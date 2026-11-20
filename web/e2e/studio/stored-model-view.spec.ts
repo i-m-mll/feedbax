@@ -225,7 +225,6 @@ test('an Evaluate attachment for the step is stored in a document based on the s
   const { [variant]: based, ...others } = saved.project.documents ?? {};
   expect(others).toEqual(snapshot.project.documents);
   expect(based).toMatchObject({ base: { document: expect.any(String) } });
-  expect(saved.project.steps?.baseline).not.toHaveProperty('model_attachments');
   expect((saved.project.steps?.baseline?.base as { inline: { trial_documents: unknown } }).inline.trial_documents)
     .toEqual({ model: { document: variant } });
   await page.reload();

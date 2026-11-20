@@ -39,19 +39,6 @@ def _renamed_prefix(family: MemberFamily, old: str, new: str) -> _Rename:
     return rename
 
 
-def _renamed_override_target(old: str, new: str) -> _Rename:
-    """Rewrite `steps.<step>.document_overrides.<name>...`, which names the document as a key."""
-
-    def rename(path: str) -> str:
-        parts = path.split(".", 4)
-        if len(parts) >= 4 and parts[0] == "steps" and parts[2:4] == ["document_overrides", old]:
-            parts[3] = new
-            return ".".join(parts)
-        return path
-
-    return rename
-
-
 def _renamed_patch_targets(patchset: _Json, rename: _Rename) -> _Json:
     if patchset is None or "patches" not in patchset:
         return patchset
@@ -136,15 +123,11 @@ def _rename_document(
 ) -> tuple[dict[str, JsonValue], dict[str, JsonValue]]:
     renamed = _renamed_document_references({key: value for key, value in project.items() if key != "documents"}, old, new)
     renamed = _renamed_sweeps(renamed, _renamed_prefix("documents", old, new))
-    renamed = _renamed_sweeps(renamed, _renamed_override_target(old, new))
     documents = {
         name: {**document, "base": {"document": new}} if document.get("base") == {"document": old} else document
         for name, document in project.get("documents", {}).items()
     }
     renamed = {"documents": _rekey(documents, old, new), **renamed}
-    for step in renamed.get("steps", {}).values():
-        if "document_overrides" in step:
-            step["document_overrides"] = _rekey(step["document_overrides"], old, new)
     shown = dict(presentation)
     if "documents" in shown:
         shown["documents"] = _rekey(shown["documents"], old, new)
@@ -183,10 +166,9 @@ def rename_member(
     """Return the project and presentation with the member and its references renamed.
 
     A document is referred to by the project's `DocumentReference`s, the `base` of the
-    documents based on it, `documents.<name>...` and `steps.<step>.document_overrides.<name>...`
-    sweep targets, and each step's `document_overrides`. Documents' content is left byte for byte, Model addresses are
-    relative to their document and carry no name, and `model_attachments` batches are named
-    by their author. A step is referred to by `StepBase.step`, `StepReference.step` in other
+    documents based on it, and `documents.<name>...` sweep targets. Documents' content is left byte for byte, Model
+    addresses are relative to their document and carry no name, and Model difference batches are named by their
+    author. A step is referred to by `StepBase.step`, `StepReference.step` in other
     steps' inputs, and `steps.<name>...` targets in the project's and steps' sweeps. A step's group membership is its own `group`
     field, so it moves with the step. The presentation is keyed by member name.
     """

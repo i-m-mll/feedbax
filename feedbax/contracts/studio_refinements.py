@@ -559,6 +559,22 @@ CROSS_FIELD_REFINEMENTS.update(
                 "(value.kind === 'absolute' && value.batch == null) || (value.kind !== 'absolute' && value.batch != null)",
             ),
         ),
+        "ModelEditRequest": (
+            _typescript_refinement(
+                "model-edit.variant-step",
+                "A Model edit made in a variant is made for a step",
+                "value.variant != null && value.step == null",
+            ),
+        ),
+        "Step": (
+            _typescript_refinement(
+                "step.no-model-difference",
+                "A step holds no model_attachments; a Model change is a document based on the Model",
+                "('inline' in value.base && value.base.inline != null && 'model_attachments' in value.base.inline)"
+                " || (value.deltas ?? []).some((delta) => (delta.patches ?? []).some((patch) =>"
+                " patch.path === 'model_attachments' || patch.path.startsWith('model_attachments.')))",
+            ),
+        ),
         "SelectionSpec": (
             _typescript_refinement(
                 "selection.identity",
@@ -620,6 +636,8 @@ REGISTERED_CONSTRAINT_VALIDATORS: dict[str, frozenset[str]] = {
     "WorkspaceReplayProduct": frozenset({"validate_source_mode"}),
     "BatchScheduleOriginSpec": frozenset({"_validate_origin"}),
     "SelectionSpec": frozenset({"_validate_selection_spec"}),
+    "ModelEditRequest": frozenset({"_variant_has_step"}),
+    "Step": frozenset({"_no_model_difference"}),
 }
 
 

@@ -67,7 +67,7 @@ export function useManagedReport({
   const [refusal, setRefusal] = useState<{ scope: string; at: Place; reason: string }>();
   const shared = document && (plan.steps.some(({ id, documentUses }) => id !== stepId && documentUses?.includes(document))
     || Object.entries(draft.steps ?? {}).some(([id, { base }]) => id !== stepId && 'document' in base && base.document === document));
-  const direct = !step?.sweep && !step?.deltas?.length && !Object.keys(step?.document_overrides ?? {}).length;
+  const direct = !step?.sweep && !step?.deltas?.length;
   const editable = !!report && !!document && wholeStep && direct &&
     projection?.revision === saved.revision && !pending && !outside && !shared;
   const figures = projection?.window_map?.analysis_elements?.filter(isReportFigureSource)

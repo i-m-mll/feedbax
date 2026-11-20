@@ -9,20 +9,29 @@ from feedbax.contracts.project_resolution import ResolutionCode
 from feedbax.contracts.request_identity import decode_request
 from tests.support.managed_train_fixture import managed_evaluation_step, managed_train_project
 
-# Read at develop 76a6c51d, where the same changes were stored on the Evaluate step (`model_attachments`)
-# and a Task choice was a `params.variation` entry with path `task`.
+# Read at develop 76a6c51d, where the same changes were stored on the Evaluate step itself,
+# and a Task choice was a `params.variation` entry with path `task`; the swept and nearest-shared ids at a9b3bb7d.
 FEE = "train:40b570d54d78b55b6a06cce52dabd7968d1e0e09c3b92a6a09ab05e0d06f3117"
 DEFAULT = "evaluate:9e1f087eb03b07a9106a08054a90b5bce78b5775c23b582ed213998535edc062"
 FIELD_CHANGED = "evaluate:af856b63bdc773b5ed9f350993b003223f6b3a6c74c185eb676f4f471530882b"
 ATTACHMENT_ADDED = "evaluate:3ad98387a55ff6903ae938428689f61b996d4b33eecb2552d8ec2a3487353caf"
 FEWER_CONDITIONS = "evaluate:93633f66c3a47e11b1ea2d5acf5718a9c031b496319876725a53cc8c322594cc"
+SWEPT_PUSHED = (
+    ("trained==347a995705cde9b16ee3a665dede47e6594d0c1158f3809255731f622a8fbe30",
+     "evaluate:449db0e3369f600420a8faf2642b1b661296c5d006b9e4acc0356aac1bc5f1e2"),
+    ("trained==abb0ffe5124ac74b8d431462660c668b987dd969c5bf76fc07a20894a2b46eea",
+     "evaluate:c9ccc993dbbf9a51b2e92053741ebc7140901744a8bd2f53574786ec53805677"),
+)
+NEAREST_SHARED = {
+    "fee": "train:79900a9a69a9f18592ed334d91afb7cc6e13c8af1e1e22411f4c5cbcde43d1f0",
+    "other": FEE,
+    "check": "evaluate:59359e9c566cf281ef63419ca6948b365d145982adc65418ab1adc840de50cc3",
+}
 UNPAIRED_TASK = "Model input 'target_pos' reads signal 'target_pos', which the Task does not declare."
 
 TASK = "simple-reaches-task"
 MASS = {"composites": [], "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]}}
 PUSH = {"kind": "intervention", "id": "push", "operation": "Scale", "fields": {"factor": 0.5}}
-STORED_FIELD = {"op": "set_field", "address": MASS, "value": 2.0}
-STORED_ATTACHMENT = {"op": "add", "owner": {"composites": [], "element": {"kind": "wire", "id": "drive"}}, "attachment": PUSH, "after": None}
 
 
 def _data():
@@ -120,11 +129,7 @@ def test_an_evaluation_keeps_its_subjects_swept_value_under_its_documents_change
     _based(data, "model-2", _with_push(_model(data)))
     _reads(data, "check", "model", "model-2")
     plan = _plan(data)
-    stored = swept()
-    stored["steps"]["check"]["model_attachments"] = {"edit": [STORED_ATTACHMENT]}
-    expected = _plan(stored)
-    runs = sorted((run.key.row, run.request_id) for run in plan.runs if run.kind == "evaluate")
-    assert len(runs) == 2 and runs == sorted((run.key.row, run.request_id) for run in expected.runs if run.kind == "evaluate")
+    assert tuple(sorted((run.key.row, run.request_id) for run in plan.runs if run.kind == "evaluate")) == SWEPT_PUSHED
     trained = {run.request_id for run in plan.runs if run.kind == "train"}
     for run in (run for run in plan.runs if run.kind == "evaluate"):
         spec = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
@@ -150,15 +155,7 @@ def test_an_evaluation_reads_its_documents_differences_from_the_nearest_shared_d
     _reads(data, "check", "model", "model-2")
     _based(data, "model-3", _with_mass(_model(data), 3.0))
     _reads(data, "fee", "model", "model-3")
-    moved = _ids(data)
-
-    stored = _data()
-    stored["steps"]["other"] = deepcopy(stored["steps"]["fee"])
-    _based(stored, "model-3", _with_mass(_model(stored), 3.0))
-    _reads(stored, "fee", "model", "model-3")
-    stored["steps"]["check"]["model_attachments"] = {"edit": [STORED_ATTACHMENT]}
-    assert moved["fee"] != FEE and moved["other"] == FEE
-    assert moved == _ids(stored)
+    assert _ids(data) == NEAREST_SHARED
 
     _reads(data, "fee", "model", "model")
     assert _ids(data) == {"fee": FEE, "other": FEE, "check": ATTACHMENT_ADDED}

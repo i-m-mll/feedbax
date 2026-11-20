@@ -7,6 +7,7 @@ import sys
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.desktop.release import AppPaths
+from tests.support.model_documents import changed_model
 from tests.test_document_train_pair import authored_documents, document_project
 from tests.test_model_document_plan import _add_attachment, _attachment_owner, _end, _model_project, _planar_arm, _wire
 
@@ -46,9 +47,10 @@ if __name__ == "__main__":
     home, folder_name, scope = sys.argv[1:]
     if scope == "managed-fields":
         raw = document_project(authored_documents())
-        raw["steps"]["train"]["model_attachments"] = {
-            "wire": [_add_attachment(_attachment_owner("read"), "training-scale", None, 1.0)],
-        }
+        model = raw["documents"][raw["steps"]["train"]["base"]["inline"]["trial_documents"]["model"]["document"]]
+        model["payload"] = changed_model(
+            model["payload"], [_add_attachment(_attachment_owner("read"), "training-scale", None, 1.0)],
+        )
     else:
         raw = _model_project()
     if scope in {"equations", "mechanics-port", "within-step"}:

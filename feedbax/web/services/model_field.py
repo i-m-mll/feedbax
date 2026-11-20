@@ -14,6 +14,7 @@ from feedbax.contracts.model_document import (
 )
 from feedbax.contracts.model_edit import (
     EvaluateAttachmentReadRequest, EvaluateAttachmentRequest, EvaluateAttachmentRows, EvaluateAttachmentStep,
+    EvaluateAttachmentVariant,
     ModelEditCommand, SetField,
 )
 from feedbax.contracts.manifest import OverridePatch
@@ -365,7 +366,7 @@ def model_fields(
         else:
             value = result.model_dump(mode="json")
     difference = SetField(op="set_field", address=field.address, value=value)
-    if evaluate is not None and isinstance(evaluate.scope, EvaluateAttachmentStep):
+    if evaluate is not None and isinstance(evaluate.scope, EvaluateAttachmentStep | EvaluateAttachmentVariant):
         return ModelFieldResponse(command=ModelEditCommand(operation=difference))
     if evaluate is not None:
         request = EvaluateAttachmentRequest(**evaluate.model_dump(), difference=difference)

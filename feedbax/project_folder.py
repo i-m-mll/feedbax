@@ -29,7 +29,6 @@ from feedbax.expression_registry import FunctionRegistry
 from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.training.methods import TrainingMethodRegistry
 from feedbax.contracts.base import StrictModel, sha256_bytes
-from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
 from feedbax.contracts.matrix_core import apply_value_patch_in_place
 from feedbax.contracts.model_address import ModelAddress
@@ -459,16 +458,12 @@ def _may_read_figure_pin(project: Project) -> bool:
         for document in figures.values()
     ):
         return True
-    if any(figures.keys() & step.document_overrides.keys() for step in project.steps.values()):
-        return True
     if (sweep := project.sweep) is None:
         return False
 
     def affects_figures(path: str) -> bool:
         family, *parts = path.split(".")
-        return family == "documents" or bool(figures) and family == "steps" and (
-            len(parts) == 1 or parts[1:2] == ["document_overrides"]
-        )
+        return family == "documents" or bool(figures) and family == "steps" and len(parts) == 1
 
     patches = [
         *sweep.rows.values(), *sweep.exceptions.values(),

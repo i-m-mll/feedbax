@@ -24,7 +24,6 @@ from feedbax.contracts.project import (
     apply_differences,
     base_chain,
     check_typed_payload,
-    DocumentEdit,
     DocumentReference,
     ExternalBase,
     InlineBase,
@@ -32,12 +31,8 @@ from feedbax.contracts.project import (
     Project,
     RunBase,
     SetDocumentValue,
-    SetProjectValue,
     StepBase,
     StepKind,
-    apply_document_edit,
-    document_edit_ops,
-    document_edit_value,
     json_pointer_parts,
 )
 from feedbax.contracts.project_inputs import InitialModelReference, InputBinding, ObjectiveDocumentReference, TaskDocumentReference
@@ -344,42 +339,6 @@ def _figure_slot(path: str) -> str | None:
     return None
 
 
-@dataclass(frozen=True)
-class DocumentDifference:
-    """One edit a step applies to a document it reads, at ``location`` in that step's file."""
-
-    step: str
-    location: tuple[str, ...]
-    edit: DocumentEdit
-
-
-type DocumentDifferences = Mapping[str, tuple[DocumentDifference, ...]]
-
-
-def document_differences(project: Project, step: str) -> dict[str, tuple[DocumentDifference, ...]]:
-    """The differences ``step`` applies to each document: those of its ``base: {step}`` chain, root first, then its own.
-
-    Applied in order, a later difference at the same path wins. A chain that names a missing step or returns to itself
-    ends there; composing the step reports it.
-    """
-    chain: list[str] = []
-    name: str | None = step
-    while name is not None and name not in chain and (authored := project.steps.get(name)) is not None:
-        chain.append(name)
-        name = authored.base.step if isinstance(authored.base, StepBase) else None
-    differences: dict[str, list[DocumentDifference]] = {}
-    for name in reversed(chain):
-        for document, edits in project.steps[name].document_overrides.items():
-            for index, edit in enumerate(document_edit_ops(edits)):
-                location = (edit.path,) if isinstance(edits, dict) else (
-                    (str(index), "value") if isinstance(edit, SetProjectValue) else (str(index),)
-                )
-                differences.setdefault(document, []).append(
-                    DocumentDifference(name, ("document_overrides", document, *location), edit)
-                )
-    return {document: tuple(items) for document, items in differences.items()}
-
-
 def _written_sources(shape: Any, at: tuple[str, ...] = ()) -> Iterator[tuple[tuple[str, ...], Any]]:
     """The places a variant wrote in a sparse source tree, each with the sources of the value it wrote there."""
     if isinstance(shape, ValueSource) or isinstance(shape, SourceObject | SourceList) and shape.source is not None:
@@ -410,7 +369,6 @@ class _Documents:
         step: str | None = None,
         variant_sources: Any = None,
         read_document: Callable[[str], Document | None] | None = None,
-        overrides: DocumentDifferences | None = None,
         *,
         external: Callable[[str], bytes | None] | None = None,
         partial_figures: bool = False,
@@ -419,7 +377,6 @@ class _Documents:
         self.step = step
         self.variant_sources = variant_sources
         self.read_document = project.documents.get if read_document is None else read_document
-        self.overrides = overrides or {}
         self.row_patches = row_patches or {}
         self.used: set[str] = set()
         self.edited: dict[str, JsonValue] = {}
@@ -503,22 +460,14 @@ class _Documents:
             )
         self.used.add(reference.document)
         payload = self.payload(reference.document, document, path)
-        edits = self.overrides.get(reference.document)
         patches = self.row_patches.get(reference.document, ())
-        if edits or patches:
+        if patches:
             if reference.document not in self.edited:
                 draft = deepcopy(payload)
-                try:
-                    if not isinstance(draft, dict):
-                        raise ValueError("Document differences require an object payload")
-                    for difference in edits or ():
-                        apply_document_edit(draft, difference.edit, document_edit_value(difference.edit))
-                except ValueError as error:
-                    raise _Problem(
-                        ResolutionCode.INVALID_DELTA, path, str(error), step=self.step, document=reference.document
-                    ) from error
                 for item in patches:
                     try:
+                        if not isinstance(draft, dict):
+                            raise ValueError("A variant writes into an object payload only")
                         draft = apply_override_patch_copy(draft, item.patch)
                     except ValueError as error:
                         raise _Problem(
@@ -593,11 +542,10 @@ class _Documents:
                 value, ValueSource("document", pin.path, pointer((*json_pointer_parts(pin.pointer), *parts))),
             )
         name = reference.document
-        edits = self.overrides.get(name)
         patches = self.row_patches.get(name, ())
         variant = source_at(self.variant_sources, ("documents", name, "payload"))
         based = name in self.composed
-        if not edits and not patches:
+        if not patches:
             if based:
                 return source_at(self.shape(name), parts)
             return source_shape(
@@ -610,9 +558,6 @@ class _Documents:
                 deepcopy(self.shape(name)) if based
                 else source_shape(cast(RootDocument, document).payload, ValueSource("document", name), variant)
             )
-            for difference in edits or ():
-                source = ValueSource("step", difference.step, pointer(difference.location), step=difference.step)
-                apply_document_edit(shape, difference.edit, source_shape(document_edit_value(difference.edit), source))
             for item in patches:
                 assert item.source is not None
                 shape = patch_source(shape, item.patch, source_shape(item.patch.value, item.source, item.override))
@@ -686,7 +631,7 @@ class _Documents:
         if isinstance(value, DocumentReference):
             selected, active = self._follow(value, path, active)
             if (
-                value.document not in self.pinned and value.document not in self.overrides
+                value.document not in self.pinned
                 and value.document not in self.composed
                 and value.document not in self.row_patches and self.variant_sources is None
             ):
@@ -901,30 +846,6 @@ class _Resolver:
                     source = ValueSource("step", name, pointer(path), step=name)
                     override = source_at(self.variant_sources, ("steps", name, *path))
                     origins = patch_source(origins, patch, source_shape(patch.value, source, override))
-        if step.model_attachments:
-            batches = {name: [item.model_dump(mode="json", exclude_unset=True) for item in records]
-                       for name, records in step.model_attachments.items()}
-            inherited = payload.get(MODEL_ATTACHMENTS, {})
-            if not isinstance(inherited, dict):
-                raise _Problem(
-                    ResolutionCode.INVALID_PAYLOAD, MODEL_ATTACHMENTS,
-                    "Expected named batches of Model attachment differences", step=name,
-                )
-            payload = payload | {MODEL_ATTACHMENTS: inherited | batches}
-            if origins is not None:
-                if MODEL_ATTACHMENTS not in origins:
-                    origins = patch_source(origins, OverridePatch(
-                        path=MODEL_ATTACHMENTS, op="add", value={},
-                    ), source_shape({}, None))
-                for batch, records in batches.items():
-                    source = ValueSource("step", name, pointer((MODEL_ATTACHMENTS, batch)), step=name)
-                    patch = OverridePatch(
-                        path=f"{MODEL_ATTACHMENTS}.{batch}",
-                        op="replace" if batch in inherited else "add", value=records,
-                    )
-                    origins = patch_source(origins, patch, source_shape(
-                        records, source, source_at(self.variant_sources, ("steps", name, MODEL_ATTACHMENTS, batch)),
-                    ))
         try:
             sweep = inherit_sweep(
                 parent.sweep, step.sweep, author=name if self.track_sources else None
@@ -1143,7 +1064,7 @@ class _Resolver:
 
     def row_documents(self, name: str, state: _StepState, *, partial_figures: bool = False) -> _Documents:
         return _Documents(
-            self.project, name, self.variant_sources, self.read_document, document_differences(self.project, name),
+            self.project, name, self.variant_sources, self.read_document,
             external=self.readers.figure_external if self.project.steps[name].kind == "analyze" else None,
             partial_figures=partial_figures,
             row_patches=state.row_document_patches,
@@ -1234,17 +1155,11 @@ class StepComposition:
 
     name: str
     _state: _StepState
-    _document_differences: DocumentDifferences
 
     @cached_property
     def row_basis(self) -> str:
         """Hash the ordered payload and required paths before row-local patches."""
-        return sha256_bytes(to_json((
-            self._state.payload, self._state.requires, sorted(self._state.document_uses), {
-                document: [difference.edit.model_dump(mode="json") for difference in differences]
-                for document, differences in sorted(self._document_differences.items())
-            },
-        )))
+        return sha256_bytes(to_json((self._state.payload, self._state.requires, sorted(self._state.document_uses))))
 
     @property
     def sweep(self) -> Sweep | None:
@@ -1347,7 +1262,7 @@ def compose_step(
     resolver = _Resolver(project, readers, track_sources, variant_sources, read_document, inline_origin)
     try:
         state = resolver.state(step)
-        return StepTemplate(StepComposition(step, state, document_differences(project, step)), resolver)
+        return StepTemplate(StepComposition(step, state), resolver)
     except _Problem as error:
         return error.diagnostic
 

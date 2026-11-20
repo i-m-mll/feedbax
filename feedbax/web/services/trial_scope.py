@@ -27,7 +27,9 @@ from feedbax.contracts.project_resolution import (
     ProjectDiagnostic, StepTemplate, compose_document, compose_step, document_write_target,
 )
 from feedbax.contracts.project_sources import pointer
-from feedbax.contracts.project_sweep import AxisCondition, NamedAxis, SetValue, RemoveValue, _compose_writes
+from feedbax.contracts.project_sweep import (
+    AxisCondition, NamedAxis, SetValue, RemoveValue, _compose_writes, _paths_overlap, authored_row,
+)
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.studio_project import AuthoredFileAddress, CreateNamedDocument, StudioProjectFilePatch
 from feedbax.project_members import generated_name
@@ -299,6 +301,8 @@ class _DocumentStores:
     created: list[CreateNamedDocument]
     pointing: dict[str, dict[str, str]]
     """Per chosen step, the documents it reads that it reads a new document in place of."""
+    written: dict[str, tuple[Payload, Payload]]
+    """Each document that holds the edit in place, with its composed content before and after."""
 
 
 def _document_stores(
@@ -314,7 +318,7 @@ def _document_stores(
     documents = project.documents
     if chosen is not None and (not chosen or not chosen <= lit_steps(documents, readers, shown)):
         raise ProjectFolderInvalid(f"A chosen step does not read {shown} or a document based on it.")
-    stores = _DocumentStores([], [], {})
+    stores = _DocumentStores([], [], {}, {})
     before: dict[str, Payload] = {}
     after: dict[str, Payload] = {}
 
@@ -346,6 +350,7 @@ def _document_stores(
         if chosen is None or changed(name, content, ()) <= chosen:
             if not same_json(content, old(name)):
                 after[name] = content
+                stores.written[name] = (old(name), content)
             base = None
             if isinstance(document, BasedDocument):
                 base = after.get(document.base.document) or old(document.base.document)
@@ -514,6 +519,82 @@ def evaluation_document_write(
     return StoredEdit(files, reached=frozenset(named)) + document_write(current, shown, edits, chosen, readers)
 
 
+def variant_evaluation_write(
+    project: Project, plan, variant: str, shown: str, edits: Sequence[DocumentEdit], chosen: Collection[str], slot: str,
+) -> StoredEdit:
+    """:func:`evaluation_document_write` in a ``variant`` other than the default one, stored in the variant's row.
+
+    The rule is the default variant's, with the readers of the variant. Where the default variant writes a document,
+    the row writes ``documents.<name>.payload.<path>``; where it points a step at a created document, the row replaces
+    the step's reference. A created document is a file of its own, which no step reads outside the variant.
+    """
+    subjects = {
+        run.key.step: subject.producer.step for run in plan.runs
+        if run.key.variant == variant and run.kind == "evaluate"
+        and (subject := run.inputs.get("subject")) is not None and subject.producer is not None
+    }
+    chosen = set(chosen)
+    named = set()
+    for row in plan.rows:
+        if row.key.variant == variant and row.key.step in chosen and shown in row.followed_documents:
+            if subjects.get(row.key.step) in chosen:
+                chosen.discard(row.key.step)
+            else:
+                named.add(row.key.step)
+
+    def readers(name: str) -> frozenset[str]:
+        return plan.document_users(variant, name) | (frozenset(named) if name == shown else frozenset())
+
+    stores = _document_stores(project, shown, edits, frozenset(chosen), readers, set())
+    writes = [
+        OverridePatch(path=".".join(("documents", name, "payload", *json_pointer_parts(path))), op="remove")
+        if isinstance(record, RemoveDocumentValue) else OverridePatch(
+            path=".".join(("documents", name, "payload", *json_pointer_parts(path))),
+            op="replace" if _holds(before, json_pointer_parts(path)) else "add", value=record.value,
+        )
+        for name, (before, after) in stores.written.items() for path, record in diff(before, after).items()
+    ]
+    for step, mapping in sorted(stores.pointing.items()):
+        authored = project.steps[step]
+        if not isinstance(authored.base, InlineBase) or authored.deltas:
+            raise ProjectFolderInvalid(f"A variant points only a step defined in its own file at a document; {step} is not.")
+        inline = authored.base.inline
+        prefix = ("steps", step, "base", "inline")
+        if step in named:
+            reference = {"document": mapping[shown]}
+            documents = inline.get("trial_documents")
+            writes.append(
+                OverridePatch(path=".".join((*prefix, "trial_documents", slot)), op="add", value=reference)
+                if isinstance(documents, dict) else
+                OverridePatch(path=".".join((*prefix, "trial_documents")), op="add", value={slot: reference})
+            )
+            continue
+        for path, reference in _references(inline):
+            if reference.document in mapping:
+                writes.append(OverridePatch(path=".".join((*prefix, *path)), op="replace", value=reference.model_copy(
+                    update={"document": mapping[reference.document]},
+                ).model_dump(mode="json", exclude_none=True)))
+    row = authored_row(project.sweep, variant)
+    if row is None:
+        raise ProjectFolderInvalid("The variant needs an authored row.")
+    if clash := next((path for path in row.patches for write in writes if _paths_overlap(path, write.path)), None):
+        raise ProjectFolderInvalid(f"The variant already writes {clash}; this edit would replace it.")
+    return StoredEdit(
+        [variant_file(project, variant, writes)] if writes else [], tuple(stores.created), frozenset(chosen | named),
+    )
+
+
+def _holds(payload: Any, parts: Sequence[str]) -> bool:
+    for part in parts:
+        if isinstance(payload, dict) and part in payload:
+            payload = payload[part]
+        elif isinstance(payload, list) and part.isdigit() and int(part) < len(payload):
+            payload = payload[int(part)]
+        else:
+            return False
+    return True
+
+
 def _in_form_of(before: Payload, after: Payload) -> Payload:
     """``after``, a normalized Model, spelled as ``before`` wherever the two mean the same Model."""
     from feedbax.contracts.model_document import ModelDocument
@@ -541,6 +622,10 @@ def model_document_store(folders, project_id: str, project: Project, body, befor
     if body.step is None:
         return head.then(shared_document_write(project, body.document, edits))
     plan = folders.read_plan(project_id, revision=body.revision).plan
+    if body.variant is not None and body.variant != plan.variants[0]:
+        return head + variant_evaluation_write(
+            project, plan, body.variant, body.document, edits, {body.step, *body.chosen_steps}, "model",
+        )
     return head + evaluation_document_write(
         project, plan, body.document, edits, {body.step, *body.chosen_steps}, "model",
     )
@@ -657,7 +742,7 @@ def _step_file(project, step_id, address, raw, authored, writes) -> StudioProjec
     prior = authored.deltas[:kept]
     stored = [patch for layer in authored.deltas[kept:] for patch in layer.patches]
     before = authored_payload(project.model_copy(update={"steps": project.steps | {
-        step_id: authored.model_copy(update={"deltas": prior, "model_attachments": {}}),
+        step_id: authored.model_copy(update={"deltas": prior}),
     }}), step_id)
     patches = normalized_patches(before, [*stored, *writes])
     deltas = [layer.model_dump(mode="json", exclude_unset=True) for layer in prior]
