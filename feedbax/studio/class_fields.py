@@ -50,10 +50,10 @@ class ClassField:
         return bool(self.sweeps and self.sweeps.covering)
 
     def members(self) -> tuple[str, NamedAxis] | None:
-        """The sweep over this field when each of its values is one class and its parameters."""
-        if self.sweeps is None or len(self.sweeps.covering) != 1:
+        """The field's sweep for the runs it is read for, when each of its values is one class and its parameters."""
+        if self.sweeps is None or len(self.sweeps.covering) != 1 or len(self.sweeps.shown) != 1:
             return None
-        name, axis = self.sweeps.covering[0]
+        name, axis = self.sweeps.shown[0]
         if not isinstance(axis, NamedAxis) or not axis.values or not self.sweeps.may_edit_member(axis) or any(
             entry.value not in self.classes for entry in axis.values.values() if entry is not None
         ):

@@ -741,6 +741,103 @@ def test_a_parameter_swept_for_one_optimizer_divides_only_its_runs(tmp_path):
         assert len([row for row in train.plan(tmp_path, name).rows if row.key.step == "train"]) == 6
 
 
+def test_a_rate_swept_for_adam_only_reads_as_the_selected_runs_have_it(tmp_path):
+    """The whole step reads Mixed with the runs' values; Adam's runs read the sweep; SGD's runs read their one value."""
+    url = _optimizer_swept_project(tmp_path, "adam-rate")
+    optimizer, rate = "/settings/optimizer", "/settings/optimizer/learning_rate/value"
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        train = _TrainClient(client, url)
+        train.sweep_class(optimizer, {"kind": "to_sweep"})
+        train.sweep_class(optimizer, {"kind": "add_member", "key": "sgd"})
+        adam, group = train.runs(tmp_path, "adam-rate", optimizer="adam"), {"optimizer": ["adam"]}
+        train.number(rate, {"kind": "to_sweep"}, adam, group)
+        adam = train.runs(tmp_path, "adam-rate", optimizer="adam")
+        train.number(rate, {"kind": "text", "text": "0.002, 0.003"}, adam, group)
+        adam, sgd = (train.runs(tmp_path, "adam-rate", optimizer=key) for key in ("adam", "sgd"))
+        (held,) = {
+            definition.payload["settings"]["optimizer"]["learning_rate"]["value"]
+            for key, definition in train.plan(tmp_path, "adam-rate").selected_definitions.items() if key in sgd
+        }
+
+        def field(keys=(), axes=None, named=None):
+            body = client.post(url + "/authoring/train/train/fields", json=train.scope(keys, axes, named=named)).json()
+            return next(item for item in body["fields"] if item["id"] == rate)
+
+        whole = field(named=adam[0])
+        assert whole["sweep"] is None and whole["mixed"]
+        assert sorted(member["value"] for member in whole["members"]) == sorted([held, 0.002, 0.003])
+        swept = field(adam, group)
+        assert [value["value"] for value in swept["sweep"]["values"]] == [0.002, 0.003] and swept["can_change_axis"]
+        assert field(adam[:1])["sweep"]["values"]
+        other = field(sgd, {"optimizer": ["sgd"]})
+        assert other["sweep"] is None and not other["mixed"] and other["text"] == str(held)
+
+
+def test_a_class_swept_for_some_runs_reads_as_the_selected_runs_have_it(tmp_path):
+    """The optimizer swept for the fast rate's runs only: Mixed for the step, the sweep for those runs, Adam for the others."""
+    url = _optimizer_swept_project(tmp_path, "fast-optimizer")
+    optimizer, rate = "/settings/optimizer", "/settings/optimizer/learning_rate/value"
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        train = _TrainClient(client, url)
+        train.number(rate, {"kind": "text", "text": "0.001, 0.003"})
+        train.sweep_class(optimizer, {"kind": "to_sweep"})
+        train.sweep_class(optimizer, {"kind": "add_member", "key": "sgd"})
+        rows = train.plan(tmp_path, "fast-optimizer").rows
+        slow, fast = sorted({row.coordinates["learning-rate"].value_id for row in rows},
+                            key=lambda value_id: next(row.coordinates["learning-rate"].value for row in rows
+                                                      if row.coordinates["learning-rate"].value_id == value_id))
+        train.save(Mock(status_code=200, json=lambda: {"files": [{
+            "address": {"kind": "step", "id": "train"},
+            "patches": [{"op": "add", "path": "/sweep/axes/optimizer/where", "value": {"axes": {"learning-rate": [fast]}}}],
+        }]}))
+        assert len(train.plan(tmp_path, "fast-optimizer").rows) == 3
+        fast_runs = train.runs(tmp_path, "fast-optimizer", **{"learning-rate": fast})
+        slow_runs = train.runs(tmp_path, "fast-optimizer", **{"learning-rate": slow})
+
+        def classes(keys=(), axes=None, named=None):
+            body = client.post(url + "/authoring/train/train", json=train.scope(keys, axes, named=named)).json()
+            return next(item for item in body["classes"] if item["id"] == optimizer), body["mixed"]
+
+        whole, mixed = classes(named=fast_runs[0])
+        assert whole["sweep"] is None and whole["classes"] == ["adam", "sgd"] and "/settings/optimizer/type" in mixed
+        swept, _ = classes(fast_runs, {"learning-rate": [fast]})
+        assert [member["value"] for member in swept["sweep"]["members"]] == ["adam", "sgd"]
+        other, mixed = classes(slow_runs, {"learning-rate": [slow]})
+        assert other["sweep"] is None and other["classes"] == ["adam"] and "/settings/optimizer/type" not in mixed
+
+
+def test_a_model_field_swept_for_some_runs_reads_as_the_selected_runs_have_it(tmp_path):
+    """Mass swept for seed 1's runs only: Mixed for the step, the sweep for those runs, the one mass for the others."""
+    url = _seed_swept_project(tmp_path, "seed-mass")
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        train = _TrainClient(client, url)
+        plant = {"composites": [], "element": {"kind": "component", "id": "plant"}}
+
+        def mass(keys=(), axes=None, named=None, **edit):
+            body = train.scope(keys, axes, named=named) | {"document": "reach-model", "owner": plant} | edit
+            response = client.post(url + "/model/fields", json=body)
+            return response if edit else next(item for item in response.json()["fields"] if item["label"] == "Mass")
+
+        (default,) = train.runs(tmp_path, "seed-mass", seed="seed-1")
+        train.save(mass(named=default, address=mass(named=default)["address"], edit={"kind": "text", "text": "2, 3"}))
+        axis = next(name for name in client.get(url + "/open").json()["snapshot"]["project"]["steps"]["train"]["sweep"]["axes"]
+                    if name != "seed")
+        train.save(Mock(status_code=200, json=lambda: {"files": [{
+            "address": {"kind": "step", "id": "train"},
+            "patches": [{"op": "add", "path": f"/sweep/axes/{axis}/where", "value": {"axes": {"seed": ["seed-1"]}}}],
+        }]}))
+        first = train.runs(tmp_path, "seed-mass", seed="seed-1")
+        (second,) = train.runs(tmp_path, "seed-mass", seed="seed-2")
+        assert len(first) == 2
+
+        whole = mass(named=first[0])
+        assert whole["sweep"] is None and whole["mixed"]
+        assert sorted(member["value"] for member in whole["members"]) == [1.0, 2, 3]
+        assert [value["value"] for value in mass(first, {"seed": ["seed-1"]})["sweep"]["values"]] == [2, 3]
+        other = mass([second], {"seed": ["seed-2"]})
+        assert other["sweep"] is None and not other["mixed"] and other["text"] == "1.0"
+
+
 def test_a_class_without_a_swept_parameter_is_refused_as_a_member(tmp_path):
     raw = _model_project()
     raw["steps"].pop("baseline")

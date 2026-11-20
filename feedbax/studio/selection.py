@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 
 from pydantic import JsonValue
 
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project_plan import PlannedRow
-from feedbax.contracts.project_sweep import AxisCondition
+from feedbax.contracts.project_sweep import AxisCondition, SweepCoordinate
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
 
 
@@ -52,6 +52,8 @@ class TrainSelection:
     store: Callable[[list[OverridePatch]], StoredEdit]
     values: AxisCondition | None = None
     """The selected runs as a set of values per sweep of the step, when they are exactly those values' runs."""
+    coordinates: tuple[Mapping[str, SweepCoordinate], ...] | None = None
+    """The sweep coordinates of the step's selected runs; absent when no run is named."""
 
 
 def merged_files(files: list[StudioProjectFilePatch]) -> list[StudioProjectFilePatch]:
