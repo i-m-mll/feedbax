@@ -867,6 +867,7 @@ def train_selection(
         named.payload if isinstance(scope, SweepValuesScope | EvaluateAttachmentAxis | EvaluateAttachmentRows)
         and named is not None else None, scoped,
         partial(checked, scope, _scoped_runs(project, plan, key, scope, chosen)), values,
+        tuple(row.coordinates for row in plan.rows if row.key in shown and row.key.step == step_id),
     )
 
 

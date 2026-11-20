@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 
 from pydantic import JsonValue
@@ -22,6 +22,7 @@ from feedbax.contracts.project_sweep import (
     SampledAxis,
     SetValue,
     Sweep,
+    SweepCoordinate,
     axis_to_list,
     sweep_value_identity_bytes,
     _paths_overlap,
@@ -162,12 +163,15 @@ def _where(axis: Axis) -> AxisCondition | None:
 class FieldSweeps:
     """The sweeps over one field; a new axis is named by ``name``, the path segments that identify the field.
 
+    ``covering`` are every axis over the field. ``runs`` are the sweep coordinates of the runs the field is read for;
+    the field's sweep is the axis over it whose condition admits every one of them (``shown``). With ``runs`` absent
+    the field is read for the step's definition, where every axis over it is its sweep.
     With ``selected``, the edit is made for those runs: a new sweep applies to them only.
     """
 
     def __init__(
         self, step: Step, target: SweepTarget, label: str, name: tuple[str, ...], *, integer: bool,
-        selected: SelectedValues | None = None,
+        selected: SelectedValues | None = None, runs: Sequence[Mapping[str, SweepCoordinate]] | None = None,
     ):
         self.step = step
         self.selected = selected
@@ -180,6 +184,11 @@ class FieldSweeps:
         self.covering = [
             (name, axis) for name, axis in self.axes.items()
             if axis is not None and paths_match(self.paths, _axis_field_paths(axis))
+        ]
+        # A conditioned axis gives a coordinate to exactly the runs its condition admits.
+        self.shown = [
+            (name, axis) for name, axis in self.covering
+            if runs is None or _where(axis) is None or bool(runs) and all(name in run for run in runs)
         ]
         exceptions = [exception for exception in step.sweep.exceptions.values() if exception is not None] if step.sweep else []
         crossed = step.sweep is None or (step.sweep.combination in (None, "cross") and not step.sweep.rows)
@@ -245,9 +254,10 @@ class FieldSweeps:
         return self.simple and _axis_paths(axis) == self.paths
 
     def view(self) -> StudioSweepList | StudioSweepRange | StudioSweepSampler | None:
-        if len(self.covering) != 1:
+        """The field's sweep for the runs it is read for."""
+        if len(self.covering) != 1 or len(self.shown) != 1:
             return None
-        name, axis = self.covering[0]
+        name, axis = self.shown[0]
         if isinstance(axis, NamedAxis) and not self.may_edit_member(axis):
             return None
         if isinstance(axis, RangeAxis):

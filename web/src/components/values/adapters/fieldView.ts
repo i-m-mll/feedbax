@@ -96,6 +96,8 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
     }, true),
   ] : [];
   const picked = options.selectedMembers ?? new Set<string>();
+  /** The values the selected runs hold, outside a sweep of the field. */
+  const held = !sweep && field.mixed ? field.members ?? [] : [];
   const source = origin(options);
   return {
     id: options.id,
@@ -112,10 +114,10 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
         value === 'value' && !!sweep && (!choices.length || !field.can_change_axis)),
     })),
     keeps: sweep ? field.selected_value ?? choices[0]?.id : undefined,
-    members: list && {
+    members: list ? {
       values: list.values.map(({ id, value }) => ({ id, text: String(value), selected: picked.has(id) })),
       choose: options.chooseMember,
-    },
+    } : held.length ? { values: held.map(({ id, value }) => ({ id, text: String(value), selected: false })) } : undefined,
     parts,
     canList: !!sweep && sweep.kind !== 'list' && sweep.can_list && field.can_change_axis,
     differs: effective ?? undefined,
