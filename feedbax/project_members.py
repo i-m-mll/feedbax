@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections import defaultdict
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from pydantic import JsonValue
 
-from feedbax.contracts.project_inputs import DocumentReference
+from feedbax.contracts.project import BasedDocument, Document, RootDocument, nearest_shared_base
+from feedbax.contracts.project_inputs import DocumentReference, StepReference
+from feedbax.contracts.project_plan import ProjectPlan
 from feedbax.contracts.studio_project import MemberFamily
 
 type _Json = Any
@@ -135,7 +138,11 @@ def _rename_document(
     renamed = _renamed_document_references({key: value for key, value in project.items() if key != "documents"}, old, new)
     renamed = _renamed_sweeps(renamed, _renamed_prefix("documents", old, new))
     renamed = _renamed_sweeps(renamed, _renamed_override_target(old, new))
-    renamed = {"documents": _rekey(project.get("documents", {}), old, new), **renamed}
+    documents = {
+        name: {**document, "base": {"document": new}} if document.get("base") == {"document": old} else document
+        for name, document in project.get("documents", {}).items()
+    }
+    renamed = {"documents": _rekey(documents, old, new), **renamed}
     for step in renamed.get("steps", {}).values():
         if "document_overrides" in step:
             step["document_overrides"] = _rekey(step["document_overrides"], old, new)
@@ -176,9 +183,9 @@ def rename_member(
 ) -> tuple[dict[str, JsonValue], dict[str, JsonValue]]:
     """Return the project and presentation with the member and its references renamed.
 
-    A document is referred to by the project's `DocumentReference`s, `documents.<name>...`
-    and `steps.<step>.document_overrides.<name>...` sweep targets, and each step's
-    `document_overrides`. Documents' content is left byte for byte, Model addresses are
+    A document is referred to by the project's `DocumentReference`s, the `base` of the
+    documents based on it, `documents.<name>...` and `steps.<step>.document_overrides.<name>...`
+    sweep targets, and each step's `document_overrides`. Documents' content is left byte for byte, Model addresses are
     relative to their document and carry no name, and `model_attachments` batches are named
     by their author. A step is referred to by `StepBase.step`, `StepReference.step` in other
     steps' inputs, and `steps.<name>...` targets in the project's and steps' sweeps. A step's group membership is its own `group`
@@ -212,3 +219,39 @@ def references_member(project: dict[str, JsonValue], family: MemberFamily, name:
     """Whether any authored reference names the member, whether or not it exists."""
     others = {**project, family: {key: value for key, value in project.get(family, {}).items() if key != name}}
     return rename_member(others, {}, family, name, name + "-")[0] != others
+
+
+_MODEL = "payload.trial_documents.model"
+
+
+def _evaluated_models(plan: ProjectPlan) -> frozenset[tuple[str, str]]:
+    """Each Model document an Evaluate step names, paired with each Model document its subject reads."""
+    trained: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for row in plan.rows:
+        if row.kind == "train" and (model := row.document_ids.get(_MODEL)) is not None:
+            trained[row.key.variant, row.key.step].add(model)
+    pairs = set()
+    for row in plan.rows:
+        if row.kind != "evaluate" or (model := row.document_ids.get(_MODEL)) is None:
+            continue
+        subject = (plan.steps[row.key.variant, row.key.step].inputs or {}).get("subject")
+        if (initial := row.document_ids.get("inputs.subject")) is not None:
+            subjects = {initial}
+        elif isinstance(subject, StepReference):
+            subjects = trained[row.key.variant, subject.step]
+        else:
+            subjects = set()
+        pairs.update((model, trained_model) for trained_model in subjects)
+    return frozenset(pairs)
+
+
+def detach_refusals(plan: ProjectPlan, documents: Mapping[str, Document]) -> frozenset[str]:
+    """The based documents whose Detach would leave an Evaluate step's Model document sharing no document with its subject's."""
+    related = [pair for pair in _evaluated_models(plan) if nearest_shared_base(documents, *pair) is not None]
+    refused = set()
+    for name, document in documents.items():
+        if isinstance(document, BasedDocument):
+            detached = {**documents, name: RootDocument.model_construct(schema_id=document.schema_id, payload={})}
+            if any(nearest_shared_base(detached, *pair) is None for pair in related):
+                refused.add(name)
+    return frozenset(refused)
