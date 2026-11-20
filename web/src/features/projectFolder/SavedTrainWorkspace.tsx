@@ -1176,7 +1176,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       const surface = renamingStep?.surface ?? mapSurface;
       void perform(async () => {
         await editor.memberCommand(studioAccessibleName('renameStep', from),
-          { kind: 'rename', family: 'steps', member: from, name }, editor.getSnapshot().saved);
+          { kind: 'change_key', family: 'steps', member: from, key: name }, editor.getSnapshot().saved);
         selection.renameStep(from, name);
         setStepFocus({ stepId: name, surface });
       }, (reason) => ({ kind: 'step', step: from, reason }));

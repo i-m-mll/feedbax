@@ -108,7 +108,7 @@ function fixture(settleMs = 400, start = initial) {
     if (body.revision !== current.revision) throw new ApiRequestError('http', '/members/command', 'Changed', { status: 409 });
     const { member: from, kind } = body.command;
     if (kind === 'detach') throw new Error('The fake transport does not detach');
-    const to = body.command.name ?? `${from}-2`;
+    const to = (kind === 'change_key' ? body.command.key : kind === 'duplicate' ? body.command.name : undefined) ?? `${from}-2`;
     const source = current.file_revisions.find(({ address }) => address.kind === 'document' && address.id === from)!;
     const { [from]: moved, ...others } = current.project.documents ?? {};
     const shown = current.presentation?.documents ?? {};
@@ -116,10 +116,10 @@ function fixture(settleMs = 400, start = initial) {
       ...current,
       revision: hex(sequence++),
       presentation_revision: hex(sequence++),
-      project: { ...current.project, documents: kind === 'rename' ? { ...others, [to]: moved } : { ...current.project.documents, [to]: moved } },
-      presentation: { ...current.presentation, documents: { ...(kind === 'rename' ? {} : shown), [to]: shown[from] } },
+      project: { ...current.project, documents: kind === 'change_key' ? { ...others, [to]: moved } : { ...current.project.documents, [to]: moved } },
+      presentation: { ...current.presentation, documents: { ...(kind === 'change_key' ? {} : shown), [to]: shown[from] } },
       file_revisions: [
-        ...current.file_revisions.filter((file) => kind !== 'rename' || file !== source),
+        ...current.file_revisions.filter((file) => kind !== 'change_key' || file !== source),
         { ...source, address: { kind: 'document', id: to } },
       ],
     };

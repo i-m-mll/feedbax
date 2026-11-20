@@ -61,9 +61,11 @@ from feedbax.contracts.project_io import (
 from feedbax.contracts.project_plan import ProjectPlan, ProjectPlanMemo, RunKey, compile_project, compiler_authority
 from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, compose_document
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_target
+from feedbax.contracts.result_address import ANALYSIS_SCHEMA, payload_elements
 from feedbax.persistence.project_subject import terminal_train_reader
 from feedbax.project_members import (
-    detach_refusals, duplicate_step, generated_name, references_member, rename_member,
+    change_member_key, detach_refusals, duplicate_step, fresh_element_keys, generated_name, label_member,
+    references_member,
 )
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.studio.selection import StoredEdit
@@ -1196,7 +1198,10 @@ class ProjectFolder:
             return self._snapshot(folder.location, text)
 
     def member_command(self, project_id: str, body: StudioMemberCommand) -> StudioMemberCommandResult:
-        """Rename, duplicate or detach a document, or rename or duplicate a step, with its references and presentation, in one write."""
+        """Label a step, operation or figure, change a member's key, or duplicate or detach a member, in one write.
+
+        A key change rewrites the member's references and presentation; a label changes no reference.
+        """
         command = body.command
         with self._locked_folder(project_id) as folder:
             root = folder.path
@@ -1204,11 +1209,7 @@ class ProjectFolder:
             check_revision("project", body.revision, text.revision)
             presentation_data, presentation_revision = _read_presentation(root)
             check_revision("presentation", body.presentation_revision, presentation_revision)
-            family: MemberFamily = "documents" if command.kind == "detach" else command.family
             member = command.member
-            members = getattr(text.project, family)
-            if member not in members:
-                raise ProjectFolderNotFound(f"{family}/{member}.json")
             source = text.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
             shown_before = _decode_presentation(presentation_data).model_dump(mode="json", exclude_unset=True)
             shown = dict(shown_before)
@@ -1219,27 +1220,63 @@ class ProjectFolder:
                     raise ProjectFolderInvalid(f"{name} cannot be composed: {document.detail}")
                 return document.model_dump(mode="json", by_alias=True)
 
+            def element_keys() -> set[str]:
+                return {
+                    key for name, document in text.project.documents.items() if document.schema_id == ANALYSIS_SCHEMA
+                    for key in payload_elements(composed(name)["payload"])
+                }
+
+            if command.kind in ("rename", "change_key") and command.family == "elements":
+                document = command.document
+                assert document is not None
+                if document not in text.project.documents:
+                    raise ProjectFolderNotFound(f"documents/{document}.json")
+                if member not in payload_elements(composed(document)["payload"]):
+                    raise ProjectFolderNotFound(f"documents/{document}.json#{member}")
+            elif command.kind == "detach" or command.family == "documents":
+                if member not in text.project.documents:
+                    raise ProjectFolderNotFound(f"documents/{member}.json")
+            elif member not in text.project.steps:
+                raise ProjectFolderNotFound(f"steps/{member}.json")
+
             if command.kind == "detach":
                 name = member
-                if not isinstance(members[member], BasedDocument):
+                if not isinstance(text.project.documents[member], BasedDocument):
                     raise ProjectFolderInvalid(f"{member} has no base.")
                 if member in self._compile(folder.location, text).detach_refused:
                     raise ProjectFolderInvalid(
                         f"Detaching {member} would leave an Evaluate step's Model document sharing no document with its subject's.",
                     )
                 project = {**source, "documents": {**source["documents"], member: composed(member)}}
+            elif command.kind == "rename":
+                name = member
+                project = label_member(source, command.family, member, command.label, document=command.document)
+            elif command.kind == "change_key" and command.family == "elements":
+                name = command.key
+                if name in element_keys():
+                    raise ProjectFolderInvalid(f"An operation or figure already holds the key {name}.")
+                project, shown = change_member_key(
+                    source, shown, "elements", member, name, document=command.document,
+                )
             else:
-                name = command.name or _free_member_name(source, family, member)
+                family = command.family
+                members = getattr(text.project, family)
+                name = (command.key if command.kind == "change_key" else command.name) or _free_member_name(
+                    source, family, member,
+                )
                 if name in members:
                     raise ProjectFileExists(f"{family}/{name}.json")
                 if references_member(source, family, name):
                     raise ProjectFolderInvalid(f"A reference already names {name}.")
-                if command.kind == "rename":
-                    project, shown = rename_member(source, shown, family, member, name)
+                if command.kind == "change_key":
+                    project, shown = change_member_key(source, shown, family, member, name)
                 elif family == "steps":
                     project, shown = duplicate_step(source, shown, member, name)
                 else:
-                    project = {**source, "documents": {**source["documents"], name: composed(member)}}
+                    copy = composed(member)
+                    if copy["schema"] == ANALYSIS_SCHEMA:
+                        copy["payload"] = fresh_element_keys(copy["payload"], element_keys())
+                    project = {**source, "documents": {**source["documents"], name: copy}}
                     if member in shown.get("documents", {}):
                         shown["documents"] = {**shown["documents"], name: shown["documents"][member]}
             try:
@@ -1247,7 +1284,7 @@ class ProjectFolder:
                 presentation = PresentationDocument.model_validate(shown)
             except ValueError as error:
                 raise ProjectFolderInvalid(str(error)) from error
-            if command.kind == "rename":
+            if command.kind == "change_key":
                 plan = compile_project(
                     validated, readers=self._base_readers(folder.location, text), operations=self.operations,
                     components=self.components, functions=self.functions, python_tasks=self.python_tasks,
@@ -1258,13 +1295,14 @@ class ProjectFolder:
                 )
                 if introduced:
                     raise ProjectFolderInvalid(
-                        f"Renaming {member} leaves a reference this rename does not rewrite.",
+                        f"Changing the key of {member} leaves a reference this change does not rewrite.",
                     )
             original = dump_text_project(text.project, text.configuration)
             encoded = dump_text_project(validated, text.configuration)
-            copied, source_file = f"{family}/{name}.json", f"{family}/{member}.json"
-            if encoded[copied] == original[source_file]:
-                encoded[copied] = text.files[source_file]
+            if command.kind == "duplicate":
+                copied, source_file = f"{command.family}/{name}.json", f"{command.family}/{member}.json"
+                if encoded[copied] == original[source_file]:
+                    encoded[copied] = text.files[source_file]
             pending = []
             for relative in sorted(original.keys() | encoded.keys()):
                 if original.get(relative) == encoded.get(relative):

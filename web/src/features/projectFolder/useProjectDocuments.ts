@@ -174,7 +174,7 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
       }) : undefined,
       rename: editable ? (name) => {
         void attempt(role, () => editor.memberCommand(studioAccessibleName('rename', kind),
-          { kind: 'rename', family: 'documents', member: document, name }, editor.getSnapshot().saved));
+          { kind: 'change_key', family: 'documents', member: document, key: name }, editor.getSnapshot().saved));
       } : undefined,
       detach: editable && based && !detachRefused.includes(document) ? () => {
         void attempt(role, () => editor.memberCommand(studioAccessibleName('detach', kind),

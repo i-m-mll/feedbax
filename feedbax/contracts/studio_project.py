@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field, FiniteFloat, JsonValue
+from pydantic import Field, FiniteFloat, JsonValue, model_validator
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.project import Document, Project, Sha256, Step
 from feedbax.contracts.project import ProjectValueEdit as ProjectValueEdit
 from feedbax.contracts.project import RemoveProjectValue as RemoveProjectValue
 from feedbax.contracts.project import SetProjectValue as SetProjectValue
-from feedbax.contracts.project_inputs import ProjectName
+from feedbax.contracts.project_inputs import NonemptyText, ProjectName
 from feedbax.contracts.project_io import ProjectConfiguration
 
 
@@ -139,21 +139,46 @@ class StudioProjectRename(StrictModel):
 
 
 type MemberFamily = Literal["documents", "steps"]
+type KeyedFamily = Literal["documents", "steps", "elements"]
 
 
-class RenameMember(StrictModel):
-    """Rename a document or step and every authored reference to it."""
+class _KeyedMember(StrictModel):
+    """A member; an operation or figure is named with its Analysis document, and only it is."""
+
+    family: KeyedFamily
+    member: ProjectName
+    document: ProjectName | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    @model_validator(mode="after")
+    def _element_document(self) -> _KeyedMember:
+        if (self.family == "elements") != (self.document is not None):
+            raise ValueError("an operation or figure is named with its document, and only it")
+        return self
+
+
+class RenameMember(_KeyedMember):
+    """Set or clear the display label of a step, operation or figure; no key, reference, run or request changes."""
 
     kind: Literal["rename"]
-    family: MemberFamily
-    member: ProjectName
-    name: ProjectName
+    family: Literal["steps", "elements"]
+    label: NonemptyText | None
+
+
+class ChangeKey(_KeyedMember):
+    """Change the key of a document, step, operation or figure, and rewrite every authored reference to it.
+
+    An operation's or figure's key changes across its document's family.
+    """
+
+    kind: Literal["change_key"]
+    key: ProjectName
 
 
 class DuplicateMember(StrictModel):
     """Copy a document or step and its presentation under a new name, generated when omitted.
 
-    A document's copy is a root document holding the source's composed content.
+    A document's copy is a root document holding the source's composed content; an Analysis document's copy gives
+    its operations and figures keys no other document holds.
     """
 
     kind: Literal["duplicate"]
@@ -172,7 +197,7 @@ class DetachMember(StrictModel):
 class StudioMemberCommand(StrictModel):
     revision: Sha256
     presentation_revision: Sha256
-    command: Annotated[RenameMember | DuplicateMember | DetachMember, Field(discriminator="kind")]
+    command: Annotated[RenameMember | ChangeKey | DuplicateMember | DetachMember, Field(discriminator="kind")]
 
 
 class StudioMemberCommandResult(StrictModel):
