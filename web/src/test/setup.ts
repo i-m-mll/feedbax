@@ -11,3 +11,8 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
 if (typeof Range !== 'undefined' && !Range.prototype.getBoundingClientRect) {
   Range.prototype.getBoundingClientRect = () => new DOMRect();
 }
+
+// Node defines its own `localStorage`, undefined unless started with a storage file, and it hides jsdom's.
+if (typeof window !== 'undefined' && globalThis.localStorage === undefined && 'jsdom' in window) {
+  Object.defineProperty(globalThis, 'localStorage', { value: (window as unknown as { jsdom: { window: Window } }).jsdom.window.localStorage, configurable: true });
+}
