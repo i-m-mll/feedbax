@@ -1402,8 +1402,11 @@ _BATCHES = "/training_config/n_batches"
 _RATE = "/settings/optimizer/learning_rate/value"
 
 
-def _shared_training(tmp_path, *, continuation=False):
-    """Two Train steps, ``train`` and ``other``, read their method, settings and run controls from ``training``."""
+def _shared_training(tmp_path, *, continuations=0):
+    """Two Train steps, ``train`` and ``other``, read their method, settings and run controls from ``training``.
+
+    ``continuations`` Train steps follow ``train`` in a chain, ``train-2`` based on ``train``, ``train-3`` on ``train-2``.
+    """
     from feedbax.contracts.training_document import TRAINING_DOCUMENT_KEYS, TRAINING_DOCUMENT_SCHEMA_ID
 
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
@@ -1414,14 +1417,16 @@ def _shared_training(tmp_path, *, continuation=False):
     inline |= {key: {"document": "training", "pointer": f"/{key}"} for key in TRAINING_DOCUMENT_KEYS}
     raw["steps"]["other"] = deepcopy(raw["steps"]["train"]) | {"note": None}
     raw["steps"]["other"]["base"]["inline"]["seed"] = 1
-    if continuation:
-        raw["steps"]["train-2"] = {
-            "kind": "train", "base": {"step": "train"},
-            "inputs": {"checkpoint": {"step": "train", "checkpoint": "last"}},
-            "deltas": [{"layer_id": "initialize", "patches": [
+    parent = "train"
+    for number in range(2, continuations + 2):
+        raw["steps"][f"train-{number}"] = {
+            "kind": "train", "base": {"step": parent},
+            "inputs": {"checkpoint": {"step": parent, "checkpoint": "last"}},
+            "deltas": [] if number > 2 else [{"layer_id": "initialize", "patches": [
                 {"path": "checkpoint_initialization", "op": "add", "value": "initialize_from"},
             ]}],
         }
+        parent = f"train-{number}"
     root = tmp_path / "reach"
     for name, data in dump_text_project(
         Project.model_validate(raw), ProjectConfiguration(project="reach", store="results"),
@@ -1573,7 +1578,7 @@ def test_a_sweep_on_a_training_document_step_is_the_step_s_own(tmp_path):
 
 
 def test_a_continuation_s_edit_of_its_training_document_is_its_own(tmp_path):
-    root, client = _shared_training(tmp_path, continuation=True)
+    root, client = _shared_training(tmp_path, continuations=1)
     with client:
         train = _Training(client)
         parent, child = train.requests("train"), train.requests("train-2")
@@ -1585,6 +1590,51 @@ def test_a_continuation_s_edit_of_its_training_document_is_its_own(tmp_path):
         assert len(continuation.deltas) == 1 and continuation.document_overrides
         assert train.requests("train") == parent
         assert _changed(child, train.requests("train-2")) == child.keys()
+
+
+def test_a_continuation_inherits_its_parent_s_document_differences(tmp_path):
+    root, client = _shared_training(tmp_path, continuations=2)
+    with client:
+        train = _Training(client)
+        document = root / "documents" / "training.json"
+        stored = document.read_bytes()
+
+        def batches():
+            return {key.step: definition.payload["training_config"]["n_batches"]
+                    for key, definition in train.plan().selected_definitions.items()}
+
+        def differences():
+            return {name: step.document_overrides for name, step in load_text_project(root).project.steps.items()
+                    if step.document_overrides}
+
+        def source(step):
+            (sources,) = [value for key, value in train.plan().sources.items() if key.step == step]
+            return sources["/payload" + _BATCHES].step
+
+        train.number("train-2", _BATCHES, {"kind": "text", "text": "4"})
+        assert batches() == {"train": 2, "other": 2, "train-2": 4, "train-3": 4}
+        assert document.read_bytes() == stored
+        assert source("train-3") == "train-2"
+
+        parent = train.requests("train-2")
+        train.number("train-3", _BATCHES, {"kind": "text", "text": "8"})
+        assert batches() == {"train": 2, "other": 2, "train-2": 4, "train-3": 8}
+        assert train.requests("train-2") == parent
+        assert set(differences()) == {"train-2", "train-3"}
+
+        train.number("train-3", _BATCHES, {"kind": "text", "text": "10"}, lit=("train", "other", "train-2", "train-3"))
+        assert batches() == {"train": 10, "other": 10, "train-2": 10, "train-3": 10}
+        assert not differences()
+
+        train.number("train-3", _BATCHES, {"kind": "text", "text": "4"})
+        requests = {step: train.requests(step) for step in ("train", "other", "train-2", "train-3")}
+        snapshot = _read(client)
+        renamed = client.post(f"{_URL}/members/command", json={
+            "revision": snapshot["revision"], "presentation_revision": snapshot["presentation_revision"],
+            "command": {"kind": "rename", "family": "documents", "member": "training", "name": "schedule"},
+        })
+        assert renamed.status_code == 200, renamed.text
+        assert {step: train.requests(step) for step in requests} == requests
 
 
 def test_a_shared_training_document_keeps_a_sweep_s_value_as_the_step_s_difference(tmp_path):

@@ -4,9 +4,8 @@ from collections.abc import Callable, Collection
 from copy import deepcopy
 from dataclasses import dataclass
 from functools import partial
-from hashlib import sha256
 
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.manifest import OverridePatch
@@ -17,12 +16,14 @@ from feedbax.contracts.model_edit import (
 from feedbax.contracts.project import (
     DocumentEdit, InlineBase, Project, RemoveProjectValue, SetProjectValue, apply_document_edits, document_edit_ops,
 )
+from feedbax.contracts.project_inputs import SweepExceptionTerms
 from feedbax.contracts.project_plan import RunKey
-from feedbax.contracts.project_resolution import StepTemplate, compose_step, document_write_target
+from feedbax.contracts.project_resolution import StepTemplate, compose_step, document_differences, document_write_target
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_sweep import AxisCondition, NamedAxis, SetValue, RemoveValue, _compose_writes
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
+from feedbax.project_members import generated_name
 from feedbax.studio.selection import TrainSelection, merged_files
 from feedbax.web.services.project_folder import ProjectFolderInvalid
 
@@ -137,23 +138,43 @@ def sweep_value_file(address, raw, axis, value, writes):
     return file_value(address, raw, (*parts, "patches"), _store_patches(authored.get("patches", {}), writes))
 
 
-def row_exception_file(address, raw, rows, writes, *, name_prefix):
-    rows = sorted(set(rows))
-    return _exception_file(address, raw, {"rows": rows}, rows, writes, name_prefix=name_prefix)
+def row_exception_file(address, raw, rows, writes):
+    return _exception_file(address, raw, {"rows": sorted(set(rows))}, writes)
 
 
 def values_exception_file(address, raw, axes, writes):
-    where = {"axes": {axis: sorted(set(values)) for axis, values in sorted(axes.items())}}
-    return _exception_file(address, raw, where, where, writes, name_prefix="values-")
+    return _exception_file(address, raw, {"axes": {axis: sorted(set(values)) for axis, values in sorted(axes.items())}}, writes)
 
 
-def _exception_file(address, raw, where, identity, writes, *, name_prefix):
+def _canonical_where(where) -> bytes | None:
+    try:
+        terms = SweepExceptionTerms.model_validate(where)
+    except ValidationError:
+        return None
+    selector = terms.model_dump(mode="json", exclude_defaults=True)
+    if "rows" in selector:
+        selector["rows"] = sorted(set(selector["rows"]))
+    if "axes" in selector:
+        selector["axes"] = {axis: sorted(set(values)) for axis, values in selector["axes"].items()}
+    return canonical_json_v2_bytes(selector)
+
+
+def _exception_file(address, raw, where, writes):
+    """Add ``writes`` to the exception whose selector is ``where``, or to a new one named by :func:`generated_name`."""
     sweep = raw.get("sweep") or {}
-    name = name_prefix + sha256(canonical_json_v2_bytes(identity)).hexdigest()
     exceptions = sweep.get("exceptions", {})
-    prior = exceptions.get(name, {"where": where})
-    if prior is None or prior.get("where") != where or prior.get("exclude"):
-        raise ProjectFolderInvalid("The selected exception has an incompatible definition.")
+    selector = _canonical_where(where)
+    name = next(
+        (name for name, exception in exceptions.items()
+         if exception is not None and _canonical_where(exception.get("where")) == selector),
+        None,
+    )
+    if name is None:
+        name, prior = generated_name("exception", exceptions.__contains__), {"where": where}
+    else:
+        prior = exceptions[name]
+        if prior.get("exclude"):
+            raise ProjectFolderInvalid("The selected exception has an incompatible definition.")
     updated = prior | {"patches": _store_patches(prior.get("patches", {}), writes)}
     return file_value(address, raw, ("sweep",), sweep | {"exceptions": exceptions | {name: updated}})
 
@@ -192,7 +213,8 @@ def document_files(
     """Store ``edits`` of ``document``'s payload for the steps ``lit``: in the document when they are all the steps that
     read it, otherwise as a difference from it on each of them.
 
-    Stored in the document, an edit takes the place of a lit step's own difference at the same path.
+    Stored in the document, an edit takes the place of the differences at the same path that the lit steps apply, on
+    the steps that store them: a step's own, or those it inherits from its base chain.
     """
     entry = project.documents[document]
     shared = set(lit) == set(users)
@@ -202,7 +224,12 @@ def document_files(
         apply_document_edits(raw, edits)
         files.append(file_value(AuthoredFileAddress(kind="document", id=document),
                                 {"payload": entry.payload}, ("payload",), raw))
-    for step in sorted(lit):
+        storing = {
+            difference.step for step in lit for difference in document_differences(project, step).get(document, ())
+        }
+    else:
+        storing = set(lit)
+    for step in sorted(storing | set(lit)):
         previous = document_edit_ops(project.steps[step].document_overrides.get(document, {}))
         if shared:
             local = []
@@ -286,7 +313,9 @@ def scoped_file(
             payload = project.documents[document].payload
             if lit != readers:
                 payload = deepcopy(payload)
-                apply_document_edits(payload, authored.document_overrides.get(document, {}))
+                apply_document_edits(payload, [
+                    difference.edit for difference in document_differences(project, step_id).get(document, ())
+                ])
             edits = [_document_edit(patch, path, payload) for patch, path in patches]
             files.extend(document_files(project, document, edits, lit, readers))
     return merged_files(files)
@@ -300,7 +329,7 @@ def _selection_file(address, raw, authored, scope, writes) -> StudioProjectFileP
         return sweep_value_file(address, raw, scope.axis, scope.value, writes)
     if isinstance(scope, SweepValuesScope):
         return values_exception_file(address, raw, scope.axes, writes)
-    return row_exception_file(address, raw, scope.rows, writes, name_prefix="trial-rows-")
+    return row_exception_file(address, raw, scope.rows, writes)
 
 
 def _step_file(address, raw, authored, writes) -> StudioProjectFilePatch:

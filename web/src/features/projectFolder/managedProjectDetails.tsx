@@ -1,3 +1,4 @@
+import type { ExceptionMentions } from '@/components/values/adapters/fieldView';
 import { useQuery } from '@tanstack/react-query';
 import { useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { fetchSavedEvaluationReplay } from '@/api/jobs';
@@ -82,6 +83,7 @@ interface DetailInputs {
   /** The problems that keep the named run from running. */
   readonly runProblems?: readonly StudioProjectWindowMapProblem[];
   readonly revealProblem?: (problem: StudioProjectWindowMapProblem) => void;
+  readonly exceptions?: ExceptionMentions;
 }
 
 const rootModelPath: string[] = [];
@@ -346,6 +348,7 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     setPath: (path) => { if (storedId) input.setModelPath(storedId, path); },
     sections: input.drawerSections,
     openProblems: input.openModelProblems,
+    exceptions: input.exceptions,
   });
   return {
     model: stored ? storedView : { body: <DetailReason reason="definitionUnavailable" name="model" /> },

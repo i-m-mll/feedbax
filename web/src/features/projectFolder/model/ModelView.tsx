@@ -18,7 +18,7 @@ import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
 import { Select } from '@/components/ui/Select';
 import { TextField } from '@/components/ui/TextField';
 import { ValueField } from '@/components/values/ValueField';
-import { fromFieldView } from '@/components/values/adapters/fieldView';
+import { fromFieldView, type ExceptionMentions } from '@/components/values/adapters/fieldView';
 import { rawField } from '@/components/values/adapters/raw';
 import type { FieldModel } from '@/components/values/fieldModel';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
@@ -68,6 +68,7 @@ type Props = {
   sections: DrawerSections;
   /** Opens Problems showing only those inside the element. */
   openProblems?: (element: ModelAddress, opener: HTMLElement) => void;
+  exceptions?: ExceptionMentions;
 };
 const sourceAttachment = '@source';
 const componentDragType = 'application/x-feedbax-component';
@@ -159,7 +160,7 @@ function LeafChoices({ definitions, query, choose, disabled }: {
   </section>)}</>;
 }
 
-export function useStoredModelView({ model, saved, editor, elements: state, active, editable, fieldEditable, fieldLitSteps, planCurrent, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, evaluate, problem, problems, projectionRun, path, setPath, sections, openProblems }: Props) {
+export function useStoredModelView({ model, saved, editor, elements: state, active, editable, fieldEditable, fieldLitSteps, planCurrent, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, evaluate, problem, problems, projectionRun, path, setPath, sections, openProblems, exceptions }: Props) {
   const selected = useModelSelection(state, model?.id);
   const pick = useStore(state, (current) => current.pick);
   const reveal = useStore(state, (current) => current.reveal);
@@ -291,6 +292,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const model = fromFieldView(field, {
       id: addressKey(field.address),
       planSources: field.sources?.filter((source) => !(source.kind === 'document' && source.name === fieldBody.document)),
+      exceptions,
       source: attachments.data?.field_sources?.[addressKey(field.address)] ??
         attachments.data?.field_sources?.[addressKey(fieldBody.owner)] ??
         attachments.data?.source ?? undefined,

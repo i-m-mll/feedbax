@@ -43,7 +43,7 @@ import {
   ModelAddressSchema, StepReferenceSchema, type PresentationDocument, type PresentationPosition, type ProjectValueEdit,
   type StudioActivityJob, type StudioJobSubmission, type StudioMachineQuote, type StudioProjectDocument, type StudioProjectWindowMapProblem,
   type StudioSavedTrainKey, type StudioSavedTrainRuns,
-  type StudioCheckpointRuleRequest, type JsonValue, type SweepExceptionTerms, type ModelAddress, type PatchValue,
+  type StudioCheckpointRuleRequest, type JsonValue, type SweepExceptionTerms, type StudioPlanReviewSource, type StudioProjectWindowMapException, type ModelAddress, type PatchValue,
   type StudioClassField,
 } from '@/generated/studioContracts';
 import { useConnection } from '@/api/connection';
@@ -231,6 +231,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     reveal: Reveal;
   }>();
   const [excludedUsers, setExcludedUsers] = useState<Readonly<Record<string, readonly string[]>>>({});
+  /** The exception a field's source revealed, shown in its step's Exceptions while the revision stands. */
+  const [exceptionReveal, setExceptionReveal] = useState<{ revision: string; step: string; id: string }>();
   /** A field of a step's definition to put the keyboard on once the Runs view's inspector shows it. */
   const [fieldFocus, setFieldFocus] = useState<FieldFocusRequest & { step: string }>();
   const [focusFirstModel, setFocusFirstModel] = useState<string>();
@@ -541,6 +543,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     fieldAxes: state.selection?.kind === 'values' ? Object.fromEntries(
       state.selection.terms.map(({ sweepId, valueIds }) => [sweepId, [...valueIds]]),
     ) : undefined,
+    exceptions: exceptionMention,
   };
   function setModelPath(slot: ProjectWindowSlot, document: string, path: string[]) {
     setWindowState((current) => ({
@@ -913,6 +916,30 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       const all = target.sweeps.find(({ id }) => id === axis)?.values;
       return !all || all.some(({ id }) => !values.has(id));
     }).map(([axis, values]) => `${axis} ${[...values].map((value) => axisValueText(axis, value)).join(', ')}`);
+  }
+
+  function stepExceptions(stepId: string, scope: string | null = variant) {
+    return authoredMap?.steps.find(({ step_id, variant: id }) => step_id === stepId && id === scope)?.exceptions ?? [];
+  }
+
+  /** The runs an exception picks, as its row in Exceptions and a field's source read them (`seed 2 · 2 runs`). */
+  function exceptionRuns(target: PlanStepView, { count, rule }: StudioProjectWindowMapException) {
+    return [
+      ...exceptionTerms(target, rule.where),
+      count === 1 ? studioFormat('oneRun') : studioFormat('runCount', { count }),
+    ].join(' · ');
+  }
+
+  function exceptionMention(source: StudioPlanReviewSource) {
+    const target = plan.steps.find(({ id }) => id === source.step);
+    const scope = source.variant ?? variant;
+    const exception = target && stepExceptions(target.id, scope).find(({ id }) => id === source.name);
+    if (!target || !exception) return undefined;
+    return { runs: exceptionRuns(target, exception), reveal: () => {
+      selection.select(selectStep(state, target.id), scope);
+      setExceptionReveal({ revision: saved.revision, step: target.id, id: exception.id });
+      setWindowState((current) => showProjectWindowView({ ...current, inspectorOpen: true }, 'runs', focusSlot));
+    } };
   }
 
   /** A sweep value as the value it sets, never its id. */
@@ -1330,12 +1357,12 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             const pivot = pivotCommand(slot);
             const pivotActive = pivotSlots[slot] === step.id;
             const run = state.focus?.stepId === step.id ? step.runs.find(({ id }) => id === state.focus?.runId) : undefined;
-            const exceptions = authoredMap?.steps.find(({ step_id, variant: id }) => step_id === step.id && id === variant)
-              ?.exceptions?.map(({ id, count, rule }) => ({ id, text: [
-                ...exceptionPatchTexts(rule.patches ?? {}, trainLabels, trainClasses),
-                ...exceptionTerms(step, rule.where),
-                count === 1 ? studioFormat('oneRun') : studioFormat('runCount', { count }),
-              ].join(' · ') })) ?? [];
+            const exceptions = stepExceptions(step.id).map((exception) => ({ id: exception.id, text: [
+              ...exceptionPatchTexts(exception.rule.patches ?? {}, trainLabels, trainClasses),
+              exceptionRuns(step, exception),
+            ].join(' · ') }));
+            const revealedException = exceptionReveal?.revision === saved.revision && exceptionReveal.step === step.id
+              ? exceptionReveal.id : undefined;
             return {
               header: <StudioRunControls commands={step.kind === 'train' || step.kind === 'evaluate' || lightSteps.has(step.id)
                 ? runCommands : undefined}
@@ -1373,7 +1400,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                       onToRows={freezeAttempts ? freezeEvaluationSubset : undefined} />}
                   </FocusedFields>}
                 attachments={(exceptions.length > 0 || listedInputs.length > 0) && <>
-                  {exceptions.length > 0 && <SweepExceptions exceptions={exceptions}
+                  {exceptions.length > 0 && <SweepExceptions exceptions={exceptions} revealed={revealedException}
                     onRemove={ready && !busy && !saved.project.sweep ? removeSweepException : undefined} />}
                   {listedInputs.length > 0 && <ul aria-label={studioName('inputs')}>{listedInputs.map((input) => {
                     const source = input.sourceStepId && plan.steps.find((item) => item.id === input.sourceStepId);

@@ -60,8 +60,11 @@ export function studioEvaluateValueSource(source: StudioEvaluateValueSource) {
   return studioFormat(source.kind === 'trained' ? 'trainedValue' : 'evaluateChangedValue', { step: source.step });
 }
 
-export function studioPlanValueSource(source: StudioPlanReviewSource) {
+/** Where a value comes from. An exception reads by the runs it picks (`runs`, as the Exceptions list reads them). */
+export function studioPlanValueSource(source: StudioPlanReviewSource, runs?: string) {
   switch (source.kind) {
+    case 'exception':
+      return runs ? studioFormat('fieldSource', { kind: studioName('exception'), name: runs }) : studioName('exception');
     case 'sweep_value':
       return studioFormat('fieldSource', { kind: source.axis ?? studioName('sweep'), name: source.value ?? source.name });
     case 'upstream':
