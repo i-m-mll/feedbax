@@ -1,4 +1,4 @@
-import { isHttpConflict, isServiceFailure } from '@/api/request';
+import { isHttpConflict, isRefusal, isServiceFailure } from '@/api/request';
 import { studioName } from '@/components/activity/studioVocabulary';
 import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import type {
@@ -962,8 +962,16 @@ export class ProjectEditController {
       }
       this.cancelSettle();
     } catch (error) {
-      this.error = error;
-      if (isHttpConflict(error)) await this.refresh();
+      if (isRefusal(error)) {
+        // A refused save cannot succeed on retry: the edits built on it are dropped and the reason goes to the gesture.
+        this.cancelSettle();
+        this.queued.length = 0;
+        this.draft = editContent(this.saved);
+        this.history = this.savedHistory;
+      } else {
+        this.error = error;
+        if (isHttpConflict(error)) await this.refresh();
+      }
       throw error;
     } finally {
       this.saving = false;
