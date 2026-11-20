@@ -46,7 +46,7 @@ from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFol
 from feedbax.studio.selection import StoredEdit
 from feedbax.web.services.trial_scope import (
     authored_payload, document_write, evaluation_document_write, file_value, lit_steps, preview_stored, reached_runs, refuse_unreached, scoped_file,
-    selected_runs, variant_file,
+    selected_runs,
 )
 
 
@@ -459,20 +459,18 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
             raise ProjectFolderInvalid("Reset needs a value the step reads from a document.")
         change = _reset_edit(project, document, change)
 
+    variant = None if key.variant == plan.variants[0] else key.variant
+
     def readers(name):
-        return plan.document_users(plan.variants[0], name)
+        return plan.document_users(key.variant, name)
 
     chosen = set(scope.chosen_steps) if isinstance(scope, StudioTrialStepScope) else set()
     users = set(lit_steps(project.documents, readers, document)) if document else set()
     family = _family(project, document) if document else set()
-    if scope is None and key.variant != plan.variants[0]:
-        scope = EvaluateAttachmentVariant(kind="variant", variant=key.variant)
-    elif scope is None:
+    if scope is None:
         scope = StudioTrialStepScope(kind="step")
         chosen = users
     if isinstance(scope, StudioTrialStepScope):
-        if key.variant != plan.variants[0]:
-            raise ProjectFolderInvalid("A step scope covers the primary variant only.")
         if chosen and document is not None and (key.step not in chosen or not chosen <= users):
             raise ProjectFolderInvalid("The chosen steps no longer match this document.")
         chosen = chosen or {key.step}
@@ -484,13 +482,12 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
             for row in plan.rows
         ):
             raise ProjectFolderInvalid("A chosen step no longer uses the selected document.")
-    if document is not None and isinstance(scope, EvaluateAttachmentVariant):
-        selected = {row.key for row in plan.rows if row.key.variant == key.variant and row.key.step in users}
     if selected != {key}:
         settled = folders.read_plan(project_id, revision=body.revision, source_runs=selected)
     evaluate_field = (step.kind == "evaluate" and isinstance(change, StudioTrialDocumentEdit) and change.kind == "task")
+    whole = isinstance(scope, StudioTrialStepScope)
+    stored_scope = EvaluateAttachmentVariant(kind="variant", variant=variant) if whole and variant else scope
     if step.kind == "evaluate":
-        whole = isinstance(scope, StudioTrialStepScope)
         if isinstance(change, StudioTrialSelectDocument):
             role = change.role
             if role == "task":
@@ -500,37 +497,32 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
             else:
                 raise ProjectFolderInvalid("An Evaluate reads its Objective and Training from its subject.")
             reference = {"document": change.document}
-            stored = scoped_file(project, key.step, scope, [
+            stored = scoped_file(project, key.step, stored_scope, [
                 _override(f"trial_documents.{role}", "replace" if role in slots else "add", reference)
                 if isinstance(slots := (authored_payload(project, key.step) or {}).get("trial_documents"), dict)
                 else _override("trial_documents", "add", {role: reference}),
             ] if whole else _task_selection_writes(definition, reference), chosen=chosen, users=readers)
         elif evaluate_field and whole:
-            stored = _evaluate_task_write(project, plan, key, scope, change)
+            stored = _evaluate_task_write(project, plan, key, scope, change, variant)
             selected = selected_runs(plan, key, scope, chosen_steps=set(stored.reached) | {key.step})
             settled = folders.read_plan(project_id, revision=body.revision, source_runs=selected)
         elif evaluate_field:
             stored = _evaluate_field_files(project, settled.plan, key, scope, selected, bundle, change, documents, projected)
         else:
             raise ProjectFolderInvalid("Evaluate authoring edits the task variation.")
-    elif document is not None and isinstance(scope, StudioTrialStepScope):
-        stored = document_write(project, document, list(change.edits), chosen, readers)
-    elif document is not None and isinstance(scope, EvaluateAttachmentVariant):
-        _, value = _changed_value(documents, definition, change.kind)
-        stored = StoredEdit([variant_file(
-            project, key.variant, _value_writes(f"documents.{document}.payload", value, change),
-        )], reached=frozenset(users))
+    elif document is not None and whole:
+        stored = document_write(project, document, list(change.edits), chosen, readers, variant)
     elif isinstance(change, StudioTrialSelectDocument) and change.role == "training":
         writes = training_document_choice(project, key.step, bundle.training_methods, change.document)
         if isinstance(writes, StudioSweptParameterMissing):
             return StoredEdit([]), writes
-        stored = scoped_file(project, key.step, scope, writes, chosen=chosen, users=readers)
+        stored = scoped_file(project, key.step, stored_scope, writes, chosen=chosen, users=readers)
     else:
         writes = _train_writes(change, project, definition, documents, projected)
-        stored = scoped_file(project, key.step, scope, writes, chosen=chosen, users=readers) if writes else StoredEdit([])
+        stored = scoped_file(project, key.step, stored_scope, writes, chosen=chosen, users=readers) if writes else StoredEdit([])
     if not stored.files and not stored.created:
         return StoredEdit([]), ()
-    variants = {key.variant} if isinstance(scope, EvaluateAttachmentVariant) else set(plan.variants)
+    variants = {key.variant} if variant and whole else set(plan.variants)
     reach = reached_runs(plan, variants, selected, stored.reached - {key.step})
     return _validate_files(
         stored, project, settled, selected, reach, key.step, folders, bundle, change, expression,
@@ -570,10 +562,10 @@ def _reset_edit(project, document, change: StudioTrialDocumentReset) -> StudioTr
 _ABSENT = object()
 
 
-def _evaluate_task_write(project, plan, key, scope: StudioTrialStepScope, change) -> StoredEdit:
-    """An Evaluate step's edit of its Task, stored in the Task document it reads for the chosen steps.
+def _evaluate_task_write(project, plan, key, scope: StudioTrialStepScope, change, variant: str | None) -> StoredEdit:
+    """An Evaluate step's edit of its Task, stored in the Task document it reads for the chosen steps of its variant.
 
-    Without chosen steps they are the Evaluate steps that read the document or one based on it.
+    Without chosen steps they are the Evaluate steps of the variant that read the document or one based on it.
     """
     row = next(row for row in plan.rows if row.key == key)
     document = row.document_ids.get(EVALUATION_TASK) or row.document_ids.get("payload.trial_documents.python_task")
@@ -581,13 +573,13 @@ def _evaluate_task_write(project, plan, key, scope: StudioTrialStepScope, change
         raise ProjectFolderInvalid("The selected Evaluate reads no Task document.")
 
     def readers(name):
-        return plan.document_users(plan.variants[0], name)
+        return plan.document_users(key.variant, name)
 
     chosen = {key.step, *scope.chosen_steps} if scope.chosen_steps else {key.step} | {
         step for step in lit_steps(project.documents, readers, document)
-        if plan.steps[plan.variants[0], step].kind == "evaluate"
+        if plan.steps[key.variant, step].kind == "evaluate"
     }
-    return evaluation_document_write(project, plan, document, list(change.edits), chosen, "task")
+    return evaluation_document_write(project, plan, document, list(change.edits), chosen, "task", variant)
 
 
 def _evaluate_field_files(project, plan, key, scope, selected, bundle, change, documents, projected):

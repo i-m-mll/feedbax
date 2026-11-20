@@ -9,7 +9,7 @@ from feedbax.contracts.expression_values import Level, Problem, ScopedValue, Val
 from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import (
-    EvaluateAttachmentAxis, EvaluateAttachmentRows, EvaluateAttachmentVariant, StudioEvaluateValueSource,
+    EvaluateAttachmentAxis, EvaluateAttachmentRows, StudioEvaluateValueSource,
 )
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.project import Pointer, ProjectValueEdit, Sha256
@@ -99,7 +99,7 @@ class StudioTrialAuthoringRequest(StrictModel):
         Field(discriminator="kind"),
     ] | None = None
     scope: Annotated[
-        StudioTrialStepScope | EvaluateAttachmentAxis | EvaluateAttachmentRows | EvaluateAttachmentVariant,
+        StudioTrialStepScope | EvaluateAttachmentAxis | EvaluateAttachmentRows,
         Field(discriminator="kind"),
     ] | None = None
 

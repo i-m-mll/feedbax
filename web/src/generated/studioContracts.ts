@@ -4050,7 +4050,7 @@ export type StudioTrialAuthoringRequest = {
   "revision": Sha256;
   "run": StudioSavedTrainKey;
   "change"?: StudioTrialDocumentEdit | StudioTrialDocumentReset | StudioTrialBindingEdit | StudioTrialSelectDocument | StudioTrialExpressionEdit | null;
-  "scope"?: StudioTrialStepScope | EvaluateAttachmentAxis | EvaluateAttachmentRows | EvaluateAttachmentVariant | null;
+  "scope"?: StudioTrialStepScope | EvaluateAttachmentAxis | EvaluateAttachmentRows | null;
 };
 
 export type StudioTrialBindingEdit = {
@@ -10794,7 +10794,7 @@ export const StudioTrialAuthoringRequestSchema: z.ZodType<StudioTrialAuthoringRe
     "revision": Sha256Schema,
     "run": StudioSavedTrainKeySchema,
     "change": z.union([z.union([StudioTrialDocumentEditSchema, StudioTrialDocumentResetSchema, StudioTrialBindingEditSchema, StudioTrialSelectDocumentSchema, StudioTrialExpressionEditSchema]), z.null()]).optional(),
-    "scope": z.union([z.union([StudioTrialStepScopeSchema, EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema, EvaluateAttachmentVariantSchema]), z.null()]).optional(),
+    "scope": z.union([z.union([StudioTrialStepScopeSchema, EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema]), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialAuthoringRequest>;
 

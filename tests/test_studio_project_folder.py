@@ -1403,10 +1403,10 @@ _BATCHES = "/training_config/n_batches"
 _RATE = "/settings/optimizer/learning_rate/value"
 
 
-def _shared_training(tmp_path, *, continuations=0, other=True, third=False, checkpoints=True):
+def _shared_training(tmp_path, *, continuations=0, other=True, third=False, checkpoints=True, variants=()):
     """Two Train steps, ``train`` and ``other``, read their method, settings and run controls from ``training``.
 
-    ``third`` adds a third such step. ``continuations`` Train steps follow ``train`` in a chain, ``train-2`` based on
+    ``variants`` are the project's variant rows, none by default. ``third`` adds a third such step. ``continuations`` Train steps follow ``train`` in a chain, ``train-2`` based on
     ``train``, ``train-3`` on ``train-2``, each starting from its parent's checkpoint unless not ``checkpoints``.
     """
     from feedbax.contracts.training_document import TRAINING_DOCUMENT_KEYS, TRAINING_DOCUMENT_SCHEMA_ID
@@ -1423,6 +1423,8 @@ def _shared_training(tmp_path, *, continuations=0, other=True, third=False, chec
     if third:
         raw["steps"]["third"] = deepcopy(raw["steps"]["train"]) | {"note": None}
         raw["steps"]["third"]["base"]["inline"]["seed"] = 2
+    if variants:
+        raw["sweep"] = {"rows": {variant: {} for variant in variants}}
     parent = "train"
     for number in range(2, continuations + 2):
         raw["steps"][f"train-{number}"] = {
@@ -1475,9 +1477,10 @@ class _Training:
             assert saved.status_code == 200, saved.text
         return body
 
-    def number(self, step, field, edit, chosen=()):
+    def number(self, step, field, edit, chosen=(), variant=None):
+        run = {"run": {"variant": variant, "step": step, "row": "default"}} if variant else {}
         return self.save(self.client.post(f"{_URL}/authoring/train/{step}/fields", json={
-            "revision": self.revision, "field": field, "edit": edit, "chosen_steps": list(chosen),
+            "revision": self.revision, "field": field, "edit": edit, "chosen_steps": list(chosen), **run,
         }))
 
     def reset(self, step, field, chosen=()):
@@ -1552,6 +1555,29 @@ def test_a_narrowed_training_edit_is_a_document_based_on_the_shared_one(tmp_path
         assert train.values() == {"train": 7, "other": 7}
         assert _differences(train, "training-2") == {}
         assert set(train.documents()) >= {"training", "training-2"} and "training-3" not in train.documents()
+
+
+def test_a_variant_s_narrowed_training_edit_is_a_document_only_its_row_points_at(tmp_path):
+    root, client = _shared_training(tmp_path, variants=("control", "treated"))
+    with client:
+        train = _Training(client, root)
+        files = {path: path.read_bytes() for path in (root / "documents" / "training.json", *(root / "steps").iterdir())}
+        before = {run.key: run.request_id for run in train.plan().runs}
+        train.number("train", _BATCHES, {"kind": "text", "text": "5"}, variant="treated")
+        assert {path: path.read_bytes() for path in files} == files
+        assert train.documents()["training-2"].base.document == "training"
+        assert _differences(train, "training-2") == {_BATCHES: 5}
+        patches = load_text_project(root).project.sweep.rows["treated"].patches
+        assert patches and all(
+            path.startswith("steps.train.base.inline.") and write.value["document"] == "training-2"
+            for path, write in patches.items()
+        )
+        assert not load_text_project(root).project.sweep.rows["control"].patches
+        after = {run.key: run.request_id for run in train.plan().runs}
+        assert _changed(before, after) == {key for key in before if (key.variant, key.step) == ("treated", "train")}
+        values = {key: _select(definition.payload, _BATCHES) for key, definition in train.plan().selected_definitions.items()}
+        assert values[RunKey("treated", "train", "default")] == 5
+        assert values[RunKey("treated", "other", "default")] == values[RunKey("control", "train", "default")] != 5
 
 
 def test_the_chosen_readers_of_a_document_share_one_document_based_on_it(tmp_path):
