@@ -450,6 +450,20 @@ class _Store:
             stores.files if self.variant is None else [], tuple(stores.created),
         ))
 
+    def base(self, step: str, document: str) -> None:
+        """Make ``step``, whose definition is a document, read ``document`` in its place."""
+        current = self.view.steps[step]
+        if self.variant is None:
+            raw = current.model_dump(mode="json", by_alias=True, exclude_unset=True)
+            file = file_value(AuthoredFileAddress(kind="step", id=step), raw, ("base", "document"), document)
+            self.files.append(file)
+            self.view = preview_authored_files(self.view, [file])
+            return
+        self.row.append(OverridePatch(path=f"steps.{step}.base.document", op="replace", value=document))
+        self.view = self.view.model_copy(update={"steps": self.view.steps | {
+            step: current.model_copy(update={"base": current.base.model_copy(update={"document": document})}),
+        }})
+
     def step(self, step: str, writes: Sequence[OverridePatch]) -> None:
         """Store ``writes``, paths in ``step``'s payload: in its file, or in the row. The row writes the step's own
         definition when its file holds one alone, and otherwise a layer it appends to the step's deltas."""
@@ -502,7 +516,13 @@ class _Store:
             step: (slot, pointing[step][document]) for step, (slot, document) in named.items()
             if document in pointing.get(step, {})
         }
-        if missing := set(pointing) - desired.keys() - slots.keys():
+        bases = {
+            step: mapping[base.document] for step, mapping in pointing.items()
+            if isinstance(base := before.steps[step].base, DocumentReference) and base.document in mapping
+        }
+        for step, document in bases.items():
+            self.base(step, document)
+        if missing := set(pointing) - desired.keys() - slots.keys() - bases.keys():
             raise ProjectFolderInvalid(f"{', '.join(sorted(missing))} reads the document only through its sweep.")
         for step in sorted(desired.keys() | slots.keys(), key=lambda name: (_step_chain(before, name), name)):
             composed = _step_references(self.view, step)
@@ -601,11 +621,6 @@ def document_write(
     return store.stored(chosen)
 
 
-def shared_document_write(project: Project, shown: str, edits: Sequence[DocumentEdit]) -> list[StudioProjectFilePatch]:
-    """Store ``edits`` of ``shown`` for every step that reads it or a document based on it."""
-    return _document_stores(project, shown, edits, None, lambda name: (), set()).files
-
-
 def content_edits(before: Payload, after: Payload) -> list[DocumentEdit]:
     """The edits that turn a document's composed content ``before`` into ``after``."""
     return [
@@ -613,6 +628,58 @@ def content_edits(before: Payload, after: Payload) -> list[DocumentEdit]:
         else SetProjectValue(op="replace", path=path, value=record.value)
         for path, record in diff(before, after).items()
     ]
+
+
+def changed_from_base(project: Project, document: str | None) -> list[str]:
+    """The pointers, at every depth, whose value in ``document`` differs from its base's, when it has a base.
+
+    A list is compared item by item, as the edits that address its items do, though a difference stores it whole.
+    """
+    entry = project.documents.get(document) if document is not None else None
+    if not isinstance(entry, BasedDocument):
+        return []
+    composed = [compose_document(project.documents.get, name) for name in (entry.base.document, document)]
+    if any(isinstance(item, ProjectDiagnostic) for item in composed):
+        return []
+    return sorted(set(_differing(composed[0].payload, composed[1].payload)) - {""})
+
+
+def _differing(before, after, at: str = ""):
+    if before == after:
+        return
+    yield at
+    if isinstance(after, dict):
+        for key, item in after.items():
+            inherited = before.get(key, _ABSENT) if isinstance(before, dict) else _ABSENT
+            yield from _differing(inherited, item, f"{at}/{str(key).replace('~', '~0').replace('/', '~1')}")
+    elif isinstance(after, list):
+        for index, item in enumerate(after):
+            inherited = before[index] if isinstance(before, list) and index < len(before) else _ABSENT
+            yield from _differing(inherited, item, f"{at}/{index}")
+
+
+def base_value_edits(project: Project, document: str, paths: Sequence[str]) -> list[DocumentEdit]:
+    """The edits that give each of ``paths`` in ``document`` the value of its base, removing what the base lacks."""
+    entry = project.documents[document]
+    if not isinstance(entry, BasedDocument):
+        raise ProjectFolderInvalid(f"{document} is not based on another document.")
+    base = _composed(project, entry.base.document)
+    edits: list[DocumentEdit] = []
+    for path in paths:
+        value: Any = base
+        for part in json_pointer_parts(path):
+            if isinstance(value, dict):
+                value = value.get(part, _ABSENT)
+            elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
+                value = value[int(part)]
+            else:
+                value = _ABSENT
+        edits.append(RemoveProjectValue(op="remove", path=path) if value is _ABSENT
+                     else SetProjectValue(op="replace", path=path, value=value))
+    return edits
+
+
+_ABSENT = object()
 
 
 def evaluation_document_write(
@@ -683,7 +750,7 @@ def model_document_store(folders, project_id: str, project: Project, body, befor
     project = preview_authored_files(project, body.files)
     edits = content_edits(before, _in_form_of(before, after))
     if body.step is None:
-        return head.then(shared_document_write(project, body.document, edits))
+        return head.then(_document_stores(project, body.document, edits, None, lambda name: (), set()).files)
     plan = folders.read_plan(project_id, revision=body.revision).plan
     return head + evaluation_document_write(
         project, plan, body.document, edits, {body.step, *body.chosen_steps}, "model", body.variant,

@@ -156,7 +156,7 @@ def test_managed_wire_review_uses_plan_ports_without_writing_a_draft():
     from feedbax.contracts.operation import DatasetPort
     from feedbax.contracts.studio_analyze import StudioAnalyzeWire
     from feedbax.project_folder import preview_authored_files
-    from feedbax.web.services.analyze_authoring import review_wire
+    from feedbax.web.services.analyze_authoring import analyze_edit
 
     project = _project()
     registry = _operations()
@@ -168,21 +168,21 @@ def test_managed_wire_review_uses_plan_ports_without_writing_a_draft():
     assert draft_row.inputs["states"][0].producer == RunKey("default", "baseline", "default")
     states_port = registry.resolve("feedbax.aligned_velocity").value.definition.inputs["states"]
     states = DatasetPort(schema_ids=(states_port.schema_ids[0],))
+
+    def review(element, role, source):
+        plan = compile_project(project, operations=registry)
+        wire = StudioAnalyzeWire(kind="wire", element=element, role=role, source=source)
+        return analyze_edit(project, plan, _KEY, "velocity-analysis", wire, frozenset(), registry, states).files
+
     with pytest.raises(ValueError, match="Requires dataset schemas"):
-        review_wire(project, _KEY, "velocity-analysis", StudioAnalyzeWire(
-            element="summarize", role="velocity", source={"input": "states"},
-        ), registry, states)
-    result = review_wire(project, _KEY, "velocity-analysis", StudioAnalyzeWire(
-        element="summarize", role="velocity", source={"element": "align", "product": "velocity"},
-    ), registry, states)
+        review("summarize", "velocity", {"input": "states"})
+    result = review("summarize", "velocity", {"element": "align", "product": "velocity"})
     wired = preview_authored_files(project, result).documents["velocity-analysis"].payload
     assert wired["operations"]["summarize"]["inputs"] == {"velocity": {"element": "align", "product": "velocity"}}
     assert summary["inputs"] == {}
     assert "ddof" not in summary["params"]
     summary["inputs"]["velocity"] = {"element": "align", "product": "velocity"}
-    assert not review_wire(project, _KEY, "velocity-analysis", StudioAnalyzeWire(
-        element="summarize", role="velocity", source={"element": "align", "product": "velocity"},
-    ), registry, states)
+    assert not review("summarize", "velocity", {"element": "align", "product": "velocity"})
 
     summary["params"]["ddof"] = ddof
     view = document["views"]["profile"]
@@ -191,9 +191,7 @@ def test_managed_wire_review_uses_plan_ports_without_writing_a_draft():
     draft_row = next(row for row in draft_plan.rows if isinstance(row, PlannedAnalyzeRun))
     assert draft_row.figures["profile"].data == ("summary",)
     assert "profile" not in draft_row.elements
-    reviewed = review_wire(project, _KEY, "velocity-analysis", StudioAnalyzeWire(
-        element="profile", role="summary", source={"element": "summarize", "product": "summary"},
-    ), registry, states)
+    reviewed = review("profile", "summary", {"element": "summarize", "product": "summary"})
     wired = preview_authored_files(project, reviewed).documents["velocity-analysis"].payload
     assert wired["views"]["profile"]["inputs"] == {"summary": {"element": "summarize", "product": "summary"}}
     assert view == {"figure": {"document": "velocity-figure"}, "inputs": {}}

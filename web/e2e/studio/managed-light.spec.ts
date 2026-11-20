@@ -223,7 +223,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   await edit(() => number(page, boundsScale, '1.5'));
   const beforeRefusal = await edit(() => number(page, inspector.getByRole('textbox', { name: 'Ddof', exact: true }), '0'));
   const refusal = page.waitForResponse((response) => new URL(response.url()).pathname === reviewPath &&
-    Boolean(response.request().postDataJSON()?.wire));
+    response.request().postDataJSON()?.change?.kind === 'wire');
   await tabTo(page, roleField('Velocity'));
   await page.keyboard.press('ArrowDown');
   // The popup's search field takes focus after it opens; keys typed before then are lost.
