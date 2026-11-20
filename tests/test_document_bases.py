@@ -108,3 +108,59 @@ def test_a_broken_base_is_a_problem_of_the_based_document_alone():
             (code, "model-2", "other"),
         ]
         assert [run.key.step for run in plan.runs] == ["fit"]
+
+
+BATCHES = "/training_config/n_batches"
+
+
+def _training_data(overridden: bool) -> dict:
+    """``fit`` reads ``training``; ``other`` reads ``training-2``, based on it, which sets ``n_batches`` when
+    ``overridden``."""
+    from feedbax.contracts.training_document import TRAINING_DOCUMENT_KEYS, TRAINING_DOCUMENT_SCHEMA_ID
+
+    data = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    fit = data["steps"].pop("train")
+    inline = fit["base"]["inline"]
+    data["documents"]["training"] = {
+        "schema": TRAINING_DOCUMENT_SCHEMA_ID, "payload": {key: inline[key] for key in TRAINING_DOCUMENT_KEYS},
+    }
+    inline |= {key: {"document": "training", "pointer": f"/{key}"} for key in TRAINING_DOCUMENT_KEYS}
+    other = deepcopy(fit)
+    other["base"]["inline"] |= {key: {"document": "training-2", "pointer": f"/{key}"} for key in TRAINING_DOCUMENT_KEYS}
+    data["steps"] = {"fit": fit, "other": other}
+    data["documents"]["training-2"] = {
+        "schema": TRAINING_DOCUMENT_SCHEMA_ID, "base": {"document": "training"},
+        "differences": {BATCHES: {"value": 4}} if overridden else {},
+    }
+    return data
+
+
+def _variant_requests(data, writes: dict[str, dict]) -> dict[tuple[str, str], str]:
+    data = deepcopy(data)
+    data["sweep"] = {"rows": {"default": {}} | {
+        name: {"patches": {f"documents.{document}.payload.training_config.n_batches": {"value": 7}}}
+        for name, document in writes.items()
+    }}
+    plan = compile_project(Project.model_validate(data))
+    assert not plan.diagnostics, plan.diagnostics
+    return {(run.key.variant, run.key.step): run.request_id for run in plan.runs}
+
+
+def test_a_variant_writes_a_based_document_s_composed_content():
+    for overridden in (False, True):
+        data = _training_data(overridden)
+        alone = _requests(compile_project(Project.model_validate(data)))
+        ids = _variant_requests(data, {"root": "training", "based": "training-2"})
+        assert {step: ids["default", step] for step in ("fit", "other")} == alone
+        assert ids["root", "fit"] != alone["fit"]
+        assert (ids["root", "other"] == alone["other"]) is overridden
+        assert ids["based", "fit"] == alone["fit"] and ids["based", "other"] != alone["other"]
+
+    data = _training_data(False)
+    data["sweep"] = {"rows": {"default": {}, "based": {"patches": {
+        "documents.training-2.payload.training_config.n_batches": {"value": 7},
+    }}}}
+    project = Project.model_validate(data)
+    other = next(run.key for run in compile_project(project).runs if (run.key.variant, run.key.step) == ("based", "other"))
+    source = compile_project(project, source_runs=[other]).sources[other]["/payload" + BATCHES]
+    assert (source.kind, source.variant) == ("variant", "based")

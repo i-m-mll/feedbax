@@ -47,6 +47,7 @@ from feedbax.contracts.project_sources import (
     ValueSource,
     first_source,
     patch_source,
+    place_source,
     pointer,
     source_at,
     source_shape,
@@ -379,17 +380,13 @@ def document_differences(project: Project, step: str) -> dict[str, tuple[Documen
     return {document: tuple(items) for document, items in differences.items()}
 
 
-def _place_source(shape: Any, parts: tuple[str, ...], source: Any) -> Any:
-    """Copy ``shape`` with ``source`` at ``parts``, or with nothing there when ``source`` is None."""
-    head, *rest = parts
-    children = dict(shape) if isinstance(shape, dict) else {}
-    if rest:
-        children[head] = _place_source(children.get(head), tuple(rest), source)
-    elif source is None:
-        children.pop(head, None)
-    else:
-        children[head] = source
-    return SourceObject(shape.source if isinstance(shape, SourceObject) else None, children)
+def _written_sources(shape: Any, at: tuple[str, ...] = ()) -> Iterator[tuple[tuple[str, ...], Any]]:
+    """The places a variant wrote in a sparse source tree, each with the sources of the value it wrote there."""
+    if isinstance(shape, ValueSource) or isinstance(shape, SourceObject | SourceList) and shape.source is not None:
+        yield at, shape
+    elif isinstance(shape, SourceObject):
+        for key, child in shape.items():
+            yield from _written_sources(child, (*at, key))
 
 
 def compose_document(read_document: Callable[[str], Document | None], name: str) -> RootDocument | ProjectDiagnostic:
@@ -485,10 +482,12 @@ class _Documents:
             else:
                 shape = self.shape(document.base.document)
                 for path, difference in document.differences.items():
-                    shape = _place_source(shape, json_pointer_parts(path), (
+                    shape = place_source(shape, json_pointer_parts(path), (
                         source_shape(difference.value, ValueSource("document", name, path))
                         if isinstance(difference, SetDocumentValue) else None
                     ))
+                for parts, source in _written_sources(source_at(self.variant_sources, ("documents", name, "payload"))):
+                    shape = place_source(shape, parts, source)
                 self.shapes[name] = shape
         return self.shapes[name]
 
