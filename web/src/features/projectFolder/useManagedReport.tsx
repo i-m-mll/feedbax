@@ -1,5 +1,4 @@
 import { useState, type FormEvent } from 'react';
-import { apiErrorMessage } from '@/api/request';
 import { studioChangeDetail, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
 import { MentionRow, ProblemRow } from '@/features/projectWindow/StudioProblems';
 import { Button } from '@/components/ui/Button';
@@ -16,6 +15,7 @@ import { isReportFigureSource, reportFigureRole, type ReportFigureSource } from 
 import type { ProjectEditController, ProjectEditSnapshot } from './projectEditController';
 import { savedRunId } from './projectWindowPlan';
 import { SavedReportResult } from './SavedLightProducts';
+import type { GestureFailures } from './refusals';
 
 type Block = ReportDocument['blocks'][number];
 type BlockAction = Extract<StudioCommandId, 'moveEarlier' | 'moveLater' | 'remove'>;
@@ -30,9 +30,11 @@ function figureAddress({ key, name, figure }: ReportFigureSource) {
 }
 
 export function useManagedReport({
-  editor, snapshot, plan, projection, variant, stepId, run, wholeStep, focused,
+  editor, snapshot, plan, projection, variant, stepId, run, wholeStep, focused, failures,
 }: {
   editor: ProjectEditController;
+  /** Where the step's refused gestures land. */
+  failures: GestureFailures;
   snapshot: ProjectEditSnapshot;
   plan: PlanView;
   projection?: StudioSavedTrainRuns;
@@ -57,7 +59,6 @@ export function useManagedReport({
   const [dialog, setDialog] = useState<{ scope: string; revision: string; kind: 'text' | 'figure' }>();
   const [figureChoice, setFigureChoice] = useState<string | null>(null);
   const [selection, setSelection] = useState<{ scope: string; index: number }>();
-  const [error, setError] = useState<{ scope: string; message: string }>();
   const shared = document && (plan.steps.some(({ id, documentUses }) => id !== stepId && documentUses?.includes(document))
     || Object.entries(draft.steps ?? {}).some(([id, { base }]) => id !== stepId && 'document' in base && base.document === document));
   const direct = !step?.sweep && !step?.deltas?.length && !Object.keys(step?.document_overrides ?? {}).length;
@@ -77,10 +78,10 @@ export function useManagedReport({
         ProjectValueEditSchema.parse({ op: step?.inputs ? 'replace' : 'add', path: '/inputs', value: nextInputs }),
       ] });
       editor.editFiles(name, files, { reviewedRevision: saved.revision });
-      setError(undefined);
+      failures.clear();
       return true;
     } catch (cause) {
-      setError({ scope, message: apiErrorMessage(cause) });
+      failures.fail(cause);
       return false;
     }
   }
@@ -175,9 +176,7 @@ export function useManagedReport({
       disabled={!command.enabled} onClick={command.invoke}>{studioName(command.name)}</Button>;
   }
 
-  const issue = error?.scope === scope ? <p role="alert">{error.message}</p> : null;
   const body = report && <div className="mx-auto grid w-full max-w-3xl gap-4 p-4">
-    {!opened && issue}
     {planned && <p role="status">{studioRunStatus(planned.status)}
       {planned.reason && <span className="block text-shell-muted">{planned.reason}</span>}
     </p>}
@@ -240,7 +239,6 @@ export function useManagedReport({
   </div>;
   const overlay = opened && <Dialog ariaLabel={opened === 'text' ? addText.label : addFigure.label}
     manageFocus panelClassName="grid w-[min(28rem,90vw)] gap-3" onClose={() => setDialog(undefined)}>
-    {issue}
     <form className="grid gap-2" onSubmit={addBlock}>
       {opened === 'text' ? <label className="grid gap-1">{studioName('text')}
         <TextArea name="block" required data-dialog-autofocus />
