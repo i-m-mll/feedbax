@@ -81,6 +81,8 @@ from feedbax.contracts.project_sweep import (
     DEFAULT_SWEEP_ROW,
     ExpandedRow,
     InputAxis,
+    NamedAxis,
+    SetAxis,
     Sweep,
     SweepCoordinate,
     SweepExpansionError,
@@ -92,6 +94,7 @@ from feedbax.contracts.project_sweep import (
 )
 from feedbax.contracts.project_sources import ValueSource, changed_sources, patch_source, place_source, pointer, source_shape
 from feedbax.contracts.report_document import ReportDocument
+from feedbax.contracts.set_document import model_slot, resolve_set_axes
 from feedbax.contracts.request_identity import EncodedRequest, RequestDocumentMemo
 from feedbax.contracts.request_refs import (
     BarrierMember,
@@ -335,6 +338,7 @@ class _TrainEvaluationSource:
 class SourceSweep:
     inputs: dict[str, tuple[SweepInputMember, ...]] = field(default_factory=dict)
     integer_sites: dict[str, bool] = field(default_factory=dict)
+    sets: dict[str, NamedAxis] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -373,7 +377,7 @@ class PlanSourceIndex:
             sweep = self.snapshot.sweeps.get((variant, step), SourceSweep())
             rows = expand_sweep(
                 template.sweep, inputs=sweep.inputs, integer_site=sweep.integer_sites.__getitem__,
-                checkpoint_subject=project.steps[step].kind == "evaluate",
+                checkpoint_subject=project.steps[step].kind == "evaluate", sets=sweep.sets,
             )
             return template, {row.id: row for row in rows}
         return template
@@ -1539,12 +1543,23 @@ class _Compiler:
                 return answer
 
             try:
+                sets = {}
+                if composition.sweep is not None and any(
+                    isinstance(axis, SetAxis) for axis in composition.sweep.axes.values()
+                ):
+                    resolved = resolved_definition()
+                    if isinstance(resolved, ProjectDiagnostic):
+                        return resolved, {}
+                    sets = resolve_set_axes(
+                        composition.sweep, read_document or self.variants[variant].documents.get,
+                        model_slot(resolved.payload, resolved.document_ids, resolved.document_pointers),
+                    )
                 exception_matches: dict[str, tuple[str, ...]] = {}
                 rows = expand_sweep(
                     composition.sweep, inputs=fanout,
                     integer_site=capture_site if self.source_sweeps is not None else integer_site,
                     checkpoint_subject=kind == "evaluate",
-                    exception_matches=exception_matches,
+                    exception_matches=exception_matches, sets=sets,
                 )
                 if self.source_sweeps is not None:
                     axes = composition.sweep.axes if composition.sweep is not None else {}
@@ -1557,8 +1572,8 @@ class _Compiler:
                             for member in members
                         )
                         for role, members in fanout.items() if role in roles
-                    }, sites)
-                    if source.inputs or source.integer_sites:
+                    }, sites, sets)
+                    if source.inputs or source.integer_sites or source.sets:
                         self.source_sweeps[variant, name] = source
                 return rows, exception_matches
             except SweepExpansionError as error:

@@ -92,6 +92,12 @@ def check_typed_payload(schema_id: str, payload: JsonValue) -> None:
         ObjectiveDocument.model_validate(payload)
     elif schema_id == TRAINING_DOCUMENT_SCHEMA_ID:
         TrainingDocument.model_validate(payload)
+    else:
+        # A Set holds Differences, so its module imports this one.
+        from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID, SetDocument
+
+        if schema_id == SET_DOCUMENT_SCHEMA_ID:
+            SetDocument.model_validate(payload)
 
 
 class RootDocument(StrictModel):
@@ -117,6 +123,14 @@ class RemoveDocumentValue(StrictModel):
 type Differences = dict[DifferencePointer, SetDocumentValue | RemoveDocumentValue]
 
 
+def check_disjoint(differences: Differences) -> None:
+    """Refuse a difference that lies under another."""
+    paths = sorted(json_pointer_parts(path) for path in differences)
+    for outer, inner in zip(paths, paths[1:]):
+        if inner[: len(outer)] == outer:
+            raise ValueError(f"difference {pointer(inner)!r} lies under {pointer(outer)!r}")
+
+
 class DocumentBase(StrictModel):
     document: ProjectName
 
@@ -134,10 +148,7 @@ class BasedDocument(StrictModel):
 
     @model_validator(mode="after")
     def _disjoint_differences(self) -> BasedDocument:
-        paths = sorted(json_pointer_parts(path) for path in self.differences)
-        for outer, inner in zip(paths, paths[1:]):
-            if inner[: len(outer)] == outer:
-                raise ValueError(f"difference {pointer(inner)!r} lies under {pointer(outer)!r}")
+        check_disjoint(self.differences)
         return self
 
 
