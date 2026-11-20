@@ -959,6 +959,14 @@ class _Resolver:
                         self.variant_sources, ("steps", author, *axis_path, "path")
                     )
                     return source, first_source(target_override) or path_override
+            case "set_entry":
+                axis, value, document = ids
+                difference = pointer(tuple(path.split(".")[3:]))
+                target = ("entries", value, "differences", difference, "value")
+                source = ValueSource(
+                    "document", document, pointer(target), step=author, axis=axis, value=value,
+                )
+                return source, source_at(self.variant_sources, ("documents", document, "payload", *target))
             case "exception":
                 (exception,) = ids
                 target = ("sweep", "exceptions", exception, "patches", path, "value")
