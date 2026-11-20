@@ -946,8 +946,14 @@ class ProjectFolder:
         except (ValueError, UnicodeError):
             presentation = None
             presentation_error = "unreadable_presentation"
+        documents = text.project.documents
+        composed = {
+            name: entry.payload for name, document in documents.items() if isinstance(document, BasedDocument)
+            if isinstance(entry := compose_document(documents.get, name), RootDocument)
+        }
         return StudioProjectSnapshot(
             project_id=location.project_id,
+            composed=composed,
             revision=text.revision,
             project=text.project,
             semantic_root=project_semantic_root(text.project),

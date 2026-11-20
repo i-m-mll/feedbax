@@ -61,7 +61,7 @@ export function useTrialAuthoring(
       if (result.files.length) {
         if (removes && !await confirmRemoval(filesRemoval(project, revision, result.files, editor.signal))) return;
         const documents = [result.model, result.task_document, result.objective_document];
-        editor.editFiles(name, result.files, {
+        const stored = editor.storeEdit(name, result, {
           reviewedRevision: revision,
           dependencies: [
             { kind: 'step', id: run.step },
@@ -69,6 +69,8 @@ export function useTrialAuthoring(
           ],
         });
         await editor.flush();
+        const settled = await stored;
+        if (settled.status === 'refused') return apiErrorMessage(settled.error);
       } else if (result.problems.length) {
         return result.problems[0].reason;
       }

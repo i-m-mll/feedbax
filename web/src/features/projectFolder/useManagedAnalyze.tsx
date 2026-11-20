@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { rootPayload } from './rootPayload';
+import { documentPayload } from './documentPayload';
 import { ChartLine, Database, Sigma } from 'lucide-react';
 import { useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
@@ -64,7 +64,7 @@ export function useManagedAnalyze({
   const step = key ? draft.steps?.[key.step] : undefined;
   const base = step?.kind === 'analyze' && step.base;
   const document = base && 'document' in base && !base.pointer ? base.document : undefined;
-  const authored = document ? rootPayload(draft.documents?.[document]) : undefined;
+  const authored = document ? documentPayload(draft.documents, saved.composed, document) : undefined;
   const parsed = document ? AnalysisDocumentSchema.safeParse(authored) : undefined;
   const analysis = parsed?.success ? parsed.data : undefined;
   const id = key ? savedRunId(key) : undefined;

@@ -12,7 +12,8 @@ import { isMemberName } from '@/features/projectFolder/projectMemberName';
 export interface DocumentPickerModel {
   readonly label: StudioNameId;
   readonly document: string;
-  readonly documents: readonly string[];
+  /** The documents the step can read, each after the document it is based on, at its depth below its root. */
+  readonly documents: readonly { readonly name: string; readonly depth: number }[];
   readonly count?: { readonly lit: number; readonly users: number };
   /** Why the last document chosen was not taken. */
   readonly refusal?: string;
@@ -21,6 +22,7 @@ export interface DocumentPickerModel {
   readonly create?: () => Promise<string | undefined>;
   readonly duplicate?: () => Promise<string | undefined>;
   readonly rename?: (name: string) => void;
+  readonly detach?: () => void;
 }
 
 /**
@@ -32,7 +34,7 @@ export function DocumentPicker({ model, editing, setEditing }: {
   editing: string | undefined;
   setEditing: (document: string | undefined) => void;
 }) {
-  const { label, document, documents, count, refusal, choose, create, duplicate, rename } = model;
+  const { label, document, documents, count, refusal, choose, create, duplicate, rename, detach } = model;
   const edit = (start?: () => Promise<string | undefined>) => start && (async () => setEditing(await start()));
   // Rename replaces the menu's trigger with the name field, so the closing menu must not return focus elsewhere.
   const renaming = useRef(false);
@@ -42,7 +44,7 @@ export function DocumentPicker({ model, editing, setEditing }: {
       aria-label={studioAccessibleName('rename', document)}
       onEditingChange={(next) => { if (!next) setEditing(undefined); }}
       onCommit={(name) => {
-        if (!isMemberName(name) || documents.includes(name)) return false;
+        if (!isMemberName(name) || documents.some((entry) => entry.name === name)) return false;
         rename(name);
       }} />;
   }
@@ -56,12 +58,15 @@ export function DocumentPicker({ model, editing, setEditing }: {
     </MenuTrigger>
     <MenuContent aria-label={studioName(label)} finalFocus={() => !renaming.current}>
       <MenuRadioGroup value={document} onValueChange={(value: string) => { if (value !== document) choose?.(value); }}>
-        {documents.map((name) => <MenuRadioItem key={name} value={name} disabled={!choose}>{name}</MenuRadioItem>)}
+        {documents.map(({ name, depth }) => <MenuRadioItem key={name} value={name} disabled={!choose}>
+          <span style={depth ? { paddingInlineStart: `${depth}rem` } : undefined}>{name}</span>
+        </MenuRadioItem>)}
       </MenuRadioGroup>
       <MenuSeparator />
       <MenuItem disabled={!create} onClick={edit(create)}>{studioName('new')}</MenuItem>
       <MenuItem disabled={!duplicate} onClick={edit(duplicate)}>{studioName('duplicate')}</MenuItem>
       <MenuItem disabled={!rename} onClick={() => { renaming.current = true; setEditing(document); }}>{studioName('rename')}</MenuItem>
+      {detach && <MenuItem onClick={detach}>{studioName('detach')}</MenuItem>}
     </MenuContent>
   </Menu>
   {refusal && <span role="alert" className="min-w-0 truncate text-xs text-shell-muted">{refusal}</span>}</>;

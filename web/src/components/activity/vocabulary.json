@@ -314,6 +314,7 @@
     "reportDocument": "Report Document",
     "new": "New",
     "duplicate": "Duplicate",
+    "detach": "Detach",
     "variables": "Variables",
     "signals": "Signals",
     "perTrial": "Per Trial",

@@ -3,7 +3,7 @@ import type { ModelFieldResponse, StudioProjectDocument, StudioProjectSnapshot }
 import { enter, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { placeFromLibrary } from './fixtures/controls';
-import { rootPayload } from '../../src/features/projectFolder/rootPayload';
+import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
