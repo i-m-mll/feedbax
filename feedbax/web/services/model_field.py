@@ -371,7 +371,10 @@ def model_fields(
             raise ProjectFolderInvalid("The Model field has no local variant write destination.")
         if field_key not in authored_fields or isinstance(difference.address.element.parent, AttachmentElement):
             raise ProjectFolderInvalid("This Model field is not part of the named document.")
-        keys = [row.key for row in plan.rows if row.key.variant == variant and owner_name in row.document_uses]
+        keys = [
+            row.key for row in plan.rows
+            if row.key.variant == variant and owner_name in row.document_uses - row.followed_documents
+        ]
         if key not in keys:
             raise ProjectFolderInvalid("The selected run no longer uses this Model.")
         definitions = folders.read_plan(project_id, revision=body.revision, source_runs=keys).plan.selected_definitions
@@ -380,8 +383,7 @@ def model_fields(
             definition = definitions.get(selected_key)
             if definition is None or selected_model(definition, owner_name) is None:
                 raise ProjectFolderInvalid("A selected run no longer uses this Model directly.")
-            slot = "trial_documents/model" if "trial_documents" in definition.payload else "graph"
-            source = definition.sources.get(f"/payload/{slot}{relative}")
+            source = definition.sources.get(f"/payload/trial_documents/model{relative}")
             if source is None:
                 raise ProjectFolderInvalid("The Model field has no authored source in every selected run.")
             if not (

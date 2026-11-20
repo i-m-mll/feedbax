@@ -2707,6 +2707,11 @@ export type DatasetPort = {
   "coordinates"?: Record<string, FieldDescriptor>;
 };
 
+export type DetachMember = {
+  "kind": "detach";
+  "member": string;
+};
+
 export type DifferencePointer = string;
 
 export type Differences = Record<string, SetDocumentValue | RemoveDocumentValue>;
@@ -3689,7 +3694,7 @@ export type StudioInputPlace = {
 export type StudioMemberCommand = {
   "revision": Sha256;
   "presentation_revision": Sha256;
-  "command": RenameMember | DuplicateMember;
+  "command": RenameMember | DuplicateMember | DetachMember;
 };
 
 export type StudioMemberCommandResult = {
@@ -3791,6 +3796,7 @@ export type StudioProjectWindowMap = {
   "evaluations"?: Array<StudioSavedEvaluationRow>;
   "analysis_elements"?: Array<StudioProjectWindowMapElement>;
   "analysis_figures"?: Array<StudioProjectWindowMapFigure>;
+  "detach_refused"?: Array<string>;
 };
 
 export type StudioProjectWindowMapCoordinate = {
@@ -9023,6 +9029,13 @@ export const DatasetPortSchema: z.ZodType<DatasetPort> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<DatasetPort>;
 
+export const DetachMemberSchema: z.ZodType<DetachMember> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("detach"),
+    "member": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<DetachMember>;
+
 export const DifferencePointerSchema: z.ZodType<DifferencePointer> = z.lazy(() =>
   z.string().min(1).regex(new RegExp("^(?:/(?:[^~/]|~[01])*)*$"))
 ) as unknown as z.ZodType<DifferencePointer>;
@@ -10348,7 +10361,7 @@ export const StudioMemberCommandSchema: z.ZodType<StudioMemberCommand> = z.lazy(
   z.object({
     "revision": Sha256Schema,
     "presentation_revision": Sha256Schema,
-    "command": z.union([RenameMemberSchema, DuplicateMemberSchema]),
+    "command": z.union([RenameMemberSchema, DuplicateMemberSchema, DetachMemberSchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioMemberCommand>;
 
@@ -10482,6 +10495,7 @@ export const StudioProjectWindowMapSchema: z.ZodType<StudioProjectWindowMap> = z
     "evaluations": z.array(StudioSavedEvaluationRowSchema).optional(),
     "analysis_elements": z.array(StudioProjectWindowMapElementSchema).optional(),
     "analysis_figures": z.array(StudioProjectWindowMapFigureSchema).optional(),
+    "detach_refused": z.array(z.string()).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMap>;
 

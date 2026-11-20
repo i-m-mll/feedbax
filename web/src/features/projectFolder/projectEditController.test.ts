@@ -107,6 +107,7 @@ function fixture(settleMs = 400, start = initial) {
   const memberCommand = vi.fn<NonNullable<ProjectEditTransport['memberCommand']>>(async (_id, body) => {
     if (body.revision !== current.revision) throw new ApiRequestError('http', '/members/command', 'Changed', { status: 409 });
     const { member: from, kind } = body.command;
+    if (kind === 'detach') throw new Error('The fake transport does not detach');
     const to = body.command.name ?? `${from}-2`;
     const source = current.file_revisions.find(({ address }) => address.kind === 'document' && address.id === from)!;
     const { [from]: moved, ...others } = current.project.documents ?? {};

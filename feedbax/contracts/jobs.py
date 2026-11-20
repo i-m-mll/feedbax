@@ -412,6 +412,8 @@ class StudioProjectWindowMap(StrictModel):
     evaluations: list[StudioSavedEvaluationRow] = Field(default_factory=list)
     analysis_elements: list[StudioProjectWindowMapElement] = Field(default_factory=list, exclude_if=lambda value: not value)
     analysis_figures: list[StudioProjectWindowMapFigure] = Field(default_factory=list, exclude_if=lambda value: not value)
+    detach_refused: list[str] = Field(default_factory=list)
+    """Based documents whose Detach would leave an Evaluate step's Model document sharing no document with its subject's."""
 
 
 class StudioSavedTrainRuns(StrictModel):
