@@ -17,7 +17,8 @@ export type Refusal =
 /** A view's channel for its gestures' outcomes: `clear` as one starts, `fail` with what it threw. */
 export interface GestureFailures {
   clear(): void;
-  fail(cause: unknown): void;
+  /** A service failure goes to the bottom bar; a refusal goes to `land` when given, otherwise to the step's mark. */
+  fail(cause: unknown, land?: (reason: string) => void): void;
 }
 
 /** Identifies a projected problem across refreshes of the projection. */

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExtern
 import { useStore } from 'zustand';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { approveSavedRun, fetchExecutionTargets, fetchSavedTrainRuns, quoteSavedRun, runSavedTrain } from '@/api/jobs';
-import { apiErrorMessage, isServiceFailure, isUnanswered } from '@/api/request';
+import { apiErrorMessage, isRefusal, isServiceFailure, isUnanswered } from '@/api/request';
 import { prepareCheckpointRuleEdit, prepareSubsetToRows } from '@/api/studioAuthoring';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import {
@@ -613,7 +613,13 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     return (reason: string): Refusal | undefined => stepId ? { kind: 'step', step: stepId, reason } : undefined;
   }
   function stepFailures(stepId: string | undefined): GestureFailures {
-    return { clear: settled, fail: (cause) => failed(cause, refuseStep(stepId)) };
+    return {
+      clear: settled,
+      fail: (cause, land) => {
+        if (land && !isServiceFailure(cause)) land(apiErrorMessage(cause));
+        else failed(cause, refuseStep(stepId));
+      },
+    };
   }
 
   const refuseRuns = (runIds: readonly string[]) => (reason: string): Refusal | undefined =>
@@ -1179,7 +1185,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const commands = [
     bindStudioCommand('rename', () => {
       void perform(async () => {
-        const revision = await editor.flush();
+        // A refused pending save already went back to the gesture that made it.
+        const revision = await editor.flush().catch((cause: unknown) => { if (isRefusal(cause)) return undefined; throw cause; });
+        if (revision === undefined) return;
         setRename({ name: editor.getSnapshot().configuration.project, revision });
       });
     }, {

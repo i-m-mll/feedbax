@@ -59,6 +59,8 @@ export function useManagedReport({
   const [dialog, setDialog] = useState<{ scope: string; revision: string; kind: 'text' | 'figure' }>();
   const [figureChoice, setFigureChoice] = useState<string | null>(null);
   const [selection, setSelection] = useState<{ scope: string; index: number }>();
+  /** A gesture refused inside the open dialog, shown there. */
+  const [refusal, setRefusal] = useState<{ scope: string; reason: string }>();
   const shared = document && (plan.steps.some(({ id, documentUses }) => id !== stepId && documentUses?.includes(document))
     || Object.entries(draft.steps ?? {}).some(([id, { base }]) => id !== stepId && 'document' in base && base.document === document));
   const direct = !step?.sweep && !step?.deltas?.length && !Object.keys(step?.document_overrides ?? {}).length;
@@ -79,9 +81,11 @@ export function useManagedReport({
       ] });
       editor.editFiles(name, files, { reviewedRevision: saved.revision });
       failures.clear();
+      setRefusal(undefined);
       return true;
     } catch (cause) {
-      failures.fail(cause);
+      setRefusal(undefined);
+      failures.fail(cause, opened ? (reason) => setRefusal({ scope, reason }) : undefined);
       return false;
     }
   }
@@ -126,9 +130,13 @@ export function useManagedReport({
   }
 
   const blockActions = ['moveEarlier', 'moveLater', 'remove'] as const;
-  const addText = bindStudioCommand('addText', () => setDialog({ scope, revision: saved.revision, kind: 'text' }), { enabled: editable });
+  const addText = bindStudioCommand('addText', () => {
+    setRefusal(undefined);
+    setDialog({ scope, revision: saved.revision, kind: 'text' });
+  }, { enabled: editable });
   const addFigure = bindStudioCommand('addFigure', () => {
     setFigureChoice(null);
+    setRefusal(undefined);
     setDialog({ scope, revision: saved.revision, kind: 'figure' });
   }, {
     enabled: editable && figures.length > 0,
@@ -239,6 +247,7 @@ export function useManagedReport({
   </div>;
   const overlay = opened && <Dialog ariaLabel={opened === 'text' ? addText.label : addFigure.label}
     manageFocus panelClassName="grid w-[min(28rem,90vw)] gap-3" onClose={() => setDialog(undefined)}>
+    {refusal?.scope === scope && <p role="alert">{refusal.reason}</p>}
     <form className="grid gap-2" onSubmit={addBlock}>
       {opened === 'text' ? <label className="grid gap-1">{studioName('text')}
         <TextArea name="block" required data-dialog-autofocus />
