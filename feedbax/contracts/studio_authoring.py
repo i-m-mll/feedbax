@@ -11,7 +11,7 @@ from feedbax.contracts.component import ComponentDefinition
 from feedbax.expression_registry import FunctionInfo
 from feedbax.contracts.operation import OperationDefinition
 from feedbax.contracts.project import Sha256
-from feedbax.contracts.project_inputs import NonemptyText, ProjectName
+from feedbax.contracts.project_inputs import NonemptyText, ProjectName, StepReference
 from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.studio_project import StudioProjectFilePatch
 
@@ -185,6 +185,17 @@ class StudioTrainAuthoringRequest(StudioRunSelection):
     revision: Sha256
     change: StudioAuthoringChange | None = None
     class_sweep: StudioClassSweepChange | None = None
+
+
+class StudioTrainStartRequest(StrictModel):
+    revision: Sha256
+    source: StepReference | None = None
+    """The Train step whose checkpoint the step starts from, which it then continues; none starts it from its Model."""
+
+
+class StudioTrainStartEdit(StrictModel):
+    revision: Sha256
+    files: list[StudioProjectFilePatch]
 
 
 class StudioSweptParameterMissing(StrictModel):

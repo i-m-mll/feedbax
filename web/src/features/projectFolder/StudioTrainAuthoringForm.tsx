@@ -1,9 +1,9 @@
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { apiErrorMessage } from '@/api/request';
+import { apiErrorMessage, isRefusal } from '@/api/request';
 import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
 import {
-  catalogEntries, projectTrainFields, readStudioTrainAuthoring, useAuthoringCatalog,
+  catalogEntries, prepareTrainStart, projectTrainFields, readStudioTrainAuthoring, useAuthoringCatalog,
 } from '@/api/studioAuthoring';
 import { studioName, studioSweptParameterMissing } from '@/components/activity/studioVocabulary';
 import { CatalogPicker } from '@/components/ui/CatalogPicker';
@@ -29,7 +29,6 @@ import type { ClassProjection } from '@/components/values/adapters/jsonSchema';
 import { modelDocumentId, sameAuthoredFile, type AuthoredProject } from './authoredEdits';
 import { ProjectEditConflictError, type ProjectEditController, type ProjectEditValidation } from './projectEditController';
 import { filesRemoval, sweepValueRuns, useRunRemoval } from './runRemoval';
-import { checkpointStartEdits } from './createCheckpointTrain';
 import { inTrainingDocument } from './trainingDocument';
 import { documentChoice, stepChoice, stepChoiceId, stepGroup } from './referenceChoices';
 import { ReferenceField } from '@/components/values/ReferenceField';
@@ -54,6 +53,8 @@ interface Props {
   readonly trainingDocument?: boolean;
   /** The training document's users an edit is made for, the step among them; without them, the step alone. */
   readonly chosen?: readonly string[];
+  /** Takes the reason the service refuses to read the step's definition, which belongs on the step, and none once it reads. */
+  readonly onRefused?: (reason: string | undefined) => void;
 }
 
 const settingsPrefix = '/settings';
@@ -196,34 +197,34 @@ function CheckpointStart({ editor, stepId, step, trains, picking, editable }: {
   const { saved } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const confirmRemoval = useRunRemoval();
   const labelId = useId();
+  const [reason, setReason] = useState<string>();
   const authored = saved.project.steps?.[stepId];
   const model = modelDocumentId(step?.documentIds);
   if (!authored || !model) return null;
   const source = StepReferenceSchema.safeParse(authored.inputs?.checkpoint);
   const sources = trains.filter(({ id }) => id !== stepId);
   const current = source.success ? sources.find(({ id }) => id === source.data.step) : undefined;
-  const inherited = 'step' in authored.base &&
-    !!trains.find(({ id }) => 'step' in authored.base && id === authored.base.step)?.inputs.some(({ id }) => id === 'checkpoint');
   const name = studioName('start');
   async function start(next: StepReference | null) {
-    const files = [{ address: { kind: 'step' as const, id: stepId }, patches: checkpointStartEdits(authored!, inherited, next) }];
-    if (!files[0].patches.length) return;
     const { revision } = editor.getSnapshot().saved;
-    if (!await confirmRemoval(filesRemoval(saved.project_id, revision, files, editor.signal))) return;
+    const { files } = await prepareTrainStart(saved.project_id, stepId, { revision, source: next }, editor.signal);
+    if (!files.length || !await confirmRemoval(filesRemoval(saved.project_id, revision, files, editor.signal))) return;
+    const based = 'step' in authored!.base ? [authored!.base.step] : [];
     editor.editFiles(name, files, {
       reviewedRevision: revision,
-      dependencies: next ? [{ kind: 'step', id: next.step }] : [{ kind: 'document', id: model! }],
+      dependencies: [...new Set([...based, ...next ? [next.step] : []])].map((id) => ({ kind: 'step' as const, id })),
     });
     await editor.flush();
   }
-  return <FieldRow label={name} labelId={labelId}>
+  return <FieldRow label={name} labelId={labelId} below={reason && <p role="alert">{reason}</p>}>
     <ReferenceField label={name} aria-labelledby={labelId} picking={picking}
       groups={[{ label: studioName('documents'), choices: [documentChoice('model', model)] }, stepGroup(sources)]}
       value={source.success ? current ? stepChoice(current) : { id: stepChoiceId(source.data.step), label: source.data.step }
         : documentChoice('model', model)}
       onChoose={editable ? (choice) => {
         const train = sources.find(({ id }) => stepChoiceId(id) === choice.id);
-        void start(train ? { step: train.id, checkpoint: 'last' } : null);
+        setReason(undefined);
+        start(train ? { step: train.id, checkpoint: 'last' } : null).catch((error: unknown) => setReason(apiErrorMessage(error)));
       } : undefined} />
   </FieldRow>;
 }
@@ -250,6 +251,12 @@ export function StudioTrainAuthoringForm(props: Props) {
   const command = useRef<AbortController | null>(null);
   const shown = definition.data;
   const current = shown?.revision === revision ? shown : null;
+  const refused = [definition.error, numeric.fields.error].find(isRefusal);
+  const refusal = refused && apiErrorMessage(refused);
+  const onRefused = useRef(props.onRefused);
+  onRefused.current = props.onRefused;
+  useEffect(() => { onRefused.current?.(refusal); }, [refusal]);
+  useEffect(() => () => onRefused.current?.(undefined), []);
 
   useEffect(() => {
     const lifetime = new AbortController();
@@ -339,6 +346,7 @@ export function StudioTrainAuthoringForm(props: Props) {
     } };
   }
 
+  if (refusal !== undefined) return null;
   return (
     <StudioRegion state={studioReadState('definition', shown && numeric.fields.data,
       definition.error ?? numeric.fields.error ?? catalog.error, () => {
