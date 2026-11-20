@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field, FiniteFloat
+from pydantic import Field, FiniteFloat, JsonValue
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.project import Document, Project, Sha256, Step
@@ -76,6 +76,8 @@ class StudioProjectSnapshot(StudioProjectRevision):
     presentation_error: Literal["unreadable_presentation"] | None = None
     file_revisions: list[StudioAuthoredFileRevision]
     declaration: StudioAuthoredDeclaration | None = None
+    composed: dict[str, JsonValue] = Field(default_factory=dict)
+    """The composed payload of each based document whose base chain composes."""
 
 
 class StudioProjectFilePatch(StrictModel):

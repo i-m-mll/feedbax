@@ -6,7 +6,7 @@ import type {
 import { enter, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
 import { palette } from './fixtures/studioKeyboard';
-import { rootPayload } from '../../src/features/projectFolder/rootPayload';
+import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 

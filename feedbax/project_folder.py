@@ -34,7 +34,7 @@ from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_
 from feedbax.contracts.matrix_core import apply_value_patch_in_place
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.project import BasedDocument, Project, Sha256, json_pointer_parts
+from feedbax.contracts.project import BasedDocument, Project, RootDocument, Sha256, json_pointer_parts
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
@@ -888,8 +888,14 @@ class ProjectFolder:
         except (ValueError, UnicodeError):
             presentation = None
             presentation_error = "unreadable_presentation"
+        documents = text.project.documents
+        composed = {
+            name: entry.payload for name, document in documents.items() if isinstance(document, BasedDocument)
+            if isinstance(entry := compose_document(documents.get, name), RootDocument)
+        }
         return StudioProjectSnapshot(
             project_id=location.project_id,
+            composed=composed,
             revision=text.revision,
             project=text.project,
             semantic_root=project_semantic_root(text.project),

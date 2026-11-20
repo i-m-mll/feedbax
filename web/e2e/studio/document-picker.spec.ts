@@ -1,11 +1,11 @@
 import { expect, test } from './fixtures/studio';
-import type { Locator, Page } from '@playwright/test';
+import type { APIRequestContext, Page } from '@playwright/test';
 import type {
   StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
 import { appendManagedFiles, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind, palette } from './fixtures/studioKeyboard';
-import { rootPayload } from '../../src/features/projectFolder/rootPayload';
+import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -269,13 +269,20 @@ test('New in the Document header gives an empty report that cannot run', async (
   await expect(document.getByText('The report has no blocks.')).toBeVisible();
 });
 
-test('the Training view edits the training document for the steps it lights, and the Inspector for its step', async ({ page, request }) => {
-  test.setTimeout(60_000);
-  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('history-files'));
-  const primary = page.locator('[data-slot="primary"]').getByRole('tabpanel');
-  const picker = (label: string) => primary.locator('.studio-window-slot__header')
-    .getByRole('button', { name: new RegExp(`^${label} Document `) });
-  const batches = (region: Locator) => region.getByRole('textbox', { name: 'Batches', exact: true });
+/** A project whose Train steps `train` and `sibling`, and any `extra` steps, read the Training document `training`. */
+async function sharedTraining(request: APIRequestContext, extra: readonly unknown[] = []) {
+  const { snapshot, projectPath } = await seedManagedProject(request, [...await fixture('history-files'), ...extra]);
+  const keys = ['method', 'settings', 'training_config'] as const;
+  const inline = (snapshot.project.steps!.train.base as { inline: Record<string, unknown> }).inline;
+  const { snapshot: withDocument } = await appendManagedFiles(request, snapshot, [{ kind: 'document', id: 'training', document: {
+    schema: 'feedbax.spec.training_document', payload: Object.fromEntries(keys.map((key) => [key, inline[key]])),
+  } }]);
+  const shared = await request.patch(projectPath, { data: { revision: withDocument.revision, files:
+    ['train', 'sibling'].map((id) => ({ address: { kind: 'step', id }, patches: keys.map((key) => ({
+      op: 'replace', path: `/base/inline/${key}`, value: { document: 'training', pointer: `/${key}` },
+    })) })),
+  } });
+  expect(shared.ok(), await shared.text()).toBe(true);
   async function saved() {
     const response = await request.get(projectPath);
     expect(response.ok()).toBe(true);
@@ -288,54 +295,67 @@ test('the Training view edits the training document for the steps it lights, and
     const { rows } = await response.json() as StudioSavedTrainRuns;
     return Object.fromEntries(rows.map(({ key, request_id }) => [key.step, request_id]));
   }
+  return { snapshot, saved, requests };
+}
+
+function trainingView(page: Page) {
+  const primary = page.locator('[data-slot="primary"]').getByRole('tabpanel');
+  const picker = (label: string) => primary.locator('.studio-window-slot__header')
+    .getByRole('button', { name: new RegExp(`^${label} Document `) });
+  const batches = primary.getByRole('textbox', { name: 'Batches', exact: true });
+  const menu = page.getByRole('menu', { name: 'Training Document', exact: true });
+  /** How far the picker's menu indents `name` under its base. */
+  async function indent(name: string) {
+    await picker('Training').click();
+    const item = menu.getByRole('menuitemradio', { name, exact: true }).locator('span').last();
+    const padding = await item.evaluate((element) => getComputedStyle(element).paddingInlineStart);
+    await page.keyboard.press('Escape');
+    return padding;
+  }
+  return { primary, picker, batches, menu, indent };
+}
+
+test('a narrowed edit in the Training view makes a document based on the shown one, and one Undo restores the files', async ({ page, request }) => {
+  test.setTimeout(60_000);
+  const { snapshot, saved, requests } = await sharedTraining(request);
+  const { primary, picker, batches, indent } = trainingView(page);
   /** Commits a Batches value and waits for the plan of the revision it saved. */
-  async function setBatches(region: Locator, value: string) {
+  async function setBatches(value: string) {
     const before = (await saved()).revision;
-    await batches(region).fill(value);
-    await batches(region).press('Enter');
+    await batches.fill(value);
+    await batches.press('Enter');
     await expect.poll(async () => (await saved()).revision).not.toBe(before);
     return requests();
   }
-
-  const keys = ['method', 'settings', 'training_config'] as const;
-  const inline = (snapshot.project.steps!.train.base as { inline: Record<string, unknown> }).inline;
-  const { snapshot: withDocument } = await appendManagedFiles(request, snapshot, [{ kind: 'document', id: 'training', document: {
-    schema: 'feedbax.spec.training_document', payload: Object.fromEntries(keys.map((key) => [key, inline[key]])),
-  } }]);
-  const shared = await request.patch(projectPath, { data: { revision: withDocument.revision, files:
-    ['train', 'sibling'].map((id) => ({ address: { kind: 'step', id }, patches: keys.map((key) => ({
-      op: 'replace', path: `/base/inline/${key}`, value: { document: 'training', pointer: `/${key}` },
-    })) })),
-  } });
-  expect(shared.ok(), await shared.text()).toBe(true);
+  const document = (name: string) => saved().then(({ project }) => project.documents?.[name]);
 
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Training', exact: true }).click();
   await expect(picker('Training')).toHaveText('training');
-  const document = () => saved().then(({ project }) => rootPayload(project.documents?.training));
   const initial = await requests();
-  const edited = await setBatches(primary, '7');
+  const edited = await setBatches('7');
   expect(edited.train).not.toBe(initial.train);
   expect(edited.sibling).not.toBe(initial.sibling);
-  expect(await document()).toMatchObject({ training_config: { n_batches: 7 } });
-
-  await page.getByRole('tab', { name: 'Runs', exact: true }).click();
-  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-  const own = await setBatches(inspector, '8');
-  expect(own.train).not.toBe(edited.train);
-  expect(own.sibling).toBe(edited.sibling);
-  expect(await document()).toMatchObject({ training_config: { n_batches: 7 } });
-  await page.getByRole('tab', { name: 'Training', exact: true }).click();
-  await expect(batches(primary)).toHaveValue('');
-  await expect(batches(primary)).toHaveAttribute('placeholder', 'Mixed');
+  expect(rootPayload(await document('training'))).toMatchObject({ training_config: { n_batches: 7 } });
 
   await mapStep(page, 'sibling').click({ modifiers: ['Shift'] });
   await expect(picker('Training')).toHaveText('training1 of 2');
-  const alone = await setBatches(primary, '9');
-  expect(alone.train).not.toBe(own.train);
-  expect(alone.sibling).toBe(own.sibling);
-  expect(await document()).toMatchObject({ training_config: { n_batches: 7 } });
+  const files = (await saved()).project;
+  const alone = await setBatches('9');
+  expect(alone.train).not.toBe(edited.train);
+  expect(alone.sibling).toBe(edited.sibling);
+  expect(await document('training')).toEqual(files.documents?.training);
+  expect(await document('training-2')).toMatchObject({ base: { document: 'training' } });
+  await expect(picker('Training')).toHaveText('training-2');
+  await expect(batches).toHaveValue('9');
+  expect(await indent('training')).toBe('0px');
+  expect(await indent('training-2')).not.toBe('0px');
+
+  await primary.focus();
+  await page.keyboard.press('Meta+Z');
+  await expect.poll(async () => (await saved()).project).toEqual(files);
+  await expect(picker('Training')).toHaveText('training1 of 2');
 
   await page.getByRole('tab', { name: 'Objective', exact: true }).click();
   const objective = picker('Objective');
@@ -344,13 +364,44 @@ test('the Training view edits the training document for the steps it lights, and
   await expect(weight).toBeEditable();
   await mapStep(page, 'sibling').click({ modifiers: ['Shift'] });
   await expect(objective).toHaveText(`${name}1 of 2`);
-  const before = (await saved()).project.documents?.[name];
+  const before = await document(name);
   const revision = (await saved()).revision;
   await weight.fill('0.5');
   await weight.press('Enter');
   await expect.poll(async () => (await saved()).revision).not.toBe(revision);
   const reached = await requests();
-  expect(reached.train).not.toBe(alone.train);
-  expect(reached.sibling).toBe(alone.sibling);
-  expect((await saved()).project.documents?.[name]).toEqual(before);
+  expect(reached.train).not.toBe(edited.train);
+  expect(reached.sibling).toBe(edited.sibling);
+  expect(await document(name)).toEqual(before);
+  await expect(objective).toHaveText(`${name}-2`);
+});
+
+test('a continuation taken out keeps its runs, and Detach cuts a based document from its base', async ({ page, request }) => {
+  test.setTimeout(60_000);
+  const continuation = { kind: 'step', id: 'train-2', step: { kind: 'train', base: { step: 'train' } } };
+  const { snapshot, saved, requests } = await sharedTraining(request, [continuation]);
+  const { picker, batches, menu, indent } = trainingView(page);
+
+  await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
+  await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Training', exact: true }).click();
+  await mapStep(page, 'train-2').click({ modifiers: ['Shift'] });
+  await mapStep(page, 'sibling').click({ modifiers: ['Shift'] });
+  await expect(picker('Training')).toHaveText('training1 of 3');
+  const before = await requests();
+  await batches.fill('9');
+  await batches.press('Enter');
+  await expect(picker('Training')).toHaveText('training-2');
+  const after = await requests();
+  expect(after.train).not.toBe(before.train);
+  expect(after['train-2']).toBe(before['train-2']);
+  expect(after.sibling).toBe(before.sibling);
+
+  await picker('Training').click();
+  await menu.getByRole('menuitem', { name: 'Detach', exact: true }).click();
+  await expect.poll(async () => 'base' in ((await saved()).project.documents?.['training-2'] ?? {})).toBe(false);
+  expect(await indent('training-2')).toBe('0px');
+  expect(await requests()).toEqual(after);
+  await picker('Training').click();
+  await expect(menu.getByRole('menuitem', { name: 'Detach', exact: true })).toHaveCount(0);
 });
