@@ -20,15 +20,12 @@ from feedbax.contracts.studio_analyze import (
     StudioAnalyzeRequest,
     StudioAnalyzeWire,
 )
-from feedbax.contracts.studio_project import (
-    AuthoredFileAddress,
-    SetProjectValue,
-    StudioProjectFilePatch,
-)
+from feedbax.contracts.studio_project import SetProjectValue, StudioProjectFilePatch
 from feedbax.jobs import JobConflict, JobNotFound
 from feedbax.plot.templates import FigureTemplateRegistry
-from feedbax.web.services.project_folder import ProjectFolderInvalid
+from feedbax.web.services.project_folder import ProjectFolderInvalid, preview_authored_files
 from feedbax.web.services.project_plan import ProjectPlanRead, ProjectPlanService
+from feedbax.web.services.trial_scope import shared_document_write
 
 
 def _port(
@@ -58,7 +55,7 @@ def review_wire(
     *,
     readers: BaseReaders = BaseReaders(),
     figure_templates: FigureTemplateRegistry | None = None,
-) -> StudioProjectFilePatch:
+) -> list[StudioProjectFilePatch]:
     composed = compose_document(project.documents.get, document)
     if isinstance(composed, ProjectDiagnostic):
         raise ValueError(composed.detail)
@@ -76,11 +73,11 @@ def review_wire(
     elif wire.element not in analysis.views:
         raise ValueError(f"Unknown figure {wire.element!r}.")
 
-    proposal = project.model_copy(deep=True)
     binding = wire.source.model_dump(mode="json")
-    bindings = proposal.documents[document].payload[family][wire.element]["inputs"]
-    operation = "replace" if wire.role in bindings else "add"
-    bindings[wire.role] = binding
+    files = shared_document_write(project, document, [SetProjectValue(
+        op="replace", path=f"/{family}/{wire.element}/inputs/{wire.role}", value=binding,
+    )])
+    proposal = preview_authored_files(project, files)
     plan = compile_project(
         proposal, operations=registry, figure_templates=figure_templates, readers=readers,
     )
@@ -104,14 +101,7 @@ def review_wire(
     for problem in problems:
         if problem.path in {f"{path}.inputs", f"{path}.inputs.{wire.role}"}:
             raise ValueError(problem.detail)
-    return StudioProjectFilePatch(
-        address=AuthoredFileAddress(kind="document", id=document),
-        patches=[
-            SetProjectValue(
-                op=operation, path=f"/payload/{family}/{wire.element}/inputs/{wire.role}", value=binding
-            )
-        ],
-    )
+    return files
 
 
 def _variable_choices(definition: OperationDefinition, states: DatasetPort) -> dict[str, list[str]]:
@@ -219,10 +209,10 @@ def analyze_authoring(
         registry = service.jobs.registries.operations
         definitions = list(registry.definitions())
         reviewed = (
-            [review_wire(
+            review_wire(
                 project, key, step.base.document, body.wire, registry, states,
                 readers=view.settled.readers, figure_templates=service.jobs.registries.figure_templates,
-            )]
+            )
             if body.wire
             else []
         )

@@ -12,7 +12,9 @@ from feedbax.tasks.registry import resolve_python_task_instance
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import EvaluateAttachmentRows, EvaluateAttachmentVariant
-from feedbax.contracts.project import SetProjectValue, apply_document_edits, json_pointer_parts
+from feedbax.contracts.project import (
+    BasedDocument, RemoveProjectValue, SetProjectValue, apply_document_edits, based_on, json_pointer_parts,
+)
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.contracts.project_plan import RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
@@ -25,7 +27,7 @@ from feedbax.studio.authoring import training_document_choice
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.contracts.studio_trials import (
     StudioTaskChoice, StudioTaskType, StudioTrialAuthoring, StudioTrialAuthoringRequest, StudioTrialBindingEdit,
-    StudioTrialDocumentEdit, StudioTrialExpressionEdit, StudioTrialField, StudioTrialInput,
+    StudioTrialDocumentEdit, StudioTrialDocumentReset, StudioTrialExpressionEdit, StudioTrialField, StudioTrialInput,
     StudioTrialOutput, StudioTrialReset, StudioTrialSelectDocument, StudioTrialStepScope,
 )
 from feedbax.contracts.task_document import (
@@ -41,9 +43,10 @@ from feedbax.objectives.document import ObjectiveExecutor, ObjectiveUse, compile
 from feedbax.plugins.application import ApplicationRegistryBundle
 from feedbax.web.services.evaluate_sources import evaluate_subject, evaluate_value_source
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, preview_authored_files
+from feedbax.studio.selection import StoredEdit
 from feedbax.web.services.trial_scope import (
-    document_files, file_value, reached_runs, reached_steps, refuse_unreached, scoped_file, selected_runs,
-    variant_file,
+    document_write, file_value, lit_steps, preview_stored, reached_runs, refuse_unreached, scoped_file,
+    selected_runs, variant_file,
 )
 
 
@@ -443,13 +446,24 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
         if not isinstance(change, StudioTrialDocumentEdit):
             return [], change
     document = None
-    if step.kind == "train" and isinstance(change, StudioTrialDocumentEdit):
-        field, _ = _changed_value(documents, definition, change.kind)
+    if step.kind == "train" and isinstance(change, StudioTrialDocumentEdit | StudioTrialDocumentReset):
+        field, _ = _changed_value(
+            documents, definition, change.document if isinstance(change, StudioTrialDocumentReset) else change.kind,
+        )
         path = f"payload.trial_documents.{field}"
         if not definition.document_pointers.get(path):
             document = definition.document_ids.get(path)
+    if isinstance(change, StudioTrialDocumentReset):
+        if document is None:
+            raise ProjectFolderInvalid("Reset needs a value the step reads from a document.")
+        change = _reset_edit(project, document, change)
+
+    def readers(name):
+        return plan.document_users(plan.variants[0], name)
+
     chosen = set(scope.chosen_steps) if isinstance(scope, StudioTrialStepScope) else set()
-    users = set(plan.document_users(key.variant, document)) if document else set()
+    users = set(lit_steps(project.documents, readers, document)) if document else set()
+    family = _family(project, document) if document else set()
     if scope is None and key.variant != plan.variants[0]:
         scope = EvaluateAttachmentVariant(kind="variant", variant=key.variant)
     elif scope is None:
@@ -462,15 +476,10 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
             raise ProjectFolderInvalid("The chosen steps no longer match this document.")
         chosen = chosen or {key.step}
     selected = selected_runs(plan, key, scope, chosen_steps=chosen)
-
-    def readers(name):
-        return plan.document_users(plan.variants[0], name)
-
     if document is not None and isinstance(scope, StudioTrialStepScope):
         path = f"payload.trial_documents.{field}"
         if any(
-            row.key in selected and row.document_ids.get(path) != document
-            and document not in row.document_uses
+            row.key in selected and row.document_ids.get(path) not in family and not family & row.document_uses
             for row in plan.rows
         ):
             raise ProjectFolderInvalid("A chosen step no longer uses the selected document.")
@@ -484,33 +493,68 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
             if change.role != "task":
                 raise ProjectFolderInvalid("An Evaluate reads its Model and Objective from its subject.")
             _chosen_task(project, change.document)
-            files = scoped_file(project, key.step, scope, _task_selection_writes(definition, {"document": change.document}),
-                                chosen=chosen, users=readers)
+            stored = scoped_file(project, key.step, scope, _task_selection_writes(
+                definition, {"document": change.document},
+            ), chosen=chosen, users=readers)
         elif evaluate_field:
-            files = _evaluate_field_files(project, settled.plan, key, scope, selected, bundle, change, documents, projected)
+            stored = _evaluate_field_files(project, settled.plan, key, scope, selected, bundle, change, documents, projected)
         else:
             raise ProjectFolderInvalid("Evaluate authoring edits the task variation.")
     elif document is not None and isinstance(scope, StudioTrialStepScope):
-        files = document_files(project, document, list(change.edits), chosen, users)
+        stored = document_write(project, document, list(change.edits), chosen, readers)
     elif document is not None and isinstance(scope, EvaluateAttachmentVariant):
         _, value = _changed_value(documents, definition, change.kind)
-        files = [variant_file(project, key.variant, _value_writes(f"documents.{document}.payload", value, change))]
+        stored = StoredEdit([variant_file(
+            project, key.variant, _value_writes(f"documents.{document}.payload", value, change),
+        )], reached=frozenset(users))
     elif isinstance(change, StudioTrialSelectDocument) and change.role == "training":
         writes = training_document_choice(project, key.step, bundle.training_methods, change.document)
         if isinstance(writes, StudioSweptParameterMissing):
-            return [], writes
-        files = scoped_file(project, key.step, scope, writes, chosen=chosen, users=readers)
+            return StoredEdit([]), writes
+        stored = scoped_file(project, key.step, scope, writes, chosen=chosen, users=readers)
     else:
         writes = _train_writes(change, project, definition, documents, projected)
-        files = scoped_file(project, key.step, scope, writes, chosen=chosen, users=readers) if writes else []
-    if not files:
-        return [], ()
+        stored = scoped_file(project, key.step, scope, writes, chosen=chosen, users=readers) if writes else StoredEdit([])
+    if not stored.files and not stored.created:
+        return StoredEdit([]), ()
     variants = {key.variant} if isinstance(scope, EvaluateAttachmentVariant) else set(plan.variants)
-    reach = reached_runs(plan, variants, selected, reached_steps(project, chosen or {key.step}) - {key.step})
+    reach = reached_runs(plan, variants, selected, stored.reached - {key.step})
     return _validate_files(
-        files, project, settled, selected, reach, key.step, folders, bundle, change, expression,
+        stored, project, settled, selected, reach, key.step, folders, bundle, change, expression,
         evaluate_field=evaluate_field,
     )
+
+
+def _family(project, document) -> set[str]:
+    """``document`` and the documents based on it, at any depth."""
+    found, pending = set(), [document]
+    while pending:
+        name = pending.pop()
+        if name not in found:
+            found.add(name)
+            pending.extend(based_on(project.documents, name))
+    return found
+
+
+def _reset_edit(project, document, change: StudioTrialDocumentReset) -> StudioTrialDocumentEdit:
+    """The edit that gives each of ``change``'s paths the value of the base of ``document``."""
+    entry = project.documents[document]
+    if not isinstance(entry, BasedDocument):
+        raise ProjectFolderInvalid(f"{document} is not based on another document.")
+    base = compose_document(project.documents.get, entry.base.document)
+    if isinstance(base, ProjectDiagnostic):
+        raise ProjectFolderInvalid(base.detail)
+    edits = []
+    for path in change.paths:
+        value = base.payload
+        for part in json_pointer_parts(path):
+            value = value.get(part, _ABSENT) if isinstance(value, dict) else _ABSENT
+        edits.append(RemoveProjectValue(op="remove", path=path) if value is _ABSENT
+                     else SetProjectValue(op="replace", path=path, value=value))
+    return StudioTrialDocumentEdit(kind=change.document, edits=edits)
+
+
+_ABSENT = object()
 
 
 def _evaluate_field_files(project, plan, key, scope, selected, bundle, change, documents, projected):
@@ -527,19 +571,20 @@ def _evaluate_field_files(project, plan, key, scope, selected, bundle, change, d
     current = project
     for row, writes in recipes.items():
         current = preview_authored_files(
-            current, scoped_file(current, row.step, EvaluateAttachmentRows(kind="rows", rows=(row.row,)), writes),
+            current, scoped_file(current, row.step, EvaluateAttachmentRows(kind="rows", rows=(row.row,)), writes).files,
         )
     raw = project.steps[key.step].model_dump(mode="json", by_alias=True, exclude_unset=True)
     sweep = current.steps[key.step].sweep.model_dump(mode="json", by_alias=True, exclude_unset=True)
-    return [file_value(AuthoredFileAddress(kind="step", id=key.step), raw, ("sweep",), sweep)]
+    return StoredEdit([file_value(AuthoredFileAddress(kind="step", id=key.step), raw, ("sweep",), sweep)],
+                      reached=frozenset({key.step}))
 
 
 def _validate_files(
-    files, project, settled, selected, reach, named, folders, bundle, change, expression, *, evaluate_field,
+    stored, project, settled, selected, reach, named, folders, bundle, change, expression, *, evaluate_field,
 ):
     plan = settled.plan
     choosing = isinstance(change, StudioTrialSelectDocument)
-    authored = preview_authored_files(project, files)
+    authored = preview_stored(project, stored)
     compare_names = isinstance(change, StudioTrialDocumentEdit) and change.kind == "objective" and any(
         "name" in json_pointer_parts(edit.path) or len(json_pointer_parts(edit.path)) <= 2 for edit in change.edits
     )
@@ -581,9 +626,9 @@ def _validate_files(
                 raise ProjectFolderInvalid("The selected runs have different Objective term orders.")
         introduced = tuple(problem for problem in after.problems if problem not in before.problems)
         if introduced and not evaluate_field and not choosing:
-            return [], introduced
+            return StoredEdit([]), introduced
         if evaluate_field and introduced and key in current:
-            return [], introduced
+            return StoredEdit([]), introduced
         if isinstance(change, StudioTrialDocumentEdit):
             old_value = old.task_source if change.kind == "task" else old.objective
             new_value = new.task_source if change.kind == "task" else new.objective
@@ -626,7 +671,7 @@ def _validate_files(
             ), None)
             raise ProjectFolderInvalid(diagnostic.detail if diagnostic else "The edit removes a planned request.")
     refuse_unreached(plan, candidate, reach)
-    return files, ()
+    return stored, ()
 
 
 def _objective_names(plan, key):
@@ -657,10 +702,10 @@ def trial_authoring(
         raise ProjectFolderInvalid("The selected run has no authored trial pairing.")
     try:
         documents, projected, graph = _pairing(plan, key, bundle)
-        files, refused = [], ()
+        stored, refused = StoredEdit([]), ()
         refusal = None
         if body.change is not None:
-            files, refused = _prepare_edits(
+            stored, refused = _prepare_edits(
                 body, folders, project_id, snapshot.project, settled, key, bundle, documents, projected,
             )
             if isinstance(refused, StudioSweptParameterMissing):
@@ -725,5 +770,5 @@ def trial_authoring(
                                  projection=project_site(site, bundle.expression_functions),
                                  text=_field_text(expressions[path], site) if path in expressions else None)
                 for path, site in projected.fields.items()],
-        problems=[*projected.problems, *refused], files=files, refusal=refusal,
+        problems=[*projected.problems, *refused], files=stored.files, created=list(stored.created), refusal=refusal,
     )

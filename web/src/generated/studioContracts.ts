@@ -1153,6 +1153,7 @@ export interface TrainFieldRequest {
 export interface TrainFieldResponse {
   fields?: TrainFieldView[];
   files?: StudioProjectFilePatch[];
+  created?: CreateNamedDocument[];
   dependencies?: string[];
   problems?: Problem[];
   removed_values?: Record<string, string[]>;
@@ -3987,6 +3988,7 @@ export type StudioTrainAuthoring = {
   "settings": Record<string, JsonValue> | null;
   "mixed"?: Array<string>;
   "files": Array<StudioProjectFilePatch>;
+  "created"?: Array<CreateNamedDocument>;
   "documents": Array<string>;
   "refusal"?: StudioSweptParameterMissing | null;
   "classes"?: Array<StudioClassField>;
@@ -4001,6 +4003,7 @@ export type StudioTrainAuthoringRequest = {
   "revision": Sha256;
   "change"?: StudioAuthoringChange | null;
   "class_sweep"?: StudioClassSweepChange | null;
+  "reset"?: string | null;
 };
 
 export type StudioTrainStartEdit = {
@@ -4055,13 +4058,14 @@ export type StudioTrialAuthoring = {
   "fields": Array<StudioTrialField>;
   "problems": Array<Problem>;
   "files": Array<StudioProjectFilePatch>;
+  "created"?: Array<CreateNamedDocument>;
   "refusal"?: StudioSweptParameterMissing | null;
 };
 
 export type StudioTrialAuthoringRequest = {
   "revision": Sha256;
   "run": StudioSavedTrainKey;
-  "change"?: StudioTrialDocumentEdit | StudioTrialBindingEdit | StudioTrialSelectDocument | StudioTrialExpressionEdit | null;
+  "change"?: StudioTrialDocumentEdit | StudioTrialDocumentReset | StudioTrialBindingEdit | StudioTrialSelectDocument | StudioTrialExpressionEdit | null;
   "scope"?: StudioTrialStepScope | EvaluateAttachmentAxis | EvaluateAttachmentRows | EvaluateAttachmentVariant | null;
 };
 
@@ -4074,6 +4078,12 @@ export type StudioTrialBindingEdit = {
 export type StudioTrialDocumentEdit = {
   "kind": "task" | "objective";
   "edits": Array<ProjectValueEdit>;
+};
+
+export type StudioTrialDocumentReset = {
+  "kind": "reset";
+  "document": "task" | "objective";
+  "paths": Array<Pointer>;
 };
 
 export type StudioTrialExpressionEdit = {
@@ -6303,6 +6313,7 @@ export const TrainFieldResponseSchema: z.ZodType<TrainFieldResponse> = z.lazy(()
     .object({
       "fields": z.array(TrainFieldViewSchema).optional(),
       "files": z.array(StudioProjectFilePatchSchema).optional(),
+      "created": z.array(CreateNamedDocumentSchema).optional(),
       "dependencies": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
       "problems": z.array(ProblemSchema).optional(),
       "removed_values": z.record(z.string(), z.array(z.string())).optional(),
@@ -10720,6 +10731,7 @@ export const StudioTrainAuthoringSchema: z.ZodType<StudioTrainAuthoring> = z.laz
     "settings": z.union([z.record(z.string(), jsonValueSchema), z.null()]),
     "mixed": z.array(z.string()).optional(),
     "files": z.array(StudioProjectFilePatchSchema),
+    "created": z.array(CreateNamedDocumentSchema).optional(),
     "documents": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))),
     "refusal": z.union([StudioSweptParameterMissingSchema, z.null()]).optional(),
     "classes": z.array(StudioClassFieldSchema).optional(),
@@ -10736,6 +10748,7 @@ export const StudioTrainAuthoringRequestSchema: z.ZodType<StudioTrainAuthoringRe
     "revision": Sha256Schema,
     "change": z.union([StudioAuthoringChangeSchema, z.null()]).optional(),
     "class_sweep": z.union([StudioClassSweepChangeSchema, z.null()]).optional(),
+    "reset": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrainAuthoringRequest>;
 
@@ -10800,6 +10813,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "fields": z.array(StudioTrialFieldSchema),
     "problems": z.array(ProblemSchema),
     "files": z.array(StudioProjectFilePatchSchema),
+    "created": z.array(CreateNamedDocumentSchema).optional(),
     "refusal": z.union([StudioSweptParameterMissingSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialAuthoring>;
@@ -10808,7 +10822,7 @@ export const StudioTrialAuthoringRequestSchema: z.ZodType<StudioTrialAuthoringRe
   z.object({
     "revision": Sha256Schema,
     "run": StudioSavedTrainKeySchema,
-    "change": z.union([z.union([StudioTrialDocumentEditSchema, StudioTrialBindingEditSchema, StudioTrialSelectDocumentSchema, StudioTrialExpressionEditSchema]), z.null()]).optional(),
+    "change": z.union([z.union([StudioTrialDocumentEditSchema, StudioTrialDocumentResetSchema, StudioTrialBindingEditSchema, StudioTrialSelectDocumentSchema, StudioTrialExpressionEditSchema]), z.null()]).optional(),
     "scope": z.union([z.union([StudioTrialStepScopeSchema, EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema, EvaluateAttachmentVariantSchema]), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialAuthoringRequest>;
@@ -10827,6 +10841,14 @@ export const StudioTrialDocumentEditSchema: z.ZodType<StudioTrialDocumentEdit> =
     "edits": z.array(ProjectValueEditSchema).min(1),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialDocumentEdit>;
+
+export const StudioTrialDocumentResetSchema: z.ZodType<StudioTrialDocumentReset> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("reset"),
+    "document": z.union([z.literal("task"), z.literal("objective")]),
+    "paths": z.array(PointerSchema).min(1),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialDocumentReset>;
 
 export const StudioTrialExpressionEditSchema: z.ZodType<StudioTrialExpressionEdit> = z.lazy(() =>
   z.object({

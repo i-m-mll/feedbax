@@ -13,7 +13,7 @@ from feedbax.contracts.operation import OperationDefinition
 from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName, StepReference
 from feedbax.contracts.jobs import StudioSavedTrainKey
-from feedbax.contracts.studio_project import StudioProjectFilePatch
+from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
 
 
 class StudioAuthoringDeclaration(StrictModel):
@@ -185,6 +185,8 @@ class StudioTrainAuthoringRequest(StudioRunSelection):
     revision: Sha256
     change: StudioAuthoringChange | None = None
     class_sweep: StudioClassSweepChange | None = None
+    reset: str | None = None
+    """A pointer in the Train definition to give the value of the base of the document it is read from."""
 
 
 class StudioTrainStartRequest(StrictModel):
@@ -244,6 +246,8 @@ class StudioTrainAuthoring(StrictModel):
     mixed: list[str] = Field(default_factory=list)
     """Pointers in the definition where the selected runs hold different values."""
     files: list[StudioProjectFilePatch]
+    created: list[CreateNamedDocument] = Field(default_factory=list)
+    """Documents the edit creates, written before ``files``, which may name them."""
     documents: list[ProjectName]
     refusal: StudioSweptParameterMissing | None = None
     classes: list[StudioClassField] = Field(default_factory=list)
