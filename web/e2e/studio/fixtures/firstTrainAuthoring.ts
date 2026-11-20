@@ -3,7 +3,7 @@ import type { ModelDocument, ObjectiveDocument, PythonTaskSelection, StudioProje
 import { mapStep } from './canonicalTrain';
 import { pick } from './controls';
 import { activate, number, palette, post, readSaved } from './studioKeyboard';
-import { rootPayload } from '../../../src/features/projectFolder/rootPayload';
+import { rootPayload } from './rootPayload';
 
 export async function authorFirstTrain(
   page: Page, request: APIRequestContext, totalUpdates: number,

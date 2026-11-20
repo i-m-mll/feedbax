@@ -151,15 +151,17 @@ function useTrainFields(
   const editable = !fields.isPlaceholderData && !pending && !outside;
   async function edit(field: string, change: ProjectedEdit): Promise<string | undefined> {
     try {
-      const { problems = [], files = [], dependencies = [], removed_values: removedValues } = await projectTrainFields(projectId, stepId, { ...body, field, edit: change }, editor.signal);
+      const { problems = [], files = [], created = [], dependencies = [], removed_values: removedValues } = await projectTrainFields(projectId, stepId, { ...body, field, edit: change }, editor.signal);
       if (problems[0]) return problems[0].reason;
-      if (files.length && await confirmRemoval(sweepValueRuns(removedValues))) {
-        editor.editFiles(studioName('setField'), files, {
+      if ((files.length || created.length) && await confirmRemoval(sweepValueRuns(removedValues))) {
+        const stored = editor.storeEdit(studioName('setField'), { files, created }, {
           reviewedRevision: revision,
           dependencies: dependencies.map((id) => ({ kind: 'document', id })),
           validate: validateRecipe(saved.project, { kind: 'step', id: stepId }, dependencies),
         });
         await editor.flush();
+        const settled = await stored;
+        if (settled.status === 'refused') return apiErrorMessage(settled.error);
       }
       return undefined;
     } catch (error) {
@@ -274,15 +276,18 @@ export function StudioTrainAuthoringForm(props: Props) {
     try {
       const recipe = await readStudioTrainAuthoring(projectId, stepId, { revision, ...scope, ...change }, editor.signal);
       if (recipe.refusal) return studioSweptParameterMissing(recipe.refusal);
-      if (!recipe.files.length || !await confirmRemoval(sweepValueRuns(recipe.removed_values))) return undefined;
+      if (!recipe.files.length && !recipe.created?.length ||
+          !await confirmRemoval(sweepValueRuns(recipe.removed_values))) return undefined;
       const latest = editor.getSnapshot();
       if (latest.saved.revision !== revision || latest.pending || latest.outside) throw new ProjectEditConflictError();
-      editor.editFiles(label, recipe.files, {
+      const stored = editor.storeEdit(label, recipe, {
         reviewedRevision: revision,
         dependencies: recipe.documents.map((id) => ({ kind: 'document', id })),
         validate: validateRecipe(latest.saved.project, { kind: 'step', id: stepId }, recipe.documents),
       });
       await editor.flush();
+      const settled = await stored;
+      if (settled.status === 'refused') return apiErrorMessage(settled.error);
       return undefined;
     } catch (error) {
       return apiErrorMessage(error);

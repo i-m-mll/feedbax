@@ -11,7 +11,7 @@ import { authorWalkthroughSweep, selectModelComponent, verifyWalkthroughSuccesso
 import { activate, chooseOption, chooseStepKind, number, openView, palette, tabTo, typeValue } from './fixtures/studioKeyboard';
 
 import { pick } from './fixtures/controls';
-import { rootPayload } from '../../src/features/projectFolder/rootPayload';
+import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 

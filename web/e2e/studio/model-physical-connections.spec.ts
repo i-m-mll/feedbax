@@ -3,7 +3,7 @@ import { type Locator, type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, StudioProjectDocument, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { palette } from './fixtures/studioKeyboard';
-import { rootPayload } from '../../src/features/projectFolder/rootPayload';
+import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 

@@ -2,7 +2,7 @@ import { expect, test } from './fixtures/studio';
 import type { ModelDocument, ModelEditResponse } from '../../src/generated/studioContracts';
 import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { expectVisibleFocus } from './fixtures/studioAccessibility';
-import { rootPayload } from '../../src/features/projectFolder/rootPayload';
+import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 

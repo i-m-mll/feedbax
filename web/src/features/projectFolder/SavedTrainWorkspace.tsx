@@ -76,7 +76,7 @@ import {
   TrialObjectiveInspector, TrialObjectiveOutline, TrialObjectiveTable, TrialTaskForm, TrialTaskInspector, TrialTaskOutline, useTrialAuthoring,
   type TrialChangeScope,
 } from './StudioTrialAuthoring';
-import { useProjectDocuments, type DocumentRole } from './useProjectDocuments';
+import { documentFamily, useProjectDocuments, type DocumentRole } from './useProjectDocuments';
 import { useManagedAnalyze } from './useManagedAnalyze';
 import { useManagedReport } from './useManagedReport';
 import { ScrollFade } from '@/components/ui/ScrollFade';
@@ -316,8 +316,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   /** The steps an edit of the selected step reaches outside a document view, drawn lit: it and the steps based on it. */
   const reachedSteps = wholeStep && step?.kind === 'train' ? withBaseDescendants(saved.project, [step.id]) : undefined;
   /**
-   * The steps a view of the document the step reads in `field` chooses, all that use it less those taken out, and the
-   * steps it lights, the chosen ones and the users based on them.
+   * The steps a view of the document the step reads in `field` lights: those that read it or a document based on it,
+   * less those taken out. An edit there is made for the lit steps.
    */
   function documentScope(field: 'graph' | 'task' | 'objective' | 'training'): NamedDocumentScope | undefined {
     const ids = step?.documentIds;
@@ -327,14 +327,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     if (!document || !step || !singleStep || !data || step.kind !== 'train') return undefined;
     const localVariant = Boolean(saved.project.sweep && !primaryVariant && field === 'graph');
     if (!localVariant && !wholeStep) return undefined;
-    const users = new Set(plan.steps.filter(({ documentUses }) => documentUses?.includes(document)).map(({ id }) => id));
+    const family = documentFamily(saved.project, document);
+    const users = new Set(plan.steps.filter(({ documentUses }) => documentUses?.some((used) => family.has(used)))
+      .map(({ id }) => id));
     if (!users.has(step.id)) return undefined;
     const key = JSON.stringify([step.id, document, variant]);
-    if (localVariant) return { document, key, users, chosen: users, lit: users, localVariant };
+    if (localVariant) return { document, key, users, lit: users, localVariant };
     const excluded = excludedUsers[key] ?? [];
-    const chosen = new Set([...users].filter((id) => id === step.id || !excluded.includes(id)));
-    const lit = withBaseDescendants(saved.project, chosen);
-    return { document, key, users, chosen, lit: new Set([...lit].filter((id) => users.has(id))) };
+    return { document, key, users, lit: new Set([...users].filter((id) => id === step.id || !excluded.includes(id))) };
   }
   const documentScopes = {
     graph: documentScope('graph'), task: documentScope('task'),
@@ -348,12 +348,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     if (extend && activeDocumentScope && activeDocumentScope.users.size > 1) {
       if (activeDocumentScope.localVariant || id === step?.id || !activeDocumentScope.users.has(id)) return;
       const { key } = activeDocumentScope;
-      // Taking a step out takes out the steps based on it; they stay lit while another lit step reaches them.
-      const reached = [...withBaseDescendants(saved.project, [id])];
       setExcludedUsers((current) => {
         const ids = current[key] ?? [];
-        return { ...current, [key]: ids.includes(id) ? ids.filter((excluded) => !reached.includes(excluded))
-          : [...new Set([...ids, ...reached])] };
+        return { ...current, [key]: ids.includes(id) ? ids.filter((excluded) => excluded !== id) : [...ids, id] };
       });
       return;
     }
@@ -497,8 +494,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   /** A whole-step edit of a Train step's Task or Objective is made for the steps its view chooses. */
   const trialChangeScope: TrialChangeScope = (change) => {
     if (trialEditScope || step?.kind !== 'train' || !trialScope || trialScope.kind !== 'step') return trialEditScope;
-    const chosen = change.kind === 'task' ? documentScopes.task?.chosen
-      : change.kind === 'objective' || change.kind === 'expression' ? documentScopes.objective?.chosen : undefined;
+    const chosen = change.kind === 'task' ? documentScopes.task?.lit
+      : change.kind === 'objective' || change.kind === 'expression' ? documentScopes.objective?.lit : undefined;
     return chosen && { kind: 'step', chosen_steps: [...chosen] };
   };
   const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, trialStep && trialVisible,
@@ -507,6 +504,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const pickDocument = useProjectDocuments({
     editor, stepId: step?.id, run: namedRun, scope: trialEditScope,
     editable: documentEditable,
+    detachRefused: data?.window_map?.detach_refused,
     selectable: new Set<DocumentRole>([
       ...!trialEditable ? [] : step?.kind === 'train' ? ['model', 'task', 'objective', 'training'] as const : ['task'] as const,
       ...documentEditable && wholeStep ? ['analysis', 'report'] as const : [],
@@ -1405,7 +1403,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               padded: true,
               picker: pickDocument('training', trainingDocument, scope),
               body: authoring ? withProblem(<StudioTrainAuthoringForm {...authoring} run={namedRun}
-                runPending={!data && !projection.isError} trainingDocument chosen={scope ? [...scope.chosen] : undefined}
+                runPending={!data && !projection.isError} trainingDocument chosen={scope ? [...scope.lit] : undefined}
                 fieldRows={scope ? undefined : detailInputs.fieldRows} fieldAxes={scope ? undefined : detailInputs.fieldAxes} />)
                 : noView,
             };

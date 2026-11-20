@@ -3784,6 +3784,7 @@ export type StudioProjectSnapshot = {
   "presentation_error"?: "unreadable_presentation" | null;
   "file_revisions": Array<StudioAuthoredFileRevision>;
   "declaration"?: StudioAuthoredDeclaration | null;
+  "composed"?: Record<string, JsonValue>;
 };
 
 export type StudioProjectWindowMap = {
@@ -10481,6 +10482,7 @@ export const StudioProjectSnapshotSchema: z.ZodType<StudioProjectSnapshot> = z.l
     "presentation_error": z.union([z.literal("unreadable_presentation"), z.null()]).optional(),
     "file_revisions": z.array(StudioAuthoredFileRevisionSchema),
     "declaration": z.union([StudioAuthoredDeclarationSchema, z.null()]).optional(),
+    "composed": z.record(z.string(), jsonValueSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectSnapshot>;
 

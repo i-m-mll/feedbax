@@ -40,6 +40,12 @@ export interface ProjectEditTransport {
 }
 
 type NamedFileCreation = StudioProjectCreateFile['file'];
+
+/** An edit as a route returns it: the documents it creates, and the patches that follow their creation. */
+export interface StoredEdit {
+  readonly files: readonly StudioProjectFilePatch[];
+  readonly created?: readonly NamedFileCreation[];
+}
 type FollowingEdits = (snapshot: StudioProjectSnapshot) => Promise<readonly StudioProjectFilePatch[]>;
 
 interface FileGesture {
@@ -461,9 +467,11 @@ export class ProjectEditController {
         revision: before.revision, presentation_revision: before.presentation_revision, document, command,
       }, this.signal);
       if (result.status === 'applied') {
-        const history = typeof result.undo_token === 'string'
-          ? moveHistory(this.savedHistory, { name, document, token: result.undo_token }, 'edit') : this.savedHistory;
-        this.adopt({ ...this.document, snapshot: result.snapshot }, history);
+        // An edit that wrote more than the shown document's file has no token; its entry is the files it changed.
+        const gesture = typeof result.undo_token === 'string' ? { name, document, token: result.undo_token }
+          : changedFiles(name, before, result.snapshot, true);
+        this.adopt({ ...this.document, snapshot: result.snapshot },
+          gesture ? moveHistory(this.savedHistory, gesture, 'edit') : this.savedHistory);
       }
       return result;
     });
@@ -523,6 +531,24 @@ export class ProjectEditController {
       intended,
       reviewedRevision,
     );
+  }
+
+  /**
+   * Store an edit a route computed: its patches, after the documents it creates when it creates any, as one Undo
+   * entry. A refused save settles as refused; any other failure of a creating edit is thrown.
+   */
+  async storeEdit(name: string, edit: StoredEdit, options: {
+    reviewedRevision: string; validate?: ProjectEditValidation; dependencies?: readonly AuthoredFileAddress[];
+  }): Promise<EditSettlement> {
+    const created = edit.created ?? [];
+    if (!created.length) return this.editFiles(name, edit.files, options);
+    try {
+      await this.createFiles(name, created, options.reviewedRevision, async () => edit.files);
+      return savedEdit;
+    } catch (error) {
+      if (isRefusal(error)) return { status: 'refused', error };
+      throw error;
+    }
   }
 
   /** Create files as one Undo entry, which the patches `use` computes against the created files join. */
