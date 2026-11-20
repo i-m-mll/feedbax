@@ -76,10 +76,10 @@ test('renaming a Train step keeps its runs and its Evaluate reader Done, and one
     .toEqual(['baseline', 'fit']);
   expect(renamed.project.steps!.fit.group).toBe('fitting');
   expect(renamed.project.steps!.baseline.inputs?.subject).toMatchObject({ step: 'fit' });
-  const targets = Object.values(renamed.project.sweep!.axes!.mass as { values: Record<string, { patches: Record<string, unknown> }> })
+  const targets = Object.values(renamed.project.sweep!.axes!.batch as { values: Record<string, { patches: Record<string, unknown> }> })
     .flatMap((axis) => Object.values(axis).flatMap(({ patches }) => Object.keys(patches)));
   expect(targets.length).toBeGreaterThan(0);
-  for (const target of targets) expect(target.startsWith('steps.fit.{')).toBe(true);
+  for (const target of targets) expect(target.startsWith('steps.fit.')).toBe(true);
   expect(renamed.presentation?.steps).toEqual({ fit: before.presentation!.steps!.train });
   expect(await statuses()).toEqual({ fit: 'succeeded', baseline: 'succeeded' });
   await expect(runs(page).getByText('Done', { exact: true })).toBeVisible();

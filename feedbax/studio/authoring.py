@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from types import UnionType
 from typing import Annotated, Any, Literal, Union, get_args, get_origin, overload
@@ -240,6 +240,7 @@ class TrainProjection:
     documents: list[str]
     classes: list[StudioClassField]
     removed: dict[str, list[str]]
+    changed: list[str]
 
 
 @dataclass(frozen=True)
@@ -843,7 +844,27 @@ def project_train_fields(
             for field in definition.classes.values()
         ],
         removed,
+        sorted(_changed_definition(project, step_id, definition, settings)),
     )
+
+
+def _changed_definition(project: Project, step_id: str, definition: _TrainFields, settings: Any) -> set[str]:
+    """The pointers of the Train definition whose value a difference sets: its fields, its settings at every depth,
+    and its classes, a class being changed where its tag is."""
+    tags = {f"{at}/{field.tag}": at for at, field in definition.classes.items()}
+    changed = changed_fields(project, step_id, [
+        *definition.fields, *definition.classes, *tags,
+        *(f"/settings{pointer}" for pointer in _pointers(settings)),
+    ])
+    return changed | {tags[at] for at in changed & tags.keys()}
+
+
+def _pointers(value: Any, at: str = "") -> Iterator[str]:
+    """``value``'s pointer and those of every value inside it."""
+    yield at
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield from _pointers(child, f"{at}/{str(key).replace('~', '~0').replace('/', '~1')}")
 
 
 def _class_sweep_edit(definition: _TrainFields, change: StudioClassSweepChange, selection: TrainSelection):

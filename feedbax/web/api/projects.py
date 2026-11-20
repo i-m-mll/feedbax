@@ -134,7 +134,7 @@ def read_train_authoring(
             settings=projection.settings, mixed=projection.mixed, files=projection.stored.files,
             created=list(projection.stored.created),
             documents=projection.documents, refusal=projection.refusal, classes=projection.classes,
-            removed_values=projection.removed,
+            removed_values=projection.removed, changed=projection.changed,
         )
 
     return _project_response(response, project_fields)

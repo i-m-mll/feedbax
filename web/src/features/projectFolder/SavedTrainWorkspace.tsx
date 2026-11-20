@@ -6,7 +6,7 @@ import { apiErrorMessage, isRefusal, isServiceFailure, isUnanswered, landsOnGest
 import { prepareCheckpointRuleEdit, prepareSubsetToRows } from '@/api/studioAuthoring';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import {
-  studioAccessibleName, studioCountOf, studioFormat, studioName, studioPlaceName, studioProblemDetail, studioReason, studioRunReason, type StudioPlace,
+  studioAccessibleName, studioCountOf, studioEvaluateValueSource, studioFormat, studioName, studioPlaceName, studioProblemDetail, studioReason, studioRunReason, type StudioPlace,
 } from '@/components/activity/studioVocabulary';
 import { HeaderActivity } from '@/components/layout/HeaderActivity';
 import {
@@ -1393,7 +1393,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               return {
                 padded: true,
                 picker: pickDocument('task', value.task_document ?? undefined, documentScopes.task),
-                body: withProblem(<TrialTaskForm view={value} commit={commit} />),
+                body: withProblem(<TrialTaskForm view={value} commit={commit} changed={step?.kind === 'evaluate'
+                  ? studioEvaluateValueSource({ kind: 'evaluate', step: step.id }) : studioName('changed')} />),
                 drawer: <TrialTaskOutline sections={drawerSections} view={value} selected={selected} select={choose(document)} />,
                 inspector: selected && <TrialTaskInspector view={value} commit={commit} selected={selected} />,
               };
@@ -1421,7 +1422,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
           }
           if (view === 'model' || view === 'task' || view === 'scene') {
             const scope = slot === focusSlot && view === focusView ? activeDocumentScope : undefined;
-            return { ...details[view], picker: pickDocument('model', details[view].documentId, scope),
+            const picker = pickDocument('model', details[view].documentId, scope);
+            return { ...details[view], picker: picker && { ...picker, refusal: picker.refusal ?? details[view].refusal },
               header: details[view].path, body: withProblem(details[view].body) };
           }
           if (!step) return { body: noView };

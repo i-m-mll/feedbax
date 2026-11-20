@@ -25,7 +25,7 @@ import './valueField.css';
 export type ValueFieldForm = 'row' | 'cell';
 
 /** Where the value comes from; a link to that object when it names one, or the changed mark's Reset. */
-function Origin({ id, text, reveal, reset }: { id: string; text: string; reveal?: () => void; reset?: () => void }) {
+export function Origin({ id, text, reveal, reset }: { id: string; text: string; reveal?: () => void; reset?: () => void }) {
   if (reset) return <Menu>
     <MenuTrigger render={<Button id={id} variant="ghost" size="content" className="justify-self-start text-left text-shell-muted" />}>
       {text}
@@ -229,7 +229,8 @@ function ClassValue({ model, parameter, labelId, picker, pickReason }: {
     <FieldRow label={model.label} labelId={labelId} below={origin || shown ? <>
       {origin && <Origin id={originId} text={origin}
         reveal={parameter.origin ? parameter.revealOrigin : model.revealOrigin}
-        reset={parameter.changed && !readOnly ? () => void submit({ kind: 'reset' }) : undefined} />}
+        reset={readOnly ? undefined : parameter.origin ? parameter.changed ? () => void submit({ kind: 'reset' }) : undefined
+          : model.changed && model.commit ? () => void model.commit!({ kind: 'reset' }).then(setReason) : undefined} />}
       {shown && <p role="alert" id={reasonId}>{shown}</p>}
     </> : undefined}>
       <ValueText model={parameter} id={id} readOnly={readOnly} describedBy={describedBy} invalid={!!reason}

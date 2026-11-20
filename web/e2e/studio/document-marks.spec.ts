@@ -1,7 +1,7 @@
 import { expect, test } from './fixtures/studio';
 import type { APIRequestContext, Page } from '@playwright/test';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
-import { appendManagedFiles, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { appendManagedFiles, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -190,6 +190,79 @@ test('an Evaluate step pointed at a Model document unrelated to its subject\'s c
   expect((await runs()).window_map?.rows.find(({ key }) => key.step === 'check')?.status).toBe('cannot_run');
   await page.getByRole('button', { name: /^Problems \d+$/ }).click();
   await expect(page.getByRole('listitem').filter({ hasText: 'Shares no document with point-mass.' })).toContainText('check');
+  // The view's refused read is on the document's picker, not a failed view.
+  const header = page.locator('[data-slot="primary"]').getByRole('tabpanel').locator('.studio-window-slot__header');
+  await expect(header.getByRole('alert')).toContainText(`${created} shares no document with point-mass.`);
+  await expect(page.locator('[data-slot="primary"]').getByRole('button', { name: 'Retry', exact: true })).toHaveCount(0);
+});
+
+test('a based Objective document marks the term value it changes, and Reset gives it the base\'s', async ({ page, request }) => {
+  test.setTimeout(60_000);
+  const { snapshot, requests, documents } = await project(request);
+  const primary = page.locator('[data-slot="primary"]').getByRole('tabpanel');
+  const picker = primary.locator('.studio-window-slot__header').getByRole('button', { name: /^Objective Document / });
+  const table = primary.getByRole('table', { name: 'Objective Terms', exact: true });
+  const name = table.getByRole('textbox', { name: 'Name', exact: true });
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  const inspected = inspector.getByRole('textbox', { name: 'Name', exact: true });
+
+  await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
+  await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Objective', exact: true }).click();
+  await expect(name).toBeEditable();
+  await expect(name).not.toHaveAccessibleDescription(/Changed/);
+  const initial = await requests();
+  await mapStep(page, 'sibling').click({ modifiers: ['Shift'] });
+  await name.fill('Effort');
+  await name.press('Enter');
+  await expect(picker).toHaveText('simple-reaches-objective-2');
+  await name.click();
+  await expect(inspected).toHaveValue('Effort');
+  await expect(inspected).toHaveAccessibleDescription('Changed');
+  await expect(inspector.getByRole('combobox', { name: 'Reduction', exact: true })).not.toHaveAccessibleDescription(/Changed/);
+  await inspector.getByRole('button', { name: 'Changed', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Reset', exact: true }).click();
+  await expect(name).toHaveValue('');
+  await expect(inspected).not.toHaveAccessibleDescription(/Changed/);
+  await expect.poll(async () => (await documents())['simple-reaches-objective-2']).toMatchObject({ differences: {} });
+  expect(await requests()).toEqual(initial);
+});
+
+test('an attachment a based Model document adds is marked as authored there, and not in a document based on it', async ({ page, request }) => {
+  test.setTimeout(60_000);
+  const { snapshot: seeded } = await project(request);
+  const { snapshot } = await appendManagedFiles(request, seeded, [
+    { kind: 'document', id: 'point-mass-2', document: {
+      schema: 'feedbax.spec.model', base: { document: 'point-mass' }, differences: {
+        '/interior/wires/decode/attachments': { value: [{ id: 'lag', kind: 'delay', delay: { value: 1, unit: 'st' }, initial: 0 }] },
+      },
+    } },
+    { kind: 'document', id: 'point-mass-3', document: { schema: 'feedbax.spec.model', base: { document: 'point-mass-2' } } },
+  ]);
+  const pointed = await request.patch(`/api/projects/${snapshot.project_id}`, { data: { revision: snapshot.revision, files: [{
+    address: { kind: 'step', id: 'train' },
+    patches: [{ op: 'replace', path: '/base/inline/trial_documents/model', value: { document: 'point-mass-3' } }],
+  }] } });
+  expect(pointed.ok(), await pointed.text()).toBe(true);
+  const drawer = page.getByRole('complementary', { name: 'Details Drawer' });
+  const wire = drawer.getByRole('treeitem', { name: 'Recurrent controller.output → Motor command.input', exact: true });
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  const delay = (marked: boolean) => inspector.getByRole('treeitem', { name: marked ? /^Delay ◇/ : /^Delay\b/ });
+
+  await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
+  await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  await wire.click();
+  await expect(delay(false)).toBeVisible();
+  await expect(delay(true)).toHaveCount(0);
+  const picker = page.locator('[data-slot="primary"]').getByRole('tabpanel').locator('.studio-window-slot__header')
+    .getByRole('button', { name: /^Model Document / });
+  await picker.click();
+  await page.getByRole('menu', { name: 'Model Document', exact: true })
+    .getByRole('menuitemradio', { name: 'point-mass-2', exact: true }).click();
+  await expect(picker).toHaveText('point-mass-2');
+  await wire.click();
+  await expect(delay(true)).toBeVisible();
 });
 
 test('a based Training document marks the value it changes, and Reset gives it the base\'s', async ({ page, request }) => {
@@ -229,6 +302,72 @@ test('a based Training document marks the value it changes, and Reset gives it t
   await expect(batches).not.toHaveAccessibleDescription(/Changed/);
   await expect.poll(async () => (await documents())['training-2']).toMatchObject({ differences: {} });
   expect(await requests()).toEqual(initial);
+});
+
+test('a based Training document marks the class it changes, and Reset gives it the base\'s', async ({ page, request }) => {
+  test.setTimeout(60_000);
+  const { snapshot: seeded, documents } = await project(request);
+  const keys = ['method', 'settings', 'training_config'] as const;
+  const inline = (seeded.project.steps!.train.base as { inline: Record<string, unknown> }).inline;
+  const { snapshot } = await appendManagedFiles(request, seeded, [
+    { kind: 'document', id: 'training', document: {
+      schema: 'feedbax.spec.training_document', payload: Object.fromEntries(keys.map((key) => [key, inline[key]])),
+    } },
+    { kind: 'document', id: 'training-2', document: {
+      schema: 'feedbax.spec.training_document', base: { document: 'training' },
+      differences: { '/settings/optimizer/type': { value: 'adabelief' } },
+    } },
+  ]);
+  const pointed = await request.patch(`/api/projects/${snapshot.project_id}`, { data: { revision: snapshot.revision, files: [{
+    address: { kind: 'step', id: 'train' }, patches: keys.map((key) => ({
+      op: 'replace', path: `/base/inline/${key}`, value: { document: 'training-2', pointer: `/${key}` },
+    })),
+  }] } });
+  expect(pointed.ok(), await pointed.text()).toBe(true);
+  const primary = page.locator('[data-slot="primary"]').getByRole('tabpanel');
+  const optimizer = primary.getByRole('region', { name: /Optimizer/ }).first();
+
+  await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
+  await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Training', exact: true }).click();
+  await expect(primary.getByRole('textbox', { name: 'Batches', exact: true })).not.toHaveAccessibleDescription(/Changed/);
+  await optimizer.getByRole('button', { name: 'Changed', exact: true }).first().click();
+  await page.getByRole('menuitem', { name: 'Reset', exact: true }).click();
+  await expect.poll(async () => (await documents())['training-2']).toMatchObject({ differences: {} });
+  await expect(optimizer.getByRole('combobox', { name: 'Optimizer', exact: true })).toHaveValue('Adam');
+  await expect(optimizer.getByRole('button', { name: 'Changed', exact: true })).toHaveCount(0);
+});
+
+test('an Evaluate step\'s Task edit marks the value its document changes, and Reset gives it the base\'s', async ({ page, request }) => {
+  // The service refuses a whole-step Evaluate Task edit ("A selected value is controlled by a different authored source.").
+  test.fixme();
+  test.setTimeout(60_000);
+  const files = (JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.evaluate_authoring')) as { kind: string; id: string }[])
+    .filter(({ id }) => id !== 'conditions');
+  const { snapshot, projectPath } = await seedManagedProject(request, [...files, evaluation('check', 'train')]);
+  const documents = async () => {
+    const response = await request.get(projectPath);
+    return (await response.json() as StudioProjectSnapshot).project.documents ?? {};
+  };
+  const before = Object.keys(await documents());
+  const task = page.getByRole('tabpanel', { name: 'Task', exact: true });
+  const target = task.getByRole('textbox', { name: 'Target x (m)', exact: true });
+
+  await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
+  await mapStep(page, 'check').click();
+  await page.getByRole('tab', { name: 'Task', exact: true }).click();
+  await expect(target).toBeEditable();
+  const base = await target.inputValue();
+  await target.fill('0.24');
+  await target.press('Enter');
+  await expect(target).toHaveAccessibleDescription('Changed by check');
+  const created = Object.keys(await documents()).filter((name) => !before.includes(name));
+  expect(created).toHaveLength(1);
+  await task.getByRole('button', { name: 'Changed by check', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Reset', exact: true }).click();
+  await expect(target).toHaveValue(base);
+  await expect(target).not.toHaveAccessibleDescription('Changed by check');
+  await expect.poll(async () => (await documents())[created[0]]).toMatchObject({ differences: {} });
 });
 
 test('a narrowed edit for two of three readers makes one document, and later edits of the base reach it by the document rule', async ({ page, request }) => {

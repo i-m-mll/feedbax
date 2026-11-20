@@ -91,10 +91,10 @@ def seed_step_rename(home: str, project_id: str):
     raw = _evaluation_project()
     raw["steps"] = {name: raw["steps"][name] for name in ("train", "baseline")}
     raw["steps"]["train"]["group"] = "fitting"
-    raw["sweep"] = {"axes": {"mass": {"values": {
-        "nominal": {"value": 1, "patches": {"steps.train." + _MASS: {"value": 1}}},
+    raw["sweep"] = {"axes": {"batch": {"values": {
+        "small": {"value": 4, "patches": {"steps.train.base.inline.training_config.batch_size": {"value": 4}}},
     }}}}
-    return _seed(home, project_id, raw, {"steps": {"train": {"sweep_order": ["mass"]}}})
+    return _seed(home, project_id, raw, {"steps": {"train": {"sweep_order": ["batch"]}}})
 
 
 def walkthrough_files(batches: str | None = None):
