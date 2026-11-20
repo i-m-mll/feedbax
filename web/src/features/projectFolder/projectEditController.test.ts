@@ -497,6 +497,16 @@ it('returns a refused save to its gesture and keeps no project error', async () 
   editor.dispose();
 });
 
+it('delivers a timer-drained refusal to the gesture that queued the edit', async () => {
+  const { editor, write } = fixture(10);
+  const refused = new ApiRequestError('http', '/api/projects/reach', 'Value 2 is out of range.', { status: 422 });
+  write.mockRejectedValueOnce(refused);
+  const settlement = await editor.edit(model, 'Refused edit', [value(2)]);
+  expect(settlement).toEqual({ status: 'refused', error: refused });
+  expect(editor.getSnapshot()).toMatchObject({ error: null, pending: 0 });
+  editor.dispose();
+});
+
 it('retries a lost connection after a fresh read and flushes edits arriving during a write', async () => {
   const { editor, current, write, external } = fixture();
   write.mockRejectedValueOnce(new ApiRequestError('network', '/api/projects/reach', 'Offline'));

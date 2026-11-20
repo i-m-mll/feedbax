@@ -96,13 +96,23 @@ interface OutsideBurst {
   readonly history: History;
 }
 
+/** How a queued edit ended: on disk, refused with the save's error, or discarded for the disk's version. */
+export type EditSettlement =
+  | { readonly status: 'saved' }
+  | { readonly status: 'refused'; readonly error: unknown }
+  | { readonly status: 'dropped' };
+
 interface PendingEdit {
   readonly base: ProjectEditContent;
   readonly gesture: FileGesture;
   readonly direction: 'edit' | 'undo' | 'redo';
   readonly files: readonly StudioProjectFilePatch[];
   readonly historyAfter: History;
+  /** Delivers the edit's settlement to the gesture that queued it, whoever drains the queue. */
+  readonly settle: (settlement: EditSettlement) => void;
 }
+
+const savedEdit: EditSettlement = { status: 'saved' };
 
 export interface ProjectEditSnapshot {
   readonly saved: StudioProjectSnapshot;
@@ -355,13 +365,13 @@ export class ProjectEditController {
   };
 
   edit(address: AuthoredFileAddress, name: string, edits: readonly ProjectValueEdit[], validate?: ProjectEditValidation) {
-    this.editFiles(name, [{ address, patches: [...edits] }], { validate });
+    return this.editFiles(name, [{ address, patches: [...edits] }], { validate });
   }
 
   editFiles(name: string, changes: readonly StudioProjectFilePatch[], options: {
     validate?: ProjectEditValidation; reviewedRevision?: string; reviewedPresentationRevision?: string;
     dependencies?: readonly AuthoredFileAddress[];
-  } = {}) {
+  } = {}): Promise<EditSettlement> {
     this.requireEditable();
     const { reviewedRevision, reviewedPresentationRevision, dependencies = [], validate } = options;
     if (reviewedRevision !== undefined && (this.saved.revision !== reviewedRevision || this.queued.length)) {
@@ -372,7 +382,7 @@ export class ProjectEditController {
       throw new ProjectEditConflictError();
     }
     const applied = applyFiles(this.draft, structuredClone(changes), true);
-    if (!applied.inverse.length) return;
+    if (!applied.inverse.length) return Promise.resolve(savedEdit);
     const before = this.draft.presentation;
     const after = applied.project.presentation;
     const placement = touchesPresentation(applied.files);
@@ -382,7 +392,7 @@ export class ProjectEditController {
       reviewedRevision, reviewedPresentationRevision, dependencies,
       presentation: placement && before && after ? { before, after } : undefined,
     };
-    this.stage(gesture, 'edit', gesture.files, applied.project);
+    return this.stage(gesture, 'edit', gesture.files, applied.project);
   }
 
   undo() {
@@ -670,7 +680,7 @@ export class ProjectEditController {
         this.savedHistory, unchanged, this.saved.declaration?.authored_revision === latest.snapshot.declaration?.authored_revision,
       );
       if (choice === 'disk') {
-        this.queued.length = 0;
+        for (const pending of this.queued.splice(0)) pending.settle({ status: 'dropped' });
         this.adopt(latest, kept);
         return;
       }
@@ -683,7 +693,10 @@ export class ProjectEditController {
         for (const pending of this.queued) {
           const { files, gesture } = pending;
           if (files.length !== 1 || gesture.reviewedRevision !== undefined) {
-            if (files.every(({ address }) => sameAuthoredFile(this.draft, disk, address))) continue;
+            if (files.every(({ address }) => sameAuthoredFile(this.draft, disk, address))) {
+              pending.settle(savedEdit);
+              continue;
+            }
             if (pending.direction === 'edit' && gesture.reviewedRevision !== undefined ||
                 !files.every(({ address }) => unchanged.has(addressKey(address))) ||
                 !gesture.dependencies.every((address) => unchanged.has(addressKey(address)))) {
@@ -702,18 +715,22 @@ export class ProjectEditController {
           // observed value without attributing an unacknowledged write to undo.
           if (!sameFile && (alreadyOnDisk.has(key) || sameAuthoredFile(this.draft, disk, address))) {
             alreadyOnDisk.add(key);
+            pending.settle(savedEdit);
             continue;
           }
           const base = project;
           const applied = applyAuthoredEdits(base, address, patches, !sameFile, sameFile ? undefined : pending.base);
-          if (!applied.inverse.length) continue;
+          if (!applied.inverse.length) {
+            pending.settle(savedEdit);
+            continue;
+          }
           pending.gesture.validate?.(base, applied.project);
           const edits = [{ address, patches: applied.edits }];
           const adjusted = sameFile ? gesture : { ...gesture, files: edits, inverse: [{ address, patches: applied.inverse }] };
           const direction = sameFile ? pending.direction : 'edit';
           project = applied.project;
           history = moveHistory(history, adjusted, direction);
-          rebased.push({ base, gesture: adjusted, direction, files: edits, historyAfter: history });
+          rebased.push({ base, gesture: adjusted, direction, files: edits, historyAfter: history, settle: pending.settle });
         }
       } catch (error) {
         this.error = error;
@@ -774,16 +791,30 @@ export class ProjectEditController {
     gesture.validate?.(this.draft, project);
     this.outsideBurst = undefined;
     const historyAfter = moveHistory(this.history, gesture, direction);
-    this.queued.push({ base: this.draft, gesture, direction, files, historyAfter });
+    let settle!: PendingEdit['settle'];
+    const settlement = new Promise<EditSettlement>((resolve) => { settle = resolve; });
+    this.queued.push({ base: this.draft, gesture, direction, files, historyAfter, settle });
     this.draft = project;
     this.history = historyAfter;
     this.publish();
     this.scheduleSettle();
+    return settlement;
   }
 
   private scheduleSettle() {
     this.cancelSettle();
-    this.settle = setTimeout(() => { void this.flush().catch(() => {}); }, this.settleMs);
+    this.settle = setTimeout(() => { void this.settleQueue(); }, this.settleMs);
+  }
+
+  /** The settle timer's drain. Its outcomes are already delivered, so only an undelivered failure propagates. */
+  private async settleQueue() {
+    try {
+      await this.flush();
+    } catch (error) {
+      const delivered = isRefusal(error) || error === this.error || this.abort.signal.aborted ||
+        error instanceof ProjectEditConflictError && this.outside;
+      if (!delivered) throw error;
+    }
   }
 
   private cancelSettle() {
@@ -956,16 +987,16 @@ export class ProjectEditController {
         this.abort.signal.throwIfAborted();
         this.document = { ...this.document, snapshot: latest };
         this.savedHistory = batch[batch.length - 1].historyAfter;
-        this.queued.splice(0, batch.length);
+        for (const pending of this.queued.splice(0, batch.length)) pending.settle(savedEdit);
         if (!this.queued.length) this.draft = editContent(latest);
         this.publish();
       }
       this.cancelSettle();
     } catch (error) {
       if (isRefusal(error)) {
-        // A refused save cannot succeed on retry: the edits built on it are dropped and the reason goes to the gesture.
+        // A refused save cannot succeed on retry: it and the edits built on it are refused, each to its own gesture.
         this.cancelSettle();
-        this.queued.length = 0;
+        for (const pending of this.queued.splice(0)) pending.settle({ status: 'refused', error });
         this.draft = editContent(this.saved);
         this.history = this.savedHistory;
       } else {
