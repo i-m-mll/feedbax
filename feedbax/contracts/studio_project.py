@@ -149,10 +149,10 @@ class RenameMember(StrictModel):
 
 
 class DuplicateMember(StrictModel):
-    """Copy a document and its presentation under a new name, generated when omitted."""
+    """Copy a document or step and its presentation under a new name, generated when omitted."""
 
     kind: Literal["duplicate"]
-    family: Literal["documents"]
+    family: MemberFamily
     member: ProjectName
     name: ProjectName | None = None
 

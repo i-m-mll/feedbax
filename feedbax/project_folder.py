@@ -61,12 +61,13 @@ from feedbax.contracts.project_plan import ProjectPlan, ProjectPlanMemo, RunKey,
 from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_target
 from feedbax.persistence.project_subject import terminal_train_reader
-from feedbax.project_members import generated_name, references_member, rename_member
+from feedbax.project_members import duplicate_step, generated_name, references_member, rename_member
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.studio_project import (
     PRESENTATION_ADDRESS,
     AuthoredFileAddress,
     CreateNamedDocument,
+    MemberFamily,
     PresentationDocument,
     ReplayDeclarationAddress,
     ReplayFileAddress,
@@ -579,10 +580,14 @@ def _diagnostic_counts(diagnostics: Iterable[ProjectDiagnostic]) -> Counter:
     return Counter((item.code, item.step, item.variant, item.row, item.element) for item in diagnostics)
 
 
-def _free_document_name(project: dict, document: str) -> str:
-    stem = re.sub(r"-[0-9]+$", "", document)
-    return generated_name(stem, lambda name: name == stem or name in project["documents"]
-                          or references_member(project, "documents", name))
+def _free_member_name(project: dict, family: MemberFamily, member: str) -> str:
+    """The name of a copy: a document's stem numbered, a step's kind (`train-2`), whichever is free of members and references."""
+    if family == "documents":
+        stem = re.sub(r"-[0-9]+$", "", member)
+        return generated_name(stem, lambda name: name == stem or name in project["documents"]
+                              or references_member(project, "documents", name))
+    return generated_name(project["steps"][member]["kind"], lambda name: name in project["steps"]
+                          or references_member(project, "steps", name))
 
 
 def _check_file_spellings(root: Path, files: Iterable[str]) -> None:
@@ -1120,7 +1125,7 @@ class ProjectFolder:
             return self._snapshot(folder.location, text)
 
     def member_command(self, project_id: str, body: StudioMemberCommand) -> StudioMemberCommandResult:
-        """Rename a document or step, or duplicate a document, with its references and presentation in one write."""
+        """Rename or duplicate a document or step, with its references and presentation, in one write."""
         command = body.command
         with self._locked_folder(project_id) as folder:
             root = folder.path
@@ -1135,13 +1140,15 @@ class ProjectFolder:
             source = text.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
             shown_before = _decode_presentation(presentation_data).model_dump(mode="json", exclude_unset=True)
             shown = dict(shown_before)
-            name = command.name or _free_document_name(source, member)
+            name = command.name or _free_member_name(source, family, member)
             if name in members:
                 raise ProjectFileExists(f"{family}/{name}.json")
             if references_member(source, family, name):
                 raise ProjectFolderInvalid(f"A reference already names {name}.")
             if command.kind == "rename":
                 project, shown = rename_member(source, shown, family, member, name)
+            elif family == "steps":
+                project, shown = duplicate_step(source, shown, member, name)
             else:
                 project = {**source, "documents": {**source["documents"], name: source["documents"][member]}}
                 if member in shown.get("documents", {}):
