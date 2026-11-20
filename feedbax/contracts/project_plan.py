@@ -431,6 +431,8 @@ class ProjectPlan:
     )
     source_snapshot: SourceSnapshot | None = field(default=None, repr=False, compare=False)
     exception_matches: Mapping[tuple[str, str], Mapping[str, tuple[str, ...]]] = field(default_factory=dict)
+    variant_projects: Mapping[str, Project] = field(default_factory=dict, repr=False, compare=False)
+    """Each variant's project, its row applied; a variant whose row does not apply has none."""
 
     def detached(self) -> ProjectPlan:
         """Return this plan with its own copies of the selected payloads, which callers may change."""
@@ -1306,6 +1308,8 @@ class _Compiler:
                             source = ValueSource("variant", row.id, pointer(parts), variant=row.id)
                             origins = place_source(origins, parts, source_shape(patch.value, source))
                         continue
+                    if parts[0] == "steps" and parts[2:3] == ("deltas",) and len(parts) > 3 and parts[1] in data["steps"]:
+                        data["steps"][parts[1]].setdefault("deltas", [])
                     apply_override_patch_in_place(data, patch)
                     if origins is not None:
                         source = ValueSource("variant", row.id, pointer(parts), variant=row.id)
@@ -1369,6 +1373,7 @@ class _Compiler:
             SourceSnapshot(self.project.model_copy(deep=True), self.variant_sites, self.source_sweeps)
             if self.source_sweeps is not None else None,
             MappingProxyType(self.exception_matches),
+            MappingProxyType(dict(self.variants)),
         )
 
     def step(
