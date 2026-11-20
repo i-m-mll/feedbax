@@ -230,3 +230,76 @@ test('a based Training document marks the value it changes, and Reset gives it t
   await expect.poll(async () => (await documents())['training-2']).toMatchObject({ differences: {} });
   expect(await requests()).toEqual(initial);
 });
+
+test('a narrowed edit for two of three readers makes one document, and later edits of the base reach it by the document rule', async ({ page, request }) => {
+  test.setTimeout(60_000);
+  const [...files] = await fixture('history-files');
+  const sibling = files.at(-1) as { id: string; step: { base: { inline: { seed: number } } } };
+  const third = structuredClone(sibling);
+  third.id = 'third';
+  third.step.base.inline.seed = 92;
+  const { snapshot, requests, documents } = await project(request, [third]);
+  const { picker, mass, open, setMass } = modelView(page);
+  const changed = async (before: Record<string, string>) => {
+    const after = await requests();
+    return Object.keys(before).filter((step) => before[step] !== after[step]).sort();
+  };
+
+  await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
+  await open('train');
+  await mapStep(page, 'third').click({ modifiers: ['Shift'] });
+  await expect(picker).toHaveText('point-mass2 of 3');
+  let before = await requests();
+  await setMass('2.5');
+  await expect(picker).toHaveText('point-mass-2');
+  expect(await changed(before)).toEqual(['sibling', 'train']);
+  const variant = (await documents())['point-mass-2'];
+
+  await open('third');
+  await expect(picker).toHaveText('point-mass');
+  for (const step of ['train', 'sibling']) await mapStep(page, step).click({ modifiers: ['Shift'] });
+  before = await requests();
+  await setMass('3');
+  await expect.poll(() => changed(before)).toEqual(['third']);
+  expect((await documents())['point-mass-2']).toEqual(variant);
+
+  for (const step of ['train', 'sibling']) await mapStep(page, step).click({ modifiers: ['Shift'] });
+  await expect(picker).toHaveText('point-mass');
+  before = await requests();
+  await setMass('4');
+  await expect.poll(() => changed(before)).toEqual(['sibling', 'third', 'train']);
+  await expect(mass).toHaveValue('4');
+  expect((await documents())['point-mass-2']).toMatchObject({ differences: {} });
+});
+
+test('a subject moved to a new document leaves its evaluation\'s document as it was, and picking the old one back restores the evaluation', async ({ page, request }) => {
+  test.setTimeout(60_000);
+  const { snapshot, requests, documents } = await project(request, [evaluation('check', 'train')]);
+  const { picker, menu, open, setMass } = modelView(page);
+
+  await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
+  await open('check');
+  await setMass('2.5');
+  await expect(picker).toHaveText('point-mass-2');
+  const evaluated = await requests();
+  const files = await documents();
+
+  await open('train');
+  await expect(picker).toHaveText('point-mass');
+  for (const step of ['sibling', 'check']) await mapStep(page, step).click({ modifiers: ['Shift'] });
+  await expect(picker).toHaveText('point-mass1 of 3');
+  await setMass('3');
+  await expect(picker).toHaveText('point-mass-3');
+  const { 'point-mass-3': created, ...rest } = await documents();
+  expect(rest).toEqual(files);
+  expect(created).toMatchObject({ base: { document: 'point-mass' } });
+  const moved = await requests();
+  expect(moved.check).toBeDefined();
+  expect([moved.train, moved.check]).not.toEqual([evaluated.train, evaluated.check]);
+  expect(moved.sibling).toBe(evaluated.sibling);
+
+  await picker.click();
+  await menu.getByRole('menuitemradio', { name: 'point-mass', exact: true }).click();
+  await expect(picker).toHaveText(/^point-mass(\d+ of \d+)?$/);
+  await expect.poll(requests).toEqual(evaluated);
+});
