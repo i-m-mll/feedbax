@@ -84,6 +84,8 @@ from feedbax.contracts.project_sweep import (
     DEFAULT_SWEEP_ROW,
     ExpandedRow,
     InputAxis,
+    NamedAxis,
+    SetAxis,
     Sweep,
     SweepCoordinate,
     SweepExpansionError,
@@ -95,6 +97,7 @@ from feedbax.contracts.project_sweep import (
 )
 from feedbax.contracts.project_sources import ValueSource, changed_sources, patch_source, place_source, pointer, source_shape
 from feedbax.contracts.report_document import ReportDocument
+from feedbax.contracts.set_document import model_slot, resolve_set_axes
 from feedbax.contracts.request_identity import EncodedRequest, RequestDocumentMemo
 from feedbax.contracts.request_refs import (
     BarrierMember,
@@ -126,6 +129,7 @@ if TYPE_CHECKING:
     from feedbax.tasks.registry import PythonTaskRegistry
     from feedbax.training.methods import TrainingMethodRegistry
     from feedbax.component_registry import ComponentRegistry
+    from feedbax.compiler.model_document import LoweredModelDocument
     from feedbax.expression_registry import FunctionRegistry
     from feedbax.plot.templates import FigureTemplateRegistry
 
@@ -338,6 +342,7 @@ class _TrainEvaluationSource:
 class SourceSweep:
     inputs: dict[str, tuple[SweepInputMember, ...]] = field(default_factory=dict)
     integer_sites: dict[str, bool] = field(default_factory=dict)
+    sets: dict[str, NamedAxis] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -376,7 +381,7 @@ class PlanSourceIndex:
             sweep = self.snapshot.sweeps.get((variant, step), SourceSweep())
             rows = expand_sweep(
                 template.sweep, inputs=sweep.inputs, integer_site=sweep.integer_sites.__getitem__,
-                checkpoint_subject=project.steps[step].kind == "evaluate",
+                checkpoint_subject=project.steps[step].kind == "evaluate", sets=sweep.sets,
             )
             return template, {row.id: row for row in rows}
         return template
@@ -640,6 +645,16 @@ class _ModelSource:
     stamp: str
     evaluation_problem: ProjectDiagnostic | None = None
     evaluation_graph: GraphSpec | None = None
+    trained: _TrainedSource | None = None
+
+
+@dataclass(frozen=True)
+class _TrainedSource:
+    """What a Train run's checkpoint holds, as its plan knows it."""
+
+    graph: GraphSpec
+    method: str
+    replicates: int
 
 
 EVALUATION_MODEL = "payload.trial_documents.model"
@@ -854,6 +869,8 @@ class _TrainPreparation:
     checkpoint_problem: RunProblem | None
     evaluation: GraphSpec | ProjectDiagnostic
     condition_ids: tuple[str, ...]
+    graph: GraphSpec
+    lowered: LoweredModelDocument
 
 
 @dataclass(frozen=True)
@@ -903,6 +920,29 @@ def _trial_problem(
     )
 
 
+def _checkpoint_fit_problem(
+    source: _TrainedSource, preparation: _TrainPreparation, spec: DocumentTrainingRequestSpec,
+    components: ComponentRegistry,
+) -> RunProblem | None:
+    from feedbax.compiler.checkpoint_fit import checkpoint_misfit
+
+    if source.replicates != spec.training_config.replicates:
+        return RunProblem("/training_config/replicates", f"The checkpoint has {source.replicates} replicates.")
+    continuation = spec.continuation
+    if continuation is not None and continuation.state == "preserve" and source.method != spec.method:
+        return RunProblem("/method", f"Carrying state needs the checkpoint's method, {source.method!r}.")
+    if (misfit := checkpoint_misfit(source.graph, preparation.graph, components)) is None:
+        return None
+    if not misfit.path:
+        return RunProblem("/trial_documents/model", misfit.reason)
+    graph_path = (
+        "graph", *(token for name in misfit.path[:-1] for token in ("subgraphs", name)), "nodes", misfit.path[-1],
+    )
+    address = preparation.lowered.source_address(pointer(graph_path))
+    path = ("trial_documents", "model", *address.stored_path()) if address is not None else graph_path
+    return RunProblem(pointer(path), misfit.reason, address)
+
+
 class _PayloadProblems(Exception):
     """Problems at dotted payload paths found while lowering a row."""
 
@@ -927,13 +967,16 @@ def _encode_row(
     training_methods: TrainingMethodRegistry | None = None,
     previous: _LoweredRow | None = None,
     document_pointers: Mapping[str, str] = MappingProxyType({}),
+    checkpoint_source: _TrainedSource | None = None,
+    components: ComponentRegistry | None = None,
 ) -> _LoweredRow:
     checkpoint_problem = None
     condition_ids = None
     if prepared_train is not None:
         payload = payload | {"trial_documents": prepared_train.documents}
-        checkpoint_problem = prepared_train.preparation.checkpoint_problem
-        condition_ids = prepared_train.preparation.condition_ids
+        preparation = prepared_train.preparation
+        checkpoint_problem = preparation.checkpoint_problem
+        condition_ids = preparation.condition_ids
         model_source = prepared_train.model
     elif kind == "train":
         from feedbax.tasks.registry import application_python_tasks, resolve_python_task_instance
@@ -1038,6 +1081,14 @@ def _encode_row(
         if remember_train is not None:
             assert isinstance(spec, DocumentTrainingRequestSpec) and model_source is not None
             remember_train(_PreparedTrainRow(spec.trial_documents, preparation, model_source))
+        if isinstance(spec, DocumentTrainingRequestSpec):
+            assert model_source is not None
+            model_source = replace(model_source, trained=_TrainedSource(
+                preparation.graph, spec.method, spec.training_config.replicates,
+            ))
+            if checkpoint_problem is None and checkpoint_source is not None:
+                assert components is not None
+                checkpoint_problem = _checkpoint_fit_problem(checkpoint_source, preparation, spec, components)
         evaluation_source = None
         problem = (
             RunProblem("/trial_documents/model/interior/components", "Model has no components.")
@@ -1578,12 +1629,23 @@ class _Compiler:
                 return answer
 
             try:
+                sets = {}
+                if composition.sweep is not None and any(
+                    isinstance(axis, SetAxis) for axis in composition.sweep.axes.values()
+                ):
+                    resolved = resolved_definition()
+                    if isinstance(resolved, ProjectDiagnostic):
+                        return resolved, {}
+                    sets = resolve_set_axes(
+                        composition.sweep, read_document or self.variants[variant].documents.get,
+                        model_slot(resolved.payload, resolved.document_ids, resolved.document_pointers),
+                    )
                 exception_matches: dict[str, tuple[str, ...]] = {}
                 rows = expand_sweep(
                     composition.sweep, inputs=fanout,
                     integer_site=capture_site if self.source_sweeps is not None else integer_site,
                     checkpoint_subject=kind == "evaluate",
-                    exception_matches=exception_matches,
+                    exception_matches=exception_matches, sets=sets,
                 )
                 if self.source_sweeps is not None:
                     axes = composition.sweep.axes if composition.sweep is not None else {}
@@ -1596,8 +1658,8 @@ class _Compiler:
                             for member in members
                         )
                         for role, members in fanout.items() if role in roles
-                    }, sites)
-                    if source.inputs or source.integer_sites:
+                    }, sites, sets)
+                    if source.inputs or source.integer_sites or source.sets:
                         self.source_sweeps[variant, name] = source
                 return rows, exception_matches
             except SweepExpansionError as error:
@@ -1749,6 +1811,9 @@ class _Compiler:
             (model_source.stamp,) if model_source is not None else ()
         )
         source_problem = model_source.evaluation_problem if model_source is not None else None
+        checkpoint = inputs.get("checkpoint") if kind == "train" else None
+        trained = self.model_sources.get(checkpoint.producer) if checkpoint is not None and checkpoint.producer else None
+        checkpoint_source = trained.trained if trained is not None else None
 
         def lower(reader=None, previous=None):
             if definition is None:
@@ -1834,6 +1899,7 @@ class _Compiler:
                 self.python_tasks, model_source=authored_model, document_pointers=document_pointers,
                 prepared_train=prepared_train, remember_train=remember_train,
                 training_methods=self.training_methods, previous=previous,
+                checkpoint_source=checkpoint_source, components=self.components or _builtin_model_registry(),
             )
             return replace(
                 lowered,
@@ -1885,7 +1951,9 @@ class _Compiler:
                     ResolutionCode.INVALID_PAYLOAD, pointer(("inputs", "subject", *problem.path)), problem.reason,
                     model_address=address,
                 )
-            result = _TrainPreparation(checkpoint_problem, evaluation, paired.execution.task.condition_ids)
+            result = _TrainPreparation(
+                checkpoint_problem, evaluation, paired.execution.task.condition_ids, graph, paired.lowered,
+            )
         self.trial_preparations[identity] = result
         return result
 

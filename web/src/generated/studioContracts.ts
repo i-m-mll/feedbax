@@ -2549,7 +2549,7 @@ export type AuthoredFileAddress = {
   "id": string;
 };
 
-export type Axis = NamedAxis | InputAxis | ListedAxis | RangeAxis | SampledAxis | CheckpointRuleAxis;
+export type Axis = NamedAxis | InputAxis | ListedAxis | RangeAxis | SampledAxis | CheckpointRuleAxis | SetAxis;
 
 export type AxisCondition = {
   "axes": Record<string, Array<string>>;
@@ -3321,6 +3321,11 @@ export type SelectedRow = {
   "key": string;
   "variant": string;
   "row": string;
+};
+
+export type SetAxis = {
+  "set": string;
+  "where"?: AxisCondition | null;
 };
 
 export type SetDocumentValue = {
@@ -8819,7 +8824,7 @@ export const AuthoredFileAddressSchema: z.ZodType<AuthoredFileAddress> = z.lazy(
 ) as unknown as z.ZodType<AuthoredFileAddress>;
 
 export const AxisSchema: z.ZodType<Axis> = z.lazy(() =>
-  z.union([NamedAxisSchema, InputAxisSchema, ListedAxisSchema, RangeAxisSchema, SampledAxisSchema, CheckpointRuleAxisSchema])
+  z.union([NamedAxisSchema, InputAxisSchema, ListedAxisSchema, RangeAxisSchema, SampledAxisSchema, CheckpointRuleAxisSchema, SetAxisSchema])
 ) as unknown as z.ZodType<Axis>;
 
 export const AxisConditionSchema: z.ZodType<AxisCondition> = z.lazy(() =>
@@ -9877,6 +9882,13 @@ export const SelectedRowSchema: z.ZodType<SelectedRow> = z.lazy(() =>
     "row": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$")),
   }).strict()
 ) as unknown as z.ZodType<SelectedRow>;
+
+export const SetAxisSchema: z.ZodType<SetAxis> = z.lazy(() =>
+  z.object({
+    "set": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "where": z.union([AxisConditionSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<SetAxis>;
 
 export const SetDocumentValueSchema: z.ZodType<SetDocumentValue> = z.lazy(() =>
   z.object({

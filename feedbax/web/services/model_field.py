@@ -224,6 +224,23 @@ def _reset_text(
     return print_field(field.numeric.literal(field.numeric.value), field.numeric.site)
 
 
+def _held_values(
+    plan, keys: tuple[RunKey, ...], document: str, owner: ModelAddress, components: ComponentRegistry,
+) -> dict[str, list[int | float]]:
+    """The distinct values each field of ``owner`` holds in the Model the runs ``keys`` read as ``document``."""
+    held: dict[str, list[int | float]] = {}
+    for key in keys:
+        definition = plan.selected_definitions.get(key)
+        payload = selected_model(definition, document) if definition is not None else None
+        if payload is None:
+            continue
+        for field in _fields(ModelDocument.model_validate(payload), owner, components):
+            values = held.setdefault(field.address.to_text(), [])
+            if field.numeric.value not in values:
+                values.append(field.numeric.value)
+    return held
+
+
 def model_fields(
     folders: ProjectFolderService, project_id: str, body: ModelFieldRequest,
     components: ComponentRegistry, functions: FunctionRegistry,
@@ -240,6 +257,8 @@ def model_fields(
     shown = project.documents.get(body.document)
     changes, restored = (shown.differences, shown.base.document) if isinstance(shown, BasedDocument) else ({}, None)
     definitions = ()
+    runs = None
+    held: dict[str, list[int | float]] = {}
     evaluate = None
     variant = None
     if body.evaluate_scope is not None and body.run is not None:
@@ -269,6 +288,12 @@ def model_fields(
             if plan.steps[(key.variant, key.step)].kind == "train":
                 if project.sweep is None:
                     step = project.steps[key.step]
+                    picked = scoped or tuple(
+                        row.key for row in plan.rows if (row.key.variant, row.key.step) == (key.variant, key.step)
+                    )
+                    plan = folders.read_plan(project_id, revision=body.revision, source_runs=(key, *picked)).plan
+                    runs = tuple(row.coordinates for row in plan.rows if row.key in picked)
+                    held = _held_values(plan, picked, body.document, body.owner, components)
                 elif key.variant != plan.variants[0] and project.sweep.rows.get(key.variant) is not None:
                     variant = key.variant
     if evaluate is not None and effective_model is None:
@@ -286,7 +311,10 @@ def model_fields(
         axis = None
         if step is not None:
             target = SweepTarget(numeric.value, _addressed, field_key)
-            axis = FieldSweeps(step, target, numeric.label, numeric.key[-1:], integer=numeric.site.expected.base == ValueBase.INTEGER)
+            axis = FieldSweeps(
+                step, target, numeric.label, numeric.key[-1:], integer=numeric.site.expected.base == ValueBase.INTEGER,
+                runs=runs,
+            )
             if evaluate is not None:
                 # The addressed sweep can set fields inherited from registry defaults.
                 numeric = replace(numeric, stored=True)
@@ -296,6 +324,7 @@ def model_fields(
                                 if (source := definition.sources.get(f"/payload/trial_documents/model{relative}")) is not None)
         fields.append(project_numeric_field(
             ModelFieldView, numeric, axis, functions, selected, resolved.numeric.value if resolved else None,
+            held=held.get(field_key, ()),
             period=(effective_model or model).step_seconds, scoped=bool(body.rows or body.axes),
             address=field.address,
             sources=[StudioPlanReviewSource.model_validate(source, from_attributes=True) for source in sources],

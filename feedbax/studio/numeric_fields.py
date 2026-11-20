@@ -1,6 +1,6 @@
 """One projection and edit recipe for numeric Studio fields."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field as dataclass_field
 from math import isfinite
 
@@ -154,15 +154,19 @@ def _sample_axis(value: SweepSample, field: NumericField, functions: FunctionReg
 
 def project_numeric_field[View: StudioFieldView](
     view_type: type[View], field: NumericField, axis: FieldSweeps | None,
-    functions: FunctionRegistry, selected: PlannedRow | None, effective: object, *, mixed: bool = False,
+    functions: FunctionRegistry, selected: PlannedRow | None, effective: object, *, held: Sequence[object] = (),
     period: float | None = None, scoped: bool = False, **address,
 ) -> View:
-    """The field as the selected runs have it; ``scoped`` says they are not the whole step, as for the edit."""
+    """The field as the selected runs have it; ``scoped`` says they are not the whole step, as for the edit.
+
+    ``held`` are the distinct values the selected runs hold; several, outside a sweep of the field, read as Mixed with
+    those values as its members.
+    """
     own = not scoped or bool(axis and axis.for_selection)
     site = project_site(field.site, functions)
     view = axis.view() if axis else None
     coordinate = selected.coordinates.get(view.id) if selected and view else None
-    source = axis.covering[0][1] if axis and len(axis.covering) == 1 else None
+    source = axis.shown[0][1] if axis and len(axis.covering) == 1 and len(axis.shown) == 1 else None
     shown: FieldValue = field.literal(field.value)
     if isinstance(source, RangeAxis):
         rule = source.range
@@ -179,12 +183,17 @@ def project_numeric_field[View: StudioFieldView](
             ]
         except ValueError:
             view = view.model_copy(update={"can_list": False})
+    elif view is None and len(held) > 1:
+        members = [
+            StudioSweepValue(id=f"value-{index + 1}", value=value, label=None)
+            for index, value in enumerate(held) if type(value) in (float, int)
+        ]
     return view_type(
         **address, label=field.label, text=print_field(shown, field.site), unit=field.unit,
         conversion=_conversion(field, period) if source is None else None,
         effective=print_field(field.literal(effective), field.site)
         if type(effective) in (int, float) and effective != field.value else None,
-        mixed=mixed,
+        mixed=len(held) > 1,
         site=site, sweep=view, selected_value=coordinate.value_id if coordinate else None,
         can_sweep=bool(own and axis and axis.can_sweep and field.stored),
         can_change_axis=bool(own and axis and axis.simple and view and (

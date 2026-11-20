@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from types import UnionType
 from typing import Annotated, Any, Literal, Union, get_args, get_origin, overload
@@ -27,7 +27,7 @@ from feedbax.contracts.project import (
     BasedDocument, DocumentReference, ExternalBase, InlineBase, Project, RunBase, Step, StepBase, StepKind,
     json_pointer_parts,
 )
-from feedbax.contracts.project_sweep import Sweep
+from feedbax.contracts.project_sweep import Sweep, SweepCoordinate
 from feedbax.contracts.project_inputs import StepReference, SubsetTerms
 from feedbax.contracts.project_plan import ProjectPlan, RunKey
 from feedbax.contracts.project_resolution import (
@@ -364,6 +364,7 @@ class _TrainFields:
     def __init__(
         self, project: Project, step_id: str, registry: TrainingMethodRegistry, current: dict[str, JsonValue] | None = None,
         *, shown: dict[str, JsonValue] | None = None, selected: tuple[dict[str, JsonValue], ...] = (),
+        runs: tuple[Mapping[str, SweepCoordinate], ...] | None = None,
     ) -> None:
         step = project.steps.get(step_id)
         if step is None or step.kind != "train":
@@ -398,6 +399,7 @@ class _TrainFields:
         self.current = self.payload if current is None else current
         self.shown = shown if shown is not None else selected[0] if selected else self.payload
         self.selected = selected or (self.shown,)
+        self.runs = runs
         self.sources = (resolved.sources or {}) if isinstance(resolved, ResolvedStep) else {}
         self.fields: dict[str, _Field] = {}
         self.classes: dict[str, ClassField] = {}
@@ -644,7 +646,7 @@ class _TrainFields:
             def writes(value: JsonValue) -> list[SetProjectValue]:
                 return _step_writes([OverridePatch(op="replace", path=".".join((*site, tag)), value=value)])
 
-            sweeps = FieldSweeps(self.step, SweepTarget(key, writes), label, site[-1:], integer=False)
+            sweeps = FieldSweeps(self.step, SweepTarget(key, writes), label, site[-1:], integer=False, runs=self.runs)
         self.classes[pointer(site)] = ClassField(
             site, label, tag, {key: model for key, model in classes.items() if isinstance(key, str)}, sweeps,
         )
@@ -777,7 +779,7 @@ def project_train_fields(
     """Project the Train step's declared fields and the selected runs' settings, and store one atomic edit for the
     selected runs, or the reason the step's sweep refuses it."""
     payloads = selection.payloads
-    definition = _TrainFields(project, step_id, registry, selection.current, selected=payloads)
+    definition = _TrainFields(project, step_id, registry, selection.current, selected=payloads, runs=selection.coordinates)
     definition.training(read_plan)
     settings = definition.shown.get("settings")
     mixed = _differences([_effective(payload, registry) for payload in payloads]) if payloads else set()
@@ -944,7 +946,9 @@ def project_training_numeric_fields(
     project: Project, step_id: str, registry: TrainingMethodRegistry, functions: FunctionRegistry,
     body: TrainFieldRequest, selection: TrainSelection, read_plan: _ReadPlan,
 ) -> TrainFieldResponse:
-    definition = _TrainFields(project, step_id, registry, shown=selection.current, selected=selection.payloads)
+    definition = _TrainFields(
+        project, step_id, registry, shown=selection.current, selected=selection.payloads, runs=selection.coordinates,
+    )
     definition.training(read_plan)
     effective = [_effective(payload, registry) for payload in selection.payloads]
     selected = (
@@ -963,6 +967,7 @@ def project_training_numeric_fields(
         target = SweepTarget.from_field(view.value, view.control, step_writes) if not definition.inherits else None
         axis = FieldSweeps(
             definition.step, target, view.label, field.name, integer=view.control.step == 1, selected=selected,
+            runs=selection.coordinates,
         ) if target is not None else None
         numeric = NumericField(
             path, view.label, view.value,
@@ -970,10 +975,10 @@ def project_training_numeric_fields(
                  finest=Level.RUN, structural=True),
             target is not None, lambda value, view=view: _number(view, value),
         )
-        values = {json.dumps(_get(payload, path)) for payload in effective}
+        values = [json.loads(value) for value in dict.fromkeys(json.dumps(_get(payload, path)) for payload in effective)]
         fields.append(project_numeric_field(
             TrainFieldView, numeric, axis, functions, selection.row,
-            json.loads(next(iter(values))) if len(values) == 1 else None, mixed=len(values) > 1,
+            values[0] if len(values) == 1 else None, held=values,
             scoped=selection.scoped, id=field_id,
         ))
         targets[field_id] = field, numeric, axis
