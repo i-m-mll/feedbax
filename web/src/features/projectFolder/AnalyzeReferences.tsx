@@ -37,8 +37,10 @@ function boundChoice(binding: InputBinding | null | undefined, steps: readonly P
 }
 
 /** The binding of an Analyze step's input role to a step's output or a document of the role's kind. */
-export function AnalyzeRoleBinding({ role, kind, binding, project, steps, picking, onBind }: {
+export function AnalyzeRoleBinding({ role, kind, binding, project, steps, picking, refusal, onBind }: {
   role: string;
+  /** Why the last binding was refused. */
+  refusal?: string;
   kind: RoleKind;
   binding: InputBinding | null | undefined;
   project: AuthoredProject;
@@ -48,7 +50,7 @@ export function AnalyzeRoleBinding({ role, kind, binding, project, steps, pickin
 }) {
   const labelId = useId();
   const label = humanizeLabel(role);
-  return <FieldRow label={label} labelId={labelId}>
+  return <FieldRow label={label} labelId={labelId} below={refusal && <p role="alert">{refusal}</p>}>
     <ReferenceField label={label} aria-labelledby={labelId} picking={picking}
       groups={roleGroups(project, steps, kind)} value={boundChoice(binding, steps)}
       onChoose={onBind && ((choice) => {
@@ -69,7 +71,7 @@ const sourceId = (source: Source) => JSON.stringify('input' in source ? [source.
  * An operation's or figure's input roles, each wired to one of the document's inputs or another operation's output
  * of the role's kind. Picking fills a role from an element on the canvas.
  */
-export function AnalyzeElementInputs({ document, element, roles, inputs, declarations, outputs, picking, onWire }: {
+export function AnalyzeElementInputs({ document, element, roles, inputs, declarations, outputs, picking, refusal, onWire }: {
   document: string;
   element: string;
   roles: readonly { name: string; kind: RoleKind }[];
@@ -78,6 +80,8 @@ export function AnalyzeElementInputs({ document, element, roles, inputs, declara
   /** Each other operation's dataset products. */
   outputs: readonly { element: string; products: readonly string[] }[];
   picking: ElementSelectionStore;
+  /** Why a role's last wiring was refused. */
+  refusal?: (role: string) => string | undefined;
   onWire?: (role: string, source: Source) => void;
 }) {
   const labelId = useId();
@@ -97,7 +101,8 @@ export function AnalyzeElementInputs({ document, element, roles, inputs, declara
         products.map((product): [string, Source] => [sourceId({ element: source, product }), { element: source, product }])),
     ]);
     const label = humanizeLabel(name);
-    return <FieldRow key={name} label={label} labelId={`${labelId}-${name}`}>
+    const refused = refusal?.(name);
+    return <FieldRow key={name} label={label} labelId={`${labelId}-${name}`} below={refused && <p role="alert">{refused}</p>}>
       <ReferenceField label={label} aria-labelledby={`${labelId}-${name}`} picking={picking}
         groups={[
           { label: studioName('inputs'), choices: documentInputs },
