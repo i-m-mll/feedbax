@@ -2740,6 +2740,8 @@ export type DocumentBase = {
   "document": string;
 };
 
+export type DocumentEdit = SetProjectValue | RemoveProjectValue | EnsureDocumentCollection;
+
 export type DocumentInputReference = InitialModelReference_DocumentReference_ | TaskDocumentReference_DocumentReference_ | ObjectiveDocumentReference_DocumentReference_;
 
 export type DocumentPresentation = {
@@ -2778,6 +2780,12 @@ export type DuplicateMember = {
   "family": MemberFamily;
   "member": string;
   "name"?: string | null;
+};
+
+export type EnsureDocumentCollection = {
+  "op": "ensure";
+  "path": DifferencePointer;
+  "collection": "object" | "array";
 };
 
 export type EnvironmentChange = "arguments" | "rejected_update" | "output_shape_or_dtype" | "numerical_drift" | "nonfinite_outputs";
@@ -3444,13 +3452,33 @@ export type StudioAnalyzeAuthoring = {
   "states": DatasetPort;
   "variables": Record<string, Record<string, Array<string>>>;
   "figure": FigureDocument;
+  "changed"?: Array<Pointer>;
   "files"?: Array<StudioProjectFilePatch>;
+  "created"?: Array<CreateNamedDocument>;
+};
+
+export type StudioAnalyzeChange = StudioAnalyzeWire | StudioAnalyzeEdit | StudioAnalyzeRemove | StudioAnalyzeReset;
+
+export type StudioAnalyzeEdit = {
+  "kind": "edit";
+  "edits": Array<DocumentEdit>;
+};
+
+export type StudioAnalyzeRemove = {
+  "kind": "remove";
+  "element": string;
 };
 
 export type StudioAnalyzeRequest = {
   "revision": Sha256;
   "key": StudioSavedTrainKey;
-  "wire"?: StudioAnalyzeWire | null;
+  "change"?: StudioAnalyzeChange | null;
+  "chosen_steps"?: Array<string>;
+};
+
+export type StudioAnalyzeReset = {
+  "kind": "reset";
+  "paths": Array<Pointer>;
 };
 
 export type StudioAnalyzeStep = {
@@ -3465,6 +3493,7 @@ export type StudioAnalyzeStep = {
 };
 
 export type StudioAnalyzeWire = {
+  "kind": "wire";
   "element": string;
   "role": string;
   "source": StepInput | OperationDataset;
@@ -9067,6 +9096,10 @@ export const DocumentBaseSchema: z.ZodType<DocumentBase> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<DocumentBase>;
 
+export const DocumentEditSchema: z.ZodType<DocumentEdit> = z.lazy(() =>
+  z.union([SetProjectValueSchema, RemoveProjectValueSchema, EnsureDocumentCollectionSchema])
+) as unknown as z.ZodType<DocumentEdit>;
+
 export const DocumentInputReferenceSchema: z.ZodType<DocumentInputReference> = z.lazy(() =>
   z.union([InitialModelReference_DocumentReference_Schema, TaskDocumentReference_DocumentReference_Schema, ObjectiveDocumentReference_DocumentReference_Schema])
 ) as unknown as z.ZodType<DocumentInputReference>;
@@ -9120,6 +9153,14 @@ export const DuplicateMemberSchema: z.ZodType<DuplicateMember> = z.lazy(() =>
     "name": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<DuplicateMember>;
+
+export const EnsureDocumentCollectionSchema: z.ZodType<EnsureDocumentCollection> = z.lazy(() =>
+  z.object({
+    "op": z.literal("ensure"),
+    "path": DifferencePointerSchema,
+    "collection": z.union([z.literal("object"), z.literal("array")]),
+  }).strict()
+) as unknown as z.ZodType<EnsureDocumentCollection>;
 
 export const EnvironmentChangeSchema: z.ZodType<EnvironmentChange> = z.lazy(() =>
   z.union([z.literal("arguments"), z.literal("rejected_update"), z.literal("output_shape_or_dtype"), z.literal("numerical_drift"), z.literal("nonfinite_outputs")])
@@ -10022,17 +10063,45 @@ export const StudioAnalyzeAuthoringSchema: z.ZodType<StudioAnalyzeAuthoring> = z
     "states": DatasetPortSchema,
     "variables": z.record(z.string(), z.record(z.string(), z.array(z.string()))),
     "figure": FigureDocumentSchema,
+    "changed": z.array(PointerSchema).optional(),
     "files": z.array(StudioProjectFilePatchSchema).optional(),
+    "created": z.array(CreateNamedDocumentSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioAnalyzeAuthoring>;
+
+export const StudioAnalyzeChangeSchema: z.ZodType<StudioAnalyzeChange> = z.lazy(() =>
+  z.union([StudioAnalyzeWireSchema, StudioAnalyzeEditSchema, StudioAnalyzeRemoveSchema, StudioAnalyzeResetSchema])
+) as unknown as z.ZodType<StudioAnalyzeChange>;
+
+export const StudioAnalyzeEditSchema: z.ZodType<StudioAnalyzeEdit> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("edit"),
+    "edits": z.array(DocumentEditSchema).min(1),
+  }).strict()
+) as unknown as z.ZodType<StudioAnalyzeEdit>;
+
+export const StudioAnalyzeRemoveSchema: z.ZodType<StudioAnalyzeRemove> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("remove"),
+    "element": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<StudioAnalyzeRemove>;
 
 export const StudioAnalyzeRequestSchema: z.ZodType<StudioAnalyzeRequest> = z.lazy(() =>
   z.object({
     "revision": Sha256Schema,
     "key": StudioSavedTrainKeySchema,
-    "wire": z.union([StudioAnalyzeWireSchema, z.null()]).optional(),
+    "change": z.union([StudioAnalyzeChangeSchema, z.null()]).optional(),
+    "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioAnalyzeRequest>;
+
+export const StudioAnalyzeResetSchema: z.ZodType<StudioAnalyzeReset> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("reset"),
+    "paths": z.array(PointerSchema).min(1),
+  }).strict()
+) as unknown as z.ZodType<StudioAnalyzeReset>;
 
 export const StudioAnalyzeStepSchema: z.ZodType<StudioAnalyzeStep> = z.lazy(() =>
   z.object({
@@ -10049,6 +10118,7 @@ export const StudioAnalyzeStepSchema: z.ZodType<StudioAnalyzeStep> = z.lazy(() =
 
 export const StudioAnalyzeWireSchema: z.ZodType<StudioAnalyzeWire> = z.lazy(() =>
   z.object({
+    "kind": z.literal("wire"),
     "element": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "role": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "source": z.union([StepInputSchema, OperationDatasetSchema]),

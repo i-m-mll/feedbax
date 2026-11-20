@@ -112,7 +112,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   await edit(() => enter(inspector.getByRole('textbox', { name: 'Bounds Scale', exact: true }), '1.5'));
   const beforeRefusal = await edit(() => enter(inspector.getByRole('textbox', { name: 'Ddof', exact: true }), '0'));
   const refusal = page.waitForResponse((response) => new URL(response.url()).pathname === reviewPath &&
-    Boolean(response.request().postDataJSON()?.wire));
+    response.request().postDataJSON()?.change?.kind === 'wire');
   await pick(role('Velocity'), 'states');
   expect((await refusal).status()).toBe(422);
   // The refusal lands on the role field it was made in.

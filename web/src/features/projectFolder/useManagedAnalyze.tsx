@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { documentPayload } from './documentPayload';
+import { baseChain, documentPayload } from './documentPayload';
 import { ChartLine, Database, Sigma } from 'lucide-react';
 import { useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
@@ -20,7 +20,7 @@ import { LibraryList, type LibraryItem } from '@/features/projectWindow/LibraryL
 import { bindStudioCommand } from '@/features/projectWindow/studioCommands';
 import {
   AnalysisDocumentSchema, type AnalysisDocument, type InputBinding, type JsonPrimitive, type JsonValue, type OperationElement,
-  type ParamSchema, type PresentationPosition, type StudioProjectFilePatch,
+  type ParamSchema, type PresentationPosition, type StudioAnalyzeChange,
   type StudioSavedTrainKey, type StudioSavedTrainRuns,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
@@ -31,6 +31,7 @@ import {
 import type { PlanStepView } from '@/features/pipeline/planView';
 import { AnalyzeElementInputs, AnalyzeRoleBinding } from './AnalyzeReferences';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
+import type { ChangeMark } from '@/components/values/fieldModel';
 import { savedRunId } from './projectWindowPlan';
 import { placeElement, type Reveal } from './projectWindowProblems';
 import { MentionRow, ProblemRow } from '@/features/projectWindow/StudioProblems';
@@ -44,9 +45,11 @@ const operationDragType = 'application/x-feedbax-operation';
 const figureItem = 'velocity_summary';
 
 export function useManagedAnalyze({
-  editor, key, projection, wholeStep, focusedView, reveal, savePosition, selection, sections, steps, failures,
+  editor, key, projection, wholeStep, chosen, focusedView, reveal, savePosition, selection, sections, steps, failures,
 }: {
   editor: ProjectEditController;
+  /** The steps an edit of the shown document is made for, when other steps read it too; the step alone otherwise. */
+  chosen?: ReadonlySet<string>;
   /** Where the step's refused gestures land. */
   failures: GestureFailures;
   selection: ElementSelectionStore;
@@ -81,11 +84,12 @@ export function useManagedAnalyze({
   const cursor = useRef<{ scope: string; point: PresentationPosition }>();
   const shape = step?.kind === 'analyze' ? JSON.stringify([
     step.base, step.sweep, step.deltas, step.inputs?.states,
+    document && baseChain(saved.project.documents, document).map((name) => saved.project.documents?.[name]),
   ]) : undefined;
   const authoring = useQuery({
     queryKey: ['studio-analyze', saved.project_id, id, shape],
     queryFn: ({ signal }) => readStudioAnalyze(saved.project_id, { revision: saved.revision, key: key! }, signal),
-    enabled: !!document && !!key && key.row === 'default' && key.variant === projection?.window_map?.variants[0],
+    enabled: !!document && !!key && key.variant === projection?.window_map?.variants[0],
     placeholderData: keepPreviousData,
     staleTime: 30_000,
   });
@@ -150,37 +154,51 @@ export function useManagedAnalyze({
     }
   }
 
-  function file(path: string[], value: JsonValue): StudioProjectFilePatch {
-    let parent = authored;
-    for (const segment of path.slice(0, -1)) {
-      parent = parent && typeof parent === 'object' && !Array.isArray(parent) ? parent[segment] : undefined;
-    }
-    const leaf = path.at(-1)!;
-    const existing = parent && typeof parent === 'object' && Object.prototype.hasOwnProperty.call(parent, leaf);
-    return {
-      address: { kind: 'document', id: document! },
-      patches: [{ op: existing ? 'replace' : 'add', path: authoredPointer(['payload', ...path]), value }],
-    };
-  }
-  async function save(label: string, files: StudioProjectFilePatch[]) {
-    if (liveScope.current !== scope || editor.getSnapshot().saved.revision !== saved.revision) {
+  /** Store `change` of the shown document for the chosen steps, as the service computes it, as one Undo entry. */
+  async function save(label: string, change: StudioAnalyzeChange) {
+    if (!key || liveScope.current !== scope || editor.getSnapshot().saved.revision !== saved.revision) {
       throw new ProjectEditConflictError();
     }
-    editor.editFiles(label, files, { reviewedRevision: saved.revision });
+    const reviewed = await readStudioAnalyze(saved.project_id, {
+      revision: saved.revision, key, change, chosen_steps: [...chosen ?? []],
+    });
+    if (reviewed.document !== document) throw new ProjectEditConflictError();
+    if (!reviewed.files?.length && !reviewed.created?.length) return;
+    const stored = editor.storeEdit(label, { files: reviewed.files ?? [], created: reviewed.created ?? [] }, {
+      reviewedRevision: saved.revision,
+    });
     await editor.flush();
+    const settled = await stored;
+    if (settled.status === 'refused') throw settled.error;
+  }
+  const set = (path: readonly string[], value: JsonValue): StudioAnalyzeChange => ({ kind: 'edit', edits: [
+    ...path.slice(0, -1).map((_, index) => ({
+      op: 'ensure' as const, path: authoredPointer(path.slice(0, index + 1)), collection: 'object' as const,
+    })),
+    { op: 'replace', path: authoredPointer(path), value },
+  ] });
+  const changedPaths = new Set(catalog?.document === document ? catalog?.changed ?? [] : []);
+  function changedAt(path: readonly string[]): ChangeMark | undefined {
+    const pointer = authoredPointer(path);
+    if (!changedPaths.has(pointer)) return undefined;
+    return { text: studioName('changed'), reset: canEdit ? async () => {
+      try { await save(studioName('reset'), { kind: 'reset', paths: [pointer] }); return undefined; }
+      catch (cause) { return cause instanceof Error ? cause.message : String(cause); }
+    } : undefined };
   }
   function add(kind: 'operations' | 'views', stem: string, value: JsonValue, point?: PresentationPosition) {
     void perform(async () => {
       const name = generatedName(stem, (name) => name === 'states' || name in operations || name in figures);
       const label = studioName(kind === 'operations' ? 'addOperation' : 'addFigure');
-      const collection = analysis?.[kind];
-      await save(label, [collection ? file([kind, name], value) : file([kind], { [name]: value })]);
+      await save(label, set([kind, name], value));
       setDialog(undefined);
       if (liveScope.current === scope) {
         setInspected(undefined);
         element.onSelect(name);
       }
-      if (point) await savePosition(document!, name, point);
+      // A narrowed edit leaves the step reading the document it created.
+      const now = key && editor.getSnapshot().draft.steps?.[key.step]?.base;
+      if (point) await savePosition(now && 'document' in now ? now.document : document!, name, point);
     }, canEdit, opened ? 'dialog' : undefined);
   }
   const addFigure = (point?: PresentationPosition) => {
@@ -195,13 +213,7 @@ export function useManagedAnalyze({
   }, { name: focusedView === 'figures' ? 'addFigure' : 'addOperation', enabled: canEdit });
   function wire(element: string, role: string, source: Source) {
     if (!key) return;
-    void perform(async () => {
-      const review = await readStudioAnalyze(saved.project_id, {
-        revision: saved.revision, key, wire: { element, role, source },
-      });
-      if (review.document !== document || review.files?.length !== 1) throw new ProjectEditConflictError();
-      await save(humanizeLabel(role), review.files);
-    }, canEdit, [element, role]);
+    void perform(() => save(humanizeLabel(role), { kind: 'wire', element, role, source }), canEdit, [element, role]);
   }
   function bind(role: string, binding: InputBinding) {
     if (!key) return;
@@ -216,6 +228,10 @@ export function useManagedAnalyze({
     }, canBind, [role, role]);
   }
 
+  const removeCommand = bindStudioCommand('modelRemove', () => {
+    if (selected) void perform(() => save(studioName('modelRemove'), { kind: 'remove', element: selected }));
+  }, { enabled: canEdit && !!(operation || figure) });
+
   const problemOf = (name: string) => diagnostics.find((item) => placeElement(item.place) === name)?.detail;
   const items: CanvasNode[] = [
     ...Object.keys(declarations).map((name) => ({ id: name, selectionId: name, name, glyph: <Database /> })),
@@ -223,6 +239,9 @@ export function useManagedAnalyze({
     ...Object.keys(figures).map((name) => ({ id: name, selectionId: name, name, glyph: <ChartLine />, problem: problemOf(name) })),
   ];
   const canvas = useRef<CanvasViewport>(null);
+  /** A based document is laid out as its base is, where it does not place an element itself. */
+  const positions = document ? Object.assign({}, ...[...baseChain(draft.documents, document)].reverse()
+    .map((name) => saved.presentation?.documents?.[name]?.positions)) : undefined;
   const viewport = canvasViewportCommands(() => canvas.current, !!document);
   const connections = [...Object.entries(operations), ...Object.entries(figures)].flatMap(([target, value]) =>
     Object.entries(value.inputs).map(([role, source]) => {
@@ -240,9 +259,7 @@ export function useManagedAnalyze({
     if (!operation || !selected) return;
     const [name, ...rest] = path;
     const next = setIn(operation.params?.[name], rest, value);
-    void perform(() => save(humanizeLabel(name), [operation.params
-      ? file(['operations', selected, 'params', name], next)
-      : file(['operations', selected, 'params'], { [name]: next })]));
+    void perform(() => save(humanizeLabel(name), set(['operations', selected, 'params', name], next)));
   }
   const inspector = selected && (operation || figure || selectedInput) && <Inspector name={selected}
     type={operation ? operation.operation : figure ? studioName('figures') : humanizeLabel(selectedInput!.kind ?? 'dataset')}>
@@ -265,6 +282,7 @@ export function useManagedAnalyze({
           return schema && options ? fromParamSchema(schema, operation.params?.[schema.name], canEdit
             ? (value) => writeParameter(path, value) : undefined, { options }) : undefined;
         }}
+        changed={(path) => changedAt(['operations', selected, 'params', ...path])}
         write={canEdit ? writeParameter : undefined} />
     </div>}
     {figure && selected && selectedFigure && <label className="grid gap-1">
@@ -274,7 +292,7 @@ export function useManagedAnalyze({
         onBlur={({ currentTarget }) => {
           const caption = currentTarget.value;
           if (inlineFigure && caption !== (selectedFigure.caption ?? '')) {
-            void perform(() => save(studioName('caption'), [file(['views', selected, 'figure', 'caption'], caption)]));
+            void perform(() => save(studioName('caption'), set(['views', selected, 'figure', 'caption'], caption)));
           }
         }}
         onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} />
@@ -325,7 +343,7 @@ export function useManagedAnalyze({
     analysis: {
       body: <CanvasStrip viewport={viewport}><div className="min-h-0 flex-1">
         <ManagedDocumentCanvas key={scope} selectedId={element.selectedId} onSelect={selectElement} items={items} connections={connections} viewportRef={canvas}
-          positions={document ? saved.presentation?.documents?.[document]?.positions : undefined} pick={canvasPick}
+          positions={positions} pick={canvasPick}
           openAt={canEdit ? (point) => open('add', point) : undefined} placing={!!opened?.point}
           drop={canEdit ? { type: operationDragType, place } : undefined}
           rememberPoint={(point) => { cursor.current = point ? { scope, point } : undefined; }} />
@@ -336,8 +354,8 @@ export function useManagedAnalyze({
       {figure && selected && selectedPlan && <SavedFigureResult key={JSON.stringify([scope, selected])}
         history={selectedPlan} name={selected} />}
     </>, drawer, inspector: libraryInspector || (figure ? inspector : undefined) },
-    commands: document && focusedView === 'analysis' ? [addCommand, ...viewport]
-      : document && focusedView === 'figures' ? [addCommand] : [],
+    commands: document && focusedView === 'analysis' ? [addCommand, removeCommand, ...viewport]
+      : document && focusedView === 'figures' ? [addCommand, removeCommand] : [],
     overlay: opened && <Dialog ariaLabel={studioName('addOperation')}
       manageFocus panelClassName="grid w-[min(26rem,90vw)] gap-3" onClose={() => setDialog(undefined)}>
       {shown?.at === 'dialog' && <p role="alert">{shown.reason}</p>}

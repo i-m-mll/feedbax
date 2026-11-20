@@ -320,13 +320,15 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
    * less those taken out. An edit there is made for the lit steps. From an Evaluate step the document's Train readers
    * are drawn as readers and are lit only when put in, and the step is lit even while it follows its subject's.
    */
-  function documentScope(field: 'graph' | 'task' | 'objective' | 'training'): NamedDocumentScope | undefined {
+  function documentScope(field: 'graph' | 'task' | 'objective' | 'training' | 'analysis'): NamedDocumentScope | undefined {
     const ids = step?.documentIds;
     const document = field === 'graph' ? modelDocumentId(ids)
       : field === 'task' ? ids?.['payload.trial_documents.task'] ?? ids?.['payload.trial_documents.python_task']
-        : field === 'objective' ? ids?.['payload.trial_documents.objective'] : trainingDocumentId(ids);
+        : field === 'objective' ? ids?.['payload.trial_documents.objective']
+          : field === 'analysis' ? ids?.payload : trainingDocumentId(ids);
     const evaluating = step?.kind === 'evaluate' && (field === 'graph' || field === 'task');
-    if (!document || !step || !singleStep || !data || step.kind !== 'train' && !evaluating) return undefined;
+    const analyzing = step?.kind === 'analyze' && field === 'analysis';
+    if (!document || !step || !singleStep || !data || step.kind !== 'train' && !evaluating && !analyzing) return undefined;
     const localVariant = Boolean(saved.project.sweep && !primaryVariant && field === 'graph');
     if (!localVariant && !wholeStep) return undefined;
     const family = documentFamily(saved.project, document);
@@ -343,12 +345,13 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   }
   const documentScopes = {
     graph: documentScope('graph'), task: documentScope('task'),
-    objective: documentScope('objective'), training: documentScope('training'),
+    objective: documentScope('objective'), training: documentScope('training'), analysis: documentScope('analysis'),
   };
   const activeDocumentScope = windowState.mode === 'map' ? undefined
     : focusView === 'model' ? documentScopes.graph
       : focusView === 'task' || focusView === 'objective' || focusView === 'training' ? documentScopes[focusView]
-        : undefined;
+        : focusView === 'analysis' || focusView === 'figures' ? documentScopes.analysis
+          : undefined;
   function chooseMapStep(id: string, extend: boolean) {
     if (extend && activeDocumentScope && activeDocumentScope.users.size > 1) {
       if (activeDocumentScope.localVariant || id === step?.id || !activeDocumentScope.users.has(id)) return;
@@ -583,6 +586,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     ? (focusSlot === 'primary' ? primary : secondary)[focusView] : undefined;
   const analyze = useManagedAnalyze({
     editor, key: step?.kind === 'analyze' ? namedRun : undefined, projection: data, wholeStep,
+    chosen: documentScopes.analysis?.lit,
     focusedView: windowState.mode === 'map' ? null : focusView, reveal: revealed, savePosition: saveElementPosition, selection: elements,
     sections: drawerSections, steps: plan.steps, failures: stepFailures(step?.kind === 'analyze' ? step.id : undefined),
   });
@@ -1371,7 +1375,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
           if (view === 'analysis' || view === 'figures') {
             const detail = analyze[view];
             return { ...detail, body: withProblem(detail.body),
-              picker: view === 'analysis' && authored?.kind === 'analyze' ? pickDocument('analysis', documentBase) : undefined,
+              picker: view === 'analysis' && authored?.kind === 'analyze'
+                ? pickDocument('analysis', documentBase, documentScopes.analysis) : undefined,
             };
           }
           if ((view === 'task' || view === 'objective') && trialStep) {

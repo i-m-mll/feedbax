@@ -1,4 +1,4 @@
-"""Project registered operation controls and review saved-folder Analyze connections."""
+"""Project registered operation controls and store the edits of an Analyze step's analysis document."""
 
 from feedbax.analysis.operations import OperationRegistry
 from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySettings
@@ -11,21 +11,27 @@ from feedbax.contracts.operation import (
     require_dataset_fields,
     require_dataset_port,
 )
-from feedbax.contracts.project import DocumentReference, Project
+from feedbax.contracts.project import DocumentReference, DocumentEdit, Project, RemoveProjectValue, SetProjectValue
 from feedbax.contracts.project_inputs import StepReference
 from feedbax.contracts.project_plan import PlannedAnalyzeRun, RunKey, compile_project
 from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, compose_document
+from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.studio_analyze import (
     StudioAnalyzeAuthoring,
+    StudioAnalyzeChange,
+    StudioAnalyzeEdit,
+    StudioAnalyzeRemove,
     StudioAnalyzeRequest,
     StudioAnalyzeWire,
 )
-from feedbax.contracts.studio_project import SetProjectValue, StudioProjectFilePatch
 from feedbax.jobs import JobConflict, JobNotFound
 from feedbax.plot.templates import FigureTemplateRegistry
-from feedbax.web.services.project_folder import ProjectFolderInvalid, preview_authored_files
+from feedbax.web.services.project_folder import ProjectFolderInvalid
 from feedbax.web.services.project_plan import ProjectPlanRead, ProjectPlanService
-from feedbax.web.services.trial_scope import shared_document_write
+from feedbax.studio.selection import StoredEdit
+from feedbax.web.services.trial_scope import (
+    base_value_edits, changed_from_base, document_write, lit_steps, preview_stored,
+)
 
 
 def _port(
@@ -45,21 +51,30 @@ def _port(
         raise ValueError(f"Unknown dataset output {source.element}.{source.product}.") from error
 
 
-def review_wire(
-    project: Project,
-    key: RunKey,
-    document: str,
-    wire: StudioAnalyzeWire,
-    registry: OperationRegistry,
-    states: DatasetPort,
-    *,
-    readers: BaseReaders = BaseReaders(),
-    figure_templates: FigureTemplateRegistry | None = None,
-) -> list[StudioProjectFilePatch]:
+def _analysis(project: Project, document: str) -> AnalysisDocument:
     composed = compose_document(project.documents.get, document)
     if isinstance(composed, ProjectDiagnostic):
         raise ValueError(composed.detail)
-    analysis = AnalysisDocument.model_validate(composed.payload)
+    return AnalysisDocument.model_validate(composed.payload)
+
+
+def _removal(analysis: AnalysisDocument, element: str) -> list[DocumentEdit]:
+    """The edits that remove ``element`` and every input bound to one of its outputs."""
+    family = "operations" if element in analysis.operations else "views" if element in analysis.views else None
+    if family is None:
+        raise ValueError(f"Unknown analysis element {element!r}.")
+    edits: list[DocumentEdit] = [RemoveProjectValue(op="remove", path=pointer((family, element)))]
+    for name, holder in ("operations", analysis.operations), ("views", analysis.views):
+        for target, value in holder.items():
+            if target != element:
+                edits.extend(
+                    RemoveProjectValue(op="remove", path=pointer((name, target, "inputs", role)))
+                    for role, source in value.inputs.items() if getattr(source, "element", None) == element
+                )
+    return edits
+
+
+def _wire_edit(analysis: AnalysisDocument, wire: StudioAnalyzeWire, registry: OperationRegistry, states: DatasetPort):
     family = "operations" if wire.element in analysis.operations else "views"
     source = _port(wire.source, analysis, registry, states)
     if family == "operations":
@@ -72,12 +87,17 @@ def review_wire(
         require_dataset_port(source, expected)
     elif wire.element not in analysis.views:
         raise ValueError(f"Unknown figure {wire.element!r}.")
+    return family, SetProjectValue(
+        op="replace", path=pointer((family, wire.element, "inputs", wire.role)),
+        value=wire.source.model_dump(mode="json"),
+    )
 
-    binding = wire.source.model_dump(mode="json")
-    files = shared_document_write(project, document, [SetProjectValue(
-        op="replace", path=f"/{family}/{wire.element}/inputs/{wire.role}", value=binding,
-    )])
-    proposal = preview_authored_files(project, files)
+
+def _review_wire(
+    proposal: Project, key: RunKey, analysis: AnalysisDocument, family: str, wire: StudioAnalyzeWire,
+    registry: OperationRegistry, states: DatasetPort, readers: BaseReaders, figure_templates,
+) -> None:
+    """Refuse a wire the plan of ``proposal`` cannot resolve on ``key``'s run."""
     plan = compile_project(
         proposal, operations=registry, figure_templates=figure_templates, readers=readers,
     )
@@ -101,7 +121,50 @@ def review_wire(
     for problem in problems:
         if problem.path in {f"{path}.inputs", f"{path}.inputs.{wire.role}"}:
             raise ValueError(problem.detail)
-    return files
+
+
+def analyze_edit(
+    project: Project,
+    plan,
+    key: RunKey,
+    document: str,
+    change: StudioAnalyzeChange,
+    chosen: frozenset[str],
+    registry: OperationRegistry,
+    states: DatasetPort,
+    *,
+    readers: BaseReaders = BaseReaders(),
+    figure_templates: FigureTemplateRegistry | None = None,
+) -> StoredEdit:
+    """Store ``change`` of ``document``, which ``key``'s step reads, for the ``chosen`` steps by the document rule.
+
+    The chosen steps read ``document`` or a document based on it; when other steps read it too, a document based on
+    it holds the change for the chosen ones. A wire is refused when the plan of the stored edit cannot resolve it.
+    """
+    chosen = chosen or frozenset({key.step})
+
+    def users(name: str) -> frozenset[str]:
+        return plan.document_users(key.variant, name)
+
+    if key.step not in chosen or not chosen <= lit_steps(project.documents, users, document):
+        raise ValueError("The chosen steps no longer match this document.")
+    family = None
+    if isinstance(change, StudioAnalyzeWire):
+        analysis = _analysis(project, document)
+        family, edit = _wire_edit(analysis, change, registry, states)
+        edits: list[DocumentEdit] = [edit]
+    elif isinstance(change, StudioAnalyzeEdit):
+        edits = list(change.edits)
+    elif isinstance(change, StudioAnalyzeRemove):
+        edits = _removal(_analysis(project, document), change.element)
+    else:
+        edits = base_value_edits(project, document, change.paths)
+    stored = document_write(project, document, edits, chosen, users)
+    if family is not None and (stored.files or stored.created):
+        _review_wire(
+            preview_stored(project, stored), key, analysis, family, change, registry, states, readers, figure_templates,
+        )
+    return stored
 
 
 def _variable_choices(definition: OperationDefinition, states: DatasetPort) -> dict[str, list[str]]:
@@ -183,15 +246,13 @@ def analyze_authoring(
     key = RunKey(body.key.variant, body.key.step, body.key.row)
     step = project.steps.get(key.step)
     if (
-        key.row != "default"
-        or step is None
+        step is None
         or step.kind != "analyze"
-        or step.sweep
         or not isinstance(step.base, DocumentReference)
         or step.base.pointer
         or step.deltas
     ):
-        raise ProjectFolderInvalid(f"Analyze step {key.step!r} is swept or has no named analysis document")
+        raise ProjectFolderInvalid(f"Analyze step {key.step!r} has no named analysis document")
     document = project.documents.get(step.base.document)
     if document is None or document.schema_id != "feedbax.analysis_document.v1":
         raise ProjectFolderInvalid("The selected step has no saved analysis document.")
@@ -200,21 +261,15 @@ def analyze_authoring(
         raise ProjectFolderInvalid(f"The states input of Analyze step {key.step!r} is not one Evaluate step of this variant")
     try:
         states, view = _states_port(service, project_id, body.revision, key, reference)
-        if any(
-            planned.key.step != key.step and step.base.document in planned.document_uses
-            for planned in view.settled.plan.rows
-        ):
-            raise ValueError("This analysis document is shared by more than one step.")
+        plan = view.settled.plan
+        if not any(row.key == key for row in plan.rows):
+            raise ValueError(f"Run {key.row!r} no longer belongs to step {key.step!r}.")
         registry = service.jobs.registries.operations
         definitions = list(registry.definitions())
-        reviewed = (
-            review_wire(
-                project, key, step.base.document, body.wire, registry, states,
-                readers=view.settled.readers, figure_templates=service.jobs.registries.figure_templates,
-            )
-            if body.wire
-            else []
-        )
+        stored = analyze_edit(
+            project, plan, key, step.base.document, body.change, frozenset(body.chosen_steps), registry, states,
+            readers=view.settled.readers, figure_templates=service.jobs.registries.figure_templates,
+        ) if body.change else StoredEdit([])
     except (JobConflict, JobNotFound, KeyError, ValueError) as error:
         raise ProjectFolderInvalid(str(error)) from error
     return StudioAnalyzeAuthoring(
@@ -226,5 +281,7 @@ def analyze_authoring(
             definition.key: _variable_choices(definition, states) for definition in definitions
         },
         figure=VelocitySummary(VelocitySummarySettings()),
-        files=reviewed,
+        changed=changed_from_base(project, step.base.document),
+        files=stored.files,
+        created=list(stored.created),
     )

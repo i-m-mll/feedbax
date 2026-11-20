@@ -13,7 +13,7 @@ from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import EvaluateAttachmentRows, EvaluateAttachmentVariant
 from feedbax.contracts.project import (
-    BasedDocument, RemoveProjectValue, SetProjectValue, apply_document_edits, based_on, json_pointer_parts,
+    SetProjectValue, apply_document_edits, based_on, json_pointer_parts,
 )
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.contracts.project_plan import EVALUATION_TASK, RunKey, compile_project, own_task_variation
@@ -45,7 +45,7 @@ from feedbax.web.services.evaluate_sources import evaluate_subject, evaluate_val
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, preview_authored_files
 from feedbax.studio.selection import StoredEdit
 from feedbax.web.services.trial_scope import (
-    authored_payload, document_write, evaluation_document_write, file_value, lit_steps, preview_stored, reached_runs, refuse_unreached, scoped_file,
+    authored_payload, base_value_edits, changed_from_base, document_write, evaluation_document_write, file_value, lit_steps, preview_stored, reached_runs, refuse_unreached, scoped_file,
     selected_runs, variant_view,
 )
 
@@ -464,7 +464,7 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
         )
         if restored is None:
             raise ProjectFolderInvalid("Reset needs a value the step reads from a document.")
-        change = _reset_edit(project, restored, change)
+        change = StudioTrialDocumentEdit(kind=change.document, edits=base_value_edits(project, restored, change.paths))
 
     variant = None if key.variant == plan.variants[0] else key.variant
 
@@ -545,34 +545,6 @@ def _whole_document(definition, path: str) -> str | None:
     return None if definition.document_pointers.get(path) else definition.document_ids.get(path)
 
 
-def _changed(project, document: str | None) -> list[str]:
-    """The pointers, at every depth, whose value in ``document`` differs from its base's, when it has a base.
-
-    A list is compared item by item, as the edits that address its items do, though a difference stores it whole.
-    """
-    entry = project.documents.get(document) if document is not None else None
-    if not isinstance(entry, BasedDocument):
-        return []
-    composed = [compose_document(project.documents.get, name) for name in (entry.base.document, document)]
-    if any(isinstance(item, ProjectDiagnostic) for item in composed):
-        return []
-    return sorted(set(_differing(composed[0].payload, composed[1].payload)) - {""})
-
-
-def _differing(before, after, at: str = ""):
-    if before == after:
-        return
-    yield at
-    if isinstance(after, dict):
-        for key, item in after.items():
-            inherited = before.get(key, _ABSENT) if isinstance(before, dict) else _ABSENT
-            yield from _differing(inherited, item, f"{at}/{str(key).replace('~', '~0').replace('/', '~1')}")
-    elif isinstance(after, list):
-        for index, item in enumerate(after):
-            inherited = before[index] if isinstance(before, list) and index < len(before) else _ABSENT
-            yield from _differing(inherited, item, f"{at}/{index}")
-
-
 def _family(project, document) -> set[str]:
     """``document`` and the documents based on it, at any depth."""
     found, pending = set(), [document]
@@ -584,30 +556,6 @@ def _family(project, document) -> set[str]:
     return found
 
 
-def _reset_edit(project, document, change: StudioTrialDocumentReset) -> StudioTrialDocumentEdit:
-    """The edit that gives each of ``change``'s paths the value of the base of ``document``."""
-    entry = project.documents[document]
-    if not isinstance(entry, BasedDocument):
-        raise ProjectFolderInvalid(f"{document} is not based on another document.")
-    base = compose_document(project.documents.get, entry.base.document)
-    if isinstance(base, ProjectDiagnostic):
-        raise ProjectFolderInvalid(base.detail)
-    edits = []
-    for path in change.paths:
-        value = base.payload
-        for part in json_pointer_parts(path):
-            if isinstance(value, dict):
-                value = value.get(part, _ABSENT)
-            elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
-                value = value[int(part)]
-            else:
-                value = _ABSENT
-        edits.append(RemoveProjectValue(op="remove", path=path) if value is _ABSENT
-                     else SetProjectValue(op="replace", path=path, value=value))
-    return StudioTrialDocumentEdit(kind=change.document, edits=edits)
-
-
-_ABSENT = object()
 
 
 def _evaluate_task_write(project, plan, key, scope: StudioTrialStepScope, change, variant: str | None) -> StoredEdit:
@@ -819,8 +767,8 @@ def trial_authoring(
         task_document=definition.document_ids.get(task_path) if task_path else None,
         objective_document=definition.document_ids.get("payload.trial_documents.objective"),
         task=task, objective=documents.objective if step.kind == "train" else None,
-        task_changed=_changed(snapshot.project, _whole_document(definition, task_path) if task_path else None),
-        objective_changed=_changed(snapshot.project, _whole_document(
+        task_changed=changed_from_base(snapshot.project, _whole_document(definition, task_path) if task_path else None),
+        objective_changed=changed_from_base(snapshot.project, _whole_document(
             definition, "payload.trial_documents.objective",
         )) if step.kind == "train" else [],
         task_source=task_source, task_field_sources=task_field_sources,
