@@ -14,6 +14,17 @@ type _Json = Any
 type _Rename = Callable[[str], str]
 
 
+def generated_name(base: str, taken: Callable[[str], bool]) -> str:
+    """The name Studio gives a member it creates: ``base`` while it is free, then the first free ``base-2``, ``base-3``.
+
+    The rule of the interface's ``generatedName`` (``web/src/features/projectFolder/generatedName.ts``).
+    """
+    name, number = base, 2
+    while taken(name):
+        name, number = f"{base}-{number}", number + 1
+    return name
+
+
 def _renamed_prefix(family: MemberFamily, old: str, new: str) -> _Rename:
     """Rewrite a sweep target that addresses the member by name, `<family>.<name>...`."""
     prefix = f"{family}.{old}"

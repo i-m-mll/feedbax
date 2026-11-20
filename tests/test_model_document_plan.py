@@ -357,7 +357,7 @@ def test_model_field_tau_keeps_units_and_allows_subsequent_leaf_edits(tmp_path):
     with TestClient(create_app(projects_dir=tmp_path)) as client:
         def prepare(label, text, row="default", *, files=False):
             snapshot = client.get(url).json()
-            body = {"revision": snapshot["revision"], "document": "reach-model", "owner": owner, "lit_steps": ["train"],
+            body = {"revision": snapshot["revision"], "document": "reach-model", "owner": owner, "chosen_steps": ["train"],
                     "run": {"variant": "default", "step": "train", "row": row}}
             response = client.post(url + "/model/fields", json=body)
             assert response.status_code == 200, response.text

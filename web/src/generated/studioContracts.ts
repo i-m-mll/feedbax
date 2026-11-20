@@ -1030,7 +1030,7 @@ export interface ModelFieldRequest {
   run?: StudioSavedTrainKey | null;
   rows?: string[];
   axes?: Record<string, string[]>;
-  lit_steps?: string[];
+  chosen_steps?: string[];
   revision: string;
   document: string;
   owner: ModelAddress;
@@ -1144,7 +1144,7 @@ export interface TrainFieldRequest {
   run?: StudioSavedTrainKey | null;
   rows?: string[];
   axes?: Record<string, string[]>;
-  lit_steps?: string[];
+  chosen_steps?: string[];
   revision: string;
   field?: string | null;
   edit?: FieldTextEdit | FieldKindEdit | FieldNameEdit | null;
@@ -3973,7 +3973,7 @@ export type StudioTrainAuthoringRequest = {
   "run"?: StudioSavedTrainKey | null;
   "rows"?: Array<string>;
   "axes"?: Record<string, Array<string>>;
-  "lit_steps"?: Array<string>;
+  "chosen_steps"?: Array<string>;
   "revision": Sha256;
   "change"?: StudioAuthoringChange | null;
   "class_sweep"?: StudioClassSweepChange | null;
@@ -4084,7 +4084,7 @@ export type StudioTrialSelectDocument = {
 
 export type StudioTrialStepScope = {
   "kind": "step";
-  "lit_steps"?: Array<string>;
+  "chosen_steps"?: Array<string>;
 };
 
 export type SubsetTerms = {
@@ -6094,7 +6094,7 @@ export const ModelFieldRequestSchema: z.ZodType<ModelFieldRequest> = z.lazy(() =
       "run": StudioSavedTrainKeySchema.nullable().optional(),
       "rows": z.array(z.string()).optional(),
       "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1)).optional(),
-      "lit_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
+      "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
       "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
       "owner": ModelAddressSchema,
@@ -6256,7 +6256,7 @@ export const TrainFieldRequestSchema: z.ZodType<TrainFieldRequest> = z.lazy(() =
       "run": StudioSavedTrainKeySchema.nullable().optional(),
       "rows": z.array(z.string()).optional(),
       "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1)).optional(),
-      "lit_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
+      "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
       "field": z.string().nullable().optional(),
       "edit": z.union([FieldTextEditSchema, FieldKindEditSchema, FieldNameEditSchema]).nullable().optional(),
@@ -10660,7 +10660,7 @@ export const StudioTrainAuthoringRequestSchema: z.ZodType<StudioTrainAuthoringRe
     "run": z.union([StudioSavedTrainKeySchema, z.null()]).optional(),
     "rows": z.array(z.string()).optional(),
     "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1)).optional(),
-    "lit_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
+    "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
     "revision": Sha256Schema,
     "change": z.union([StudioAuthoringChangeSchema, z.null()]).optional(),
     "class_sweep": z.union([StudioClassSweepChangeSchema, z.null()]).optional(),
@@ -10797,7 +10797,7 @@ export const StudioTrialSelectDocumentSchema: z.ZodType<StudioTrialSelectDocumen
 export const StudioTrialStepScopeSchema: z.ZodType<StudioTrialStepScope> = z.lazy(() =>
   z.object({
     "kind": z.literal("step"),
-    "lit_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
+    "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialStepScope>;
 

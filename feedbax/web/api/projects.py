@@ -117,7 +117,7 @@ def read_train_authoring(
         bundle = request.app.state.bootstrap_state.bundle
         selection = train_selection(
             folders, project_id, snapshot.revision, snapshot.project, step_id, body.run, body.rows, body.axes,
-            body.lit_steps,
+            body.chosen_steps,
         )
         try:
             projection = project_train_fields(
@@ -150,7 +150,7 @@ def project_train_numeric_fields(
         bundle = request.app.state.bootstrap_state.bundle
         selection = train_selection(
             folders, project_id, body.revision, snapshot.project, step_id, body.run, body.rows, body.axes,
-            body.lit_steps,
+            body.chosen_steps,
         )
         try:
             return project_training_numeric_fields(

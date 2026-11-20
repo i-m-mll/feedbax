@@ -19,7 +19,7 @@ from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, SetField
 from feedbax.contracts.project import (
     Document,
-    DocumentOverrides,
+    DocumentEdit,
     DocumentReference,
     ExternalBase,
     InlineBase,
@@ -30,7 +30,6 @@ from feedbax.contracts.project import (
     StepBase,
     StepKind,
     apply_document_edit,
-    apply_document_edits,
     document_edit_ops,
     document_edit_value,
     json_pointer_parts,
@@ -334,6 +333,42 @@ def _figure_slot(path: str) -> str | None:
     return None
 
 
+@dataclass(frozen=True)
+class DocumentDifference:
+    """One edit a step applies to a document it reads, at ``location`` in that step's file."""
+
+    step: str
+    location: tuple[str, ...]
+    edit: DocumentEdit
+
+
+type DocumentDifferences = Mapping[str, tuple[DocumentDifference, ...]]
+
+
+def document_differences(project: Project, step: str) -> dict[str, tuple[DocumentDifference, ...]]:
+    """The differences ``step`` applies to each document: those of its ``base: {step}`` chain, root first, then its own.
+
+    Applied in order, a later difference at the same path wins. A chain that names a missing step or returns to itself
+    ends there; composing the step reports it.
+    """
+    chain: list[str] = []
+    name: str | None = step
+    while name is not None and name not in chain and (authored := project.steps.get(name)) is not None:
+        chain.append(name)
+        name = authored.base.step if isinstance(authored.base, StepBase) else None
+    differences: dict[str, list[DocumentDifference]] = {}
+    for name in reversed(chain):
+        for document, edits in project.steps[name].document_overrides.items():
+            for index, edit in enumerate(document_edit_ops(edits)):
+                location = (edit.path,) if isinstance(edits, dict) else (
+                    (str(index), "value") if isinstance(edit, SetProjectValue) else (str(index),)
+                )
+                differences.setdefault(document, []).append(
+                    DocumentDifference(name, ("document_overrides", document, *location), edit)
+                )
+    return {document: tuple(items) for document, items in differences.items()}
+
+
 class _Documents:
     def __init__(
         self,
@@ -341,7 +376,7 @@ class _Documents:
         step: str | None = None,
         variant_sources: Any = None,
         read_document: Callable[[str], Document | None] | None = None,
-        overrides: Mapping[str, DocumentOverrides] | None = None,
+        overrides: DocumentDifferences | None = None,
         *,
         external: Callable[[str], bytes | None] | None = None,
         partial_figures: bool = False,
@@ -380,8 +415,8 @@ class _Documents:
                 try:
                     if not isinstance(draft, dict):
                         raise ValueError("Document differences require an object payload")
-                    if edits:
-                        apply_document_edits(draft, edits)
+                    for difference in edits or ():
+                        apply_document_edit(draft, difference.edit, document_edit_value(difference.edit))
                 except ValueError as error:
                     raise _Problem(
                         ResolutionCode.INVALID_DELTA, path, str(error), step=self.step, document=reference.document
@@ -473,14 +508,9 @@ class _Documents:
             document = self.read_document(name)
             assert document is not None and self.step is not None
             shape = source_shape(document.payload, ValueSource("document", name), variant)
-            for index, edit in enumerate(document_edit_ops(edits) if edits else ()):
-                location = (edit.path,) if isinstance(edits, dict) else (str(index),)
-                if not isinstance(edits, dict) and isinstance(edit, SetProjectValue):
-                    location += ("value",)
-                source = ValueSource(
-                    "step", self.step, pointer(("document_overrides", name, *location)), step=self.step,
-                )
-                apply_document_edit(shape, edit, source_shape(document_edit_value(edit), source))
+            for difference in edits or ():
+                source = ValueSource("step", difference.step, pointer(difference.location), step=difference.step)
+                apply_document_edit(shape, difference.edit, source_shape(document_edit_value(difference.edit), source))
             for item in patches:
                 assert item.source is not None
                 shape = patch_source(shape, item.patch, source_shape(item.patch.value, item.source, item.override))
@@ -1010,7 +1040,7 @@ class _Resolver:
 
     def row_documents(self, name: str, state: _StepState, *, partial_figures: bool = False) -> _Documents:
         return _Documents(
-            self.project, name, self.variant_sources, self.read_document, self.project.steps[name].document_overrides,
+            self.project, name, self.variant_sources, self.read_document, document_differences(self.project, name),
             external=self.readers.figure_external if self.project.steps[name].kind == "analyze" else None,
             partial_figures=partial_figures,
             row_patches=state.row_document_patches,
@@ -1101,13 +1131,16 @@ class StepComposition:
 
     name: str
     _state: _StepState
-    _document_overrides: Mapping[str, DocumentOverrides]
+    _document_differences: DocumentDifferences
 
     @cached_property
     def row_basis(self) -> str:
         """Hash the ordered payload and required paths before row-local patches."""
         return sha256_bytes(to_json((
-            self._state.payload, self._state.requires, sorted(self._state.document_uses), self._document_overrides,
+            self._state.payload, self._state.requires, sorted(self._state.document_uses), {
+                document: [difference.edit.model_dump(mode="json") for difference in differences]
+                for document, differences in sorted(self._document_differences.items())
+            },
         )))
 
     @property
@@ -1211,7 +1244,7 @@ def compose_step(
     resolver = _Resolver(project, readers, track_sources, variant_sources, read_document, inline_origin)
     try:
         state = resolver.state(step)
-        return StepTemplate(StepComposition(step, state, project.steps[step].document_overrides), resolver)
+        return StepTemplate(StepComposition(step, state, document_differences(project, step)), resolver)
     except _Problem as error:
         return error.diagnostic
 

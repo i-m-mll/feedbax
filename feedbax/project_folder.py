@@ -61,7 +61,7 @@ from feedbax.contracts.project_plan import ProjectPlan, ProjectPlanMemo, RunKey,
 from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_target
 from feedbax.persistence.project_subject import terminal_train_reader
-from feedbax.project_members import references_member, rename_member
+from feedbax.project_members import generated_name, references_member, rename_member
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.studio_project import (
     PRESENTATION_ADDRESS,
@@ -581,10 +581,8 @@ def _diagnostic_counts(diagnostics: Iterable[ProjectDiagnostic]) -> Counter:
 
 def _free_document_name(project: dict, document: str) -> str:
     stem = re.sub(r"-[0-9]+$", "", document)
-    index = 2
-    while (name := f"{stem}-{index}") in project["documents"] or references_member(project, "documents", name):
-        index += 1
-    return name
+    return generated_name(stem, lambda name: name == stem or name in project["documents"]
+                          or references_member(project, "documents", name))
 
 
 def _check_file_spellings(root: Path, files: Iterable[str]) -> None:

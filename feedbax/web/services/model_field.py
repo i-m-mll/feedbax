@@ -35,7 +35,7 @@ from feedbax.web.services.evaluate_attachment import (
 )
 from feedbax.web.services.model_projection import selected_model
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
-from feedbax.web.services.trial_scope import scoped_file, selection_scope, variant_file
+from feedbax.web.services.trial_scope import reached_steps, scoped_file, selection_scope, variant_file
 
 
 @dataclass(frozen=True)
@@ -350,7 +350,9 @@ def model_fields(
             return ModelFieldResponse(problems=[Problem(code=ProblemCode.STRUCTURE, reason=error.problem.detail)])
         return ModelFieldResponse(files=[edit.file])
     if variant is not None:
-        if body.rows or plan is None or set(body.lit_steps) != plan.document_users(variant, owner_name):
+        if body.rows or plan is None or not plan.document_users(variant, owner_name) <= reached_steps(
+            project, set(body.chosen_steps) or {body.run.step},
+        ):
             raise ProjectFolderInvalid("Select the steps that use this Model in the authored variant.")
         sweep = project.sweep
         assert sweep is not None
@@ -388,7 +390,9 @@ def model_fields(
         return ModelFieldResponse(files=[variant_file(project, variant, [write])])
     if body.address.to_text() not in authored_fields:
         return ModelFieldResponse(files=[step_file(_step_field_write(step, field.address, value))])
-    if set(body.lit_steps) != plan.document_users(body.run.variant, owner_name):
+    if not plan.document_users(body.run.variant, owner_name) <= reached_steps(
+        project, set(body.chosen_steps) or {body.run.step},
+    ):
         return ModelFieldResponse(problems=[Problem(
             code=ProblemCode.STRUCTURE, reason="Select all steps that use this Model to change its document value.",
         )])

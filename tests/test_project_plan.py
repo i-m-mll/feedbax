@@ -88,7 +88,7 @@ def test_text_and_studio_compile_one_shared_plan_before_any_results(tmp_path):
     }
 
 
-def test_named_document_difference_is_local_and_updates_memoized_sources():
+def test_named_document_difference_reaches_steps_based_on_it_and_updates_memoized_sources():
     data = _project_data()
     data["steps"]["sibling"] = {"kind": "train", "base": {"step": "fit"}}
     data["steps"]["fit"]["sweep"] = {
@@ -109,12 +109,12 @@ def test_named_document_difference_is_local_and_updates_memoized_sources():
     assert plan == compile_project(scoped, source_runs=keys)
     requests = {run.key: run.request_id for run in plan.runs}
     assert requests[fit.key] != fit.request_id
-    assert requests[sibling.key] == sibling.request_id
+    assert requests[sibling.key] != sibling.request_id
     assert plan.document_users("default", "point-mass") == {"fit", "sibling"}
     slot = "/payload/trial_documents/model"
-    fit_source = plan.sources[fit.key][slot + path]
-    assert (fit_source.kind, fit_source.name) == ("step", "fit")
-    assert plan.sources[sibling.key][slot + path].name == "point-mass"
+    for key in keys:
+        source = plan.sources[key][slot + path]
+        assert (source.kind, source.name) == ("step", "fit")
     assert plan.selected_definitions[fit.key].payload["seed"] == 2
 
     data["documents"]["point-mass"]["payload"]["interior"]["components"]["plant"]["fields"]["mass"] = 4

@@ -7,6 +7,14 @@ import type { FieldCommit, FieldModel } from '../fieldModel';
 
 export type ProjectedEdit = FieldTextEdit | FieldKindEdit | FieldNameEdit;
 
+/** An exception a field's source names: the runs it picks, and a command that reveals its row in Exceptions. */
+export interface ExceptionMention {
+  readonly runs: string;
+  readonly reveal: () => void;
+}
+
+export type ExceptionMentions = (source: StudioPlanReviewSource) => ExceptionMention | undefined;
+
 export interface FieldViewOptions {
   id: string;
   commit?: (edit: ProjectedEdit) => Promise<string | undefined>;
@@ -19,12 +27,21 @@ export interface FieldViewOptions {
   selectedMembers?: ReadonlySet<string>;
   chooseMember?: (id: string, extend: boolean) => void;
   planSources?: readonly StudioPlanReviewSource[];
+  exceptions?: ExceptionMentions;
   source?: StudioEvaluateValueSource;
 }
 
-function origin({ planSources, source }: FieldViewOptions) {
-  if (planSources?.length) return [...new Set(planSources.map(studioPlanValueSource))].join(', ');
-  return source && studioEvaluateValueSource(source);
+function origin({ planSources, exceptions, source }: FieldViewOptions) {
+  if (!planSources?.length) return { text: source && studioEvaluateValueSource(source) };
+  const mentions = planSources.map((item) => item.kind === 'exception' ? exceptions?.(item) : undefined);
+  const named = new Map(planSources.flatMap((item, index) => {
+    const mention = mentions[index];
+    return mention ? [[JSON.stringify([item.step, item.variant, item.name]), mention] as const] : [];
+  }));
+  return {
+    text: [...new Set(planSources.map((item, index) => studioPlanValueSource(item, mentions[index]?.runs)))].join(', '),
+    reveal: named.size === 1 ? [...named.values()][0].reveal : undefined,
+  };
 }
 
 /** A field the server projects (`StudioFieldView`): the server parses its text and reports refusals. */
@@ -75,6 +92,7 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
     }, true),
   ] : [];
   const picked = options.selectedMembers ?? new Set<string>();
+  const source = origin(options);
   return {
     id: options.id,
     label,
@@ -97,7 +115,8 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
     parts,
     canList: !!sweep && sweep.kind !== 'list' && sweep.can_list && field.can_change_axis,
     differs: effective ?? undefined,
-    origin: [field.conversion, origin(options)].filter(Boolean).join(' · ') || undefined,
+    origin: [field.conversion, source.text].filter(Boolean).join(' · ') || undefined,
+    revealOrigin: source.reveal,
     names: field.site.site.names ?? [],
     functions: field.site.functions,
     commit,

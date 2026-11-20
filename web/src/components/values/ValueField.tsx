@@ -24,6 +24,15 @@ import './valueField.css';
 
 export type ValueFieldForm = 'row' | 'cell';
 
+/** Where the value comes from; a link to that object when it names one. */
+function Origin({ id, text, reveal }: { id: string; text: string; reveal?: () => void }) {
+  return reveal
+    ? <Button id={id} variant="ghost" size="content" className="justify-self-start text-left text-shell-muted" onClick={reveal}>
+      {text}
+    </Button>
+    : <span id={id} className="text-shell-muted">{text}</span>;
+}
+
 function Outline({ children }: { children: ReactNode }) {
   return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}
     strokeLinecap="round" strokeLinejoin="round">{children}</svg>;
@@ -89,7 +98,7 @@ export function ValueField({ model, form = 'row' }: { model: FieldModel; form?: 
   const readOnly = !model.commit || busy;
   const describedBy = [model.origin && originId, (reason ?? model.reason) && reasonId].filter(Boolean).join(' ') || undefined;
   const below = <>
-    {model.origin && <span id={originId} className="text-shell-muted">{model.origin}</span>}
+    {model.origin && <Origin id={originId} text={model.origin} reveal={model.revealOrigin} />}
     {(reason ?? model.reason) && <p role="alert" id={reasonId}>{reason ?? model.reason}</p>}
   </>;
 
@@ -209,7 +218,8 @@ function ClassValue({ model, parameter, labelId, picker, pickReason }: {
   return <section className={clsx('value-field value-field-class grid min-w-0 tabular-nums', parameter.members && 'value-field-class-swept')}
     aria-label={studioFieldLabel('field', model.label)}>
     <FieldRow label={model.label} labelId={labelId} below={origin || shown ? <>
-      {origin && <span id={originId} className="text-shell-muted">{origin}</span>}
+      {origin && <Origin id={originId} text={origin}
+        reveal={parameter.origin ? parameter.revealOrigin : model.revealOrigin} />}
       {shown && <p role="alert" id={reasonId}>{shown}</p>}
     </> : undefined}>
       <ValueText model={parameter} id={id} readOnly={readOnly} describedBy={describedBy} invalid={!!reason}

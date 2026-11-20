@@ -50,8 +50,10 @@ interface Props {
   /** The project's Train steps, whose checkpoints the step can start from. */
   readonly trains?: readonly PlanStepView[];
   readonly picking?: ElementSelectionStore;
-  /** The form is the Training view's: it shows the training document's fields, and an edit reaches the `lit` steps. */
-  readonly trainingDocument?: { readonly lit: readonly string[] };
+  /** The form is the Training view's: it shows the training document's fields. */
+  readonly trainingDocument?: boolean;
+  /** The training document's users an edit is made for, the step among them; without them, the step alone. */
+  readonly chosen?: readonly string[];
 }
 
 const settingsPrefix = '/settings';
@@ -83,23 +85,23 @@ function validateRecipe(
   };
 }
 
-type RunSelection = Pick<TrainFieldRequest, 'run' | 'rows' | 'axes' | 'lit_steps'>;
+type RunSelection = Pick<TrainFieldRequest, 'run' | 'rows' | 'axes' | 'chosen_steps'>;
 
 /**
  * The runs an edit is made for: the named run, and the selected rows and sweep values when they are not the whole step
  * (rows that are every run of the step are the step, so that an edit there reaches runs the edit itself adds); and the
- * steps an edit of a document reaches, none being the step alone.
+ * steps an edit of a document is made for, none being the step alone.
  */
 function runSelection(
   run?: StudioSavedTrainKey, rows: readonly string[] = [], axes: Readonly<Record<string, readonly string[]>> = {},
-  lit: readonly string[] = [], step?: PlanStepView,
+  chosen: readonly string[] = [], step?: PlanStepView,
 ): RunSelection {
   if (!run) return {};
   if (step && new Set(rows).size === step.runs.length) rows = [];
   return {
     run, rows: [...rows],
     axes: rows.length ? Object.fromEntries(Object.entries(axes).map(([axis, values]) => [axis, [...values]])) : {},
-    lit_steps: [...lit],
+    chosen_steps: [...chosen],
   };
 }
 
@@ -233,7 +235,7 @@ export function StudioTrainAuthoringForm(props: Props) {
   const { project_id: projectId, revision } = saved;
   const methodLabel = useId();
   const [methodReason, setMethodReason] = useState<string>();
-  const scope = runSelection(props.run, props.fieldRows, props.fieldAxes, props.trainingDocument?.lit, props.step);
+  const scope = runSelection(props.run, props.fieldRows, props.fieldAxes, props.chosen, props.step);
   const shows = (id: string) => !props.trainingDocument || inTrainingDocument(id);
   const definition = useQuery({
     queryKey: ['train-authoring', projectId, stepId, revision, scope],

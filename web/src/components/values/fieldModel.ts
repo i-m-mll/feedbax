@@ -71,6 +71,8 @@ export interface FieldModel {
   /** The value set on the selected runs, where it differs from the document's. */
   readonly differs?: string;
   readonly origin?: string;
+  /** Shows the object the origin names, where it names one. */
+  readonly revealOrigin?: () => void;
   readonly reason?: string;
   readonly names: readonly ScopedValue[];
   readonly functions: readonly FunctionInfo[];

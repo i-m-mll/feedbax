@@ -43,12 +43,13 @@ import {
   ModelAddressSchema, StepReferenceSchema, type PresentationDocument, type PresentationPosition, type ProjectValueEdit,
   type StudioActivityJob, type StudioJobSubmission, type StudioMachineQuote, type StudioProjectDocument, type StudioProjectWindowMapProblem,
   type StudioSavedTrainKey, type StudioSavedTrainRuns,
-  type StudioCheckpointRuleRequest, type JsonValue, type SweepExceptionTerms, type ModelAddress, type PatchValue,
+  type StudioCheckpointRuleRequest, type JsonValue, type SweepExceptionTerms, type StudioPlanReviewSource, type StudioProjectWindowMapException, type ModelAddress, type PatchValue,
   type StudioClassField,
 } from '@/generated/studioContracts';
 import { useConnection } from '@/api/connection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { authoredPointer, directTrainStep, modelDocumentId } from './authoredEdits';
+import { withBaseDescendants } from './baseDescendants';
 import { useManagedProjectDetails, useSavedEvaluationScene, type NamedDocumentScope } from './managedProjectDetails';
 import {
   choosePick, clearSelection, isModelAddress, selectElement, useElementSelectionStore, usePick, type PickTarget,
@@ -234,6 +235,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     reveal: Reveal;
   }>();
   const [excludedUsers, setExcludedUsers] = useState<Readonly<Record<string, readonly string[]>>>({});
+  /** The exception a field's source revealed, shown in its step's Exceptions while the revision stands. */
+  const [exceptionReveal, setExceptionReveal] = useState<{ revision: string; step: string; id: string }>();
   /** A field of a step's definition to put the keyboard on once the Runs view's inspector shows it. */
   const [fieldFocus, setFieldFocus] = useState<FieldFocusRequest & { step: string }>();
   const [focusFirstModel, setFocusFirstModel] = useState<string>();
@@ -311,7 +314,12 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     ? problemReveal.reveal : undefined;
   /** A revealed place among the step's own fields, which the inspector draws and reveals instead of a banner. */
   const fieldReveal = revealed?.view === 'runs' && placeField(revealed.place) ? revealed : undefined;
-  /** The steps a view of the document the step reads in `field` lights: all that use it, less those taken out. */
+  /** The steps an edit of the selected step reaches outside a document view, drawn lit: it and the steps based on it. */
+  const reachedSteps = wholeStep && step?.kind === 'train' ? withBaseDescendants(saved.project, [step.id]) : undefined;
+  /**
+   * The steps a view of the document the step reads in `field` chooses, all that use it less those taken out, and the
+   * steps it lights, the chosen ones and the users based on them.
+   */
   function documentScope(field: 'graph' | 'task' | 'objective' | 'training'): NamedDocumentScope | undefined {
     const ids = step?.documentIds;
     const document = field === 'graph' ? modelDocumentId(ids)
@@ -323,9 +331,11 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     const users = new Set(plan.steps.filter(({ documentUses }) => documentUses?.includes(document)).map(({ id }) => id));
     if (!users.has(step.id)) return undefined;
     const key = JSON.stringify([step.id, document, variant]);
-    if (localVariant) return { document, key, users, lit: users, localVariant };
+    if (localVariant) return { document, key, users, chosen: users, lit: users, localVariant };
     const excluded = excludedUsers[key] ?? [];
-    return { document, key, users, lit: new Set([...users].filter((id) => id === step.id || !excluded.includes(id))) };
+    const chosen = new Set([...users].filter((id) => id === step.id || !excluded.includes(id)));
+    const lit = withBaseDescendants(saved.project, chosen);
+    return { document, key, users, chosen, lit: new Set([...lit].filter((id) => users.has(id))) };
   }
   const documentScopes = {
     graph: documentScope('graph'), task: documentScope('task'),
@@ -339,9 +349,12 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     if (extend && activeDocumentScope && activeDocumentScope.users.size > 1) {
       if (activeDocumentScope.localVariant || id === step?.id || !activeDocumentScope.users.has(id)) return;
       const { key } = activeDocumentScope;
+      // Taking a step out takes out the steps based on it; they stay lit while another lit step reaches them.
+      const reached = [...withBaseDescendants(saved.project, [id])];
       setExcludedUsers((current) => {
         const ids = current[key] ?? [];
-        return { ...current, [key]: ids.includes(id) ? ids.filter((excluded) => excluded !== id) : [...ids, id] };
+        return { ...current, [key]: ids.includes(id) ? ids.filter((excluded) => !reached.includes(excluded))
+          : [...new Set([...ids, ...reached])] };
       });
       return;
     }
@@ -482,12 +495,12 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     ? undefined : trialScope || undefined;
   const documentEditable = !pending && !outside && !snapshot.saving;
   const trialEditable = documentEditable && Boolean(trialScope);
-  /** A whole-step edit of a Train step's Task or Objective reaches the steps its view lights. */
+  /** A whole-step edit of a Train step's Task or Objective is made for the steps its view chooses. */
   const trialChangeScope: TrialChangeScope = (change) => {
     if (trialEditScope || step?.kind !== 'train' || !trialScope || trialScope.kind !== 'step') return trialEditScope;
-    const lit = change.kind === 'task' ? documentScopes.task?.lit
-      : change.kind === 'objective' || change.kind === 'expression' ? documentScopes.objective?.lit : undefined;
-    return lit && { kind: 'step', lit_steps: [...lit] };
+    const chosen = change.kind === 'task' ? documentScopes.task?.chosen
+      : change.kind === 'objective' || change.kind === 'expression' ? documentScopes.objective?.chosen : undefined;
+    return chosen && { kind: 'step', chosen_steps: [...chosen] };
   };
   const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, trialStep && trialVisible,
     trialEditable, trialChangeScope, runRemoval.confirm);
@@ -545,6 +558,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     fieldAxes: state.selection?.kind === 'values' ? Object.fromEntries(
       state.selection.terms.map(({ sweepId, valueIds }) => [sweepId, [...valueIds]]),
     ) : undefined,
+    exceptions: exceptionMention,
   };
   function setModelPath(slot: ProjectWindowSlot, document: string, path: string[]) {
     setWindowState((current) => ({
@@ -958,6 +972,30 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     }).map(([axis, values]) => `${axis} ${[...values].map((value) => axisValueText(axis, value)).join(', ')}`);
   }
 
+  function stepExceptions(stepId: string, scope: string | null = variant) {
+    return authoredMap?.steps.find(({ step_id, variant: id }) => step_id === stepId && id === scope)?.exceptions ?? [];
+  }
+
+  /** The runs an exception picks, as its row in Exceptions and a field's source read them (`seed 2 · 2 runs`). */
+  function exceptionRuns(target: PlanStepView, { count, rule }: StudioProjectWindowMapException) {
+    return [
+      ...exceptionTerms(target, rule.where),
+      count === 1 ? studioFormat('oneRun') : studioFormat('runCount', { count }),
+    ].join(' · ');
+  }
+
+  function exceptionMention(source: StudioPlanReviewSource) {
+    const target = plan.steps.find(({ id }) => id === source.step);
+    const scope = source.variant ?? variant;
+    const exception = target && stepExceptions(target.id, scope).find(({ id }) => id === source.name);
+    if (!target || !exception) return undefined;
+    return { runs: exceptionRuns(target, exception), reveal: () => {
+      selection.select(selectStep(state, target.id), scope);
+      setExceptionReveal({ revision: saved.revision, step: target.id, id: exception.id });
+      setWindowState((current) => showProjectWindowView({ ...current, inspectorOpen: true }, 'runs', focusSlot));
+    } };
+  }
+
   /** A sweep value as the value it sets, never its id. */
   function axisValueText(axis: string, valueId: string) {
     const coordinate = data?.window_map?.rows.map(({ coordinates }) => coordinates[axis])
@@ -1151,6 +1189,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     onProblems: (step: string, opener: HTMLButtonElement) => setPanel({ kind: 'problems', scope: { step, variant }, opener }),
     newStepCommand, newSweepCommand, onChooseStep: chooseMapStep, runMenu,
     documentScope: activeDocumentScope && activeDocumentScope.users.size > 1 ? activeDocumentScope : undefined,
+    reached: activeDocumentScope ? undefined
+      : reachedSteps && new Set([...reachedSteps].filter((id) => id !== step?.id)),
     pending: planPending,
   };
   const activity = bindStudioCommand('activity', () => setPanel((current) => current?.kind === 'activity' ? null : { kind: 'activity' }));
@@ -1354,7 +1394,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               padded: true,
               picker: pickDocument('training', trainingDocument, scope),
               body: authoring ? withProblem(<StudioTrainAuthoringForm {...authoring} run={namedRun}
-                runPending={!data && !projection.isError} trainingDocument={{ lit: scope ? [...scope.lit] : [] }}
+                runPending={!data && !projection.isError} trainingDocument chosen={scope ? [...scope.chosen] : undefined}
                 fieldRows={scope ? undefined : detailInputs.fieldRows} fieldAxes={scope ? undefined : detailInputs.fieldAxes} />)
                 : noView,
             };
@@ -1373,12 +1413,12 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             const pivot = pivotCommand(slot);
             const pivotActive = pivotSlots[slot] === step.id;
             const run = state.focus?.stepId === step.id ? step.runs.find(({ id }) => id === state.focus?.runId) : undefined;
-            const exceptions = authoredMap?.steps.find(({ step_id, variant: id }) => step_id === step.id && id === variant)
-              ?.exceptions?.map(({ id, count, rule }) => ({ id, text: [
-                ...exceptionPatchTexts(rule.patches ?? {}, trainLabels, trainClasses),
-                ...exceptionTerms(step, rule.where),
-                count === 1 ? studioFormat('oneRun') : studioFormat('runCount', { count }),
-              ].join(' · ') })) ?? [];
+            const exceptions = stepExceptions(step.id).map((exception) => ({ id: exception.id, text: [
+              ...exceptionPatchTexts(exception.rule.patches ?? {}, trainLabels, trainClasses),
+              exceptionRuns(step, exception),
+            ].join(' · ') }));
+            const revealedException = exceptionReveal?.revision === saved.revision && exceptionReveal.step === step.id
+              ? exceptionReveal.id : undefined;
             return {
               header: <StudioRunControls commands={step.kind === 'train' || step.kind === 'evaluate' || lightSteps.has(step.id)
                 ? runCommands : undefined}
@@ -1418,7 +1458,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                       onToRows={freezeAttempts ? freezeEvaluationSubset : undefined} />}
                   </FocusedFields>}
                 attachments={(exceptions.length > 0 || listedInputs.length > 0) && <>
-                  {exceptions.length > 0 && <SweepExceptions exceptions={exceptions}
+                  {exceptions.length > 0 && <SweepExceptions exceptions={exceptions} revealed={revealedException}
                     refusal={refusal?.kind === 'exception' && refusal.step === step.id
                       ? { id: refusal.exception, reason: refusal.reason } : undefined}
                     onRemove={ready && !busy && !saved.project.sweep ? removeSweepException : undefined} />}

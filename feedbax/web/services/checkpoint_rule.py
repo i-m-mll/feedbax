@@ -68,7 +68,7 @@ def prepare_checkpoint_rule_edit(
             selected = {row_key for row_key in rows if row_key.row in scope.rows}
             if len(selected) != len(scope.rows):
                 raise ProjectFolderInvalid("The selected Evaluate rows changed.")
-            file = row_exception_file(address, raw, scope.rows, writes, name_prefix="checkpoint-rows-")
+            file = row_exception_file(address, raw, scope.rows, writes)
         if key not in selected:
             raise ProjectFolderInvalid("The selected run is outside the requested scope.")
     try:

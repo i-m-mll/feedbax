@@ -619,11 +619,18 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
   await expect(mass).toBeEditable();
   await enter(mass, '3');
   await expect(runs(page).getByText('Out of date', { exact: true })).toHaveCount(4);
-  await expect(mass).toHaveAccessibleDescription('Exception · field');
+  // The source reads the runs the exception picks, as its row in Exceptions does, and reveals that row.
+  await expect(mass).toHaveAccessibleDescription('Exception · learning-rate 0.001 · 2 runs');
+  await expect(page.locator('body')).not.toContainText(/trial-rows|values-/);
+  await page.getByRole('button', { name: 'Exception · learning-rate 0.001 · 2 runs', exact: true }).click();
+  const revealedException = page.getByRole('complementary', { name: 'Inspector', exact: true })
+    .getByRole('list', { name: 'Exceptions', exact: true }).getByRole('listitem');
+  await expect(revealedException).toHaveText([/ · learning-rate 0\.001 · 2 runs$/]);
+  await expect(revealedException).toHaveAttribute('aria-current', 'true');
   const scoped = await read();
   const sweep = scoped.window_map!.steps.find(({ step_id }) => step_id === 'train')!;
   expect(sweep.exceptions).toHaveLength(1);
-  expect(sweep.exceptions![0]).toMatchObject({ id: 'field', count: 2, rule: { where: { rows: picked.map(({ key }) => key.row) } } });
+  expect(sweep.exceptions![0]).toMatchObject({ id: 'exception', count: 2, rule: { where: { rows: picked.map(({ key }) => key.row) } } });
   expect(scoped.rows.filter(({ status }) => status === 'stale').map(({ key }) => key.row))
     .toEqual([...picked, ...groupStale].map(({ key }) => key.row));
 

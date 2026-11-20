@@ -80,8 +80,9 @@ export interface MapDocumentScope {
 
 type ChooseStep = (id: string, extend: boolean) => void;
 
-function documentLevel(scope: MapDocumentScope | undefined, step: string) {
-  return !scope ? undefined : scope.lit.has(step) ? 'lit' : scope.users.has(step) ? 'plain' : 'faint';
+/** How a step is drawn against the document view's scope, or, outside one, whether an edit of the selection reaches it. */
+function documentLevel(scope: MapDocumentScope | undefined, step: string, reached = false) {
+  return !scope ? reached ? 'lit' : undefined : scope.lit.has(step) ? 'lit' : scope.users.has(step) ? 'plain' : 'faint';
 }
 
 const documentLevelStyle = 'data-[document-scope=faint]:border-dashed';
@@ -99,6 +100,8 @@ export interface StudioPipelineMapProps {
   state: PipelineSelectionState;
   onSelectionChange: (state: PipelineSelectionState) => void;
   documentScope?: MapDocumentScope;
+  /** Outside a document view, the steps an edit of the selected step reaches besides it: those based on it. */
+  reached?: ReadonlySet<string>;
   onChooseStep?: ChooseStep;
   mode?: 'map' | 'line';
   drawerOpen?: boolean;
@@ -274,6 +277,7 @@ const StepCard = memo(function StepCard({
   applySelection,
   chooseStep,
   documentScope,
+  reached,
   onPresentationChange,
   newStep,
   newSweep,
@@ -294,6 +298,7 @@ const StepCard = memo(function StepCard({
   applySelection: ApplyMapSelection;
   chooseStep: ChooseStep;
   documentScope?: MapDocumentScope;
+  reached?: boolean;
   onPresentationChange?: StudioPipelineMapProps['onPresentationChange'];
   newStep?: StudioCommand;
   newSweep?: StudioCommand;
@@ -315,7 +320,7 @@ const StepCard = memo(function StepCard({
   const arrange = useMemo(() => onPresentationChange &&
     ((order: string[]) => onPresentationChange(step.id, { ...presentation, sweepOrder: order })),
   [onPresentationChange, step.id, presentation]);
-  const level = documentLevel(documentScope, step.id);
+  const level = documentLevel(documentScope, step.id, reached);
   const selected = useMemo(() => new Set(
     (compact ? [] : level === 'lit' ? step.runs : selectedRuns(step, selection)).map(({ id }) => id),
   ), [step, selection, level, compact]);
@@ -620,6 +625,7 @@ function MapLine({
   selection,
   chooseStep,
   documentScope,
+  reached,
   rename,
   enterStep,
 }: {
@@ -628,6 +634,7 @@ function MapLine({
   selection: PipelineSelection | null;
   chooseStep: ChooseStep;
   documentScope?: MapDocumentScope;
+  reached?: ReadonlySet<string>;
   rename?: MapStepRename;
   enterStep?: (stepId: string) => void;
 }) {
@@ -660,7 +667,7 @@ function MapLine({
               aria-current={stepSelection(selection, step.id) ? 'step' : undefined}
               aria-pressed={documentScope ? documentScope.lit.has(step.id) : undefined}
               data-map-selection={stepSelection(selection, step.id)?.kind}
-              data-document-scope={documentLevel(documentScope, step.id)}
+              data-document-scope={documentLevel(documentScope, step.id, reached?.has(step.id))}
               {...lineSelection(step.id)}
             >
               <StepName step={step} />
@@ -678,6 +685,7 @@ export function StudioPipelineMap({
   onSelectionChange,
   onChooseStep,
   documentScope,
+  reached,
   mode = 'map',
   drawerOpen = false,
   presentation,
@@ -761,7 +769,7 @@ export function StudioPipelineMap({
       } : undefined}
     >
       {!plan.steps.length ? null : mode === 'line' ? (
-        <MapLine plan={plan} layout={layout} selection={state.selection} chooseStep={chooseStep} documentScope={documentScope} rename={rename} enterStep={onEnterStep} />
+        <MapLine plan={plan} layout={layout} selection={state.selection} chooseStep={chooseStep} documentScope={documentScope} reached={reached} rename={rename} enterStep={onEnterStep} />
       ) : (
         <>
           {drawDrawer && (
@@ -791,6 +799,7 @@ export function StudioPipelineMap({
                     applySelection={applySelection}
                     chooseStep={chooseStep}
                     documentScope={documentScope}
+                    reached={reached?.has(step.id)}
                     compact={compact && step.id !== primaryStep}
                     dimmed={!documentScope && selectedSteps.length > 0 &&
                       !ancestry.upstream.has(step.id) && !ancestry.downstream.has(step.id)}
