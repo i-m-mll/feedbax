@@ -188,7 +188,7 @@ test('authors and reopens an addressed Model through the project history', async
   expect(initial.project.documents?.model.schema).toBe('feedbax.spec.model');
 });
 
-test('edits and reopens an authored Evaluate attachment without changing the Model document', async ({ page, request, studio }, info) => {
+test('an Evaluate attachment for the step is stored in a document based on the subject\'s, and reopens', async ({ page, request, studio }, info) => {
   test.setTimeout(45_000);
   const seeded = await seedManagedProject(request, []);
   const { projectPath } = seeded;
@@ -205,17 +205,29 @@ test('edits and reopens an authored Evaluate attachment without changing the Mod
   const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
   await model.locator('[data-id="wrapper"] header').dblclick();
   await model.locator('[data-id="controller"] header').dblclick();
+  const edited = () => page.waitForResponse((response) => response.request().method() === 'POST' &&
+    new URL(response.url()).pathname === `${projectPath}/model/edit`);
   await outlineRow(page, 'Cell.output → Readout.input').click();
-  await addIntervention(page, projectPath, { kind: 'step' });
+  await inspector.getByRole('button', { name: 'Add Attachment', exact: true }).click();
+  const [added] = await Promise.all([edited(), page.getByRole('menuitem', { name: 'Add Intervention', exact: true }).click()]);
+  expect(added.ok(), await added.text()).toBe(true);
+  expect(added.request().postDataJSON()).toMatchObject({ step: 'baseline', command: { operation: { op: 'set_attachment' } } });
+  const { result } = await added.json() as { result: { created: string[] } };
+  const [variant] = result.created;
+  expect(variant).toBeDefined();
+  await model.locator('[data-id="wrapper"] header').dblclick();
+  await model.locator('[data-id="controller"] header').dblclick();
+  await model.getByRole('button', { name: 'Attachment Scale', exact: true }).click();
   await expect(inspector.getByRole('textbox', { name: 'Factor', exact: true })).toHaveValue('1');
-  const [changed] = await Promise.all([
-    page.waitForResponse((response) => response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath),
-    enter(inspector.getByRole('textbox', { name: 'Factor', exact: true }), '0.5'),
-  ]);
+  const [changed] = await Promise.all([edited(), enter(inspector.getByRole('textbox', { name: 'Factor', exact: true }), '0.5')]);
   expect(changed.ok(), await changed.text()).toBe(true);
-  const saved = await changed.json() as StudioProjectDocument['snapshot'];
-  expect(saved.project.documents).toEqual(snapshot.project.documents);
-  expect(saved.project.steps?.baseline).toMatchObject({ model_attachments: expect.any(Object) });
+  const saved = (await changed.json() as { result: { snapshot: StudioProjectDocument['snapshot'] } }).result.snapshot;
+  const { [variant]: based, ...others } = saved.project.documents ?? {};
+  expect(others).toEqual(snapshot.project.documents);
+  expect(based).toMatchObject({ base: { document: expect.any(String) } });
+  expect(saved.project.steps?.baseline).not.toHaveProperty('model_attachments');
+  expect((saved.project.steps?.baseline?.base as { inline: { trial_documents: unknown } }).inline.trial_documents)
+    .toEqual({ model: { document: variant } });
   await page.reload();
   await mapStep(page, 'baseline').click();
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
