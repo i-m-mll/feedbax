@@ -24,7 +24,7 @@ from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, FigureSour
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.matrix_core import apply_override_patches
 from feedbax.contracts.project import (
-    DocumentReference, ExternalBase, InlineBase, Project, Step, StepBase, StepKind, json_pointer_parts,
+    DocumentReference, ExternalBase, InlineBase, Project, RunBase, Step, StepBase, StepKind, json_pointer_parts,
 )
 from feedbax.contracts.project_sweep import Sweep
 from feedbax.contracts.project_inputs import StepReference, SubsetTerms
@@ -336,6 +336,19 @@ def _source(source: ValueSource | None) -> StudioAuthoringSource | None:
     return StudioAuthoringSource(kind=source.kind, name=source.name, path=source.path)
 
 
+def _base_source(step: Step) -> str:
+    base = step.base
+    if isinstance(base, StepBase):
+        return f"row {base.row!r} of step {base.step!r}"
+    if isinstance(base, RunBase):
+        return f"run {base.run!r}"
+    if isinstance(base, ExternalBase):
+        return f"file {base.path!r}"
+    if isinstance(base, DocumentReference):
+        return f"document {base.document!r}"
+    return "its own definition with differences written as text"
+
+
 class _TrainFields:
     """A Train step's fields as the selected runs have them.
 
@@ -352,26 +365,26 @@ class _TrainFields:
         if step is None or step.kind != "train":
             raise ValueError(f"Unknown Train step {step_id!r}")
         direct = isinstance(step.base, InlineBase) and not (step.deltas or step.inputs)
+        inherits = isinstance(step.base, StepBase) and step.base.row is None
+        if not (direct or inherits):
+            raise ValueError(f"Train step {step_id!r} takes its definition from {_base_source(step)}")
         checkpoint = step.inputs.get("checkpoint")
-        linked = (
-            isinstance(step.base, StepBase) and step.base.row is None
-            and isinstance(checkpoint, StepReference) and checkpoint.step == step.base.step
-            and checkpoint.checkpoint == "last"
-        )
-        if not (direct or linked):
-            raise ValueError(f"Train step {step_id!r} takes its definition from another step")
         self.project = project
         self.step_id = step_id
         self.step = step
-        self.linked = linked
+        self.inherits = inherits
+        self.continues = (
+            inherits and isinstance(checkpoint, StepReference) and checkpoint.step == step.base.step
+            and checkpoint.checkpoint == "last"
+        )
         self.registry = registry
         template = compose_step(project, step_id, track_sources=True)
         resolved = (
             template.resolve(include_sources=True) if isinstance(template, StepTemplate) else None
         )
-        if linked:
+        if inherits:
             if not isinstance(template, StepTemplate) or not isinstance(resolved, ResolvedStep):
-                raise ValueError("The checkpoint continuation's definition could not be resolved")
+                raise ValueError(f"Train step {step_id!r}'s definition could not be resolved")
             self.authored = template.authored_payload()
         else:
             assert isinstance(step.base, InlineBase)
@@ -534,7 +547,7 @@ class _TrainFields:
             _options({name: method.label or name for name, method in registrations.items()}),
             method_change,
         )
-        if self.linked:
+        if self.continues:
             self.checkpoint_carry(read_plan)
         self.field(
             ("seed",), "Seed", self.payload.get("seed", 0),
@@ -623,7 +636,7 @@ class _TrainFields:
         _, _, classes = choice
         key = stored.get(tag) if isinstance(stored, dict) else None
         sweeps = None
-        if not self.linked and isinstance(key, str):
+        if not self.inherits and isinstance(key, str):
             def writes(value: JsonValue) -> list[SetProjectValue]:
                 return _step_writes([OverridePatch(op="replace", path=".".join((*site, tag)), value=value)])
 
@@ -920,7 +933,7 @@ def project_training_numeric_fields(
         path = json_pointer_parts(field_id)
         def step_writes(value, field=field):
             return _step_writes(field.number_write(value))
-        target = SweepTarget.from_field(view.value, view.control, step_writes) if not definition.linked else None
+        target = SweepTarget.from_field(view.value, view.control, step_writes) if not definition.inherits else None
         axis = FieldSweeps(
             definition.step, target, view.label, field.name, integer=view.control.step == 1, selected=selected,
         ) if target is not None else None

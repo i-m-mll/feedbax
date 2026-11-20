@@ -207,6 +207,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const [commandError, setCommandError] = useState<string>();
   /** The last refused gesture, shown on the object it acted on. */
   const [refusal, setRefusal] = useState<Refusal>();
+  /** The refusal of the selected Train step's authoring read, which is drawn on the step while it holds. */
+  const [readRefusal, setReadRefusal] = useState<Refusal & { kind: 'step' }>();
   const commandFailed = (error: unknown) => {
     if (!isUnanswered(error)) setCommandError(apiErrorMessage(error));
   };
@@ -269,7 +271,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const primaryVariant = variant !== null && variant === variants[0];
   const plan = useMemo(() => projectWindowPlan(saved.project, projection.data, variant, validity.checking),
     [saved.project, projection.data, variant, validity.checking]);
-  const shownPlan = useMemo(() => planWithRefusal(plan, refusal), [plan, refusal]);
+  const shownPlan = useMemo(() => planWithRefusal(planWithRefusal(plan, readRefusal), refusal), [plan, readRefusal, refusal]);
   const activityResultState = useMemo<ActivityResultState>(() => {
     const states = new Map(plan.steps.flatMap(({ runs }) => runs.flatMap(({ state, results }) =>
       results.map(({ jobId }) => [jobId, state] as const))));
@@ -286,15 +288,12 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const canAuthorSweep = (id: string) => primaryVariant && directTrainStep(saved.project, id, true) !== null;
   const authored = step && saved.project.steps?.[step.id];
   const subjectCheckpoint = authored?.kind === 'evaluate' ? exactCheckpoint(authored) : undefined;
-  const checkpoint = authored && authored.inputs?.checkpoint;
-  const linked = wholeStep && authored?.kind === 'train' &&
-    'step' in authored.base && authored.base.row == null && checkpoint &&
-    'step' in checkpoint && checkpoint.step === authored.base.step && checkpoint.checkpoint === 'last';
-  const started = wholeStep && authored?.kind === 'train' && 'inline' in authored.base && !authored.deltas?.length &&
-    Object.keys(authored.inputs ?? {}).join() === 'checkpoint' && StepReferenceSchema.safeParse(checkpoint).success;
-  const authoring = step && (primaryVariant && directTrainStep(saved.project, step.id, true) !== null || linked || started) &&
+  const authoring = step && (primaryVariant && directTrainStep(saved.project, step.id, true) !== null ||
+    wholeStep && authored?.kind === 'train') &&
     state.selection ? {
     editor, stepId: step.id, step, selection: state.selection, picking: elements,
+    onRefused: (reason: string | undefined) => setReadRefusal((current) => reason ? { kind: 'step', step: step.id, reason }
+      : current?.step === step.id ? undefined : current),
     trains: plan.steps.filter(({ kind }) => kind === 'train'),
     onChooseSweepValue: (sweepId: string, valueId: string, extend: boolean) => {
       selection.select(selectSweepValue(latestState.current, step.id, sweepId, valueId, extend));

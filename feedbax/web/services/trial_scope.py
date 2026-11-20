@@ -27,6 +27,7 @@ from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
 from feedbax.project_members import generated_name
 from feedbax.studio.selection import TrainSelection, merged_files
+from feedbax.studio.step_differences import normalized_patches
 from feedbax.web.services.project_folder import ProjectFolderInvalid, preview_authored_files
 
 
@@ -347,7 +348,8 @@ def scoped_file(
         return [variant_file(project, scope.variant, writes)]
     if isinstance(scope, EvaluateAttachmentAxis | SweepValuesScope | EvaluateAttachmentRows):
         return [_selection_file(address, raw, authored, scope, writes)]
-    files = [_step_file(address, raw, authored, direct)] if direct else []
+    stored = _step_file(project, step_id, address, raw, authored, direct) if direct else None
+    files = [stored] if stored is not None else []
     if through:
         chosen = set(chosen) or {step_id}
         if users is None:
@@ -378,15 +380,37 @@ def _selection_file(address, raw, authored, scope, writes) -> StudioProjectFileP
     return row_exception_file(address, raw, scope.rows, writes)
 
 
-def _step_file(address, raw, authored, writes) -> StudioProjectFilePatch:
+_STUDIO_LAYER = "trial-authoring"
+
+
+def _step_file(project, step_id, address, raw, authored, writes) -> StudioProjectFilePatch | None:
+    """The step's file with ``writes`` stored: in its own definition, or else in Studio's delta layer.
+
+    Studio's layer is the trailing run of its layers, kept as one: one patch per path, none that writes the value the
+    step has without it, and no layer when none is left.
+    """
     if isinstance(authored.base, InlineBase) and not authored.deltas:
         updated = apply_override_patches(authored.base.inline, writes)
         return file_value(address, raw, ("base", "inline"), updated)
-    # Compose a local difference without modifying the inherited definition.
-    layer = MatrixCompositionDelta(
-        layer_id="trial-authoring", patches=writes, acknowledges_ancestor_paths=[patch.path for patch in writes],
-    )
-    return file_value(address, raw, ("deltas",), [*raw.get("deltas", []), layer.model_dump(mode="json", exclude_unset=True)])
+    kept = len(authored.deltas)
+    while kept and authored.deltas[kept - 1].layer_id == _STUDIO_LAYER:
+        kept -= 1
+    prior = authored.deltas[:kept]
+    stored = [patch for layer in authored.deltas[kept:] for patch in layer.patches]
+    before = _authored_payload(project.model_copy(update={"steps": project.steps | {
+        step_id: authored.model_copy(update={"deltas": prior, "model_attachments": {}}),
+    }}), step_id)
+    patches = normalized_patches(before, [*stored, *writes])
+    deltas = [layer.model_dump(mode="json", exclude_unset=True) for layer in prior]
+    if patches:
+        deltas.append(MatrixCompositionDelta(
+            layer_id=_STUDIO_LAYER, patches=patches, acknowledges_ancestor_paths=[patch.path for patch in patches],
+        ).model_dump(mode="json", exclude_unset=True))
+    if deltas:
+        return file_value(address, raw, ("deltas",), deltas)
+    if "deltas" in raw:
+        return StudioProjectFilePatch(address=address, patches=[RemoveProjectValue(op="remove", path="/deltas")])
+    return None
 
 
 def train_selection(

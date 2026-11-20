@@ -3979,6 +3979,16 @@ export type StudioTrainAuthoringRequest = {
   "class_sweep"?: StudioClassSweepChange | null;
 };
 
+export type StudioTrainStartEdit = {
+  "revision": Sha256;
+  "files": Array<StudioProjectFilePatch>;
+};
+
+export type StudioTrainStartRequest = {
+  "revision": Sha256;
+  "source"?: StepReference | null;
+};
+
 export type StudioTrainStep = {
   "kind": "train";
   "base": Base;
@@ -10667,6 +10677,20 @@ export const StudioTrainAuthoringRequestSchema: z.ZodType<StudioTrainAuthoringRe
   }).strict()
 ) as unknown as z.ZodType<StudioTrainAuthoringRequest>;
 
+export const StudioTrainStartEditSchema: z.ZodType<StudioTrainStartEdit> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "files": z.array(StudioProjectFilePatchSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioTrainStartEdit>;
+
+export const StudioTrainStartRequestSchema: z.ZodType<StudioTrainStartRequest> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "source": z.union([StepReferenceSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioTrainStartRequest>;
+
 export const StudioTrainStepSchema: z.ZodType<StudioTrainStep> = z.lazy(() =>
   z.object({
     "kind": z.literal("train"),
@@ -11121,6 +11145,8 @@ export const contractSchemas = {
   StudioAuthoringSurface: StudioAuthoringSurfaceSchema,
   StudioTrainAuthoring: StudioTrainAuthoringSchema,
   StudioTrainAuthoringRequest: StudioTrainAuthoringRequestSchema,
+  StudioTrainStartEdit: StudioTrainStartEditSchema,
+  StudioTrainStartRequest: StudioTrainStartRequestSchema,
   AuthoredFileAddress: AuthoredFileAddressSchema,
   RemoveProjectValue: RemoveProjectValueSchema,
   SetProjectValue: SetProjectValueSchema,
@@ -11278,6 +11304,8 @@ export interface ContractTypeMap {
   StudioAuthoringSurface: StudioAuthoringSurface;
   StudioTrainAuthoring: StudioTrainAuthoring;
   StudioTrainAuthoringRequest: StudioTrainAuthoringRequest;
+  StudioTrainStartEdit: StudioTrainStartEdit;
+  StudioTrainStartRequest: StudioTrainStartRequest;
   AuthoredFileAddress: AuthoredFileAddress;
   RemoveProjectValue: RemoveProjectValue;
   SetProjectValue: SetProjectValue;

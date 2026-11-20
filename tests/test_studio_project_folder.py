@@ -21,7 +21,7 @@ from feedbax import project_folder
 from feedbax.contracts import project_plan, request_identity
 from feedbax.contracts.jobs import StudioJobEventHistory
 from feedbax.contracts.model_address import ModelAddress
-from feedbax.contracts.project import Project, SetProjectValue
+from feedbax.contracts.project import InlineBase, Project, SetProjectValue, StepBase
 from feedbax.builtins.training import StandardTrainingSettings, supervised_gradient
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
 from feedbax.contracts.project_plan import RunKey, compile_project
@@ -1744,3 +1744,82 @@ def test_a_shared_training_document_keeps_a_sweep_s_value_as_the_step_s_differen
         ]
         (definition,) = [value for key, value in train.plan().selected_definitions.items() if key.step == "train"]
         assert definition.payload["settings"]["optimizer"]["learning_rate"]["value"] == 0.003
+
+
+def _start(train, step, source):
+    return train.save(train.client.post(f"{_URL}/authoring/train/{step}/start", json={
+        "revision": train.revision, "source": source,
+    }))
+
+
+def test_starting_a_continuation_from_its_model_detaches_it_and_back_continues(tmp_path):
+    root, client = _shared_training(tmp_path, continuations=1, other=False)
+    with client:
+        train = _Training(client)
+        train.number("train", _RATE, {"kind": "text", "text": "0.001, 0.003"})
+        file = root / "steps" / "train-2.json"
+        continuation = load_text_project(root).project.steps["train-2"]
+
+        _start(train, "train-2", None)
+        detached = load_text_project(root).project.steps["train-2"]
+        assert isinstance(detached.base, InlineBase) and not detached.inputs and not detached.deltas
+        assert detached.base.inline["settings"] == {"document": "training", "pointer": "/settings"}
+        assert all(not run.inputs for run in train.plan().runs if run.key.step == "train-2")
+        assert set(train.requests("train-2").values()) == set(train.requests("train").values())
+        response = client.post(f"{_URL}/authoring/train/train-2", json={"revision": train.revision})
+        assert response.status_code == 200, response.text
+
+        _start(train, "train-2", {"step": "train", "checkpoint": "last"})
+        restored = load_text_project(root).project.steps["train-2"]
+        assert restored.base == continuation.base and restored.inputs == continuation.inputs
+        assert restored.sweep is None and not restored.requires
+        assert [patch.model_dump(exclude_unset=True) for layer in restored.deltas for patch in layer.patches] == [
+            {"path": "checkpoint_initialization", "op": "add", "value": "initialize_from"},
+        ]
+
+        _start(train, "train-2", None)
+        detached = train.requests("train-2")
+        train.number("train", _RATE, {"kind": "text", "text": "0.002, 0.004"})
+        assert train.requests("train-2") == detached
+        stored = file.read_bytes()
+        train.number("train-2", _BATCHES, {"kind": "text", "text": "5"}, chosen=("train", "train-2"))
+        assert file.read_bytes() == stored
+        assert _changed(detached, train.requests("train-2")) == detached.keys()
+
+
+def test_a_step_based_on_a_step_without_its_checkpoint_opens_in_the_train_editor(tmp_path):
+    root, client = _shared_training(tmp_path, continuations=1, other=False)
+    with client:
+        train = _Training(client)
+        saved = client.patch(_URL, json={"revision": train.revision, "address": {"kind": "step", "id": "train-2"},
+                                         "patches": [{"op": "remove", "path": "/deltas"}, {"op": "remove", "path": "/inputs"}]})
+        assert saved.status_code == 200, saved.text
+        step = load_text_project(root).project.steps["train-2"]
+        assert step.base == StepBase(step="train") and not step.inputs and not step.deltas
+
+        def fields(step):
+            response = client.post(f"{_URL}/authoring/train/{step}", json={"revision": train.revision})
+            assert response.status_code == 200, response.text
+            return {field["id"]: field["value"] for field in response.json()["fields"]}
+
+        parent = fields("train")
+        assert fields("train-2") == parent
+        train.number("train-2", "/seed", {"kind": "text", "text": "3"})
+        assert fields("train-2")["/seed"] == 3 and fields("train") == parent
+
+
+def test_choosing_a_document_and_then_the_one_it_replaced_leaves_the_step_as_it_was(tmp_path):
+    root, client = _shared_training(tmp_path, continuations=1, other=False)
+    with client:
+        train = _Training(client)
+        payload = load_text_project(root).project.documents["training"].payload
+        created = client.post(f"{_URL}/files", json={"revision": train.revision, "file": {
+            "kind": "document", "id": "training-2", "document": {"schema": "feedbax.spec.training_document", "payload": payload},
+        }})
+        assert created.status_code == 201, created.text
+        file = root / "steps" / "train-2.json"
+        stored = file.read_bytes()
+        train.save(train.choose("train-2", "training-2"))
+        assert file.read_bytes() != stored
+        train.save(train.choose("train-2", "training"))
+        assert file.read_bytes() == stored
