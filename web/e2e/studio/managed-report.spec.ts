@@ -5,6 +5,7 @@ import type {
 import { mapStep, runProjectFixture } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
 import { chooseStepKind } from './fixtures/studioKeyboard';
+import { rootPayload } from '../../src/features/projectFolder/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -17,7 +18,7 @@ test('authors an ordered shared Report from a planned Analyze figure', async ({ 
   const figures = page.getByRole('tabpanel', { name: 'Figures', exact: true });
   const document = page.getByRole('tabpanel', { name: 'Document', exact: true });
   const blocks = document.getByRole('listitem');
-  const report = (saved: StudioProjectSnapshot) => saved.project.documents?.report.payload as unknown as ReportDocument;
+  const report = (saved: StudioProjectSnapshot) => rootPayload(saved.project.documents?.report) as unknown as ReportDocument;
   const inputs = (saved: StudioProjectSnapshot) => saved.project.steps?.report.inputs;
   const profile = { step: 'analyze', row: 'default', element: 'profile', product: 'figure' };
   const comparison = { ...profile, element: 'comparison' };

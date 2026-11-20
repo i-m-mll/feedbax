@@ -24,7 +24,7 @@ from feedbax._secure_fs import (
 from feedbax.contracts._authoring_inputs import AuthoringInputs
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.project import Document, Payload, Project, Step
+from feedbax.contracts.project import DOCUMENT, Payload, Project, Step
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName
 from feedbax.contracts.project_sweep import Row, Sweep
 from feedbax.contracts.strict_json import strict_json_loads
@@ -134,9 +134,10 @@ class ProjectReadError(ValueError):
         super().__init__(f"{self.source}: {message}")
 
 
-def _parse[Model: StrictModel](model: type[Model], data: bytes, source: str | Path) -> Model:
+def _parse[Model](model: type[Model] | TypeAdapter[Model], data: bytes, source: str | Path) -> Model:
     try:
-        return model.model_validate(strict_json_loads(data, ref=str(source)))
+        value = strict_json_loads(data, ref=str(source))
+        return model.validate_python(value) if isinstance(model, TypeAdapter) else model.model_validate(value)  # type: ignore[attr-defined]
     except (ValueError, UnicodeError) as error:
         raise ProjectReadError(source, str(error)) from error
 
@@ -314,7 +315,7 @@ def parse_text_project_files(root: Path, files: Mapping[str, bytes]) -> TextProj
     path = root / declaration
     named_paths = [Path(name) for name in sorted(files) if name != declaration]
 
-    def read[Model: StrictModel](model: type[Model], name: str) -> Model:
+    def read[Model](model: type[Model] | TypeAdapter[Model], name: str) -> Model:
         return _parse(model, files[name], root / name)
 
     manifest = _parse_manifest(files[declaration], path)
@@ -328,7 +329,7 @@ def parse_text_project_files(root: Path, files: Mapping[str, bytes]) -> TextProj
         )
     try:
         project = Project(
-            documents={file.stem: read(Document, file.as_posix()) for file in named_paths if file.parent.name == "documents"},
+            documents={file.stem: read(DOCUMENT, file.as_posix()) for file in named_paths if file.parent.name == "documents"},
             steps={file.stem: read(Step, file.as_posix()) for file in named_paths if file.parent.name == "steps"},
             sweep=(
                 manifest.sweep.model_copy(

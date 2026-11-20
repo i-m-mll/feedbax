@@ -18,7 +18,7 @@ from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, TaskDocument
 
 if TYPE_CHECKING:
-    from feedbax.contracts.project import Document
+    from feedbax.contracts.project import RootDocument
     from feedbax.tasks.registry import PythonTaskRegistry
 
 
@@ -70,7 +70,7 @@ DOCUMENT_INPUT_MEDIA_TYPES = frozenset((INITIAL_MODEL_MEDIA_TYPE, TASK_INPUT_MED
 
 
 def authored_document_input(
-    reference: DocumentInputReference, document: Document, *, python_tasks: PythonTaskRegistry | None = None,
+    reference: DocumentInputReference, document: RootDocument, *, python_tasks: PythonTaskRegistry | None = None,
 ) -> DocumentInput:
     if isinstance(reference, InitialModelReference):
         if document.schema_id != MODEL_DOCUMENT_SCHEMA_ID:

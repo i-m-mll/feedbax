@@ -4,6 +4,7 @@ import type { ModelDocument, ModelEditResponse, StudioProjectDocument } from '..
 import { chooseSweepValue, enter, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { outlineRow, pick, placeFromLibrary } from './fixtures/controls';
+import { rootPayload } from '../../src/features/projectFolder/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -44,7 +45,7 @@ test('authors and reopens an addressed Model through the project history', async
     return result;
   }
   function stored(project: StudioProjectDocument['snapshot']) {
-    return project.project.documents?.model.payload as unknown as ModelDocument;
+    return rootPayload(project.project.documents?.model) as unknown as ModelDocument;
   }
   const card = (id: string) => model.locator(`.react-flow__node[data-id="${id}"]`);
   await page.goto(url);

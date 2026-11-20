@@ -5,13 +5,14 @@ import { join } from 'node:path';
 import type { ModelDocument, StudioProjectSnapshot } from '../../src/generated/studioContracts';
 import { fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { readSaved } from './fixtures/studioKeyboard';
+import { rootPayload } from '../../src/features/projectFolder/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
 const inspector = (page: Page) => page.locator('[data-studio-focus-region="inspector"]:visible');
 
 function components(saved: StudioProjectSnapshot, document: string) {
-  return Object.entries((saved.project.documents?.[document]?.payload as unknown as ModelDocument).interior.components ?? {});
+  return Object.entries((rootPayload(saved.project.documents?.[document]) as unknown as ModelDocument).interior.components ?? {});
 }
 
 test('the Model inspector frames the document, one component and two', async ({ page, request }) => {

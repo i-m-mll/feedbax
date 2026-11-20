@@ -2,6 +2,7 @@ import { expect, test } from './fixtures/studio';
 import { type APIRequestContext, type CDPSession, type Locator, type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, ModelFieldResponse, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { rootPayload } from '../../src/features/projectFolder/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -192,7 +193,7 @@ async function measureField(page: Page, context: CDPSession, projectPath: string
   expect(fields.problems).toHaveLength(0);
   expect(fields.command?.operation.op).toBe('set_field');
   const { snapshot, acknowledgedAt } = await savedEdit;
-  const model = snapshot.project.documents!.model.payload as unknown as ModelDocument;
+  const model = rootPayload(snapshot.project.documents!.model) as unknown as ModelDocument;
   expect(model.step_seconds).toBe(0.02);
   const plan = await (await settled).json() as StudioSavedTrainRuns;
   expect(plan.revision).toBe(snapshot.revision);

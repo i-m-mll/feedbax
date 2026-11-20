@@ -6,6 +6,7 @@ import { ProjectEditConflictError, ProjectEditController, type ProjectEditTransp
 import { createCheckpointTrain } from './createCheckpointTrain';
 import { createTrain } from './createTrain';
 import { projectWindowPlan, savedRunId } from './projectWindowPlan';
+import { rootPayload } from './rootPayload';
 
 const model: AuthoredFileAddress = { kind: 'document', id: 'model' };
 const task: AuthoredFileAddress = { kind: 'document', id: 'task' };
@@ -363,7 +364,7 @@ it('coalesces observed revisions across files and stops the burst at an undo or 
   ]);
   expect(editor.getSnapshot()).toMatchObject({ undoName: 'Local Task', redoName: 'Outside Change' });
   await editor.redo();
-  expect(current().project.documents?.task?.payload).toEqual({ value: 3 });
+  expect(rootPayload(current().project.documents?.task)).toEqual({ value: 3 });
 
   editor.edit(task, 'Second Local Task', [value(5)]);
   await editor.flush();
@@ -372,7 +373,7 @@ it('coalesces observed revisions across files and stops the burst at an undo or 
   await editor.undo();
   await editor.flush();
   expect(editor.getSnapshot()).toMatchObject({ undoName: 'Second Local Task', redoName: 'Outside Change' });
-  expect(current().project.documents?.task?.payload).toEqual({ value: 5 });
+  expect(rootPayload(current().project.documents?.task)).toEqual({ value: 5 });
   editor.dispose();
 });
 
@@ -390,7 +391,7 @@ it('replays exact outside bytes after local Undo canonicalizes the same authored
 
   await editor.undo();
   expect(replay.mock.calls[0][1].files[0].before).toBe(canonical.revision);
-  expect(current().project.documents?.task?.payload).toEqual({ value: 1 });
+  expect(rootPayload(current().project.documents?.task)).toEqual({ value: 1 });
   await editor.redo();
   expect(current().file_revisions.find(({ address }) => address.id === task.id)?.data)
     .toBe(outside.file_revisions.find(({ address }) => address.id === task.id)?.data);
@@ -427,7 +428,7 @@ it('moves a replay acknowledged by exact observed file digests after losing its 
   expect(current().project).toEqual(initial.project);
   expect(editor.getSnapshot()).toMatchObject({ undoName: null, redoName: 'Outside Change' });
   await editor.redo();
-  expect(current().project.documents?.task?.payload).toEqual({ value: 3 });
+  expect(rootPayload(current().project.documents?.task)).toEqual({ value: 3 });
   editor.dispose();
 });
 
@@ -439,7 +440,7 @@ it('rejects a stale outside replay and shows the newer observation', async () =>
   await expect(editor.undo()).rejects.toMatchObject({ status: 409 });
   expect(replay).toHaveBeenCalledTimes(1);
   expect(editor.getSnapshot()).toMatchObject({ saved: current(), pending: 0, undoName: 'Outside Change', redoName: null });
-  expect(current().project.documents?.task?.payload).toEqual({ value: 4 });
+  expect(rootPayload(current().project.documents?.task)).toEqual({ value: 4 });
   editor.dispose();
 });
 
@@ -459,7 +460,7 @@ it('rebases kept edits over the latest revision and gives undo the outside value
 
 it('checks a structural edit guard against outside dependencies on undo and Keep Edits', async () => {
   const validate = (_before: StudioProjectSnapshot['project'], after: StudioProjectSnapshot['project']) => {
-    const payload = after.documents?.task?.payload as { value: number };
+    const payload = rootPayload(after.documents?.task) as { value: number };
     if (payload.value !== 1) throw new Error('The task now depends on the existing model layout.');
   };
   const saved = fixture();
@@ -493,7 +494,7 @@ it('returns a refused save to its gesture and keeps no project error', async () 
   const snapshot = editor.getSnapshot();
   expect(snapshot.error).toBeNull();
   expect(snapshot.pending).toBe(0);
-  expect(snapshot.draft.documents?.model.payload).toEqual({ value: 1 });
+  expect(rootPayload(snapshot.draft.documents?.model)).toEqual({ value: 1 });
   editor.dispose();
 });
 
@@ -601,7 +602,7 @@ it('undoes a document command and the step use that joined it as one entry', asy
   const result = await editor.memberCommand('Duplicate Task', { kind: 'duplicate', family: 'documents', member: 'task' }, before,
     async ({ member }) => [{ address: model, patches: [{ op: 'replace', path: '/payload/value', value: member }] }]);
   expect(result.member).toBe('task-2');
-  expect(current().project.documents?.model?.payload).toEqual({ value: 'task-2' });
+  expect(rootPayload(current().project.documents?.model)).toEqual({ value: 'task-2' });
   expect(editor.getSnapshot().undoName).toBe('Duplicate Task');
 
   await editor.undo();

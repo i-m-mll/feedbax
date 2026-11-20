@@ -3,6 +3,7 @@ import type { ModelFieldResponse, StudioProjectDocument, StudioProjectSnapshot }
 import { enter, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { placeFromLibrary } from './fixtures/controls';
+import { rootPayload } from '../../src/features/projectFolder/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -62,7 +63,7 @@ test('edits and reopens a stored Model field sweep through project history', asy
   await expect(hidden).toHaveValue('64');
   await expect.poll(async () => {
     const { snapshot } = await (await request.get(projectPath + '/open')).json() as StudioProjectDocument;
-    return JSON.stringify(snapshot.project.documents?.model?.payload);
+    return JSON.stringify(rootPayload(snapshot.project.documents?.model));
   }).toContain('"hidden_size":64');
 
   const valueMenu = inspector.getByRole('button', { name: 'Hidden size kind: Value' });

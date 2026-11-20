@@ -6,6 +6,7 @@ import type {
 import { enter, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
 import { palette } from './fixtures/studioKeyboard';
+import { rootPayload } from '../../src/features/projectFolder/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -93,7 +94,7 @@ test('authors a managed Train in an empty folder and reopens its result', async 
   await task.focus();
   await Promise.all([patch(), page.keyboard.press('Meta+Shift+Z')]);
   await expect(taskSteps).toHaveValue('12');
-  await expect.poll(async () => (await saved()).project.documents?.task?.payload).toMatchObject({
+  await expect.poll(async () => rootPayload((await saved()).project.documents?.task)).toMatchObject({
     type: 'feedbax.Reaching', params: { x: 0.22, n_steps: 12 },
   });
 
@@ -121,16 +122,16 @@ test('authors a managed Train in an empty folder and reopens its result', async 
   const cell = await add('GRU', 'Runtime');
   await expect(inspector.getByRole('textbox', { name: 'Input size', exact: true })).toBeEnabled();
   await enter(inspector.getByRole('textbox', { name: 'Input size', exact: true }), '2');
-  await expect.poll(async () => Object.values(((await saved()).project.documents?.model?.payload as unknown as ModelDocument)
+  await expect.poll(async () => Object.values((rootPayload((await saved()).project.documents?.model) as unknown as ModelDocument)
     .interior.components ?? {})).toEqual(expect.arrayContaining([expect.objectContaining({
       type: 'feedbax.GRU', fields: expect.objectContaining({ input_size: 2 }),
     })]));
   const linear = await add('Linear', 'Runtime');
   await enter(inspector.getByRole('textbox', { name: 'Input size', exact: true }), '4');
-  await expect.poll(async () => Object.values(((await saved()).project.documents?.model?.payload as unknown as ModelDocument)
+  await expect.poll(async () => Object.values((rootPayload((await saved()).project.documents?.model) as unknown as ModelDocument)
     .interior.components ?? {}).find((component) => component.kind === 'leaf' && component.type === 'feedbax.Linear')).toMatchObject({ fields: { input_size: 4 } });
   await enter(inspector.getByRole('textbox', { name: 'Output size', exact: true }), '2');
-  await expect.poll(async () => Object.values(((await saved()).project.documents?.model?.payload as unknown as ModelDocument)
+  await expect.poll(async () => Object.values((rootPayload((await saved()).project.documents?.model) as unknown as ModelDocument)
     .interior.components ?? {})).toEqual(expect.arrayContaining([expect.objectContaining({
       type: 'feedbax.Linear', fields: expect.objectContaining({ input_size: 4, output_size: 2 }),
     })]));
@@ -162,7 +163,7 @@ test('authors a managed Train in an empty folder and reopens its result', async 
   const portDialog = page.getByRole('dialog', { name: 'Add Port', exact: true });
   await enter(portDialog.getByRole('textbox', { name: 'Name', exact: true }), 'Command');
   await expect(portDialog).toBeHidden();
-  const savedModel = (await saved()).project.documents?.model?.payload as unknown as ModelDocument;
+  const savedModel = rootPayload((await saved()).project.documents?.model) as unknown as ModelDocument;
   const command = savedModel.ports?.outputs?.find(({ name }) => name === 'Command');
   expect(command).toBeDefined();
   const commandOutput = { owner: 'outputs', port: command!.id };
@@ -177,7 +178,7 @@ test('authors a managed Train in an empty folder and reopens its result', async 
   await objective.getByRole('button', { name: 'Add Term', exact: true }).click();
   await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(Command)');
   await enter(objective.getByRole('textbox', { name: 'Weight', exact: true }), '2');
-  await expect.poll(async () => (await saved()).project.documents?.objective?.payload).toMatchObject({
+  await expect.poll(async () => rootPayload((await saved()).project.documents?.objective)).toMatchObject({
     terms: [expect.objectContaining({ weight: expect.objectContaining({ kind: 'literal', value: 2 }) })],
   });
   await objective.focus();
@@ -194,7 +195,7 @@ test('authors a managed Train in an empty folder and reopens its result', async 
   });
 
   const reopened = await saved();
-  const reopenedModel = reopened.project.documents?.model?.payload as unknown as ModelDocument;
+  const reopenedModel = rootPayload(reopened.project.documents?.model) as unknown as ModelDocument;
   expect(Object.values(reopenedModel.interior.wires ?? {})).toEqual(expect.arrayContaining([
     expect.objectContaining({ target: inputToCell }),
     expect.objectContaining({ source: gruOutput, target: linearInput }),

@@ -5,6 +5,7 @@ import type {
 } from '../../src/generated/studioContracts';
 import { appendManagedFiles, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind, palette } from './fixtures/studioKeyboard';
+import { rootPayload } from '../../src/features/projectFolder/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -261,7 +262,7 @@ test('New in the Document header gives an empty report that cannot run', async (
   await expect(header.getByRole('button', { name: /^Report Document / })).toHaveText(created);
   const base = (await saved()).project.steps?.report?.base;
   expect(base && 'document' in base ? base.document : undefined).toBe(created);
-  expect((await saved()).project.documents?.[created]?.payload).toMatchObject({ blocks: [] });
+  expect(rootPayload((await saved()).project.documents?.[created])).toMatchObject({ blocks: [] });
   await expect(document.getByRole('listitem')).toHaveCount(0);
   await expect(document.getByRole('button', { name: 'Add Text', exact: true })).toBeEnabled();
   await expect(document.getByRole('status')).toContainText("Can't run");
@@ -312,7 +313,7 @@ test('the Training view edits the training document for the steps it lights, and
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Training', exact: true }).click();
   await expect(picker('Training')).toHaveText('training');
-  const document = () => saved().then(({ project }) => project.documents?.training?.payload);
+  const document = () => saved().then(({ project }) => rootPayload(project.documents?.training));
   const initial = await requests();
   const edited = await setBatches(primary, '7');
   expect(edited.train).not.toBe(initial.train);

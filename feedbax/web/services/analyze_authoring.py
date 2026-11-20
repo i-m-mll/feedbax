@@ -14,7 +14,7 @@ from feedbax.contracts.operation import (
 from feedbax.contracts.project import DocumentReference, Project
 from feedbax.contracts.project_inputs import StepReference
 from feedbax.contracts.project_plan import PlannedAnalyzeRun, RunKey, compile_project
-from feedbax.contracts.project_resolution import BaseReaders
+from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, compose_document
 from feedbax.contracts.studio_analyze import (
     StudioAnalyzeAuthoring,
     StudioAnalyzeRequest,
@@ -59,7 +59,10 @@ def review_wire(
     readers: BaseReaders = BaseReaders(),
     figure_templates: FigureTemplateRegistry | None = None,
 ) -> StudioProjectFilePatch:
-    analysis = AnalysisDocument.model_validate(project.documents[document].payload)
+    composed = compose_document(project.documents.get, document)
+    if isinstance(composed, ProjectDiagnostic):
+        raise ValueError(composed.detail)
+    analysis = AnalysisDocument.model_validate(composed.payload)
     family = "operations" if wire.element in analysis.operations else "views"
     source = _port(wire.source, analysis, registry, states)
     if family == "operations":

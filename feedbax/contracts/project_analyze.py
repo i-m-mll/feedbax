@@ -31,7 +31,7 @@ from feedbax.contracts.figure_document import (
 from feedbax.contracts.operation import DatasetPort, require_dataset_fields, require_dataset_port
 from feedbax.contracts.project import Document, Payload, json_pointer_parts
 from feedbax.contracts.project_plan import ElementKey, PlannedElement, PlannedInput, RunKey
-from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode
+from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode, compose_document
 from feedbax.contracts.request_identity import EncodedRequest, encode_request
 from feedbax.contracts.request_refs import InputMember, ProductRef
 from feedbax.contracts.request_specs import (
@@ -96,9 +96,10 @@ class _Lowerer:
         )
         name = self.document_ids[doc_path] if doc_path is not None else None
         if name is not None and doc_path is not None and document_path is None and path.split(".", 4)[3:4] == ["figure"]:
-            authored = self.documents[name]
+            authored = compose_document(self.documents.get, name)
             document_path = (
-                "payload.path" if authored.schema_id == FIGURE_DOCUMENT_SCHEMA and is_figure_document_pin(authored.payload)
+                "payload.path" if not isinstance(authored, ProjectDiagnostic)
+                and authored.schema_id == FIGURE_DOCUMENT_SCHEMA and is_figure_document_pin(authored.payload)
                 else ".".join(("payload", *json_pointer_parts(self.document_pointers.get(doc_path)))) + path[len(doc_path):]
             )
         self.problems.append(

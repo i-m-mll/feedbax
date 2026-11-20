@@ -58,7 +58,7 @@ from feedbax.contracts.project_io import (
     text_project_fingerprint,
 )
 from feedbax.contracts.project_plan import ProjectPlan, ProjectPlanMemo, RunKey, compile_project, compiler_authority
-from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic
+from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, compose_document
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_target
 from feedbax.persistence.project_subject import terminal_train_reader
 from feedbax.project_members import duplicate_step, generated_name, references_member, rename_member
@@ -206,8 +206,12 @@ def _loses_model_target(payload, next_payload, targets, state, result, authority
 def model_edit_source(
     snapshot: StudioProjectSnapshot, document: ProjectName,
 ) -> tuple[dict[str, JsonValue], dict[str, JsonValue]]:
-    source = snapshot.project.documents.get(document)
-    if source is None or source.schema_id != MODEL_DOCUMENT_SCHEMA_ID:
+    source = compose_document(snapshot.project.documents.get, document)
+    if isinstance(source, ProjectDiagnostic) and source.document == document and source.document_path is None:
+        raise ProjectFolderNotFound(document)
+    if isinstance(source, ProjectDiagnostic):
+        raise ProjectFolderInvalid(source.detail)
+    if source.schema_id != MODEL_DOCUMENT_SCHEMA_ID:
         raise ProjectFolderNotFound(document)
     if snapshot.presentation is None:
         raise ProjectFolderInvalid("The project presentation document is unreadable")
@@ -387,10 +391,13 @@ def compile_saved_project(
 
 def _may_read_figure_pin(project: Project) -> bool:
     figures = {
-        name: document for name, document in project.documents.items()
+        name: compose_document(project.documents.get, name) for name, document in project.documents.items()
         if document.schema_id == FIGURE_DOCUMENT_SCHEMA
     }
-    if any(is_figure_document_pin(document.payload) for document in figures.values()):
+    if any(
+        not isinstance(document, ProjectDiagnostic) and is_figure_document_pin(document.payload)
+        for document in figures.values()
+    ):
         return True
     if any(figures.keys() & step.document_overrides.keys() for step in project.steps.values()):
         return True

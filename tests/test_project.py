@@ -4,7 +4,7 @@ import pytest
 from pydantic import BaseModel
 
 from feedbax.contracts.base import sha256_bytes
-from feedbax.contracts.project import Document, Project
+from feedbax.contracts.project import Project, RootDocument
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
     ProjectReadError,
@@ -367,10 +367,10 @@ def test_document_schema_validation_distinguishes_unknown_schema_reference_and_v
 
     project = Project(
         documents={
-            "good": Document(schema="task", payload={"rate": 1}),
-            "bad": Document(schema="task", payload={"rate": "never"}),
-            "unknown": Document(schema="unknown", payload={}),
-            "unresolved": Document(schema="task", payload={"document": "missing"}),
+            "good": RootDocument(schema="task", payload={"rate": 1}),
+            "bad": RootDocument(schema="task", payload={"rate": "never"}),
+            "unknown": RootDocument(schema="unknown", payload={}),
+            "unresolved": RootDocument(schema="task", payload={"document": "missing"}),
         }
     )
     errors = validate_project_documents(project, {"task": Task.model_validate})

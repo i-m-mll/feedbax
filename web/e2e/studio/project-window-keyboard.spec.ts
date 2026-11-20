@@ -7,6 +7,7 @@ import { authorFirstTrain } from './fixtures/firstTrainAuthoring';
 import { activate, activateMenuItem, chooseOutlineRow, chooseStepKind, number, palette, post, readSaved, tabTo } from './fixtures/studioKeyboard';
 import { expectVisibleFocus, scanStudio } from './fixtures/studioAccessibility';
 import { outlineRow } from './fixtures/controls';
+import { rootPayload } from '../../src/features/projectFolder/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -109,7 +110,7 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   await expect(reach).toHaveValue('0.15');
   await expect(task.getByRole('alert')).toHaveCount(0);
   await enter(reach, '0.6');
-  await expect.poll(async () => (await readSaved(request, projectPath)).project.documents?.task?.payload)
+  await expect.poll(async () => rootPayload((await readSaved(request, projectPath)).project.documents?.task))
     .toMatchObject({ params: { x: 0.6 } });
   const current = await readSaved(request, projectPath);
   expect(current.revision).not.toBe(saved.revision);
@@ -341,7 +342,7 @@ test('Model edits follow the lit users of a saved shared document', async ({ pag
   await component.click();
   const inspector = region(page, 'inspector');
   const mass = inspector.getByRole('textbox', { name: 'Mass', exact: true });
-  const documentValue = (saved: StudioProjectSnapshot) => saved.project.documents?.[model.id].payload;
+  const documentValue = (saved: StudioProjectSnapshot) => rootPayload(saved.project.documents?.[model.id]);
   const valueAt = (mass: number) => ({ interior: { components: { plant: { fields: { mass } } } } });
 
   async function savedModelWrite(writing: ReturnType<typeof post>) {

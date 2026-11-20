@@ -6,6 +6,7 @@ import type {
 import { enter, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
 import { chooseStepKind } from './fixtures/studioKeyboard';
+import { rootPayload } from '../../src/features/projectFolder/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -23,7 +24,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   const figures = page.getByRole('tabpanel', { name: 'Figures', exact: true });
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-  const graph = (saved: StudioProjectSnapshot) => saved.project.documents?.analysis.payload as unknown as AnalysisDocument;
+  const graph = (saved: StudioProjectSnapshot) => rootPayload(saved.project.documents?.analysis) as unknown as AnalysisDocument;
   const mutation = (method: string, route: string) => page.waitForResponse((response) =>
     response.request().method() === method && new URL(response.url()).pathname === route);
 
