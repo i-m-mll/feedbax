@@ -22,8 +22,21 @@ export interface FieldOption {
  * a member by a class's option value and removes one by its id.
  */
 export type FieldEdit = FieldTextEdit | FieldKindEdit | FieldNameEdit | StudioAddClassMember | StudioRemoveClassMember |
-  { readonly kind: 'set'; readonly value: JsonValue };
+  { readonly kind: 'set'; readonly value: JsonValue } | { readonly kind: 'reset' };
 export type FieldCommit = (edit: FieldEdit) => Promise<string | undefined>;
+
+/** The changed mark of a value a difference of the shown document sets: its text, and the Reset that gives the value the inherited one. */
+export interface ChangeMark {
+  readonly text: string;
+  readonly reset?: () => Promise<string | undefined>;
+}
+
+/** `commit`, with Reset going to `change`'s reset. A field that takes no edit takes no Reset. */
+export function withReset(commit: FieldCommit | undefined, change: ChangeMark | undefined): FieldCommit | undefined {
+  const reset = change?.reset;
+  if (!reset || !commit) return commit;
+  return (edit) => edit.kind === 'reset' ? reset() : commit(edit);
+}
 
 export interface FieldKindOffer {
   readonly kind: FieldKind;
@@ -71,6 +84,8 @@ export interface FieldModel {
   /** The value set on the selected runs, where it differs from the document's. */
   readonly differs?: string;
   readonly origin?: string;
+  /** The value is a difference of the shown document: its origin is the changed mark, and offers Reset. */
+  readonly changed?: boolean;
   /** Shows the object the origin names, where it names one. */
   readonly revealOrigin?: () => void;
   readonly reason?: string;

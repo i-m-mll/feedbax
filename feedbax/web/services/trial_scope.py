@@ -1,9 +1,10 @@
 """Store an edit of a step's definition by the scope of the runs it is made for."""
 
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from functools import partial
+from typing import Any
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -14,19 +15,27 @@ from feedbax.contracts.model_edit import (
     EvaluateAttachmentAxis, EvaluateAttachmentRows, EvaluateAttachmentStep, EvaluateAttachmentVariant,
 )
 from feedbax.contracts.project import (
-    StepBase,
-    DocumentEdit, InlineBase, Project, RemoveProjectValue, SetProjectValue, apply_document_edits, document_edit_ops,
+    BasedDocument, Document, DocumentBase, DocumentEdit, DocumentReference, InlineBase, Payload, Project,
+    DifferenceNotApplied, RemoveDocumentValue, RemoveProjectValue, SetProjectValue, StepBase, apply_differences,
+    apply_document_edit, based_on, diff,
+    document_edit_value, json_pointer_parts, same_json,
 )
 from feedbax.contracts.project_inputs import SweepExceptionTerms
 from feedbax.contracts.project_plan import RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.project_resolution import StepTemplate, compose_step, document_differences, document_write_target
+from feedbax.contracts.project_resolution import (
+    ProjectDiagnostic, StepTemplate, compose_document, compose_step, document_write_target,
+)
 from feedbax.contracts.project_sources import pointer
-from feedbax.contracts.project_sweep import AxisCondition, NamedAxis, SetValue, RemoveValue, _compose_writes
+from feedbax.contracts.project_sweep import (
+    AxisCondition, NamedAxis, SetValue, RemoveValue, _compose_writes,
+)
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
-from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
+from feedbax.contracts.studio_project import AuthoredFileAddress, CreateNamedDocument, StudioProjectFilePatch
 from feedbax.project_members import generated_name
-from feedbax.studio.selection import TrainSelection, merged_files
+from feedbax.project_folder import _free_member_name, document_file
+from feedbax.studio.selection import StoredEdit, TrainSelection, merged_files
+from feedbax.studio.step_differences import normalized_patches
 from feedbax.web.services.project_folder import ProjectFolderInvalid, preview_authored_files
 
 
@@ -105,7 +114,7 @@ def selected_runs(plan, key, scope, *, chosen_steps=()):
     else:
         selected = {
             row.key for row in plan.rows
-            if row.key.step in (chosen_steps or (key.step,))
+            if row.key.variant == key.variant and row.key.step in (chosen_steps or (key.step,))
         }
     if key not in selected or any(item.variant != key.variant for item in selected):
         raise ProjectFolderInvalid("The edit must address runs in the selected variant only.")
@@ -234,63 +243,451 @@ type DocumentUsers = Callable[[str], Collection[str]]
 """The steps of the primary variant whose runs read a document."""
 
 
-def _overlap(left: str, right: str) -> bool:
-    return left == right or left.startswith(right + "/") or right.startswith(left + "/")
+def preview_stored(project: Project, stored: StoredEdit) -> Project:
+    """``project`` with the documents ``stored`` creates and its patches."""
+    if stored.created:
+        project = project.model_copy(update={
+            "documents": project.documents | {created.id: created.document for created in stored.created},
+        })
+    return preview_authored_files(project, stored.files)
 
 
-def _covers(outer: str, inner: str) -> bool:
-    return inner == outer or inner.startswith(outer + "/")
+def _composed(project: Project, name: str) -> Payload:
+    entry = compose_document(project.documents.get, name)
+    if isinstance(entry, ProjectDiagnostic):
+        raise ProjectFolderInvalid(entry.detail)
+    if not isinstance(entry.payload, dict):
+        raise ProjectFolderInvalid(f"{name} is not an object.")
+    return entry.payload
 
 
-def _step_difference(project: Project, step: str, document: str, local: list[DocumentEdit]) -> StudioProjectFilePatch:
-    authored = project.steps[step]
-    differences = authored.model_dump(mode="json")["document_overrides"]
-    if not local:
-        differences.pop(document, None)
-    else:
-        differences[document] = [edit.model_dump(mode="json") for edit in local]
-    return StudioProjectFilePatch(
-        address=AuthoredFileAddress(kind="step", id=step),
-        patches=[SetProjectValue(
-            op="replace" if "document_overrides" in authored.model_fields_set else "add",
-            path="/document_overrides", value=differences,
-        )],
-    )
+def _edited(content: Payload, edits: Sequence[DocumentEdit], name: str) -> Payload:
+    """``content`` with ``edits``: a value set or removed at each path, whatever the document held there."""
+    result = deepcopy(content)
+    for edit in edits:
+        parts = json_pointer_parts(edit.path)
+        parent: Any = result
+        for part in parts[:-1]:
+            parent = parent.get(part) if isinstance(parent, dict) else None
+        if isinstance(parent, dict):
+            if isinstance(edit, RemoveProjectValue) and parts[-1] not in parent:
+                continue
+            if isinstance(edit, SetProjectValue):
+                edit = edit.model_copy(update={"op": "replace" if parts[-1] in parent else "add"})
+        try:
+            apply_document_edit(result, edit, document_edit_value(edit))
+        except ValueError as error:
+            raise ProjectFolderInvalid(f"The edit does not apply to {name}: {error}") from error
+    return result
 
 
-def document_files(
-    project: Project, document: str, edits: list[DocumentEdit], chosen: Collection[str], users: Collection[str],
-) -> list[StudioProjectFilePatch]:
-    """Store ``edits`` of ``document``'s payload for the ``chosen`` steps.
+def lit_steps(documents: Mapping[str, Document], readers: DocumentUsers, name: str) -> frozenset[str]:
+    """The steps an edit of ``name`` would change: its readers and those of the documents based on it."""
+    lit: set[str] = set()
+    pending, seen = [name], set()
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        lit.update(readers(current))
+        pending.extend(based_on(documents, current))
+    return frozenset(lit)
 
-    The edit is stored in the document when the steps it reaches, the chosen ones and those based on them, are all of
-    the document's ``users``; otherwise as a difference on each chosen step not based on another chosen step. Each chosen
-    step's own difference at an edited path is cleared, or replaced where the edit is stored on it. A step the edit
-    reaches without being chosen keeps its own difference.
+
+@dataclass(frozen=True)
+class _DocumentStores:
+    files: list[StudioProjectFilePatch]
+    created: list[CreateNamedDocument]
+    pointing: dict[str, dict[str, str]]
+    """Per chosen step, the documents it reads that it reads a new document in place of."""
+    written: dict[str, tuple[Payload, Payload]]
+    """Each document that holds the edit in place, with its composed content before and after."""
+
+
+def _document_stores(
+    project: Project, shown: str, edits: Sequence[DocumentEdit], chosen: frozenset[str] | None, readers: DocumentUsers,
+    taken: set[str],
+) -> _DocumentStores:
+    """Where ``edits`` of ``shown`` are stored for the ``chosen`` steps, every step when None.
+
+    Each document of ``shown``'s family, from ``shown`` down, holds the edit when every step whose content that would
+    change is chosen, and is otherwise left as it was, with a new document based on it holding the edit for its chosen
+    readers.
     """
-    entry = project.documents[document]
-    shared = set(users) <= reached_steps(project, chosen)
-    files = []
-    if shared:
-        raw = deepcopy(entry.payload)
-        apply_document_edits(raw, edits)
-        files.append(file_value(AuthoredFileAddress(kind="document", id=document),
-                                {"payload": entry.payload}, ("payload",), raw))
-    storing = set() if shared else {step for step in chosen if step not in base_descendants(project, set(chosen) - {step})}
-    for step in sorted(chosen):
-        previous = document_edit_ops(project.steps[step].document_overrides.get(document, {}))
-        local = []
-        for edit in previous:
-            affected = [requested for requested in edits if _overlap(edit.path, requested.path)]
-            if not affected or step in storing and not any(_covers(requested.path, edit.path) for requested in affected):
-                local.append(edit)
-            elif not any(_covers(requested.path, edit.path) for requested in affected):
-                raise ProjectFolderInvalid(f"{step} has an overlapping document difference.")
-        if step in storing:
-            local.extend(edits)
-        if local != previous:
-            files.append(_step_difference(project, step, document, local))
-    return files
+    documents = project.documents
+    if chosen is not None and (not chosen or not chosen <= lit_steps(documents, readers, shown)):
+        raise ProjectFolderInvalid(f"A chosen step does not read {shown} or a document based on it.")
+    stores = _DocumentStores([], [], {}, {})
+    before: dict[str, Payload] = {}
+    after: dict[str, Payload] = {}
+
+    def old(name: str) -> Payload:
+        if name not in before:
+            before[name] = _composed(project, name)
+        return before[name]
+
+    def changed(name: str, content: Payload | None, seen: tuple[str, ...]) -> frozenset[str]:
+        """The steps whose content changes when ``name`` composes to ``content``, its children keeping their
+        differences; None is content their differences no longer apply to."""
+        if name in seen:
+            return frozenset()
+        steps = set(readers(name)) if content is None or not same_json(content, old(name)) else set()
+        for child in based_on(documents, name):
+            try:
+                inherited = None if content is None else apply_differences(content, documents[child].differences)
+            except DifferenceNotApplied:
+                inherited = None
+            steps |= changed(child, inherited, (*seen, name))
+        return frozenset(steps)
+
+    def visit(name: str, seen: tuple[str, ...]) -> None:
+        document = documents[name]
+        inherits = isinstance(document, BasedDocument) and document.base.document in after
+        if name in seen or chosen is not None and not inherits and not lit_steps(documents, readers, name) & chosen:
+            return
+        content = _edited(old(name), edits, name)
+        if chosen is None or changed(name, content, ()) <= chosen:
+            if not same_json(content, old(name)):
+                after[name] = content
+                stores.written[name] = (old(name), content)
+            base = None
+            if isinstance(document, BasedDocument):
+                base = after.get(document.base.document) or old(document.base.document)
+            file = document_file(name, document, content, base)
+            if file is not None:
+                stores.files.append(file)
+        elif direct := frozenset(readers(name)) & chosen:
+            variant = _document_name(project, name, taken)
+            taken.add(variant)
+            stores.created.append(CreateNamedDocument(kind="document", id=variant, document=BasedDocument(
+                schema=document.schema_id, base=DocumentBase(document=name), differences=diff(old(name), content),
+            )))
+            for step in direct:
+                stores.pointing.setdefault(step, {})[name] = variant
+        for child in based_on(documents, name):
+            visit(child, (*seen, name))
+
+    visit(shown, ())
+    return stores
+
+
+def _document_name(project: Project, name: str, taken: Collection[str]) -> str:
+    data = project.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    data["documents"] |= {other: {} for other in taken if other not in data["documents"]}
+    return _free_member_name(data, "documents", name)
+
+
+def _references(payload: Any, at: tuple[str, ...] = ()) -> Iterator[tuple[tuple[str, ...], DocumentReference]]:
+    if isinstance(payload, dict):
+        if isinstance(payload.get("document"), str):
+            try:
+                yield at, DocumentReference.model_validate(payload)
+                return
+            except ValidationError:
+                pass
+        for key, value in payload.items():
+            yield from _references(value, (*at, key))
+    elif isinstance(payload, list):
+        for index, value in enumerate(payload):
+            yield from _references(value, (*at, str(index)))
+
+
+def _step_references(project: Project, step: str) -> dict[tuple[str, ...], DocumentReference]:
+    payload = authored_payload(project, step)
+    return dict(_references(payload)) if payload is not None else {}
+
+
+def _step_chain(project: Project, step: str) -> int:
+    depth, seen = 0, {step}
+    while isinstance(base := project.steps[step].base, StepBase) and base.step in project.steps and base.step not in seen:
+        step = base.step
+        seen.add(step)
+        depth += 1
+    return depth
+
+
+def _slot_write(payload: Any, slot: str, document: str) -> OverridePatch:
+    """The write that gives a step whose payload is ``payload`` a reference of its own to ``document`` in ``slot``."""
+    reference = {"document": document}
+    if isinstance(payload, dict) and isinstance(payload.get("trial_documents"), dict):
+        return OverridePatch(path=f"trial_documents.{slot}", op="add", value=reference)
+    return OverridePatch(path="trial_documents", op="add", value={slot: reference})
+
+
+_VARIANT_LAYER = "variant"
+
+
+class _Store:
+    """Where an edit keeps its changes: the project's files in the default variant, ``variant`` None, and otherwise the
+    variant's row. ``view`` is the project the edit reads, the variant's with its row applied, kept up to date with
+    what has been stored."""
+
+    def __init__(self, project: Project, variant: str | None, view: Project):
+        self.project, self.variant, self.view = project, variant, view
+        self.files: list[StudioProjectFilePatch] = []
+        self.created: list[CreateNamedDocument] = []
+        self.row: list[OverridePatch] = []
+        self.layers: dict[str, list[dict[str, Any]]] = {}
+        """Per step outside its file's own definition, the layer the row appends to it; none drops the row's layer."""
+
+    def documents(self, stores: _DocumentStores) -> None:
+        """Store the documents ``stores`` writes and creates: in their files, or as the row's
+        ``documents.<name>.payload.<path>`` writes."""
+        self.created.extend(stores.created)
+        if self.variant is None:
+            self.files.extend(stores.files)
+        else:
+            self.row.extend(
+                OverridePatch(path=".".join(("documents", name, "payload", *json_pointer_parts(path))), op="remove")
+                if isinstance(record, RemoveDocumentValue) else OverridePatch(
+                    path=".".join(("documents", name, "payload", *json_pointer_parts(path))),
+                    op="replace" if _holds(before, json_pointer_parts(path)) else "add", value=record.value,
+                )
+                for name, (before, after) in stores.written.items() for path, record in diff(before, after).items()
+            )
+        self.view = preview_stored(self.view, StoredEdit(
+            stores.files if self.variant is None else [], tuple(stores.created),
+        ))
+
+    def step(self, step: str, writes: Sequence[OverridePatch]) -> None:
+        """Store ``writes``, paths in ``step``'s payload: in its file, or in the row. The row writes the step's own
+        definition when its file holds one alone, and otherwise a layer it appends to the step's deltas."""
+        current = self.view.steps[step]
+        if self.variant is None:
+            file = _step_file(self.view, step, AuthoredFileAddress(kind="step", id=step),
+                              current.model_dump(mode="json", by_alias=True, exclude_unset=True), current, writes)
+            if file is not None:
+                self.files.append(file)
+                self.view = preview_authored_files(self.view, [file])
+            return
+        authored = self.project.steps[step]
+        if isinstance(authored.base, InlineBase) and not authored.deltas:
+            self.row.extend(patch.model_copy(update={"path": f"steps.{step}.base.inline.{patch.path}"}) for patch in writes)
+            updated = current.model_copy(update={"base": InlineBase(inline=apply_override_patches(current.base.inline, writes))})
+        else:
+            count = len(authored.deltas)
+            prior = [patch for layer in current.deltas[count:] for patch in layer.patches]
+            bare = current.model_copy(update={"deltas": current.deltas[:count]})
+            before = authored_payload(self.view.model_copy(update={"steps": self.view.steps | {step: bare}}), step)
+            patches = normalized_patches(before, [*prior, *writes])
+            layers = [MatrixCompositionDelta(
+                layer_id=_VARIANT_LAYER, patches=patches, acknowledges_ancestor_paths=[patch.path for patch in patches],
+            )] if patches else []
+            self.layers[step] = [layer.model_dump(mode="json", exclude_unset=True) for layer in layers]
+            updated = bare.model_copy(update={"deltas": [*bare.deltas, *layers]})
+        self.view = self.view.model_copy(update={"steps": self.view.steps | {step: updated}})
+
+    def point(self, pointing: Mapping[str, Mapping[str, str]], named: Mapping[str, tuple[str, str]]) -> None:
+        """Point each step of ``pointing`` at its new documents, visiting steps parents first.
+
+        A step's desired reference is its reference before the edit, mapped for the pointed steps; a ``named`` step,
+        which reads its document through its subject, is given a reference of its own in its slot. A reference is
+        written only where the composed one differs.
+        """
+        if not pointing:
+            return
+        before = self.view
+        moved = {old for mapping in pointing.values() for old in mapping}
+        desired: dict[str, dict[tuple[str, ...], DocumentReference]] = {}
+        for step in before.steps:
+            references = _step_references(before, step)
+            if any(reference.document in moved for reference in references.values()):
+                mapping = pointing.get(step, {})
+                desired[step] = {
+                    path: reference.model_copy(update={"document": mapping.get(reference.document, reference.document)})
+                    for path, reference in references.items() if reference.document in moved
+                }
+        slots = {
+            step: (slot, pointing[step][document]) for step, (slot, document) in named.items()
+            if document in pointing.get(step, {})
+        }
+        if missing := set(pointing) - desired.keys() - slots.keys():
+            raise ProjectFolderInvalid(f"{', '.join(sorted(missing))} reads the document only through its sweep.")
+        for step in sorted(desired.keys() | slots.keys(), key=lambda name: (_step_chain(before, name), name)):
+            composed = _step_references(self.view, step)
+            writes = [
+                OverridePatch(path=".".join(path), op="replace" if path in composed else "add",
+                              value=reference.model_dump(mode="json", exclude_none=True))
+                for path, reference in desired.get(step, {}).items() if composed.get(path) != reference
+            ]
+            if step in slots:
+                writes.append(_slot_write(authored_payload(self.view, step), *slots[step]))
+            if writes:
+                self.step(step, writes)
+
+    def stored(self, reached: frozenset[str]) -> StoredEdit:
+        if self.variant is None:
+            return StoredEdit(merged_files(self.files), tuple(self.created), reached)
+        return StoredEdit(_row_file(self.project, self.variant, self.row, self.layers), tuple(self.created), reached)
+
+
+def _row_file(
+    project: Project, variant: str, writes: Sequence[OverridePatch], layers: Mapping[str, list[dict[str, Any]]],
+) -> list[StudioProjectFilePatch]:
+    """The variant's row with ``writes``, which compose with its writes, and ``layers``, which replace its layer of
+    each step. A write that leaves a value as the default variant has it is dropped from the row."""
+    row = project.sweep.rows.get(variant) if project.sweep else None
+    if row is None:
+        raise ProjectFolderInvalid("The variant needs an authored row.")
+    appended = {f"steps.{step}.deltas.-": layer for step, layer in layers.items()}
+    if not writes and not appended:
+        return []
+    raw = row.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    previous = raw.get("patches", {})
+    patches = _store_patches(previous, [
+        *writes, *(OverridePatch(path=path, op="add", value=layer[0]) for path, layer in appended.items() if layer),
+    ])
+    touched = {write.path for write in writes}
+    kept = {
+        path: value for path, value in patches.items()
+        if not (path in appended and not appended[path])
+        and not (path in touched and value is not None and _as_default(project, path, value))
+    }
+    if kept == previous:
+        return []
+    return [file_value(AuthoredFileAddress(kind="variant", id=variant), raw, ("patches",), kept)]
+
+
+def _as_default(project: Project, path: str, write: Any) -> bool:
+    """Whether the row's ``write`` at ``path`` leaves the value the default variant has there."""
+    parts = path.split(".")
+    if parts[0] == "documents" and len(parts) > 3 and parts[2] == "payload" and parts[1] in project.documents:
+        content: Any = _composed(project, parts[1])
+    elif parts[0] == "steps" and parts[2:4] == ["base", "inline"] and parts[1] in project.steps and isinstance(
+        project.steps[parts[1]].base, InlineBase,
+    ):
+        content = project.steps[parts[1]].base.inline
+    else:
+        return False
+    rest = parts[4:] if parts[0] == "steps" else parts[3:]
+    present = _holds(content, rest)
+    if write.get("op") == "remove":
+        return not present
+    if not present:
+        return False
+    for part in rest:
+        content = content[int(part)] if isinstance(content, list) else content[part]
+    return same_json(content, write.get("value"))
+
+
+def variant_view(plan, project: Project, variant: str | None) -> Project:
+    """The project an edit in ``variant`` reads: ``project`` in the default variant, None, else the variant's."""
+    if variant is None:
+        return project
+    view = plan.variant_projects.get(variant)
+    if view is None:
+        raise ProjectFolderInvalid(f"The {variant} variant's row does not apply; fix it before editing in it.")
+    return view
+
+
+def document_write(
+    project: Project, shown: str, edits: Sequence[DocumentEdit], chosen: Collection[str], readers: DocumentUsers,
+    variant: str | None = None, named: Mapping[str, tuple[str, str]] = {}, view: Project | None = None,
+) -> StoredEdit:
+    """Store ``edits`` of the document ``shown`` for the ``chosen`` steps, which read it or a document based on it.
+
+    ``readers`` are the steps of ``variant`` that read a document, None being the default variant, and ``view`` that
+    variant's project. After it every chosen step has the edited value in that variant and no other step's definition
+    in any variant has changed.
+    """
+    chosen = frozenset(chosen)
+    if variant is not None and view is None:
+        raise ValueError("An edit in a variant reads the variant's project.")
+    store = _Store(project, variant, view or project)
+    stores = _document_stores(store.view, shown, edits, chosen, readers, set())
+    store.documents(stores)
+    store.point(stores.pointing, named)
+    return store.stored(chosen)
+
+
+def shared_document_write(project: Project, shown: str, edits: Sequence[DocumentEdit]) -> list[StudioProjectFilePatch]:
+    """Store ``edits`` of ``shown`` for every step that reads it or a document based on it."""
+    return _document_stores(project, shown, edits, None, lambda name: (), set()).files
+
+
+def content_edits(before: Payload, after: Payload) -> list[DocumentEdit]:
+    """The edits that turn a document's composed content ``before`` into ``after``."""
+    return [
+        RemoveProjectValue(op="remove", path=path) if isinstance(record, RemoveDocumentValue)
+        else SetProjectValue(op="replace", path=path, value=record.value)
+        for path, record in diff(before, after).items()
+    ]
+
+
+def evaluation_document_write(
+    project: Project, plan, shown: str, edits: Sequence[DocumentEdit], chosen: Collection[str], slot: str,
+    variant: str | None = None,
+) -> StoredEdit:
+    """:func:`document_write` of ``shown`` for the ``chosen`` steps of ``variant``, among which an Evaluate step may
+    read it through its subject at ``trial_documents.<slot>``.
+
+    Such a step follows its subject when the subject is chosen. Otherwise it is a reader the edit can narrow to, given a
+    reference of its own to the document it is pointed at.
+    """
+    variant_id = variant or plan.variants[0]
+    variant = None if variant_id == plan.variants[0] else variant_id
+    subjects = {
+        run.key.step: subject.producer.step for run in plan.runs
+        if run.key.variant == variant_id and run.kind == "evaluate"
+        and (subject := run.inputs.get("subject")) is not None and subject.producer is not None
+    }
+    chosen = set(chosen)
+    named: dict[str, tuple[str, str]] = {}
+    for row in plan.rows:
+        if row.key.variant == variant_id and row.key.step in chosen and shown in row.followed_documents:
+            if subjects.get(row.key.step) in chosen:
+                chosen.discard(row.key.step)
+            else:
+                named[row.key.step] = (slot, shown)
+
+    def readers(name: str) -> frozenset[str]:
+        return plan.document_users(variant_id, name) | (frozenset(named) if name == shown else frozenset())
+
+    return document_write(project, shown, edits, chosen, readers, variant, named, variant_view(plan, project, variant))
+
+
+def _holds(payload: Any, parts: Sequence[str]) -> bool:
+    for part in parts:
+        if isinstance(payload, dict) and part in payload:
+            payload = payload[part]
+        elif isinstance(payload, list) and part.isdigit() and int(part) < len(payload):
+            payload = payload[int(part)]
+        else:
+            return False
+    return True
+
+
+def _in_form_of(before: Payload, after: Payload) -> Payload:
+    """``after``, a normalized Model, spelled as ``before`` wherever the two mean the same Model."""
+    from feedbax.contracts.model_document import ModelDocument
+
+    result = deepcopy(before)
+    for path, record in diff(ModelDocument.model_validate(before).model_dump(mode="json"), after).items():
+        target, source = result, after
+        parts = json_pointer_parts(path)
+        for index, part in enumerate(parts):
+            if index == len(parts) - 1 or not isinstance(target.get(part), dict):
+                if isinstance(record, RemoveDocumentValue) and index == len(parts) - 1:
+                    target.pop(part, None)
+                elif part in source:
+                    target[part] = deepcopy(source[part])
+                break
+            target, source = target[part], source[part]
+    return result
+
+
+def model_document_store(folders, project_id: str, project: Project, body, before: Payload, after: Payload) -> StoredEdit:
+    """Store a Model edit of ``body.document`` by the document rule, after the request's step files."""
+    head = StoredEdit(list(body.files), reached=frozenset(file.address.id for file in body.files))
+    project = preview_authored_files(project, body.files)
+    edits = content_edits(before, _in_form_of(before, after))
+    if body.step is None:
+        return head.then(shared_document_write(project, body.document, edits))
+    plan = folders.read_plan(project_id, revision=body.revision).plan
+    return head + evaluation_document_write(
+        project, plan, body.document, edits, {body.step, *body.chosen_steps}, "model", body.variant,
+    )
 
 
 def _document_edit(patch: OverridePatch, document_path: str, payload) -> DocumentEdit:
@@ -304,7 +701,7 @@ def _document_edit(patch: OverridePatch, document_path: str, payload) -> Documen
     return SetProjectValue(op="replace" if exists else "add", path=pointer(parts), value=patch.value)
 
 
-def _authored_payload(project: Project, step_id: str):
+def authored_payload(project: Project, step_id: str):
     authored = project.steps[step_id]
     if isinstance(authored.base, InlineBase):
         return authored.base.inline
@@ -314,18 +711,25 @@ def _authored_payload(project: Project, step_id: str):
 
 def scoped_file(
     project, step_id, scope: RunScope, writes, *, chosen: Collection[str] = (), users: DocumentUsers | None = None,
-) -> list[StudioProjectFilePatch]:
-    """The files that store ``writes``, paths in the step's definition, for the runs ``scope`` selects.
+    view: Project | None = None,
+) -> StoredEdit:
+    """What stores ``writes``, paths in the step's definition, for the runs ``scope`` selects.
 
-    A write whose path passes through a document reference changes that document. For the whole step it is stored by
-    :func:`document_files` for the ``chosen`` steps (the step alone when none are named) among the document's ``users``.
-    For a sweep value or exception it is applied to the selected runs' copy of the document, and for a variant it is the
-    variant's write of the document.
+    A write whose path passes through a document reference changes that document. For the whole step, in the default
+    variant or in another one, whose project is ``view``, it is stored by the document rule for the ``chosen`` steps
+    (the step alone when none are named) among the steps of that variant that read it or a document based on it, given
+    by ``users``. For a sweep value or exception it is applied to the selected runs' copy of the document.
     """
     authored = project.steps[step_id]
-    raw = authored.model_dump(mode="json", by_alias=True, exclude_unset=True)
-    address = AuthoredFileAddress(kind="step", id=step_id)
-    payload = _authored_payload(project, step_id)
+    if isinstance(scope, EvaluateAttachmentAxis | SweepValuesScope | EvaluateAttachmentRows):
+        raw = authored.model_dump(mode="json", by_alias=True, exclude_unset=True)
+        address = AuthoredFileAddress(kind="step", id=step_id)
+        return StoredEdit([_selection_file(address, raw, authored, scope, writes)], reached=frozenset({step_id}))
+    variant = scope.variant if isinstance(scope, EvaluateAttachmentVariant) else None
+    if variant is not None and view is None:
+        raise ValueError("An edit in a variant reads the variant's project.")
+    store = _Store(project, variant, view or project)
+    payload = authored_payload(store.view, step_id)
     through: dict[str, list[tuple[OverridePatch, str]]] = {}
     direct = []
     for patch in writes:
@@ -334,37 +738,27 @@ def scoped_file(
             direct.append(patch)
         else:
             through.setdefault(target[0], []).append((patch, target[1]))
-    if isinstance(scope, EvaluateAttachmentVariant):
-        writes = [
-            OverridePatch(path=f"steps.{step_id}.base.inline.{patch.path}", op=patch.op, **(
-                {"value": patch.value} if patch.op != "remove" else {}
-            ))
-            for patch in direct
-        ] + [
-            patch.model_copy(update={"path": f"documents.{document}.payload.{path}"})
-            for document, patches in through.items() for patch, path in patches
-        ]
-        return [variant_file(project, scope.variant, writes)]
-    if isinstance(scope, EvaluateAttachmentAxis | SweepValuesScope | EvaluateAttachmentRows):
-        return [_selection_file(address, raw, authored, scope, writes)]
-    files = [_step_file(address, raw, authored, direct)] if direct else []
+    reached = reached_steps(project, {step_id}) if direct else frozenset()
+    if direct:
+        store.step(step_id, direct)
     if through:
-        chosen = set(chosen) or {step_id}
+        chosen = frozenset(chosen) or frozenset({step_id})
         if users is None:
             raise ProjectFolderInvalid("This edit changes a document and needs the steps that read it.")
+        if step_id not in chosen:
+            raise ProjectFolderInvalid("The chosen steps no longer match this document.")
+        reached |= chosen
+        taken: set[str] = set()
+        pointing: dict[str, dict[str, str]] = {}
         for document, patches in through.items():
-            readers = set(users(document))
-            if step_id not in chosen or not chosen <= readers:
-                raise ProjectFolderInvalid("The chosen steps no longer match this document.")
-            payload = project.documents[document].payload
-            if not readers <= reached_steps(project, chosen):
-                payload = deepcopy(payload)
-                apply_document_edits(payload, [
-                    difference.edit for difference in document_differences(project, step_id).get(document, ())
-                ])
-            edits = [_document_edit(patch, path, payload) for patch, path in patches]
-            files.extend(document_files(project, document, edits, chosen, readers))
-    return merged_files(files)
+            shown = _composed(store.view, document)
+            edits = [_document_edit(patch, path, shown) for patch, path in patches]
+            found = _document_stores(store.view, document, edits, chosen, users, taken)
+            store.documents(found)
+            for step, mapping in found.pointing.items():
+                pointing.setdefault(step, {}).update(mapping)
+        store.point(pointing, {})
+    return store.stored(reached)
 
 
 def _selection_file(address, raw, authored, scope, writes) -> StudioProjectFilePatch:
@@ -378,15 +772,37 @@ def _selection_file(address, raw, authored, scope, writes) -> StudioProjectFileP
     return row_exception_file(address, raw, scope.rows, writes)
 
 
-def _step_file(address, raw, authored, writes) -> StudioProjectFilePatch:
+_STUDIO_LAYER = "trial-authoring"
+
+
+def _step_file(project, step_id, address, raw, authored, writes) -> StudioProjectFilePatch | None:
+    """The step's file with ``writes`` stored: in its own definition, or else in Studio's delta layer.
+
+    Studio's layer is the trailing run of its layers, kept as one: one patch per path, none that writes the value the
+    step has without it, and no layer when none is left.
+    """
     if isinstance(authored.base, InlineBase) and not authored.deltas:
         updated = apply_override_patches(authored.base.inline, writes)
         return file_value(address, raw, ("base", "inline"), updated)
-    # Compose a local difference without modifying the inherited definition.
-    layer = MatrixCompositionDelta(
-        layer_id="trial-authoring", patches=writes, acknowledges_ancestor_paths=[patch.path for patch in writes],
-    )
-    return file_value(address, raw, ("deltas",), [*raw.get("deltas", []), layer.model_dump(mode="json", exclude_unset=True)])
+    kept = len(authored.deltas)
+    while kept and authored.deltas[kept - 1].layer_id == _STUDIO_LAYER:
+        kept -= 1
+    prior = authored.deltas[:kept]
+    stored = [patch for layer in authored.deltas[kept:] for patch in layer.patches]
+    before = authored_payload(project.model_copy(update={"steps": project.steps | {
+        step_id: authored.model_copy(update={"deltas": prior}),
+    }}), step_id)
+    patches = normalized_patches(before, [*stored, *writes])
+    deltas = [layer.model_dump(mode="json", exclude_unset=True) for layer in prior]
+    if patches:
+        deltas.append(MatrixCompositionDelta(
+            layer_id=_STUDIO_LAYER, patches=patches, acknowledges_ancestor_paths=[patch.path for patch in patches],
+        ).model_dump(mode="json", exclude_unset=True))
+    if deltas:
+        return file_value(address, raw, ("deltas",), deltas)
+    if "deltas" in raw:
+        return StudioProjectFilePatch(address=address, patches=[RemoveProjectValue(op="remove", path="/deltas")])
+    return None
 
 
 def train_selection(
@@ -395,27 +811,32 @@ def train_selection(
     """The runs a Train edit names, read from the plan of ``revision``, and the write that stores an edit for them.
 
     ``chosen_steps`` are the steps the user named for an edit of a document the step reads; none is the step alone.
-    Without rows the selection is every run of the chosen steps in the named run's variant. The edit reaches the chosen
-    steps and those based on them; the write refuses one that changes a request of any other step.
+    Without rows the selection is every run of the chosen steps in the named run's variant. An edit of a document
+    reaches the chosen steps, and one of the step's own values the steps based on it; the write refuses one that
+    changes a request of any other step.
     """
-    def users(document: str) -> frozenset[str]:
-        plan = folders.read_plan(project_id, revision=revision).plan
-        return plan.document_users(plan.variants[0], document)
-
     chosen = {step_id, *chosen_steps}
 
     def checked(scope, selected, writes):
-        files = scoped_file(project, step_id, scope, writes, chosen=tuple(chosen_steps), users=users)
-        if files:
-            settled = folders.read_plan(project_id, revision=revision)
+        variant = isinstance(scope, EvaluateAttachmentVariant)
+
+        def users(document: str) -> frozenset[str]:
+            plan = folders.read_plan(project_id, revision=revision).plan
+            return plan.document_users(scope.variant if variant else plan.variants[0], document)
+
+        settled = folders.read_plan(project_id, revision=revision)
+        view = variant_view(settled.plan, project, scope.variant if variant else None)
+        stored = scoped_file(project, step_id, scope, writes, chosen=tuple(chosen_steps), users=users, view=view)
+        if stored.files or stored.created:
             candidate = compile_project(
-                preview_authored_files(project, files), readers=settled.readers,
+                preview_stored(project, stored), readers=settled.readers,
                 operations=folders.operations, components=folders.components, functions=folders.functions,
                 python_tasks=folders.python_tasks, figure_templates=folders.figure_templates,
             )
-            reached = reached_steps(project, chosen)
-            refuse_unreached(settled.plan, candidate, selected or reached_runs(settled.plan, settled.plan.variants, (), reached))
-        return files
+            refuse_unreached(settled.plan, candidate, selected or reached_runs(
+                settled.plan, {scope.variant} if variant else settled.plan.variants, (), stored.reached,
+            ))
+        return stored
 
     if run is None:
         if rows or axes:
@@ -452,12 +873,12 @@ def train_selection(
 def _scoped_runs(project, plan, key: RunKey, scope: RunScope, chosen: Collection[str]) -> frozenset[RunKey]:
     """The runs an edit for ``scope`` may change: the step's selected runs and those of the other steps it reaches.
 
-    Stored on the step, an edit reaches those runs in every variant; stored on a variant, in that variant.
+    For the whole step, in a variant or not, the write says which steps it reaches, and none are named here.
     """
-    variants = {scope.variant} if isinstance(scope, EvaluateAttachmentVariant) else set(plan.variants)
-    reached = reached_steps(project, chosen)
     if isinstance(scope, EvaluateAttachmentStep | EvaluateAttachmentVariant):
-        return reached_runs(plan, variants, (), reached)
+        return frozenset()
+    variants = set(plan.variants)
+    reached = reached_steps(project, chosen)
     picked = {
         row.key for row in plan.rows if row.key.variant in variants and row.key.step == key.step and (
             row.key.row in scope.rows if isinstance(scope, EvaluateAttachmentRows)

@@ -6,6 +6,7 @@ import { ProjectEditConflictError, ProjectEditController, type ProjectEditTransp
 import { createCheckpointTrain } from './createCheckpointTrain';
 import { createTrain } from './createTrain';
 import { projectWindowPlan, savedRunId } from './projectWindowPlan';
+import { documentPayload } from './documentPayload';
 
 const model: AuthoredFileAddress = { kind: 'document', id: 'model' };
 const task: AuthoredFileAddress = { kind: 'document', id: 'task' };
@@ -106,6 +107,7 @@ function fixture(settleMs = 400, start = initial) {
   const memberCommand = vi.fn<NonNullable<ProjectEditTransport['memberCommand']>>(async (_id, body) => {
     if (body.revision !== current.revision) throw new ApiRequestError('http', '/members/command', 'Changed', { status: 409 });
     const { member: from, kind } = body.command;
+    if (kind === 'detach') throw new Error('The fake transport does not detach');
     const to = body.command.name ?? `${from}-2`;
     const source = current.file_revisions.find(({ address }) => address.kind === 'document' && address.id === from)!;
     const { [from]: moved, ...others } = current.project.documents ?? {};
@@ -363,7 +365,7 @@ it('coalesces observed revisions across files and stops the burst at an undo or 
   ]);
   expect(editor.getSnapshot()).toMatchObject({ undoName: 'Local Task', redoName: 'Outside Change' });
   await editor.redo();
-  expect(current().project.documents?.task?.payload).toEqual({ value: 3 });
+  expect(documentPayload(current().project.documents, undefined, 'task')).toEqual({ value: 3 });
 
   editor.edit(task, 'Second Local Task', [value(5)]);
   await editor.flush();
@@ -372,7 +374,7 @@ it('coalesces observed revisions across files and stops the burst at an undo or 
   await editor.undo();
   await editor.flush();
   expect(editor.getSnapshot()).toMatchObject({ undoName: 'Second Local Task', redoName: 'Outside Change' });
-  expect(current().project.documents?.task?.payload).toEqual({ value: 5 });
+  expect(documentPayload(current().project.documents, undefined, 'task')).toEqual({ value: 5 });
   editor.dispose();
 });
 
@@ -390,7 +392,7 @@ it('replays exact outside bytes after local Undo canonicalizes the same authored
 
   await editor.undo();
   expect(replay.mock.calls[0][1].files[0].before).toBe(canonical.revision);
-  expect(current().project.documents?.task?.payload).toEqual({ value: 1 });
+  expect(documentPayload(current().project.documents, undefined, 'task')).toEqual({ value: 1 });
   await editor.redo();
   expect(current().file_revisions.find(({ address }) => address.id === task.id)?.data)
     .toBe(outside.file_revisions.find(({ address }) => address.id === task.id)?.data);
@@ -427,7 +429,7 @@ it('moves a replay acknowledged by exact observed file digests after losing its 
   expect(current().project).toEqual(initial.project);
   expect(editor.getSnapshot()).toMatchObject({ undoName: null, redoName: 'Outside Change' });
   await editor.redo();
-  expect(current().project.documents?.task?.payload).toEqual({ value: 3 });
+  expect(documentPayload(current().project.documents, undefined, 'task')).toEqual({ value: 3 });
   editor.dispose();
 });
 
@@ -439,7 +441,7 @@ it('rejects a stale outside replay and shows the newer observation', async () =>
   await expect(editor.undo()).rejects.toMatchObject({ status: 409 });
   expect(replay).toHaveBeenCalledTimes(1);
   expect(editor.getSnapshot()).toMatchObject({ saved: current(), pending: 0, undoName: 'Outside Change', redoName: null });
-  expect(current().project.documents?.task?.payload).toEqual({ value: 4 });
+  expect(documentPayload(current().project.documents, undefined, 'task')).toEqual({ value: 4 });
   editor.dispose();
 });
 
@@ -459,7 +461,7 @@ it('rebases kept edits over the latest revision and gives undo the outside value
 
 it('checks a structural edit guard against outside dependencies on undo and Keep Edits', async () => {
   const validate = (_before: StudioProjectSnapshot['project'], after: StudioProjectSnapshot['project']) => {
-    const payload = after.documents?.task?.payload as { value: number };
+    const payload = documentPayload(after.documents, undefined, 'task') as { value: number };
     if (payload.value !== 1) throw new Error('The task now depends on the existing model layout.');
   };
   const saved = fixture();
@@ -493,7 +495,7 @@ it('returns a refused save to its gesture and keeps no project error', async () 
   const snapshot = editor.getSnapshot();
   expect(snapshot.error).toBeNull();
   expect(snapshot.pending).toBe(0);
-  expect(snapshot.draft.documents?.model.payload).toEqual({ value: 1 });
+  expect(documentPayload(snapshot.draft.documents, undefined, 'model')).toEqual({ value: 1 });
   editor.dispose();
 });
 
@@ -601,7 +603,7 @@ it('undoes a document command and the step use that joined it as one entry', asy
   const result = await editor.memberCommand('Duplicate Task', { kind: 'duplicate', family: 'documents', member: 'task' }, before,
     async ({ member }) => [{ address: model, patches: [{ op: 'replace', path: '/payload/value', value: member }] }]);
   expect(result.member).toBe('task-2');
-  expect(current().project.documents?.model?.payload).toEqual({ value: 'task-2' });
+  expect(documentPayload(current().project.documents, undefined, 'model')).toEqual({ value: 'task-2' });
   expect(editor.getSnapshot().undoName).toBe('Duplicate Task');
 
   await editor.undo();
@@ -613,5 +615,28 @@ it('undoes a document command and the step use that joined it as one entry', asy
   await editor.redo();
   expect(Object.keys(current().project.documents ?? {}).sort()).toEqual(['model', 'task', 'task-2']);
   expect(current().presentation?.documents?.['task-2']).toEqual(shown.documents.task);
+  editor.dispose();
+});
+
+it('undoes a narrowed edit, the document it creates and the patch that follows, as one entry', async () => {
+  const { editor, current, write } = fixture();
+  const before = current();
+  const settled = await editor.storeEdit('Set Value', {
+    created: [{ kind: 'document', id: 'model-2', document: { schema: 'graph', base: { document: 'model' }, differences: { '/value': { value: 2 } } } }],
+    files: [{ address: task, patches: [value(7)] }],
+  }, { reviewedRevision: before.revision });
+  expect(settled).toEqual({ status: 'saved' });
+  expect(write).toHaveBeenCalledOnce();
+  const edited = current().project.documents;
+  expect(Object.keys(edited ?? {}).sort()).toEqual(['model', 'model-2', 'task']);
+  expect(editor.getSnapshot()).toMatchObject({ undoName: 'Set Value', redoName: null });
+
+  await editor.undo();
+  expect(current().project.documents).toEqual(before.project.documents);
+  expect(current().file_revisions).toEqual(before.file_revisions);
+  expect(editor.getSnapshot()).toMatchObject({ undoName: null, redoName: 'Set Value' });
+
+  await editor.redo();
+  expect(current().project.documents).toEqual(edited);
   editor.dispose();
 });

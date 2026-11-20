@@ -1,58 +1,26 @@
 import type { PipelineMapStepSource } from '@/components/pipeline/StudioPipelineMap';
 import type { PlanView } from '@/features/pipeline/planView';
 import { selectedRuns } from '@/features/pipeline/selection';
-import type { JsonValue, ProjectValueEdit, Step, StepReference, StudioSavedTrainRuns, SubsetTerms } from '@/generated/studioContracts';
+import type { Step, StepReference, StudioSavedTrainRuns, SubsetTerms } from '@/generated/studioContracts';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import { planVariants, savedRunId, sharedRowTerms, stepSourceRows } from './projectWindowPlan';
 import { generatedName, holds } from './generatedName';
 
 const initializationPath = 'checkpoint_initialization';
-const initializationLayer = 'initialize';
 
 /**
- * `step` started from `source`'s checkpoint, initializing its model from it, or from its own Model when `source` is
- * null. `inherited` says whether the step's base already sets the initialization policy.
+ * A new Train step continuing `source`'s step from its last checkpoint, initializing its model from it. `inherited` says
+ * whether that step is itself a continuation, whose initialization policy the new step replaces.
  */
-export function withCheckpointStart(step: Step, inherited: boolean, source: StepReference | null): Step {
-  const { checkpoint: _checkpoint, ...inputs } = step.inputs ?? {};
-  const deltas = (step.deltas ?? []).filter(({ layer_id }) => layer_id !== initializationLayer);
-  let base = step.base;
-  if ('inline' in base) {
-    const { [initializationPath]: _policy, ...payload } = base.inline;
-    base = { inline: source ? { ...payload, [initializationPath]: 'initialize_from' } : payload };
-  } else if (source || inherited) {
-    deltas.push({
-      layer_id: initializationLayer,
-      patches: [source
-        ? { path: initializationPath, op: inherited ? 'replace' : 'add', value: 'initialize_from' }
-        : { path: initializationPath, op: 'remove' }],
-      ...(inherited && { acknowledges_ancestor_paths: [initializationPath] }),
-    });
-  }
-  const { inputs: _inputs, deltas: _deltas, ...rest } = step;
-  const started = { ...inputs, ...(source && { checkpoint: source }) };
+function continuation(source: StepReference, inherited: boolean): Step {
   return {
-    ...rest, base,
-    ...(Object.keys(started).length && { inputs: started }),
-    ...(deltas.length && { deltas }),
+    kind: 'train', base: { step: source.step }, inputs: { checkpoint: source },
+    deltas: [{
+      layer_id: 'initialize',
+      patches: [{ path: initializationPath, op: inherited ? 'replace' : 'add', value: 'initialize_from' }],
+      ...(inherited && { acknowledges_ancestor_paths: [initializationPath] }),
+    }],
   };
-}
-
-/** The edits that give an authored step `withCheckpointStart`'s start. */
-export function checkpointStartEdits(step: Step, inherited: boolean, source: StepReference | null): ProjectValueEdit[] {
-  const next = withCheckpointStart(step, inherited, source);
-  const changed = (['base', 'inputs', 'deltas'] as const)
-    .filter((key) => JSON.stringify(step[key]) !== JSON.stringify(next[key]));
-  // A removal from an authored file takes its last key, so removals go last-first.
-  const order = Object.keys(step);
-  const removed = changed.filter((key) => next[key] === undefined)
-    .sort((left, right) => order.indexOf(right) - order.indexOf(left));
-  return [
-    ...removed.map((key): ProjectValueEdit => ({ op: 'remove', path: '/' + key })),
-    ...changed.filter((key) => next[key] !== undefined).map((key): ProjectValueEdit => ({
-      op: step[key] === undefined ? 'add' : 'replace', path: '/' + key, value: next[key] as JsonValue,
-    })),
-  ];
 }
 
 export function trainSourceSubset(
@@ -95,8 +63,8 @@ export async function createCheckpointTrain(
   const id = generatedName('train', holds(editor.getSnapshot().saved.project.steps));
   await editor.createFile({
     kind: 'step', id,
-    step: withCheckpointStart({ kind: 'train', base: { step: step.id } }, step.inputs.some(({ id }) => id === 'checkpoint'),
-      { step: step.id, checkpoint: 'last', ...(where && { where }) }),
+    step: continuation({ step: step.id, checkpoint: 'last', ...(where && { where }) },
+      step.inputs.some(({ id }) => id === 'checkpoint')),
   }, projection.revision);
   return id;
 }

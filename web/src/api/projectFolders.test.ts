@@ -3,6 +3,7 @@ import {
   createProjectFolder, openProjectFolder, patchProjectFolder, readProjectFolder, renameProjectFolder, replayProjectHistory, writeProjectPresentation,
 } from '@/api/projectFolders';
 import type { StudioProjectSnapshot } from '@/generated/studioContracts';
+import { documentPayload } from '../features/projectFolder/documentPayload';
 
 const revision = 'a'.repeat(64);
 const presentationRevision = 'b'.repeat(64);
@@ -53,7 +54,7 @@ describe('Studio project folder HTTP contracts', () => {
     const { snapshot: read } = await openProjectFolder('reaches', signal);
     expect(read.project.steps?.train.sweep?.rows?.reference?.from).toBe('baseline');
     expect(read.project.steps?.train).not.toHaveProperty('inputs');
-    expect(Object.entries(read.project.documents?.model.payload as object)).toContainEqual(['__proto__', { named: 1 }]);
+    expect(Object.entries(documentPayload(read.project.documents, undefined, 'model') as object)).toContainEqual(['__proto__', { named: 1 }]);
     expect(fetch).toHaveBeenCalledWith('/api/projects/reaches/open', expect.objectContaining({
       cache: 'no-store',
       signal,

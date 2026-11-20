@@ -16,6 +16,7 @@ from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project_plan import compile_project
+from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import ProductRef
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
@@ -80,9 +81,13 @@ def _authored_roots(text: TextProject, gaps: list[str]) -> list[RootObservation]
         if model is None:
             gaps.append(f"document {name}: no Store-root traversal for {document.schema_id}")
             continue
+        composed = compose_document(text.project.documents.get, name)
+        if isinstance(composed, ProjectDiagnostic):
+            gaps.append(f"document {name}: {composed.detail}")
+            continue
         try:
             assets = tuple(
-                ref for _, ref in model_asset_refs(model.model_validate(document.payload))
+                ref for _, ref in model_asset_refs(model.model_validate(composed.payload))
             )
         except ValueError as error:
             gaps.append(f"document {name}: {error}")

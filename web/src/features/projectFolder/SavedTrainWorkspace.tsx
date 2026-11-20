@@ -6,7 +6,7 @@ import { apiErrorMessage, isRefusal, isServiceFailure, isUnanswered, landsOnGest
 import { prepareCheckpointRuleEdit, prepareSubsetToRows } from '@/api/studioAuthoring';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import {
-  studioAccessibleName, studioCountOf, studioFormat, studioName, studioPlaceName, studioProblemDetail, studioReason, studioRunReason, type StudioPlace,
+  studioAccessibleName, studioCountOf, studioEvaluateValueSource, studioFormat, studioName, studioPlaceName, studioProblemDetail, studioReason, studioRunReason, type StudioPlace,
 } from '@/components/activity/studioVocabulary';
 import { HeaderActivity } from '@/components/layout/HeaderActivity';
 import {
@@ -16,7 +16,7 @@ import { isMemberName } from './projectMemberName';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { useStepInsertMenu, type StepInsertion } from '@/components/pipeline/StepInsertMenu';
 import { InspectorRow, StudioRunControls, StudioRuns, StudioStepInspector, type RunMention } from '@/components/pipeline/StudioRuns';
-import type { RunMenu } from '@/components/pipeline/RunContextMenu';
+import type { RunMenu, StepMenu } from '@/components/pipeline/CommandContextMenu';
 import type { ActivityResultState } from '@/components/activity/StudioActivity';
 import { useResultValidity } from './useResultValidity';
 import { useFollowingQuery } from '@/hooks/useFollowingQuery';
@@ -76,7 +76,7 @@ import {
   TrialObjectiveInspector, TrialObjectiveOutline, TrialObjectiveTable, TrialTaskForm, TrialTaskInspector, TrialTaskOutline, useTrialAuthoring,
   type TrialChangeScope,
 } from './StudioTrialAuthoring';
-import { useProjectDocuments, type DocumentRole } from './useProjectDocuments';
+import { documentFamily, useProjectDocuments, type DocumentRole } from './useProjectDocuments';
 import { useManagedAnalyze } from './useManagedAnalyze';
 import { useManagedReport } from './useManagedReport';
 import { ScrollFade } from '@/components/ui/ScrollFade';
@@ -207,6 +207,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const [commandError, setCommandError] = useState<string>();
   /** The last refused gesture, shown on the object it acted on. */
   const [refusal, setRefusal] = useState<Refusal>();
+  /** The refusal of the selected Train step's authoring read, which is drawn on the step while it holds. */
+  const [readRefusal, setReadRefusal] = useState<Refusal & { kind: 'step' }>();
   const commandFailed = (error: unknown) => {
     if (!isUnanswered(error)) setCommandError(apiErrorMessage(error));
   };
@@ -269,7 +271,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const primaryVariant = variant !== null && variant === variants[0];
   const plan = useMemo(() => projectWindowPlan(saved.project, projection.data, variant, validity.checking),
     [saved.project, projection.data, variant, validity.checking]);
-  const shownPlan = useMemo(() => planWithRefusal(plan, refusal), [plan, refusal]);
+  const shownPlan = useMemo(() => planWithRefusal(planWithRefusal(plan, readRefusal), refusal), [plan, readRefusal, refusal]);
   const activityResultState = useMemo<ActivityResultState>(() => {
     const states = new Map(plan.steps.flatMap(({ runs }) => runs.flatMap(({ state, results }) =>
       results.map(({ jobId }) => [jobId, state] as const))));
@@ -286,15 +288,12 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const canAuthorSweep = (id: string) => primaryVariant && directTrainStep(saved.project, id, true) !== null;
   const authored = step && saved.project.steps?.[step.id];
   const subjectCheckpoint = authored?.kind === 'evaluate' ? exactCheckpoint(authored) : undefined;
-  const checkpoint = authored && authored.inputs?.checkpoint;
-  const linked = wholeStep && authored?.kind === 'train' &&
-    'step' in authored.base && authored.base.row == null && checkpoint &&
-    'step' in checkpoint && checkpoint.step === authored.base.step && checkpoint.checkpoint === 'last';
-  const started = wholeStep && authored?.kind === 'train' && 'inline' in authored.base && !authored.deltas?.length &&
-    Object.keys(authored.inputs ?? {}).join() === 'checkpoint' && StepReferenceSchema.safeParse(checkpoint).success;
-  const authoring = step && (primaryVariant && directTrainStep(saved.project, step.id, true) !== null || linked || started) &&
+  const authoring = step && (primaryVariant && directTrainStep(saved.project, step.id, true) !== null ||
+    wholeStep && authored?.kind === 'train') &&
     state.selection ? {
     editor, stepId: step.id, step, selection: state.selection, picking: elements,
+    onRefused: (reason: string | undefined) => setReadRefusal((current) => reason ? { kind: 'step', step: step.id, reason }
+      : current?.step === step.id ? undefined : current),
     trains: plan.steps.filter(({ kind }) => kind === 'train'),
     onChooseSweepValue: (sweepId: string, valueId: string, extend: boolean) => {
       selection.select(selectSweepValue(latestState.current, step.id, sweepId, valueId, extend));
@@ -317,25 +316,30 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   /** The steps an edit of the selected step reaches outside a document view, drawn lit: it and the steps based on it. */
   const reachedSteps = wholeStep && step?.kind === 'train' ? withBaseDescendants(saved.project, [step.id]) : undefined;
   /**
-   * The steps a view of the document the step reads in `field` chooses, all that use it less those taken out, and the
-   * steps it lights, the chosen ones and the users based on them.
+   * The steps a view of the document the step reads in `field` lights: those that read it or a document based on it,
+   * less those taken out. An edit there is made for the lit steps. From an Evaluate step the document's Train readers
+   * are drawn as readers and are lit only when put in, and the step is lit even while it follows its subject's.
    */
   function documentScope(field: 'graph' | 'task' | 'objective' | 'training'): NamedDocumentScope | undefined {
     const ids = step?.documentIds;
     const document = field === 'graph' ? modelDocumentId(ids)
       : field === 'task' ? ids?.['payload.trial_documents.task'] ?? ids?.['payload.trial_documents.python_task']
         : field === 'objective' ? ids?.['payload.trial_documents.objective'] : trainingDocumentId(ids);
-    if (!document || !step || !singleStep || !data || step.kind !== 'train') return undefined;
+    const evaluating = step?.kind === 'evaluate' && (field === 'graph' || field === 'task');
+    if (!document || !step || !singleStep || !data || step.kind !== 'train' && !evaluating) return undefined;
     const localVariant = Boolean(saved.project.sweep && !primaryVariant && field === 'graph');
     if (!localVariant && !wholeStep) return undefined;
-    const users = new Set(plan.steps.filter(({ documentUses }) => documentUses?.includes(document)).map(({ id }) => id));
+    const family = documentFamily(saved.project, document);
+    const users = new Set(plan.steps.filter(({ documentUses }) => documentUses?.some((used) => family.has(used)))
+      .map(({ id }) => id));
+    if (evaluating) users.add(step.id);
     if (!users.has(step.id)) return undefined;
     const key = JSON.stringify([step.id, document, variant]);
-    if (localVariant) return { document, key, users, chosen: users, lit: users, localVariant };
-    const excluded = excludedUsers[key] ?? [];
-    const chosen = new Set([...users].filter((id) => id === step.id || !excluded.includes(id)));
-    const lit = withBaseDescendants(saved.project, chosen);
-    return { document, key, users, chosen, lit: new Set([...lit].filter((id) => users.has(id))) };
+    if (localVariant) return { document, key, users, lit: users, localVariant };
+    const toggled = excludedUsers[key] ?? [];
+    const reader = (id: string) => evaluating && plan.steps.find((item) => item.id === id)?.kind !== 'evaluate';
+    return { document, key, users, lit: new Set([...users].filter((id) =>
+      id === step.id || (reader(id) ? toggled.includes(id) : !toggled.includes(id)))) };
   }
   const documentScopes = {
     graph: documentScope('graph'), task: documentScope('task'),
@@ -349,12 +353,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     if (extend && activeDocumentScope && activeDocumentScope.users.size > 1) {
       if (activeDocumentScope.localVariant || id === step?.id || !activeDocumentScope.users.has(id)) return;
       const { key } = activeDocumentScope;
-      // Taking a step out takes out the steps based on it; they stay lit while another lit step reaches them.
-      const reached = [...withBaseDescendants(saved.project, [id])];
       setExcludedUsers((current) => {
         const ids = current[key] ?? [];
-        return { ...current, [key]: ids.includes(id) ? ids.filter((excluded) => !reached.includes(excluded))
-          : [...new Set([...ids, ...reached])] };
+        return { ...current, [key]: ids.includes(id) ? ids.filter((excluded) => excluded !== id) : [...ids, id] };
       });
       return;
     }
@@ -490,16 +491,22 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       : selectedDefinitionRows.length ? { kind: 'rows', rows: selectedDefinitionRows.map(({ key }) => key.row) } as const
         : undefined);
   const evaluateScope = step?.kind === 'evaluate' ? trialScope : undefined;
-  // A Train step's whole-step edit is unscoped: the server writes its shared documents for every step that uses them.
-  const trialEditScope = step?.kind === 'train' && trialScope && (trialScope.kind === 'step' || trialScope.kind === 'variant')
-    ? undefined : trialScope || undefined;
+  const wholeTrialStep = trialScope && (trialScope.kind === 'step' || trialScope.kind === 'variant');
+  // A whole-step edit is a step scope in every variant, the run naming the variant. A Train step's is unscoped, the
+  // server writing its shared documents for every step of the variant that uses them, or made for the chosen steps.
+  const trialEditScope = !trialScope || trialScope.kind === 'step' || trialScope.kind === 'variant'
+    ? trialScope && step?.kind !== 'train' ? { kind: 'step' } as const : undefined
+    : trialScope;
   const documentEditable = !pending && !outside && !snapshot.saving;
   const trialEditable = documentEditable && Boolean(trialScope);
   /** A whole-step edit of a Train step's Task or Objective is made for the steps its view chooses. */
   const trialChangeScope: TrialChangeScope = (change) => {
-    if (trialEditScope || step?.kind !== 'train' || !trialScope || trialScope.kind !== 'step') return trialEditScope;
-    const chosen = change.kind === 'task' ? documentScopes.task?.chosen
-      : change.kind === 'objective' || change.kind === 'expression' ? documentScopes.objective?.chosen : undefined;
+    if (step?.kind === 'evaluate' && wholeTrialStep && change.kind === 'task' && documentScopes.task) {
+      return { kind: 'step', chosen_steps: [...documentScopes.task.lit] };
+    }
+    if (trialEditScope || step?.kind !== 'train' || !wholeTrialStep) return trialEditScope;
+    const chosen = change.kind === 'task' ? documentScopes.task?.lit
+      : change.kind === 'objective' || change.kind === 'expression' ? documentScopes.objective?.lit : undefined;
     return chosen && { kind: 'step', chosen_steps: [...chosen] };
   };
   const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, trialStep && trialVisible,
@@ -508,8 +515,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const pickDocument = useProjectDocuments({
     editor, stepId: step?.id, run: namedRun, scope: trialEditScope,
     editable: documentEditable,
+    detachRefused: data?.window_map?.detach_refused,
     selectable: new Set<DocumentRole>([
-      ...!trialEditable ? [] : step?.kind === 'train' ? ['model', 'task', 'objective', 'training'] as const : ['task'] as const,
+      ...!trialEditable ? [] : step?.kind === 'train' ? ['model', 'task', 'objective', 'training'] as const : ['model', 'task'] as const,
       ...documentEditable && wholeStep ? ['analysis', 'report'] as const : [],
     ]),
     onError: setCommandError,
@@ -1173,14 +1181,26 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     focus: stepFocus,
     focused: () => setStepFocus(null),
   } : undefined;
+  const duplicateStep = documentEditable ? (from: string) => {
+    void perform(async () => {
+      const { member } = await editor.memberCommand(studioAccessibleName('duplicateStep', from),
+        { kind: 'duplicate', family: 'steps', member: from }, editor.getSnapshot().saved);
+      commandScope.selectCreatedStep(member);
+    }, refuseStep(from));
+  } : undefined;
   /** Going into a step puts the keyboard in the slot that shows its views; a window showing only the map opens Runs. */
   const enterStep = (stepId: string) => {
     selection.select(selectStep(state, stepId));
     if (windowState.mode === 'map') setWindowState((current) => showProjectWindowView(current, 'runs', focusSlot));
     requestSlotFocus((count) => count + 1);
   };
+  /** The commands on a step: its context menu, and the palette's for the selected step. */
+  const stepCommands: StepMenu = (target, startRename = () => setRenamingStep({ stepId: target.id, surface: mapSurface })) => [
+    bindStudioCommand('renameStep', startRename, { subject: target.label, enabled: !!renameStep && !busy }),
+    bindStudioCommand('duplicateStep', () => duplicateStep?.(target.id), { subject: target.label, enabled: !!duplicateStep && !busy }),
+  ];
   const mapProps = {
-    plan: shownPlan, state, problemSteps, rename: renameStep, onEnterStep: enterStep,
+    plan: shownPlan, state, problemSteps, rename: renameStep, onEnterStep: enterStep, stepMenu: stepCommands,
     onSelectionChange: (value: PipelineSelectionState) => {
       setResultAttempt(undefined);
       setProblemReveal(undefined);
@@ -1238,7 +1258,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     windowState.mode !== 'map' && focusView === 'results' && stoppedNewStep ? stoppedNewStep : nextStep,
     ...(focusedDetail?.commands ?? []),
     // After the focused view's commands, so its own F2 (a Model component's rename) comes first.
-    step && bindStudioCommand('renameStep', () => setRenamingStep({ stepId: step.id, surface: mapSurface }), { subject: step.label, enabled: !!renameStep && !busy }),
+    ...(step ? stepCommands(step) : []),
     ...analyze.commands,
     ...report.commands,
     step && newSweepCommand(step.id),
@@ -1373,7 +1393,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               return {
                 padded: true,
                 picker: pickDocument('task', value.task_document ?? undefined, documentScopes.task),
-                body: withProblem(<TrialTaskForm view={value} commit={commit} />),
+                body: withProblem(<TrialTaskForm view={value} commit={commit} changed={step?.kind === 'evaluate'
+                  ? studioEvaluateValueSource({ kind: 'evaluate', step: step.id }) : studioName('changed')} />),
                 drawer: <TrialTaskOutline sections={drawerSections} view={value} selected={selected} select={choose(document)} />,
                 inspector: selected && <TrialTaskInspector view={value} commit={commit} selected={selected} />,
               };
@@ -1394,14 +1415,15 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               padded: true,
               picker: pickDocument('training', trainingDocument, scope),
               body: authoring ? withProblem(<StudioTrainAuthoringForm {...authoring} run={namedRun}
-                runPending={!data && !projection.isError} trainingDocument chosen={scope ? [...scope.chosen] : undefined}
+                runPending={!data && !projection.isError} trainingDocument chosen={scope ? [...scope.lit] : undefined}
                 fieldRows={scope ? undefined : detailInputs.fieldRows} fieldAxes={scope ? undefined : detailInputs.fieldAxes} />)
                 : noView,
             };
           }
           if (view === 'model' || view === 'task' || view === 'scene') {
             const scope = slot === focusSlot && view === focusView ? activeDocumentScope : undefined;
-            return { ...details[view], picker: pickDocument('model', details[view].documentId, scope),
+            const picker = pickDocument('model', details[view].documentId, scope);
+            return { ...details[view], picker: picker && { ...picker, refusal: picker.refusal ?? details[view].refusal },
               header: details[view].path, body: withProblem(details[view].body) };
           }
           if (!step) return { body: noView };
@@ -1426,7 +1448,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                   disabled: busy || machineCatalog.isPending || !connected,
                   onChange: (value) => setMachines((current) => ({ ...current, [step.id]: value })) })}
                 pivotCommand={pivot} pivotActive={pivotActive} reason={run && studioRunReason(run)} />,
-              inspector: <StudioStepInspector plan={plan} step={step} state={state} onReveal={revealRunMention}
+              inspector: <StudioStepInspector plan={plan} step={step} state={state} onReveal={revealRunMention} stepMenu={stepCommands}
                 onChooseStep={(stepId) => selection.select(selectStep(state, stepId))}
                 revealed={fieldReveal && { place: fieldReveal.place, detail: fieldReveal.reason, problem: fieldReveal.problem }}
                 upstreamDetail={checkpointLineage()}

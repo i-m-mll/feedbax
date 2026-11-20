@@ -1,6 +1,6 @@
 import type { JsonValue } from '@/generated/studioContracts';
 import { studioReason } from '@/components/activity/studioVocabulary';
-import type { FieldCommit, FieldModel, FieldType } from '../fieldModel';
+import { withReset, type ChangeMark, type FieldModel, type FieldType } from '../fieldModel';
 
 /** Writes a value the client holds raw; answers with a reason when it refuses. */
 export type RawChange = (value: JsonValue) => Promise<string | undefined> | string | undefined | void;
@@ -19,20 +19,24 @@ export function rawText(value: JsonValue | undefined) {
   return value == null ? '' : typeof value === 'object' ? JSON.stringify(value) : String(value);
 }
 
-/** A field whose value the client holds as JSON: it parses text by the field's type. Raw fields offer Value only. */
-export function rawField({ id, label, type, value, unit, origin, change, parts }: {
+/**
+ * A field whose value the client holds as JSON: it parses text by the field's type. Raw fields offer Value only.
+ * A `changed` value's origin is its mark.
+ */
+export function rawField({ id, label, type, value, unit, origin, change, parts, changed }: {
   id: string; label: string; type: FieldType; value: JsonValue | undefined; unit?: string; origin?: string;
-  change?: RawChange; parts?: readonly FieldModel[];
+  change?: RawChange; parts?: readonly FieldModel[]; changed?: ChangeMark;
 }): FieldModel {
   const write = async (next: JsonValue): Promise<string | undefined> => (await change!(next)) || undefined;
-  const commit: FieldCommit | undefined = change && (async (edit) => {
+  const commit = withReset(change && (async (edit) => {
     if (edit.kind === 'set') return write(edit.value);
     if (edit.kind !== 'text') return undefined;
     const parsed = parse(type, label, edit.text);
     return 'reason' in parsed ? parsed.reason : write(parsed.value);
-  });
+  }), changed);
   return {
-    id, label, type, unit, origin, value: value ?? undefined, text: rawText(value), kind: 'value',
+    id, label, type, unit, value: value ?? undefined, text: rawText(value), kind: 'value',
+    origin: changed?.text ?? origin, changed: !!changed?.reset,
     kinds: [{ kind: 'value', enabled: !!commit }], names: [], functions: [], parts, commit,
   };
 }

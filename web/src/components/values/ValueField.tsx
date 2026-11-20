@@ -24,8 +24,16 @@ import './valueField.css';
 
 export type ValueFieldForm = 'row' | 'cell';
 
-/** Where the value comes from; a link to that object when it names one. */
-function Origin({ id, text, reveal }: { id: string; text: string; reveal?: () => void }) {
+/** Where the value comes from; a link to that object when it names one, or the changed mark's Reset. */
+export function Origin({ id, text, reveal, reset }: { id: string; text: string; reveal?: () => void; reset?: () => void }) {
+  if (reset) return <Menu>
+    <MenuTrigger render={<Button id={id} variant="ghost" size="content" className="justify-self-start text-left text-shell-muted" />}>
+      {text}
+    </MenuTrigger>
+    <MenuContent aria-label={studioName('changed')}>
+      <MenuItem onClick={reset}>{studioName('reset')}</MenuItem>
+    </MenuContent>
+  </Menu>;
   return reveal
     ? <Button id={id} variant="ghost" size="content" className="justify-self-start text-left text-shell-muted" onClick={reveal}>
       {text}
@@ -98,7 +106,8 @@ export function ValueField({ model, form = 'row' }: { model: FieldModel; form?: 
   const readOnly = !model.commit || busy;
   const describedBy = [model.origin && originId, (reason ?? model.reason) && reasonId].filter(Boolean).join(' ') || undefined;
   const below = <>
-    {model.origin && <Origin id={originId} text={model.origin} reveal={model.revealOrigin} />}
+    {model.origin && <Origin id={originId} text={model.origin} reveal={model.revealOrigin}
+      reset={model.changed && !readOnly ? () => void submit({ kind: 'reset' }) : undefined} />}
     {(reason ?? model.reason) && <p role="alert" id={reasonId}>{reason ?? model.reason}</p>}
   </>;
 
@@ -219,7 +228,9 @@ function ClassValue({ model, parameter, labelId, picker, pickReason }: {
     aria-label={studioFieldLabel('field', model.label)}>
     <FieldRow label={model.label} labelId={labelId} below={origin || shown ? <>
       {origin && <Origin id={originId} text={origin}
-        reveal={parameter.origin ? parameter.revealOrigin : model.revealOrigin} />}
+        reveal={parameter.origin ? parameter.revealOrigin : model.revealOrigin}
+        reset={readOnly ? undefined : parameter.origin ? parameter.changed ? () => void submit({ kind: 'reset' }) : undefined
+          : model.changed && model.commit ? () => void model.commit!({ kind: 'reset' }).then(setReason) : undefined} />}
       {shown && <p role="alert" id={reasonId}>{shown}</p>}
     </> : undefined}>
       <ValueText model={parameter} id={id} readOnly={readOnly} describedBy={describedBy} invalid={!!reason}

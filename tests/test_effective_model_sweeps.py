@@ -19,6 +19,7 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored, document_project  # noqa: F401
 from tests.support.host import job_row, token, wait_until
+from tests.support.model_documents import read_changed_model
 from tests.test_model_document_plan import _add_attachment, _attachment_address, _attachment_owner, _model_controller
 
 
@@ -41,19 +42,22 @@ def _decode(plan, key):
     return decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
 
 
+_TRAINED = "trained-model"
+
+
 def _managed_project(authored):
     raw = document_project(authored, evaluation=True)
     raw["steps"] = {name: raw["steps"][name] for name in ("train", "baseline")}
-    raw["steps"]["train"]["model_attachments"] = {
-        "wire": [_add_attachment(_attachment_owner("read"), "train-added", None, 0.8)],
-    }
+    read_changed_model(
+        raw, "train", [_add_attachment(_attachment_owner("read"), "train-added", None, 0.8)], name=_TRAINED,
+    )
     return raw
 
 
 def test_saved_managed_train_clock_range_preserves_equal_request_identity(tmp_path, authored):  # noqa: F811
     raw = document_project(authored)
     train = raw["steps"]["train"]
-    train["document_overrides"] = {"reach-model": {"/step_seconds": 0.02}}
+    raw["documents"]["reach-model"]["payload"]["step_seconds"] = 0.02
     baseline = compile_project(Project.model_validate(raw))
     assert not baseline.diagnostics, baseline.diagnostics
     (original,) = baseline.runs
@@ -126,7 +130,7 @@ def test_saved_train_and_evaluate_use_the_same_attachment_id(host, tmp_path, aut
 def test_addressed_rules_list_conversion_and_scoped_variant(authored):
     raw = _managed_project(authored)
     target = _wire_field("train-added", "fields", "factor").to_text()
-    variant_target = "steps.train." + target
+    variant_target = f"documents.{_TRAINED}.{target}"
     raw["documents"]["alternate"] = deepcopy(raw["documents"]["reach-model"])
     other = deepcopy(raw["steps"]["train"])
     other["base"]["inline"]["trial_documents"]["model"] = {"document": "alternate"}
@@ -134,7 +138,7 @@ def test_addressed_rules_list_conversion_and_scoped_variant(authored):
     mass = _field({"composites": [], "element": {"kind": "component", "id": "plant"}}, "fields", "mass").to_text()
     raw["sweep"] = {"axes": {
         "condition": {"path": variant_target, "values": [0.6, 0.9]},
-        "step-mass": {"path": f"steps.train.{mass}", "values": [2]},
+        "step-mass": {"path": f"documents.{_TRAINED}.{mass}", "values": [2]},
         "base-mass": {"path": f"documents.alternate.{mass}", "values": [4]},
     }}
     raw["steps"]["baseline"]["sweep"] = {
@@ -174,12 +178,13 @@ def test_addressed_rules_list_conversion_and_scoped_variant(authored):
     assert requests() == before
 
     missing = deepcopy(raw)
-    missing["steps"]["train"].pop("model_attachments")
+    missing["documents"][_TRAINED]["differences"] = {}
     plan = compile_project(Project.model_validate(missing), memo=memo)
-    train_problems = [problem for problem in plan.diagnostics if problem.step == "train"]
-    assert len(train_problems) == 2
-    assert all(problem.model_address.to_text() == target for problem in train_problems)
-    assert {run.key.step for run in plan.runs} == {"other"}
+    assert len(plan.diagnostics) == 2
+    assert all(
+        (problem.document, problem.model_address.to_text()) == (_TRAINED, target) for problem in plan.diagnostics
+    )
+    assert not plan.runs
 
 
 def test_named_draw_part_does_not_reset_attachment_anchors(authored):

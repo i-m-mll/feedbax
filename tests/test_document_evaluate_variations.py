@@ -41,6 +41,7 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import read_settled_project_plan
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored, document_project  # noqa: F401
+from tests.support.model_documents import read_changed_model
 from tests.support.host import job_row, token, wait_until
 from tests.test_model_document_plan import (
     _add_attachment,
@@ -80,7 +81,7 @@ def test_saved_addressed_condition_restores_document_train_model(host, tmp_path,
     owner = _attachment_owner("read")
     selection = {
         "run": {"step": "condition", "row": "default", "variant": "default"},
-        "scope": {"kind": "step"},
+        "scope": {"kind": "rows", "rows": ["default"]},
     }
     invalid = EvaluateAttachmentRequest.model_validate(
         selection
@@ -260,15 +261,18 @@ def _thelen_project(documents):
         update={"terms": (*objective.terms, term)},
     ).model_dump(mode="json")
     raw["documents"]["task"]["payload"] = task.model_copy(update={"signals": tuple(signals)}).model_dump(mode="json")
-    raw["steps"]["train"]["model_attachments"] = {
-        "source": [_set_model_field(_owner_field("muscle", "vmax_factor"), config["vmax_factor"])],
-    }
+    components = new_application_registry_bundle().components
+    trained = read_changed_model(
+        raw, "train", [_set_model_field(_owner_field("muscle", "vmax_factor"), config["vmax_factor"])],
+        components=components,
+    )
     params = raw["steps"]["baseline"]["base"]["inline"]["params"]
     params["trial_set"] = {"kind": "conditions", "ids": [task.condition_ids[0]]}
     raw["steps"]["condition"] = deepcopy(raw["steps"]["baseline"])
-    raw["steps"]["condition"]["model_attachments"] = {
-        "source": [_set_model_field(_owner_field("muscle", "optimal_muscle_length"), 0.24)],
-    }
+    read_changed_model(
+        raw, "condition", [_set_model_field(_owner_field("muscle", "optimal_muscle_length"), 0.24)],
+        base=trained, components=components,
+    )
     return raw, config | {"dt": model["step_seconds"]}, samples
 
 
@@ -452,7 +456,11 @@ def test_saved_curl_addition_binds_resolved_inputs_and_refuses_learned_edit(host
         result["base"]["inline"]["params"]["variation"] = variation
         return result
 
-    steps["curl"] = step([]) | {"model_attachments": {"curl": _curl_addition()}}
+    steps["curl"] = step([])
+    read_changed_model(
+        raw, "curl", _curl_addition(), base=steps["train"]["base"]["inline"]["trial_documents"]["model"]["document"],
+        components=registry.components,
+    )
     steps["learned"] = step({"kernel": {
         "path": "graph.subgraphs.wrapper.subgraphs.controller.nodes.cell.params.input_kernel",
         "op": "add", "value": [[0.0]],

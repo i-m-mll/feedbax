@@ -1,5 +1,6 @@
 """Apply saved edits directly and through the existing Studio HTTP routes."""
 
+from functools import partial
 import json
 import subprocess
 import sys
@@ -166,6 +167,7 @@ def test_cases_cover_the_model_command_contract():
 
 def test_each_named_operation_has_core_and_http_file_parity(tmp_path, monkeypatch, model_project):
     from feedbax.web.app import create_app
+    from feedbax.web.services.trial_scope import model_document_store
 
     direct, served = tmp_path / "direct", tmp_path / "served"
     registry = new_application_registry_bundle()
@@ -182,7 +184,9 @@ def test_each_named_operation_has_core_and_http_file_parity(tmp_path, monkeypatc
         })
         ids = count()
         monkeypatch.setattr(model_edit, "uuid4", lambda: UUID(int=next(ids)))
-        result = core.apply_model_command(operation, body, registry.components)
+        result = core.apply_model_command(
+            operation, body, registry.components, partial(model_document_store, core, operation),
+        )
         assert isinstance(result, AppliedModelEdit), (operation, result)
         changed = (result.snapshot.revision, result.snapshot.presentation_revision) != (
             before.revision, before.presentation_revision,

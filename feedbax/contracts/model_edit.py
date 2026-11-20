@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field, StringConstraints
+from pydantic import Field, StringConstraints, model_validator
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.model_address import ModelAddress, ModelElementId, SignalSource, SignalTarget
@@ -265,10 +265,28 @@ class ModelEditResult(StrictModel):
 
 
 class ModelEditRequest(StrictModel):
+    """A command applied to the composed content of ``document``, stored by the document rule.
+
+    Without ``step`` the edit is stored for every step that reads the document or one based on it. With it, the edit is
+    made for ``step`` and the ``chosen_steps``, in ``variant`` when it names one other than the default, whose row then
+    holds it. ``files`` are step-file patches written in the same transaction, ahead of the command, such as the removal
+    of the sweep whose kept value the command sets.
+    """
+
     revision: Sha256
     presentation_revision: Sha256
     document: ProjectName
     command: ModelEditCommand
+    step: ProjectName | None = None
+    chosen_steps: list[ProjectName] = Field(default_factory=list)
+    variant: ProjectName | None = None
+    files: list[StudioProjectFilePatch] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _variant_has_step(self) -> ModelEditRequest:
+        if self.variant is not None and self.step is None:
+            raise ValueError("A Model edit made in a variant is made for a step")
+        return self
 
 
 type ModelUndoToken = Annotated[str, StringConstraints(min_length=1)]
@@ -329,6 +347,9 @@ class EvaluateAttachmentState(StrictModel):
     resolved_model: ModelDocument | None = None
     source: StudioEvaluateValueSource | None = None
     field_sources: dict[str, StudioEvaluateValueSource] = Field(default_factory=dict)
+    changed_from: ProjectName | None = None
+    """The nearest document the read Model document shares with the subject's, when they differ: what the
+    evaluation changes is the read document's differences from it."""
 
 
 class EvaluateAttachmentEdit(StrictModel):
@@ -338,11 +359,15 @@ class EvaluateAttachmentEdit(StrictModel):
 
 
 class ModelEditApplied(StrictModel):
+    """``undo_token`` is given when the edit wrote the shown document's file and layout alone; ``created`` names the
+    documents the edit made."""
+
     status: Literal["applied"]
     snapshot: StudioProjectSnapshot
     changed: tuple[ModelAddress, ...]
     clipboard: ModelClipboard | None = None
     undo_token: ModelUndoToken | None = None
+    created: tuple[ProjectName, ...] = ()
 
 
 class ModelEditRefused(StrictModel):

@@ -26,10 +26,8 @@ def _train_definition():
     }
     model = documents[trial["model"]["document"]]["payload"]
     model["ports"]["inputs"][0]["name"] = "reach_target"
-    train["document_overrides"] = {
-        trial["model"]["document"]: {"/interior/components/plant/fields/mass": 1.25},
-        task["document"]: {"/params/x": 0.18},
-    }
+    model["interior"]["components"]["plant"]["fields"]["mass"] = 1.25
+    documents[task["document"]]["payload"]["params"]["x"] = 0.18
     inline["training_config"]["snapshot_interval"] = 1
     return project
 

@@ -11,6 +11,7 @@ import {
   type StudioTrialAuthoringRequest,
   type StudioTrainAuthoring,
   type StudioTrainAuthoringRequest,
+  type StudioTrainStartRequest,
   type TrainFieldRequest,
   type TrainFieldResponse,
 } from '@/generated/studioContracts';
@@ -26,6 +27,22 @@ export async function prepareCheckpointRuleEdit(projectId: string, body: StudioC
     return edit;
   } catch (error) {
     throw asApiRequestError(error, path, 'The checkpoint edit did not match its contract');
+  }
+}
+
+export async function prepareTrainStart(
+  projectId: string, stepId: string, body: StudioTrainStartRequest, signal: AbortSignal,
+) {
+  const path = `/api/projects/${encodeURIComponent(projectId)}/authoring/train/${encodeURIComponent(stepId)}/start`;
+  try {
+    const response = await requestJson(path, {
+      method: 'POST', body: JSON.stringify(parseContract('StudioTrainStartRequest', body)), cache: 'no-store', signal,
+    });
+    const edit = parseContract('StudioTrainStartEdit', response);
+    if (edit.revision !== body.revision) throw new Error('The start edit revision changed');
+    return edit;
+  } catch (error) {
+    throw asApiRequestError(error, path, 'The start edit did not match its contract');
   }
 }
 

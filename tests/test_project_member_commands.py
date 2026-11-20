@@ -9,7 +9,9 @@ import pytest
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
 from feedbax.web.app import create_app
+from feedbax.web.services.project_plan import ProjectPlanRead
 from tests.test_canonical_evaluate_admission import _save_project
+from tests.support.managed_train_fixture import managed_evaluation_step
 from tests.test_document_train_pair import authored_documents, document_project
 
 PROJECT = "documents"
@@ -29,10 +31,6 @@ def studio(tmp_path):
         folders = app.state.project_folders
         raw = document_project(authored_documents())
         raw["steps"]["train-b"] = deepcopy(raw["steps"]["train"])
-        # An attachment batch is named by its author, so a batch that shares a document's name is not a reference.
-        raw["steps"]["train-b"]["model_attachments"] = {
-            "reach-model": [{"op": "set_field", "address": MASS, "value": 1.4}],
-        }
         model = raw["documents"]["reach-model"]["payload"]
         controller = model["interior"]["components"]["wrapper"]["interior"]["components"]["controller"]
         reset = ModelAddress.model_validate({
@@ -126,7 +124,6 @@ def test_rename_preserves_document_bytes_and_requests_through_undo(studio):
     for step in STEPS:
         trial = after["project"]["steps"][step]["base"]["inline"]["trial_documents"]
         assert trial["model"] == {"document": "arm"} and "model_name" not in trial
-    assert set(after["project"]["steps"]["train-b"]["model_attachments"]) == {"reach-model"}
     assert after["project"]["sweep"]["rows"]["nominal"]["patches"] == {f"documents.arm.{MASS_TEXT}": {"value": 2.0}}
     assert after["presentation"]["documents"] == {"arm": before["presentation"]["documents"]["reach-model"]}
     # A document's name is outside request identity, so both Train steps keep their results.
@@ -236,14 +233,14 @@ def evaluated(tmp_path):
     with TestClient(app) as client:
         folders = app.state.project_folders
         raw = document_project(authored_documents(), evaluation=True)
-        target = "steps.train." + MASS_TEXT
-        raw["sweep"] = {"axes": {"mass": {"values": {
-            name: {"value": value, "patches": {target: {"value": value}}} for name, value in (("nominal", 1), ("heavy", 2))
+        target = "steps.train.base.inline.training_config.batch_size"
+        raw["sweep"] = {"axes": {"batch": {"values": {
+            name: {"value": value, "patches": {target: {"value": value}}} for name, value in (("nominal", 4), ("heavy", 8))
         }}}}
         raw["steps"]["train"]["group"] = "fitting"
         _save_project(folders, PROJECT, Project.model_validate(raw))
         (folders.root / PROJECT / "presentation.json").write_text(
-            '{"steps": {"train": {"sweep_order": ["mass"]}}}\n',
+            '{"steps": {"train": {"sweep_order": ["batch"]}}}\n',
         )
         yield client, folders
 
@@ -267,9 +264,9 @@ def test_a_step_rename_rewrites_its_references_and_keeps_every_request(evaluated
     steps = after["project"]["steps"]
     assert set(steps) == {"fit", "baseline"} and steps["fit"]["group"] == "fitting"
     assert steps["baseline"]["inputs"]["subject"]["step"] == "fit"
-    targets = {target for value in after["project"]["sweep"]["axes"]["mass"]["values"].values() for target in value["patches"]}
-    assert targets and all(target.startswith("steps.fit.{") for target in targets)
-    assert after["presentation"]["steps"] == {"fit": {"sweep_order": ["mass"]}}
+    targets = {target for value in after["project"]["sweep"]["axes"]["batch"]["values"].values() for target in value["patches"]}
+    assert targets and all(target.startswith("steps.fit.") for target in targets)
+    assert after["presentation"]["steps"] == {"fit": {"sweep_order": ["batch"]}}
     renamed = _files(folders)
     assert "steps/fit.json" in renamed and "steps/train.json" not in renamed
     assert _step_requests(folders, after["revision"]) == {
@@ -291,3 +288,159 @@ def test_a_step_rename_refuses_a_taken_name(evaluated):
     snapshot = _snapshot(client)
     _command(client, snapshot, {"kind": "rename", "family": "steps", "member": "train", "name": "baseline"}, 409)
     _command(client, snapshot, {"kind": "rename", "family": "steps", "member": "missing", "name": "other"}, 404)
+
+
+def test_a_step_duplicate_shares_its_sources_requests_until_it_differs(evaluated):
+    client, folders = evaluated
+    before = _snapshot(client)
+    files = _files(folders)
+    requests = _step_requests(folders, before["revision"])
+
+    result = _command(client, before, {"kind": "duplicate", "family": "steps", "member": "train"})
+    after = result["snapshot"]
+    assert result["member"] == "train-2"
+    steps = after["project"]["steps"]
+    assert steps["train-2"] == steps["train"] == before["project"]["steps"]["train"]
+    assert set(after["project"]["documents"]) == set(before["project"]["documents"])
+    assert after["presentation"]["steps"]["train-2"] == before["presentation"]["steps"]["train"]
+    duplicated = _step_requests(folders, after["revision"])
+    variants = {variant for variant, _, _ in requests}
+    assert len(variants) == 2
+    # The project's sweep patches the copy as it patches its source, so each variant's copy is the source's request.
+    for (variant, step, row), request in requests.items():
+        assert duplicated[variant, step, row] == request
+        if step == "train":
+            assert duplicated[variant, "train-2", row] == request
+    assert _files(folders)["steps/train-2.json"] == files["steps/train.json"]
+
+    # One Undo removes the step.
+    response = _replay(client, before, after)
+    assert response.status_code == 200, response.text
+    assert response.json()["project"] == before["project"]
+    assert _files(folders).keys() == files.keys()
+
+    again = _command(client, response.json(), {"kind": "duplicate", "family": "steps", "member": "train"})["snapshot"]
+    response = client.patch(URL, json={
+        "revision": again["revision"], "address": {"kind": "step", "id": "train-2"},
+        "patches": [{"op": "replace", "path": "/base/inline/training_config/n_batches", "value": 3}],
+    })
+    assert response.status_code == 200, response.text
+    edited = _step_requests(folders, response.json()["revision"])
+    assert {key: edited[key] for key in requests} == requests
+    assert all(edited[variant, "train-2", row] != request for (variant, step, row), request in requests.items() if step == "train")
+
+
+def test_a_duplicate_of_a_continuation_is_named_for_its_kind_and_continues_its_parent(evaluated):
+    client, folders = evaluated
+    before = _snapshot(client)
+    requests = _step_requests(folders, before["revision"])
+
+    result = _command(client, before, {"kind": "duplicate", "family": "steps", "member": "baseline"})
+    assert result["member"] == "evaluate"
+    assert result["snapshot"]["project"]["steps"]["evaluate"]["inputs"]["subject"] == {"step": "train", "checkpoint": "last"}
+    duplicated = _step_requests(folders, result["snapshot"]["revision"])
+    assert {key: duplicated[key] for key in requests} == requests
+    assert {(variant, row): request for (variant, step, row), request in duplicated.items() if step == "evaluate"} == {
+        (variant, row): request for (variant, step, row), request in requests.items() if step == "baseline"
+    }
+
+
+MASS_POINTER = "/interior/components/plant/fields/mass"
+
+
+@pytest.fixture
+def based(tmp_path):
+    """`train` reads `reach-model`; `train-b` reads `model-2`, based on it with a heavier plant."""
+    app = create_app(projects_dir=tmp_path / "projects")
+    with TestClient(app) as client:
+        folders = app.state.project_folders
+        raw = document_project(authored_documents())
+        raw["documents"]["model-2"] = {
+            "schema": raw["documents"]["reach-model"]["schema"], "base": {"document": "reach-model"},
+            "differences": {MASS_POINTER: {"value": 3.0}},
+        }
+        raw["steps"]["train-b"] = deepcopy(raw["steps"]["train"])
+        raw["steps"]["train-b"]["base"]["inline"]["trial_documents"]["model"] = {"document": "model-2"}
+        _save_project(folders, PROJECT, Project.model_validate(raw))
+        yield client, folders
+
+
+def _change_base(client, folders):
+    """Change a value of `reach-model` that `model-2` inherits, and return the new revision."""
+    raw = _snapshot(client)["project"]
+    readout = raw["documents"]["reach-model"]["payload"]["interior"]["components"]["wrapper"]["interior"][
+        "components"]["controller"]["interior"]["components"]["readout"]
+    readout["fields"]["use_bias"] = False
+    _save_project(folders, PROJECT, Project.model_validate(raw))
+    return _snapshot(client)["revision"]
+
+
+def _point(client, snapshot, step, document):
+    response = client.patch(URL, json={
+        "revision": snapshot["revision"], "address": {"kind": "step", "id": step},
+        "patches": [{"op": "replace", "path": "/base/inline/trial_documents/model", "value": {"document": document}}],
+    })
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_detach_keeps_requests_and_stops_following_the_base(based):
+    client, folders = based
+    before = _snapshot(client)
+    requests = _requests(folders, before["revision"])
+    assert requests["train"] != requests["train-b"]
+
+    after = _command(client, before, {"kind": "detach", "member": "model-2"})["snapshot"]
+    detached = after["project"]["documents"]["model-2"]
+    assert "base" not in detached and detached["payload"]["interior"]["components"]["plant"]["fields"]["mass"] == 3.0
+    assert _requests(folders, after["revision"]) == requests
+
+    edited = _requests(folders, _change_base(client, folders))
+    assert edited["train"] != requests["train"] and edited["train-b"] == requests["train-b"]
+    _command(client, _snapshot(client), {"kind": "detach", "member": "model-2"}, 422)
+
+
+def test_duplicate_of_a_based_document_is_a_root_with_its_content(based):
+    client, folders = based
+    before = _snapshot(client)
+    requests = _requests(folders, before["revision"])
+    result = _command(client, before, {"kind": "duplicate", "family": "documents", "member": "model-2"})
+    assert result["member"] == "model-3"
+    assert "base" not in result["snapshot"]["project"]["documents"]["model-3"]
+    pointed = _point(client, result["snapshot"], "train-b", "model-3")
+    assert _requests(folders, pointed["revision"]) == requests
+    # The copy is unrelated to `reach-model`, whose later changes do not reach it.
+    edited = _requests(folders, _change_base(client, folders))
+    assert edited["train"] != requests["train"] and edited["train-b"] == requests["train-b"]
+
+
+def test_rename_of_a_base_rewrites_the_documents_based_on_it(based):
+    client, folders = based
+    before = _snapshot(client)
+    requests = _requests(folders, before["revision"])
+    after = _command(client, before, {"kind": "rename", "family": "documents", "member": "reach-model", "name": "arm"})["snapshot"]
+    assert after["project"]["documents"]["model-2"]["base"] == {"document": "arm"}
+    assert _requests(folders, after["revision"]) == requests
+    # A reference by a base keeps the name taken.
+    _command(client, after, {"kind": "rename", "family": "documents", "member": "objective", "name": "reach-model"})
+    raw = _snapshot(client)["project"]
+    raw["documents"]["orphan"] = {"schema": raw["documents"]["arm"]["schema"], "base": {"document": "gone"}}
+    _save_project(folders, PROJECT, Project.model_validate(raw))
+    _command(client, _snapshot(client), {"kind": "rename", "family": "documents", "member": "arm", "name": "gone"}, 422)
+
+
+def test_detach_is_refused_where_an_evaluation_would_lose_its_relation_to_its_subject(based):
+    client, folders = based
+    raw = _snapshot(client)["project"]
+    raw["steps"]["baseline"] = managed_evaluation_step("train")
+    raw["steps"]["baseline"]["base"]["inline"]["trial_documents"] = {"model": {"document": "model-2"}}
+    # A based document no evaluation's relation passes through may be detached.
+    raw["documents"]["model-4"] = deepcopy(raw["documents"]["model-2"])
+    _save_project(folders, PROJECT, Project.model_validate(raw))
+    snapshot = _snapshot(client)
+    files = _files(folders)
+    settled = folders.read_plan(PROJECT, revision=snapshot["revision"])
+    assert ProjectPlanRead.without_history(settled).window_map().detach_refused == ["model-2"]
+    _command(client, snapshot, {"kind": "detach", "member": "model-2"}, 422)
+    assert _files(folders) == files
+    _command(client, snapshot, {"kind": "detach", "member": "model-4"})

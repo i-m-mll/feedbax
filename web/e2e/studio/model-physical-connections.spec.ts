@@ -3,6 +3,7 @@ import { type Locator, type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, StudioProjectDocument, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { palette } from './fixtures/studioKeyboard';
+import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -36,7 +37,7 @@ test('edits a conserving connection only inside its physical interior', async ({
   const connectionLine = model.locator('.react-flow__connection-path');
   const root = { composites: ['equations'], element: { kind: 'graph' } };
   const stored = (current: StudioProjectDocument['snapshot']) => {
-    const document = current.project.documents?.['reach-model'].payload as unknown as ModelDocument;
+    const document = rootPayload(current.project.documents?.['reach-model']) as unknown as ModelDocument;
     const component = document.interior.components?.equations;
     if (component?.kind !== 'composite' || !('connections' in component.interior)) {
       throw new Error('Expected a stored Equations interior');

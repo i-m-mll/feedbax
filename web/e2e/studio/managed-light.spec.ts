@@ -11,6 +11,7 @@ import { authorWalkthroughSweep, selectModelComponent, verifyWalkthroughSuccesso
 import { activate, chooseOption, chooseStepKind, number, openView, palette, tabTo, typeValue } from './fixtures/studioKeyboard';
 
 import { pick } from './fixtures/controls';
+import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -241,7 +242,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   const wired = await edit(() => chooseOption(page, roleField('Summary'), 'summarize_velocity.summary'));
   await expect(analysis.locator('.react-flow__edge')).toHaveCount(3);
   if (first) {
-    const authored = wired.project.documents!.analysis.payload as unknown as AnalysisDocument;
+    const authored = rootPayload(wired.project.documents!.analysis) as unknown as AnalysisDocument;
     const state = '/v1/model/state/' + first.plantId + '/';
     expect(authored.operations).toMatchObject({
       aligned_velocity: {
@@ -273,7 +274,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   await typeValue(page, addText.getByRole('textbox', { name: 'Text', exact: true }), '**Velocity** by condition.');
   await edit(() => activate(page, addText.getByRole('button', { name: 'Add Text', exact: true })));
   const ordered = await edit(() => palette(page, 'moveEarlier', 'Move Earlier 2'));
-  const report = ordered.project.documents!.report.payload as unknown as ReportDocument;
+  const report = rootPayload(ordered.project.documents!.report) as unknown as ReportDocument;
   const inputs = ordered.project.steps!.report.inputs!;
   expect(report.blocks[0]).toMatchObject({ markdown: '**Velocity** by condition.' });
   expect(report.blocks).toHaveLength(2);
@@ -599,7 +600,7 @@ test('authors a paired Analyze and shared successors from the primary variant', 
   expect(paired.project.sweep).toEqual(initial.project.sweep);
   await drawer.getByRole('textbox', { name: 'Search Library', exact: true }).fill('Aligned velocity');
   await drawer.getByRole('option', { name: 'Aligned velocity', exact: true }).dblclick();
-  await expect.poll(async () => (await snapshot()).project.documents?.analysis?.payload)
+  await expect.poll(async () => rootPayload((await snapshot()).project.documents?.analysis))
     .toMatchObject({ operations: { aligned_velocity: { operation: 'feedbax.aligned_velocity' } } });
 
   const evaluated = await successor('Evaluate', 'evaluate');

@@ -18,20 +18,21 @@ from feedbax.contracts.matrix_core import apply_override_patch_copy
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, SetField
 from feedbax.contracts.project import (
+    DifferenceNotApplied,
     Document,
-    DocumentEdit,
+    RootDocument,
+    apply_differences,
+    base_chain,
+    check_typed_payload,
     DocumentReference,
     ExternalBase,
     InlineBase,
     Payload,
     Project,
     RunBase,
-    SetProjectValue,
+    SetDocumentValue,
     StepBase,
     StepKind,
-    apply_document_edit,
-    document_edit_ops,
-    document_edit_value,
     json_pointer_parts,
 )
 from feedbax.contracts.project_inputs import InitialModelReference, InputBinding, ObjectiveDocumentReference, TaskDocumentReference
@@ -41,6 +42,7 @@ from feedbax.contracts.project_sources import (
     ValueSource,
     first_source,
     patch_source,
+    place_source,
     pointer,
     source_at,
     source_shape,
@@ -123,7 +125,7 @@ class ResolvedStep:
     document_uses: frozenset[str] = frozenset()
     document_pointers: dict[str, str] = field(default_factory=dict)
     document_problems: tuple[ProjectDiagnostic, ...] = ()
-    input_documents: dict[str, Document] = field(default_factory=dict)
+    input_documents: dict[str, RootDocument] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -137,6 +139,7 @@ class _ResolvedTrial:
     authored: dict[str, Any]
     payload: Payload
     documents: frozenset[str]
+    reads: frozenset[str]
     document_ids: dict[str, str]
     document_pointers: dict[str, str]
 
@@ -173,12 +176,15 @@ class _TrialResolution:
                         value, path, document_ids=ids, document_pointers=pointers,
                     )
                     assert isinstance(resolved, dict)
-                    trial = _ResolvedTrial(value, resolved, frozenset(documents.used), ids, pointers)
+                    reads = frozenset(
+                        member for name in documents.used for member in documents.chains.get(name, (name,))
+                    )
+                    trial = _ResolvedTrial(value, resolved, frozenset(documents.used), reads, ids, pointers)
                 finally:
                     documents.used = uses
                 self.previous = trial
             else:
-                for document in trial.documents:
+                for document in trial.reads:
                     documents.read_document(document)
             documents.used.update(trial.documents)
             document_ids.update(trial.document_ids)
@@ -333,40 +339,27 @@ def _figure_slot(path: str) -> str | None:
     return None
 
 
-@dataclass(frozen=True)
-class DocumentDifference:
-    """One edit a step applies to a document it reads, at ``location`` in that step's file."""
-
-    step: str
-    location: tuple[str, ...]
-    edit: DocumentEdit
-
-
-type DocumentDifferences = Mapping[str, tuple[DocumentDifference, ...]]
+def _written_sources(shape: Any, at: tuple[str, ...] = ()) -> Iterator[tuple[tuple[str, ...], Any]]:
+    """The places a variant wrote in a sparse source tree, each with the sources of the value it wrote there."""
+    if isinstance(shape, ValueSource) or isinstance(shape, SourceObject | SourceList) and shape.source is not None:
+        yield at, shape
+    elif isinstance(shape, SourceObject):
+        for key, child in shape.items():
+            yield from _written_sources(child, (*at, key))
 
 
-def document_differences(project: Project, step: str) -> dict[str, tuple[DocumentDifference, ...]]:
-    """The differences ``step`` applies to each document: those of its ``base: {step}`` chain, root first, then its own.
-
-    Applied in order, a later difference at the same path wins. A chain that names a missing step or returns to itself
-    ends there; composing the step reports it.
-    """
-    chain: list[str] = []
-    name: str | None = step
-    while name is not None and name not in chain and (authored := project.steps.get(name)) is not None:
-        chain.append(name)
-        name = authored.base.step if isinstance(authored.base, StepBase) else None
-    differences: dict[str, list[DocumentDifference]] = {}
-    for name in reversed(chain):
-        for document, edits in project.steps[name].document_overrides.items():
-            for index, edit in enumerate(document_edit_ops(edits)):
-                location = (edit.path,) if isinstance(edits, dict) else (
-                    (str(index), "value") if isinstance(edit, SetProjectValue) else (str(index),)
-                )
-                differences.setdefault(document, []).append(
-                    DocumentDifference(name, ("document_overrides", document, *location), edit)
-                )
-    return {document: tuple(items) for document, items in differences.items()}
+def compose_document(read_document: Callable[[str], Document | None], name: str) -> RootDocument | ProjectDiagnostic:
+    """The document ``name`` as a root document holding its composed payload."""
+    document = read_document(name)
+    if document is None:
+        return ProjectDiagnostic(ResolutionCode.MISSING_DOCUMENT, "document", name, document=name)
+    if isinstance(document, RootDocument):
+        return document
+    try:
+        payload = _Documents(Project(), read_document=read_document).payload(name, document, "document")
+    except _Problem as error:
+        return error.diagnostic
+    return RootDocument.model_construct(schema_id=document.schema_id, payload=payload)
 
 
 class _Documents:
@@ -376,7 +369,6 @@ class _Documents:
         step: str | None = None,
         variant_sources: Any = None,
         read_document: Callable[[str], Document | None] | None = None,
-        overrides: DocumentDifferences | None = None,
         *,
         external: Callable[[str], bytes | None] | None = None,
         partial_figures: bool = False,
@@ -385,7 +377,6 @@ class _Documents:
         self.step = step
         self.variant_sources = variant_sources
         self.read_document = project.documents.get if read_document is None else read_document
-        self.overrides = overrides or {}
         self.row_patches = row_patches or {}
         self.used: set[str] = set()
         self.edited: dict[str, JsonValue] = {}
@@ -394,6 +385,68 @@ class _Documents:
         self.pinned: dict[str, tuple[ExternalBase, JsonValue]] = {}
         self.partial_figures = partial_figures
         self.figure_problems: dict[str, ProjectDiagnostic] = {}
+        self.composed: dict[str, JsonValue] = {}
+        self.chains: dict[str, tuple[str, ...]] = {}
+        self.shapes: dict[str, Any] = {}
+
+    def payload(self, name: str, document: Document, path: str, active: tuple[str, ...] = ()) -> JsonValue:
+        """The document's payload composed with its base chain."""
+        if isinstance(document, RootDocument):
+            self.chains[name] = (name,)
+            return document.payload
+        if name in self.composed:
+            return self.composed[name]
+
+        def problem(code: ResolutionCode, document_path: str, detail: str) -> _Problem:
+            return _Problem(code, path, detail, step=self.step, document=name, document_path=document_path)
+
+        base_name = document.base.document
+        if base_name in (*active, name):
+            raise problem(ResolutionCode.DOCUMENT_CYCLE, "base.document", " -> ".join((*active, name, base_name)))
+        base = self.read_document(base_name)
+        if base is None:
+            raise problem(ResolutionCode.MISSING_DOCUMENT, "base.document", base_name)
+        if base.schema_id != document.schema_id:
+            raise problem(
+                ResolutionCode.INVALID_DOCUMENT, "schema",
+                f"{document.schema_id} differs from the schema {base.schema_id} of its base {base_name}",
+            )
+        content = self.payload(base_name, base, path, (*active, name))
+        if not isinstance(content, dict):
+            raise problem(ResolutionCode.INVALID_DOCUMENT, "base.document", f"{base_name} is not an object")
+        try:
+            payload = apply_differences(content, document.differences)
+        except DifferenceNotApplied as error:
+            raise problem(ResolutionCode.INVALID_DELTA, f"differences.{error.path}", str(error)) from error
+        try:
+            check_typed_payload(document.schema_id, payload)
+        except ValidationError as error:
+            raise problem(ResolutionCode.INVALID_DOCUMENT, "differences", str(error)) from error
+        self.composed[name] = payload
+        self.chains[name] = (name, *self.chains[base_name])
+        return payload
+
+    def shape(self, name: str) -> Any:
+        """Sources of a composed payload: a difference's document where it differs, the base's where inherited."""
+        if name not in self.shapes:
+            document = self.read_document(name)
+            assert document is not None
+            if isinstance(document, RootDocument):
+                self.shapes[name] = source_shape(
+                    document.payload, ValueSource("document", name),
+                    source_at(self.variant_sources, ("documents", name, "payload")),
+                )
+            else:
+                shape = self.shape(document.base.document)
+                for path, difference in document.differences.items():
+                    shape = place_source(shape, json_pointer_parts(path), (
+                        source_shape(difference.value, ValueSource("document", name, path))
+                        if isinstance(difference, SetDocumentValue) else None
+                    ))
+                for parts, source in _written_sources(source_at(self.variant_sources, ("documents", name, "payload"))):
+                    shape = place_source(shape, parts, source)
+                self.shapes[name] = shape
+        return self.shapes[name]
 
     def select(self, reference: DocumentReference, path: str) -> Any:
         document = self.read_document(reference.document)
@@ -406,23 +459,15 @@ class _Documents:
                 document=reference.document,
             )
         self.used.add(reference.document)
-        payload = document.payload
-        edits = self.overrides.get(reference.document)
+        payload = self.payload(reference.document, document, path)
         patches = self.row_patches.get(reference.document, ())
-        if edits or patches:
+        if patches:
             if reference.document not in self.edited:
                 draft = deepcopy(payload)
-                try:
-                    if not isinstance(draft, dict):
-                        raise ValueError("Document differences require an object payload")
-                    for difference in edits or ():
-                        apply_document_edit(draft, difference.edit, document_edit_value(difference.edit))
-                except ValueError as error:
-                    raise _Problem(
-                        ResolutionCode.INVALID_DELTA, path, str(error), step=self.step, document=reference.document
-                    ) from error
                 for item in patches:
                     try:
+                        if not isinstance(draft, dict):
+                            raise ValueError("A variant writes into an object payload only")
                         draft = apply_override_patch_copy(draft, item.patch)
                     except ValueError as error:
                         raise _Problem(
@@ -497,20 +542,22 @@ class _Documents:
                 value, ValueSource("document", pin.path, pointer((*json_pointer_parts(pin.pointer), *parts))),
             )
         name = reference.document
-        edits = self.overrides.get(name)
         patches = self.row_patches.get(name, ())
         variant = source_at(self.variant_sources, ("documents", name, "payload"))
-        if not edits and not patches:
+        based = name in self.composed
+        if not patches:
+            if based:
+                return source_at(self.shape(name), parts)
             return source_shape(
                 value, ValueSource("document", name, pointer(parts)), source_at(variant, parts),
             )
         if name not in self.edited_sources:
             document = self.read_document(name)
             assert document is not None and self.step is not None
-            shape = source_shape(document.payload, ValueSource("document", name), variant)
-            for difference in edits or ():
-                source = ValueSource("step", difference.step, pointer(difference.location), step=difference.step)
-                apply_document_edit(shape, difference.edit, source_shape(document_edit_value(difference.edit), source))
+            shape = (
+                deepcopy(self.shape(name)) if based
+                else source_shape(cast(RootDocument, document).payload, ValueSource("document", name), variant)
+            )
             for item in patches:
                 assert item.source is not None
                 shape = patch_source(shape, item.patch, source_shape(item.patch.value, item.source, item.override))
@@ -584,7 +631,8 @@ class _Documents:
         if isinstance(value, DocumentReference):
             selected, active = self._follow(value, path, active)
             if (
-                value.document not in self.pinned and value.document not in self.overrides
+                value.document not in self.pinned
+                and value.document not in self.composed
                 and value.document not in self.row_patches and self.variant_sources is None
             ):
                 return self.source_leaf(selected, ValueSource(
@@ -798,30 +846,6 @@ class _Resolver:
                     source = ValueSource("step", name, pointer(path), step=name)
                     override = source_at(self.variant_sources, ("steps", name, *path))
                     origins = patch_source(origins, patch, source_shape(patch.value, source, override))
-        if step.model_attachments:
-            batches = {name: [item.model_dump(mode="json", exclude_unset=True) for item in records]
-                       for name, records in step.model_attachments.items()}
-            inherited = payload.get(MODEL_ATTACHMENTS, {})
-            if not isinstance(inherited, dict):
-                raise _Problem(
-                    ResolutionCode.INVALID_PAYLOAD, MODEL_ATTACHMENTS,
-                    "Expected named batches of Model attachment differences", step=name,
-                )
-            payload = payload | {MODEL_ATTACHMENTS: inherited | batches}
-            if origins is not None:
-                if MODEL_ATTACHMENTS not in origins:
-                    origins = patch_source(origins, OverridePatch(
-                        path=MODEL_ATTACHMENTS, op="add", value={},
-                    ), source_shape({}, None))
-                for batch, records in batches.items():
-                    source = ValueSource("step", name, pointer((MODEL_ATTACHMENTS, batch)), step=name)
-                    patch = OverridePatch(
-                        path=f"{MODEL_ATTACHMENTS}.{batch}",
-                        op="replace" if batch in inherited else "add", value=records,
-                    )
-                    origins = patch_source(origins, patch, source_shape(
-                        records, source, source_at(self.variant_sources, ("steps", name, MODEL_ATTACHMENTS, batch)),
-                    ))
         try:
             sweep = inherit_sweep(
                 parent.sweep, step.sweep, author=name if self.track_sources else None
@@ -1040,7 +1064,7 @@ class _Resolver:
 
     def row_documents(self, name: str, state: _StepState, *, partial_figures: bool = False) -> _Documents:
         return _Documents(
-            self.project, name, self.variant_sources, self.read_document, document_differences(self.project, name),
+            self.project, name, self.variant_sources, self.read_document,
             external=self.readers.figure_external if self.project.steps[name].kind == "analyze" else None,
             partial_figures=partial_figures,
             row_patches=state.row_document_patches,
@@ -1072,7 +1096,7 @@ class _Resolver:
             selected = documents.select(reference, path)
             document = self.project.documents[reference.document]
             try:
-                input_documents[role] = Document.model_validate({"schema": document.schema_id, "payload": selected})
+                input_documents[role] = RootDocument.model_validate({"schema": document.schema_id, "payload": selected})
             except ValidationError as error:
                 raise _Problem(ResolutionCode.INVALID_DOCUMENT, path, str(error), step=name, document=reference.document) from error
             document_ids[path] = reference.document
@@ -1131,17 +1155,11 @@ class StepComposition:
 
     name: str
     _state: _StepState
-    _document_differences: DocumentDifferences
 
     @cached_property
     def row_basis(self) -> str:
         """Hash the ordered payload and required paths before row-local patches."""
-        return sha256_bytes(to_json((
-            self._state.payload, self._state.requires, sorted(self._state.document_uses), {
-                document: [difference.edit.model_dump(mode="json") for difference in differences]
-                for document, differences in sorted(self._document_differences.items())
-            },
-        )))
+        return sha256_bytes(to_json((self._state.payload, self._state.requires, sorted(self._state.document_uses))))
 
     @property
     def sweep(self) -> Sweep | None:
@@ -1244,7 +1262,7 @@ def compose_step(
     resolver = _Resolver(project, readers, track_sources, variant_sources, read_document, inline_origin)
     try:
         state = resolver.state(step)
-        return StepTemplate(StepComposition(step, state, document_differences(project, step)), resolver)
+        return StepTemplate(StepComposition(step, state), resolver)
     except _Problem as error:
         return error.diagnostic
 
@@ -1279,6 +1297,9 @@ def validate_project_documents(
             payload = documents.inline(DocumentReference(document=name), "payload")
             validator(payload)
         except _Problem as error:
+            owner = error.diagnostic.document
+            if owner != name and owner in base_chain(project.documents, name):
+                continue
             failures.append(replace(error.diagnostic, document=name))
         except ValueError as error:
             if isinstance(error, ValidationError):

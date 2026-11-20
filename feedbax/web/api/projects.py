@@ -20,6 +20,8 @@ from feedbax.contracts.studio_authoring import (
     StudioAuthoringSurface,
     StudioTrainAuthoring,
     StudioTrainAuthoringRequest,
+    StudioTrainStartEdit,
+    StudioTrainStartRequest,
 )
 from feedbax.contracts.studio_project import (
     StudioMemberCommand,
@@ -123,18 +125,30 @@ def read_train_authoring(
             projection = project_train_fields(
                 snapshot.project, step_id, bundle.training_methods, body.change, selection,
                 read_plan=lambda keys: folders.read_plan(project_id, revision=snapshot.revision, source_runs=keys).plan,
-                class_sweep=body.class_sweep,
+                class_sweep=body.class_sweep, reset=body.reset,
             )
         except ValueError as error:
             raise ProjectFolderInvalid(str(error)) from error
         return StudioTrainAuthoring(
             project_id=project_id, step_id=step_id, revision=snapshot.revision, fields=projection.fields,
-            settings=projection.settings, mixed=projection.mixed, files=projection.files,
+            settings=projection.settings, mixed=projection.mixed, files=projection.stored.files,
+            created=list(projection.stored.created),
             documents=projection.documents, refusal=projection.refusal, classes=projection.classes,
-            removed_values=projection.removed,
+            removed_values=projection.removed, changed=projection.changed,
         )
 
     return _project_response(response, project_fields)
+
+
+@router.post("/{project_id}/authoring/train/{step_id}/start")
+def start_train_step(
+    project_id: ProjectName, step_id: ProjectName, body: StudioTrainStartRequest, request: Request, response: Response,
+) -> StudioTrainStartEdit:
+    from feedbax.web.services.train_start import prepare_train_start
+
+    return _project_response(response, lambda: prepare_train_start(
+        request.app.state.project_folders, project_id, step_id, body,
+    ))
 
 
 @router.post("/{project_id}/authoring/train/{step_id}/fields")

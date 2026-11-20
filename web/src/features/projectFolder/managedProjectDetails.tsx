@@ -1,4 +1,5 @@
 import type { ExceptionMentions } from '@/components/values/adapters/fieldView';
+import { documentPayload } from './documentPayload';
 import { useQuery } from '@tanstack/react-query';
 import { useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { fetchSavedEvaluationReplay } from '@/api/jobs';
@@ -37,9 +38,8 @@ import { Select } from '@/components/ui/Select';
 type DetailName = 'model' | 'task' | 'scene';
 type StoredModel = { id: string; value: ModelDocument };
 
+/** A document view's steps: `lit` are those an edit is made for. */
 export interface NamedDocumentScope extends MapDocumentScope {
-  /** The steps an edit is made for, which with the steps based on them are the lit steps. */
-  readonly chosen: ReadonlySet<string>;
   readonly key: string;
   readonly document: string;
   readonly localVariant?: boolean;
@@ -47,6 +47,8 @@ export interface NamedDocumentScope extends MapDocumentScope {
 
 export interface ManagedProjectDetail {
   readonly documentId?: string;
+  /** Why the service refuses the view's read of its document, shown on the document's picker. */
+  readonly refusal?: string;
   readonly body: ReactNode;
   readonly drawer?: ReactNode;
   readonly inspector?: ReactNode;
@@ -312,11 +314,12 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
   const direct = DocumentReferenceSchema.safeParse(managedModel);
   const storedId = modelDocumentId(input.step?.documentIds) ?? input.modelSource ?? (direct.success ? direct.data.document : undefined);
   const storedDocument = storedId ? saved.project.documents?.[storedId] : undefined;
+  const storedPayload = storedId ? documentPayload(saved.project.documents, saved.composed, storedId) : undefined;
   const stored = useMemo(() => {
     if (!storedId || storedDocument?.schema !== modelSchema) return undefined;
-    const result = ModelDocumentSchema.safeParse(storedDocument.payload);
+    const result = ModelDocumentSchema.safeParse(storedPayload);
     return result.success ? { id: storedId, value: result.data } : undefined;
-  }, [storedId, storedDocument]);
+  }, [storedId, storedDocument, storedPayload]);
   const reveal = input.problemReveal;
   const revealedMember = placeMember(reveal?.place);
   const canEdit = selection?.kind === 'steps' && selection.stepIds.length === 1 && selection.stepIds[0] === stepId && !outside;
@@ -326,7 +329,7 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     active: activeView === 'model',
     selectedSweepValues: input.selectedSweepValues,
     confirmRunRemoval: input.confirmRunRemoval,
-    fieldChosenSteps: graphScope?.chosen,
+    fieldChosenSteps: graphScope?.lit,
     planCurrent: input.planCurrent,
     fieldRows: input.fieldRows,
     fieldAxes: input.fieldAxes,
@@ -347,7 +350,7 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
       return member && member.document === storedId ? [{ address: member.address, reason: item.detail }] : [];
     }),
     path: input.modelPath && input.modelPath.document === storedId ? input.modelPath.path : rootModelPath,
-    setPath: (path) => { if (storedId) input.setModelPath(storedId, path); },
+    setPath: (path, document = storedId) => { if (document) input.setModelPath(document, path); },
     sections: input.drawerSections,
     openProblems: input.openModelProblems,
     exceptions: input.exceptions,

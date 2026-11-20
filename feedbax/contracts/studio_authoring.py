@@ -11,9 +11,9 @@ from feedbax.contracts.component import ComponentDefinition
 from feedbax.expression_registry import FunctionInfo
 from feedbax.contracts.operation import OperationDefinition
 from feedbax.contracts.project import Sha256
-from feedbax.contracts.project_inputs import NonemptyText, ProjectName
+from feedbax.contracts.project_inputs import NonemptyText, ProjectName, StepReference
 from feedbax.contracts.jobs import StudioSavedTrainKey
-from feedbax.contracts.studio_project import StudioProjectFilePatch
+from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
 
 
 class StudioAuthoringDeclaration(StrictModel):
@@ -185,6 +185,19 @@ class StudioTrainAuthoringRequest(StudioRunSelection):
     revision: Sha256
     change: StudioAuthoringChange | None = None
     class_sweep: StudioClassSweepChange | None = None
+    reset: str | None = None
+    """A pointer in the Train definition to give the value of the base of the document it is read from."""
+
+
+class StudioTrainStartRequest(StrictModel):
+    revision: Sha256
+    source: StepReference | None = None
+    """The Train step whose checkpoint the step starts from, which it then continues; none starts it from its Model."""
+
+
+class StudioTrainStartEdit(StrictModel):
+    revision: Sha256
+    files: list[StudioProjectFilePatch]
 
 
 class StudioSweptParameterMissing(StrictModel):
@@ -233,8 +246,12 @@ class StudioTrainAuthoring(StrictModel):
     mixed: list[str] = Field(default_factory=list)
     """Pointers in the definition where the selected runs hold different values."""
     files: list[StudioProjectFilePatch]
+    created: list[CreateNamedDocument] = Field(default_factory=list)
+    """Documents the edit creates, written before ``files``, which may name them."""
     documents: list[ProjectName]
     refusal: StudioSweptParameterMissing | None = None
     classes: list[StudioClassField] = Field(default_factory=list)
     removed_values: dict[str, list[str]] = Field(default_factory=dict)
     """Per sweep, the values whose runs the edit removes from the project."""
+    changed: list[str] = Field(default_factory=list)
+    """Pointers in the definition whose value is a difference of the based document it is read from."""

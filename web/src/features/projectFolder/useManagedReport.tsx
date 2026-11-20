@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react';
+import { documentPayload } from './documentPayload';
 import { studioChangeDetail, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
 import { MentionRow, ProblemRow } from '@/features/projectWindow/StudioProblems';
 import { Button } from '@/components/ui/Button';
@@ -53,7 +54,7 @@ export function useManagedReport({
   const document = base && 'document' in base && !base.pointer ? base.document : undefined;
   const authored = document ? draft.documents?.[document] : undefined;
   const parsed = authored?.schema === 'feedbax.report_document.v1'
-    ? ReportDocumentSchema.safeParse(authored.payload) : undefined;
+    ? ReportDocumentSchema.safeParse(documentPayload(draft.documents, saved.composed, document!)) : undefined;
   const report = parsed?.success ? parsed.data : undefined;
   const planned = run && projection?.window_map?.rows.find(({ key }) => savedRunId(key) === savedRunId(run));
   const retained = planned?.light?.result ?? planned?.light?.previous;
@@ -66,7 +67,7 @@ export function useManagedReport({
   const [refusal, setRefusal] = useState<{ scope: string; at: Place; reason: string }>();
   const shared = document && (plan.steps.some(({ id, documentUses }) => id !== stepId && documentUses?.includes(document))
     || Object.entries(draft.steps ?? {}).some(([id, { base }]) => id !== stepId && 'document' in base && base.document === document));
-  const direct = !step?.sweep && !step?.deltas?.length && !Object.keys(step?.document_overrides ?? {}).length;
+  const direct = !step?.sweep && !step?.deltas?.length;
   const editable = !!report && !!document && wholeStep && direct &&
     projection?.revision === saved.revision && !pending && !outside && !shared;
   const figures = projection?.window_map?.analysis_elements?.filter(isReportFigureSource)

@@ -238,12 +238,12 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   await number(page, batchCount, String(additionalUpdates));
   const changed = await batches;
   expect(changed.ok(), await changed.text()).toBe(true);
-  expect(changed.request().postDataJSON().address).toEqual({ kind: 'step', id: child });
-  const editedChild = (await changed.json() as StudioProjectSnapshot).project.steps![child];
-  // The child reads its parent's training document, so its own Batches is a difference from that document.
-  expect(editedChild.document_overrides).toEqual({ training: [
-    { op: 'replace', path: '/training_config/n_batches', value: additionalUpdates },
-  ] });
+  // The child reads its parent's training document, so its own Batches is a document based on that one.
+  const editedProject = (await changed.json() as StudioProjectSnapshot).project;
+  expect(Object.values(editedProject.documents ?? {}).filter((document) => 'base' in document
+    && document.base.document === 'training')).toEqual([expect.objectContaining({
+    differences: { '/training_config/n_batches': { value: additionalUpdates } },
+  })]);
   const beforeChildren = await attempts();
   const planned = stepRows(await plan(context), child);
   expect(planned.map(({ key }) => key.row)).toEqual(prefix.slice(0, 2).map(({ key }) => key.row));

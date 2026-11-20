@@ -490,7 +490,9 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   const acknowledged = await edit;
   expect(acknowledged.ok(), await acknowledged.text()).toBe(true);
   snapshot = await acknowledged.json() as StudioProjectSnapshot;
-  expect(snapshot.project.steps?.[childId]?.deltas?.[2]?.patches).toEqual([
+  expect(snapshot.project.steps?.[childId]?.deltas).toHaveLength(2);
+  expect(snapshot.project.steps?.[childId]?.deltas?.[1]?.patches).toEqual([
+    expect.objectContaining({ path: carryoverPath }),
     expect.objectContaining({ path: 'training_config.n_batches', value: 4 }),
   ]);
   await page.locator('[data-slot="secondary"]').getByRole('button', { name: 'Close Slot', exact: true }).click();

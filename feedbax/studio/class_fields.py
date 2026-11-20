@@ -20,6 +20,7 @@ from feedbax.contracts.studio_authoring import (
 )
 from feedbax.contracts.studio_project import StudioProjectFilePatch
 from feedbax.studio.authoring_sweeps import FieldSweeps, drop_axis, patch_writes, sweep_paths
+from feedbax.studio.selection import StoredEdit
 
 type _Path = tuple[str, ...]
 
@@ -81,7 +82,7 @@ class ClassField:
 
 @dataclass(frozen=True)
 class ClassSweepEdit:
-    files: list[StudioProjectFilePatch]
+    stored: StoredEdit
     removed: dict[str, list[str]] = dataclass_field(default_factory=dict)
 
 
@@ -92,7 +93,7 @@ def edit_class_sweep(
     *,
     scoped: bool,
     parameter_label: Callable[[_Path], str],
-    store: Callable[[list[OverridePatch]], list[StudioProjectFilePatch]],
+    store: Callable[[list[OverridePatch]], StoredEdit],
     step_file: Callable[[list[SetProjectValue]], StudioProjectFilePatch],
 ) -> ClassSweepEdit | StudioSweptParameterMissing:
     """The files that make ``change`` to the sweep over ``field``, or the parameter a new member's class lacks.
@@ -112,7 +113,7 @@ def edit_class_sweep(
         key = sweeps.target.value
         assert isinstance(key, str)
         entry = sweeps.target.entry(key, field.title(key))
-        return ClassSweepEdit([step_file(sweeps.write_axis(NamedAxis(values={key: entry})))])
+        return ClassSweepEdit(StoredEdit([step_file(sweeps.write_axis(NamedAxis(values={key: entry})))]))
     members = field.members()
     if members is None or not sweeps.simple:
         raise ValueError(f"{field.label} has no editable sweep.")
@@ -123,14 +124,14 @@ def edit_class_sweep(
         if kept is None:
             raise ValueError(f"{field.label} has no member {edit.value_id!r}.")
         return ClassSweepEdit(
-            [*store(patch_writes(kept.patches)), step_file([drop_axis(name)])],
+            store(patch_writes(kept.patches)).then([step_file([drop_axis(name)])]),
             {name: [value_id for value_id in values if value_id != edit.value_id]},
         )
     if edit.kind == "remove_member":
         if edit.value_id not in values or len(values) == 1:
             raise ValueError(f"{field.label} has no other member to keep.")
         rest = NamedAxis(values={value_id: entry for value_id, entry in values.items() if value_id != edit.value_id})
-        return ClassSweepEdit([step_file(sweeps.write_axis(rest))], {name: [edit.value_id]})
+        return ClassSweepEdit(StoredEdit([step_file(sweeps.write_axis(rest))]), {name: [edit.value_id]})
     key = edit.key
     if key not in field.classes or any(entry.value == key for entry in values.values()):
         raise ValueError(f"{field.label} has no class {key!r} to add.")
@@ -146,7 +147,7 @@ def edit_class_sweep(
     added = sweeps._fresh_id(key, values)
     after = NamedAxis(values=moved_values | {added: sweeps.target.entry(key, field.title(key))})
     removals = [OverridePatch(op="remove", path=".".join((*field.site, parameter))) for parameter in moved]
-    return ClassSweepEdit([*(store(removals) if removals else []), step_file(sweeps.write_axis(after))])
+    return ClassSweepEdit((store(removals) if removals else StoredEdit([])).then([step_file(sweeps.write_axis(after))]))
 
 
 def _swept_parameter_missing(

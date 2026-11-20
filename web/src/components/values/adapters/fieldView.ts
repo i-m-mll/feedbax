@@ -3,7 +3,7 @@ import type {
   StudioPlanReviewSource,
 } from '@/generated/studioContracts';
 import { studioEvaluateValueSource, studioName, studioPlanValueSource, studioReason } from '@/components/activity/studioVocabulary';
-import type { FieldCommit, FieldModel } from '../fieldModel';
+import { withReset, type ChangeMark, type FieldModel } from '../fieldModel';
 
 export type ProjectedEdit = FieldTextEdit | FieldKindEdit | FieldNameEdit;
 
@@ -29,17 +29,20 @@ export interface FieldViewOptions {
   planSources?: readonly StudioPlanReviewSource[];
   exceptions?: ExceptionMentions;
   source?: StudioEvaluateValueSource;
+  /** The changed mark, when the value is a difference of the shown document. */
+  changed?: ChangeMark;
 }
 
-function origin({ planSources, exceptions, source }: FieldViewOptions) {
-  if (!planSources?.length) return { text: source && studioEvaluateValueSource(source) };
+function origin({ planSources, exceptions, source, changed }: FieldViewOptions) {
+  if (!planSources?.length) return { text: changed?.text ?? (source && studioEvaluateValueSource(source)) };
   const mentions = planSources.map((item) => item.kind === 'exception' ? exceptions?.(item) : undefined);
   const named = new Map(planSources.flatMap((item, index) => {
     const mention = mentions[index];
     return mention ? [[JSON.stringify([item.step, item.variant, item.name]), mention] as const] : [];
   }));
   return {
-    text: [...new Set(planSources.map((item, index) => studioPlanValueSource(item, mentions[index]?.runs)))].join(', '),
+    text: [...new Set([...changed ? [changed.text] : [],
+      ...planSources.map((item, index) => studioPlanValueSource(item, mentions[index]?.runs))])].join(', '),
     reveal: named.size === 1 ? [...named.values()][0].reveal : undefined,
   };
 }
@@ -49,8 +52,9 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
   const { label, sweep, unit } = field;
   const { rowSelection = false, multipleRows = false } = options;
   const project = options.commit;
-  const commit: FieldCommit | undefined = project && ((edit) => edit.kind === 'add_member' || edit.kind === 'remove_member'
-    ? Promise.resolve(undefined) : project(edit.kind === 'set' ? { kind: 'text', text: String(edit.value) } : edit));
+  const reset = options.changed?.reset;
+  const commit = withReset(project && ((edit) => edit.kind === 'add_member' || edit.kind === 'remove_member' || edit.kind === 'reset'
+    ? Promise.resolve(undefined) : project(edit.kind === 'set' ? { kind: 'text', text: String(edit.value) } : edit)), options.changed);
   const readOnly = !commit;
   const rule = readOnly || !field.can_change_axis ? undefined : commit;
   const kind = sweep ? 'sweep' : options.kind ?? 'value';
@@ -116,6 +120,7 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
     canList: !!sweep && sweep.kind !== 'list' && sweep.can_list && field.can_change_axis,
     differs: effective ?? undefined,
     origin: [field.conversion, source.text].filter(Boolean).join(' · ') || undefined,
+    changed: !!reset,
     revealOrigin: source.reveal,
     names: field.site.site.names ?? [],
     functions: field.site.functions,

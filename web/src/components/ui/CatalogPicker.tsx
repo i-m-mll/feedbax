@@ -16,6 +16,7 @@ export interface CatalogPickerProps {
   placeholder?: string;
   'aria-label'?: string;
   'aria-labelledby'?: string;
+  'aria-describedby'?: string;
   className?: string;
 }
 

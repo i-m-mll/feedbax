@@ -14,7 +14,7 @@ import {
 import { Button } from "@/components/ui/Button";
 import { ScrollFade } from "@/components/ui/ScrollFade";
 import { Table, TableCell, TableHeaderCell, TableRow, TableRowHeader } from "@/components/ui/Table";
-import { RunContextMenu, type RunMenu } from "./RunContextMenu";
+import { CommandContextMenu, type RunMenu } from "./CommandContextMenu";
 
 const gutter = "w-px pl-1 pr-2 text-right";
 
@@ -142,7 +142,7 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
             const reason = run.results.some(({ validity }) => validity.reasons?.length) ? undefined : run.reason;
             const selectRow = selectionButton((extend) => onSelectionChange(selectRun(state, { stepId: step.id, runId: run.id }, extend)));
             return (
-              <RunContextMenu key={run.id} runs={[run]} menu={runMenu} trigger={<TableRow
+              <CommandContextMenu key={run.id} commands={runMenu && ((anchor) => runMenu([run], anchor))} trigger={<TableRow
                 data-result-run={run.id}
                 ref={(node) => {
                   virtual.measureElement(node);

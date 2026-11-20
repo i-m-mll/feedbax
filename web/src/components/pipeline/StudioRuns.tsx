@@ -25,7 +25,8 @@ import { CommandBar, withGlyph, type BarControl, type BarEntry } from "@/compone
 import { Select } from "@/components/ui/Select";
 import { Table, TableCell, TableHeaderCell, TableRowHeader } from "@/components/ui/Table";
 import { StudioRunTable, type RunSelectionProps } from "./StudioRunTable";
-import type { RunMenu } from "./RunContextMenu";
+import { focusRing } from "@/components/ui/styles";
+import { CommandContextMenu, type RunMenu, type StepMenu } from "./CommandContextMenu";
 
 interface StudioRunsProps extends RunSelectionProps {
   plan: PlanView;
@@ -201,9 +202,10 @@ export interface RunMention {
  * them, then under a hairline the rows of what attaches to the step (exceptions, inputs) and the steps the runs relate to.
  */
 export function StudioStepInspector({
-  plan, step, state, detail, fields, attachments, revealed, upstreamDetail, onReveal, onChooseStep,
+  plan, step, state, detail, fields, attachments, revealed, upstreamDetail, onReveal, onChooseStep, stepMenu,
 }: Pick<RunSelectionProps, "step" | "state"> & {
   plan: PlanView;
+  stepMenu?: StepMenu;
   /** What a single chosen run's result adds to its reasons. */
   detail?: ReactNode;
   fields?: ReactNode;
@@ -251,7 +253,10 @@ export function StudioStepInspector({
   const related = upstream.size > 0 || downstream.size > 0;
   return <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] content-start gap-2 text-sm [overflow-wrap:anywhere]">
     <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
-      <span className="flex min-w-0 items-center gap-1.5"><StepKindMark kind={step.kind} /><h3 className="min-w-0 break-words font-semibold">{title}</h3></span>
+      <CommandContextMenu commands={stepMenu && (() => stepMenu(step))} trigger={
+        <span className={`flex min-w-0 items-center gap-1.5 rounded-sm ${focusRing}`} tabIndex={stepMenu ? 0 : undefined}>
+          <StepKindMark kind={step.kind} /><h3 className="min-w-0 break-words font-semibold">{title}</h3>
+        </span>} />
       {chosen ? <ul className="contents">
         {[...counts].map(([status, count]) => <li key={status} className="inline-flex items-center gap-1">
           {!single && <span className="tabular-nums">{count}</span>}

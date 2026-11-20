@@ -8,7 +8,7 @@ from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySe
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.figure_document import FigureDocument
 from feedbax.contracts.model_address import ModelAddress
-from feedbax.contracts.project import Document, DocumentReference, Project, Step
+from feedbax.contracts.project import RootDocument, DocumentReference, Project, Step
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
     StudioProjectFile,
@@ -41,7 +41,7 @@ _FIXTURES = Path(__file__).resolve().parents[1] / "web/e2e/studio/fixtures"
 def _project() -> Project:
     project = managed_train_project()
     project.steps["baseline"] = Step.model_validate(managed_evaluation_step("train"))
-    project.documents["velocity-analysis"] = Document.model_validate(
+    project.documents["velocity-analysis"] = RootDocument.model_validate(
         {
             "schema": "feedbax.analysis_document.v1",
             "payload": json.loads((_FIXTURES / "velocity-analysis.json").read_bytes()) | {
@@ -49,7 +49,7 @@ def _project() -> Project:
             },
         }
     )
-    project.documents["velocity-figure"] = Document.model_validate(
+    project.documents["velocity-figure"] = RootDocument.model_validate(
         {
             "schema": "feedbax.figure_document.v1",
             "payload": {
@@ -155,6 +155,7 @@ def test_managed_wire_review_uses_plan_ports_without_writing_a_draft():
 
     from feedbax.contracts.operation import DatasetPort
     from feedbax.contracts.studio_analyze import StudioAnalyzeWire
+    from feedbax.project_folder import preview_authored_files
     from feedbax.web.services.analyze_authoring import review_wire
 
     project = _project()
@@ -174,20 +175,14 @@ def test_managed_wire_review_uses_plan_ports_without_writing_a_draft():
     result = review_wire(project, _KEY, "velocity-analysis", StudioAnalyzeWire(
         element="summarize", role="velocity", source={"element": "align", "product": "velocity"},
     ), registry, states)
-    assert result.model_dump(mode="json") == {
-        "address": {"kind": "document", "id": "velocity-analysis"},
-        "patches": [{
-            "op": "add", "path": "/payload/operations/summarize/inputs/velocity",
-            "value": {"element": "align", "product": "velocity"},
-        }],
-    }
+    wired = preview_authored_files(project, result).documents["velocity-analysis"].payload
+    assert wired["operations"]["summarize"]["inputs"] == {"velocity": {"element": "align", "product": "velocity"}}
     assert summary["inputs"] == {}
     assert "ddof" not in summary["params"]
     summary["inputs"]["velocity"] = {"element": "align", "product": "velocity"}
-    replacement = review_wire(project, _KEY, "velocity-analysis", StudioAnalyzeWire(
+    assert not review_wire(project, _KEY, "velocity-analysis", StudioAnalyzeWire(
         element="summarize", role="velocity", source={"element": "align", "product": "velocity"},
     ), registry, states)
-    assert replacement.patches[0].op == "replace"
 
     summary["params"]["ddof"] = ddof
     view = document["views"]["profile"]
@@ -199,8 +194,8 @@ def test_managed_wire_review_uses_plan_ports_without_writing_a_draft():
     reviewed = review_wire(project, _KEY, "velocity-analysis", StudioAnalyzeWire(
         element="profile", role="summary", source={"element": "summarize", "product": "summary"},
     ), registry, states)
-    assert reviewed.patches[0].path == "/payload/views/profile/inputs/summary"
-    assert reviewed.patches[0].op == "add"
+    wired = preview_authored_files(project, reviewed).documents["velocity-analysis"].payload
+    assert wired["views"]["profile"]["inputs"] == {"summary": {"element": "summarize", "product": "summary"}}
     assert view == {"figure": {"document": "velocity-figure"}, "inputs": {}}
 
 
@@ -340,7 +335,7 @@ def test_named_figure_pin_does_not_supply_an_external_train_base():
     project = _project()
     train = project.steps["train"]
     raw = json.dumps(train.base.inline).encode()
-    project.documents["train-pin"] = Document.model_validate({
+    project.documents["train-pin"] = RootDocument.model_validate({
         "schema": "feedbax.figure_document.v1",
         "payload": {"path": "train.json", "sha256": sha256_bytes(raw)},
     })

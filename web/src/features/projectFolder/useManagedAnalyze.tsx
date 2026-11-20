@@ -1,4 +1,5 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { documentPayload } from './documentPayload';
 import { ChartLine, Database, Sigma } from 'lucide-react';
 import { useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
@@ -63,7 +64,7 @@ export function useManagedAnalyze({
   const step = key ? draft.steps?.[key.step] : undefined;
   const base = step?.kind === 'analyze' && step.base;
   const document = base && 'document' in base && !base.pointer ? base.document : undefined;
-  const authored = document ? draft.documents?.[document]?.payload : undefined;
+  const authored = document ? documentPayload(draft.documents, saved.composed, document) : undefined;
   const parsed = document ? AnalysisDocumentSchema.safeParse(authored) : undefined;
   const analysis = parsed?.success ? parsed.data : undefined;
   const id = key ? savedRunId(key) : undefined;
@@ -79,7 +80,7 @@ export function useManagedAnalyze({
   const inFlight = useRef(false);
   const cursor = useRef<{ scope: string; point: PresentationPosition }>();
   const shape = step?.kind === 'analyze' ? JSON.stringify([
-    step.base, step.sweep, step.deltas, step.document_overrides, step.inputs?.states,
+    step.base, step.sweep, step.deltas, step.inputs?.states,
   ]) : undefined;
   const authoring = useQuery({
     queryKey: ['studio-analyze', saved.project_id, id, shape],

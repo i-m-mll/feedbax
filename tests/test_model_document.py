@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
-from feedbax.contracts.project import Document, Project
+from feedbax.contracts.project import RootDocument, Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
 
 
@@ -35,7 +35,7 @@ def _three_levels() -> dict:
 
 def test_text_project_preserves_one_recursive_model(tmp_path: Path) -> None:
     payload = _three_levels()
-    document = Document(schema=MODEL_DOCUMENT_SCHEMA_ID, payload=payload)
+    document = RootDocument(schema=MODEL_DOCUMENT_SCHEMA_ID, payload=payload)
     project = Project(documents={"model": document})
     for name, data in dump_text_project(project, ProjectConfiguration(project="model", store="store")).items():
         path = tmp_path / name
@@ -44,7 +44,7 @@ def test_text_project_preserves_one_recursive_model(tmp_path: Path) -> None:
     assert load_text_project(tmp_path).project.documents["model"].payload == payload
     del payload["interior"]["components"]["outer"]["interior"]
     with pytest.raises(ValidationError, match="interior"):
-        Document(schema=MODEL_DOCUMENT_SCHEMA_ID, payload=payload)
+        RootDocument(schema=MODEL_DOCUMENT_SCHEMA_ID, payload=payload)
 
 
 def test_physical_ports_and_connections_are_confined_to_physical_interiors() -> None:

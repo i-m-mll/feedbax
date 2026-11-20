@@ -62,6 +62,8 @@ export interface ProjectDocumentInputs {
   /** The roles in which the step may point at another document, as opposed to editing the one it has. */
   readonly selectable: ReadonlySet<DocumentRole>;
   readonly editable: boolean;
+  /** The based documents whose Detach would leave an Evaluate step's Model document unrelated to its subject's. */
+  readonly detachRefused?: readonly string[];
   readonly onError: (message: string) => void;
 }
 
@@ -71,7 +73,40 @@ export function documentsOfRole(project: { documents?: Readonly<Record<string, D
   return Object.keys(all).filter((id) => schemas[role].includes(all[id].schema)).sort();
 }
 
-export function useProjectDocuments({ editor, stepId, run, scope, selectable, editable, onError }: ProjectDocumentInputs) {
+/** `name` and the documents based on it, to any depth. */
+export function documentFamily(project: { documents?: Readonly<Record<string, Document>> | null }, name: string) {
+  const all = Object.entries(project.documents ?? {});
+  const family = new Set([name]);
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const [id, document] of all) {
+      if (!family.has(id) && 'base' in document && family.has(document.base.document)) {
+        family.add(id);
+        grew = true;
+      }
+    }
+  }
+  return family;
+}
+
+/** The documents of `role`, each followed by the documents based on it, with its depth below its root. */
+export function documentTree(project: { documents?: Readonly<Record<string, Document>> | null }, role: DocumentRole) {
+  const all = project.documents ?? {};
+  const names = documentsOfRole(project, role);
+  const baseOf = (name: string) => {
+    const document = all[name];
+    return 'base' in document && names.includes(document.base.document) ? document.base.document : undefined;
+  };
+  const tree: { name: string; depth: number }[] = [];
+  const visit = (name: string, depth: number) => {
+    tree.push({ name, depth });
+    for (const child of names) if (baseOf(child) === name) visit(child, depth + 1);
+  };
+  for (const name of names) if (baseOf(name) === undefined) visit(name, 0);
+  return tree;
+}
+
+export function useProjectDocuments({ editor, stepId, run, scope, selectable, editable, detachRefused = [], onError }: ProjectDocumentInputs) {
   const { saved } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const projectId = saved.project_id;
   /** The document a step did not take in a role, and why: it lacks a parameter the step sweeps. */
@@ -116,7 +151,8 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
   return (role: DocumentRole, document: string | undefined, sharing?: { lit: ReadonlySet<string>; users: ReadonlySet<string> }): DocumentPickerModel | undefined => {
     if (!document) return undefined;
     const count = sharing && { lit: sharing.lit.size, users: sharing.users.size };
-    const documents = documentsOfRole(saved.project, role);
+    const documents = documentTree(saved.project, role);
+    const based = 'base' in (saved.project.documents?.[document] ?? {});
     const kind = studioName(role);
     const repoint = editable && !!stepId && selectable.has(role);
     return {
@@ -139,6 +175,10 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
       rename: editable ? (name) => {
         void attempt(role, () => editor.memberCommand(studioAccessibleName('rename', kind),
           { kind: 'rename', family: 'documents', member: document, name }, editor.getSnapshot().saved));
+      } : undefined,
+      detach: editable && based && !detachRefused.includes(document) ? () => {
+        void attempt(role, () => editor.memberCommand(studioAccessibleName('detach', kind),
+          { kind: 'detach', member: document }, editor.getSnapshot().saved));
       } : undefined,
     };
   };
