@@ -34,7 +34,7 @@ from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_
 from feedbax.contracts.matrix_core import apply_value_patch_in_place
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.project import Project, Sha256, json_pointer_parts
+from feedbax.contracts.project import BasedDocument, Project, Sha256, json_pointer_parts
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
@@ -61,7 +61,9 @@ from feedbax.contracts.project_plan import ProjectPlan, ProjectPlanMemo, RunKey,
 from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, compose_document
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_target
 from feedbax.persistence.project_subject import terminal_train_reader
-from feedbax.project_members import duplicate_step, generated_name, references_member, rename_member
+from feedbax.project_members import (
+    detach_refusals, duplicate_step, generated_name, references_member, rename_member,
+)
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.studio_project import (
     PRESENTATION_ADDRESS,
@@ -282,6 +284,7 @@ class SettledProjectPlan:
     plan: ProjectPlan
     readers: BaseReaders
     project_root: Path
+    detach_refused: frozenset[str]
 
     @classmethod
     def from_text(
@@ -292,6 +295,7 @@ class SettledProjectPlan:
         return cls(
             location.project_id, text.revision, project_semantic_root(text.project),
             text.configuration, text.store_path if store is None else store, plan, readers, text.root,
+            detach_refusals(plan, text.project.documents),
         )
 
 
@@ -383,6 +387,7 @@ def compile_saved_project(
         )
         settled = SettledProjectPlan(
             project_id, text.revision, semantic_root, text.configuration, store, plan, readers, text.root,
+            detach_refusals(plan, text.project.documents),
         )
         if reusable:
             memo.saved = _SavedCompilation(stamp, settled, observations)
@@ -1132,7 +1137,7 @@ class ProjectFolder:
             return self._snapshot(folder.location, text)
 
     def member_command(self, project_id: str, body: StudioMemberCommand) -> StudioMemberCommandResult:
-        """Rename or duplicate a document or step, with its references and presentation, in one write."""
+        """Rename, duplicate or detach a document, or rename or duplicate a step, with its references and presentation, in one write."""
         command = body.command
         with self._locked_folder(project_id) as folder:
             root = folder.path
@@ -1140,26 +1145,44 @@ class ProjectFolder:
             check_revision("project", body.revision, text.revision)
             presentation_data, presentation_revision = _read_presentation(root)
             check_revision("presentation", body.presentation_revision, presentation_revision)
-            family, member = command.family, command.member
+            family: MemberFamily = "documents" if command.kind == "detach" else command.family
+            member = command.member
             members = getattr(text.project, family)
             if member not in members:
                 raise ProjectFolderNotFound(f"{family}/{member}.json")
             source = text.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
             shown_before = _decode_presentation(presentation_data).model_dump(mode="json", exclude_unset=True)
             shown = dict(shown_before)
-            name = command.name or _free_member_name(source, family, member)
-            if name in members:
-                raise ProjectFileExists(f"{family}/{name}.json")
-            if references_member(source, family, name):
-                raise ProjectFolderInvalid(f"A reference already names {name}.")
-            if command.kind == "rename":
-                project, shown = rename_member(source, shown, family, member, name)
-            elif family == "steps":
-                project, shown = duplicate_step(source, shown, member, name)
+
+            def composed(name: str) -> dict:
+                document = compose_document(text.project.documents.get, name)
+                if isinstance(document, ProjectDiagnostic):
+                    raise ProjectFolderInvalid(f"{name} cannot be composed: {document.detail}")
+                return document.model_dump(mode="json", by_alias=True)
+
+            if command.kind == "detach":
+                name = member
+                if not isinstance(members[member], BasedDocument):
+                    raise ProjectFolderInvalid(f"{member} has no base.")
+                if member in self._compile(folder.location, text).detach_refused:
+                    raise ProjectFolderInvalid(
+                        f"Detaching {member} would leave an Evaluate step's Model document sharing no document with its subject's.",
+                    )
+                project = {**source, "documents": {**source["documents"], member: composed(member)}}
             else:
-                project = {**source, "documents": {**source["documents"], name: source["documents"][member]}}
-                if member in shown.get("documents", {}):
-                    shown["documents"] = {**shown["documents"], name: shown["documents"][member]}
+                name = command.name or _free_member_name(source, family, member)
+                if name in members:
+                    raise ProjectFileExists(f"{family}/{name}.json")
+                if references_member(source, family, name):
+                    raise ProjectFolderInvalid(f"A reference already names {name}.")
+                if command.kind == "rename":
+                    project, shown = rename_member(source, shown, family, member, name)
+                elif family == "steps":
+                    project, shown = duplicate_step(source, shown, member, name)
+                else:
+                    project = {**source, "documents": {**source["documents"], name: composed(member)}}
+                    if member in shown.get("documents", {}):
+                        shown["documents"] = {**shown["documents"], name: shown["documents"][member]}
             try:
                 validated = Project.model_validate(project)
                 presentation = PresentationDocument.model_validate(shown)
