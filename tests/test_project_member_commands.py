@@ -117,7 +117,7 @@ def test_rename_preserves_document_bytes_and_requests_through_undo(studio):
     requests = _requests(folders, before["revision"])
     assert requests.keys() == set(STEPS)
 
-    result = _command(client, before, {"kind": "rename", "family": "documents", "member": "reach-model", "name": "arm"})
+    result = _command(client, before, {"kind": "change_key", "family": "documents", "member": "reach-model", "key": "arm"})
     after = result["snapshot"]
     assert result["member"] == "arm"
     assert "reach-model" not in after["project"]["documents"]
@@ -145,12 +145,12 @@ def test_rename_preserves_document_bytes_and_requests_through_undo(studio):
 def test_rename_refuses_a_name_already_in_use(studio):
     client, folders = studio
     snapshot = _snapshot(client)
-    _command(client, snapshot, {"kind": "rename", "family": "documents", "member": "reach-model", "name": "task"}, 409)
+    _command(client, snapshot, {"kind": "change_key", "family": "documents", "member": "reach-model", "key": "task"}, 409)
     raw = snapshot["project"]
     raw["steps"]["train-b"]["base"]["inline"]["trial_documents"]["objective"] = {"document": "missing"}
     _save_project(folders, PROJECT, Project.model_validate(raw))
     snapshot = _snapshot(client)
-    _command(client, snapshot, {"kind": "rename", "family": "documents", "member": "objective", "name": "missing"}, 422)
+    _command(client, snapshot, {"kind": "change_key", "family": "documents", "member": "objective", "key": "missing"}, 422)
 
 
 def test_a_step_using_a_duplicate_diverges_alone(studio):
@@ -258,7 +258,7 @@ def test_a_step_rename_rewrites_its_references_and_keeps_every_request(evaluated
     requests = _step_requests(folders, before["revision"])
     assert {step for _, step, _ in requests} == {"train", "baseline"}
 
-    result = _command(client, before, {"kind": "rename", "family": "steps", "member": "train", "name": "fit"})
+    result = _command(client, before, {"kind": "change_key", "family": "steps", "member": "train", "key": "fit"})
     after = result["snapshot"]
     assert result["member"] == "fit"
     steps = after["project"]["steps"]
@@ -286,8 +286,8 @@ def test_a_step_rename_rewrites_its_references_and_keeps_every_request(evaluated
 def test_a_step_rename_refuses_a_taken_name(evaluated):
     client, folders = evaluated
     snapshot = _snapshot(client)
-    _command(client, snapshot, {"kind": "rename", "family": "steps", "member": "train", "name": "baseline"}, 409)
-    _command(client, snapshot, {"kind": "rename", "family": "steps", "member": "missing", "name": "other"}, 404)
+    _command(client, snapshot, {"kind": "change_key", "family": "steps", "member": "train", "key": "baseline"}, 409)
+    _command(client, snapshot, {"kind": "change_key", "family": "steps", "member": "missing", "key": "other"}, 404)
 
 
 def test_a_step_duplicate_shares_its_sources_requests_until_it_differs(evaluated):
@@ -418,15 +418,15 @@ def test_rename_of_a_base_rewrites_the_documents_based_on_it(based):
     client, folders = based
     before = _snapshot(client)
     requests = _requests(folders, before["revision"])
-    after = _command(client, before, {"kind": "rename", "family": "documents", "member": "reach-model", "name": "arm"})["snapshot"]
+    after = _command(client, before, {"kind": "change_key", "family": "documents", "member": "reach-model", "key": "arm"})["snapshot"]
     assert after["project"]["documents"]["model-2"]["base"] == {"document": "arm"}
     assert _requests(folders, after["revision"]) == requests
     # A reference by a base keeps the name taken.
-    _command(client, after, {"kind": "rename", "family": "documents", "member": "objective", "name": "reach-model"})
+    _command(client, after, {"kind": "change_key", "family": "documents", "member": "objective", "key": "reach-model"})
     raw = _snapshot(client)["project"]
     raw["documents"]["orphan"] = {"schema": raw["documents"]["arm"]["schema"], "base": {"document": "gone"}}
     _save_project(folders, PROJECT, Project.model_validate(raw))
-    _command(client, _snapshot(client), {"kind": "rename", "family": "documents", "member": "arm", "name": "gone"}, 422)
+    _command(client, _snapshot(client), {"kind": "change_key", "family": "documents", "member": "arm", "key": "gone"}, 422)
 
 
 def test_detach_is_refused_where_an_evaluation_would_lose_its_relation_to_its_subject(based):

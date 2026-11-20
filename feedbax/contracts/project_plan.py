@@ -74,6 +74,9 @@ from feedbax.contracts.project_resolution import (
     reference_write_target,
     _select,
 )
+from feedbax.contracts.result_address import (
+    AddressProblem, ElementHolders, analyze_cards, payload_elements, shared_element_keys,
+)
 from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters, authored_rollout_settings, resolve_trial_ids
 from feedbax.contracts.project_sweep import (
     CHECKPOINT_RULE_TARGET,
@@ -1186,6 +1189,7 @@ class _Compiler:
         self.model_sources: dict[RunKey, _ModelSource] = {}
         self.terminal_sources: dict[RequestId, TerminalTrainSource] = {}
         self.checkpoint_horizons: dict[RequestId, int | None] = {}
+        self.element_holders: dict[str, ElementHolders] = {}
 
     def expand_variants(self, known_sites: Mapping[str, bool] | None = None) -> None:
         def integer_site(path: str) -> bool:
@@ -1374,6 +1378,7 @@ class _Compiler:
         for variant, project in self.variants.items():
             for name in sorted(project.steps):
                 self.step(variant, name, ())
+        self.diagnostics.extend(self.shared_key_diagnostics())
         return ProjectPlan(
             self.variant_order,
             MappingProxyType(self.steps),
@@ -1390,6 +1395,40 @@ class _Compiler:
             MappingProxyType(self.exception_matches),
             MappingProxyType(dict(self.variants)),
         )
+
+    def holders(self, variant: str) -> ElementHolders:
+        if variant not in self.element_holders:
+            project = self.variants[variant]
+
+            def elements_of(card: str) -> frozenset[str]:
+                composition = self.compose(variant, card, False)
+                if isinstance(composition, ProjectDiagnostic):
+                    return frozenset()
+                try:
+                    return payload_elements(composition.bind(project).authored_payload())
+                except ValueError:
+                    return frozenset()
+
+            self.element_holders[variant] = ElementHolders(analyze_cards(project), elements_of)
+        return self.element_holders[variant]
+
+    def shared_key_diagnostics(self) -> list[ProjectDiagnostic]:
+        """A diagnostic on each Analysis document holding a key an unrelated document holds, once for every variant
+        that shares it."""
+        found = {variant: shared_element_keys(project) for variant, project in self.variants.items()}
+        everywhere = set.intersection(*(set(keys) for keys in found.values())) if found else set()
+        problems = []
+        for variant, keys in found.items():
+            for key in keys:
+                if key in everywhere and variant != self.variant_order[0]:
+                    continue
+                problems.append(ProjectDiagnostic(
+                    ResolutionCode.INVALID_DOCUMENT, f"payload.{key.family}.{key.element}",
+                    f"{key.element!r} is also held by {key.holder}, which is unrelated to this document.",
+                    document=key.document, element=key.element,
+                    variant=None if key in everywhere else variant,
+                ))
+        return problems
 
     def step(
         self, variant: str, name: str, active: tuple[tuple[str, str], ...]
@@ -2920,6 +2959,11 @@ class _Compiler:
                 ResolutionCode.BAD_REFERENCE, path,
                 "this input selects a step row without an element or product", name,
             )
+        if element_input:
+            card = self.holders(variant).card_of(reference.step, reference.element)
+            if isinstance(card, AddressProblem):
+                return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, f"{path}.element", card.detail, name)
+            reference = reference.model_copy(update={"step": card})
         if reference.checkpoint is not None and role.product_role != "checkpoint":
             return ProjectDiagnostic(
                 ResolutionCode.BAD_REFERENCE, f"{path}.checkpoint",

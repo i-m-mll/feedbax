@@ -265,7 +265,11 @@ class StepNote(StrictModel):
 
 
 class Step(StrictModel):
+    """A card. Its key (the dict key, or the file stem in a text project) is how the project refers to it;
+    ``label`` is only what Studio and the CLI show, and enters no request, run key or reference."""
+
     kind: StepKind
+    label: NonemptyText | None = Field(default=None, exclude_if=lambda value: value is None)
     base: Base
     deltas: list[MatrixCompositionDelta] = Field(default_factory=list)
     sweep: Sweep | None = None

@@ -2639,6 +2639,14 @@ export type Cell = {
   "value": Expression;
 };
 
+export type ChangeKey = {
+  "family": KeyedFamily;
+  "member": string;
+  "document"?: string | null;
+  "kind": "change_key";
+  "key": string;
+};
+
 export type CheckDomain = "code" | "environment";
 
 export type CheckpointBatches = {
@@ -2866,6 +2874,7 @@ export type FigureDocumentView = {
 
 export type FigureElement = {
   "figure": FigureDocument | FigureTemplateRef | DocumentReference;
+  "label"?: string | null;
   "inputs": Record<string, StepInput | OperationDataset>;
 };
 
@@ -2957,6 +2966,8 @@ export type JaxOperation = {
 };
 
 export type JobStatus = "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+
+export type KeyedFamily = "documents" | "steps" | "elements";
 
 export type Level = 0 | 1 | 2;
 
@@ -3091,6 +3102,7 @@ export type OperationDefinition = {
 
 export type OperationElement = {
   "operation": string;
+  "label"?: string | null;
   "inputs": Record<string, StepInput | OperationDataset>;
   "params"?: Record<string, JsonValue>;
 };
@@ -3230,10 +3242,11 @@ export type RemoveValue = {
 };
 
 export type RenameMember = {
-  "kind": "rename";
-  "family": MemberFamily;
+  "family": "steps" | "elements";
   "member": string;
-  "name": string;
+  "document"?: string | null;
+  "kind": "rename";
+  "label": string | null;
 };
 
 export type ReplayDeclarationAddress = {
@@ -3372,6 +3385,7 @@ export type StateReset = "trial" | "epoch";
 
 export type Step = {
   "kind": StepKind;
+  "label"?: string | null;
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "sweep"?: Sweep | null;
@@ -3455,6 +3469,7 @@ export type StudioAnalyzeRequest = {
 
 export type StudioAnalyzeStep = {
   "kind": "analyze";
+  "label"?: string | null;
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "sweep"?: Sweep | null;
@@ -3635,6 +3650,7 @@ export type StudioDefinitionChange = {
 
 export type StudioEvaluateStep = {
   "kind": "evaluate";
+  "label"?: string | null;
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "sweep"?: Sweep | null;
@@ -3676,7 +3692,7 @@ export type StudioInputPlace = {
 export type StudioMemberCommand = {
   "revision": Sha256;
   "presentation_revision": Sha256;
-  "command": RenameMember | DuplicateMember | DetachMember;
+  "command": RenameMember | ChangeKey | DuplicateMember | DetachMember;
 };
 
 export type StudioMemberCommandResult = {
@@ -3904,6 +3920,7 @@ export type StudioReplayPresentation = {
 
 export type StudioReportStep = {
   "kind": "report";
+  "label"?: string | null;
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "sweep"?: Sweep | null;
@@ -4006,6 +4023,7 @@ export type StudioTrainStartRequest = {
 
 export type StudioTrainStep = {
   "kind": "train";
+  "label"?: string | null;
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "sweep"?: Sweep | null;
@@ -8922,6 +8940,16 @@ export const CellSchema: z.ZodType<Cell> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<Cell>;
 
+export const ChangeKeySchema: z.ZodType<ChangeKey> = z.lazy(() =>
+  z.object({
+    "family": KeyedFamilySchema,
+    "member": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "document": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+    "kind": z.literal("change_key"),
+    "key": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<ChangeKey>;
+
 export const CheckDomainSchema: z.ZodType<CheckDomain> = z.lazy(() =>
   z.union([z.literal("code"), z.literal("environment")])
 ) as unknown as z.ZodType<CheckDomain>;
@@ -9234,6 +9262,7 @@ export const FigureDocumentViewSchema: z.ZodType<FigureDocumentView> = z.lazy(()
 export const FigureElementSchema: z.ZodType<FigureElement> = z.lazy(() =>
   z.object({
     "figure": z.union([FigureDocumentSchema, FigureTemplateRefSchema, DocumentReferenceSchema]),
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([StepInputSchema, OperationDatasetSchema])),
   }).strict()
 ) as unknown as z.ZodType<FigureElement>;
@@ -9356,6 +9385,10 @@ export const JaxOperationSchema: z.ZodType<JaxOperation> = z.lazy(() =>
 export const JobStatusSchema: z.ZodType<JobStatus> = z.lazy(() =>
   z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")])
 ) as unknown as z.ZodType<JobStatus>;
+
+export const KeyedFamilySchema: z.ZodType<KeyedFamily> = z.lazy(() =>
+  z.union([z.literal("documents"), z.literal("steps"), z.literal("elements")])
+) as unknown as z.ZodType<KeyedFamily>;
 
 export const LevelSchema: z.ZodType<Level> = z.lazy(() =>
   z.union([z.literal(0), z.literal(1), z.literal(2)])
@@ -9539,6 +9572,7 @@ export const OperationDefinitionSchema: z.ZodType<OperationDefinition> = z.lazy(
 export const OperationElementSchema: z.ZodType<OperationElement> = z.lazy(() =>
   z.object({
     "operation": z.string().min(1),
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([StepInputSchema, OperationDatasetSchema])),
     "params": z.record(z.string(), jsonValueSchema).optional(),
   }).strict()
@@ -9734,10 +9768,11 @@ export const RemoveValueSchema: z.ZodType<RemoveValue> = z.lazy(() =>
 
 export const RenameMemberSchema: z.ZodType<RenameMember> = z.lazy(() =>
   z.object({
-    "kind": z.literal("rename"),
-    "family": MemberFamilySchema,
+    "family": z.union([z.literal("steps"), z.literal("elements")]),
     "member": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-    "name": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "document": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+    "kind": z.literal("rename"),
+    "label": z.union([z.string().min(1), z.null()]),
   }).strict()
 ) as unknown as z.ZodType<RenameMember>;
 
@@ -9928,6 +9963,7 @@ export const StateResetSchema: z.ZodType<StateReset> = z.lazy(() =>
 export const StepSchema: z.ZodType<Step> = z.lazy(() =>
   z.object({
     "kind": StepKindSchema,
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
@@ -10037,6 +10073,7 @@ export const StudioAnalyzeRequestSchema: z.ZodType<StudioAnalyzeRequest> = z.laz
 export const StudioAnalyzeStepSchema: z.ZodType<StudioAnalyzeStep> = z.lazy(() =>
   z.object({
     "kind": z.literal("analyze"),
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
@@ -10275,6 +10312,7 @@ export const StudioDefinitionChangeSchema: z.ZodType<StudioDefinitionChange> = z
 export const StudioEvaluateStepSchema: z.ZodType<StudioEvaluateStep> = z.lazy(() =>
   z.object({
     "kind": z.literal("evaluate"),
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
@@ -10326,7 +10364,7 @@ export const StudioMemberCommandSchema: z.ZodType<StudioMemberCommand> = z.lazy(
   z.object({
     "revision": Sha256Schema,
     "presentation_revision": Sha256Schema,
-    "command": z.union([RenameMemberSchema, DuplicateMemberSchema, DetachMemberSchema]),
+    "command": z.union([RenameMemberSchema, ChangeKeySchema, DuplicateMemberSchema, DetachMemberSchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioMemberCommand>;
 
@@ -10618,6 +10656,7 @@ export const StudioReplayPresentationSchema: z.ZodType<StudioReplayPresentation>
 export const StudioReportStepSchema: z.ZodType<StudioReportStep> = z.lazy(() =>
   z.object({
     "kind": z.literal("report"),
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
@@ -10748,6 +10787,7 @@ export const StudioTrainStartRequestSchema: z.ZodType<StudioTrainStartRequest> =
 export const StudioTrainStepSchema: z.ZodType<StudioTrainStep> = z.lazy(() =>
   z.object({
     "kind": z.literal("train"),
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),

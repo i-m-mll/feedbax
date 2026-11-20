@@ -41,6 +41,7 @@ from feedbax.contracts.project_plan_io import (
     select_plan_requests,
 )
 from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic
+from feedbax.contracts.result_address import AddressProblem, ResultAddress, ResultTarget, project_holders
 from feedbax.persistence.project_subject import terminal_train_reader
 
 if TYPE_CHECKING:
@@ -54,6 +55,10 @@ def configure_status_parser(parser: argparse.ArgumentParser) -> None:
         type=Path,
         default=Path("."),
         help="Project declaration file or directory to search upward (default: current directory).",
+    )
+    parser.add_argument(
+        "addresses", nargs="*", metavar="[card/]element[@row]",
+        help="Show only these results. Use . before addresses for the current project.",
     )
     parser.add_argument(
         "--variant", action="append", help="Show this variant. Repeat to select more."
@@ -76,6 +81,49 @@ def _address(key: RunKey | ElementKey) -> str:
     run = run_key(key)
     address = f"{run.variant}/{run.step}/{run.row}"
     return f"{address}/{key.name}" if isinstance(key, ElementKey) else address
+
+
+type _Targets = Mapping[str, tuple[ResultTarget, ...]] | None
+
+
+def _targets(
+    output: CommandOutput, plan: ProjectPlan, addresses: list[str], variants: tuple[str, ...] | None,
+) -> _Targets | int:
+    """Each variant's resolved targets of ``addresses``, None when none are given, or 2 after reporting a refusal."""
+    if not addresses:
+        return None
+    scope = [variant for variant in variants or plan.variants if variant in plan.variant_projects]
+    targets: dict[str, list[ResultTarget]] = {}
+    for text in addresses:
+        try:
+            address = ResultAddress.parse(text)
+        except ValueError as error:
+            output.error("unknown_address", str(error), path=text, address=text)
+            return 2
+        problems = []
+        for variant in scope:
+            project = plan.variant_projects[variant]
+            resolved = project_holders(project).resolve(address, project.steps)
+            if isinstance(resolved, AddressProblem):
+                problems.append(resolved)
+            else:
+                targets.setdefault(variant, []).append(resolved)
+        if len(problems) == len(scope):
+            output.error("unknown_address", problems[0].detail, path=text, address=text)
+            return 2
+    return {variant: tuple(found) for variant, found in targets.items()}
+
+
+def _addressed(key: RunKey | ElementKey, targets: _Targets) -> bool:
+    if targets is None:
+        return True
+    run = run_key(key)
+    return any(
+        run.step == target.card
+        and (target.row is None or run.row == target.row)
+        and (target.element is None or isinstance(key, ElementKey) and key.name == target.element)
+        for target in targets.get(run.variant, ())
+    )
 
 
 def _output_path(path: Path, text: TextProject, external_paths: set[Path]) -> Path:
@@ -233,6 +281,9 @@ def _plan(args: argparse.Namespace, output: CommandOutput) -> int:
         known_variants.update(saved_variants or ())
         known_variants.update(run_key(key).variant for key in before.entries)
     _validate_variants(text.root, variants, known_variants)
+    targets = _targets(output, plan, args.addresses, variants)
+    if isinstance(targets, int):
+        return targets
     scoped = select_plan_requests(current, variants)
     problems = write_diagnostics(output, plan, variants, declaration=text.declaration)
     changes: Mapping[RunKey | ElementKey, ElementChange] = {}
@@ -244,7 +295,8 @@ def _plan(args: argparse.Namespace, output: CommandOutput) -> int:
             raise ProjectReadError(args.check, str(error)) from error
     elif not output.json:
         for key, request in scoped.entries.items():
-            output.write(f"{_address(key)} {request.request_id}")
+            if _addressed(key, targets):
+                output.write(f"{_address(key)} {request.request_id}")
 
     if args.out is not None and not problems:
         destination = _output_path(args.out, text, external_paths)
@@ -275,7 +327,7 @@ def _plan(args: argparse.Namespace, output: CommandOutput) -> int:
             ]
         output.response(result)
     elif before is not None:
-        _write_review(output, changes, scoped, before)
+        _write_review(output, {key: change for key, change in changes.items() if _addressed(key, targets)}, scoped, before)
     return 2 if problems else int(any(change.state != "unchanged" for change in changes.values()))
 
 
@@ -303,6 +355,9 @@ def run_status(args: argparse.Namespace, output: CommandOutput) -> int:
         location, text, plan, _, _ = _read_plan(args.project_dir)
         variants = _variants(args.variant)
         _validate_variants(text.root, variants, set(plan.variants))
+        targets = _targets(output, plan, args.addresses, variants)
+        if isinstance(targets, int):
+            return targets
         problems = write_diagnostics(output, plan, variants, declaration=text.declaration)
         settled = SettledProjectPlan.from_text(location, text, plan)
         view = read_settled_project_plan(
@@ -328,7 +383,7 @@ def run_status(args: argparse.Namespace, output: CommandOutput) -> int:
     output.write("ADDRESS\tROW\tSTATE\tREASON")
     for row in view.status_rows():
         key = run_key(row.key)
-        if variants is None or key.variant in variants:
+        if (variants is None or key.variant in variants) and _addressed(row.key, targets):
             history = view.history.get(row.key) or view.light.get(row.key)
             change = history and (history.change if isinstance(history, TrainRowHistory) else history.changed)
             reason = row.reason or (f"Definition changed at {change.path}." if change and row.status is JobStatus.STALE
