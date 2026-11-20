@@ -79,7 +79,7 @@ class StudioTrialExpressionEdit(StrictModel):
 
 class StudioTrialStepScope(StrictModel):
     kind: Literal["step"]
-    lit_steps: list[ProjectName] = Field(default_factory=list)
+    chosen_steps: list[ProjectName] = Field(default_factory=list)
 
 
 class StudioTrialAuthoringRequest(StrictModel):

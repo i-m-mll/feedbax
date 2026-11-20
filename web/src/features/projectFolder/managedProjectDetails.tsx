@@ -38,6 +38,8 @@ type DetailName = 'model' | 'task' | 'scene';
 type StoredModel = { id: string; value: ModelDocument };
 
 export interface NamedDocumentScope extends MapDocumentScope {
+  /** The steps an edit is made for, which with the steps based on them are the lit steps. */
+  readonly chosen: ReadonlySet<string>;
   readonly key: string;
   readonly document: string;
   readonly localVariant?: boolean;
@@ -84,8 +86,6 @@ interface DetailInputs {
   readonly runProblems?: readonly StudioProjectWindowMapProblem[];
   readonly revealProblem?: (problem: StudioProjectWindowMapProblem) => void;
   readonly exceptions?: ExceptionMentions;
-  /** The steps an edit of the selected step reaches outside a document view. */
-  readonly reachedSteps?: ReadonlySet<string>;
 }
 
 const rootModelPath: string[] = [];
@@ -326,7 +326,7 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     active: activeView === 'model',
     selectedSweepValues: input.selectedSweepValues,
     confirmRunRemoval: input.confirmRunRemoval,
-    fieldLitSteps: graphScope?.lit ?? input.reachedSteps,
+    fieldChosenSteps: graphScope?.chosen,
     planCurrent: input.planCurrent,
     fieldRows: input.fieldRows,
     fieldAxes: input.fieldAxes,

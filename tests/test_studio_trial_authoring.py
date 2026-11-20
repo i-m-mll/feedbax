@@ -378,7 +378,7 @@ def test_scoped_objective_writes_preserve_other_requests(tmp_path, kind):
     scope = {"kind": kind}
     if kind == "step":
         raw["steps"]["other"] = deepcopy(raw["steps"]["train"])
-        scope["lit_steps"] = ["train"]
+        scope["chosen_steps"] = ["train"]
         raw["documents"]["objective"]["payload"]["terms"] = [
             {"id": "base", "measure": {"kind": "literal", "value": 1}, "weight": {"kind": "literal", "value": 1}},
         ]
@@ -442,7 +442,7 @@ def test_scoped_objective_writes_preserve_other_requests(tmp_path, kind):
             assert next(item for item in updated.runs if item.key == other).request_id == previous[other]
         if kind == "step":
             shared = body | {
-                "revision": saved.json()["revision"], "scope": {"kind": "step", "lit_steps": ["train", "other"]},
+                "revision": saved.json()["revision"], "scope": {"kind": "step", "chosen_steps": ["train", "other"]},
                 "change": {"kind": "objective", "edits": [
                     {"op": "replace", "path": "/terms/0/weight/value", "value": 3},
                 ]},
@@ -484,7 +484,7 @@ def test_an_objective_edit_on_a_step_reaches_the_steps_based_on_it(tmp_path):
     def edit(client, lit, value):
         return client.post(f"{route}/authoring/trials", json={
             "run": {"variant": "default", "step": "train", "row": "default"},
-            "revision": folders.read_plan(project, revision=None).revision, "scope": {"kind": "step", "lit_steps": lit},
+            "revision": folders.read_plan(project, revision=None).revision, "scope": {"kind": "step", "chosen_steps": lit},
             "change": {"kind": "objective", "edits": [{"op": "replace", "path": "/terms/0/weight/value", "value": value}]},
         })
 
@@ -496,17 +496,14 @@ def test_an_objective_edit_on_a_step_reaches_the_steps_based_on_it(tmp_path):
         assert saved.status_code == 200, saved.text
 
     with TestClient(create_app(projects_dir=tmp_path)) as client:
-        refused = edit(client, ["train"], 2)
-        assert refused.status_code == 422, refused.text
-
         before = requests()
-        save(client, edit(client, ["train", "other"], 2))
+        save(client, edit(client, ["train"], 2))
         after = requests()
         assert {key for key in before if before[key] != after[key]} == {train, other}
 
         save(client, client.post(f"{route}/authoring/trials", json={
             "run": {"variant": "default", "step": "other", "row": "default"},
-            "revision": folders.read_plan(project, revision=None).revision, "scope": {"kind": "step", "lit_steps": ["other"]},
+            "revision": folders.read_plan(project, revision=None).revision, "scope": {"kind": "step", "chosen_steps": ["other"]},
             "change": {"kind": "objective", "edits": [{"op": "replace", "path": "/terms/0/weight/value", "value": 5}]},
         }))
         before = requests()

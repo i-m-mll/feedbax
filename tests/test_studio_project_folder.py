@@ -36,6 +36,7 @@ from feedbax.studio.selection import TrainSelection
 from feedbax.contracts.matrix_core import apply_override_patches
 from feedbax.web.api import jobs
 from feedbax.web.app import create_app
+from feedbax.web.services.project_folder import ProjectFolderInvalid
 from tests.support import external_method_witness
 from tests.support.managed_train_fixture import managed_train_project
 from tests.support.hang import HANG_SECONDS
@@ -571,7 +572,7 @@ def test_variant_model_authoring_preserves_sweeps_and_request_scope(study):
     body = {"revision": before["revision"], "run": key, "document": _MODEL, "owner": owner}
     change = {
         "address": field.model_dump(mode="json"), "edit": {"kind": "text", "text": "3"},
-        "lit_steps": ["fit", "other"],
+        "chosen_steps": ["fit", "other"],
     }
 
     def review(**updates):
@@ -582,7 +583,7 @@ def test_variant_model_authoring_preserves_sweeps_and_request_scope(study):
         assert inspection.status_code == 200, inspection.text
         mass = next(item for item in inspection.json()["fields"] if item["label"] == "Mass")
         assert ModelAddress.model_validate(mass["address"]) == field
-        narrowed = review(**(change | {"lit_steps": ["fit"]}))
+        narrowed = review(**(change | {"chosen_steps": ["fit"]}))
         assert narrowed.status_code == 422, narrowed.text
         assert "steps that use this Model" in narrowed.text
         parent = review(**(change | {"run": {**key, "variant": "parent"}}))
@@ -1402,10 +1403,11 @@ _BATCHES = "/training_config/n_batches"
 _RATE = "/settings/optimizer/learning_rate/value"
 
 
-def _shared_training(tmp_path, *, continuations=0):
+def _shared_training(tmp_path, *, continuations=0, other=True):
     """Two Train steps, ``train`` and ``other``, read their method, settings and run controls from ``training``.
 
-    ``continuations`` Train steps follow ``train`` in a chain, ``train-2`` based on ``train``, ``train-3`` on ``train-2``.
+    ``continuations`` Train steps follow ``train`` in a chain, ``train-2`` based on ``train``, ``train-3`` on ``train-2``,
+    each starting from its parent's checkpoint.
     """
     from feedbax.contracts.training_document import TRAINING_DOCUMENT_KEYS, TRAINING_DOCUMENT_SCHEMA_ID
 
@@ -1415,8 +1417,9 @@ def _shared_training(tmp_path, *, continuations=0):
         "schema": TRAINING_DOCUMENT_SCHEMA_ID, "payload": {key: inline[key] for key in TRAINING_DOCUMENT_KEYS},
     }
     inline |= {key: {"document": "training", "pointer": f"/{key}"} for key in TRAINING_DOCUMENT_KEYS}
-    raw["steps"]["other"] = deepcopy(raw["steps"]["train"]) | {"note": None}
-    raw["steps"]["other"]["base"]["inline"]["seed"] = 1
+    if other:
+        raw["steps"]["other"] = deepcopy(raw["steps"]["train"]) | {"note": None}
+        raw["steps"]["other"]["base"]["inline"]["seed"] = 1
     parent = "train"
     for number in range(2, continuations + 2):
         raw["steps"][f"train-{number}"] = {
@@ -1463,9 +1466,9 @@ class _Training:
         assert saved.status_code == 200, saved.text
         return body
 
-    def number(self, step, field, edit, lit=()):
+    def number(self, step, field, edit, chosen=()):
         return self.save(self.client.post(f"{_URL}/authoring/train/{step}/fields", json={
-            "revision": self.revision, "field": field, "edit": edit, "lit_steps": list(lit),
+            "revision": self.revision, "field": field, "edit": edit, "chosen_steps": list(chosen),
         }))
 
     def choose(self, step, document):
@@ -1480,7 +1483,7 @@ def _changed(before, after):
     return {key for key in before if before[key] != after[key]}
 
 
-def test_a_training_document_edit_reaches_the_lit_steps(tmp_path):
+def test_a_training_document_edit_reaches_the_chosen_steps(tmp_path):
     root, client = _shared_training(tmp_path)
     with client:
         train = _Training(client)
@@ -1495,7 +1498,7 @@ def test_a_training_document_edit_reaches_the_lit_steps(tmp_path):
         before = {step: train.requests(step) for step in steps}
         saved = {step: path.read_bytes() for step, path in steps.items()}
         stored = document.read_bytes()
-        train.number("train", _BATCHES, {"kind": "text", "text": "5"}, lit=("train", "other"))
+        train.number("train", _BATCHES, {"kind": "text", "text": "5"}, chosen=("train", "other"))
         assert document.read_bytes() != stored
         assert {step: path.read_bytes() for step, path in steps.items()} == saved
         middle = {step: train.requests(step) for step in steps}
@@ -1518,7 +1521,7 @@ def test_a_training_document_edit_reaches_the_lit_steps(tmp_path):
         run = {"variant": "default", "step": "train", "row": min(key.row for key in train.requests("train"))}
         def batches_field(lit):
             response = train.client.post(f"{_URL}/authoring/train/train/fields", json={
-                "revision": train.revision, "run": run, "lit_steps": list(lit),
+                "revision": train.revision, "run": run, "chosen_steps": list(lit),
             })
             assert response.status_code == 200, response.text
             return next(field for field in response.json()["fields"] if field["id"] == _BATCHES)
@@ -1611,7 +1614,7 @@ def test_a_continuation_inherits_its_parent_s_document_differences(tmp_path):
             (sources,) = [value for key, value in train.plan().sources.items() if key.step == step]
             return sources["/payload" + _BATCHES].step
 
-        train.number("train-2", _BATCHES, {"kind": "text", "text": "4"}, lit=("train-2", "train-3"))
+        train.number("train-2", _BATCHES, {"kind": "text", "text": "4"}, chosen=("train-2", "train-3"))
         assert batches() == {"train": 2, "other": 2, "train-2": 4, "train-3": 4}
         assert document.read_bytes() == stored
         assert source("train-3") == "train-2"
@@ -1622,7 +1625,7 @@ def test_a_continuation_inherits_its_parent_s_document_differences(tmp_path):
         assert train.requests("train-2") == parent
         assert set(differences()) == {"train-2", "train-3"}
 
-        train.number("train-3", _BATCHES, {"kind": "text", "text": "10"}, lit=("train", "other", "train-2", "train-3"))
+        train.number("train-3", _BATCHES, {"kind": "text", "text": "10"}, chosen=("train", "other", "train-2", "train-3"))
         assert batches() == {"train": 10, "other": 10, "train-2": 10, "train-3": 10}
         assert not differences()
 
@@ -1637,31 +1640,92 @@ def test_a_continuation_inherits_its_parent_s_document_differences(tmp_path):
         assert {step: train.requests(step) for step in requests} == requests
 
 
-def test_a_train_field_edit_on_a_step_reaches_the_steps_based_on_it(tmp_path):
-    root, client = _shared_training(tmp_path, continuations=1)
+def _batches(train):
+    return {key.step: definition.payload["training_config"]["n_batches"]
+            for key, definition in train.plan().selected_definitions.items()}
+
+
+def _batch_differences(root):
+    return {
+        name: [edit.value for edit in document_edit_ops(step.document_overrides.get("training", {}))
+               if edit.path == _BATCHES]
+        for name, step in load_text_project(root).project.steps.items()
+        if any(edit.path == _BATCHES for edit in document_edit_ops(step.document_overrides.get("training", {})))
+    }
+
+
+def test_an_edit_on_a_step_reaches_the_steps_based_on_it(tmp_path):
+    root, client = _shared_training(tmp_path, continuations=1, other=False)
     with client:
         train = _Training(client)
+        before = {step: train.requests(step) for step in ("train", "train-2")}
+        train.number("train", _BATCHES, {"kind": "text", "text": "5"})
+        assert _batches(train) == {"train": 5, "train-2": 5}
+        assert all(_changed(before[step], train.requests(step)) == before[step].keys() for step in before)
 
-        def edit(lit, text):
-            return train.client.post(f"{_URL}/authoring/train/train/fields", json={
-                "revision": train.revision, "field": _BATCHES, "edit": {"kind": "text", "text": text}, "lit_steps": lit,
-            })
-
-        refused = edit(["train"], "5")
-        assert refused.status_code == 422, refused.text
-        before = {step: train.requests(step) for step in ("train", "train-2", "other")}
-        train.save(edit(["train", "train-2"], "5"))
-        assert _changed(before["train"], train.requests("train")) == before["train"].keys()
-        assert _changed(before["train-2"], train.requests("train-2")) == before["train-2"].keys()
-        assert train.requests("other") == before["other"]
-
-        # The continuation holds its own value, so only the checkpoint it starts from changes.
         train.number("train-2", _BATCHES, {"kind": "text", "text": "9"})
-        train.save(edit(["train"], "6"))
-        assert {key.step: definition.payload["training_config"]["n_batches"]
-                for key, definition in train.plan().selected_definitions.items()} == {
-            "train": 6, "other": 2, "train-2": 9,
-        }
+        train.number("train", _BATCHES, {"kind": "text", "text": "6"})
+        assert _batches(train) == {"train": 6, "train-2": 9}
+        assert _batch_differences(root) == {"train-2": [9]}
+
+
+def test_an_edit_clears_differences_on_the_chosen_steps_only(tmp_path):
+    root, client = _shared_training(tmp_path, continuations=2, other=False)
+    document = root / "documents" / "training.json"
+
+    def stored():
+        return load_text_project(root).project.documents["training"].payload["training_config"]["n_batches"]
+
+    with client:
+        train = _Training(client)
+        train.number("train-3", _BATCHES, {"kind": "text", "text": "9"})
+        train.number("train-2", _BATCHES, {"kind": "text", "text": "4"})
+        train.number("train", _BATCHES, {"kind": "text", "text": "11"})
+        assert stored() == 11
+        assert _batch_differences(root) == {"train-2": [4], "train-3": [9]}
+        assert _batches(train) == {"train": 11, "train-2": 4, "train-3": 9}
+
+        train.number("train", _BATCHES, {"kind": "text", "text": "10"}, chosen=("train", "train-2", "train-3"))
+        assert stored() == 10 and not _batch_differences(root)
+        assert _batches(train) == {"train": 10, "train-2": 10, "train-3": 10}
+
+        train.number("train-3", _BATCHES, {"kind": "text", "text": "9"})
+        stored_bytes = document.read_bytes()
+        parent = train.requests("train")
+        train.number("train-2", _BATCHES, {"kind": "text", "text": "4"})
+        assert document.read_bytes() == stored_bytes and train.requests("train") == parent
+        assert _batch_differences(root) == {"train-2": [4], "train-3": [9]}
+
+
+def test_an_edit_for_chosen_steps_beside_another_user_is_their_difference(tmp_path):
+    root, client = _shared_training(tmp_path, continuations=2)
+    document = root / "documents" / "training.json"
+    with client:
+        train = _Training(client)
+        train.number("train-3", _BATCHES, {"kind": "text", "text": "9"})
+        train.number("train-2", _BATCHES, {"kind": "text", "text": "4"})
+        stored, other = document.read_bytes(), train.requests("other")
+        train.number("train", _BATCHES, {"kind": "text", "text": "7"}, chosen=("train", "train-2"))
+        assert _batch_differences(root) == {"train": [7], "train-3": [9]}
+        assert _batches(train) == {"train": 7, "other": 2, "train-2": 7, "train-3": 9}
+        assert document.read_bytes() == stored and train.requests("other") == other
+
+
+def test_the_write_refuses_a_change_to_a_step_it_does_not_reach(tmp_path):
+    from feedbax.web.services.trial_scope import refuse_unreached
+
+    root, client = _shared_training(tmp_path)
+    with client:
+        folders = client.app.state.project_folders
+        settled = folders.read_plan("reach", revision=None)
+        project = load_text_project(root).project
+        edited = project.model_copy(deep=True)
+        edited.documents["training"].payload["training_config"]["n_batches"] = 3
+        candidate = compile_project(edited, readers=settled.readers)
+        reach = {row.key for row in settled.plan.rows if row.key.step == "train"}
+        with pytest.raises(ProjectFolderInvalid, match="outside the selected scope"):
+            refuse_unreached(settled.plan, candidate, reach)
+        refuse_unreached(settled.plan, candidate, {row.key for row in settled.plan.rows})
 
 
 def test_a_shared_training_document_keeps_a_sweep_s_value_as_the_step_s_difference(tmp_path):

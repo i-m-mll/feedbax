@@ -357,7 +357,7 @@ def test_model_field_tau_keeps_units_and_allows_subsequent_leaf_edits(tmp_path):
     with TestClient(create_app(projects_dir=tmp_path)) as client:
         def prepare(label, text, row="default", *, files=False):
             snapshot = client.get(url).json()
-            body = {"revision": snapshot["revision"], "document": "reach-model", "owner": owner, "lit_steps": ["train"],
+            body = {"revision": snapshot["revision"], "document": "reach-model", "owner": owner, "chosen_steps": ["train"],
                     "run": {"variant": "default", "step": "train", "row": row}}
             response = client.post(url + "/model/fields", json=body)
             assert response.status_code == 200, response.text
@@ -489,9 +489,8 @@ def _seed_swept_project(tmp_path, name):
 class _TrainClient:
     """A Train step's edits through the Studio endpoints, each saved as it is made."""
 
-    def __init__(self, client, url, lit=()):
-        """``lit`` are the steps an edit of ``train`` reaches besides it, the steps based on it."""
-        self.client, self.url, self.lit = client, url, lit
+    def __init__(self, client, url):
+        self.client, self.url = client, url
 
     @property
     def revision(self):
@@ -541,7 +540,7 @@ class _TrainClient:
 
     def scope(self, keys=(), axes=None, *, named=None):
         run = named or (keys[0] if keys else None)
-        return {"revision": self.revision} | ({"lit_steps": ["train", *self.lit]} if self.lit else {}) | ({"run": {
+        return {"revision": self.revision} | ({"run": {
             "variant": run.variant, "step": run.step, "row": run.row,
         }, "rows": [key.row for key in keys], "axes": axes or {}} if run else {})
 
@@ -684,7 +683,7 @@ def test_a_parameter_swept_for_one_optimizer_divides_only_its_runs(tmp_path):
     _save_project(ProjectFolderService(tmp_path), name, Project.model_validate(raw))
     url = f"/api/projects/{name}"
     with TestClient(create_app(projects_dir=tmp_path)) as client:
-        train = _TrainClient(client, url, lit=("train-2",))
+        train = _TrainClient(client, url)
         train.sweep_class(optimizer, {"kind": "to_sweep"})
         train.sweep_class(optimizer, {"kind": "add_member", "key": "sgd"})
         before = train.requests(tmp_path, name)

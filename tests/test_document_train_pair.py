@@ -247,7 +247,7 @@ def test_variant_model_field_edit_does_not_reach_inheriting_variants(tmp_path, a
     revision = folders.read("variant").revision
     with TestClient(create_app(projects_dir=tmp_path)) as client:
         result = client.post("/api/projects/variant/model/fields", json={
-            "revision": revision, "document": "reach-model", "owner": owner, "lit_steps": ["train"],
+            "revision": revision, "document": "reach-model", "owner": owner, "chosen_steps": ["train"],
             "run": {"variant": "compare", "step": "train", "row": "default"},
             "address": owner | {"element": {"kind": "field", "parent": owner["element"], "path": ["fields", "mass"]}},
             "edit": {"kind": "text", "text": "2"},

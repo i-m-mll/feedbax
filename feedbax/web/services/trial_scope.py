@@ -89,7 +89,7 @@ def file_value(address, raw, parts, value):
     ])
 
 
-def selected_runs(plan, key, scope, *, lit_steps=()):
+def selected_runs(plan, key, scope, *, chosen_steps=()):
     rows = [row for row in plan.rows if row.key.step == key.step]
     if isinstance(scope, EvaluateAttachmentVariant):
         selected = {row.key for row in rows if row.key.variant == scope.variant}
@@ -105,7 +105,7 @@ def selected_runs(plan, key, scope, *, lit_steps=()):
     else:
         selected = {
             row.key for row in plan.rows
-            if row.key.step in (lit_steps or (key.step,))
+            if row.key.step in (chosen_steps or (key.step,))
         }
     if key not in selected or any(item.variant != key.variant for item in selected):
         raise ProjectFolderInvalid("The edit must address runs in the selected variant only.")
@@ -192,13 +192,13 @@ def base_descendants(project: Project, steps: Collection[str]) -> frozenset[str]
     return frozenset(found - set(steps))
 
 
-def _lit_roots(project: Project, lit: Collection[str]) -> set[str]:
-    """The lit steps not based on another lit step: an edit stored on them reaches the rest through their bases."""
-    return {step for step in lit if not (base_descendants(project, set(lit) - {step}) & {step})}
+def reached_steps(project: Project, chosen: Collection[str]) -> frozenset[str]:
+    """The steps an edit for the ``chosen`` steps reaches: those and the steps based on them."""
+    return frozenset(chosen) | base_descendants(project, chosen)
 
 
-def refuse_unlit(plan, candidate, reach: Collection[RunKey]) -> None:
-    """Refuse a candidate that changes the request of a run outside ``reach``, the runs of the lit steps.
+def refuse_unreached(plan, candidate, reach: Collection[RunKey]) -> None:
+    """Refuse a candidate that changes the request of a run outside ``reach``, the runs of the reached steps.
 
     A run fed by a reached run's product may change its request with it, provided its own definition does not change.
     """
@@ -223,11 +223,11 @@ def refuse_unlit(plan, candidate, reach: Collection[RunKey]) -> None:
         raise ProjectFolderInvalid("The proposed edit reaches runs outside the selected scope.")
 
 
-def lit_runs(
-    plan, variants: Collection[str], selected: Collection[RunKey], lit: Collection[str],
+def reached_runs(
+    plan, variants: Collection[str], selected: Collection[RunKey], steps: Collection[str],
 ) -> frozenset[RunKey]:
-    """The runs an edit for ``selected`` may change: those and every run of the lit steps in ``variants``."""
-    return frozenset(selected) | {row.key for row in plan.rows if row.key.variant in variants and row.key.step in lit}
+    """The runs an edit for ``selected`` may change: those and every run of the reached ``steps`` in ``variants``."""
+    return frozenset(selected) | {row.key for row in plan.rows if row.key.variant in variants and row.key.step in steps}
 
 
 type DocumentUsers = Callable[[str], Collection[str]]
@@ -259,42 +259,35 @@ def _step_difference(project: Project, step: str, document: str, local: list[Doc
 
 
 def document_files(
-    project: Project, document: str, edits: list[DocumentEdit], lit: Collection[str], users: Collection[str],
+    project: Project, document: str, edits: list[DocumentEdit], chosen: Collection[str], users: Collection[str],
 ) -> list[StudioProjectFilePatch]:
-    """Store ``edits`` of ``document``'s payload for the steps ``lit``: in the document when they are all the steps that
-    read it, otherwise as a difference from it on each of them.
+    """Store ``edits`` of ``document``'s payload for the ``chosen`` steps.
 
-    Stored in the document, an edit takes the place of the differences at the same path that the lit steps apply, on
-    the steps that store them: a step's own, or those it inherits from its base chain. Stored as differences, it is
-    stored on the lit steps not based on another lit step; the others read it through their bases, unless they hold
-    their own value at its path.
+    The edit is stored in the document when the steps it reaches, the chosen ones and those based on them, are all of
+    the document's ``users``; otherwise as a difference on each chosen step not based on another chosen step. Each chosen
+    step's own difference at an edited path is cleared, or replaced where the edit is stored on it. A step the edit
+    reaches without being chosen keeps its own difference.
     """
     entry = project.documents[document]
-    shared = set(lit) == set(users)
+    shared = set(users) <= reached_steps(project, chosen)
     files = []
     if shared:
         raw = deepcopy(entry.payload)
         apply_document_edits(raw, edits)
         files.append(file_value(AuthoredFileAddress(kind="document", id=document),
                                 {"payload": entry.payload}, ("payload",), raw))
-        storing = {
-            difference.step for step in lit for difference in document_differences(project, step).get(document, ())
-        }
-    else:
-        storing = _lit_roots(project, lit)
-    for step in sorted(storing):
+    storing = set() if shared else {step for step in chosen if step not in base_descendants(project, set(chosen) - {step})}
+    for step in sorted(chosen):
         previous = document_edit_ops(project.steps[step].document_overrides.get(document, {}))
-        if shared:
-            local = []
-            for edit in previous:
-                affected = [requested for requested in edits if _overlap(edit.path, requested.path)]
-                if not affected:
-                    local.append(edit)
-                elif any(requested.path != edit.path or edit.op != "replace" for requested in affected):
-                    raise ProjectFolderInvalid(f"{step} has an overlapping document difference.")
-        else:
-            local = [*(edit for edit in previous if not any(_covers(requested.path, edit.path) for requested in edits)),
-                     *edits]
+        local = []
+        for edit in previous:
+            affected = [requested for requested in edits if _overlap(edit.path, requested.path)]
+            if not affected or step in storing and not any(_covers(requested.path, edit.path) for requested in affected):
+                local.append(edit)
+            elif not any(_covers(requested.path, edit.path) for requested in affected):
+                raise ProjectFolderInvalid(f"{step} has an overlapping document difference.")
+        if step in storing:
+            local.extend(edits)
         if local != previous:
             files.append(_step_difference(project, step, document, local))
     return files
@@ -320,14 +313,14 @@ def _authored_payload(project: Project, step_id: str):
 
 
 def scoped_file(
-    project, step_id, scope: RunScope, writes, *, lit: Collection[str] = (), users: DocumentUsers | None = None,
+    project, step_id, scope: RunScope, writes, *, chosen: Collection[str] = (), users: DocumentUsers | None = None,
 ) -> list[StudioProjectFilePatch]:
     """The files that store ``writes``, paths in the step's definition, for the runs ``scope`` selects.
 
     A write whose path passes through a document reference changes that document. For the whole step it is stored by
-    :func:`document_files` for the steps ``lit`` (the step alone when none are named) among the document's ``users``.
+    :func:`document_files` for the ``chosen`` steps (the step alone when none are named) among the document's ``users``.
     For a sweep value or exception it is applied to the selected runs' copy of the document, and for a variant it is the
-    variant's write of the document. A lit step based on the step that reads another document is not reached by it.
+    variant's write of the document.
     """
     authored = project.steps[step_id]
     raw = authored.model_dump(mode="json", by_alias=True, exclude_unset=True)
@@ -356,22 +349,21 @@ def scoped_file(
         return [_selection_file(address, raw, authored, scope, writes)]
     files = [_step_file(address, raw, authored, direct)] if direct else []
     if through:
-        lit = set(lit) or {step_id}
+        chosen = set(chosen) or {step_id}
         if users is None:
             raise ProjectFolderInvalid("This edit changes a document and needs the steps that read it.")
         for document, patches in through.items():
             readers = set(users(document))
-            reading = lit & readers
-            if step_id not in reading or not lit - readers <= base_descendants(project, {step_id}):
-                raise ProjectFolderInvalid("The lit steps no longer match this document.")
+            if step_id not in chosen or not chosen <= readers:
+                raise ProjectFolderInvalid("The chosen steps no longer match this document.")
             payload = project.documents[document].payload
-            if reading != readers:
+            if not readers <= reached_steps(project, chosen):
                 payload = deepcopy(payload)
                 apply_document_edits(payload, [
                     difference.edit for difference in document_differences(project, step_id).get(document, ())
                 ])
             edits = [_document_edit(patch, path, payload) for patch, path in patches]
-            files.extend(document_files(project, document, edits, reading, readers))
+            files.extend(document_files(project, document, edits, chosen, readers))
     return merged_files(files)
 
 
@@ -398,23 +390,22 @@ def _step_file(address, raw, authored, writes) -> StudioProjectFilePatch:
 
 
 def train_selection(
-    folders, project_id, revision, project, step_id, run, rows=(), axes=None, lit_steps=(),
+    folders, project_id, revision, project, step_id, run, rows=(), axes=None, chosen_steps=(),
 ) -> TrainSelection:
     """The runs a Train edit names, read from the plan of ``revision``, and the write that stores an edit for them.
 
-    Without rows the selection is every run of the step and of the other ``lit_steps`` in the named run's variant; the
-    values shown for it are those of the lit steps not based on the step.
-    ``lit_steps`` are the steps an edit reaches: those of a document the step reads, and the steps based on them; none
-    is the step alone. The write refuses an edit that changes a request of a step that is not lit.
+    ``chosen_steps`` are the steps the user named for an edit of a document the step reads; none is the step alone.
+    Without rows the selection is every run of the chosen steps in the named run's variant. The edit reaches the chosen
+    steps and those based on them; the write refuses one that changes a request of any other step.
     """
     def users(document: str) -> frozenset[str]:
         plan = folders.read_plan(project_id, revision=revision).plan
         return plan.document_users(plan.variants[0], document)
 
-    lit = {step_id, *lit_steps}
+    chosen = {step_id, *chosen_steps}
 
     def checked(scope, selected, writes):
-        files = scoped_file(project, step_id, scope, writes, lit=tuple(lit_steps), users=users)
+        files = scoped_file(project, step_id, scope, writes, chosen=tuple(chosen_steps), users=users)
         if files:
             settled = folders.read_plan(project_id, revision=revision)
             candidate = compile_project(
@@ -422,7 +413,8 @@ def train_selection(
                 operations=folders.operations, components=folders.components, functions=folders.functions,
                 python_tasks=folders.python_tasks, figure_templates=folders.figure_templates,
             )
-            refuse_unlit(settled.plan, candidate, selected or lit_runs(settled.plan, settled.plan.variants, (), lit))
+            reached = reached_steps(project, chosen)
+            refuse_unreached(settled.plan, candidate, selected or reached_runs(settled.plan, settled.plan.variants, (), reached))
         return files
 
     if run is None:
@@ -434,9 +426,8 @@ def train_selection(
         raise ProjectFolderInvalid(f"Run {key.row!r} belongs to step {key.step!r}, not {step_id!r}.")
     plan = folders.read_plan(project_id, revision=revision, source_runs=(key,)).plan
     scope = selection_scope(project, plan, key, tuple(rows), axes)
-    compared = lit - base_descendants(project, {step_id})
     shown = tuple(RunKey(key.variant, step_id, row) for row in rows) or tuple(sorted(
-        (row.key for row in plan.rows if row.key.variant == key.variant and row.key.step in compared),
+        (row.key for row in plan.rows if row.key.variant == key.variant and row.key.step in chosen),
         key=lambda item: item.step != step_id,
     ))
     if set(shown) != {key}:
@@ -454,18 +445,19 @@ def train_selection(
         payloads, next((row for row in plan.rows if row.key == key), None),
         named.payload if isinstance(scope, SweepValuesScope | EvaluateAttachmentAxis | EvaluateAttachmentRows)
         and named is not None else None, scoped,
-        partial(checked, scope, _scoped_runs(plan, key, scope, lit)), values,
+        partial(checked, scope, _scoped_runs(project, plan, key, scope, chosen)), values,
     )
 
 
-def _scoped_runs(plan, key: RunKey, scope: RunScope, lit: Collection[str]) -> frozenset[RunKey]:
-    """The runs an edit for ``scope`` may change: the step's selected runs and the other lit steps'.
+def _scoped_runs(project, plan, key: RunKey, scope: RunScope, chosen: Collection[str]) -> frozenset[RunKey]:
+    """The runs an edit for ``scope`` may change: the step's selected runs and those of the other steps it reaches.
 
     Stored on the step, an edit reaches those runs in every variant; stored on a variant, in that variant.
     """
     variants = {scope.variant} if isinstance(scope, EvaluateAttachmentVariant) else set(plan.variants)
+    reached = reached_steps(project, chosen)
     if isinstance(scope, EvaluateAttachmentStep | EvaluateAttachmentVariant):
-        return lit_runs(plan, variants, (), lit)
+        return reached_runs(plan, variants, (), reached)
     picked = {
         row.key for row in plan.rows if row.key.variant in variants and row.key.step == key.step and (
             row.key.row in scope.rows if isinstance(scope, EvaluateAttachmentRows)
@@ -476,4 +468,4 @@ def _scoped_runs(plan, key: RunKey, scope: RunScope, lit: Collection[str]) -> fr
             )
         )
     }
-    return lit_runs(plan, variants, picked, set(lit) - {key.step})
+    return reached_runs(plan, variants, picked, reached - {key.step})

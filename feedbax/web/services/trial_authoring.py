@@ -41,7 +41,8 @@ from feedbax.plugins.application import ApplicationRegistryBundle
 from feedbax.web.services.evaluate_sources import evaluate_subject, evaluate_value_source
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, preview_authored_files
 from feedbax.web.services.trial_scope import (
-    document_files, file_value, refuse_unlit, scoped_file, selected_runs, variant_file,
+    document_files, file_value, reached_runs, reached_steps, refuse_unreached, scoped_file, selected_runs,
+    variant_file,
 )
 
 
@@ -444,20 +445,20 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
         path = f"payload.trial_documents.{field}"
         if not definition.document_pointers.get(path):
             document = definition.document_ids.get(path)
-    lit = set(scope.lit_steps) if isinstance(scope, StudioTrialStepScope) else set()
+    chosen = set(scope.chosen_steps) if isinstance(scope, StudioTrialStepScope) else set()
     users = set(plan.document_users(key.variant, document)) if document else set()
     if scope is None and key.variant != plan.variants[0]:
         scope = EvaluateAttachmentVariant(kind="variant", variant=key.variant)
     elif scope is None:
         scope = StudioTrialStepScope(kind="step")
-        lit = users
+        chosen = users
     if isinstance(scope, StudioTrialStepScope):
         if key.variant != plan.variants[0]:
             raise ProjectFolderInvalid("A step scope covers the primary variant only.")
-        if lit and (key.step not in lit or not lit <= users):
-            raise ProjectFolderInvalid("The lit steps no longer match this document.")
-        lit = lit or {key.step}
-    selected = selected_runs(plan, key, scope, lit_steps=lit)
+        if chosen and (key.step not in chosen or not chosen <= users):
+            raise ProjectFolderInvalid("The chosen steps no longer match this document.")
+        chosen = chosen or {key.step}
+    selected = selected_runs(plan, key, scope, chosen_steps=chosen)
 
     def readers(name):
         return plan.document_users(plan.variants[0], name)
@@ -469,7 +470,7 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
             and document not in row.document_uses
             for row in plan.rows
         ):
-            raise ProjectFolderInvalid("A lit step no longer uses the selected document.")
+            raise ProjectFolderInvalid("A chosen step no longer uses the selected document.")
     if document is not None and isinstance(scope, EvaluateAttachmentVariant):
         selected = {row.key for row in plan.rows if row.key.variant == key.variant and row.key.step in users}
     if selected != {key}:
@@ -481,13 +482,13 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
                 raise ProjectFolderInvalid("An Evaluate reads its Model and Objective from its subject.")
             _chosen_task(project, change.document)
             files = scoped_file(project, key.step, scope, _task_selection_writes(definition, {"document": change.document}),
-                                lit=lit, users=readers)
+                                chosen=chosen, users=readers)
         elif evaluate_field:
             files = _evaluate_field_files(project, settled.plan, key, scope, selected, bundle, change, documents, projected)
         else:
             raise ProjectFolderInvalid("Evaluate authoring edits the task variation.")
     elif document is not None and isinstance(scope, StudioTrialStepScope):
-        files = document_files(project, document, list(change.edits), lit, users)
+        files = document_files(project, document, list(change.edits), chosen, users)
     elif document is not None and isinstance(scope, EvaluateAttachmentVariant):
         _, value = _changed_value(documents, definition, change.kind)
         files = [variant_file(project, key.variant, _value_writes(f"documents.{document}.payload", value, change))]
@@ -495,14 +496,17 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
         writes = training_document_choice(project, key.step, bundle.training_methods, change.document)
         if isinstance(writes, StudioSweptParameterMissing):
             return [], writes
-        files = scoped_file(project, key.step, scope, writes, lit=lit, users=readers)
+        files = scoped_file(project, key.step, scope, writes, chosen=chosen, users=readers)
     else:
         writes = _train_writes(change, project, definition, documents, projected)
-        files = scoped_file(project, key.step, scope, writes, lit=lit, users=readers) if writes else []
+        files = scoped_file(project, key.step, scope, writes, chosen=chosen, users=readers) if writes else []
     if not files:
         return [], ()
+    variants = {key.variant} if isinstance(scope, EvaluateAttachmentVariant) else set(plan.variants)
+    reach = reached_runs(plan, variants, selected, reached_steps(project, chosen or {key.step}) - {key.step})
     return _validate_files(
-        files, project, settled, selected, key.step, folders, bundle, change, expression, evaluate_field=evaluate_field,
+        files, project, settled, selected, reach, key.step, folders, bundle, change, expression,
+        evaluate_field=evaluate_field,
     )
 
 
@@ -527,7 +531,9 @@ def _evaluate_field_files(project, plan, key, scope, selected, bundle, change, d
     return [file_value(AuthoredFileAddress(kind="step", id=key.step), raw, ("sweep",), sweep)]
 
 
-def _validate_files(files, project, settled, selected, named, folders, bundle, change, expression, *, evaluate_field):
+def _validate_files(
+    files, project, settled, selected, reach, named, folders, bundle, change, expression, *, evaluate_field,
+):
     plan = settled.plan
     choosing = isinstance(change, StudioTrialSelectDocument)
     authored = preview_authored_files(project, files)
@@ -556,7 +562,7 @@ def _validate_files(files, project, settled, selected, named, folders, bundle, c
         if key.step != named and key in previous and key in current and (
             previous[key].request_id == current[key].request_id
         ):
-            # A lit step that holds its own value where the edit is made keeps it.
+            # A reached step that holds its own value where the edit is made keeps it.
             continue
         if key not in candidate.selected_definitions:
             diagnostic = next((
@@ -616,7 +622,7 @@ def _validate_files(files, project, settled, selected, named, folders, bundle, c
                 and item.step == key.step and item.variant == key.variant and item.row == key.row
             ), None)
             raise ProjectFolderInvalid(diagnostic.detail if diagnostic else "The edit removes a planned request.")
-    refuse_unlit(plan, candidate, selected)
+    refuse_unreached(plan, candidate, reach)
     return files, ()
 
 
