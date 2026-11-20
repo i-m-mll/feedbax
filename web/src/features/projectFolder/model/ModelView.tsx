@@ -278,7 +278,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
             : [{ kind: 'document' as const, id: fieldBody.document },
               ...(fieldBody.run ? [{ kind: 'step' as const, id: fieldBody.run.step }] : []),
               ...(attachments.data?.source ? [{ kind: 'step' as const, id: attachments.data.source.step }] : [])];
-          editor.editFiles('Set Field', result.files, { reviewedRevision: current.revision, dependencies });
+          const settled = await editor.editFiles('Set Field', result.files, { reviewedRevision: current.revision, dependencies });
+          if (settled.status === 'refused') return apiErrorMessage(settled.error);
         }
         return undefined;
       } catch (error) {
