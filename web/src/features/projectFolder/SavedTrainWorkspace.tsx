@@ -16,7 +16,7 @@ import { isMemberName } from './projectMemberName';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { useStepInsertMenu, type StepInsertion } from '@/components/pipeline/StepInsertMenu';
 import { InspectorRow, StudioRunControls, StudioRuns, StudioStepInspector, type RunMention } from '@/components/pipeline/StudioRuns';
-import type { RunMenu } from '@/components/pipeline/RunContextMenu';
+import type { RunMenu, StepMenu } from '@/components/pipeline/CommandContextMenu';
 import type { ActivityResultState } from '@/components/activity/StudioActivity';
 import { useResultValidity } from './useResultValidity';
 import { useFollowingQuery } from '@/hooks/useFollowingQuery';
@@ -1186,8 +1186,13 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     if (windowState.mode === 'map') setWindowState((current) => showProjectWindowView(current, 'runs', focusSlot));
     requestSlotFocus((count) => count + 1);
   };
+  /** The commands on a step: its context menu, and the palette's for the selected step. */
+  const stepCommands: StepMenu = (target, startRename = () => setRenamingStep({ stepId: target.id, surface: mapSurface })) => [
+    bindStudioCommand('renameStep', startRename, { subject: target.label, enabled: !!renameStep && !busy }),
+    bindStudioCommand('duplicateStep', () => duplicateStep?.(target.id), { subject: target.label, enabled: !!duplicateStep && !busy }),
+  ];
   const mapProps = {
-    plan: shownPlan, state, problemSteps, rename: renameStep, onEnterStep: enterStep,
+    plan: shownPlan, state, problemSteps, rename: renameStep, onEnterStep: enterStep, stepMenu: stepCommands,
     onSelectionChange: (value: PipelineSelectionState) => {
       setResultAttempt(undefined);
       setProblemReveal(undefined);
@@ -1245,8 +1250,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     windowState.mode !== 'map' && focusView === 'results' && stoppedNewStep ? stoppedNewStep : nextStep,
     ...(focusedDetail?.commands ?? []),
     // After the focused view's commands, so its own F2 (a Model component's rename) comes first.
-    step && bindStudioCommand('renameStep', () => setRenamingStep({ stepId: step.id, surface: mapSurface }), { subject: step.label, enabled: !!renameStep && !busy }),
-    step && bindStudioCommand('duplicateStep', () => duplicateStep?.(step.id), { subject: step.label, enabled: !!duplicateStep && !busy }),
+    ...(step ? stepCommands(step) : []),
     ...analyze.commands,
     ...report.commands,
     step && newSweepCommand(step.id),
@@ -1434,7 +1438,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                   disabled: busy || machineCatalog.isPending || !connected,
                   onChange: (value) => setMachines((current) => ({ ...current, [step.id]: value })) })}
                 pivotCommand={pivot} pivotActive={pivotActive} reason={run && studioRunReason(run)} />,
-              inspector: <StudioStepInspector plan={plan} step={step} state={state} onReveal={revealRunMention}
+              inspector: <StudioStepInspector plan={plan} step={step} state={state} onReveal={revealRunMention} stepMenu={stepCommands}
                 onChooseStep={(stepId) => selection.select(selectStep(state, stepId))}
                 revealed={fieldReveal && { place: fieldReveal.place, detail: fieldReveal.reason, problem: fieldReveal.problem }}
                 upstreamDetail={checkpointLineage()}

@@ -31,7 +31,7 @@ import {
   type MarkCell,
   type RunMark,
 } from './pipelineMapLayout';
-import { RunContextMenu, type RunMenu } from './RunContextMenu';
+import { CommandContextMenu, type RunMenu } from './CommandContextMenu';
 import { Button } from '@/components/ui/Button';
 import { Menu, MenuContent, MenuItem, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuTrigger } from '@/components/ui/Menu';
 import { ScrollFade } from '@/components/ui/ScrollFade';
@@ -192,7 +192,7 @@ function MarkButton({
     : null;
   const name = [label, status, share].filter(Boolean).join(' · ');
   const shaped = size.id === 'full' && statuses.length === 1;
-  return <RunContextMenu runs={runs} menu={runMenu} trigger={
+  return <CommandContextMenu commands={runMenu && ((anchor) => runMenu(runs, anchor))} trigger={
     <Button
       variant="bare"
       size="content"
