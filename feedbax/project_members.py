@@ -56,24 +56,37 @@ def _renamed_patch_targets(patchset: _Json, rename: _Rename) -> _Json:
     return {**patchset, "patches": {rename(path): patch for path, patch in patchset["patches"].items()}}
 
 
-def _renamed_sweep(sweep: _Json, rename: _Rename) -> _Json:
-    """Rewrite the targets of a sweep's rows, exceptions and axes, the only places targets are authored."""
+def _copied_patch_targets(patchset: _Json, copy: _Rename) -> _Json:
+    """Add, beside each patch whose target ``copy`` rewrites, the same patch at the rewritten target."""
+    if patchset is None or "patches" not in patchset:
+        return patchset
+    patches = patchset["patches"]
+    return {**patchset, "patches": {**patches, **{copy(path): patch for path, patch in patches.items() if copy(path) != path}}}
+
+
+def _mapped_sweep(sweep: _Json, patchset: Callable[[_Json], _Json], path: _Rename) -> _Json:
+    """Map the patch sets of a sweep's rows, exceptions and value axes, and the paths of its path axes."""
     if sweep is None:
         return sweep
     sweep = dict(sweep)
     for section in ("rows", "exceptions"):
         if section in sweep:
-            sweep[section] = {name: _renamed_patch_targets(item, rename) for name, item in sweep[section].items()}
+            sweep[section] = {name: patchset(item) for name, item in sweep[section].items()}
     axes = {}
     for name, axis in sweep.get("axes", {}).items():
         if axis is not None and "path" in axis:
-            axis = {**axis, "path": rename(axis["path"])}
+            axis = {**axis, "path": path(axis["path"])}
         elif axis is not None and isinstance(values := axis.get("values"), dict):
-            axis = {**axis, "values": {key: _renamed_patch_targets(item, rename) for key, item in values.items()}}
+            axis = {**axis, "values": {key: patchset(item) for key, item in values.items()}}
         axes[name] = axis
     if "axes" in sweep:
         sweep["axes"] = axes
     return sweep
+
+
+def _renamed_sweep(sweep: _Json, rename: _Rename) -> _Json:
+    """Rewrite the targets of a sweep's rows, exceptions and axes, the only places targets are authored."""
+    return _mapped_sweep(sweep, lambda item: _renamed_patch_targets(item, rename), rename)
 
 
 def _renamed_sweeps(project: dict[str, JsonValue], rename: _Rename) -> dict[str, JsonValue]:
@@ -173,6 +186,26 @@ def rename_member(
     """
     rename = _rename_document if family == "documents" else _rename_step
     return rename(project, presentation, old, new)
+
+
+def duplicate_step(
+    project: dict[str, JsonValue], presentation: dict[str, JsonValue], old: str, new: str,
+) -> tuple[dict[str, JsonValue], dict[str, JsonValue]]:
+    """Return the project and presentation with step ``old`` copied as ``new``, reading the same documents and inputs.
+
+    A step's own sweep addresses the step relative to itself and is copied as it is. Each
+    patch the project's sweep makes to ``old`` it also makes to ``new``, so that the copy
+    compiles to the same requests as its source; a project sweep axis whose path addresses
+    ``old`` is one path and stays on ``old``.
+    """
+    copied = {**project, "steps": {**project["steps"], new: project["steps"][old]}}
+    if "sweep" in project:
+        retarget = _renamed_prefix("steps", old, new)
+        copied["sweep"] = _mapped_sweep(project["sweep"], lambda item: _copied_patch_targets(item, retarget), lambda path: path)
+    shown = dict(presentation)
+    if old in shown.get("steps", {}):
+        shown["steps"] = {**shown["steps"], new: shown["steps"][old]}
+    return copied, shown
 
 
 def references_member(project: dict[str, JsonValue], family: MemberFamily, name: str) -> bool:

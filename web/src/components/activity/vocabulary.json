@@ -140,6 +140,7 @@
     "removalThreshold": "Removal Threshold",
     "rename": "Rename",
     "renameStep": "Rename Step",
+    "duplicateStep": "Duplicate Step",
     "report": "Report",
     "rerun": "Rerun",
     "restart": "Restart",

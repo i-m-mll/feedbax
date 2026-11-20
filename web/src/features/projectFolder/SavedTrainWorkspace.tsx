@@ -1173,6 +1173,13 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     focus: stepFocus,
     focused: () => setStepFocus(null),
   } : undefined;
+  const duplicateStep = documentEditable ? (from: string) => {
+    void perform(async () => {
+      const { member } = await editor.memberCommand(studioAccessibleName('duplicateStep', from),
+        { kind: 'duplicate', family: 'steps', member: from }, editor.getSnapshot().saved);
+      commandScope.selectCreatedStep(member);
+    }, refuseStep(from));
+  } : undefined;
   /** Going into a step puts the keyboard in the slot that shows its views; a window showing only the map opens Runs. */
   const enterStep = (stepId: string) => {
     selection.select(selectStep(state, stepId));
@@ -1239,6 +1246,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     ...(focusedDetail?.commands ?? []),
     // After the focused view's commands, so its own F2 (a Model component's rename) comes first.
     step && bindStudioCommand('renameStep', () => setRenamingStep({ stepId: step.id, surface: mapSurface }), { subject: step.label, enabled: !!renameStep && !busy }),
+    step && bindStudioCommand('duplicateStep', () => duplicateStep?.(step.id), { subject: step.label, enabled: !!duplicateStep && !busy }),
     ...analyze.commands,
     ...report.commands,
     step && newSweepCommand(step.id),

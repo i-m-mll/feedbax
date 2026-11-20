@@ -291,3 +291,58 @@ def test_a_step_rename_refuses_a_taken_name(evaluated):
     snapshot = _snapshot(client)
     _command(client, snapshot, {"kind": "rename", "family": "steps", "member": "train", "name": "baseline"}, 409)
     _command(client, snapshot, {"kind": "rename", "family": "steps", "member": "missing", "name": "other"}, 404)
+
+
+def test_a_step_duplicate_shares_its_sources_requests_until_it_differs(evaluated):
+    client, folders = evaluated
+    before = _snapshot(client)
+    files = _files(folders)
+    requests = _step_requests(folders, before["revision"])
+
+    result = _command(client, before, {"kind": "duplicate", "family": "steps", "member": "train"})
+    after = result["snapshot"]
+    assert result["member"] == "train-2"
+    steps = after["project"]["steps"]
+    assert steps["train-2"] == steps["train"] == before["project"]["steps"]["train"]
+    assert set(after["project"]["documents"]) == set(before["project"]["documents"])
+    assert after["presentation"]["steps"]["train-2"] == before["presentation"]["steps"]["train"]
+    duplicated = _step_requests(folders, after["revision"])
+    variants = {variant for variant, _, _ in requests}
+    assert len(variants) == 2
+    # The project's sweep patches the copy as it patches its source, so each variant's copy is the source's request.
+    for (variant, step, row), request in requests.items():
+        assert duplicated[variant, step, row] == request
+        if step == "train":
+            assert duplicated[variant, "train-2", row] == request
+    assert _files(folders)["steps/train-2.json"] == files["steps/train.json"]
+
+    # One Undo removes the step.
+    response = _replay(client, before, after)
+    assert response.status_code == 200, response.text
+    assert response.json()["project"] == before["project"]
+    assert _files(folders).keys() == files.keys()
+
+    again = _command(client, response.json(), {"kind": "duplicate", "family": "steps", "member": "train"})["snapshot"]
+    response = client.patch(URL, json={
+        "revision": again["revision"], "address": {"kind": "step", "id": "train-2"},
+        "patches": [{"op": "replace", "path": "/base/inline/training_config/n_batches", "value": 3}],
+    })
+    assert response.status_code == 200, response.text
+    edited = _step_requests(folders, response.json()["revision"])
+    assert {key: edited[key] for key in requests} == requests
+    assert all(edited[variant, "train-2", row] != request for (variant, step, row), request in requests.items() if step == "train")
+
+
+def test_a_duplicate_of_a_continuation_is_named_for_its_kind_and_continues_its_parent(evaluated):
+    client, folders = evaluated
+    before = _snapshot(client)
+    requests = _step_requests(folders, before["revision"])
+
+    result = _command(client, before, {"kind": "duplicate", "family": "steps", "member": "baseline"})
+    assert result["member"] == "evaluate"
+    assert result["snapshot"]["project"]["steps"]["evaluate"]["inputs"]["subject"] == {"step": "train", "checkpoint": "last"}
+    duplicated = _step_requests(folders, result["snapshot"]["revision"])
+    assert {key: duplicated[key] for key in requests} == requests
+    assert {(variant, row): request for (variant, step, row), request in duplicated.items() if step == "evaluate"} == {
+        (variant, row): request for (variant, step, row), request in requests.items() if step == "baseline"
+    }

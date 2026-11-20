@@ -2757,7 +2757,7 @@ export type DriverIdentity = {
 
 export type DuplicateMember = {
   "kind": "duplicate";
-  "family": "documents";
+  "family": MemberFamily;
   "member": string;
   "name"?: string | null;
 };
@@ -9050,7 +9050,7 @@ export const DriverIdentitySchema: z.ZodType<DriverIdentity> = z.lazy(() =>
 export const DuplicateMemberSchema: z.ZodType<DuplicateMember> = z.lazy(() =>
   z.object({
     "kind": z.literal("duplicate"),
-    "family": z.literal("documents"),
+    "family": MemberFamilySchema,
     "member": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "name": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
   }).strict()
