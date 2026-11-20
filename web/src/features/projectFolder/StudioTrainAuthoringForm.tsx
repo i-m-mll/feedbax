@@ -21,7 +21,7 @@ import {
   StepReferenceSchema, type StepReference,
 } from '@/generated/studioContracts';
 import type {
-  AuthoredFileAddress, JsonValue, StudioAuthoringField, StudioClassField, StudioSavedTrainKey, StudioTrainAuthoringRequest,
+  AuthoredFileAddress, FieldResetEdit, JsonValue, StudioAuthoringField, StudioClassField, StudioSavedTrainKey, StudioTrainAuthoringRequest,
   TrainFieldRequest, TrainFieldView,
 } from '@/generated/studioContracts';
 import type { FieldCommit, FieldKindOffer } from '@/components/values/fieldModel';
@@ -149,7 +149,7 @@ function useTrainFields(
   const { body, fields } = useTrainFieldsQuery(editor, stepId, selection, runPending);
   const confirmRemoval = useRunRemoval();
   const editable = !fields.isPlaceholderData && !pending && !outside;
-  async function edit(field: string, change: ProjectedEdit): Promise<string | undefined> {
+  async function edit(field: string, change: ProjectedEdit | FieldResetEdit): Promise<string | undefined> {
     try {
       const { problems = [], files = [], created = [], dependencies = [], removed_values: removedValues } = await projectTrainFields(projectId, stepId, { ...body, field, edit: change }, editor.signal);
       if (problems[0]) return problems[0].reason;
@@ -302,6 +302,9 @@ export function StudioTrainAuthoringForm(props: Props) {
   const fieldModel = (field: TrainFieldView) => fromFieldView(field, {
     id: JSON.stringify([projectId, stepId, props.fieldRows, field.id]),
     commit: numeric.edit && ((edit) => numeric.edit!(field.id, edit)),
+    changed: field.changed ? {
+      text: studioName('changed'), reset: numeric.edit && (() => numeric.edit!(field.id, { kind: 'reset' })),
+    } : undefined,
     rowSelection: !!props.fieldRows?.length,
     selectedMembers: members(field.sweep?.id),
     chooseMember: field.sweep && onChooseSweepValue

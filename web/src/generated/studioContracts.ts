@@ -1040,7 +1040,7 @@ export interface ModelFieldRequest {
   owner: ModelAddress;
   evaluate_scope?: EvaluateAttachmentStep | EvaluateAttachmentAxis | EvaluateAttachmentRows | EvaluateAttachmentVariant | null;
   address?: ModelAddress | null;
-  edit?: FieldTextEdit | FieldKindEdit | FieldNameEdit | null;
+  edit?: FieldTextEdit | FieldKindEdit | FieldNameEdit | FieldResetEdit | null;
 }
 
 export interface ModelFieldResponse {
@@ -1067,6 +1067,10 @@ export interface FieldTextEdit {
   text: string;
   value_id?: string | null;
   seed?: number | null;
+}
+
+export interface FieldResetEdit {
+  kind: "reset";
 }
 
 export interface StudioSweepValue {
@@ -1109,6 +1113,7 @@ export interface StudioFieldView {
   can_sweep?: boolean;
   can_change_axis?: boolean;
   members?: StudioSweepValue[];
+  changed?: boolean;
 }
 
 export interface ModelFieldView {
@@ -1124,6 +1129,7 @@ export interface ModelFieldView {
   can_sweep?: boolean;
   can_change_axis?: boolean;
   members?: StudioSweepValue[];
+  changed?: boolean;
   address: ModelAddress;
   sources?: StudioPlanReviewSource[];
 }
@@ -1141,6 +1147,7 @@ export interface TrainFieldView {
   can_sweep?: boolean;
   can_change_axis?: boolean;
   members?: StudioSweepValue[];
+  changed?: boolean;
   id: string;
 }
 
@@ -1151,7 +1158,7 @@ export interface TrainFieldRequest {
   chosen_steps?: string[];
   revision: string;
   field?: string | null;
-  edit?: FieldTextEdit | FieldKindEdit | FieldNameEdit | null;
+  edit?: FieldTextEdit | FieldKindEdit | FieldNameEdit | FieldResetEdit | null;
 }
 
 export interface TrainFieldResponse {
@@ -6159,7 +6166,7 @@ export const ModelFieldRequestSchema: z.ZodType<ModelFieldRequest> = z.lazy(() =
       "owner": ModelAddressSchema,
       "evaluate_scope": z.union([EvaluateAttachmentStepSchema, EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema, EvaluateAttachmentVariantSchema]).nullable().optional(),
       "address": ModelAddressSchema.nullable().optional(),
-      "edit": z.union([FieldTextEditSchema, FieldKindEditSchema, FieldNameEditSchema]).nullable().optional(),
+      "edit": z.union([FieldTextEditSchema, FieldKindEditSchema, FieldNameEditSchema, FieldResetEditSchema]).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelFieldRequest>;
@@ -6205,6 +6212,14 @@ export const FieldTextEditSchema: z.ZodType<FieldTextEdit> = z.lazy(() =>
     })
     .strict()
 ) as unknown as z.ZodType<FieldTextEdit>;
+
+export const FieldResetEditSchema: z.ZodType<FieldResetEdit> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("reset"),
+    })
+    .strict()
+) as unknown as z.ZodType<FieldResetEdit>;
 
 export const StudioSweepValueSchema: z.ZodType<StudioSweepValue> = z.lazy(() =>
   z
@@ -6264,6 +6279,7 @@ export const StudioFieldViewSchema: z.ZodType<StudioFieldView> = z.lazy(() =>
       "can_sweep": z.boolean().optional(),
       "can_change_axis": z.boolean().optional(),
       "members": z.array(StudioSweepValueSchema).optional(),
+      "changed": z.boolean().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioFieldView>;
@@ -6283,6 +6299,7 @@ export const ModelFieldViewSchema: z.ZodType<ModelFieldView> = z.lazy(() =>
       "can_sweep": z.boolean().optional(),
       "can_change_axis": z.boolean().optional(),
       "members": z.array(StudioSweepValueSchema).optional(),
+      "changed": z.boolean().optional(),
       "address": ModelAddressSchema,
       "sources": z.array(StudioPlanReviewSourceSchema).optional(),
     })
@@ -6304,6 +6321,7 @@ export const TrainFieldViewSchema: z.ZodType<TrainFieldView> = z.lazy(() =>
       "can_sweep": z.boolean().optional(),
       "can_change_axis": z.boolean().optional(),
       "members": z.array(StudioSweepValueSchema).optional(),
+      "changed": z.boolean().optional(),
       "id": z.string(),
     })
     .strict()
@@ -6318,7 +6336,7 @@ export const TrainFieldRequestSchema: z.ZodType<TrainFieldRequest> = z.lazy(() =
       "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
       "field": z.string().nullable().optional(),
-      "edit": z.union([FieldTextEditSchema, FieldKindEditSchema, FieldNameEditSchema]).nullable().optional(),
+      "edit": z.union([FieldTextEditSchema, FieldKindEditSchema, FieldNameEditSchema, FieldResetEditSchema]).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TrainFieldRequest>;

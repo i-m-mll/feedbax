@@ -348,7 +348,7 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
       return member && member.document === storedId ? [{ address: member.address, reason: item.detail }] : [];
     }),
     path: input.modelPath && input.modelPath.document === storedId ? input.modelPath.path : rootModelPath,
-    setPath: (path) => { if (storedId) input.setModelPath(storedId, path); },
+    setPath: (path, document = storedId) => { if (document) input.setModelPath(document, path); },
     sections: input.drawerSections,
     openProblems: input.openModelProblems,
     exceptions: input.exceptions,

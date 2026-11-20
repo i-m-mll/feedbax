@@ -317,24 +317,29 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const reachedSteps = wholeStep && step?.kind === 'train' ? withBaseDescendants(saved.project, [step.id]) : undefined;
   /**
    * The steps a view of the document the step reads in `field` lights: those that read it or a document based on it,
-   * less those taken out. An edit there is made for the lit steps.
+   * less those taken out. An edit there is made for the lit steps. From an Evaluate step the document's Train readers
+   * are drawn as readers and are lit only when put in, and the step is lit even while it follows its subject's.
    */
   function documentScope(field: 'graph' | 'task' | 'objective' | 'training'): NamedDocumentScope | undefined {
     const ids = step?.documentIds;
     const document = field === 'graph' ? modelDocumentId(ids)
       : field === 'task' ? ids?.['payload.trial_documents.task'] ?? ids?.['payload.trial_documents.python_task']
         : field === 'objective' ? ids?.['payload.trial_documents.objective'] : trainingDocumentId(ids);
-    if (!document || !step || !singleStep || !data || step.kind !== 'train') return undefined;
+    const evaluating = step?.kind === 'evaluate' && (field === 'graph' || field === 'task');
+    if (!document || !step || !singleStep || !data || step.kind !== 'train' && !evaluating) return undefined;
     const localVariant = Boolean(saved.project.sweep && !primaryVariant && field === 'graph');
     if (!localVariant && !wholeStep) return undefined;
     const family = documentFamily(saved.project, document);
     const users = new Set(plan.steps.filter(({ documentUses }) => documentUses?.some((used) => family.has(used)))
       .map(({ id }) => id));
+    if (evaluating) users.add(step.id);
     if (!users.has(step.id)) return undefined;
     const key = JSON.stringify([step.id, document, variant]);
     if (localVariant) return { document, key, users, lit: users, localVariant };
-    const excluded = excludedUsers[key] ?? [];
-    return { document, key, users, lit: new Set([...users].filter((id) => id === step.id || !excluded.includes(id))) };
+    const toggled = excludedUsers[key] ?? [];
+    const reader = (id: string) => evaluating && plan.steps.find((item) => item.id === id)?.kind !== 'evaluate';
+    return { document, key, users, lit: new Set([...users].filter((id) =>
+      id === step.id || (reader(id) ? toggled.includes(id) : !toggled.includes(id)))) };
   }
   const documentScopes = {
     graph: documentScope('graph'), task: documentScope('task'),
@@ -493,6 +498,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const trialEditable = documentEditable && Boolean(trialScope);
   /** A whole-step edit of a Train step's Task or Objective is made for the steps its view chooses. */
   const trialChangeScope: TrialChangeScope = (change) => {
+    if (step?.kind === 'evaluate' && trialScope && trialScope.kind === 'step' && change.kind === 'task' && documentScopes.task) {
+      return { kind: 'step', chosen_steps: [...documentScopes.task.lit] };
+    }
     if (trialEditScope || step?.kind !== 'train' || !trialScope || trialScope.kind !== 'step') return trialEditScope;
     const chosen = change.kind === 'task' ? documentScopes.task?.lit
       : change.kind === 'objective' || change.kind === 'expression' ? documentScopes.objective?.lit : undefined;
@@ -506,7 +514,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     editable: documentEditable,
     detachRefused: data?.window_map?.detach_refused,
     selectable: new Set<DocumentRole>([
-      ...!trialEditable ? [] : step?.kind === 'train' ? ['model', 'task', 'objective', 'training'] as const : ['task'] as const,
+      ...!trialEditable ? [] : step?.kind === 'train' ? ['model', 'task', 'objective', 'training'] as const : ['model', 'task'] as const,
       ...documentEditable && wholeStep ? ['analysis', 'report'] as const : [],
     ]),
     onError: setCommandError,

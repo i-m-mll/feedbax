@@ -215,8 +215,8 @@ test('an Evaluate attachment for the step is stored in a document based on the s
   const { result } = await added.json() as { result: { created: string[] } };
   const [variant] = result.created;
   expect(variant).toBeDefined();
-  await model.locator('[data-id="wrapper"] header').dblclick();
-  await model.locator('[data-id="controller"] header').dblclick();
+  // The view keeps its path in the document the edit made.
+  await expect(model.getByRole('navigation', { name: 'Model Path' }).getByText('› Controller')).toBeVisible();
   await model.getByRole('button', { name: 'Attachment Scale', exact: true }).click();
   await expect(inspector.getByRole('textbox', { name: 'Factor', exact: true })).toHaveValue('1');
   const [changed] = await Promise.all([edited(), enter(inspector.getByRole('textbox', { name: 'Factor', exact: true }), '0.5')]);

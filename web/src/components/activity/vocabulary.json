@@ -315,6 +315,8 @@
     "new": "New",
     "duplicate": "Duplicate",
     "detach": "Detach",
+    "reset": "Reset",
+    "changed": "Changed",
     "variables": "Variables",
     "signals": "Signals",
     "perTrial": "Per Trial",

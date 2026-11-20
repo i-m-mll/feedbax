@@ -492,14 +492,18 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
     if step.kind == "evaluate":
         whole = isinstance(scope, StudioTrialStepScope)
         if isinstance(change, StudioTrialSelectDocument):
-            if change.role != "task":
-                raise ProjectFolderInvalid("An Evaluate reads its Model and Objective from its subject.")
-            _chosen_task(project, change.document)
+            role = change.role
+            if role == "task":
+                _chosen_task(project, change.document)
+            elif role == "model" and whole:
+                _chosen_document(project, change.document, role)
+            else:
+                raise ProjectFolderInvalid("An Evaluate reads its Objective and Training from its subject.")
             reference = {"document": change.document}
             stored = scoped_file(project, key.step, scope, [
-                _override("trial_documents.task", "replace" if "task" in slots else "add", reference)
+                _override(f"trial_documents.{role}", "replace" if role in slots else "add", reference)
                 if isinstance(slots := (authored_payload(project, key.step) or {}).get("trial_documents"), dict)
-                else _override("trial_documents", "add", {"task": reference}),
+                else _override("trial_documents", "add", {role: reference}),
             ] if whole else _task_selection_writes(definition, reference), chosen=chosen, users=readers)
         elif evaluate_field and whole:
             stored = _evaluate_task_write(project, plan, key, scope, change)
@@ -678,7 +682,7 @@ def _validate_files(
             definition = candidate.selected_definitions[key]
             field = _task_field(new.task_source) if change.role == "task" else change.role
             path = ("payload.settings" if change.role == "training"
-                    else f"payload.trial_documents.{field}" if step.kind == "train"
+                    else f"payload.trial_documents.{field}" if step.kind == "train" or change.role == "model"
                     else _evaluation_task_path(definition))
             if definition.document_ids.get(path) != change.document:
                 raise ProjectFolderInvalid(f"A selected {change.role} is controlled by a different authored source.")

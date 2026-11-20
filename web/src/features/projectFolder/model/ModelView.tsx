@@ -6,7 +6,8 @@ import { fetchComponents } from '@/api/components';
 import { editEvaluateAttachment, projectModelFields, readEvaluateAttachments, readModelProjection, reviewModelConnections } from '@/api/projectFolders';
 import { ApiRequestError, apiErrorMessage } from '@/api/request';
 import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
-import { studioAccessibleName, studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioEvaluateValueSource, studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
+import { baseChain } from '../documentPayload';
 import { Box, Crosshair, House, Search, TriangleAlert, X } from 'lucide-react';
 import clsx from 'clsx';
 import { Button, IconButton } from '@/components/ui/Button';
@@ -64,7 +65,8 @@ type Props = {
   problems?: readonly { address: ModelAddress; reason: string }[];
   projectionRun?: StudioSavedTrainKey;
   path: readonly string[];
-  setPath(path: string[]): void;
+  /** Sets the path shown in `document`, the shown Model when absent. */
+  setPath(path: string[], document?: string): void;
   sections: DrawerSections;
   /** Opens Problems showing only those inside the element. */
   openProblems?: (element: ModelAddress, opener: HTMLElement) => void;
@@ -271,6 +273,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           const applied = await editor.editModel('Set Value', fieldBody.document, result.command, current, fieldBody.run && {
             step: fieldBody.run.step, chosen_steps: [...chosenSteps], files: result.files ?? [],
           });
+          follow(applied);
           return applied.status === 'refused' ? applied.problem.detail : undefined;
         }
         if (result.files?.length && await confirmRunRemoval(sweepValueRuns(result.removed_values))) {
@@ -292,11 +295,17 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     });
   }
   const fieldName = (address: ModelAddress) => address.element.kind === 'field' ? address.element.path.map(String).join('.') : addressKey(address);
+  const shownChain = model ? baseChain(saved.project.documents, model.id) : [];
+  const changedText = evaluate ? studioEvaluateValueSource({ kind: 'evaluate', step: evaluate.run.step }) : studioName('changed');
   const projectedLists = fieldBodies.map((fieldBody, index) => (fieldsData?.[index]?.fields ?? []).map((field) => {
     const model = fromFieldView(field, {
       id: addressKey(field.address),
-      planSources: field.sources?.filter((source) => !(source.kind === 'document' && source.name === fieldBody.document)),
+      planSources: field.sources?.filter((source) => !(source.kind === 'document' && shownChain.includes(source.name))),
       exceptions,
+      changed: field.changed ? {
+        text: changedText,
+        reset: canEditField && !fieldsPlaceholder ? () => editField(fieldBody, field.address, { kind: 'reset' }) : undefined,
+      } : undefined,
       source: attachments.data?.field_sources?.[addressKey(field.address)] ??
         attachments.data?.field_sources?.[addressKey(fieldBody.owner)] ??
         attachments.data?.source ?? undefined,
@@ -399,11 +408,12 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         try {
           const result = await editor.editModel(name, model.id, { operation }, reviewed, scope);
           if (result.status === 'refused') return { address: result.problem.address, reason: result.problem.detail };
+          const shown = follow(result);
           if (result.clipboard) clipboard = result.clipboard;
           if (choose && result.changed.length) {
             const selection = operation.op === 'delete' || operation.op === 'cut' || operation.op === 'ungroup' ? []
               : operation.op === 'group' ? result.changed.slice(-1) : result.changed;
-            setSelection(selection);
+            setSelection(selection, shown);
           }
           return null;
         } catch (error) {
@@ -427,12 +437,14 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         setIssue(undefined);
         try {
           let changed: ModelAddress;
+          let shown = model.id;
           if (readBody.scope.kind === 'step') {
             const { chosenSteps } = await plan.next(({ revision }) => revision === editor.getSnapshot().saved.revision);
             const applied = await editor.editModel(name, model.id, {
               operation: difference.op === 'set_field' ? difference : { op: 'set_attachment', difference },
             }, editor.getSnapshot().saved, { step: readBody.run.step, chosen_steps: [...chosenSteps] });
             if (applied.status === 'refused') throw new Error(applied.problem.detail);
+            shown = follow(applied) ?? shown;
             const [first] = applied.changed;
             if (!first) throw new Error('The edit changed nothing.');
             changed = first;
@@ -447,7 +459,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
             changed = result.changed;
           }
           if (difference.op !== 'set_field') {
-            selectElement(state, { document: model.id, address: difference.op === 'remove' ? at(changed, { kind: 'graph' }) : changed });
+            selectElement(state, { document: shown, address: difference.op === 'remove' ? at(changed, { kind: 'graph' }) : changed });
           }
           return undefined;
         } catch (error) {
@@ -466,8 +478,26 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     setLibraryItem(undefined);
     if (model) selectElement(state, { document: model.id, address }, extend);
   }
-  function setSelection(addresses: readonly ModelAddress[]) {
-    if (model) state.setState({ selection: addresses.map((address) => ({ document: model.id, address })) });
+  function setSelection(addresses: readonly ModelAddress[], document = model?.id) {
+    if (document) state.setState({ selection: addresses.map((address) => ({ document, address })) });
+  }
+  /**
+   * After an edit that made a document based on the shown one for the shown step, the view stays where it was in it.
+   * Answers the document the view now shows.
+   */
+  function follow(applied: { status: string; created?: readonly string[]; snapshot?: { project: { documents?: Record<string, unknown> | null } } }) {
+    if (!model || applied.status !== 'applied') return model?.id;
+    const documents = applied.snapshot?.project.documents;
+    const next = applied.created?.find((name) => {
+      const document = documents?.[name];
+      return !!document && typeof document === 'object' && 'base' in document &&
+        (document as { base: { document: string } }).base.document === model.id;
+    });
+    if (!next) return model.id;
+    const from = model.id;
+    state.setState(({ selection }) => ({ selection: selection.map((item) => item.document === from ? { ...item, document: next } : item) }));
+    setPath(currentPath, next);
+    return next;
   }
   function clear() {
     if (pick) state.setState({ pick: null });

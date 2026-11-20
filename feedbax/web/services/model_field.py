@@ -17,20 +17,23 @@ from feedbax.contracts.model_edit import (
     ModelEditCommand, SetField,
 )
 from feedbax.contracts.manifest import OverridePatch
-from feedbax.contracts.project import InlineBase, SetProjectValue, base_chain
+from feedbax.contracts.project import BasedDocument, InlineBase, SetProjectValue, base_chain
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.jobs import StudioPlanReviewSource
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_sweep import _paths_overlap, authored_row
-from feedbax.contracts.studio_field import ModelFieldRequest, ModelFieldResponse, ModelFieldView
+from feedbax.contracts.studio_field import (
+    FieldResetEdit, FieldTextEdit, ModelFieldRequest, ModelFieldResponse, ModelFieldView,
+)
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
 from feedbax.expression_registry import FunctionRegistry
+from feedbax.expression_text import print_field
 from feedbax.studio.authoring_sweeps import SweepTarget, FieldSweeps
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
 from feedbax.studio.selection import merged_files
 from feedbax.web.services.evaluate_attachment import (
-    EvaluateAttachmentRefused, prepare_evaluate_attachment, read_evaluate_attachments,
+    EvaluateAttachmentRefused, evaluate_reading, prepare_evaluate_attachment,
 )
 from feedbax.web.services.model_projection import selected_model
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
@@ -204,6 +207,22 @@ def _kept_writes(
     return files, next((SetField(op="set_field", address=address, value=write.value) for address, write in fields), None)
 
 
+def _reset_text(
+    project, restored: str | None, owner: ModelAddress, address: ModelAddress, components: ComponentRegistry,
+) -> str | Problem:
+    """The text of the field at ``address`` in ``restored``, the document a Reset gives the field its value from."""
+    document = compose_document(project.documents.get, restored) if restored is not None else None
+    if document is None or isinstance(document, ProjectDiagnostic):
+        return Problem(code=ProblemCode.STRUCTURE, reason="This value is not changed from another document.")
+    field = next((
+        item for item in _fields(ModelDocument.model_validate(document.payload), owner, components)
+        if item.address == address
+    ), None)
+    if field is None:
+        return Problem(code=ProblemCode.STRUCTURE, reason=f"{restored} has no value here.")
+    return print_field(field.numeric.literal(field.numeric.value), field.numeric.site)
+
+
 def model_fields(
     folders: ProjectFolderService, project_id: str, body: ModelFieldRequest,
     components: ComponentRegistry, functions: FunctionRegistry,
@@ -217,6 +236,8 @@ def model_fields(
         raise ProjectFolderInvalid("The Model document does not exist.")
     model = ModelDocument.model_validate(document.payload)
     step = selected = plan = effective_model = None
+    shown = project.documents.get(body.document)
+    changes, restored = (shown.differences, shown.base.document) if isinstance(shown, BasedDocument) else ({}, None)
     definitions = ()
     evaluate = None
     variant = None
@@ -224,9 +245,11 @@ def model_fields(
         evaluate = EvaluateAttachmentReadRequest(revision=body.revision, run=body.run, scope=body.evaluate_scope)
         key = RunKey(body.run.variant, body.run.step, body.run.row)
         plan = folders.read_plan(project_id, revision=body.revision, source_runs=(key,)).plan
-        effective_model = read_evaluate_attachments(
+        reading = evaluate_reading(
             folders, project_id, evaluate, components, selected=plan, model_document=body.document,
-        ).resolved_model
+        )
+        effective_model = reading.state.resolved_model
+        changes, restored = reading.differences, reading.shared
         candidate = project.steps[key.step]
         if (isinstance(evaluate.scope, EvaluateAttachmentStep) and plan.variants[:1] == (key.variant,)
                 and isinstance(candidate.base, InlineBase) and not candidate.deltas):
@@ -267,6 +290,7 @@ def model_fields(
                 # The addressed sweep can set fields inherited from registry defaults.
                 numeric = replace(numeric, stored=True)
         relative = pointer(field.address.stored_path())
+        changed = any(relative == path or relative.startswith(path + "/") for path in changes)
         sources = dict.fromkeys(source for definition in definitions
                                 if (source := definition.sources.get(f"/payload/trial_documents/model{relative}")) is not None)
         fields.append(project_numeric_field(
@@ -274,6 +298,7 @@ def model_fields(
             period=(effective_model or model).step_seconds, scoped=bool(body.rows or body.axes),
             address=field.address,
             sources=[StudioPlanReviewSource.model_validate(source, from_attributes=True) for source in sources],
+            changed=changed,
         ))
         targets[field_key] = replace(field, numeric=numeric), axis
     if body.edit is None:
@@ -300,8 +325,14 @@ def model_fields(
             for source in field_view.sources
         ):
             raise ProjectFolderInvalid("A selected row already writes this field through a sweep value.")
+    edit = body.edit
+    if isinstance(edit, FieldResetEdit):
+        reset = _reset_text(project, restored, body.owner, field.address, components)
+        if isinstance(reset, Problem):
+            return ModelFieldResponse(problems=[reset])
+        edit = FieldTextEdit(kind="text", text=reset)
     prepared = prepare_numeric_field(
-        field.numeric, axis, body.edit, functions, period=(effective_model or model).step_seconds,
+        field.numeric, axis, edit, functions, period=(effective_model or model).step_seconds,
         scoped=scope is not None,
     )
     result = prepared.result

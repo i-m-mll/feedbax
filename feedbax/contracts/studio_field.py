@@ -35,13 +35,21 @@ class FieldNameEdit(StrictModel):
     label: str | None
 
 
+class FieldResetEdit(StrictModel):
+    """Give the field the value it has in the document the shown one changes it from."""
+
+    kind: Literal["reset"]
+
+
 class ModelFieldRequest(StudioRunSelection):
     revision: Sha256
     document: ProjectName
     owner: ModelAddress
     evaluate_scope: EvaluateAttachmentScope | None = None
     address: ModelAddress | None = None
-    edit: Annotated[FieldTextEdit | FieldKindEdit | FieldNameEdit, Field(discriminator="kind")] | None = None
+    edit: Annotated[
+        FieldTextEdit | FieldKindEdit | FieldNameEdit | FieldResetEdit, Field(discriminator="kind"),
+    ] | None = None
 
 
 class StudioSweepValue(StrictModel):
@@ -87,6 +95,9 @@ class StudioFieldView(StrictModel):
     can_sweep: bool = False
     can_change_axis: bool = False
     members: list[StudioSweepValue] = Field(default_factory=list)
+    changed: bool = False
+    """The value is set by a difference of the shown document: from its base, or in an evaluation's Model from the
+    nearest document it shares with the subject's."""
 
 
 class ModelFieldView(StudioFieldView):
@@ -101,7 +112,9 @@ class TrainFieldView(StudioFieldView):
 class TrainFieldRequest(StudioRunSelection):
     revision: Sha256
     field: str | None = None
-    edit: Annotated[FieldTextEdit | FieldKindEdit | FieldNameEdit, Field(discriminator="kind")] | None = None
+    edit: Annotated[
+        FieldTextEdit | FieldKindEdit | FieldNameEdit | FieldResetEdit, Field(discriminator="kind"),
+    ] | None = None
 
 
 class TrainFieldResponse(StrictModel):

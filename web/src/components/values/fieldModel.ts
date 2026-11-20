@@ -22,7 +22,7 @@ export interface FieldOption {
  * a member by a class's option value and removes one by its id.
  */
 export type FieldEdit = FieldTextEdit | FieldKindEdit | FieldNameEdit | StudioAddClassMember | StudioRemoveClassMember |
-  { readonly kind: 'set'; readonly value: JsonValue };
+  { readonly kind: 'set'; readonly value: JsonValue } | { readonly kind: 'reset' };
 export type FieldCommit = (edit: FieldEdit) => Promise<string | undefined>;
 
 export interface FieldKindOffer {
@@ -71,6 +71,8 @@ export interface FieldModel {
   /** The value set on the selected runs, where it differs from the document's. */
   readonly differs?: string;
   readonly origin?: string;
+  /** The value is a difference of the shown document: its origin is the changed mark, and offers Reset. */
+  readonly changed?: boolean;
   /** Shows the object the origin names, where it names one. */
   readonly revealOrigin?: () => void;
   readonly reason?: string;
