@@ -114,7 +114,8 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
     Boolean(response.request().postDataJSON()?.wire));
   await pick(role('Velocity'), 'states');
   expect((await refusal).status()).toBe(422);
-  await expect(analysis.getByRole('alert')).toContainText('Requires dataset schemas');
+  // The refusal lands on the role field it was made in.
+  await expect(inspector.getByRole('alert')).toHaveText(/Requires dataset schemas/);
   expect((await snapshot()).revision).toBe(beforeRefusal.revision);
   await edit(() => pick(role('Velocity'), 'aligned_velocity.velocity'));
 

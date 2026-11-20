@@ -1,7 +1,6 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { ChartLine, Database, Sigma } from 'lucide-react';
 import { useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { apiErrorMessage } from '@/api/request';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import { readStudioAnalyze } from '@/api/studioAnalyze';
 import { studioAccessibleName, studioChangeDetail, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
@@ -36,6 +35,7 @@ import { placeElement, type Reveal } from './projectWindowProblems';
 import { MentionRow, ProblemRow } from '@/features/projectWindow/StudioProblems';
 import { SavedFigureResult } from './SavedLightProducts';
 import { generatedName } from './generatedName';
+import type { GestureFailures } from './refusals';
 
 type Source = OperationElement['inputs'][string];
 
@@ -43,9 +43,11 @@ const operationDragType = 'application/x-feedbax-operation';
 const figureItem = 'velocity_summary';
 
 export function useManagedAnalyze({
-  editor, key, projection, wholeStep, focusedView, reveal, savePosition, selection, sections, steps,
+  editor, key, projection, wholeStep, focusedView, reveal, savePosition, selection, sections, steps, failures,
 }: {
   editor: ProjectEditController;
+  /** Where the step's refused gestures land. */
+  failures: GestureFailures;
   selection: ElementSelectionStore;
   sections: DrawerSections;
   /** The project's steps, whose outputs the step's input roles can be bound to. */
@@ -72,7 +74,8 @@ export function useManagedAnalyze({
   const [dialog, setDialog] = useState<{ scope: string; mode: 'add'; point?: PresentationPosition }>();
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<{ scope: string; message: string }>();
+  /** The refused gesture's own place, when it has one: the open dialog, or a role field as `[element, role]`. */
+  const [refusal, setRefusal] = useState<{ scope: string; at: 'dialog' | readonly [string, string]; reason: string }>();
   const inFlight = useRef(false);
   const cursor = useRef<{ scope: string; point: PresentationPosition }>();
   const shape = step?.kind === 'analyze' ? JSON.stringify([
@@ -121,25 +124,25 @@ export function useManagedAnalyze({
     problem.variant === key?.variant && problem.step === key?.step && problem.row === key?.row);
   const planned = new Map(projection?.window_map?.analysis_elements?.filter(({ key }) => savedRunId(key) === id)
     .map((item) => [item.name, item]));
-  const issue = error?.scope === scope ? error.message : undefined;
   const catalogState: StudioRegionState = authoring.error
     ? { kind: 'failed', issue: studioRegionIssue('operations', authoring.error), retry: () => { void authoring.refetch(); } }
     : authoring.isLoading ? { kind: 'loading' } : { kind: 'result', missing: [] };
 
   function open(mode: 'add', point?: PresentationPosition) {
     if (!canEdit) return;
-    setError(undefined);
+    setRefusal(undefined);
     setQuery('');
     setDialog({ scope, mode, point });
   }
 
-  async function perform(work: () => Promise<void>, allowed = canEdit) {
+  async function perform(work: () => Promise<void>, allowed = canEdit, at?: 'dialog' | readonly [string, string]) {
     if (!allowed || inFlight.current) return;
     inFlight.current = true;
     setBusy(true);
-    setError(undefined);
+    failures.clear();
+    setRefusal(undefined);
     try { await work(); }
-    catch (cause) { setError({ scope, message: apiErrorMessage(cause) }); }
+    catch (cause) { failures.fail(cause, at && ((reason) => setRefusal({ scope, at, reason }))); }
     finally {
       inFlight.current = false;
       setBusy(false);
@@ -177,7 +180,7 @@ export function useManagedAnalyze({
         element.onSelect(name);
       }
       if (point) await savePosition(document!, name, point);
-    });
+    }, canEdit, opened ? 'dialog' : undefined);
   }
   const addFigure = (point?: PresentationPosition) => {
     if (catalog) add('views', figureItem, { figure: catalog.figure, inputs: {} }, point);
@@ -197,7 +200,7 @@ export function useManagedAnalyze({
       });
       if (review.document !== document || review.files?.length !== 1) throw new ProjectEditConflictError();
       await save(humanizeLabel(role), review.files);
-    });
+    }, canEdit, [element, role]);
   }
   function bind(role: string, binding: InputBinding) {
     if (!key) return;
@@ -209,7 +212,7 @@ export function useManagedAnalyze({
         op: step?.inputs && role in step.inputs ? 'replace' : 'add', path: authoredPointer(['inputs', role]), value: binding as JsonValue,
       }] }], { reviewedRevision: saved.revision });
       await editor.flush();
-    }, canBind);
+    }, canBind, [role, role]);
   }
 
   const problemOf = (name: string) => diagnostics.find((item) => placeElement(item.place) === name)?.detail;
@@ -227,6 +230,9 @@ export function useManagedAnalyze({
       const label = product === role ? role : product + ' → ' + role;
       return { id: JSON.stringify([target, role]), source: from, target, label: label === from ? undefined : label };
     }));
+  const shown = refusal?.scope === scope ? refusal : undefined;
+  const roleRefusal = (element: string, role: string) =>
+    shown && shown.at !== 'dialog' && shown.at[0] === element && shown.at[1] === role ? shown.reason : undefined;
   const selectedProblems = diagnostics.filter((item) => selected && placeElement(item.place) === selected);
   const selectedPlan = selected ? planned.get(selected) : undefined;
   function writeParameter(path: readonly string[], value: JsonValue) {
@@ -240,10 +246,11 @@ export function useManagedAnalyze({
   const inspector = selected && (operation || figure || selectedInput) && <Inspector name={selected}
     type={operation ? operation.operation : figure ? studioName('figures') : humanizeLabel(selectedInput!.kind ?? 'dataset')}>
     {selected && selectedInput && <AnalyzeRoleBinding role={selected} kind={selectedInput.kind} binding={step?.inputs?.[selected]}
-      project={saved.project} steps={steps} picking={selection} onBind={canBind ? (binding) => bind(selected, binding) : undefined} />}
+      project={saved.project} steps={steps} picking={selection} refusal={roleRefusal(selected, selected)}
+      onBind={canBind ? (binding) => bind(selected, binding) : undefined} />}
     {selected && document && (operation ?? figure) && <AnalyzeElementInputs document={document} element={selected} roles={roles}
       inputs={(operation ?? figure)!.inputs} declarations={declarations} outputs={outputs} picking={selection}
-      onWire={canEdit ? (role, source) => wire(selected, role, source) : undefined} />}
+      refusal={(role) => roleRefusal(selected, role)} onWire={canEdit ? (role, source) => wire(selected, role, source) : undefined} />}
     {selectedProblems.map((problem) => <ProblemRow key={problem.path + problem.detail} problem={problem} />)}
     {selectedPlan && <p role="status">{studioRunStatus(selectedPlan.status)}
       {selectedPlan.reason && <span className="block text-shell-muted">{selectedPlan.reason}</span>}
@@ -312,11 +319,10 @@ export function useManagedAnalyze({
       {result && <span>{studioRunStatus(result.status)}</span>}
     </li>;
   })}</ul>;
-  const alert = !opened && issue && <p className="p-2" role="alert">{issue}</p>;
   return {
     selectedFigure: figure ? selected : undefined,
     analysis: {
-      body: <CanvasStrip viewport={viewport}>{alert}<div className="min-h-0 flex-1">
+      body: <CanvasStrip viewport={viewport}><div className="min-h-0 flex-1">
         <ManagedDocumentCanvas key={scope} selectedId={element.selectedId} onSelect={selectElement} items={items} connections={connections} viewportRef={canvas}
           positions={document ? saved.presentation?.documents?.[document]?.positions : undefined} pick={canvasPick}
           openAt={canEdit ? (point) => open('add', point) : undefined} placing={!!opened?.point}
@@ -325,7 +331,7 @@ export function useManagedAnalyze({
       </div></CanvasStrip>,
       drawer, inspector: libraryInspector || inspector,
     },
-    figures: { body: <>{alert}{figureList}
+    figures: { body: <>{figureList}
       {figure && selected && selectedPlan && <SavedFigureResult key={JSON.stringify([scope, selected])}
         history={selectedPlan} name={selected} />}
     </>, drawer, inspector: libraryInspector || (figure ? inspector : undefined) },
@@ -333,7 +339,7 @@ export function useManagedAnalyze({
       : document && focusedView === 'figures' ? [addCommand] : [],
     overlay: opened && <Dialog ariaLabel={studioName('addOperation')}
       manageFocus panelClassName="grid w-[min(26rem,90vw)] gap-3" onClose={() => setDialog(undefined)}>
-      {issue && <p role="alert">{issue}</p>}
+      {shown?.at === 'dialog' && <p role="alert">{shown.reason}</p>}
       <TextField data-dialog-autofocus aria-label={studioName('operations')} value={query} onValueChange={setQuery} />
       {catalog?.operations.filter(({ label }) => label.toLowerCase().includes(query.toLowerCase()))
         .map((entry) => <Button key={entry.key} variant="ghost" align="start" disabled={!canEdit}

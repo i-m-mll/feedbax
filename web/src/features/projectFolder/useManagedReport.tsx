@@ -1,5 +1,4 @@
 import { useState, type FormEvent } from 'react';
-import { apiErrorMessage } from '@/api/request';
 import { studioChangeDetail, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
 import { MentionRow, ProblemRow } from '@/features/projectWindow/StudioProblems';
 import { Button } from '@/components/ui/Button';
@@ -16,6 +15,7 @@ import { isReportFigureSource, reportFigureRole, type ReportFigureSource } from 
 import type { ProjectEditController, ProjectEditSnapshot } from './projectEditController';
 import { savedRunId } from './projectWindowPlan';
 import { SavedReportResult } from './SavedLightProducts';
+import type { GestureFailures } from './refusals';
 
 type Block = ReportDocument['blocks'][number];
 type BlockAction = Extract<StudioCommandId, 'moveEarlier' | 'moveLater' | 'remove'>;
@@ -29,10 +29,15 @@ function figureAddress({ key, name, figure }: ReportFigureSource) {
   return JSON.stringify([key.variant, key.step, key.row, name, figure.product]);
 }
 
+/** Where a refusal lands: a field, a block by index, or the open dialog. */
+type Place = 'title' | 'completeness' | `block:${number}` | 'dialog';
+
 export function useManagedReport({
-  editor, snapshot, plan, projection, variant, stepId, run, wholeStep, focused,
+  editor, snapshot, plan, projection, variant, stepId, run, wholeStep, focused, failures,
 }: {
   editor: ProjectEditController;
+  /** Where the step's refused gestures land. */
+  failures: GestureFailures;
   snapshot: ProjectEditSnapshot;
   plan: PlanView;
   projection?: StudioSavedTrainRuns;
@@ -57,7 +62,8 @@ export function useManagedReport({
   const [dialog, setDialog] = useState<{ scope: string; revision: string; kind: 'text' | 'figure' }>();
   const [figureChoice, setFigureChoice] = useState<string | null>(null);
   const [selection, setSelection] = useState<{ scope: string; index: number }>();
-  const [error, setError] = useState<{ scope: string; message: string }>();
+  /** A refused gesture's reason, on the field, block or open dialog it was made in. */
+  const [refusal, setRefusal] = useState<{ scope: string; at: Place; reason: string }>();
   const shared = document && (plan.steps.some(({ id, documentUses }) => id !== stepId && documentUses?.includes(document))
     || Object.entries(draft.steps ?? {}).some(([id, { base }]) => id !== stepId && 'document' in base && base.document === document));
   const direct = !step?.sweep && !step?.deltas?.length && !Object.keys(step?.document_overrides ?? {}).length;
@@ -69,30 +75,37 @@ export function useManagedReport({
   const opened = dialog?.scope === scope && dialog.revision === saved.revision && focused ? dialog.kind : undefined;
   const selected = selection?.scope === scope ? selection.index : undefined;
 
-  function save(name: string, patches: StudioProjectFilePatch['patches'], nextInputs?: typeof inputs) {
+  function save(name: string, at: Place, patches: StudioProjectFilePatch['patches'], nextInputs?: typeof inputs) {
     if (!editable || !stepId || !document) return false;
+    const land = (reason: string) => setRefusal({ scope, at, reason });
+    failures.clear();
+    setRefusal(undefined);
     try {
       const files: StudioProjectFilePatch[] = [{ address: { kind: 'document', id: document }, patches }];
       if (nextInputs) files.push({ address: { kind: 'step', id: stepId }, patches: [
         ProjectValueEditSchema.parse({ op: step?.inputs ? 'replace' : 'add', path: '/inputs', value: nextInputs }),
       ] });
-      editor.editFiles(name, files, { reviewedRevision: saved.revision });
-      setError(undefined);
+      void editor.editFiles(name, files, { reviewedRevision: saved.revision }).then((settled) => {
+        // The dialog has closed by the time the save settles, so its refusal goes to the step.
+        if (settled.status === 'refused') failures.fail(settled.error, at === 'dialog' ? undefined : land);
+      });
       return true;
     } catch (cause) {
-      setError({ scope, message: apiErrorMessage(cause) });
+      failures.fail(cause, land);
       return false;
     }
   }
 
-  function setBlocks(name: string, blocks: Block[], nextInputs?: typeof inputs) {
-    return save(name, [{ op: 'replace', path: '/payload/blocks', value: blocks }], nextInputs);
+  function setBlocks(name: string, at: Place, blocks: Block[], nextInputs?: typeof inputs) {
+    return save(name, at, [{ op: 'replace', path: '/payload/blocks', value: blocks }], nextInputs);
   }
+  const refusalAt = (at: Place) => refusal?.scope === scope && refusal.at === at
+    ? <p role="alert">{refusal.reason}</p> : null;
 
   function changeBlock(index: number, block: Block) {
     const previous = report?.blocks[index];
     if (!previous) return;
-    save('markdown' in block ? studioName('text') : studioName('caption'), [{
+    save('markdown' in block ? studioName('text') : studioName('caption'), `block:${index}`, [{
       op: 'replace', path: '/payload/blocks/' + index, value: block,
     }]);
   }
@@ -105,7 +118,7 @@ export function useManagedReport({
       if (id !== 'remove') {
         const reordered = blocks.slice();
         [reordered[index], reordered[target]] = [reordered[target], reordered[index]];
-        if (setBlocks(studioName(id), reordered)) setSelection({ scope, index: target });
+        if (setBlocks(studioName(id), `block:${index}`, reordered)) setSelection({ scope, index: target });
         return;
       }
       const remaining = blocks.filter((_, position) => position !== index);
@@ -115,7 +128,7 @@ export function useManagedReport({
         nextInputs = { ...inputs };
         delete nextInputs[block.figure];
       }
-      if (setBlocks(studioName(id), remaining, nextInputs)) {
+      if (setBlocks(studioName(id), `block:${index}`, remaining, nextInputs)) {
         setSelection(remaining.length ? { scope, index: Math.min(index, remaining.length - 1) } : undefined);
       }
     }, {
@@ -125,9 +138,13 @@ export function useManagedReport({
   }
 
   const blockActions = ['moveEarlier', 'moveLater', 'remove'] as const;
-  const addText = bindStudioCommand('addText', () => setDialog({ scope, revision: saved.revision, kind: 'text' }), { enabled: editable });
+  const addText = bindStudioCommand('addText', () => {
+    setRefusal(undefined);
+    setDialog({ scope, revision: saved.revision, kind: 'text' });
+  }, { enabled: editable });
   const addFigure = bindStudioCommand('addFigure', () => {
     setFigureChoice(null);
+    setRefusal(undefined);
     setDialog({ scope, revision: saved.revision, kind: 'figure' });
   }, {
     enabled: editable && figures.length > 0,
@@ -144,7 +161,7 @@ export function useManagedReport({
     if (typeof value !== 'string' || !value.trim()) return;
     let accepted: boolean;
     if (opened === 'text') {
-      accepted = setBlocks(addText.label, [...report.blocks, { markdown: value }]);
+      accepted = setBlocks(addText.label, 'dialog', [...report.blocks, { markdown: value }]);
     } else {
       const source = figures.find((figure) => figureAddress(figure) === value);
       if (!source) return;
@@ -160,7 +177,7 @@ export function useManagedReport({
       if (!existing) {
         for (let suffix = 2; Object.prototype.hasOwnProperty.call(inputs, role); suffix += 1) role = prefix + '-' + suffix;
       }
-      accepted = setBlocks(addFigure.label, [...report.blocks, { figure: role }], existing ? undefined : {
+      accepted = setBlocks(addFigure.label, 'dialog', [...report.blocks, { figure: role }], existing ? undefined : {
         ...inputs, [role]: source.figure,
       });
     }
@@ -175,9 +192,7 @@ export function useManagedReport({
       disabled={!command.enabled} onClick={command.invoke}>{studioName(command.name)}</Button>;
   }
 
-  const issue = error?.scope === scope ? <p role="alert">{error.message}</p> : null;
   const body = report && <div className="mx-auto grid w-full max-w-3xl gap-4 p-4">
-    {!opened && issue}
     {planned && <p role="status">{studioRunStatus(planned.status)}
       {planned.reason && <span className="block text-shell-muted">{planned.reason}</span>}
     </p>}
@@ -192,9 +207,10 @@ export function useManagedReport({
           onBlur={({ currentTarget }) => {
             const title = currentTarget.value.trim() || report.title;
             currentTarget.value = title;
-            if (title !== report.title) save(studioName('reportTitle'), [{ op: 'replace', path: '/payload/title', value: title }]);
+            if (title !== report.title) save(studioName('reportTitle'), 'title', [{ op: 'replace', path: '/payload/title', value: title }]);
           }}
           onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} />
+        {refusalAt('title')}
       </label>
       <label className="grid gap-1">{studioName('completeness')}
         <Select aria-label={studioName('completeness')} disabled={!editable} value={report.completeness ?? 'complete'}
@@ -202,9 +218,10 @@ export function useManagedReport({
             { value: 'complete', label: studioName('complete') },
             { value: 'allow_omissions', label: studioName('allowOmissions') },
           ]}
-          onValueChange={(value) => save(studioName('completeness'), [{
+          onValueChange={(value) => save(studioName('completeness'), 'completeness', [{
             op: report.completeness === undefined ? 'add' : 'replace', path: '/payload/completeness', value,
           }])} />
+        {refusalAt('completeness')}
       </label>
     </div>
     <ol className="grid gap-3" key={scope}>
@@ -232,6 +249,7 @@ export function useManagedReport({
                 onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} />
             </label>
           </>}
+          {refusalAt(`block:${index}`)}
           <div className="flex flex-wrap gap-2">{blockActions.map((id) => action(blockCommand(id, index)))}</div>
         </li>;
       })}
@@ -240,7 +258,7 @@ export function useManagedReport({
   </div>;
   const overlay = opened && <Dialog ariaLabel={opened === 'text' ? addText.label : addFigure.label}
     manageFocus panelClassName="grid w-[min(28rem,90vw)] gap-3" onClose={() => setDialog(undefined)}>
-    {issue}
+    {refusalAt('dialog')}
     <form className="grid gap-2" onSubmit={addBlock}>
       {opened === 'text' ? <label className="grid gap-1">{studioName('text')}
         <TextArea name="block" required data-dialog-autofocus />

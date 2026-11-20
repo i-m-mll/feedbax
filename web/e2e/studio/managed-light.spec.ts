@@ -231,7 +231,8 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   await expect(page.getByRole('option', { name: 'states', exact: true })).toHaveAttribute('data-highlighted');
   await page.keyboard.press('Enter');
   expect((await refusal).status()).toBe(422);
-  await expect(analysis.getByRole('alert')).toContainText('Requires dataset schemas');
+  // The refusal lands on the role field it was made in.
+  await expect(inspector.getByRole('alert')).toHaveText(/Requires dataset schemas/);
   expect((await snapshot()).revision).toBe(beforeRefusal.revision);
   await edit(() => chooseOption(page, roleField('Velocity'), 'aligned_velocity.velocity'));
 

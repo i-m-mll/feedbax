@@ -23,6 +23,7 @@ import {
   studioAccessibleName,
   studioCountOf,
   studioName,
+  studioRunReason,
   studioRunStatus,
   studioStep,
   type StudioResultState,
@@ -202,24 +203,27 @@ function stepSelection(selection: PipelineSelection | null, stepId: string) {
   return selection.stepId === stepId ? selection : null;
 }
 
-function StatusCounts({ id, counts, onProblems }: {
+function StatusCounts({ id, counts, refusal, onProblems }: {
   id?: string;
   counts: PlanStepView['statusCounts'];
+  refusal?: string;
   onProblems?: (opener: HTMLButtonElement) => void;
 }) {
   const className = 'inline-flex items-center gap-1 whitespace-nowrap tabular-nums';
   const statuses = Object.entries(counts) as [StudioResultState, number][];
-  if (onProblems && counts.cannot_run === undefined) statuses.push(['cannot_run', 0]);
+  if ((onProblems || refusal) && counts.cannot_run === undefined) statuses.push(['cannot_run', 0]);
   return (
     <span id={id} className="flex flex-wrap gap-x-2 gap-y-1 text-xs text-shell-muted">
       {statuses.map(([status, count]) => {
         const problem = status === 'cannot_run' && onProblems;
-        if (count <= 0 && !problem) return null;
+        const refused = status === 'cannot_run' ? refusal : undefined;
+        if (count <= 0 && !problem && !refused) return null;
         const mark = <><StatusMark status={status} label={studioRunStatus(status)} />{count > 0 && <>{' '}{count}</>}</>;
         return problem
           ? <Button variant="bare" size="content" key={status} className={className} aria-haspopup="dialog"
+            aria-description={refused} {...refused && appTip(studioRunReason({ reason: refused }))}
             onClick={(event) => problem(event.currentTarget)}>{mark}</Button>
-          : <span key={status} className={className}>{mark}</span>;
+          : <span key={status} className={className} aria-description={refused} {...refused && appTip(studioRunReason({ reason: refused }))}>{mark}</span>;
       })}
     </span>
   );
@@ -380,7 +384,7 @@ const StepCard = memo(function StepCard({
       </CardHead>
       {related > 0 && <span id={`${id}-related`} className="sr-only">{studioCountOf(related, step.runs.length)}</span>}
       {compact ? <div className="space-y-2 px-3 pb-2">
-        <StatusCounts id={`${id}-status`} counts={step.statusCounts} onProblems={problem} />
+        <StatusCounts id={`${id}-status`} counts={step.statusCounts} refusal={step.refusal} onProblems={problem} />
         {related > 0 && <span aria-hidden="true" className="block border-t-[1.5px] border-dotted border-shell-foreground"
           style={{ width: `${100 * related / step.runs.length}%` }} />}
       </div> : <>
@@ -524,11 +528,13 @@ interface DrawerProps {
 }
 
 function stepTrailing(step: PlanStepView, applySelection: ApplyMapSelection) {
-  const worst = worstStatus(step.statusCounts);
+  const worst = step.refusal ? { status: 'cannot_run' as const, count: step.statusCounts.cannot_run ?? 0 }
+    : worstStatus(step.statusCounts);
   if (!worst) return undefined;
   const shown = step.runs.length > 1 ? worst.count : undefined;
   return (
     <Button variant="bare" size="content" className="inline-flex items-center gap-1 rounded-sm tabular-nums"
+      aria-description={step.refusal} {...step.refusal && appTip(studioRunReason({ reason: step.refusal }))}
       onClick={(event) => {
         event.stopPropagation();
         const runIds = step.runs.filter(({ state }) => state === worst.status).map(({ id }) => id);
