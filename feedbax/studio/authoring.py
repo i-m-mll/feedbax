@@ -24,7 +24,8 @@ from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, FigureSour
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.matrix_core import apply_override_patches
 from feedbax.contracts.project import (
-    DocumentReference, ExternalBase, InlineBase, Project, RunBase, Step, StepBase, StepKind, json_pointer_parts,
+    BasedDocument, DocumentReference, ExternalBase, InlineBase, Project, RunBase, Step, StepBase, StepKind,
+    json_pointer_parts,
 )
 from feedbax.contracts.project_sweep import Sweep
 from feedbax.contracts.project_inputs import StepReference, SubsetTerms
@@ -66,7 +67,7 @@ from feedbax.plugins.declarations import ResolvedDeclaration
 from feedbax.studio.authoring_sweeps import SelectedValues, SweepTarget, FieldSweeps, sweep_paths
 from feedbax.studio.class_fields import ClassField, edit_class_sweep
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
-from feedbax.studio.selection import TrainSelection, merged_files
+from feedbax.studio.selection import StoredEdit, TrainSelection
 from feedbax.training.methods import RegisteredTrainingMethod, TrainingMethodRegistry
 from feedbax.training.optimizers import OPTIMIZERS, SCHEDULES
 
@@ -234,7 +235,7 @@ class TrainProjection:
     fields: list[StudioAuthoringField]
     settings: dict[str, JsonValue] | None
     mixed: list[str]
-    files: list[StudioProjectFilePatch]
+    stored: StoredEdit
     refusal: StudioSweptParameterMissing | None
     documents: list[str]
     classes: list[StudioClassField]
@@ -770,6 +771,7 @@ def project_train_fields(
     *,
     read_plan: _ReadPlan | None = None,
     class_sweep: StudioClassSweepChange | None = None,
+    reset: str | None = None,
 ) -> TrainProjection:
     """Project the Train step's declared fields and the selected runs' settings, and store one atomic edit for the
     selected runs, or the reason the step's sweep refuses it."""
@@ -779,17 +781,19 @@ def project_train_fields(
     settings = definition.shown.get("settings")
     mixed = _differences([_effective(payload, registry) for payload in payloads]) if payloads else set()
     edit: StudioSweptParameterMissing | None = None
-    files: list[StudioProjectFilePatch] = []
+    stored = StoredEdit([])
     removed: dict[str, list[str]] = {}
     documents: set[str] = set()
-    if change is not None and class_sweep is not None:
-        raise ValueError("An edit is a change or a sweep edit, not both.")
+    if sum(item is not None for item in (change, class_sweep, reset)) > 1:
+        raise ValueError("An edit is a change, a sweep edit or a reset, one at a time.")
     if class_sweep is not None:
         made = _class_sweep_edit(definition, class_sweep, selection)
         if isinstance(made, StudioSweptParameterMissing):
             edit = made
         else:
-            files, removed = merged_files(made.files), made.removed
+            stored, removed = made.stored, made.removed
+    if reset is not None:
+        stored = selection.store(reset_writes(project, step_id, reset))
     if change is not None:
         field = definition.fields.get(change.field)
         patches: _Edit = []
@@ -818,13 +822,13 @@ def project_train_fields(
         if isinstance(patches, StudioSweptParameterMissing):
             edit = patches
         elif patches:
-            files = selection.store(patches)
+            stored = selection.store(patches)
     coordinates = selection.row.coordinates if selection.row is not None else {}
     return TrainProjection(
         [field.view for field in definition.fields.values()],
         settings if isinstance(settings, dict) else None,
         sorted(mixed),
-        files,
+        stored,
         edit if isinstance(edit, StudioSweptParameterMissing) else None,
         sorted(documents),
         [
@@ -962,10 +966,9 @@ def project_training_numeric_fields(
     if isinstance(result, tuple):
         return TrainFieldResponse(problems=list(result))
     if isinstance(result, list):
-        files = merged_files([
-            *(selection.store(prepared.keep) if prepared.keep else []),
-            *([StudioProjectFilePatch(address=AuthoredFileAddress(kind="step", id=step_id), patches=result)] if result else []),
-        ])
+        stored = (selection.store(prepared.keep) if prepared.keep else StoredEdit([])).then(
+            [StudioProjectFilePatch(address=AuthoredFileAddress(kind="step", id=step_id), patches=result)] if result else [],
+        )
     elif definition.step.sweep and axis is None:
         return TrainFieldResponse(problems=[Problem(
             code=ProblemCode.STRUCTURE, reason="This Train field has no writable sweep destination.",
@@ -973,8 +976,33 @@ def project_training_numeric_fields(
     else:
         assert not isinstance(result, LiteralValue)
         definition.current = selection.current if selection.current is not None else definition.payload
-        files = selection.store(field.number_write(result))
-    return TrainFieldResponse(files=files, dependencies=list(field.documents), removed_values=prepared.removed)
+        stored = selection.store(field.number_write(result))
+    return TrainFieldResponse(
+        files=stored.files, created=list(stored.created), dependencies=list(field.documents),
+        removed_values=prepared.removed,
+    )
+
+
+def reset_writes(project: Project, step_id: str, field: str) -> list[OverridePatch]:
+    """The write that gives ``field``, a pointer in the Train definition, the value of the base of the document it
+    passes through."""
+    template = compose_step(project, step_id)
+    if isinstance(template, ProjectDiagnostic):
+        raise ValueError(template.detail)
+    parts = json_pointer_parts(field)
+    target = document_write_target(template.authored_payload(), ".".join(parts))
+    document = project.documents.get(target[0]) if target is not None else None
+    if not isinstance(document, BasedDocument):
+        raise ValueError(f"{field} is not read from a document based on another.")
+    base = compose_document(project.documents.get, document.base.document)
+    if isinstance(base, ProjectDiagnostic):
+        raise ValueError(base.detail)
+    value: Any = base.payload
+    for part in target[1].split("."):
+        if not isinstance(value, dict) or part not in value:
+            return [OverridePatch(op="remove", path=".".join(parts))]
+        value = value[part]
+    return [OverridePatch(op="replace", path=".".join(parts), value=value)]
 
 
 def training_document_choice(

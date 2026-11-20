@@ -12,10 +12,10 @@ from feedbax.contracts.model_edit import (
     EvaluateAttachmentAxis, EvaluateAttachmentRows, EvaluateAttachmentVariant, StudioEvaluateValueSource,
 )
 from feedbax.contracts.objective_document import ObjectiveDocument
-from feedbax.contracts.project import ProjectValueEdit, Sha256
+from feedbax.contracts.project import Pointer, ProjectValueEdit, Sha256
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_authoring import StudioSweptParameterMissing
-from feedbax.contracts.studio_project import StudioProjectFilePatch
+from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
 from feedbax.contracts.task_document import Epoch, PythonTaskSelection, TaskDocument
 from feedbax.expression_site import SiteProjection
 
@@ -58,6 +58,14 @@ class StudioTrialDocumentEdit(StrictModel):
     edits: list[ProjectValueEdit] = Field(min_length=1)
 
 
+class StudioTrialDocumentReset(StrictModel):
+    """Give each of ``paths`` in the step's ``document`` the value of that document's base."""
+
+    kind: Literal["reset"]
+    document: Literal["task", "objective"]
+    paths: list[Pointer] = Field(min_length=1)
+
+
 class StudioTrialSelectDocument(StrictModel):
     kind: Literal["select_document"]
     role: Literal["model", "task", "objective", "training"]
@@ -86,7 +94,8 @@ class StudioTrialAuthoringRequest(StrictModel):
     revision: Sha256
     run: StudioSavedTrainKey
     change: Annotated[
-        StudioTrialDocumentEdit | StudioTrialBindingEdit | StudioTrialSelectDocument | StudioTrialExpressionEdit,
+        StudioTrialDocumentEdit | StudioTrialDocumentReset | StudioTrialBindingEdit | StudioTrialSelectDocument
+        | StudioTrialExpressionEdit,
         Field(discriminator="kind"),
     ] | None = None
     scope: Annotated[
@@ -123,5 +132,7 @@ class StudioTrialAuthoring(StrictModel):
     fields: list[StudioTrialField]
     problems: list[Problem]
     files: list[StudioProjectFilePatch]
+    created: list[CreateNamedDocument] = Field(default_factory=list)
+    """Documents the edit creates, written before ``files``, which may name them."""
     refusal: StudioSweptParameterMissing | None = None
     """Why the chosen document was not taken: it lacks a parameter the step sweeps."""

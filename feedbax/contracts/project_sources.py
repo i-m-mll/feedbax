@@ -109,6 +109,19 @@ def changed_sources(before: Any, after: Any, shape: Any, source: ValueSource) ->
     return source_shape(after, source)
 
 
+def place_source(shape: Any, parts: tuple[str, ...], source: Any) -> Any:
+    """Copy ``shape`` with ``source`` at ``parts``, or with nothing there when ``source`` is None."""
+    head, *rest = parts
+    children = dict(shape) if isinstance(shape, dict) else {}
+    if rest:
+        children[head] = place_source(children.get(head), tuple(rest), source)
+    elif source is None:
+        children.pop(head, None)
+    else:
+        children[head] = source
+    return SourceObject(shape.source if isinstance(shape, SourceObject) else None, children)
+
+
 def first_source(shape: Any) -> ValueSource | None:
     if isinstance(shape, ValueSource):
         return shape

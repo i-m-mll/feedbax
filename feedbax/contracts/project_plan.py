@@ -90,7 +90,7 @@ from feedbax.contracts.project_sweep import (
     model_field_target,
     sweep_patch,
 )
-from feedbax.contracts.project_sources import ValueSource, changed_sources, patch_source, pointer, source_shape
+from feedbax.contracts.project_sources import ValueSource, changed_sources, patch_source, place_source, pointer, source_shape
 from feedbax.contracts.report_document import ReportDocument
 from feedbax.contracts.request_identity import EncodedRequest, RequestDocumentMemo
 from feedbax.contracts.request_refs import (
@@ -495,6 +495,7 @@ _ROLES = {
     "evaluate": _Role("subject", True, "train", "checkpoint"),
 }
 _ANALYZE_INPUTS = TypeAdapter(dict[ProjectName, AnalyzeInput])
+DOCUMENTS: TypeAdapter[dict[str, Document]] = TypeAdapter(dict[str, Document])
 
 type _CompiledRun = PlannedRun | PlannedAnalyzeRun
 type _Members = tuple[tuple[PlannedInput, _CompiledRun | None], ...]
@@ -1251,6 +1252,7 @@ class _Compiler:
                 from feedbax.compiler.model_document import ModelCompilationProblem
                 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 
+                based_writes: dict[str, list[tuple[str, OverridePatch]]] = {}
                 for path, write in row.patches.items():
                     address = None
                     document = None
@@ -1310,6 +1312,14 @@ class _Compiler:
                             "A variant cannot write through a step's document reference; "
                             f"write documents.{reached[0]}.payload.{reached[1]}"
                         )
+                    if len(parts) >= 4 and parts[0] == "documents" and parts[2] == "payload" and (
+                        "base" in data["documents"].get(parts[1], {})
+                    ):
+                        based_writes.setdefault(parts[1], []).append((path, patch))
+                        if origins is not None and patch.op != "remove":
+                            source = ValueSource("variant", row.id, pointer(parts), variant=row.id)
+                            origins = place_source(origins, parts, source_shape(patch.value, source))
+                        continue
                     if len(parts) >= 4 and parts[0] == "steps" and parts[2] == MODEL_ATTACHMENTS:
                         step = data["steps"].get(parts[1])
                         if step is not None and MODEL_ATTACHMENTS not in step:
@@ -1322,6 +1332,24 @@ class _Compiler:
                     if origins is not None:
                         source = ValueSource("variant", row.id, pointer(parts), variant=row.id)
                         origins = patch_source(origins, patch, source_shape(patch.value, source))
+                for document in sorted(based_writes, key=lambda name: len(base_chain(
+                    DOCUMENTS.validate_python(data["documents"]), name,
+                ))):
+                    path = based_writes[document][0][0]
+                    documents = DOCUMENTS.validate_python(data["documents"])
+                    base = compose_document(documents.get, documents[document].base.document)
+                    if isinstance(base, ProjectDiagnostic):
+                        raise ValueError(base.detail)
+                    content = {"documents": {document: {"payload": apply_differences(
+                        base.payload, documents[document].differences,
+                    )}}}
+                    for path, patch in based_writes[document]:
+                        apply_override_patch_in_place(content, patch)
+                    data["documents"][document]["differences"] = {
+                        at: difference.model_dump(mode="json") for at, difference in diff(
+                            base.payload, content["documents"][document]["payload"],
+                        ).items()
+                    }
                 self.variants[row.id] = Project.model_validate(data)
                 self.variant_sources[row.id] = origins
             except ValueError as error:

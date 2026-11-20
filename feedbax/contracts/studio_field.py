@@ -13,7 +13,7 @@ from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_sweep import RangeValues, SampleValues
 from feedbax.contracts.studio_authoring import StudioRunSelection
-from feedbax.contracts.studio_project import StudioProjectFilePatch
+from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
 from feedbax.expression_site import SiteProjection
 
 
@@ -107,6 +107,8 @@ class TrainFieldRequest(StudioRunSelection):
 class TrainFieldResponse(StrictModel):
     fields: list[TrainFieldView] = Field(default_factory=list)
     files: list[StudioProjectFilePatch] = Field(default_factory=list)
+    created: list[CreateNamedDocument] = Field(default_factory=list)
+    """Documents the edit creates, written before ``files``, which may name them."""
     dependencies: list[ProjectName] = Field(default_factory=list)
     problems: list[Problem] = Field(default_factory=list)
     removed_values: dict[str, list[str]] = Field(default_factory=dict)
