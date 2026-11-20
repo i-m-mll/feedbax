@@ -236,6 +236,8 @@ class PlannedRow:
     document_uses: frozenset[str] = field(default=frozenset(), kw_only=True)
     # Documents an Evaluate row reads through its subject run rather than naming them.
     followed_documents: frozenset[str] = field(default=frozenset(), kw_only=True)
+    # The Model document an Evaluate row names, and its subject run's Model document.
+    evaluated_model: tuple[str, str] | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -461,6 +463,11 @@ class ProjectPlan:
         }
         requests.update(self.elements)
         return requests
+
+    @cached_property
+    def evaluated_models(self) -> frozenset[tuple[str, str]]:
+        """Each Model document an Evaluate row names, paired with its subject run's Model document."""
+        return frozenset(row.evaluated_model for row in self.rows if row.evaluated_model is not None)
 
     def document_users(self, variant: str, document: str) -> frozenset[str]:
         return frozenset(
@@ -2461,9 +2468,12 @@ class _Compiler:
     ) -> PlannedRun | None:
         row = self.rows[key]
         followed: frozenset[str] = frozenset()
+        evaluated = None
         if row.kind == "evaluate" and (subject := inputs.get("subject")) is not None and subject.producer is not None:
             own = lowered.document_ids
             trained = self.rows[subject.producer].document_ids
+            if (named := own.get(EVALUATION_MODEL)) is not None and (model := trained.get(EVALUATION_MODEL)) is not None:
+                evaluated = named, model
             slots = {EVALUATION_MODEL: (EVALUATION_MODEL,), EVALUATION_TASK: (EVALUATION_TASK, "payload.trial_documents.python_task")}
             inherited = {
                 path: trained[path] for slot, paths in slots.items() if slot not in own
@@ -2485,7 +2495,7 @@ class _Compiler:
         if (encoded := lowered.request) is None:
             self.rows[key] = replace(
                 row, document_ids=lowered.document_ids, document_uses=lowered.document_uses,
-                followed_documents=followed,
+                followed_documents=followed, evaluated_model=evaluated,
             )
             return None
         self.requests[encoded.id] = encoded.data
@@ -2503,6 +2513,7 @@ class _Compiler:
             document_ids=lowered.document_ids,
             document_uses=lowered.document_uses,
             followed_documents=followed,
+            evaluated_model=evaluated,
         )
         self.rows[key] = run
         return run

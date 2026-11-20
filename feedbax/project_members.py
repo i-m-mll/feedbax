@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 from collections.abc import Callable, Mapping
 from typing import Any
 
 from pydantic import JsonValue
 
 from feedbax.contracts.project import BasedDocument, Document, RootDocument, nearest_shared_base
-from feedbax.contracts.project_inputs import DocumentReference, StepReference
+from feedbax.contracts.project_inputs import DocumentReference
 from feedbax.contracts.project_plan import ProjectPlan
 from feedbax.contracts.studio_project import MemberFamily
 
@@ -221,33 +220,9 @@ def references_member(project: dict[str, JsonValue], family: MemberFamily, name:
     return rename_member(others, {}, family, name, name + "-")[0] != others
 
 
-_MODEL = "payload.trial_documents.model"
-
-
-def _evaluated_models(plan: ProjectPlan) -> frozenset[tuple[str, str]]:
-    """Each Model document an Evaluate step names, paired with each Model document its subject reads."""
-    trained: dict[tuple[str, str], set[str]] = defaultdict(set)
-    for row in plan.rows:
-        if row.kind == "train" and (model := row.document_ids.get(_MODEL)) is not None:
-            trained[row.key.variant, row.key.step].add(model)
-    pairs = set()
-    for row in plan.rows:
-        if row.kind != "evaluate" or (model := row.document_ids.get(_MODEL)) is None:
-            continue
-        subject = (plan.steps[row.key.variant, row.key.step].inputs or {}).get("subject")
-        if (initial := row.document_ids.get("inputs.subject")) is not None:
-            subjects = {initial}
-        elif isinstance(subject, StepReference):
-            subjects = trained[row.key.variant, subject.step]
-        else:
-            subjects = set()
-        pairs.update((model, trained_model) for trained_model in subjects)
-    return frozenset(pairs)
-
-
 def detach_refusals(plan: ProjectPlan, documents: Mapping[str, Document]) -> frozenset[str]:
     """The based documents whose Detach would leave an Evaluate step's Model document sharing no document with its subject's."""
-    related = [pair for pair in _evaluated_models(plan) if nearest_shared_base(documents, *pair) is not None]
+    related = [pair for pair in plan.evaluated_models if nearest_shared_base(documents, *pair) is not None]
     refused = set()
     for name, document in documents.items():
         if isinstance(document, BasedDocument):
