@@ -16,7 +16,7 @@ from feedbax.contracts.model_edit import (
 )
 from feedbax.contracts.project import (
     BasedDocument, Document, DocumentBase, DocumentEdit, DocumentReference, InlineBase, Payload, Project,
-    DifferenceNotApplied, RemoveProjectValue, RootDocument, SetProjectValue, StepBase, apply_differences,
+    DifferenceNotApplied, RemoveDocumentValue, RemoveProjectValue, SetProjectValue, StepBase, apply_differences,
     apply_document_edit, based_on, diff,
     document_edit_value, json_pointer_parts, same_json,
 )
@@ -31,7 +31,7 @@ from feedbax.contracts.project_sweep import AxisCondition, NamedAxis, SetValue, 
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.studio_project import AuthoredFileAddress, CreateNamedDocument, StudioProjectFilePatch
 from feedbax.project_members import generated_name
-from feedbax.project_folder import _free_member_name
+from feedbax.project_folder import _free_member_name, document_file
 from feedbax.studio.selection import StoredEdit, TrainSelection
 from feedbax.studio.step_differences import normalized_patches
 from feedbax.web.services.project_folder import ProjectFolderInvalid, preview_authored_files
@@ -293,21 +293,6 @@ def lit_steps(documents: Mapping[str, Document], readers: DocumentUsers, name: s
     return frozenset(lit)
 
 
-def _stored_document(name: str, document: Document, content: Payload, base: Payload | None) -> StudioProjectFilePatch | None:
-    """The document's file holding ``content``: its payload, or its differences from ``base``; none when unchanged."""
-    address = AuthoredFileAddress(kind="document", id=name)
-    if isinstance(document, RootDocument):
-        if same_json(document.payload, content):
-            return None
-        return file_value(address, {"payload": document.payload}, ("payload",), content)
-    assert base is not None
-    differences = diff(base, content)
-    if differences == document.differences:
-        return None
-    return file_value(address, {"differences": {}} if "differences" in document.model_fields_set else {},
-                      ("differences",), {path: value.model_dump(mode="json") for path, value in differences.items()})
-
-
 @dataclass(frozen=True)
 class _DocumentStores:
     files: list[StudioProjectFilePatch]
@@ -364,7 +349,7 @@ def _document_stores(
             base = None
             if isinstance(document, BasedDocument):
                 base = after.get(document.base.document) or old(document.base.document)
-            file = _stored_document(name, document, content, base)
+            file = document_file(name, document, content, base)
             if file is not None:
                 stores.files.append(file)
         elif direct := frozenset(readers(name)) & chosen:
@@ -404,7 +389,7 @@ def _references(payload: Any, at: tuple[str, ...] = ()) -> Iterator[tuple[tuple[
 
 
 def _step_references(project: Project, step: str) -> dict[tuple[str, ...], DocumentReference]:
-    payload = _authored_payload(project, step)
+    payload = authored_payload(project, step)
     return dict(_references(payload)) if payload is not None else {}
 
 
@@ -472,6 +457,95 @@ def shared_document_write(project: Project, shown: str, edits: Sequence[Document
     return _document_stores(project, shown, edits, None, lambda name: (), set()).files
 
 
+def content_edits(before: Payload, after: Payload) -> list[DocumentEdit]:
+    """The edits that turn a document's composed content ``before`` into ``after``."""
+    return [
+        RemoveProjectValue(op="remove", path=path) if isinstance(record, RemoveDocumentValue)
+        else SetProjectValue(op="replace", path=path, value=record.value)
+        for path, record in diff(before, after).items()
+    ]
+
+
+def evaluation_document_write(
+    project: Project, plan, shown: str, edits: Sequence[DocumentEdit], chosen: Collection[str], slot: str,
+) -> StoredEdit:
+    """:func:`document_write` of ``shown`` for the ``chosen`` steps, among which an Evaluate step may read it through
+    its subject at ``trial_documents.<slot>``.
+
+    Such a step follows its subject when the subject is chosen. Otherwise it is given a reference of its own to
+    ``shown``, which makes it a reader the edit can narrow to.
+    """
+    variant = plan.variants[0]
+    subjects = {
+        run.key.step: subject.producer.step for run in plan.runs
+        if run.key.variant == variant and run.kind == "evaluate"
+        and (subject := run.inputs.get("subject")) is not None and subject.producer is not None
+    }
+    chosen = set(chosen)
+    followers = {
+        row.key.step for row in plan.rows
+        if row.key.variant == variant and row.key.step in chosen and shown in row.followed_documents
+    }
+    named: set[str] = set()
+    files: list[StudioProjectFilePatch] = []
+    current = project
+    for step in sorted(followers):
+        if subjects.get(step) in chosen:
+            chosen.discard(step)
+            continue
+        payload = authored_payload(current, step)
+        reference = {"document": shown}
+        write = (
+            OverridePatch(path=f"trial_documents.{slot}", op="add", value=reference)
+            if isinstance(payload, dict) and isinstance(payload.get("trial_documents"), dict)
+            else OverridePatch(path="trial_documents", op="add", value={slot: reference})
+        )
+        authored = current.steps[step]
+        file = _step_file(current, step, AuthoredFileAddress(kind="step", id=step),
+                          authored.model_dump(mode="json", by_alias=True, exclude_unset=True), authored, [write])
+        assert file is not None
+        files.append(file)
+        current = preview_authored_files(current, [file])
+        named.add(step)
+
+    def readers(name: str) -> frozenset[str]:
+        return plan.document_users(variant, name) | (named if name == shown else frozenset())
+
+    return StoredEdit(files, reached=frozenset(named)) + document_write(current, shown, edits, chosen, readers)
+
+
+def _in_form_of(before: Payload, after: Payload) -> Payload:
+    """``after``, a normalized Model, spelled as ``before`` wherever the two mean the same Model."""
+    from feedbax.contracts.model_document import ModelDocument
+
+    result = deepcopy(before)
+    for path, record in diff(ModelDocument.model_validate(before).model_dump(mode="json"), after).items():
+        target, source = result, after
+        parts = json_pointer_parts(path)
+        for index, part in enumerate(parts):
+            if index == len(parts) - 1 or not isinstance(target.get(part), dict):
+                if isinstance(record, RemoveDocumentValue) and index == len(parts) - 1:
+                    target.pop(part, None)
+                elif part in source:
+                    target[part] = deepcopy(source[part])
+                break
+            target, source = target[part], source[part]
+    return result
+
+
+def model_document_store(folders, project_id: str, project: Project, body, before: Payload, after: Payload) -> StoredEdit:
+    """Store a Model edit of ``body.document`` by the document rule, after the request's step files."""
+    head = StoredEdit(list(body.files), reached=frozenset(file.address.id for file in body.files))
+    project = preview_authored_files(project, body.files)
+    edits = content_edits(before, _in_form_of(before, after))
+    if body.step is None:
+        return head.then(shared_document_write(project, body.document, edits))
+    plan = folders.read_plan(project_id, revision=body.revision).plan
+    return head + evaluation_document_write(
+        project, plan, body.document, edits, {body.step, *body.chosen_steps}, "model",
+    )
+
+
 def _with_pointing(project: Project, stored: StoredEdit, pointing: Mapping[str, Mapping[str, str]]) -> StoredEdit:
     if not pointing:
         return stored
@@ -489,7 +563,7 @@ def _document_edit(patch: OverridePatch, document_path: str, payload) -> Documen
     return SetProjectValue(op="replace" if exists else "add", path=pointer(parts), value=patch.value)
 
 
-def _authored_payload(project: Project, step_id: str):
+def authored_payload(project: Project, step_id: str):
     authored = project.steps[step_id]
     if isinstance(authored.base, InlineBase):
         return authored.base.inline
@@ -510,7 +584,7 @@ def scoped_file(
     authored = project.steps[step_id]
     raw = authored.model_dump(mode="json", by_alias=True, exclude_unset=True)
     address = AuthoredFileAddress(kind="step", id=step_id)
-    payload = _authored_payload(project, step_id)
+    payload = authored_payload(project, step_id)
     through: dict[str, list[tuple[OverridePatch, str]]] = {}
     direct = []
     for patch in writes:
@@ -582,7 +656,7 @@ def _step_file(project, step_id, address, raw, authored, writes) -> StudioProjec
         kept -= 1
     prior = authored.deltas[:kept]
     stored = [patch for layer in authored.deltas[kept:] for patch in layer.patches]
-    before = _authored_payload(project.model_copy(update={"steps": project.steps | {
+    before = authored_payload(project.model_copy(update={"steps": project.steps | {
         step_id: authored.model_copy(update={"deltas": prior, "model_attachments": {}}),
     }}), step_id)
     patches = normalized_patches(before, [*stored, *writes])

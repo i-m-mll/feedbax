@@ -453,12 +453,16 @@ export class ProjectEditController {
     this.stage(gesture, direction, files, project);
   }
 
-  editModel(name: string, document: string, command: ModelEditCommand, reviewed: StudioProjectRevision) {
+  /** Applies a Model command for `scope`'s steps (every reader when absent), with step files written alongside it. */
+  editModel(
+    name: string, document: string, command: ModelEditCommand, reviewed: StudioProjectRevision,
+    scope?: Pick<ModelEditRequest, 'step' | 'chosen_steps' | 'files'>,
+  ) {
     return this.exclusiveTransaction(async (before) => {
       const edit = this.transport.editModel;
       if (!edit || !versionsMatch(before, reviewed)) throw new ProjectEditConflictError();
       const { result } = await edit(before.project_id, {
-        revision: before.revision, presentation_revision: before.presentation_revision, document, command,
+        revision: before.revision, presentation_revision: before.presentation_revision, document, command, ...scope,
       }, this.signal);
       if (result.status === 'applied') {
         const history = typeof result.undo_token === 'string'

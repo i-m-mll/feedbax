@@ -948,6 +948,9 @@ export interface ModelEditRequest {
   presentation_revision: string;
   document: string;
   command: ModelEditCommand;
+  step?: string | null;
+  chosen_steps?: string[];
+  files?: StudioProjectFilePatch[];
 }
 
 export interface ModelEditApplied {
@@ -956,6 +959,7 @@ export interface ModelEditApplied {
   changed: ModelAddress[];
   clipboard?: ModelClipboard | null;
   undo_token?: string | null;
+  created?: string[];
 }
 
 export interface ModelEditRefused {
@@ -6006,6 +6010,9 @@ export const ModelEditRequestSchema: z.ZodType<ModelEditRequest> = z.lazy(() =>
       "presentation_revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
       "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
       "command": ModelEditCommandSchema,
+      "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
+      "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
+      "files": z.array(StudioProjectFilePatchSchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelEditRequest>;
@@ -6018,6 +6025,7 @@ export const ModelEditAppliedSchema: z.ZodType<ModelEditApplied> = z.lazy(() =>
       "changed": z.array(ModelAddressSchema),
       "clipboard": ModelClipboardSchema.nullable().optional(),
       "undo_token": z.string().min(1).nullable().optional(),
+      "created": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelEditApplied>;

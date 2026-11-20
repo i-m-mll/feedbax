@@ -267,7 +267,10 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         }, editor.signal);
         if (result.problems?.length) return result.problems[0].reason;
         if (result.command) {
-          const applied = await editor.editModel('Set Value', fieldBody.document, result.command, current);
+          if (result.files?.length && !await confirmRunRemoval(sweepValueRuns(result.removed_values))) return undefined;
+          const applied = await editor.editModel('Set Value', fieldBody.document, result.command, current, fieldBody.run && {
+            step: fieldBody.run.step, chosen_steps: [...chosenSteps], files: result.files ?? [],
+          });
           return applied.status === 'refused' ? applied.problem.detail : undefined;
         }
         if (result.files?.length && await confirmRunRemoval(sweepValueRuns(result.removed_values))) {
@@ -389,10 +392,12 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   async function attempt(name: string, operation: Operation, choose = true): Promise<{ address?: ModelAddress; reason: string } | null> {
     if (!model || !editTopology) return { reason: studioReason('unavailable', name) };
     return run(async () => {
+        const scope = projectionRun && { step: projectionRun.step, chosen_steps: [...(await plan.next(({ revision }) =>
+          revision === editor.getSnapshot().saved.revision)).chosenSteps] };
         const reviewed = editor.getSnapshot().saved;
         setIssue(undefined);
         try {
-          const result = await editor.editModel(name, model.id, { operation }, reviewed);
+          const result = await editor.editModel(name, model.id, { operation }, reviewed, scope);
           if (result.status === 'refused') return { address: result.problem.address, reason: result.problem.detail };
           if (result.clipboard) clipboard = result.clipboard;
           if (choose && result.changed.length) {
@@ -421,15 +426,28 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     return run(async () => {
         setIssue(undefined);
         try {
-          const result = await editEvaluateAttachment(saved.project_id, { ...readBody, difference }, editor.signal);
-          if (result.revision !== saved.revision) throw new Error('The selected Evaluate revision changed.');
-          editor.editFiles(name, [result.file], {
-            reviewedRevision: saved.revision,
-            dependencies: [{ kind: 'document', id: model.id }],
-          });
-          await editor.flush();
+          let changed: ModelAddress;
+          if (readBody.scope.kind === 'step') {
+            const { chosenSteps } = await plan.next(({ revision }) => revision === editor.getSnapshot().saved.revision);
+            const applied = await editor.editModel(name, model.id, {
+              operation: difference.op === 'set_field' ? difference : { op: 'set_attachment', difference },
+            }, editor.getSnapshot().saved, { step: readBody.run.step, chosen_steps: [...chosenSteps] });
+            if (applied.status === 'refused') throw new Error(applied.problem.detail);
+            const [first] = applied.changed;
+            if (!first) throw new Error('The edit changed nothing.');
+            changed = first;
+          } else {
+            const result = await editEvaluateAttachment(saved.project_id, { ...readBody, difference }, editor.signal);
+            if (result.revision !== saved.revision) throw new Error('The selected Evaluate revision changed.');
+            editor.editFiles(name, [result.file], {
+              reviewedRevision: saved.revision,
+              dependencies: [{ kind: 'document', id: model.id }],
+            });
+            await editor.flush();
+            changed = result.changed;
+          }
           if (difference.op !== 'set_field') {
-            selectElement(state, { document: model.id, address: difference.op === 'remove' ? at(result.changed, { kind: 'graph' }) : result.changed });
+            selectElement(state, { document: model.id, address: difference.op === 'remove' ? at(changed, { kind: 'graph' }) : changed });
           }
           return undefined;
         } catch (error) {

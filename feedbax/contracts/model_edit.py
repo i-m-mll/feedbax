@@ -265,10 +265,20 @@ class ModelEditResult(StrictModel):
 
 
 class ModelEditRequest(StrictModel):
+    """A command applied to the composed content of ``document``, stored by the document rule.
+
+    Without ``step`` the edit is stored for every step that reads the document or one based on it. With it, the edit is
+    made for ``step`` and the ``chosen_steps``. ``files`` are step-file patches written in the same transaction, ahead
+    of the command, such as the removal of the sweep whose kept value the command sets.
+    """
+
     revision: Sha256
     presentation_revision: Sha256
     document: ProjectName
     command: ModelEditCommand
+    step: ProjectName | None = None
+    chosen_steps: list[ProjectName] = Field(default_factory=list)
+    files: list[StudioProjectFilePatch] = Field(default_factory=list)
 
 
 type ModelUndoToken = Annotated[str, StringConstraints(min_length=1)]
@@ -338,11 +348,15 @@ class EvaluateAttachmentEdit(StrictModel):
 
 
 class ModelEditApplied(StrictModel):
+    """``undo_token`` is given when the edit wrote the shown document's file and layout alone; ``created`` names the
+    documents the edit made."""
+
     status: Literal["applied"]
     snapshot: StudioProjectSnapshot
     changed: tuple[ModelAddress, ...]
     clipboard: ModelClipboard | None = None
     undo_token: ModelUndoToken | None = None
+    created: tuple[ProjectName, ...] = ()
 
 
 class ModelEditRefused(StrictModel):

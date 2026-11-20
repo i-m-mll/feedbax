@@ -1252,7 +1252,7 @@ class _Compiler:
                 from feedbax.compiler.model_document import ModelCompilationProblem
                 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 
-                based_writes: dict[str, list[tuple[str, OverridePatch]]] = {}
+                based_writes: dict[str, list[tuple[str, OverridePatch | SetField]]] = {}
                 for path, write in row.patches.items():
                     address = None
                     document = None
@@ -1290,7 +1290,14 @@ class _Compiler:
                         if entry is None or entry["schema"] != MODEL_DOCUMENT_SCHEMA_ID:
                             raise ValueError("The addressed Model document does not exist")
                         if "payload" not in entry:
-                            raise ValueError("A project variant cannot write a document based on another")
+                            based_writes.setdefault(document, []).append((path, patch))
+                            if origins is not None:
+                                source = ValueSource("variant", row.id, pointer(("sweep", path)), variant=row.id)
+                                origins = place_source(
+                                    origins, ("documents", document, "payload", *patch.address.stored_path()),
+                                    source_shape(patch.value, source),
+                                )
+                            continue
                         before = entry["payload"]
                         entry["payload"] = resolve_effective_model(
                             ModelDocument.model_validate(before),
@@ -1320,13 +1327,20 @@ class _Compiler:
                             source = ValueSource("variant", row.id, pointer(parts), variant=row.id)
                             origins = place_source(origins, parts, source_shape(patch.value, source))
                         continue
-                    if len(parts) >= 4 and parts[0] == "steps" and parts[2] == MODEL_ATTACHMENTS:
-                        step = data["steps"].get(parts[1])
-                        if step is not None and MODEL_ATTACHMENTS not in step:
-                            step[MODEL_ATTACHMENTS] = {}
+                    batches = (
+                        parts[:3] if len(parts) >= 4 and parts[0] == "steps" and parts[2] == MODEL_ATTACHMENTS
+                        else parts[:5] if len(parts) >= 6 and parts[0] == "steps"
+                        and parts[2:5] == ("base", "inline", MODEL_ATTACHMENTS) else None
+                    )
+                    if batches is not None:
+                        owner = data
+                        for part in batches[:-1]:
+                            owner = owner.get(part) if isinstance(owner, dict) else None
+                        if isinstance(owner, dict) and MODEL_ATTACHMENTS not in owner:
+                            owner[MODEL_ATTACHMENTS] = {}
                             if origins is not None:
                                 origins = patch_source(origins, OverridePatch(
-                                    path=".".join(parts[:3]), op="add", value={},
+                                    path=".".join(batches), op="add", value={},
                                 ), source_shape({}, None))
                     apply_override_patch_in_place(data, patch)
                     if origins is not None:
@@ -1344,7 +1358,13 @@ class _Compiler:
                         base.payload, documents[document].differences,
                     )}}}
                     for path, patch in based_writes[document]:
-                        apply_override_patch_in_place(content, patch)
+                        if isinstance(patch, SetField):
+                            content["documents"][document]["payload"] = resolve_effective_model(
+                                ModelDocument.model_validate(content["documents"][document]["payload"]),
+                                self.components or _builtin_model_registry(), (patch,), functions=self.functions,
+                            ).model_dump(mode="json")
+                        else:
+                            apply_override_patch_in_place(content, patch)
                     data["documents"][document]["differences"] = {
                         at: difference.model_dump(mode="json") for at, difference in diff(
                             base.payload, content["documents"][document]["payload"],
