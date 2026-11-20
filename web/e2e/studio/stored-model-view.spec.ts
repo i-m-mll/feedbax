@@ -257,7 +257,21 @@ test('persists an attachment in the selected project variant', async ({ page, re
   await model.locator('[data-id="controller"] header').dblclick();
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
   await outlineRow(page, 'Cell.output → Readout.input').click();
-  await addIntervention(page, projectPath,
-    { kind: 'variant', variant: 'treated' });
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  await inspector.getByRole('button', { name: 'Add Attachment', exact: true }).click();
+  const [added] = await Promise.all([
+    page.waitForResponse((response) => response.request().method() === 'POST' &&
+      new URL(response.url()).pathname === `${projectPath}/model/edit`),
+    page.getByRole('menuitem', { name: 'Add Intervention', exact: true }).click(),
+  ]);
+  expect(added.ok(), await added.text()).toBe(true);
+  expect(added.request().postDataJSON()).toMatchObject({ step: 'baseline', variant: 'treated' });
+  const { result } = await added.json() as ModelEditResponse;
+  expect(result.status, result.status === 'refused' ? result.problem.detail : '').toBe('applied');
+  await expect(model.getByRole('button', { name: 'Attachment Scale', exact: true })).toBeVisible();
+  await page.reload();
+  await pick(page.getByRole('combobox', { name: 'Variant', exact: true }), 'treated');
+  await mapStep(page, 'baseline').click();
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
   await expect(model.getByRole('button', { name: 'Attachment Scale', exact: true })).toBeVisible();
 });

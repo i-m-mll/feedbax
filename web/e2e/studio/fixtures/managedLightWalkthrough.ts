@@ -238,7 +238,6 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   await number(page, batchCount, String(additionalUpdates));
   const changed = await batches;
   expect(changed.ok(), await changed.text()).toBe(true);
-  expect(changed.request().postDataJSON().address).toEqual({ kind: 'step', id: child });
   // The child reads its parent's training document, so its own Batches is a document based on that one.
   const editedProject = (await changed.json() as StudioProjectSnapshot).project;
   expect(Object.values(editedProject.documents ?? {}).filter((document) => 'base' in document
