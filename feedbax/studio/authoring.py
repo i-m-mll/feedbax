@@ -56,7 +56,7 @@ from feedbax.contracts.studio_authoring import (
     StudioSweptParameterMissing,
 )
 from feedbax.contracts.studio_project import SetProjectValue
-from feedbax.contracts.studio_field import TrainFieldRequest, TrainFieldResponse, TrainFieldView
+from feedbax.contracts.studio_field import FieldResetEdit, TrainFieldRequest, TrainFieldResponse, TrainFieldView
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
 from feedbax.expression_registry import FunctionRegistry
 from feedbax.plugins.application import (
@@ -956,11 +956,16 @@ def project_training_numeric_fields(
             scoped=selection.scoped, id=field_id,
         ))
         targets[field_id] = field, numeric, axis
+    changed = changed_fields(project, step_id, [view.id for view in fields])
+    fields = [view.model_copy(update={"changed": view.id in changed}) for view in fields]
     if body.edit is None:
         return TrainFieldResponse(fields=fields)
     if body.field not in targets:
         raise ValueError(f"Train step {step_id!r} has no number field {body.field!r}")
     field, numeric, axis = targets[body.field]
+    if isinstance(body.edit, FieldResetEdit):
+        stored = selection.store(reset_writes(project, step_id, body.field))
+        return TrainFieldResponse(files=stored.files, created=list(stored.created), dependencies=list(field.documents))
     prepared = prepare_numeric_field(numeric, axis, body.edit, functions, scoped=selection.scoped)
     result = prepared.result
     if isinstance(result, tuple):
@@ -981,6 +986,25 @@ def project_training_numeric_fields(
         files=stored.files, created=list(stored.created), dependencies=list(field.documents),
         removed_values=prepared.removed,
     )
+
+
+def changed_fields(project: Project, step_id: str, fields: Iterable[str]) -> set[str]:
+    """Those of ``fields``, pointers in the Train definition, whose value is a difference of the document based on
+    another that they are read from."""
+    template = compose_step(project, step_id)
+    if isinstance(template, ProjectDiagnostic):
+        return set()
+    payload = template.authored_payload()
+    changed = set()
+    for field in fields:
+        target = document_write_target(payload, ".".join(json_pointer_parts(field)))
+        document = project.documents.get(target[0]) if target is not None else None
+        if not isinstance(document, BasedDocument):
+            continue
+        parts = tuple(target[1].split("."))
+        if any(parts[:len(path)] == path for path in map(json_pointer_parts, document.differences)):
+            changed.add(field)
+    return changed
 
 
 def reset_writes(project: Project, step_id: str, field: str) -> list[OverridePatch]:

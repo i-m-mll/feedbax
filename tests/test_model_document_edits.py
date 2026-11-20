@@ -55,11 +55,11 @@ class _Project:
     def composed(self, name):
         return compose_document(self.project().documents.get, name).payload
 
-    def edit(self, operation, *, step=None, chosen=(), files=()):
+    def edit(self, operation, *, step=None, chosen=(), files=(), document="model"):
         snapshot = self.snapshot()
         response = self.client.post(f"{_URL}/model/edit", json={
             "revision": snapshot["revision"], "presentation_revision": snapshot["presentation_revision"],
-            "document": "model", "command": {"operation": operation}, "chosen_steps": list(chosen),
+            "document": document, "command": {"operation": operation}, "chosen_steps": list(chosen),
             "files": list(files), **({"step": step} if step else {}),
         })
         assert response.status_code == 200, response.text
@@ -67,9 +67,9 @@ class _Project:
         assert result["status"] == "applied", result
         return result
 
-    def fields(self, step, edit, **body):
+    def fields(self, step, edit, document="model", **body):
         response = self.client.post(f"{_URL}/model/fields", json={
-            "revision": self.snapshot()["revision"], "document": "model", "owner": _PLANT, "run": self.run(step),
+            "revision": self.snapshot()["revision"], "document": document, "owner": _PLANT, "run": self.run(step),
             "address": MASS, "edit": edit, **body,
         })
         assert response.status_code == 200, response.text
@@ -190,3 +190,60 @@ def test_a_variant_writes_a_model_field_of_a_based_document():
     assert changed({f"documents.model.{_MASS_TEXT}": {"value": 3.0}}, _with_push) == {"fee", "other"}
     assert changed({f"documents.model.{_MASS_TEXT}": {"value": 3.0}}, lambda payload: _with_mass(payload, 2.0)) == {"fee"}
     assert changed({f"documents.model-2.{_MASS_TEXT}": {"value": 3.0}}, _with_push) == {"other"}
+
+
+def test_reset_of_the_only_changed_value_leaves_the_based_document_without_differences(tmp_path):
+    project = _Project(tmp_path, _two_readers(_data()))
+    with project.client:
+        before = project.ids()
+        project.edit(_mass(2.0), step="fee", chosen=("fee",))
+        assert project.reads("fee") == "model-2" and project.ids()["fee"] != before["fee"]
+
+        def mass(document):
+            fields = project.fields("fee", None, document=document)["fields"]
+            return next(field for field in fields if field["address"] == MASS)
+
+        assert mass("model-2")["changed"] and not mass("model")["changed"]
+        reply = project.fields("fee", {"kind": "reset"}, document="model-2")
+        project.edit(reply["command"]["operation"], step="fee", chosen=("fee",), document="model-2")
+        assert project.project().documents["model-2"].differences == {}
+        assert not mass("model-2")["changed"]
+        assert project.ids() == before
+
+
+def test_an_evaluation_marks_the_values_its_document_changes(tmp_path):
+    project = _Project(tmp_path, _data())
+    with project.client:
+        before = project.ids()
+        project.edit(_mass(2.0), step="check")
+        fields = project.fields("check", None, document="model-2", evaluate_scope={"kind": "step"})["fields"]
+        assert [field["address"] == MASS for field in fields] == [field["changed"] for field in fields]
+        reply = project.fields("check", {"kind": "reset"}, document="model-2", evaluate_scope={"kind": "step"})
+        project.edit(reply["command"]["operation"], step="check", document="model-2")
+        assert project.project().documents["model-2"].differences == {}
+        assert project.ids() == before
+
+
+def test_an_evaluation_picks_a_model_document_and_one_unrelated_to_its_subjects_cannot_run(tmp_path):
+    data = _data()
+    _based(data, "model-2", _with_mass(_model(data), 2.0))
+    data["documents"]["unrelated"] = deepcopy(data["documents"]["model"])
+    project = _Project(tmp_path, data)
+
+    def pick(document):
+        response = project.client.post(f"{_URL}/authoring/trials", json={
+            "revision": project.snapshot()["revision"], "run": project.run("check"),
+            "change": {"kind": "select_document", "role": "model", "document": document}, "scope": {"kind": "step"},
+        })
+        assert response.status_code == 200, response.text
+        body = response.json()
+        saved = project.client.patch(_URL, json={"revision": project.snapshot()["revision"], "files": body["files"]})
+        assert saved.status_code == 200, saved.text
+
+    with project.client:
+        pick("model-2")
+        assert project.reads("check") == "model-2" and project.ids() == {"fee": FEE, "check": FIELD_CHANGED}
+        pick("unrelated")
+        assert "check" not in project.ids()
+        problems = [problem for problem in project.plan().diagnostics if problem.step == "check"]
+        assert [problem.path for problem in problems] == ["payload.trial_documents.model"]

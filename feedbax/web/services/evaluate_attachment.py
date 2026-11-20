@@ -28,7 +28,7 @@ from feedbax.contracts.model_edit import (
 from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.project import (
-    DifferenceNotApplied, Project, apply_differences, diff, nearest_shared_base,
+    DifferenceNotApplied, Differences, Project, apply_differences, diff, nearest_shared_base,
 )
 from feedbax.contracts.project_plan import EVALUATION_MODEL, ProjectPlan, RunKey, compile_project
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
@@ -196,6 +196,24 @@ def read_evaluate_attachments(
     folders, project_id, body, components=None, *, selected: ProjectPlan | None = None,
     model_document: str | None = None,
 ):
+    return evaluate_reading(
+        folders, project_id, body, components, selected=selected, model_document=model_document,
+    ).state
+
+
+@dataclass(frozen=True)
+class EvaluateReading:
+    state: EvaluateAttachmentState
+    differences: Differences
+    """What the read Model document changes on the trained model: its differences from ``shared``."""
+    shared: str | None
+    """The nearest document the read Model document shares with the subject's, when they differ."""
+
+
+def evaluate_reading(
+    folders, project_id, body, components=None, *, selected: ProjectPlan | None = None,
+    model_document: str | None = None,
+) -> EvaluateReading:
     snapshot = folders.read(project_id, revision=body.revision)
     key = _key(body)
     if selected is None:
@@ -211,6 +229,8 @@ def read_evaluate_attachments(
     resolved = None
     source = None
     field_sources = {}
+    changes: Differences = {}
+    shared = None
     if upstream := evaluate_subject(definition):
         producer, provenance = upstream
         source = evaluate_value_source(provenance)
@@ -223,7 +243,11 @@ def read_evaluate_attachments(
             if model_document is not None and read != model_document:
                 raise ProjectFolderInvalid("The selected run does not use this Model.")
             if document and read and (model := selected_model(train, document)) is not None:
-                model = _with_document(snapshot.project, model, document, read)
+                shared, changes = _document_changes(snapshot.project, document, read)
+                try:
+                    model = apply_differences(model, changes)
+                except DifferenceNotApplied as error:
+                    raise ProjectFolderInvalid(f"{read} does not apply to the trained model: {error}") from error
                 resolved = resolve_effective_model(
                     ModelDocument.model_validate(model), components or folders.components,
                     differences, functions=folders.functions,
@@ -236,7 +260,7 @@ def read_evaluate_attachments(
                         )
                         if origin is not None:
                             field_sources[record.address.to_text()] = evaluate_value_source(origin, evaluate_step=key.step)
-    return EvaluateAttachmentState(
+    return EvaluateReading(EvaluateAttachmentState(
         revision=body.revision,
         editable=editable,
         records=tuple(record for record in local if isinstance(record, AttachmentDifference)),
@@ -246,24 +270,20 @@ def read_evaluate_attachments(
         resolved_model=resolved,
         source=source,
         field_sources=field_sources,
-    )
+    ), changes, shared)
 
 
-def _with_document(project: Project, model: dict, subject: str, read: str) -> dict:
-    """The subject run's ``model`` with the differences of the read document from the nearest one it shares with the
-    subject's."""
+def _document_changes(project: Project, subject: str, read: str) -> tuple[str | None, Differences]:
+    """The nearest document the read one shares with the subject's, and the read one's differences from it."""
     if read == subject:
-        return model
+        return None, {}
     shared = nearest_shared_base(project.documents, subject, read)
     if shared is None:
         raise ProjectFolderInvalid(f"{read} shares no document with {subject}.")
     composed = [compose_document(project.documents.get, name) for name in (shared, read)]
     if bad := next((entry for entry in composed if isinstance(entry, ProjectDiagnostic)), None):
         raise ProjectFolderInvalid(bad.detail)
-    try:
-        return apply_differences(model, diff(composed[0].payload, composed[1].payload))
-    except DifferenceNotApplied as error:
-        raise ProjectFolderInvalid(f"{read} does not apply to the trained model: {error}") from error
+    return shared, diff(composed[0].payload, composed[1].payload)
 
 
 def _selected_rows(plan: ProjectPlan, body: EvaluateAttachmentReadRequest) -> tuple[set[RunKey], bool]:

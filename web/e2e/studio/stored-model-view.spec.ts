@@ -215,8 +215,8 @@ test('an Evaluate attachment for the step is stored in a document based on the s
   const { result } = await added.json() as { result: { created: string[] } };
   const [variant] = result.created;
   expect(variant).toBeDefined();
-  await model.locator('[data-id="wrapper"] header').dblclick();
-  await model.locator('[data-id="controller"] header').dblclick();
+  // The view keeps its path in the document the edit made.
+  await expect(model.getByRole('navigation', { name: 'Model Path' }).getByText('› Controller')).toBeVisible();
   await model.getByRole('button', { name: 'Attachment Scale', exact: true }).click();
   await expect(inspector.getByRole('textbox', { name: 'Factor', exact: true })).toHaveValue('1');
   const [changed] = await Promise.all([edited(), enter(inspector.getByRole('textbox', { name: 'Factor', exact: true }), '0.5')]);
@@ -257,7 +257,21 @@ test('persists an attachment in the selected project variant', async ({ page, re
   await model.locator('[data-id="controller"] header').dblclick();
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
   await outlineRow(page, 'Cell.output → Readout.input').click();
-  await addIntervention(page, projectPath,
-    { kind: 'variant', variant: 'treated' });
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  await inspector.getByRole('button', { name: 'Add Attachment', exact: true }).click();
+  const [added] = await Promise.all([
+    page.waitForResponse((response) => response.request().method() === 'POST' &&
+      new URL(response.url()).pathname === `${projectPath}/model/edit`),
+    page.getByRole('menuitem', { name: 'Add Intervention', exact: true }).click(),
+  ]);
+  expect(added.ok(), await added.text()).toBe(true);
+  expect(added.request().postDataJSON()).toMatchObject({ step: 'baseline', variant: 'treated' });
+  const { result } = await added.json() as ModelEditResponse;
+  expect(result.status, result.status === 'refused' ? result.problem.detail : '').toBe('applied');
+  await expect(model.getByRole('button', { name: 'Attachment Scale', exact: true })).toBeVisible();
+  await page.reload();
+  await pick(page.getByRole('combobox', { name: 'Variant', exact: true }), 'treated');
+  await mapStep(page, 'baseline').click();
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
   await expect(model.getByRole('button', { name: 'Attachment Scale', exact: true })).toBeVisible();
 });
