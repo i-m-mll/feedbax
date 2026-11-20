@@ -489,8 +489,9 @@ def _seed_swept_project(tmp_path, name):
 class _TrainClient:
     """A Train step's edits through the Studio endpoints, each saved as it is made."""
 
-    def __init__(self, client, url):
-        self.client, self.url = client, url
+    def __init__(self, client, url, lit=()):
+        """``lit`` are the steps an edit of ``train`` reaches besides it, the steps based on it."""
+        self.client, self.url, self.lit = client, url, lit
 
     @property
     def revision(self):
@@ -540,7 +541,7 @@ class _TrainClient:
 
     def scope(self, keys=(), axes=None, *, named=None):
         run = named or (keys[0] if keys else None)
-        return {"revision": self.revision} | ({"run": {
+        return {"revision": self.revision} | ({"lit_steps": ["train", *self.lit]} if self.lit else {}) | ({"run": {
             "variant": run.variant, "step": run.step, "row": run.row,
         }, "rows": [key.row for key in keys], "axes": axes or {}} if run else {})
 
@@ -683,7 +684,7 @@ def test_a_parameter_swept_for_one_optimizer_divides_only_its_runs(tmp_path):
     _save_project(ProjectFolderService(tmp_path), name, Project.model_validate(raw))
     url = f"/api/projects/{name}"
     with TestClient(create_app(projects_dir=tmp_path)) as client:
-        train = _TrainClient(client, url)
+        train = _TrainClient(client, url, lit=("train-2",))
         train.sweep_class(optimizer, {"kind": "to_sweep"})
         train.sweep_class(optimizer, {"kind": "add_member", "key": "sgd"})
         before = train.requests(tmp_path, name)

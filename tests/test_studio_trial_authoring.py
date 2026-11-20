@@ -377,7 +377,7 @@ def test_scoped_objective_writes_preserve_other_requests(tmp_path, kind):
     selected, other = RunKey("default", "train", "default"), RunKey("default", "other", "default")
     scope = {"kind": kind}
     if kind == "step":
-        raw["steps"]["other"] = {"kind": "train", "base": {"step": "train"}}
+        raw["steps"]["other"] = deepcopy(raw["steps"]["train"])
         scope["lit_steps"] = ["train"]
         raw["documents"]["objective"]["payload"]["terms"] = [
             {"id": "base", "measure": {"kind": "literal", "value": 1}, "weight": {"kind": "literal", "value": 1}},
@@ -461,6 +461,58 @@ def test_scoped_objective_writes_preserve_other_requests(tmp_path, kind):
                 })
                 weights[key] = view.json()["objective"]["terms"][0]["weight"]["value"]
             assert weights == {selected: 3, other: 3}
+
+
+def test_an_objective_edit_on_a_step_reaches_the_steps_based_on_it(tmp_path):
+    raw = _python_project()
+    raw["documents"]["reach-model"]["payload"] = _model_payload()
+    raw["steps"].pop("baseline")
+    raw["steps"]["other"] = {"kind": "train", "base": {"step": "train"}}
+    raw["steps"]["independent"] = deepcopy(raw["steps"]["train"])
+    raw["documents"]["objective"]["payload"]["terms"] = [
+        {"id": "base", "measure": {"kind": "literal", "value": 1}, "weight": {"kind": "literal", "value": 1}},
+    ]
+    train, other = RunKey("default", "train", "default"), RunKey("default", "other", "default")
+    folders = ProjectFolderService(tmp_path)
+    project = "inherited-objective"
+    _save_project(folders, project, Project.model_validate(raw))
+    route = f"/api/projects/{project}"
+
+    def requests():
+        return {item.key: item.request_id for item in folders.read_plan(project, revision=None).plan.runs}
+
+    def edit(client, lit, value):
+        return client.post(f"{route}/authoring/trials", json={
+            "run": {"variant": "default", "step": "train", "row": "default"},
+            "revision": folders.read_plan(project, revision=None).revision, "scope": {"kind": "step", "lit_steps": lit},
+            "change": {"kind": "objective", "edits": [{"op": "replace", "path": "/terms/0/weight/value", "value": value}]},
+        })
+
+    def save(client, response):
+        assert response.status_code == 200, response.text
+        saved = client.patch(route, json={
+            "revision": folders.read_plan(project, revision=None).revision, "files": response.json()["files"],
+        })
+        assert saved.status_code == 200, saved.text
+
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        refused = edit(client, ["train"], 2)
+        assert refused.status_code == 422, refused.text
+
+        before = requests()
+        save(client, edit(client, ["train", "other"], 2))
+        after = requests()
+        assert {key for key in before if before[key] != after[key]} == {train, other}
+
+        save(client, client.post(f"{route}/authoring/trials", json={
+            "run": {"variant": "default", "step": "other", "row": "default"},
+            "revision": folders.read_plan(project, revision=None).revision, "scope": {"kind": "step", "lit_steps": ["other"]},
+            "change": {"kind": "objective", "edits": [{"op": "replace", "path": "/terms/0/weight/value", "value": 5}]},
+        }))
+        before = requests()
+        save(client, edit(client, ["train"], 3))
+        after = requests()
+        assert {key for key in before if before[key] != after[key]} == {train}
 
 
 def test_scoped_rename_refuses_a_name_change_in_an_unselected_inheritor(tmp_path):

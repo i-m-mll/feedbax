@@ -84,6 +84,8 @@ interface DetailInputs {
   readonly runProblems?: readonly StudioProjectWindowMapProblem[];
   readonly revealProblem?: (problem: StudioProjectWindowMapProblem) => void;
   readonly exceptions?: ExceptionMentions;
+  /** The steps an edit of the selected step reaches outside a document view. */
+  readonly reachedSteps?: ReadonlySet<string>;
 }
 
 const rootModelPath: string[] = [];
@@ -324,7 +326,7 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     active: activeView === 'model',
     selectedSweepValues: input.selectedSweepValues,
     confirmRunRemoval: input.confirmRunRemoval,
-    fieldLitSteps: graphScope?.lit,
+    fieldLitSteps: graphScope?.lit ?? input.reachedSteps,
     planCurrent: input.planCurrent,
     fieldRows: input.fieldRows,
     fieldAxes: input.fieldAxes,

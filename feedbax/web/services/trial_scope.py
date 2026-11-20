@@ -14,10 +14,12 @@ from feedbax.contracts.model_edit import (
     EvaluateAttachmentAxis, EvaluateAttachmentRows, EvaluateAttachmentStep, EvaluateAttachmentVariant,
 )
 from feedbax.contracts.project import (
+    StepBase,
     DocumentEdit, InlineBase, Project, RemoveProjectValue, SetProjectValue, apply_document_edits, document_edit_ops,
 )
 from feedbax.contracts.project_inputs import SweepExceptionTerms
-from feedbax.contracts.project_plan import RunKey
+from feedbax.contracts.project_plan import RunKey, compile_project
+from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.project_resolution import StepTemplate, compose_step, document_differences, document_write_target
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_sweep import AxisCondition, NamedAxis, SetValue, RemoveValue, _compose_writes
@@ -25,7 +27,7 @@ from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
 from feedbax.project_members import generated_name
 from feedbax.studio.selection import TrainSelection, merged_files
-from feedbax.web.services.project_folder import ProjectFolderInvalid
+from feedbax.web.services.project_folder import ProjectFolderInvalid, preview_authored_files
 
 
 _SWEEP_WRITE = TypeAdapter(SetValue | RemoveValue)
@@ -179,6 +181,53 @@ def _exception_file(address, raw, where, writes):
     return file_value(address, raw, ("sweep",), sweep | {"exceptions": exceptions | {name: updated}})
 
 
+def base_descendants(project: Project, steps: Collection[str]) -> frozenset[str]:
+    """The steps based, through ``base: {step}`` at any depth, on one of ``steps``; they read everything stored there."""
+    found = set(steps)
+    while added := {
+        name for name, step in project.steps.items()
+        if name not in found and isinstance(step.base, StepBase) and step.base.step in found
+    }:
+        found |= added
+    return frozenset(found - set(steps))
+
+
+def _lit_roots(project: Project, lit: Collection[str]) -> set[str]:
+    """The lit steps not based on another lit step: an edit stored on them reaches the rest through their bases."""
+    return {step for step in lit if not (base_descendants(project, set(lit) - {step}) & {step})}
+
+
+def refuse_unlit(plan, candidate, reach: Collection[RunKey]) -> None:
+    """Refuse a candidate that changes the request of a run outside ``reach``, the runs of the lit steps.
+
+    A run fed by a reached run's product may change its request with it, provided its own definition does not change.
+    """
+    previous = {run.key: run for run in plan.runs}
+    current = {run.key: run for run in candidate.runs}
+    changed = {
+        key for key in previous.keys() | current.keys()
+        if getattr(previous.get(key), "request_id", None) != getattr(current.get(key), "request_id", None)
+    }
+    affected = changed & set(reach)
+    for graph in (plan, candidate):
+        for run in graph.runs:
+            if run.key in changed and any(binding.producer in affected for binding in run.inputs.values()):
+                other = previous.get(run.key) if graph is candidate else current.get(run.key)
+                if other is not None:
+                    before = decode_request(plan.requests[previous[run.key].request_id], plan.documents.__getitem__)
+                    after = decode_request(candidate.requests[current[run.key].request_id], candidate.documents.__getitem__)
+                    if before.spec != after.spec:
+                        continue
+                affected.add(run.key)
+    if changed - affected:
+        raise ProjectFolderInvalid("The proposed edit reaches runs outside the selected scope.")
+
+
+def lit_runs(plan, variant: str, selected: Collection[RunKey], lit: Collection[str]) -> frozenset[RunKey]:
+    """The runs an edit for ``selected`` may change: those and every run of the lit steps in ``variant``."""
+    return frozenset(selected) | {row.key for row in plan.rows if row.key.variant == variant and row.key.step in lit}
+
+
 type DocumentUsers = Callable[[str], Collection[str]]
 """The steps of the primary variant whose runs read a document."""
 
@@ -214,7 +263,9 @@ def document_files(
     read it, otherwise as a difference from it on each of them.
 
     Stored in the document, an edit takes the place of the differences at the same path that the lit steps apply, on
-    the steps that store them: a step's own, or those it inherits from its base chain.
+    the steps that store them: a step's own, or those it inherits from its base chain. Stored as differences, it is
+    stored on the lit steps not based on another lit step; the others read it through their bases, unless they hold
+    their own value at its path.
     """
     entry = project.documents[document]
     shared = set(lit) == set(users)
@@ -228,8 +279,8 @@ def document_files(
             difference.step for step in lit for difference in document_differences(project, step).get(document, ())
         }
     else:
-        storing = set(lit)
-    for step in sorted(storing | set(lit)):
+        storing = _lit_roots(project, lit)
+    for step in sorted(storing):
         previous = document_edit_ops(project.steps[step].document_overrides.get(document, {}))
         if shared:
             local = []
@@ -274,7 +325,7 @@ def scoped_file(
     A write whose path passes through a document reference changes that document. For the whole step it is stored by
     :func:`document_files` for the steps ``lit`` (the step alone when none are named) among the document's ``users``.
     For a sweep value or exception it is applied to the selected runs' copy of the document, and for a variant it is the
-    variant's write of the document.
+    variant's write of the document. A lit step based on the step that reads another document is not reached by it.
     """
     authored = project.steps[step_id]
     raw = authored.model_dump(mode="json", by_alias=True, exclude_unset=True)
@@ -308,16 +359,17 @@ def scoped_file(
             raise ProjectFolderInvalid("This edit changes a document and needs the steps that read it.")
         for document, patches in through.items():
             readers = set(users(document))
-            if step_id not in lit or not lit <= readers:
+            reading = lit & readers
+            if step_id not in reading or not lit - readers <= base_descendants(project, {step_id}):
                 raise ProjectFolderInvalid("The lit steps no longer match this document.")
             payload = project.documents[document].payload
-            if lit != readers:
+            if reading != readers:
                 payload = deepcopy(payload)
                 apply_document_edits(payload, [
                     difference.edit for difference in document_differences(project, step_id).get(document, ())
                 ])
             edits = [_document_edit(patch, path, payload) for patch, path in patches]
-            files.extend(document_files(project, document, edits, lit, readers))
+            files.extend(document_files(project, document, edits, reading, readers))
     return merged_files(files)
 
 
@@ -348,26 +400,42 @@ def train_selection(
 ) -> TrainSelection:
     """The runs a Train edit names, read from the plan of ``revision``, and the write that stores an edit for them.
 
-    Without rows the selection is every run of the step and of the other ``lit_steps`` in the named run's variant.
-    ``lit_steps`` are the steps an edit of a document the step reads reaches; none is the step alone.
+    Without rows the selection is every run of the step and of the other ``lit_steps`` in the named run's variant; the
+    values shown for it are those of the lit steps not based on the step.
+    ``lit_steps`` are the steps an edit reaches: those of a document the step reads, and the steps based on them; none
+    is the step alone. The write refuses an edit that changes a request of a step that is not lit.
     """
     def users(document: str) -> frozenset[str]:
         plan = folders.read_plan(project_id, revision=revision).plan
         return plan.document_users(plan.variants[0], document)
 
-    store = partial(scoped_file, project, step_id, lit=tuple(lit_steps), users=users)
+    lit = {step_id, *lit_steps}
+
+    def checked(scope, selected, writes):
+        files = scoped_file(project, step_id, scope, writes, lit=tuple(lit_steps), users=users)
+        if files:
+            settled = folders.read_plan(project_id, revision=revision)
+            candidate = compile_project(
+                preview_authored_files(project, files), readers=settled.readers,
+                operations=folders.operations, components=folders.components, functions=folders.functions,
+                python_tasks=folders.python_tasks, figure_templates=folders.figure_templates,
+            )
+            variant = run.variant if run is not None else settled.plan.variants[0]
+            refuse_unlit(settled.plan, candidate, lit_runs(settled.plan, variant, selected, lit))
+        return files
+
     if run is None:
         if rows or axes:
             raise ProjectFolderInvalid("Rows were given without the run they belong to.")
-        return TrainSelection((), None, None, False, partial(store, EvaluateAttachmentStep(kind="step")))
+        return TrainSelection((), None, None, False, partial(checked, EvaluateAttachmentStep(kind="step"), ()))
     key = RunKey(run.variant, run.step, run.row)
     if key.step != step_id:
         raise ProjectFolderInvalid(f"Run {key.row!r} belongs to step {key.step!r}, not {step_id!r}.")
     plan = folders.read_plan(project_id, revision=revision, source_runs=(key,)).plan
     scope = selection_scope(project, plan, key, tuple(rows), axes)
-    lit = {step_id, *lit_steps}
+    compared = lit - base_descendants(project, {step_id})
     shown = tuple(RunKey(key.variant, step_id, row) for row in rows) or tuple(sorted(
-        (row.key for row in plan.rows if row.key.variant == key.variant and row.key.step in lit),
+        (row.key for row in plan.rows if row.key.variant == key.variant and row.key.step in compared),
         key=lambda item: item.step != step_id,
     ))
     if set(shown) != {key}:
@@ -385,5 +453,5 @@ def train_selection(
         payloads, next((row for row in plan.rows if row.key == key), None),
         named.payload if isinstance(scope, SweepValuesScope | EvaluateAttachmentAxis | EvaluateAttachmentRows)
         and named is not None else None, scoped,
-        partial(store, scope), values,
+        partial(checked, scope, selected_runs(plan, key, scope, lit_steps=tuple(lit))), values,
     )

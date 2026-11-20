@@ -1611,7 +1611,7 @@ def test_a_continuation_inherits_its_parent_s_document_differences(tmp_path):
             (sources,) = [value for key, value in train.plan().sources.items() if key.step == step]
             return sources["/payload" + _BATCHES].step
 
-        train.number("train-2", _BATCHES, {"kind": "text", "text": "4"})
+        train.number("train-2", _BATCHES, {"kind": "text", "text": "4"}, lit=("train-2", "train-3"))
         assert batches() == {"train": 2, "other": 2, "train-2": 4, "train-3": 4}
         assert document.read_bytes() == stored
         assert source("train-3") == "train-2"
@@ -1635,6 +1635,33 @@ def test_a_continuation_inherits_its_parent_s_document_differences(tmp_path):
         })
         assert renamed.status_code == 200, renamed.text
         assert {step: train.requests(step) for step in requests} == requests
+
+
+def test_a_train_field_edit_on_a_step_reaches_the_steps_based_on_it(tmp_path):
+    root, client = _shared_training(tmp_path, continuations=1)
+    with client:
+        train = _Training(client)
+
+        def edit(lit, text):
+            return train.client.post(f"{_URL}/authoring/train/train/fields", json={
+                "revision": train.revision, "field": _BATCHES, "edit": {"kind": "text", "text": text}, "lit_steps": lit,
+            })
+
+        refused = edit(["train"], "5")
+        assert refused.status_code == 422, refused.text
+        before = {step: train.requests(step) for step in ("train", "train-2", "other")}
+        train.save(edit(["train", "train-2"], "5"))
+        assert _changed(before["train"], train.requests("train")) == before["train"].keys()
+        assert _changed(before["train-2"], train.requests("train-2")) == before["train-2"].keys()
+        assert train.requests("other") == before["other"]
+
+        # The continuation holds its own value, so only the checkpoint it starts from changes.
+        train.number("train-2", _BATCHES, {"kind": "text", "text": "9"})
+        train.save(edit(["train"], "6"))
+        assert {key.step: definition.payload["training_config"]["n_batches"]
+                for key, definition in train.plan().selected_definitions.items()} == {
+            "train": 6, "other": 2, "train-2": 9,
+        }
 
 
 def test_a_shared_training_document_keeps_a_sweep_s_value_as_the_step_s_difference(tmp_path):

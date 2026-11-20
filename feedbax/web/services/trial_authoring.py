@@ -40,7 +40,9 @@ from feedbax.objectives.document import ObjectiveExecutor, ObjectiveUse, compile
 from feedbax.plugins.application import ApplicationRegistryBundle
 from feedbax.web.services.evaluate_sources import evaluate_subject, evaluate_value_source
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, preview_authored_files
-from feedbax.web.services.trial_scope import document_files, file_value, scoped_file, selected_runs, variant_file
+from feedbax.web.services.trial_scope import (
+    document_files, file_value, refuse_unlit, scoped_file, selected_runs, variant_file,
+)
 
 
 @dataclass(frozen=True)
@@ -499,7 +501,9 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
         files = scoped_file(project, key.step, scope, writes, lit=lit, users=readers) if writes else []
     if not files:
         return [], ()
-    return _validate_files(files, project, settled, selected, folders, bundle, change, expression, evaluate_field=evaluate_field)
+    return _validate_files(
+        files, project, settled, selected, key.step, folders, bundle, change, expression, evaluate_field=evaluate_field,
+    )
 
 
 def _evaluate_field_files(project, plan, key, scope, selected, bundle, change, documents, projected):
@@ -523,7 +527,7 @@ def _evaluate_field_files(project, plan, key, scope, selected, bundle, change, d
     return [file_value(AuthoredFileAddress(kind="step", id=key.step), raw, ("sweep",), sweep)]
 
 
-def _validate_files(files, project, settled, selected, folders, bundle, change, expression, *, evaluate_field):
+def _validate_files(files, project, settled, selected, named, folders, bundle, change, expression, *, evaluate_field):
     plan = settled.plan
     choosing = isinstance(change, StudioTrialSelectDocument)
     authored = preview_authored_files(project, files)
@@ -549,6 +553,11 @@ def _validate_files(files, project, settled, selected, folders, bundle, change, 
     current = {run.key: run for run in candidate.runs}
     before_diagnostics = plan.diagnostics
     for key in sorted(selected, key=lambda item: (item.variant, item.step, item.row)):
+        if key.step != named and key in previous and key in current and (
+            previous[key].request_id == current[key].request_id
+        ):
+            # A lit step that holds its own value where the edit is made keeps it.
+            continue
         if key not in candidate.selected_definitions:
             diagnostic = next((
                 item for item in candidate.diagnostics if item not in before_diagnostics
@@ -607,7 +616,7 @@ def _validate_files(files, project, settled, selected, folders, bundle, change, 
                 and item.step == key.step and item.variant == key.variant and item.row == key.row
             ), None)
             raise ProjectFolderInvalid(diagnostic.detail if diagnostic else "The edit removes a planned request.")
-    _check_other_requests(plan, candidate, previous, current, selected)
+    refuse_unlit(plan, candidate, selected)
     return files, ()
 
 
@@ -617,27 +626,6 @@ def _objective_names(plan, key):
     objective = pairing.get("objective") if isinstance(pairing, dict) else None
     terms = objective.get("terms", []) if isinstance(objective, dict) else []
     return {term.get("id"): term.get("name") for term in terms if isinstance(term, dict) and term.get("name")}
-def _check_other_requests(plan, candidate, previous, current, selected):
-    # A changed request can propagate along a saved product edge.
-    changed = {
-        key for key in previous.keys() | current.keys()
-        if getattr(previous.get(key), "request_id", None) != getattr(current.get(key), "request_id", None)
-    }
-    affected = changed & selected
-    for graph in (plan, candidate):
-        for run in graph.runs:
-            if run.key in changed and any(binding.producer in affected for binding in run.inputs.values()):
-                other = previous.get(run.key) if graph is candidate else current.get(run.key)
-                if other is not None:
-                    before = decode_request(plan.requests[previous[run.key].request_id], plan.documents.__getitem__)
-                    after = decode_request(candidate.requests[current[run.key].request_id], candidate.documents.__getitem__)
-                    if before.spec != after.spec:
-                        continue
-                affected.add(run.key)
-    if changed - affected:
-        raise ProjectFolderInvalid("The proposed edit reaches runs outside the selected scope.")
-
-
 def _field_text(expression, site: Site) -> str | None:
     if references(expression) <= {item.id for item in site.names}:
         return print_field(expression, site)
