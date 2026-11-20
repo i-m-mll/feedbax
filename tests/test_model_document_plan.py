@@ -806,6 +806,38 @@ def test_a_class_swept_for_some_runs_reads_as_the_selected_runs_have_it(tmp_path
         assert other["sweep"] is None and other["classes"] == ["adam"] and "/settings/optimizer/type" not in mixed
 
 
+def test_a_model_field_swept_for_some_runs_reads_as_the_selected_runs_have_it(tmp_path):
+    """Mass swept for seed 1's runs only: Mixed for the step, the sweep for those runs, the one mass for the others."""
+    url = _seed_swept_project(tmp_path, "seed-mass")
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        train = _TrainClient(client, url)
+        plant = {"composites": [], "element": {"kind": "component", "id": "plant"}}
+
+        def mass(keys=(), axes=None, named=None, **edit):
+            body = train.scope(keys, axes, named=named) | {"document": "reach-model", "owner": plant} | edit
+            response = client.post(url + "/model/fields", json=body)
+            return response if edit else next(item for item in response.json()["fields"] if item["label"] == "Mass")
+
+        (default,) = train.runs(tmp_path, "seed-mass", seed="seed-1")
+        train.save(mass(named=default, address=mass(named=default)["address"], edit={"kind": "text", "text": "2, 3"}))
+        axis = next(name for name in client.get(url + "/open").json()["snapshot"]["project"]["steps"]["train"]["sweep"]["axes"]
+                    if name != "seed")
+        train.save(Mock(status_code=200, json=lambda: {"files": [{
+            "address": {"kind": "step", "id": "train"},
+            "patches": [{"op": "add", "path": f"/sweep/axes/{axis}/where", "value": {"axes": {"seed": ["seed-1"]}}}],
+        }]}))
+        first = train.runs(tmp_path, "seed-mass", seed="seed-1")
+        (second,) = train.runs(tmp_path, "seed-mass", seed="seed-2")
+        assert len(first) == 2
+
+        whole = mass(named=first[0])
+        assert whole["sweep"] is None and whole["mixed"]
+        assert sorted(member["value"] for member in whole["members"]) == [1.0, 2, 3]
+        assert [value["value"] for value in mass(first, {"seed": ["seed-1"]})["sweep"]["values"]] == [2, 3]
+        other = mass([second], {"seed": ["seed-2"]})
+        assert other["sweep"] is None and not other["mixed"] and other["text"] == "1.0"
+
+
 def test_a_class_without_a_swept_parameter_is_refused_as_a_member(tmp_path):
     raw = _model_project()
     raw["steps"].pop("baseline")
