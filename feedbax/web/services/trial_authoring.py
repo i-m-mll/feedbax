@@ -16,7 +16,7 @@ from feedbax.contracts.project import (
     BasedDocument, RemoveProjectValue, SetProjectValue, apply_document_edits, based_on, json_pointer_parts,
 )
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
-from feedbax.contracts.project_plan import EVALUATION_TASK, RunKey, compile_project
+from feedbax.contracts.project_plan import EVALUATION_TASK, RunKey, compile_project, own_task_variation
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec
 from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings, authored_variation
@@ -392,7 +392,13 @@ def _evaluate_documents(plan, key, definition, bundle):
     try:
         if definition.payload.get("evaluation_type") != ROLLOUT_TYPE:
             raise ValueError("Task authoring requires a saved rollout Evaluate.")
-        params = authored_rollout_settings(definition.payload.get("params"))
+        raw_params = definition.payload.get("params")
+        own = (definition.payload.get("trial_documents") or {}).get("task")
+        if own is not None and isinstance(raw_params, dict) and (
+            variation := own_task_variation(documents.task_source, own, raw_params.get("variation", []))
+        ) is not None:
+            raw_params = raw_params | {"variation": variation}
+        params = authored_rollout_settings(raw_params)
         variant = resolve_evaluation_variant(
             projection.pair.lowered.graph, documents.task_source, params.variation,
             components=bundle.components,
