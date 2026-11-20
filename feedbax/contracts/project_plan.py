@@ -1263,29 +1263,8 @@ class _Compiler:
                         target = model_field_target(path)
                         assert target is not None
                         step_name, document = target.step, target.document
-                        if step_name is not None:
-                            step = data["steps"].get(step_name)
-                            if step is None or step["kind"] not in {"train", "evaluate"}:
-                                raise ValueError("The addressed Train or Evaluate step does not exist")
-                            batches = step.setdefault(MODEL_ATTACHMENTS, {})
-                            batch = "variant-fields"
-                            while batch in batches:
-                                batch += "-"
-                            records = [patch.model_dump(mode="json")]
-                            batches[batch] = records
-                            if origins is not None:
-                                step_path = f"steps.{step_name}.{MODEL_ATTACHMENTS}"
-                                if len(batches) == 1:
-                                    origins = patch_source(origins, OverridePatch(
-                                        path=step_path, op="add", value={},
-                                    ), source_shape({}, None))
-                                source = ValueSource("variant", row.id, pointer(("sweep", path)), variant=row.id)
-                                origins = patch_source(origins, OverridePatch(
-                                    path=f"{step_path}.{batch}", op="add", value=records,
-                                ), source_shape(records, source))
-                            continue
                         if document is None:
-                            raise ValueError("A project Model field target must name a step or document")
+                            raise ValueError("A project Model field target names a Model document")
                         entry = data["documents"].get(document)
                         if entry is None or entry["schema"] != MODEL_DOCUMENT_SCHEMA_ID:
                             raise ValueError("The addressed Model document does not exist")
@@ -1327,21 +1306,6 @@ class _Compiler:
                             source = ValueSource("variant", row.id, pointer(parts), variant=row.id)
                             origins = place_source(origins, parts, source_shape(patch.value, source))
                         continue
-                    batches = (
-                        parts[:3] if len(parts) >= 4 and parts[0] == "steps" and parts[2] == MODEL_ATTACHMENTS
-                        else parts[:5] if len(parts) >= 6 and parts[0] == "steps"
-                        and parts[2:5] == ("base", "inline", MODEL_ATTACHMENTS) else None
-                    )
-                    if batches is not None:
-                        owner = data
-                        for part in batches[:-1]:
-                            owner = owner.get(part) if isinstance(owner, dict) else None
-                        if isinstance(owner, dict) and MODEL_ATTACHMENTS not in owner:
-                            owner[MODEL_ATTACHMENTS] = {}
-                            if origins is not None:
-                                origins = patch_source(origins, OverridePatch(
-                                    path=".".join(batches), op="add", value={},
-                                ), source_shape({}, None))
                     apply_override_patch_in_place(data, patch)
                     if origins is not None:
                         source = ValueSource("variant", row.id, pointer(parts), variant=row.id)

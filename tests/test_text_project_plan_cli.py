@@ -20,6 +20,7 @@ from feedbax.contracts.project_plan_io import dump_plan_requests, load_plan_requ
 from feedbax.contracts.request_identity import encode_request
 from feedbax.contracts.request_specs import EvaluationRequestSpec
 from feedbax.web.services.project_folder import ProjectFolderService
+from tests.support.model_documents import read_changed_model
 from tests.support.managed_train_fixture import managed_evaluation_step, managed_train_project
 from tests.test_project_analyze_plan import _operations
 from tests.test_project_report_plan import _report_project
@@ -159,7 +160,8 @@ def test_cli_review_locates_derived_trials_and_addressed_model_field(tmp_path, c
         "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
     })
     edit = {"op": "set_field", "address": field.model_dump(mode="json"), "value": 2.0}
-    project["steps"]["train"]["model_attachments"] = {"physics": [edit]}
+    shared = project["steps"]["train"]["base"]["inline"]["trial_documents"]["model"]["document"]
+    changed = read_changed_model(project, "train", [edit])
 
     def save():
         for relative, data in dump_text_project(
@@ -175,13 +177,14 @@ def test_cli_review_locates_derived_trials_and_addressed_model_field(tmp_path, c
     capsys.readouterr()
     params["trial_set"]["ids"] = [second, first]
     edit["value"] = 3.0
+    read_changed_model(project, "train", [edit], base=shared, name=changed)
     save()
     assert main(["plan", str(root), "--check", str(baseline), "--json"]) == 1
     review = {item["key"]["step"]: item for item in json.loads(capsys.readouterr().out)["review"]}
     train = review["train"]
     assert train["path"].endswith(".plant.fields.mass")
     assert train["before_source"] == train["after_source"] == {
-        "kind": "step", "name": "train", "step": "train", "path": "/model_attachments/physics/0/value",
+        "kind": "document", "name": changed, "path": "/interior/components/plant/fields/mass",
     }
     evaluation = review["evaluate"]
     assert evaluation["path"] == "payload.params.trials.0"

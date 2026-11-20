@@ -1,4 +1,8 @@
+import pytest
+from pydantic import ValidationError
+
 from feedbax.builtins.training import StandardTrainingSettings
+from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_inputs import SelectedRow, SubsetTerms, subset_to_rows
 from feedbax.contracts.project_io import (
@@ -103,26 +107,58 @@ def test_named_document_difference_reaches_steps_based_on_it_and_updates_memoize
     assert first.document_users("default", "point-mass") == {"fit", "sibling"}
 
     path = "/interior/components/plant/fields/mass"
-    data["steps"]["fit"]["document_overrides"] = {"point-mass": {path: 3}}
+    data["documents"]["point-mass-2"] = {
+        "schema": data["documents"]["point-mass"]["schema"], "base": {"document": "point-mass"},
+        "differences": {path: {"value": 3}},
+    }
+    slots = data["steps"]["fit"]["base"]["inline"]["trial_documents"]
+    slots["model"] = {"document": "point-mass-2"}
     scoped = Project.model_validate(data)
     plan = compile_project(scoped, source_runs=keys, memo=memo)
     assert plan == compile_project(scoped, source_runs=keys)
     requests = {run.key: run.request_id for run in plan.runs}
     assert requests[fit.key] != fit.request_id
     assert requests[sibling.key] != sibling.request_id
-    assert plan.document_users("default", "point-mass") == {"fit", "sibling"}
+    assert plan.document_users("default", "point-mass-2") == {"fit", "sibling"}
     slot = "/payload/trial_documents/model"
     for key in keys:
         source = plan.sources[key][slot + path]
-        assert (source.kind, source.name) == ("step", "fit")
+        assert (source.kind, source.name) == ("document", "point-mass-2")
     assert plan.selected_definitions[fit.key].payload["seed"] == 2
 
     data["documents"]["point-mass"]["payload"]["interior"]["components"]["plant"]["fields"]["mass"] = 4
-    del data["steps"]["fit"]["document_overrides"]
+    slots["model"] = {"document": "point-mass"}
+    del data["documents"]["point-mass-2"]
     shared = Project.model_validate(data)
     plan = compile_project(shared, source_runs=keys, memo=memo)
     assert plan == compile_project(shared, source_runs=keys)
     assert plan.sources[fit.key][slot + path].name == "point-mass"
+
+
+@pytest.mark.parametrize("held", ["document_overrides", "model_attachments", "inline", "delta"])
+def test_a_step_that_holds_a_model_difference_is_refused(held):
+    data = _project_data()
+    fit = data["steps"]["fit"]
+    if held == "inline":
+        fit["base"]["inline"]["model_attachments"] = {}
+    elif held == "delta":
+        fit["deltas"] = [{"layer_id": "edit", "patches": [{"op": "add", "path": "model_attachments", "value": {}}]}]
+    else:
+        fit[held] = {}
+    with pytest.raises(ValidationError):
+        Project.model_validate(data)
+
+
+def test_a_project_variant_changes_a_model_through_a_document_only():
+    data = _project_data()
+    mass = ModelAddress.model_validate({
+        "composites": [], "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
+    }).to_text()
+    data["sweep"] = {"rows": {"base": {}, "heavy": {"patches": {f"steps.fit.{mass}": {"value": 2.0}}}}}
+    plan = compile_project(Project.model_validate(data))
+    (problem,) = plan.diagnostics
+    assert (problem.code, problem.variant, problem.step) == (ResolutionCode.INVALID_SWEEP, "heavy", "fit")
+    assert {run.key.variant for run in plan.runs} == {"base"}
 
 
 def test_fanout_selects_rows_and_requires_a_valid_static_subject():

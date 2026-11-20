@@ -4,9 +4,9 @@ that step's continuation."""
 from dataclasses import dataclass
 from typing import Any
 
-from feedbax.contracts.project import InlineBase, Project, RemoveProjectValue, SetProjectValue, Step, StepBase
+from feedbax.contracts.project import Project, RemoveProjectValue, SetProjectValue, Step
 from feedbax.contracts.project_inputs import StepReference
-from feedbax.contracts.project_resolution import StepTemplate, compose_step, document_differences
+from feedbax.contracts.project_resolution import StepTemplate, compose_step
 from feedbax.contracts.project_sweep import Sweep
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.studio_authoring import StudioTrainStartEdit, StudioTrainStartRequest
@@ -27,11 +27,8 @@ class _Definition:
 
 
 def _definition(project: Project, step_id: str) -> _Definition:
-    """The step's composed definition, without its own Model attachment differences, which it keeps as they are."""
-    bare = project.model_copy(update={"steps": project.steps | {
-        step_id: project.steps[step_id].model_copy(update={"model_attachments": {}}),
-    }})
-    template = compose_step(bare, step_id)
+    """The step's composed definition."""
+    template = compose_step(project, step_id)
     if not isinstance(template, StepTemplate):
         raise ProjectFolderInvalid(template.detail)
     return _Definition(
@@ -140,7 +137,6 @@ def prepare_train_start(
     if (
         (result.payload, result.sweep, result.requires) != (payload, own.sweep, own.requires)
         or result.inputs != intended
-        or document_differences(started, step_id) != document_differences(project, step_id)
     ):
         raise ProjectFolderInvalid(f"Train step {step_id!r} cannot keep its definition with this start.")
     order = list(raw)

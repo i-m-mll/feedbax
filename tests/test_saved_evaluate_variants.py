@@ -24,6 +24,7 @@ from feedbax.builtins.reaching import REACHING_TASK
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project, managed_evaluation_definition
+from tests.support.model_documents import read_changed_model
 from tests.support.host import job_row, token, wait_until
 from tests.test_model_document_plan import _add_attachment, _attachment_owner
 
@@ -54,23 +55,29 @@ def _saved_variants():
     selection = _patch("task", {"document": "replacement-task"})
     replacement = step([selection])
     perturbed = step([selection])
-    perturbed["model_attachments"] = {"wire": [_add_attachment(_attachment_owner("read"), "scale", None, 0.5)]}
     incompatible = deepcopy(task["payload"])
     incompatible["signals"] = [signal for signal in incompatible["signals"] if signal["id"] != "target_pos"]
     dtype = step([])
-    dtype["model_attachments"] = {"dtype": [{
+    dtype_change = [{
         "op": "set_field",
         "address": {
             "composites": ["wrapper", "controller"],
             "element": {"kind": "field", "parent": {"kind": "component", "id": "readout"}, "path": ["fields", "dtype"]},
         },
         "value": "float16",
-    }]}
+    }]
     definition["steps"] = {
         "train": steps["train"], "baseline": baseline, "replacement": replacement, "perturbed": perturbed,
         "different-dtype": dtype,
         "incompatible": step([_patch("task", incompatible)]),
     }
+    trained = steps["train"]["base"]["inline"]["trial_documents"]["model"]["document"]
+    components = new_application_registry_bundle().components
+    read_changed_model(
+        definition, "perturbed", [_add_attachment(_attachment_owner("read"), "scale", None, 0.5)],
+        base=trained, components=components,
+    )
+    read_changed_model(definition, "different-dtype", dtype_change, base=trained, components=components)
     return Project.model_validate(definition)
 
 

@@ -140,7 +140,6 @@ def test_a_kept_sweep_value_is_stored_in_a_document_based_on_the_shared_one(tmp_
         project.edit(reply["command"]["operation"], step="fee", files=reply["files"])
         fee = project.project().steps["fee"]
         assert fee.sweep is None or all(axis is None for axis in fee.sweep.axes.values())
-        assert "model_attachments" not in fee.model_fields_set
         assert project.reads("fee") == "model-2"
         assert project.composed("model-2")["interior"]["components"]["plant"]["fields"]["mass"] == 4
         assert project.ids()["other"] == other

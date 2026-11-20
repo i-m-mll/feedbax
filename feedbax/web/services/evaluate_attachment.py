@@ -28,7 +28,7 @@ from feedbax.contracts.model_edit import (
 from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.project import (
-    DifferenceNotApplied, InlineBase, Project, apply_differences, diff, nearest_shared_base,
+    DifferenceNotApplied, Project, apply_differences, diff, nearest_shared_base,
 )
 from feedbax.contracts.project_plan import EVALUATION_MODEL, ProjectPlan, RunKey, compile_project
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
@@ -107,22 +107,6 @@ def _scope(project, data, body):
         raise ValueError("The selected step is unavailable or is not an Evaluate step")
     step = data["steps"][key.step]
     address = AuthoredFileAddress(kind="step", id=key.step)
-    if isinstance(scope, EvaluateAttachmentVariant):
-        if key.variant != scope.variant:
-            raise ValueError("The selected run is outside the requested variant")
-        original = project.sweep.rows.get(scope.variant) if project.sweep is not None else None
-        if original is None:
-            raise ValueError("The selected variant has no authored row")
-        if not isinstance(authored.base, InlineBase):
-            raise ValueError("A variant changes the Model of an Evaluate step defined in its own file")
-        row = data["sweep"]["rows"][scope.variant]
-        patches = row.setdefault("patches", {})
-        batch = _batch_id("variant", scope.variant)
-        path = _batch_path(patches, f"steps.{key.step}.base.inline.{MODEL_ATTACHMENTS}", batch)
-        return _Scope(
-            AuthoredFileAddress(kind="variant", id=scope.variant), "patches", patches, original,
-            patch=path,
-        ), row
     if isinstance(scope, EvaluateAttachmentAxis):
         axis = step["sweep"]["axes"][scope.axis]
         if not isinstance(axis.get("values"), dict):
@@ -158,7 +142,7 @@ def _scope(project, data, body):
             address, "sweep", patches, authored, patch=_batch_path(patches, MODEL_ATTACHMENTS, batch),
             exception=(exceptions, name),
         ), step
-    raise ValueError("A change for the whole step is an edit of the Model document it reads")
+    raise ValueError("A change for the whole step, in any variant, is an edit of the Model document it reads")
 
 
 def _addressed_field(path: str) -> bool:
@@ -218,7 +202,7 @@ def read_evaluate_attachments(
         selected = folders.read_plan(project_id, revision=body.revision, source_runs=(key,)).plan
     definition = selected.selected_definitions.get(key)
     data = snapshot.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
-    local = () if isinstance(body.scope, EvaluateAttachmentStep) else _local_records(_scope(snapshot.project, data, body)[0])
+    local = () if isinstance(body.scope, EvaluateAttachmentStep | EvaluateAttachmentVariant) else _local_records(_scope(snapshot.project, data, body)[0])
     _, editable = _selected_rows(selected, body)
     effective = MODEL_DIFFERENCE_BATCHES.validate_python(
         definition.payload.get(MODEL_ATTACHMENTS, {}) if definition else {},
@@ -320,10 +304,7 @@ def prepare_evaluate_attachment(folders, project_id, body, components):
         if isinstance(difference, SetField) and any(key.variant != body.run.variant for key in selected):
             raise ValueError("The Model field scope includes another variant")
         if isinstance(difference, SetField) and scope.patch is not None:
-            path = difference.address.to_text()
-            if isinstance(body.scope, EvaluateAttachmentVariant):
-                path = f"steps.{body.run.step}.{path}"
-            scope.target[path] = {"value": difference.value}
+            scope.target[difference.address.to_text()] = {"value": difference.value}
         else:
             records = _apply(_local_records(scope), difference)
             scope.store([record.model_dump(mode="json", exclude_unset=True) for record in records])

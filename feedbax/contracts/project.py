@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from typing import Annotated, Any, Literal
 
@@ -10,7 +10,7 @@ from pydantic import Field, JsonValue, StringConstraints, TypeAdapter, model_val
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.matrix_core import apply_value_patch_in_place, ensure_value_collection
-from feedbax.contracts.model_attachment import ModelDifference
+from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS
 from feedbax.contracts.task_document import (
     PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, TaskDocument,
 )
@@ -25,7 +25,7 @@ from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID, TrainingDocument
 
 type Payload = dict[str, JsonValue]
-type DocumentOverridePath = Annotated[Pointer, StringConstraints(min_length=1)]
+type DifferencePointer = Annotated[Pointer, StringConstraints(min_length=1)]
 type Sha256 = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
 type StepKind = Literal["train", "evaluate", "analyze", "report"]
 
@@ -39,13 +39,13 @@ def json_pointer_parts(pointer: str | None) -> tuple[str, ...]:
 
 class SetProjectValue(StrictModel):
     op: Literal["add", "replace"]
-    path: DocumentOverridePath
+    path: DifferencePointer
     value: JsonValue
 
 
 class RemoveProjectValue(StrictModel):
     op: Literal["remove"]
-    path: DocumentOverridePath
+    path: DifferencePointer
 
 
 type ProjectValueEdit = Annotated[SetProjectValue | RemoveProjectValue, Field(discriminator="op")]
@@ -53,20 +53,13 @@ type ProjectValueEdit = Annotated[SetProjectValue | RemoveProjectValue, Field(di
 
 class EnsureDocumentCollection(StrictModel):
     op: Literal["ensure"]
-    path: DocumentOverridePath
+    path: DifferencePointer
     collection: Literal["object", "array"]
 
 
 type DocumentEdit = Annotated[
     SetProjectValue | RemoveProjectValue | EnsureDocumentCollection, Field(discriminator="op")
 ]
-type DocumentOverrides = dict[DocumentOverridePath, JsonValue] | list[DocumentEdit]
-
-
-def document_edit_ops(edits: DocumentOverrides) -> list[DocumentEdit]:
-    if isinstance(edits, dict):
-        return [SetProjectValue(op="replace", path=path, value=value) for path, value in edits.items()]
-    return edits
 
 
 def apply_document_edit(root: dict[str, Any], edit: DocumentEdit, value: Any) -> None:
@@ -83,8 +76,8 @@ def document_edit_value(edit: DocumentEdit) -> JsonValue:
     return edit.value if isinstance(edit, SetProjectValue) else None
 
 
-def apply_document_edits(root: dict[str, Any], edits: DocumentOverrides) -> None:
-    for edit in document_edit_ops(edits):
+def apply_document_edits(root: dict[str, Any], edits: Sequence[DocumentEdit]) -> None:
+    for edit in edits:
         apply_document_edit(root, edit, document_edit_value(edit))
 
 
@@ -121,7 +114,6 @@ class RemoveDocumentValue(StrictModel):
     op: Literal["remove"]
 
 
-type DifferencePointer = Annotated[Pointer, StringConstraints(min_length=1)]
 type Differences = dict[DifferencePointer, SetDocumentValue | RemoveDocumentValue]
 
 
@@ -276,14 +268,22 @@ class Step(StrictModel):
     kind: StepKind
     base: Base
     deltas: list[MatrixCompositionDelta] = Field(default_factory=list)
-    # These differences apply when this step reads the named document.
-    document_overrides: dict[ProjectName, DocumentOverrides] = Field(default_factory=dict)
-    model_attachments: dict[ProjectName, list[ModelDifference]] = Field(default_factory=dict)
     sweep: Sweep | None = None
     inputs: dict[ProjectName, InputBinding | None] = Field(default_factory=dict)
     requires: list[PatchPath] = Field(default_factory=list)
     note: StepNote | None = None
     group: ProjectName | None = None
+
+    @model_validator(mode="after")
+    def _no_model_difference(self) -> Step:
+        if isinstance(self.base, InlineBase) and isinstance(self.base.inline, dict) and MODEL_ATTACHMENTS in self.base.inline:
+            raise ValueError(f"A step holds no {MODEL_ATTACHMENTS}; a Model change is a document based on the Model")
+        if any(
+            patch.path == MODEL_ATTACHMENTS or patch.path.startswith(MODEL_ATTACHMENTS + ".")
+            for delta in self.deltas for patch in delta.patches
+        ):
+            raise ValueError(f"A step's deltas write no {MODEL_ATTACHMENTS}; a Model change is a document based on the Model")
+        return self
 
 
 class Project(StrictModel):

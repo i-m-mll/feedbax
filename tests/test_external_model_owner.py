@@ -19,6 +19,7 @@ from feedbax.runtime._graph_key_schedule import model_initialization_key
 from feedbax.training.method_checkpoint import read_method_checkpoint
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.installed_package import install_discovery_fixture
+from tests.support.model_documents import read_changed_model
 from tests.support.managed_train_fixture import managed_evaluation_step, managed_train_project
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.support.host import job_row, token, wait_until, worker_environment
@@ -40,7 +41,8 @@ def test_external_owner_trains_checkpoints_and_records_an_evaluate_difference(ho
     owner_type = "entry_point_provider.ObservedReadout"
     component.update(type=owner_type, revision=1)
     address = {"composites": []}
-    raw["steps"]["evaluate"] = managed_evaluation_step("train") | {"model_attachments": {"observation": [
+    raw["steps"]["evaluate"] = managed_evaluation_step("train")
+    read_changed_model(raw, "evaluate", [
         {
             "op": "add_component",
             "address": address | {"element": {"kind": "component", "id": "probe"}},
@@ -57,7 +59,7 @@ def test_external_owner_trains_checkpoints_and_records_an_evaluate_difference(ho
             "source": {"owner": "component", "component": "readout", "port": "output"},
             "target": {"owner": "component", "component": "probe", "port": "input"},
         },
-    ]}}
+    ], base=model_name, components=registry.components)
     folders = ProjectFolderService(
         tmp_path / "projects", components=registry.components,
         functions=registry.expression_functions, python_tasks=registry.python_tasks,
