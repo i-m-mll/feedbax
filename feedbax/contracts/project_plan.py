@@ -33,7 +33,10 @@ from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.model_values import model_owner_problem
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.studio_place import path_parts, variation_targets
-from feedbax.contracts.project import Document, InlineBase, RootDocument, Payload, Project, Step, StepBase, StepKind, json_pointer_parts
+from feedbax.contracts.project import (
+    DifferenceNotApplied, Differences, Document, InlineBase, Payload, Project, RootDocument, Step, StepBase, StepKind,
+    apply_differences, base_chain, diff, json_pointer_parts, nearest_shared_base,
+)
 from feedbax.contracts.project_inputs import (
     BarrierCheckpoint,
     BatchCheckpoint,
@@ -231,6 +234,10 @@ class PlannedRow:
     coordinates: Mapping[str, SweepCoordinate]
     document_ids: Mapping[str, str] = field(default_factory=dict, kw_only=True)
     document_uses: frozenset[str] = field(default=frozenset(), kw_only=True)
+    # Documents an Evaluate row reads through its subject run rather than naming them.
+    followed_documents: frozenset[str] = field(default=frozenset(), kw_only=True)
+    # The Model document an Evaluate row names, and its subject run's Model document.
+    evaluated_model: tuple[str, str] | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -457,9 +464,15 @@ class ProjectPlan:
         requests.update(self.elements)
         return requests
 
+    @cached_property
+    def evaluated_models(self) -> frozenset[tuple[str, str]]:
+        """Each Model document an Evaluate row names, paired with its subject run's Model document."""
+        return frozenset(row.evaluated_model for row in self.rows if row.evaluated_model is not None)
+
     def document_users(self, variant: str, document: str) -> frozenset[str]:
         return frozenset(
-            row.key.step for row in self.rows if row.key.variant == variant and document in row.document_uses
+            row.key.step for row in self.rows
+            if row.key.variant == variant and document in row.document_uses - row.followed_documents
         )
 
     @property
@@ -606,6 +619,18 @@ class _ModelSource:
     stamp: str
     evaluation_problem: ProjectDiagnostic | None = None
     evaluation_graph: GraphSpec | None = None
+
+
+EVALUATION_MODEL = "payload.trial_documents.model"
+EVALUATION_TASK = "payload.trial_documents.task"
+
+
+@dataclass(frozen=True)
+class _EvaluationModel:
+    """The differences an Evaluate step's Model document applies to its subject run's model."""
+
+    document: str
+    differences: Differences
 
 
 def _model_differences(payload: Payload) -> tuple[Payload, tuple[ModelDifference, ...]]:
@@ -1718,11 +1743,16 @@ class _Compiler:
                     payload, authored_model = self.lower_train_model(key, payload, document_ids, document_pointers)
             elif kind == "evaluate":
                 reference = subject.member.reference if subject is not None else None
+                read = reader or self.variants[key.variant].documents.get
                 if isinstance(reference, BestRank):
                     assert subject is not None
-                    payload = self.lower_best_evaluate(key, payload, subject, reference, has_differences)
+                    payload = self.lower_best_evaluate(
+                        key, payload, subject, reference, has_differences, document_ids, read,
+                    )
                 else:
-                    payload = self.lower_evaluate_payload(key, payload, model_source, reference, has_differences)
+                    payload = self.lower_evaluate_payload(
+                        key, payload, model_source, reference, has_differences, document_ids, read,
+                    )
             if isinstance(payload, ProjectDiagnostic):
                 return _LoweredRow(
                     None, (payload,), lowering_stamp, document_ids=document_ids, document_uses=document_uses,
@@ -1829,21 +1859,105 @@ class _Compiler:
     def lower_evaluate_payload(
         self, key: RunKey, payload: Payload, model_source: _ModelSource | None,
         reference: object, has_differences: bool,
+        document_ids: Mapping[str, str], read: Callable[[str], Document | None],
     ) -> Payload | ProjectDiagnostic:
         original = payload.get("params")
-        result = self._lower_evaluate_payload(key, payload, model_source, reference, has_differences)
-        if isinstance(result, ProjectDiagnostic) and (parts := path_parts(result.path))[:2] == ("params", "variation"):
-            return replace(result, variation_target=variation_targets(original)(parts[2]) if len(parts) > 2 else None)
+        slots = self.evaluation_slots(key, payload, model_source, reference, document_ids, read)
+        if isinstance(slots, ProjectDiagnostic):
+            return slots
+        lowered, model, task = slots
+        result = self._lower_evaluate_payload(key, lowered, model_source, reference, has_differences, model)
+        if not isinstance(result, ProjectDiagnostic):
+            return result
+        parts = path_parts(result.path)
+        if task and parts[:3] == ("params", "variation", "0"):
+            return replace(result, path=f"/trial_documents/task{pointer(parts[3:])}", document=document_ids.get(EVALUATION_TASK))
+        if parts[:2] == ("params", "variation"):
+            index = int(parts[2]) - task if len(parts) > 2 and parts[2].isdigit() else None
+            target = variation_targets(original)(str(index) if index is not None else parts[2]) if len(parts) > 2 else None
+            return replace(result, variation_target=target)
         return result
+
+    def evaluation_slots(
+        self, key: RunKey, payload: Payload, model_source: _ModelSource | None, reference: object,
+        document_ids: Mapping[str, str], read: Callable[[str], Document | None],
+    ) -> tuple[Payload, _EvaluationModel | None, bool] | ProjectDiagnostic:
+        """Lower an Evaluate step's own Model and Task documents against its subject run's.
+
+        The Task slot becomes the task replacement ahead of the authored variation, or nothing when it is the
+        subject's task. The Model slot becomes the differences of its content from the nearest document it
+        shares with the subject run's Model document.
+        """
+        if "trial_documents" not in payload:
+            return payload, None, False
+        slots = payload["trial_documents"]
+        payload = {name: value for name, value in payload.items() if name != "trial_documents"}
+
+        def problem(path: str, detail: str) -> ProjectDiagnostic:
+            return ProjectDiagnostic(
+                ResolutionCode.INVALID_PAYLOAD, path, detail, key.step, row=key.row, variant=key.variant,
+                document=document_ids.get(path),
+            )
+
+        if not isinstance(slots, dict) or slots.keys() - {"model", "task"}:
+            return problem("payload.trial_documents", "An Evaluate reads a Model and a Task document.")
+        train = self.evaluation_train(reference) if isinstance(reference, ProductRef) else None
+        if train is None or model_source is None:
+            path = EVALUATION_MODEL if "model" in slots else EVALUATION_TASK
+            return problem(path, "Requires a trained subject.")
+        model = None
+        if "model" in slots:
+            name = document_ids.get(EVALUATION_MODEL)
+            subject = model_source.document
+            documents = self.variants[key.variant].documents
+            if subject is not None:
+                for member in base_chain(documents, subject):
+                    read(member)
+            content = slots["model"]
+            if name is None or not isinstance(content, dict):
+                return problem(EVALUATION_MODEL, "Name a Model document.")
+            shared = nearest_shared_base(documents, subject, name) if subject is not None else None
+            if shared is None:
+                return replace(
+                    problem(EVALUATION_MODEL, f"Shares no document with {subject}." if subject else "Requires a subject Model document."),
+                    code=ResolutionCode.BAD_REFERENCE,
+                )
+            base = compose_document(read, shared)
+            if isinstance(base, ProjectDiagnostic):
+                return replace(base, step=key.step, row=key.row, variant=key.variant)
+            assert isinstance(base.payload, dict)
+            if differences := diff(base.payload, content):
+                model = _EvaluationModel(name, differences)
+        task = False
+        if "task" in slots:
+            subject_task = train.trial_documents.task_source
+            try:
+                same = type(subject_task).model_validate(slots["task"]) == subject_task
+            except ValidationError:
+                same = False
+            if not same:
+                params = payload.get("params")
+                if not isinstance(params, dict):
+                    return problem("payload.params", "Declare rollout parameters.")
+                authored = params.get("variation", [])
+                if isinstance(authored, dict):
+                    authored = [authored[name] for name in sorted(authored)]
+                if not isinstance(authored, list):
+                    return problem("payload.params.variation", "Declare the variation as a list.")
+                payload = payload | {"params": params | {"variation": [
+                    {"op": "replace", "path": "task", "value": slots["task"]}, *authored,
+                ]}}
+                task = True
+        return payload, model, task
 
     def _lower_evaluate_payload(
         self, key: RunKey, payload: Payload, model_source: _ModelSource | None,
-        reference: object, has_differences: bool,
+        reference: object, has_differences: bool, model: _EvaluationModel | None,
     ) -> Payload | ProjectDiagnostic:
-        if not has_differences:
+        if not has_differences and model is None:
             return self.lower_evaluate_trials(key, payload, reference, model_source)
         original = payload.get("params")
-        lowered = self.lower_evaluate_model(key, payload, model_source, reference)
+        lowered = self.lower_evaluate_model(key, payload, model_source, reference, model)
         if isinstance(lowered, ProjectDiagnostic):
             return lowered
         result = self.lower_evaluate_trials(key, lowered, reference, model_source)
@@ -1960,6 +2074,7 @@ class _Compiler:
 
     def lower_best_evaluate(
         self, key: RunKey, payload: Payload, subject: PlannedInput, rank: BestRank, has_differences: bool,
+        document_ids: Mapping[str, str], read: Callable[[str], Document | None],
     ) -> Payload | ProjectDiagnostic:
         def problem(detail: str) -> ProjectDiagnostic:
             return ProjectDiagnostic(
@@ -1978,7 +2093,9 @@ class _Compiler:
                 return problem(f"Best candidate {name}: {message}")
             if refusal := _authored_graph_variation_problem(key, payload):
                 return refusal
-            lowered = self.lower_evaluate_payload(key, payload, model, candidate.reference, has_differences)
+            lowered = self.lower_evaluate_payload(
+                key, payload, model, candidate.reference, has_differences, document_ids, read,
+            )
             if isinstance(lowered, ProjectDiagnostic):
                 return replace(lowered, detail=f"Best candidate {name}: {lowered.detail}")
             try:
@@ -2056,6 +2173,7 @@ class _Compiler:
 
     def lower_evaluate_model(
         self, key: RunKey, payload: Payload, model_source: _ModelSource | None, reference: object,
+        model: _EvaluationModel | None = None,
     ) -> Payload | ProjectDiagnostic:
         from feedbax.compiler.model_attachment import lower_evaluate_attachments
         from feedbax.compiler.model_document import ModelCompilationProblem
@@ -2065,11 +2183,15 @@ class _Compiler:
 
         address = None
         document = model_source.document if model_source is not None else None
+        differences: tuple[ModelDifference, ...] = ()
         try:
             stripped, differences = _model_differences(payload)
-            if not differences:
+            if not differences and model is None:
                 return stripped
-            address = differences[0].address
+            if differences:
+                address = differences[0].address
+            else:
+                document = model.document if model is not None else document
             if payload.get("evaluation_type") != ROLLOUT_TYPE:
                 raise ValueError("Attachment differences require a rollout Evaluate with an authored Train Model")
             if not isinstance(reference, ProductRef):
@@ -2081,8 +2203,20 @@ class _Compiler:
                 raise ValueError("Attachment differences need a saved Model document")
             components = self.components or _builtin_model_registry()
             documents = train.trial_documents
+            evaluated = model_source.model
+            if model is not None:
+                try:
+                    evaluated = ModelDocument.model_validate(
+                        apply_differences(model_source.model.model_dump(mode="json"), model.differences),
+                    )
+                except DifferenceNotApplied as error:
+                    return _model_difference_problem(
+                        key, model.document, None, str(error), path=f"{EVALUATION_MODEL}{error.path.replace('/', '.')}",
+                    )
+                except ValueError as error:
+                    return _model_difference_problem(key, model.document, None, str(error), path=EVALUATION_MODEL)
             before, lowered, derived = lower_evaluate_attachments(
-                model_source.model, None, components, differences, functions=self.functions,
+                model_source.model, evaluated, None, components, differences, functions=self.functions,
             )
             raw_params = payload["params"]
             params = authored_rollout_settings(raw_params)
@@ -2113,9 +2247,8 @@ class _Compiler:
             return _model_difference_problem(key, document, address, error.reason, path=error.path)
         except ValueError as error:
             detail = str(error)
-        return _model_difference_problem(
-            key, document, address, detail, path=pointer(address.stored_path()) if address else None,
-        )
+        path = pointer(address.stored_path()) if address else EVALUATION_MODEL if not differences else None
+        return _model_difference_problem(key, document, address, detail, path=path)
 
     def compile_step(
         self, variant: str, name: str, active: tuple[tuple[str, str], ...]
@@ -2334,6 +2467,23 @@ class _Compiler:
         omissions: Mapping[str, str], requires: tuple[str, ...],
     ) -> PlannedRun | None:
         row = self.rows[key]
+        followed: frozenset[str] = frozenset()
+        evaluated = None
+        if row.kind == "evaluate" and (subject := inputs.get("subject")) is not None and subject.producer is not None:
+            own = lowered.document_ids
+            trained = self.rows[subject.producer].document_ids
+            if (named := own.get(EVALUATION_MODEL)) is not None and (model := trained.get(EVALUATION_MODEL)) is not None:
+                evaluated = named, model
+            slots = {EVALUATION_MODEL: (EVALUATION_MODEL,), EVALUATION_TASK: (EVALUATION_TASK, "payload.trial_documents.python_task")}
+            inherited = {
+                path: trained[path] for slot, paths in slots.items() if slot not in own
+                for path in paths if path in trained
+            }
+            followed = frozenset(inherited.values()) - lowered.document_uses
+            lowered = replace(
+                lowered, document_ids=MappingProxyType({**own, **inherited}),
+                document_uses=lowered.document_uses | followed,
+            )
         self.diagnostics.extend(
             replace(problem, document=lowered.document_ids.get("payload"))
             if row.kind == "report" and problem.document is None else problem
@@ -2345,6 +2495,7 @@ class _Compiler:
         if (encoded := lowered.request) is None:
             self.rows[key] = replace(
                 row, document_ids=lowered.document_ids, document_uses=lowered.document_uses,
+                followed_documents=followed, evaluated_model=evaluated,
             )
             return None
         self.requests[encoded.id] = encoded.data
@@ -2361,6 +2512,8 @@ class _Compiler:
             admission_problem=lowered.admission_problem,
             document_ids=lowered.document_ids,
             document_uses=lowered.document_uses,
+            followed_documents=followed,
+            evaluated_model=evaluated,
         )
         self.rows[key] = run
         return run
