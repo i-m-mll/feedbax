@@ -50,8 +50,10 @@ interface Props {
   /** The project's Train steps, whose checkpoints the step can start from. */
   readonly trains?: readonly PlanStepView[];
   readonly picking?: ElementSelectionStore;
-  /** The form is the Training view's: it shows the training document's fields, and an edit reaches the `lit` steps. */
-  readonly trainingDocument?: { readonly lit: readonly string[] };
+  /** The form is the Training view's: it shows the training document's fields. */
+  readonly trainingDocument?: boolean;
+  /** The steps an edit reaches besides the step: the training document's lit users, or the steps based on the step. */
+  readonly lit?: readonly string[];
 }
 
 const settingsPrefix = '/settings';
@@ -233,7 +235,7 @@ export function StudioTrainAuthoringForm(props: Props) {
   const { project_id: projectId, revision } = saved;
   const methodLabel = useId();
   const [methodReason, setMethodReason] = useState<string>();
-  const scope = runSelection(props.run, props.fieldRows, props.fieldAxes, props.trainingDocument?.lit, props.step);
+  const scope = runSelection(props.run, props.fieldRows, props.fieldAxes, props.lit, props.step);
   const shows = (id: string) => !props.trainingDocument || inTrainingDocument(id);
   const definition = useQuery({
     queryKey: ['train-authoring', projectId, stepId, revision, scope],

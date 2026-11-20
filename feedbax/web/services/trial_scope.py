@@ -223,9 +223,11 @@ def refuse_unlit(plan, candidate, reach: Collection[RunKey]) -> None:
         raise ProjectFolderInvalid("The proposed edit reaches runs outside the selected scope.")
 
 
-def lit_runs(plan, variant: str, selected: Collection[RunKey], lit: Collection[str]) -> frozenset[RunKey]:
-    """The runs an edit for ``selected`` may change: those and every run of the lit steps in ``variant``."""
-    return frozenset(selected) | {row.key for row in plan.rows if row.key.variant == variant and row.key.step in lit}
+def lit_runs(
+    plan, variants: Collection[str], selected: Collection[RunKey], lit: Collection[str],
+) -> frozenset[RunKey]:
+    """The runs an edit for ``selected`` may change: those and every run of the lit steps in ``variants``."""
+    return frozenset(selected) | {row.key for row in plan.rows if row.key.variant in variants and row.key.step in lit}
 
 
 type DocumentUsers = Callable[[str], Collection[str]]
@@ -420,14 +422,13 @@ def train_selection(
                 operations=folders.operations, components=folders.components, functions=folders.functions,
                 python_tasks=folders.python_tasks, figure_templates=folders.figure_templates,
             )
-            variant = run.variant if run is not None else settled.plan.variants[0]
-            refuse_unlit(settled.plan, candidate, lit_runs(settled.plan, variant, selected, lit))
+            refuse_unlit(settled.plan, candidate, selected or lit_runs(settled.plan, settled.plan.variants, (), lit))
         return files
 
     if run is None:
         if rows or axes:
             raise ProjectFolderInvalid("Rows were given without the run they belong to.")
-        return TrainSelection((), None, None, False, partial(checked, EvaluateAttachmentStep(kind="step"), ()))
+        return TrainSelection((), None, None, False, partial(checked, EvaluateAttachmentStep(kind="step"), frozenset()))
     key = RunKey(run.variant, run.step, run.row)
     if key.step != step_id:
         raise ProjectFolderInvalid(f"Run {key.row!r} belongs to step {key.step!r}, not {step_id!r}.")
@@ -453,5 +454,26 @@ def train_selection(
         payloads, next((row for row in plan.rows if row.key == key), None),
         named.payload if isinstance(scope, SweepValuesScope | EvaluateAttachmentAxis | EvaluateAttachmentRows)
         and named is not None else None, scoped,
-        partial(checked, scope, selected_runs(plan, key, scope, lit_steps=tuple(lit))), values,
+        partial(checked, scope, _scoped_runs(plan, key, scope, lit)), values,
     )
+
+
+def _scoped_runs(plan, key: RunKey, scope: RunScope, lit: Collection[str]) -> frozenset[RunKey]:
+    """The runs an edit for ``scope`` may change: the step's selected runs and the other lit steps'.
+
+    Stored on the step, an edit reaches those runs in every variant; stored on a variant, in that variant.
+    """
+    variants = {scope.variant} if isinstance(scope, EvaluateAttachmentVariant) else set(plan.variants)
+    if isinstance(scope, EvaluateAttachmentStep | EvaluateAttachmentVariant):
+        return lit_runs(plan, variants, (), lit)
+    picked = {
+        row.key for row in plan.rows if row.key.variant in variants and row.key.step == key.step and (
+            row.key.row in scope.rows if isinstance(scope, EvaluateAttachmentRows)
+            else all(
+                (coordinate := row.coordinates.get(axis)) is not None and coordinate.value_id in values
+                for axis, values in ({scope.axis: (scope.value,)} if isinstance(scope, EvaluateAttachmentAxis)
+                                     else scope.axes).items()
+            )
+        )
+    }
+    return lit_runs(plan, variants, picked, set(lit) - {key.step})

@@ -1352,7 +1352,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               padded: true,
               picker: pickDocument('training', trainingDocument, scope),
               body: authoring ? withProblem(<StudioTrainAuthoringForm {...authoring} run={namedRun}
-                runPending={!data && !projection.isError} trainingDocument={{ lit: scope ? [...scope.lit] : [] }}
+                runPending={!data && !projection.isError} trainingDocument lit={scope ? [...scope.lit] : undefined}
                 fieldRows={scope ? undefined : detailInputs.fieldRows} fieldAxes={scope ? undefined : detailInputs.fieldAxes} />)
                 : noView,
             };
@@ -1394,7 +1394,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                   <FocusedFields request={slot === focusSlot && fieldFocus?.step === step.id ? fieldFocus : undefined}
                     onFocused={() => setFieldFocus(undefined)}>
                     {authoring && <StudioTrainAuthoringForm {...authoring} run={namedRun} runPending={!data && !projection.isError}
-                      trainingDocument={reachedSteps && { lit: [...reachedSteps] }}
+                      lit={reachedSteps && [...reachedSteps]}
                       fieldRows={detailInputs.fieldRows} fieldAxes={detailInputs.fieldAxes} />}
                     {evaluateInputs && <EvaluateSubjectFields step={evaluateInputs} project={saved.project} trains={trainSteps}
                       picking={elements} subset={subjectInput && inputDetail(subjectInput)}

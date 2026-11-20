@@ -622,7 +622,7 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
   // The source reads the runs the exception picks, as its row in Exceptions does, and reveals that row.
   await expect(mass).toHaveAccessibleDescription('Exception · learning-rate 0.001 · 2 runs');
   await expect(page.locator('body')).not.toContainText(/trial-rows|values-/);
-  await model.getByRole('button', { name: 'Exception · learning-rate 0.001 · 2 runs', exact: true }).click();
+  await page.getByRole('button', { name: 'Exception · learning-rate 0.001 · 2 runs', exact: true }).click();
   const revealedException = page.getByRole('complementary', { name: 'Inspector', exact: true })
     .getByRole('list', { name: 'Exceptions', exact: true }).getByRole('listitem');
   await expect(revealedException).toHaveText([/ · learning-rate 0\.001 · 2 runs$/]);
