@@ -80,6 +80,8 @@ export interface PlanStepView {
   readonly documentIds?: Readonly<Record<string, string>>;
   readonly documentUses?: readonly string[];
   readonly statusCounts: Readonly<Partial<Record<StudioResultState, number>>>;
+  /** Why the last gesture on the step was refused; its problem mark carries it. */
+  readonly refusal?: string;
 }
 
 // Presentation input for the regions. IDs, values, status and edges are supplied

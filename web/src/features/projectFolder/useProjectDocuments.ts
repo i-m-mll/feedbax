@@ -1,6 +1,6 @@
 import { useState, useSyncExternalStore } from 'react';
 import { readStudioTrialAuthoring } from '@/api/studioAuthoring';
-import { apiErrorMessage } from '@/api/request';
+import { apiErrorMessage, isServiceFailure } from '@/api/request';
 import {
   studioAccessibleName, studioName, studioSweptParameterMissing, type StudioNameId,
 } from '@/components/activity/studioVocabulary';
@@ -91,11 +91,14 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
     return result.files;
   }
 
-  async function attempt<T>(work: () => Promise<T>) {
+  /** A refusal lands on the role's picker; only a service failure goes to `onError`. */
+  async function attempt<T>(role: DocumentRole, work: () => Promise<T>) {
+    refuse(role);
     try {
       return await work();
     } catch (error) {
-      onError(apiErrorMessage(error));
+      if (isServiceFailure(error)) onError(apiErrorMessage(error));
+      else refuse(role, apiErrorMessage(error));
     }
   }
 
@@ -119,22 +122,22 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
     return {
       label: labels[role], document, documents, count,
       refusal: refused?.step === stepId && refused?.role === role ? refused.reason : undefined,
-      choose: repoint ? (next) => { void attempt(() => point(studioAccessibleName('select', kind), role, next)); } : undefined,
-      create: repoint ? () => attempt(async () => {
+      choose: repoint ? (next) => { void attempt(role, () => point(studioAccessibleName('select', kind), role, next)); } : undefined,
+      create: repoint ? () => attempt(role, async () => {
         const { saved } = editor.getSnapshot();
         const id = generatedName(role, holds(saved.project.documents));
         await editor.createFiles(studioAccessibleName('new', kind), [{ kind: 'document', id, document: blankDocuments[role] }],
           saved.revision, (snapshot) => use(role, id, snapshot.revision));
         return id;
       }) : undefined,
-      duplicate: repoint ? () => attempt(async () => {
+      duplicate: repoint ? () => attempt(role, async () => {
         const result = await editor.memberCommand(studioAccessibleName('duplicate', kind),
           { kind: 'duplicate', family: 'documents', member: document }, editor.getSnapshot().saved,
           (result) => use(role, result.member, result.snapshot.revision));
         return result.member;
       }) : undefined,
       rename: editable ? (name) => {
-        void attempt(() => editor.memberCommand(studioAccessibleName('rename', kind),
+        void attempt(role, () => editor.memberCommand(studioAccessibleName('rename', kind),
           { kind: 'rename', family: 'documents', member: document, name }, editor.getSnapshot().saved));
       } : undefined,
     };

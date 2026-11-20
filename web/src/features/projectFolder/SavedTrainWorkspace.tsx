@@ -63,6 +63,7 @@ import type { ProjectEditController } from './projectEditController';
 import { bestRankGroups, projectWindowPlan, planVariants, savedRunId, stepSourceRows } from './projectWindowPlan';
 import { placeField, placeMember, placeView, removeGraphVariation, type Reveal } from './projectWindowProblems';
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
+import { planWithRefusal, type Refusal } from './refusals';
 import { CheckpointRuleEditor, EvaluateSubjectFields, StudioEvaluateAuthoring, type EvaluateField } from './StudioEvaluateAuthoring';
 import { StudioEvaluationAttemptDetails } from './StudioEvaluationResults';
 import { focusedResult, SavedResults } from './SavedResults';
@@ -203,8 +204,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const mapViewport = useRef<CanvasViewport>(null);
   const selection = useProjectWindowSelection(Object.keys(saved.project.steps ?? {})[0] ?? null);
   const [commandError, setCommandError] = useState<string>();
-  /** A refused edit of an Evaluate field, shown on that field. */
-  const [fieldRefusal, setFieldRefusal] = useState<{ step: string; field: EvaluateField; reason: string }>();
+  /** The last refused gesture, shown on the object it acted on. */
+  const [refusal, setRefusal] = useState<Refusal>();
   const commandFailed = (error: unknown) => {
     if (!isUnanswered(error)) setCommandError(apiErrorMessage(error));
   };
@@ -265,6 +266,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const primaryVariant = variant !== null && variant === variants[0];
   const plan = useMemo(() => projectWindowPlan(saved.project, projection.data, variant, validity.checking),
     [saved.project, projection.data, variant, validity.checking]);
+  const shownPlan = useMemo(() => planWithRefusal(plan, refusal), [plan, refusal]);
   const activityResultState = useMemo<ActivityResultState>(() => {
     const states = new Map(plan.steps.flatMap(({ runs }) => runs.flatMap(({ state, results }) =>
       results.map(({ jobId }) => [jobId, state] as const))));
@@ -582,17 +584,18 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const exactJob = exactRow?.attempts.at(-1);
   const resumable = exactJob && jobsById.get(exactJob.job_id);
 
-  async function perform(work: () => Promise<void>, field?: EvaluateField) {
+  /** Runs a gesture; a refusal lands on the object `refuse` names, and only a service failure reaches the bottom bar. */
+  async function perform(work: () => Promise<void>, refuse?: (reason: string) => Refusal | undefined) {
     if (inFlight.current) return;
     inFlight.current = true;
     setBusy(true);
     setCommandError(undefined);
-    setFieldRefusal(undefined);
-    const stepId = step?.id;
+    setRefusal(undefined);
     try {
       await work();
     } catch (cause) {
-      if (field && stepId && !isServiceFailure(cause)) setFieldRefusal({ step: stepId, field, reason: apiErrorMessage(cause) });
+      const refused = !isServiceFailure(cause) && refuse?.(apiErrorMessage(cause));
+      if (refused) setRefusal(refused);
       else commandFailed(cause);
     } finally {
       inFlight.current = false;
@@ -600,9 +603,17 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     }
   }
 
+  const refuseRuns = (runIds: readonly string[]) => (reason: string): Refusal | undefined =>
+    runIds.length ? { kind: 'runs', reasons: Object.fromEntries(runIds.map((id) => [id, reason])) } : undefined;
+  const refuseField = (field: EvaluateField) => {
+    const stepId = step?.id;
+    return (reason: string): Refusal | undefined => stepId ? { kind: 'field', step: stepId, field, reason } : undefined;
+  };
+
   function applySubmission(result: StudioJobSubmission) {
-    const refusal = result.items.find(({ disposition }) => disposition === 'rejected');
-    if (refusal?.reason) setCommandError(refusal.reason);
+    const rejected = result.items.flatMap(({ disposition, run_key, reason }) =>
+      disposition === 'rejected' && reason ? [[run_key, reason] as const] : []);
+    if (rejected.length) setRefusal({ kind: 'runs', reasons: Object.fromEntries(rejected) });
     actions.refresh();
   }
 
@@ -624,7 +635,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       });
       submission.current = undefined;
       applySubmission(result);
-    });
+    }, refuseRuns(keys.map(savedRunId)));
   }
 
   function approveMachine() {
@@ -633,15 +644,19 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       await approveSavedRun(saved.project_id, { quote: machineQuote.id });
       setMachineQuote(undefined);
       actions.refresh();
-    });
+    }, (reason) => ({ kind: 'quote', reason }));
   }
 
   function stop(jobIds: string[], mode: 'checkpoint' | 'force') {
+    const runOf = (jobId: string) => jobsById.get(jobId)?.run_key;
     void perform(async () => {
       const result = await actions.stop(jobIds, mode);
-      const failure = result.find(({ error }) => error)?.error;
-      if (failure) setCommandError(failure.message);
-    });
+      const refused = result.flatMap(({ job_id, error }) => {
+        const run = error && runOf(job_id);
+        return run ? [[run, error.message] as const] : [];
+      });
+      if (refused.length) setRefusal({ kind: 'runs', reasons: Object.fromEntries(refused) });
+    }, refuseRuns(jobIds.flatMap((id) => runOf(id) ?? [])));
   }
 
   const problemPanel = panel?.kind === 'problems' ? panel : null;
@@ -881,7 +896,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   }
 
   const refusedAt = (field: EvaluateField) =>
-    fieldRefusal && fieldRefusal.step === step?.id && fieldRefusal.field === field ? fieldRefusal.reason : undefined;
+    refusal?.kind === 'field' && refusal.step === step?.id && refusal.field === field ? refusal.reason : undefined;
 
   function editEvaluateSubject(name: string, patches: ProjectValueEdit[], reads: readonly string[]) {
     if (!step || !ready) return;
@@ -891,7 +906,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       if (!await runRemoval.confirm(filesRemoval(saved.project_id, saved.revision, files, editor.signal))) return;
       editor.editFiles(name, files, { reviewedRevision: saved.revision, dependencies });
       await editor.flush();
-    }, 'subject');
+    }, refuseField('subject'));
   }
 
   function editEvaluation(field: 'subset' | 'trialSet', name: string, patch: ProjectValueEdit) {
@@ -902,7 +917,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       if (!await runRemoval.confirm(filesRemoval(saved.project_id, saved.revision, files, editor.signal))) return;
       editor.editFiles(name, files, { reviewedRevision: saved.revision, dependencies: [{ kind: 'step', id: source }] });
       await editor.flush();
-    }, field);
+    }, refuseField(field));
   }
 
   /**
@@ -938,7 +953,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         patches: [{ op: 'remove', path: authoredPointer(['sweep', 'exceptions', id]) }],
       }], { reviewedRevision: saved.revision });
       await editor.flush();
-    });
+    }, (reason) => ({ kind: 'exception', step: step.id, exception: id, reason }));
   }
 
   function freezeEvaluationSubset() {
@@ -952,7 +967,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         reviewedRevision: reviewed.revision, dependencies: [{ kind: 'step', id: subject.source_step_id }],
       });
       await editor.flush();
-    }, 'subset');
+    }, refuseField('subset'));
   }
 
   function editEvaluationCheckpoint(rule: EditableCheckpointRule) {
@@ -982,7 +997,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       if (!await runRemoval.confirm(filesRemoval(saved.project_id, saved.revision, files, editor.signal))) return;
       editor.editFiles(name, files, { reviewedRevision: saved.revision, dependencies });
       await editor.flush();
-    }, 'checkpoints');
+    }, refuseField('checkpoints'));
   }
 
   async function applyCheckpointSweepEdit(edit: StudioCheckpointRuleRequest['edit']) {
@@ -996,7 +1011,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         reviewed.files, { reviewedRevision: reviewed.revision,
           dependencies: [{ kind: 'step', id: subject.source_step_id }] });
       await editor.flush();
-    }, 'checkpoints');
+    }, refuseField('checkpoints'));
   }
 
   function chooseReportFigure(revision: string, figure: ReportFigureSource) {
@@ -1094,7 +1109,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
           { kind: 'rename', family: 'steps', member: from, name }, editor.getSnapshot().saved);
         selection.renameStep(from, name);
         setStepFocus({ stepId: name, surface });
-      });
+      }, (reason) => ({ kind: 'step', step: from, reason }));
       return true;
     },
     focus: stepFocus,
@@ -1107,7 +1122,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     requestSlotFocus((count) => count + 1);
   };
   const mapProps = {
-    plan, state, problemSteps, rename: renameStep, onEnterStep: enterStep,
+    plan: shownPlan, state, problemSteps, rename: renameStep, onEnterStep: enterStep,
     onSelectionChange: (value: PipelineSelectionState) => {
       setResultAttempt(undefined);
       setProblemReveal(undefined);
@@ -1136,7 +1151,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   if (step?.kind === 'train') {
     if (resumable && jobAllowsCommand(resumable, 'resume')) {
       runCommands.push(bindStudioCommand('resume', () => {
-        void perform(async () => { await actions.resume(resumable.job_id); });
+        void perform(async () => { await actions.resume(resumable.job_id); }, refuseRuns([resumable.run_key]));
       }, { enabled: !busy }));
     }
     runCommands.push(bindStudioCommand('openRun', () => { if (exactRow) showRun(exactRow.key); }, { enabled: !!exactJob }));
@@ -1209,7 +1224,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               void perform(async () => {
                 await editor.rename(rename.name, rename.revision);
                 setRename(undefined);
-              });
+              }, (reason) => ({ kind: 'projectName', reason }));
             }}>
               <label className="grid gap-1">
                 {studioName('name')}
@@ -1218,7 +1233,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               </label>
               {rename.revision !== saved.revision || outside
                 ? <div role="alert">{studioReason('nameChangedDuringEdit', studioName('project'))}</div>
-                : commandError && <div role="alert">{commandError}</div>}
+                : refusal?.kind === 'projectName' && <div role="alert">{refusal.reason}</div>}
               <Button type="submit" className="justify-self-end" disabled={busy || !!outside || rename.revision !== saved.revision}>
                 {studioName('rename')}
               </Button>
@@ -1227,10 +1242,11 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
           {focusedDetail?.overlay}
           {analyze.overlay}
           {report.overlay}
-          {machineQuote && <StudioMachineApproval quote={machineQuote} busy={busy} error={commandError}
+          {machineQuote && <StudioMachineApproval quote={machineQuote} busy={busy}
+            error={refusal?.kind === 'quote' ? refusal.reason : undefined}
             onApprove={approveMachine} onCancel={() => {
               setMachineQuote(undefined);
-              setCommandError(undefined);
+              setRefusal(undefined);
             }} />}
           {primaryVariant && reportChoices?.revision === saved.revision && <Dialog ariaLabel={studioName('report')} manageFocus
             onClose={() => setReportChoices(undefined)}
@@ -1332,7 +1348,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
           if (view === 'document') return { body: withProblem(report.body ?? noView),
             picker: authored?.kind === 'report' ? pickDocument('report', documentBase) : undefined };
           if (view === 'runs') {
-            const runSelection = { step, state, onSelectionChange: mapProps.onSelectionChange };
+            const runSelection = { step: shownPlan.steps.find(({ id }) => id === step.id) ?? step, state,
+              onSelectionChange: mapProps.onSelectionChange };
             const pivot = pivotCommand(slot);
             const pivotActive = pivotSlots[slot] === step.id;
             const run = state.focus?.stepId === step.id ? step.runs.find(({ id }) => id === state.focus?.runId) : undefined;
@@ -1382,6 +1399,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                   </FocusedFields>}
                 attachments={(exceptions.length > 0 || listedInputs.length > 0) && <>
                   {exceptions.length > 0 && <SweepExceptions exceptions={exceptions}
+                    refusal={refusal?.kind === 'exception' && refusal.step === step.id
+                      ? { id: refusal.exception, reason: refusal.reason } : undefined}
                     onRemove={ready && !busy && !saved.project.sweep ? removeSweepException : undefined} />}
                   {listedInputs.length > 0 && <ul aria-label={studioName('inputs')}>{listedInputs.map((input) => {
                     const source = input.sourceStepId && plan.steps.find((item) => item.id === input.sourceStepId);
@@ -1394,7 +1413,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                     </li>;
                   })}</ul>}
                 </>} />,
-              body: withProblem(<StudioRuns plan={plan} {...runSelection}
+              body: withProblem(<StudioRuns plan={shownPlan} {...runSelection}
                 region={planUnavailable ?? (step.kind === 'train' || step.runs.length > 0
                   ? { kind: 'result', missing: [] } : { kind: 'empty' })}
                 pending={planPending} pivotActive={Boolean(pivot) && pivotActive} runMenu={runMenu} />),
