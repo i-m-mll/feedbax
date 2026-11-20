@@ -21,7 +21,7 @@ export function rawText(value: JsonValue | undefined) {
 
 /**
  * A field whose value the client holds as JSON: it parses text by the field's type. Raw fields offer Value only.
- * A `changed` value reads its mark ahead of any other origin.
+ * A `changed` value's origin is its mark.
  */
 export function rawField({ id, label, type, value, unit, origin, change, parts, changed }: {
   id: string; label: string; type: FieldType; value: JsonValue | undefined; unit?: string; origin?: string;
@@ -36,7 +36,7 @@ export function rawField({ id, label, type, value, unit, origin, change, parts, 
   }), changed);
   return {
     id, label, type, unit, value: value ?? undefined, text: rawText(value), kind: 'value',
-    origin: [...new Set([changed?.text, origin].filter(Boolean))].join(', ') || undefined, changed: !!changed?.reset,
+    origin: changed?.text ?? origin, changed: !!changed?.reset,
     kinds: [{ kind: 'value', enabled: !!commit }], names: [], functions: [], parts, commit,
   };
 }

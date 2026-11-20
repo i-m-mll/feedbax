@@ -844,11 +844,19 @@ def project_train_fields(
             for field in definition.classes.values()
         ],
         removed,
-        sorted(changed_fields(project, step_id, [
-            *definition.fields, *definition.classes,
-            *(f"/settings{pointer}" for pointer in _pointers(settings)),
-        ])),
+        sorted(_changed_definition(project, step_id, definition, settings)),
     )
+
+
+def _changed_definition(project: Project, step_id: str, definition: _TrainFields, settings: Any) -> set[str]:
+    """The pointers of the Train definition whose value a difference sets: its fields, its settings at every depth,
+    and its classes, a class being changed where its tag is."""
+    tags = {f"{at}/{field.tag}": at for at, field in definition.classes.items()}
+    changed = changed_fields(project, step_id, [
+        *definition.fields, *definition.classes, *tags,
+        *(f"/settings{pointer}" for pointer in _pointers(settings)),
+    ])
+    return changed | {tags[at] for at in changed & tags.keys()}
 
 
 def _pointers(value: Any, at: str = "") -> Iterator[str]:

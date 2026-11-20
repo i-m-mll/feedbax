@@ -567,8 +567,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       state.selection.terms.map(({ sweepId, valueIds }) => [sweepId, [...valueIds]]),
     ) : undefined,
     exceptions: exceptionMention,
-    onRefused: step && ((reason: string | undefined) => setReadRefusal((current) => reason ? { kind: 'step', step: step.id, reason }
-      : current?.step === step.id ? undefined : current)),
   };
   function setModelPath(slot: ProjectWindowSlot, document: string, path: string[]) {
     setWindowState((current) => ({
@@ -1424,7 +1422,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
           }
           if (view === 'model' || view === 'task' || view === 'scene') {
             const scope = slot === focusSlot && view === focusView ? activeDocumentScope : undefined;
-            return { ...details[view], picker: pickDocument('model', details[view].documentId, scope),
+            const picker = pickDocument('model', details[view].documentId, scope);
+            return { ...details[view], picker: picker && { ...picker, refusal: picker.refusal ?? details[view].refusal },
               header: details[view].path, body: withProblem(details[view].body) };
           }
           if (!step) return { body: noView };

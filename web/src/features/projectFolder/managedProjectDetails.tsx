@@ -47,6 +47,8 @@ export interface NamedDocumentScope extends MapDocumentScope {
 
 export interface ManagedProjectDetail {
   readonly documentId?: string;
+  /** Why the service refuses the view's read of its document, shown on the document's picker. */
+  readonly refusal?: string;
   readonly body: ReactNode;
   readonly drawer?: ReactNode;
   readonly inspector?: ReactNode;
@@ -86,8 +88,6 @@ interface DetailInputs {
   readonly runProblems?: readonly StudioProjectWindowMapProblem[];
   readonly revealProblem?: (problem: StudioProjectWindowMapProblem) => void;
   readonly exceptions?: ExceptionMentions;
-  /** Takes the reason the service refuses the view's read for, on the step; `undefined` once it does not. */
-  readonly onRefused?: (reason: string | undefined) => void;
 }
 
 const rootModelPath: string[] = [];
@@ -354,7 +354,6 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     sections: input.drawerSections,
     openProblems: input.openModelProblems,
     exceptions: input.exceptions,
-    onRefused: input.onRefused,
   });
   return {
     model: stored ? storedView : { body: <DetailReason reason="definitionUnavailable" name="model" /> },

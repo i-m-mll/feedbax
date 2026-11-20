@@ -72,8 +72,6 @@ type Props = {
   /** Opens Problems showing only those inside the element. */
   openProblems?: (element: ModelAddress, opener: HTMLElement) => void;
   exceptions?: ExceptionMentions;
-  /** Takes the reason the service refuses an evaluation's read for, when it refuses one; `undefined` once it does not. */
-  onRefused?: (reason: string | undefined) => void;
 };
 const sourceAttachment = '@source';
 const componentDragType = 'application/x-feedbax-component';
@@ -165,7 +163,7 @@ function LeafChoices({ definitions, query, choose, disabled }: {
   </section>)}</>;
 }
 
-export function useStoredModelView({ model, saved, editor, elements: state, active, editable, fieldEditable, fieldChosenSteps, planCurrent, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, evaluate, problem, problems, projectionRun, path, setPath, sections, openProblems, exceptions, onRefused: refusedTo }: Props) {
+export function useStoredModelView({ model, saved, editor, elements: state, active, editable, fieldEditable, fieldChosenSteps, planCurrent, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, evaluate, problem, problems, projectionRun, path, setPath, sections, openProblems, exceptions }: Props) {
   const selected = useModelSelection(state, model?.id);
   const pick = useStore(state, (current) => current.pick);
   const reveal = useStore(state, (current) => current.reveal);
@@ -217,12 +215,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     placeholderData: (previous, query) => sameSubject(query?.queryKey[2], readBody) ? previous : undefined,
   });
   const effectiveModel = evaluate ? attachments.data?.resolved_model : projection.data?.resolved_model;
-  /** A refused evaluation's read lands on the step; the view shows the document it reads. */
+  /** Why the service refuses an evaluation's read: it lands on the Model picker, and the view shows the read document. */
   const refused = evaluate && isRefusal(attachments.error) ? apiErrorMessage(attachments.error) : undefined;
-  const onRefused = useRef(refusedTo);
-  onRefused.current = refusedTo;
-  useEffect(() => { onRefused.current?.(refused); }, [refused]);
-  useEffect(() => () => onRefused.current?.(undefined), []);
   const shownModel = evaluate && !refused ? effectiveModel : model?.value;
   const resolved = useMemo(() => shownModel && modelPath(shownModel, path), [shownModel, path]);
   const currentPath = useMemo(() => resolved?.entries.map(({ id }) => id) ?? emptyPath, [resolved]);
@@ -1141,6 +1135,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
 
   return {
     documentId: model?.id,
+    refusal: refused,
     path: model && !!resolved?.entries.length && <nav className="flex min-w-0 items-center gap-1" aria-label={studioName('modelPath')}>
       <IconButton label={studioName('modelRoot')} icon={<House />} onClick={() => go([])} />
       {resolved?.entries.map(({ id, name }, index) => <Button key={id} variant="ghost"
