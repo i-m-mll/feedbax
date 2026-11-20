@@ -169,6 +169,40 @@ def test_an_evaluation_task_edit_makes_a_document_based_on_its_subjects(tmp_path
         assert project.ids()["fee"] == FEE
 
 
+def test_a_variant_s_evaluation_task_edit_is_a_document_only_its_row_points_at(tmp_path):
+    data = _data()
+    data["sweep"] = {"rows": {"control": {}, "treated": {}}}
+    project = _Project(tmp_path, data)
+    with project.client:
+        before = {run.key: run.request_id for run in project.plan().runs}
+        steps = project.project().steps
+        path = "/variables/0/value/args/0/args/0/value"
+        bound = project.composed(TASK)["variables"][0]["value"]["args"][0]["args"][0]
+        response = project.client.post(f"{_URL}/authoring/trials", json={
+            "revision": project.snapshot()["revision"], "run": project.run("check") | {"variant": "treated"},
+            "change": {"kind": "task", "edits": [{"op": "replace", "path": path, "value": bound["value"] - 0.1}]},
+            "scope": {"kind": "step"},
+        })
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert not body.get("problems"), body
+        created, = body["created"]
+        assert created["id"] == f"{TASK}-2" and created["document"]["base"] == {"document": TASK}
+        assert project.client.post(f"{_URL}/files", json={
+            "revision": project.snapshot()["revision"], "file": created,
+        }).status_code == 201
+        saved = project.client.patch(_URL, json={"revision": project.snapshot()["revision"], "files": body["files"]})
+        assert saved.status_code == 200, saved.text
+        assert project.project().steps == steps
+        assert {path: write.model_dump(mode="json") for path, write in project.project().sweep.rows["treated"].patches.items()} == {
+            "steps.check.base.inline.trial_documents": {"op": "add", "value": {"task": {"document": f"{TASK}-2"}}},
+        }
+        after = {run.key: run.request_id for run in project.plan().runs}
+        assert {key for key in before if before[key] != after[key]} == {
+            key for key in before if (key.variant, key.step) == ("treated", "check")
+        }
+
+
 def test_a_variant_writes_a_model_field_of_a_based_document():
     def ids(writes, model_2):
         data = _data()

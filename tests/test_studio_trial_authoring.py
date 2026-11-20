@@ -375,7 +375,7 @@ def test_scoped_objective_writes_preserve_other_requests(tmp_path, kind):
     raw["documents"]["reach-model"]["payload"] = _model_payload()
     raw["steps"].pop("baseline")
     selected, other = RunKey("default", "train", "default"), RunKey("default", "other", "default")
-    scope = {"kind": kind}
+    scope = {"kind": "step" if kind == "variant" else kind}
     if kind == "step":
         raw["steps"]["other"] = deepcopy(raw["steps"]["train"])
         scope["chosen_steps"] = ["train"]
@@ -385,7 +385,6 @@ def test_scoped_objective_writes_preserve_other_requests(tmp_path, kind):
     elif kind == "variant":
         raw["sweep"] = {"rows": {"control": {}, "treated": {}}}
         selected, other = RunKey("treated", "train", "default"), RunKey("control", "train", "default")
-        scope["variant"] = "treated"
     else:
         raw["steps"]["train"]["sweep"] = {"axes": {"length": {"values": {
             "short": {"patches": {"trial_documents.python_task.params.n_steps": {"op": "add", "value": 11}}},
@@ -541,3 +540,33 @@ def test_scoped_rename_refuses_a_name_change_in_an_unselected_inheritor(tmp_path
     assert refused.status_code == 422, refused.text
     assert "outside the selected scope" in refused.json()["detail"]
     assert folders.read("scoped-name").revision == revision
+
+
+def test_an_evaluate_task_choice_in_a_variant_is_its_row_s_task_reference(tmp_path):
+    raw = _python_project()
+    raw["documents"]["test-task"] = {
+        "schema": "feedbax.spec.python_task", "payload": {"type": REACHING_TASK, "params": {"n_steps": 12, "x": 0.31}},
+    }
+    raw["sweep"] = {"rows": {"control": {}, "treated": {}}}
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, "variants", Project.model_validate(raw))
+    before = folders.read_plan("variants", revision=None)
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        reply = client.post("/api/projects/variants/authoring/trials", json={
+            "revision": before.revision, "run": {"variant": "treated", "step": "baseline", "row": "default"},
+            "change": {"kind": "select_document", "role": "task", "document": "test-task"},
+        })
+        assert reply.status_code == 200, reply.text
+        view = reply.json()
+        assert not view["problems"], view["problems"]
+        saved = client.patch("/api/projects/variants", json={"revision": before.revision, "files": view["files"]})
+        assert saved.status_code == 200, saved.text
+    project = folders.read("variants").project
+    assert project.steps == Project.model_validate(raw).steps
+    assert {path: write.model_dump(mode="json") for path, write in project.sweep.rows["treated"].patches.items()} == {
+        "steps.baseline.base.inline.trial_documents": {"op": "add", "value": {"task": {"document": "test-task"}}},
+    }
+    after = folders.read_plan("variants", revision=None)
+    prior = {run.key: run.request_id for run in before.plan.runs}
+    changed = {run.key for run in after.plan.runs if prior[run.key] != run.request_id}
+    assert changed == {RunKey("treated", "baseline", "default")}

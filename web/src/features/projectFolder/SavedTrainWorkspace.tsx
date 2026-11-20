@@ -486,14 +486,17 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       : selectedDefinitionRows.length ? { kind: 'rows', rows: selectedDefinitionRows.map(({ key }) => key.row) } as const
         : undefined);
   const evaluateScope = step?.kind === 'evaluate' ? trialScope : undefined;
-  // A Train step's whole-step edit is unscoped: the server writes its shared documents for every step that uses them.
-  const trialEditScope = step?.kind === 'train' && trialScope && (trialScope.kind === 'step' || trialScope.kind === 'variant')
-    ? undefined : trialScope || undefined;
+  const wholeTrialStep = trialScope && (trialScope.kind === 'step' || trialScope.kind === 'variant');
+  // A whole-step edit is a step scope in every variant, the run naming the variant. A Train step's is unscoped, the
+  // server writing its shared documents for every step of the variant that uses them, or made for the chosen steps.
+  const trialEditScope = !trialScope || trialScope.kind === 'step' || trialScope.kind === 'variant'
+    ? trialScope && step?.kind !== 'train' ? { kind: 'step' } as const : undefined
+    : trialScope;
   const documentEditable = !pending && !outside && !snapshot.saving;
   const trialEditable = documentEditable && Boolean(trialScope);
   /** A whole-step edit of a Train step's Task or Objective is made for the steps its view chooses. */
   const trialChangeScope: TrialChangeScope = (change) => {
-    if (trialEditScope || step?.kind !== 'train' || !trialScope || trialScope.kind !== 'step') return trialEditScope;
+    if (trialEditScope || step?.kind !== 'train' || !wholeTrialStep) return trialEditScope;
     const chosen = change.kind === 'task' ? documentScopes.task?.lit
       : change.kind === 'objective' || change.kind === 'expression' ? documentScopes.objective?.lit : undefined;
     return chosen && { kind: 'step', chosen_steps: [...chosen] };
