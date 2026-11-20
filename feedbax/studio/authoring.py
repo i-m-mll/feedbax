@@ -29,7 +29,9 @@ from feedbax.contracts.project import (
 from feedbax.contracts.project_sweep import Sweep
 from feedbax.contracts.project_inputs import StepReference, SubsetTerms
 from feedbax.contracts.project_plan import ProjectPlan, RunKey
-from feedbax.contracts.project_resolution import ResolvedStep, StepTemplate, compose_step, document_write_target
+from feedbax.contracts.project_resolution import (
+    ProjectDiagnostic, ResolvedStep, StepTemplate, compose_document, compose_step, document_write_target,
+)
 from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.contracts.report_document import ReportDocument
 from feedbax.contracts.request_identity import REQUEST_KINDS, decode_request
@@ -980,8 +982,11 @@ def training_document_choice(
 ) -> list[OverridePatch] | StudioSweptParameterMissing:
     """The writes that point the Train step at the training document ``document``, or the parameter the step sweeps
     that the document lacks."""
-    entry = project.documents.get(document)
-    if entry is None or entry.schema_id != TRAINING_DOCUMENT_SCHEMA_ID or not isinstance(entry.payload, dict):
+    entry = compose_document(project.documents.get, document)
+    if (
+        isinstance(entry, ProjectDiagnostic) or entry.schema_id != TRAINING_DOCUMENT_SCHEMA_ID
+        or not isinstance(entry.payload, dict)
+    ):
         raise ValueError(f"{document} is not a Training document.")
     definition = _TrainFields(project, step_id, registry)
     definition.training(None)

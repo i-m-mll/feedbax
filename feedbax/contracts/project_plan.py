@@ -33,7 +33,7 @@ from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.model_values import model_owner_problem
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.studio_place import path_parts, variation_targets
-from feedbax.contracts.project import Document, InlineBase, Payload, Project, Step, StepBase, StepKind, json_pointer_parts
+from feedbax.contracts.project import Document, InlineBase, RootDocument, Payload, Project, Step, StepBase, StepKind, json_pointer_parts
 from feedbax.contracts.project_inputs import (
     BarrierCheckpoint,
     BatchCheckpoint,
@@ -66,6 +66,7 @@ from feedbax.contracts.project_resolution import (
     StepTemplate,
     TerminalTrainSource,
     _TrialResolution,
+    compose_document,
     compose_step,
     reference_write_target,
     _select,
@@ -196,7 +197,7 @@ class PlannedInput:
 
 
 def plan_document_input(
-    reference: DocumentInputReference, document: Document, objects: MutableMapping[str, bytes],
+    reference: DocumentInputReference, document: RootDocument, objects: MutableMapping[str, bytes],
     *, python_tasks: PythonTaskRegistry | None = None,
 ) -> PlannedInput:
     return _plan_document_content(authored_document_input(reference, document, python_tasks=python_tasks), objects)
@@ -313,7 +314,7 @@ class SelectedRunDefinition:
     document_uses: frozenset[str]
     document_pointers: Mapping[str, str] = field(default_factory=dict)
     document_problems: tuple[ProjectDiagnostic, ...] = ()
-    input_documents: Mapping[str, Document] = field(default_factory=dict)
+    input_documents: Mapping[str, RootDocument] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1175,8 +1176,8 @@ class _Compiler:
                     )
                 if target.document is None:
                     raise ValueError("A project Model field target must name a step or document")
-                entry = self.project.documents.get(target.document)
-                return entry is not None and entry.schema_id == MODEL_DOCUMENT_SCHEMA_ID and _integer_model_site(
+                entry = compose_document(self.project.documents.get, target.document)
+                return isinstance(entry, RootDocument) and entry.schema_id == MODEL_DOCUMENT_SCHEMA_ID and _integer_model_site(
                     ModelDocument.model_validate(entry.payload), address,
                     self.components or _builtin_model_registry(),
                 )
@@ -1261,6 +1262,8 @@ class _Compiler:
                         entry = data["documents"].get(document)
                         if entry is None or entry["schema"] != MODEL_DOCUMENT_SCHEMA_ID:
                             raise ValueError("The addressed Model document does not exist")
+                        if "payload" not in entry:
+                            raise ValueError("A project variant cannot write a document based on another")
                         before = entry["payload"]
                         entry["payload"] = resolve_effective_model(
                             ModelDocument.model_validate(before),
@@ -1854,7 +1857,7 @@ class _Compiler:
         return result
 
     def initial_model_source(
-        self, reference: InitialModelReference, document: Document, differences: tuple[ModelDifference, ...],
+        self, reference: InitialModelReference, document: RootDocument, differences: tuple[ModelDifference, ...],
     ) -> InitialModelSource:
         from feedbax.compiler.model_attachment import resolve_effective_model
 
@@ -2749,15 +2752,9 @@ class _Compiler:
         subset_document = None
         if isinstance(terms, NamedSubset):
             subset_document = terms.subset
-            document = self.variants[variant].documents.get(subset_document)
-            if document is None:
-                return ProjectDiagnostic(
-                    ResolutionCode.MISSING_DOCUMENT,
-                    f"{path}.where",
-                    terms.subset,
-                    name,
-                    document=subset_document,
-                )
+            document = compose_document(self.variants[variant].documents.get, subset_document)
+            if isinstance(document, ProjectDiagnostic):
+                return replace(document, path=f"{path}.where", step=name)
             try:
                 terms = SubsetTerms.model_validate(document.payload)
             except ValidationError as error:

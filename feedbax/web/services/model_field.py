@@ -20,6 +20,7 @@ from feedbax.contracts.model_edit import (
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project import InlineBase, SetProjectValue, Step
+from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.jobs import StudioPlanReviewSource
 from feedbax.contracts.project_sources import pointer
@@ -226,8 +227,10 @@ def model_fields(
 ) -> ModelFieldResponse:
     snapshot = folders.read(project_id, revision=body.revision)
     project = snapshot.project
-    document = project.documents.get(body.document)
-    if document is None or document.schema_id != MODEL_DOCUMENT_SCHEMA_ID:
+    document = compose_document(project.documents.get, body.document)
+    if isinstance(document, ProjectDiagnostic):
+        raise ProjectFolderInvalid(f"The Model document cannot be read: {document.detail}")
+    if document.schema_id != MODEL_DOCUMENT_SCHEMA_ID:
         raise ProjectFolderInvalid("The Model document does not exist.")
     model = ModelDocument.model_validate(document.payload)
     step = selected = plan = effective_model = None

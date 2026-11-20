@@ -4,6 +4,7 @@ import type { ModelDocument, ModelEditResponse, ModelFieldResponse, StudioJobSub
 import { summarizeStudioTrace } from './fixtures/studioTrace';
 import { fixture, mapStep, runName, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
+import { rootPayload } from '../../src/features/projectFolder/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -181,7 +182,7 @@ async function measureField(page: Page, context: CDPSession, projectPath: string
     const { snapshot, changed, acknowledgedAt } = await savedEdit;
     const addressed = changed.find(({ element }) => element.kind === 'field' && element.path.at(-1) === 'step_seconds');
     if (!addressed) throw new Error('The acknowledgement did not address the Step field');
-    const model = snapshot.project.documents![modelDocument].payload as unknown as ModelDocument;
+    const model = rootPayload(snapshot.project.documents![modelDocument]) as unknown as ModelDocument;
     expect(model.step_seconds).toBe(0.02);
     const plan = await (await settled).json() as StudioSavedTrainRuns;
     expect(plan.revision).toBe(snapshot.revision);

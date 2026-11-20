@@ -13,6 +13,7 @@ from feedbax.contracts.acausal_interface import is_acausal_type
 from feedbax.contracts.domain import DomainDiagnostic
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.project import Project
+from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.contracts.representation import RepresentationMusclePathPointSpec
 from feedbax.contracts.studio_scene import ScenePlanarLink, ScenePlanarModel, ScenePlanarMuscle
 from feedbax.mechanics.authored_model import compile_planar_model
@@ -108,8 +109,8 @@ def prepare_project_scene(
 ) -> tuple[ScenePlanarModel | None, list[DomainDiagnostic]]:
     """Prepare geometry for one occurrence without realizing the outer graph or a run."""
     try:
-        document = project.documents.get(document_id)
-        if document is None or document.schema_id != MODEL_DOCUMENT_SCHEMA_ID:
+        document = compose_document(project.documents.get, document_id)
+        if isinstance(document, ProjectDiagnostic) or document.schema_id != MODEL_DOCUMENT_SCHEMA_ID:
             raise ValueError(f"{document_id!r} must name an authored Model document.")
         model = ModelDocument.model_validate(document.payload)
         graph = lower_planar_scene_interior(model, tuple(node_path), registry)

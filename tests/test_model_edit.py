@@ -11,7 +11,7 @@ from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import SignalType
 from feedbax.contracts.model_edit import ModelEditCommand, ModelEditProblem, ModelEditState
-from feedbax.contracts.project import Document, Project
+from feedbax.contracts.project import RootDocument, Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.studio.model_edit import Port, apply_model_edit
 from feedbax.studio.model_undo import apply_delta, inverse_delta
@@ -154,7 +154,7 @@ def test_ungroup_refuses_an_unconnected_input_default():
 def test_addressed_route_settles_document_and_position_and_rejects_raw_patch(tmp_path):
     path = tmp_path / "project"
     project = Project(documents={
-        "model": Document(schema="feedbax.spec.model", payload={
+        "model": RootDocument(schema="feedbax.spec.model", payload={
             "step_seconds": 0.01, "ports": {},
             "interior": {"components": {"outer": {
                 "kind": "composite", "name": "Outer", "ports": {}, "interior": {},

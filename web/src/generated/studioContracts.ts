@@ -2597,6 +2597,12 @@ export type BarrierCheckpoint = {
 
 export type Base = InlineBase | DocumentReference | StepBase | RunBase | ExternalBase;
 
+export type BasedDocument = {
+  "schema": string;
+  "base": DocumentBase;
+  "differences"?: Differences;
+};
+
 export type BatchCheckpoint = {
   "at": number;
 };
@@ -2700,6 +2706,10 @@ export type DatasetPort = {
   "coordinates"?: Record<string, FieldDescriptor>;
 };
 
+export type DifferencePointer = string;
+
+export type Differences = Record<string, SetDocumentValue | RemoveDocumentValue>;
+
 export type Dimensions = {
   "length"?: number;
   "mass"?: number;
@@ -2711,9 +2721,10 @@ export type Dimensions = {
   "angle"?: number;
 };
 
-export type Document = {
-  "schema": string;
-  "payload": JsonValue;
+export type Document = RootDocument | BasedDocument;
+
+export type DocumentBase = {
+  "document": string;
 };
 
 export type DocumentEdit = SetProjectValue | RemoveProjectValue | EnsureDocumentCollection;
@@ -3211,6 +3222,10 @@ export type RegistryDifference = {
   "after": RegistryBinding | null;
 };
 
+export type RemoveDocumentValue = {
+  "op": "remove";
+};
+
 export type RemoveProjectValue = {
   "op": "remove";
   "path": DocumentOverridePath;
@@ -3251,6 +3266,11 @@ export type ReportFigure = {
 
 export type ReportText = {
   "markdown": string;
+};
+
+export type RootDocument = {
+  "schema": string;
+  "payload": JsonValue;
 };
 
 export type Row = {
@@ -3294,6 +3314,10 @@ export type SelectedRow = {
   "key": string;
   "variant": string;
   "row": string;
+};
+
+export type SetDocumentValue = {
+  "value": JsonValue;
 };
 
 export type SetProjectValue = {
@@ -8835,6 +8859,14 @@ export const BaseSchema: z.ZodType<Base> = z.lazy(() =>
   z.union([InlineBaseSchema, DocumentReferenceSchema, StepBaseSchema, RunBaseSchema, ExternalBaseSchema])
 ) as unknown as z.ZodType<Base>;
 
+export const BasedDocumentSchema: z.ZodType<BasedDocument> = z.lazy(() =>
+  z.object({
+    "schema": z.string().min(1),
+    "base": DocumentBaseSchema,
+    "differences": DifferencesSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<BasedDocument>;
+
 export const BatchCheckpointSchema: z.ZodType<BatchCheckpoint> = z.lazy(() =>
   z.object({
     "at": z.number().int().safe().min(0),
@@ -8980,6 +9012,14 @@ export const DatasetPortSchema: z.ZodType<DatasetPort> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<DatasetPort>;
 
+export const DifferencePointerSchema: z.ZodType<DifferencePointer> = z.lazy(() =>
+  z.string().min(1).regex(new RegExp("^(?:/(?:[^~/]|~[01])*)*$"))
+) as unknown as z.ZodType<DifferencePointer>;
+
+export const DifferencesSchema: z.ZodType<Differences> = z.lazy(() =>
+  z.record(DifferencePointerSchema, z.union([SetDocumentValueSchema, RemoveDocumentValueSchema]))
+) as unknown as z.ZodType<Differences>;
+
 export const DimensionsSchema: z.ZodType<Dimensions> = z.lazy(() =>
   z.object({
     "length": z.number().int().safe().optional(),
@@ -8994,11 +9034,14 @@ export const DimensionsSchema: z.ZodType<Dimensions> = z.lazy(() =>
 ) as unknown as z.ZodType<Dimensions>;
 
 export const DocumentSchema: z.ZodType<Document> = z.lazy(() =>
-  z.object({
-    "schema": z.string().min(1),
-    "payload": jsonValueSchema,
-  }).strict()
+  z.union([RootDocumentSchema, BasedDocumentSchema])
 ) as unknown as z.ZodType<Document>;
+
+export const DocumentBaseSchema: z.ZodType<DocumentBase> = z.lazy(() =>
+  z.object({
+    "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<DocumentBase>;
 
 export const DocumentEditSchema: z.ZodType<DocumentEdit> = z.lazy(() =>
   z.union([SetProjectValueSchema, RemoveProjectValueSchema, EnsureDocumentCollectionSchema])
@@ -9675,6 +9718,12 @@ export const RegistryDifferenceSchema: z.ZodType<RegistryDifference> = z.lazy(()
   }).strict()
 ) as unknown as z.ZodType<RegistryDifference>;
 
+export const RemoveDocumentValueSchema: z.ZodType<RemoveDocumentValue> = z.lazy(() =>
+  z.object({
+    "op": z.literal("remove"),
+  }).strict()
+) as unknown as z.ZodType<RemoveDocumentValue>;
+
 export const RemoveProjectValueSchema: z.ZodType<RemoveProjectValue> = z.lazy(() =>
   z.object({
     "op": z.literal("remove"),
@@ -9732,6 +9781,13 @@ export const ReportTextSchema: z.ZodType<ReportText> = z.lazy(() =>
     "markdown": z.string(),
   }).strict()
 ) as unknown as z.ZodType<ReportText>;
+
+export const RootDocumentSchema: z.ZodType<RootDocument> = z.lazy(() =>
+  z.object({
+    "schema": z.string().min(1),
+    "payload": jsonValueSchema,
+  }).strict()
+) as unknown as z.ZodType<RootDocument>;
 
 export const RowSchema: z.ZodType<Row> = z.lazy(() =>
   z.object({
@@ -9791,6 +9847,12 @@ export const SelectedRowSchema: z.ZodType<SelectedRow> = z.lazy(() =>
     "row": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$")),
   }).strict()
 ) as unknown as z.ZodType<SelectedRow>;
+
+export const SetDocumentValueSchema: z.ZodType<SetDocumentValue> = z.lazy(() =>
+  z.object({
+    "value": jsonValueSchema,
+  }).strict()
+) as unknown as z.ZodType<SetDocumentValue>;
 
 export const SetProjectValueSchema: z.ZodType<SetProjectValue> = z.lazy(() =>
   z.object({

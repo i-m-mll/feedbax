@@ -1,4 +1,5 @@
 import type { ExceptionMentions } from '@/components/values/adapters/fieldView';
+import { rootPayload } from './rootPayload';
 import { useQuery } from '@tanstack/react-query';
 import { useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { fetchSavedEvaluationReplay } from '@/api/jobs';
@@ -314,7 +315,7 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
   const storedDocument = storedId ? saved.project.documents?.[storedId] : undefined;
   const stored = useMemo(() => {
     if (!storedId || storedDocument?.schema !== modelSchema) return undefined;
-    const result = ModelDocumentSchema.safeParse(storedDocument.payload);
+    const result = ModelDocumentSchema.safeParse(rootPayload(storedDocument));
     return result.success ? { id: storedId, value: result.data } : undefined;
   }, [storedId, storedDocument]);
   const reveal = input.problemReveal;

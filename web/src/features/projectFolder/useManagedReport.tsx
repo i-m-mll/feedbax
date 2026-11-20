@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react';
+import { rootPayload } from './rootPayload';
 import { studioChangeDetail, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
 import { MentionRow, ProblemRow } from '@/features/projectWindow/StudioProblems';
 import { Button } from '@/components/ui/Button';
@@ -53,7 +54,7 @@ export function useManagedReport({
   const document = base && 'document' in base && !base.pointer ? base.document : undefined;
   const authored = document ? draft.documents?.[document] : undefined;
   const parsed = authored?.schema === 'feedbax.report_document.v1'
-    ? ReportDocumentSchema.safeParse(authored.payload) : undefined;
+    ? ReportDocumentSchema.safeParse(rootPayload(authored)) : undefined;
   const report = parsed?.success ? parsed.data : undefined;
   const planned = run && projection?.window_map?.rows.find(({ key }) => savedRunId(key) === savedRunId(run));
   const retained = planned?.light?.result ?? planned?.light?.previous;

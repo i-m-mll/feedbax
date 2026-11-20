@@ -8,7 +8,7 @@ from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySe
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.figure_document import FigureDocument
 from feedbax.contracts.model_address import ModelAddress
-from feedbax.contracts.project import Document, DocumentReference, Project, Step
+from feedbax.contracts.project import RootDocument, DocumentReference, Project, Step
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
     StudioProjectFile,
@@ -41,7 +41,7 @@ _FIXTURES = Path(__file__).resolve().parents[1] / "web/e2e/studio/fixtures"
 def _project() -> Project:
     project = managed_train_project()
     project.steps["baseline"] = Step.model_validate(managed_evaluation_step("train"))
-    project.documents["velocity-analysis"] = Document.model_validate(
+    project.documents["velocity-analysis"] = RootDocument.model_validate(
         {
             "schema": "feedbax.analysis_document.v1",
             "payload": json.loads((_FIXTURES / "velocity-analysis.json").read_bytes()) | {
@@ -49,7 +49,7 @@ def _project() -> Project:
             },
         }
     )
-    project.documents["velocity-figure"] = Document.model_validate(
+    project.documents["velocity-figure"] = RootDocument.model_validate(
         {
             "schema": "feedbax.figure_document.v1",
             "payload": {
@@ -340,7 +340,7 @@ def test_named_figure_pin_does_not_supply_an_external_train_base():
     project = _project()
     train = project.steps["train"]
     raw = json.dumps(train.base.inline).encode()
-    project.documents["train-pin"] = Document.model_validate({
+    project.documents["train-pin"] = RootDocument.model_validate({
         "schema": "feedbax.figure_document.v1",
         "payload": {"path": "train.json", "sha256": sha256_bytes(raw)},
     })

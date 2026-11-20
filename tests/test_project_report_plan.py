@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from feedbax.contracts.figure_document import PlotlyFigurePort
-from feedbax.contracts.project import Document, Project, Step
+from feedbax.contracts.project import RootDocument, Project, Step
 from feedbax.contracts.project_inputs import StepReference
 from feedbax.contracts.project_plan import (
     ElementChange,
@@ -29,7 +29,7 @@ _PROFILE = ElementKey(_ANALYZE, "profile")
 
 def _report_project() -> Project:
     project = _project()
-    project.documents["velocity-report"] = Document.model_validate(
+    project.documents["velocity-report"] = RootDocument.model_validate(
         {
             "schema": "feedbax.report_document.v1",
             "payload": json.loads((_FIXTURES / "velocity-summary.report.json").read_bytes()),

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from copy import deepcopy
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, JsonValue, StringConstraints, model_validator
+from pydantic import Field, JsonValue, StringConstraints, TypeAdapter, model_validator
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.matrix_core import apply_value_patch_in_place, ensure_value_collection
@@ -14,6 +16,7 @@ from feedbax.contracts.task_document import (
 )
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
+from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_inputs import (
     DocumentReference as DocumentReference, InputBinding, NonemptyText, Pointer as Pointer, ProjectName, RowKey,
 )
@@ -85,23 +88,160 @@ def apply_document_edits(root: dict[str, Any], edits: DocumentOverrides) -> None
         apply_document_edit(root, edit, document_edit_value(edit))
 
 
-class Document(StrictModel):
+def check_typed_payload(schema_id: str, payload: JsonValue) -> None:
+    if schema_id == MODEL_DOCUMENT_SCHEMA_ID:
+        ModelDocument.model_validate(payload)
+    elif schema_id == TASK_DOCUMENT_SCHEMA_ID:
+        TaskDocument.model_validate(payload)
+    elif schema_id == PYTHON_TASK_SCHEMA_ID:
+        PythonTaskSelection.model_validate(payload)
+    elif schema_id == OBJECTIVE_DOCUMENT_SCHEMA_ID:
+        ObjectiveDocument.model_validate(payload)
+    elif schema_id == TRAINING_DOCUMENT_SCHEMA_ID:
+        TrainingDocument.model_validate(payload)
+
+
+class RootDocument(StrictModel):
+    """A document whose file holds its whole payload."""
+
     schema_id: NonemptyText = Field(alias="schema")
     payload: JsonValue
 
     @model_validator(mode="after")
-    def _typed_payload(self) -> Document:
-        if self.schema_id == MODEL_DOCUMENT_SCHEMA_ID:
-            ModelDocument.model_validate(self.payload)
-        elif self.schema_id == TASK_DOCUMENT_SCHEMA_ID:
-            TaskDocument.model_validate(self.payload)
-        elif self.schema_id == PYTHON_TASK_SCHEMA_ID:
-            PythonTaskSelection.model_validate(self.payload)
-        elif self.schema_id == OBJECTIVE_DOCUMENT_SCHEMA_ID:
-            ObjectiveDocument.model_validate(self.payload)
-        elif self.schema_id == TRAINING_DOCUMENT_SCHEMA_ID:
-            TrainingDocument.model_validate(self.payload)
+    def _typed_payload(self) -> RootDocument:
+        check_typed_payload(self.schema_id, self.payload)
         return self
+
+
+class SetDocumentValue(StrictModel):
+    value: JsonValue
+
+
+class RemoveDocumentValue(StrictModel):
+    op: Literal["remove"]
+
+
+type DifferencePointer = Annotated[Pointer, StringConstraints(min_length=1)]
+type Differences = dict[DifferencePointer, SetDocumentValue | RemoveDocumentValue]
+
+
+class DocumentBase(StrictModel):
+    document: ProjectName
+
+
+class BasedDocument(StrictModel):
+    """A document whose payload is its base's composed payload with ``differences`` applied.
+
+    Each difference sets or removes the value at one JSON pointer into the payload. No difference
+    lies under another, and none passes through a list: a list is one value.
+    """
+
+    schema_id: NonemptyText = Field(alias="schema")
+    base: DocumentBase
+    differences: Differences = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _disjoint_differences(self) -> BasedDocument:
+        paths = sorted(json_pointer_parts(path) for path in self.differences)
+        for outer, inner in zip(paths, paths[1:]):
+            if inner[: len(outer)] == outer:
+                raise ValueError(f"difference {pointer(inner)!r} lies under {pointer(outer)!r}")
+        return self
+
+
+type Document = RootDocument | BasedDocument
+DOCUMENT: TypeAdapter[Document] = TypeAdapter(Document)
+
+
+class DifferenceNotApplied(ValueError):
+    """A difference whose site the base no longer has."""
+
+    def __init__(self, path: str, detail: str):
+        self.path = path
+        super().__init__(detail)
+
+
+def diff(base: Payload, content: Payload) -> Differences:
+    """The fewest disjoint differences that turn ``base`` into ``content``; a list is one value."""
+    differences: Differences = {}
+
+    def walk(before: dict[str, Any], after: dict[str, Any], parts: tuple[str, ...]) -> None:
+        for key in before.keys() - after.keys():
+            differences[pointer((*parts, key))] = RemoveDocumentValue(op="remove")
+        for key, value in after.items():
+            if key not in before:
+                differences[pointer((*parts, key))] = SetDocumentValue(value=deepcopy(value))
+            elif isinstance(value, dict) and isinstance(before[key], dict):
+                walk(before[key], value, (*parts, key))
+            elif not same_json(before[key], value):
+                differences[pointer((*parts, key))] = SetDocumentValue(value=deepcopy(value))
+
+    walk(base, content, ())
+    return dict(sorted(differences.items()))
+
+
+def apply_differences(base: Payload, differences: Differences) -> Payload:
+    """Apply ``differences`` to a copy of ``base``.
+
+    Raises DifferenceNotApplied when a difference's parent is not an object in ``base``, or a
+    removed value is absent.
+    """
+    result = deepcopy(base)
+    for path, difference in differences.items():
+        *parents, key = json_pointer_parts(path)
+        parent: Any = result
+        for part in parents:
+            parent = parent.get(part) if isinstance(parent, dict) else None
+        if not isinstance(parent, dict):
+            raise DifferenceNotApplied(path, f"the base has no object at {pointer(tuple(parents)) or '/'}")
+        if isinstance(difference, SetDocumentValue):
+            parent[key] = deepcopy(difference.value)
+        elif key in parent:
+            del parent[key]
+        else:
+            raise DifferenceNotApplied(path, f"the base has no value at {path} to remove")
+    return result
+
+
+def same_json(left: Any, right: Any) -> bool:
+    """JSON equality: unlike ``==``, ``1``, ``1.0`` and ``true`` differ."""
+    if isinstance(left, dict):
+        return isinstance(right, dict) and left.keys() == right.keys() and all(
+            same_json(value, right[key]) for key, value in left.items()
+        )
+    if isinstance(left, list):
+        return isinstance(right, list) and len(left) == len(right) and all(
+            same_json(a, b) for a, b in zip(left, right)
+        )
+    return type(left) is type(right) and left == right
+
+
+def base_chain(documents: Mapping[str, Document], name: str) -> tuple[str, ...]:
+    """``name`` followed by its base, that document's base, and so on.
+
+    The chain ends at a root document, at a missing document, or before a document it already holds;
+    composing the document reports the last two.
+    """
+    chain: list[str] = []
+    current: str | None = name
+    while current is not None and current not in chain and (document := documents.get(current)) is not None:
+        chain.append(current)
+        current = document.base.document if isinstance(document, BasedDocument) else None
+    return tuple(chain)
+
+
+def based_on(documents: Mapping[str, Document], name: str) -> tuple[str, ...]:
+    """The documents whose base is ``name``, by name."""
+    return tuple(sorted(
+        other for other, document in documents.items()
+        if isinstance(document, BasedDocument) and document.base.document == name
+    ))
+
+
+def nearest_shared_base(documents: Mapping[str, Document], left: str, right: str) -> str | None:
+    """The nearest document in both base chains, which may be either document itself."""
+    shared = set(base_chain(documents, right))
+    return next((name for name in base_chain(documents, left) if name in shared), None)
 
 
 class InlineBase(StrictModel):

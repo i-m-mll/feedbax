@@ -2,6 +2,7 @@ import { expect, test } from './fixtures/studio';
 import type { ModelDocument, ModelEditResponse } from '../../src/generated/studioContracts';
 import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { expectVisibleFocus } from './fixtures/studioAccessibility';
+import { rootPayload } from '../../src/features/projectFolder/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -62,7 +63,7 @@ test('connects the saved Model task signal from the keyboard', async ({ page, re
   const { result } = await applied.json() as ModelEditResponse;
   expect(applied.ok(), JSON.stringify(result)).toBe(true);
   if (result.status !== 'applied') throw new Error(result.problem.detail);
-  const saved = result.snapshot.project.documents![modelFile.id].payload as unknown as ModelDocument;
+  const saved = rootPayload(result.snapshot.project.documents![modelFile.id]) as unknown as ModelDocument;
   const taskPort = saved.ports.inputs?.find(({ name }) => name === signal);
   expect(taskPort).toBeDefined();
   expect(Object.values(saved.interior.wires ?? {})).toContainEqual(expect.objectContaining({

@@ -3,6 +3,7 @@ import type { ModelDocument, ObjectiveDocument, PythonTaskSelection, StudioProje
 import { mapStep } from './canonicalTrain';
 import { pick } from './controls';
 import { activate, number, palette, post, readSaved } from './studioKeyboard';
+import { rootPayload } from '../../../src/features/projectFolder/rootPayload';
 
 export async function authorFirstTrain(
   page: Page, request: APIRequestContext, totalUpdates: number,
@@ -38,13 +39,13 @@ export async function authorFirstTrain(
   const nBatches = inspector.getByRole('textbox', { name: 'Batches', exact: true });
   const batchSize = inspector.getByRole('textbox', { name: 'Batch Size', exact: true });
   const taskValues = (project: StudioProjectSnapshot['project']) => (
-    project.documents?.task?.payload as PythonTaskSelection | undefined
+    rootPayload(project.documents?.task) as PythonTaskSelection | undefined
   )?.params;
   const terms = (project: StudioProjectSnapshot['project']) =>
-    (project.documents?.objective?.payload as unknown as ObjectiveDocument | undefined)?.terms ?? [];
+    (rootPayload(project.documents?.objective) as unknown as ObjectiveDocument | undefined)?.terms ?? [];
   /** A new Train step reads its training config from the `training` document. */
   const config = (project: StudioProjectSnapshot['project']) => (
-    project.documents?.training?.payload as { training_config?: { n_batches?: number; batch_size?: number } } | undefined
+    rootPayload(project.documents?.training) as { training_config?: { n_batches?: number; batch_size?: number } } | undefined
   )?.training_config;
 
   await expect(page.getByRole('button', { name: 'New Step', exact: true })).toBeEnabled();
@@ -81,7 +82,7 @@ export async function authorFirstTrain(
   const linearId = await linear.getAttribute('data-id');
   expect(linearId).toBeTruthy();
   function linearField(project: StudioProjectSnapshot['project'], field: string) {
-    const model = project.documents?.model?.payload as unknown as ModelDocument | undefined;
+    const model = rootPayload(project.documents?.model) as unknown as ModelDocument | undefined;
     const component = model?.interior.components?.[linearId!];
     return component?.kind === 'leaf' ? component.fields?.[field] : undefined;
   }
@@ -167,12 +168,12 @@ export async function authorFirstTrain(
     settings: { document: 'training', pointer: '/settings' },
     training_config: { document: 'training', pointer: '/training_config' },
   } });
-  expect(saved.project.documents?.training?.payload).toMatchObject({
+  expect(rootPayload(saved.project.documents?.training)).toMatchObject({
     method: 'feedbax.supervised_gradient',
     settings: { optimizer: { type: 'adam', learning_rate: { type: 'constant_schedule', value: 0.001 } } },
     training_config: { n_batches: totalUpdates, batch_size: 4 },
   });
-  const savedModel = saved.project.documents?.model?.payload as unknown as ModelDocument;
+  const savedModel = rootPayload(saved.project.documents?.model) as unknown as ModelDocument;
   expect(savedModel.interior.components).toMatchObject({
     [linearId!]: { kind: 'leaf', type: 'feedbax.Linear', fields: {
       input_size: 2, output_size: 2, ...(forceComparison && { activation: forceComparison.activation }),
@@ -196,7 +197,7 @@ export async function authorFirstTrain(
     }),
     expect.objectContaining({ source: linearOutput, target: { owner: 'outputs', port: commandPort!.id } }),
   ]));
-  expect(saved.project.documents?.task?.payload).toMatchObject({
+  expect(rootPayload(saved.project.documents?.task)).toMatchObject({
     type: 'feedbax.Reaching',
     params: { x: 0.22, n_steps: 12, ...(forceComparison && { y: forceComparison.targetY }) },
   });

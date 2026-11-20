@@ -13,6 +13,7 @@ from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import EvaluateAttachmentRows, EvaluateAttachmentVariant
 from feedbax.contracts.project import SetProjectValue, apply_document_edits, json_pointer_parts
+from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.contracts.project_plan import RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec
@@ -140,7 +141,10 @@ def _input_rows(documents, projection) -> list[StudioTrialInput]:
     ]
 
 
-def _selected_task(entry) -> TaskDocument | PythonTaskSelection | None:
+def _selected_task(project, document) -> TaskDocument | PythonTaskSelection | None:
+    entry = compose_document(project.documents.get, document)
+    if isinstance(entry, ProjectDiagnostic):
+        return None
     if entry.schema_id == TASK_DOCUMENT_SCHEMA_ID:
         return TaskDocument.model_validate(entry.payload)
     if entry.schema_id == PYTHON_TASK_SCHEMA_ID:
@@ -358,8 +362,7 @@ def _chosen_document(project, document, role):
 
 
 def _chosen_task(project, document):
-    entry = project.documents.get(document)
-    task = _selected_task(entry) if entry is not None else None
+    task = _selected_task(project, document)
     if task is None:
         raise ProjectFolderInvalid(f"{document} is not a Task document.")
     return task
@@ -709,8 +712,8 @@ def trial_authoring(
                 _with_task(documents, other), bundle, show_objective=step.kind == "train", graph_override=graph,
                 objective_use=ObjectiveUse.INHERITED if step.kind == "evaluate" else ObjectiveUse.TRAIN,
             ).problems))
-            for name, entry in sorted(snapshot.project.documents.items())
-            if (other := _selected_task(entry)) is not None
+            for name in sorted(snapshot.project.documents)
+            if (other := _selected_task(snapshot.project, name)) is not None
         ],
         inputs=_input_rows(documents, projected),
         outputs=[StudioTrialOutput(address=ModelAddress.from_text(value.id), value=value)
