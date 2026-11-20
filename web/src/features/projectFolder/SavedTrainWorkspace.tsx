@@ -63,7 +63,7 @@ import type { ProjectEditController } from './projectEditController';
 import { bestRankGroups, projectWindowPlan, planVariants, savedRunId, stepSourceRows } from './projectWindowPlan';
 import { placeField, placeMember, placeView, removeGraphVariation, type Reveal } from './projectWindowProblems';
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
-import { planWithRefusal, type Refusal } from './refusals';
+import { planWithRefusal, problemKey, type GestureFailures, type Refusal } from './refusals';
 import { CheckpointRuleEditor, EvaluateSubjectFields, StudioEvaluateAuthoring, type EvaluateField } from './StudioEvaluateAuthoring';
 import { StudioEvaluationAttemptDetails } from './StudioEvaluationResults';
 import { focusedResult, SavedResults } from './SavedResults';
@@ -562,12 +562,13 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const analyze = useManagedAnalyze({
     editor, key: step?.kind === 'analyze' ? namedRun : undefined, projection: data, wholeStep,
     focusedView: windowState.mode === 'map' ? null : focusView, reveal: revealed, savePosition: saveElementPosition, selection: elements,
-    sections: drawerSections, steps: plan.steps,
+    sections: drawerSections, steps: plan.steps, failures: stepFailures(step?.kind === 'analyze' ? step.id : undefined),
   });
   const report = useManagedReport({
     editor, snapshot, plan, projection: data, variant, stepId: step?.kind === 'report' ? step.id : undefined,
     run: step?.kind === 'report' ? namedRun : undefined,
     wholeStep, focused: windowState.mode !== 'map' && focusView === 'document',
+    failures: stepFailures(step?.kind === 'report' ? step.id : undefined),
   });
   const jobsById = new Map(jobs.data?.jobs.map((job) => [job.job_id, job]));
   const evaluationRequests = new Map(evaluationRows.map(({ key, request_id }) => [savedRunId(key), request_id]));
@@ -589,18 +590,30 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     if (inFlight.current) return;
     inFlight.current = true;
     setBusy(true);
-    setCommandError(undefined);
-    setRefusal(undefined);
+    settled();
     try {
       await work();
     } catch (cause) {
-      const refused = !isServiceFailure(cause) && refuse?.(apiErrorMessage(cause));
-      if (refused) setRefusal(refused);
-      else commandFailed(cause);
+      failed(cause, refuse);
     } finally {
       inFlight.current = false;
       setBusy(false);
     }
+  }
+  function settled() {
+    setCommandError(undefined);
+    setRefusal(undefined);
+  }
+  function failed(cause: unknown, refuse?: (reason: string) => Refusal | undefined) {
+    const refused = !isServiceFailure(cause) && refuse?.(apiErrorMessage(cause));
+    if (refused) setRefusal(refused);
+    else commandFailed(cause);
+  }
+  function refuseStep(stepId: string | undefined) {
+    return (reason: string): Refusal | undefined => stepId ? { kind: 'step', step: stepId, reason } : undefined;
+  }
+  function stepFailures(stepId: string | undefined): GestureFailures {
+    return { clear: settled, fail: (cause) => failed(cause, refuseStep(stepId)) };
   }
 
   const refuseRuns = (runIds: readonly string[]) => (reason: string): Refusal | undefined =>
@@ -718,7 +731,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       if (!await runRemoval.confirm((row) => row.key.step === stepId && (!variantId || row.key.variant === variantId))) return;
       editor.editFiles(studioName('removeVariation'), [graphRepair], { reviewedRevision: saved.revision });
       await editor.flush();
-    });
+    }, (reason) => ({ kind: 'problem', problem: problemKey(revealed.problem!), reason }));
   }
   function showRun(key: StudioSavedTrainKey, jobId?: string, view: 'runs' | 'results' | 'scene' = 'results') {
     const target = { stepId: key.step, runId: savedRunId(key) };
@@ -773,10 +786,11 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         ...current.steps?.[stepId], sweep_order: [...(next.sweepOrder ?? [])],
       } },
     };
+    settled();
     try {
       await session.savePresentation(updated);
-    } catch (error) {
-      commandFailed(error);
+    } catch (cause) {
+      failed(cause, refuseStep(stepId));
     }
   }
 
@@ -848,7 +862,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         : projection;
       const id = await createEvaluation(editor, source, plan, reviewed, stopped);
       commandScope.selectCreatedStep(id);
-    });
+    }, refuseStep(source.stepId));
   }
 
   function openStepMenu(kinds: StepInsertion) {
@@ -1020,7 +1034,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     void perform(async () => {
       const id = await createReport(editor, revision, figure, humanizeLabel(figure.name));
       commandScope.selectCreatedStep(id, 'document');
-    });
+    }, refuseStep(figure.key.step));
   }
 
   function stepInsertion(source?: PipelineMapStepSource): { kinds: StepInsertion; enabled: boolean } | undefined {
@@ -1045,7 +1059,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       return { kinds: { analyze: () => void perform(async () => {
         const id = await createAnalyze(editor, data.revision, input);
         commandScope.selectCreatedStep(id, 'analysis');
-      }) }, enabled: ready && !busy };
+      }, refuseStep(source.stepId)) }, enabled: ready && !busy };
     }
     if (sourceStep?.kind === 'analyze' && data) {
       const rows = new Set((source.selection ? selectedRuns(sourceStep, source.selection) : sourceStep.runs).map(({ id }) => id));
@@ -1064,7 +1078,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     const runs = source.selection ? selectedRuns(sourceStep, source.selection) : sourceStep.runs;
     return {
       kinds: {
-        train: () => void perform(async () => { await onNewStep(source, commandScope); }),
+        train: () => void perform(async () => { await onNewStep(source, commandScope); }, refuseStep(source.stepId)),
         ...(data && managedTrialDomain(data, runs) && { evaluate: () => evaluateTrain(source, data) }),
       },
       enabled: canAuthorContinuation && !busy,
@@ -1166,9 +1180,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     bindStudioCommand('rename', () => {
       void perform(async () => {
         const revision = await editor.flush();
-        const latest = editor.getSnapshot();
-        if (latest.outside) throw new Error('Resolve the outside change before renaming.');
-        setRename({ name: latest.configuration.project, revision });
+        setRename({ name: editor.getSnapshot().configuration.project, revision });
       });
     }, {
       enabled: !busy && !outside,
@@ -1275,7 +1287,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               openProjectProblems(opener);
             }
           }}>
-          <ProblemList problems={shownProblems} canReveal={(problem) => !!addressedStep(problem)}
+          <ProblemList problems={shownProblems} refusal={refusal?.kind === 'problem' ? refusal : undefined} canReveal={(problem) => !!addressedStep(problem)}
             onChoose={revealProblem} showVariant={variants.length > 1 && !problemPanel?.scope} />
         </StudioProblems>}
         activity={<HeaderActivity placement="above" open={panel?.kind === 'activity'} command={activity}
@@ -1482,8 +1494,10 @@ function namedByHolder(problem: StudioProjectWindowMapProblem, holder: string | 
   return !!place && 'document' in place && place.document === holder && !(place.part === 'task' && place.parameter);
 }
 
-function ProblemList({ problems, onChoose, canReveal, showVariant }: {
+function ProblemList({ problems, refusal, onChoose, canReveal, showVariant }: {
   problems: readonly StudioProjectWindowMapProblem[];
+  /** The problem whose repair was refused, and why. */
+  refusal?: { problem: string; reason: string };
   onChoose(problem: StudioProjectWindowMapProblem): void;
   canReveal(problem: StudioProjectWindowMapProblem): boolean;
   showVariant: boolean;
@@ -1502,7 +1516,7 @@ function ProblemList({ problems, onChoose, canReveal, showVariant }: {
           onClick={() => onChoose(first)}>{name}</Button>
         : name}</h2>}
       <ul>{entries.map((problem, index) => <li key={index} className="break-words">
-        <ProblemRow problem={problem}
+        <ProblemRow problem={problem} refusal={refusal?.problem === problemKey(problem) ? refusal.reason : undefined}
           context={[problem.step !== name ? problem.step : null, showVariant ? problem.variant : null].flatMap((part) => part ? [part] : [])}
           placeShown={!namedByHolder(problem, name)}
           onReveal={canReveal(problem) ? () => onChoose(problem) : undefined} />

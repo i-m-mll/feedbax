@@ -10,7 +10,18 @@ export type Refusal =
   | { kind: 'step'; step: string; reason: string }
   | { kind: 'exception'; step: string; exception: string; reason: string }
   | { kind: 'quote'; reason: string }
-  | { kind: 'projectName'; reason: string };
+  | { kind: 'projectName'; reason: string }
+  /** Keyed by `problemKey`. */
+  | { kind: 'problem'; problem: string; reason: string };
+
+/** A view's channel for its gestures' outcomes: `clear` as one starts, `fail` with what it threw. */
+export interface GestureFailures {
+  clear(): void;
+  fail(cause: unknown): void;
+}
+
+/** Identifies a projected problem across refreshes of the projection. */
+export const problemKey = (problem: object) => JSON.stringify(problem);
 
 function count(counts: PlanStepView['statusCounts'], state: StudioResultState, change: number) {
   const next = (counts[state] ?? 0) + change;
