@@ -149,7 +149,10 @@ class RenameMember(StrictModel):
 
 
 class DuplicateMember(StrictModel):
-    """Copy a document or step and its presentation under a new name, generated when omitted."""
+    """Copy a document or step and its presentation under a new name, generated when omitted.
+
+    A document's copy is a root document holding the source's composed content.
+    """
 
     kind: Literal["duplicate"]
     family: MemberFamily
@@ -157,10 +160,17 @@ class DuplicateMember(StrictModel):
     name: ProjectName | None = None
 
 
+class DetachMember(StrictModel):
+    """Replace a based document by a root document holding its composed content."""
+
+    kind: Literal["detach"]
+    member: ProjectName
+
+
 class StudioMemberCommand(StrictModel):
     revision: Sha256
     presentation_revision: Sha256
-    command: Annotated[RenameMember | DuplicateMember, Field(discriminator="kind")]
+    command: Annotated[RenameMember | DuplicateMember | DetachMember, Field(discriminator="kind")]
 
 
 class StudioMemberCommandResult(StrictModel):
