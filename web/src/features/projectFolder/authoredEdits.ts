@@ -87,10 +87,10 @@ function applyEdit(entry: JsonObject, edit: ProjectValueEdit, checkOrder: boolea
   } else {
     if (edit.op === 'add' && exists) throw new Error(`The field at ${edit.path} already exists.`);
     if (edit.op === 'remove') {
-      // Inverse add appends to an object in the folder codec. Keep removals
-      // that need a position behind the order-aware edit contract.
+      // Inverse add appends to an object in the folder codec. A file's own members are
+      // written in its schema's order, so only removals inside a member need a position.
       const keys = Object.keys(container);
-      if (checkOrder && keys.length > 1 &&
+      if (checkOrder && path.length > 1 && keys.length > 1 &&
         (keys[keys.length - 1] !== key || keys.some((name) => /^[0-9]+$/.test(name)))) {
         throw new Error('Removing this authored value requires its position in the ordered file.');
       }
@@ -125,10 +125,10 @@ export function removeAuthoredMember(
   if (!name || parent == null || typeof parent !== 'object') return;
   const key = keyAt(parent, name);
   if (!own(parent, key)) return;
-  if (Array.isArray(parent) || Object.keys(parent).at(-1) === key) {
+  if (path.length === 1 || Array.isArray(parent) || Object.keys(parent).at(-1) === key) {
     return { op: 'remove', path: authoredPointer(path) };
   }
-  if (path.length === 1 || hasIndexedKeys(parent)) return;
+  if (hasIndexedKeys(parent)) return;
   // Replace the container so Undo restores an object member at its old position.
   return {
     op: 'replace', path: authoredPointer(path.slice(0, -1)),

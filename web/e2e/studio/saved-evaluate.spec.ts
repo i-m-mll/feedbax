@@ -217,6 +217,7 @@ async function runSavedEvaluation(page: Page, request: APIRequestContext, info: 
     step: 'baseline', code: 'cannot_run', path: '/inputs/subject',
   }));
   await expect(page.getByRole('button', { name: 'Run', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeDisabled();
   // A card accepts a new step whatever its runs' status.
   await expect(page.getByRole('button', { name: 'New Step baseline', exact: true })).toBeEnabled();
 

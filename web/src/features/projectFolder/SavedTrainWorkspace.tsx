@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExtern
 import { useStore } from 'zustand';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { approveSavedRun, fetchExecutionTargets, fetchSavedTrainRuns, quoteSavedRun, runSavedTrain } from '@/api/jobs';
-import { apiErrorMessage, isUnanswered } from '@/api/request';
+import { apiErrorMessage, isServiceFailure, isUnanswered } from '@/api/request';
 import { prepareCheckpointRuleEdit, prepareSubsetToRows } from '@/api/studioAuthoring';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import {
@@ -63,7 +63,7 @@ import type { ProjectEditController } from './projectEditController';
 import { bestRankGroups, projectWindowPlan, planVariants, savedRunId, stepSourceRows } from './projectWindowPlan';
 import { placeField, placeMember, placeView, removeGraphVariation, type Reveal } from './projectWindowProblems';
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
-import { CheckpointRuleEditor, EvaluateSubjectFields, StudioEvaluateAuthoring } from './StudioEvaluateAuthoring';
+import { CheckpointRuleEditor, EvaluateSubjectFields, StudioEvaluateAuthoring, type EvaluateField } from './StudioEvaluateAuthoring';
 import { StudioEvaluationAttemptDetails } from './StudioEvaluationResults';
 import { focusedResult, SavedResults } from './SavedResults';
 import { filesRemoval, RunRemovalContext, useRunRemovalDialog } from './runRemoval';
@@ -203,6 +203,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const mapViewport = useRef<CanvasViewport>(null);
   const selection = useProjectWindowSelection(Object.keys(saved.project.steps ?? {})[0] ?? null);
   const [commandError, setCommandError] = useState<string>();
+  /** A refused edit of an Evaluate field, shown on that field. */
+  const [fieldRefusal, setFieldRefusal] = useState<{ step: string; field: EvaluateField; reason: string }>();
   const commandFailed = (error: unknown) => {
     if (!isUnanswered(error)) setCommandError(apiErrorMessage(error));
   };
@@ -580,15 +582,18 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const exactJob = exactRow?.attempts.at(-1);
   const resumable = exactJob && jobsById.get(exactJob.job_id);
 
-  async function perform(work: () => Promise<void>) {
+  async function perform(work: () => Promise<void>, field?: EvaluateField) {
     if (inFlight.current) return;
     inFlight.current = true;
     setBusy(true);
     setCommandError(undefined);
+    setFieldRefusal(undefined);
+    const stepId = step?.id;
     try {
       await work();
     } catch (cause) {
-      commandFailed(cause);
+      if (field && stepId && !isServiceFailure(cause)) setFieldRefusal({ step: stepId, field, reason: apiErrorMessage(cause) });
+      else commandFailed(cause);
     } finally {
       inFlight.current = false;
       setBusy(false);
@@ -875,6 +880,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     </>;
   }
 
+  const refusedAt = (field: EvaluateField) =>
+    fieldRefusal && fieldRefusal.step === step?.id && fieldRefusal.field === field ? fieldRefusal.reason : undefined;
+
   function editEvaluateSubject(name: string, patches: ProjectValueEdit[], reads: readonly string[]) {
     if (!step || !ready) return;
     const files = [{ address: { kind: 'step' as const, id: step.id }, patches }];
@@ -883,10 +891,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       if (!await runRemoval.confirm(filesRemoval(saved.project_id, saved.revision, files, editor.signal))) return;
       editor.editFiles(name, files, { reviewedRevision: saved.revision, dependencies });
       await editor.flush();
-    });
+    }, 'subject');
   }
 
-  function editEvaluation(name: string, patch: ProjectValueEdit) {
+  function editEvaluation(field: 'subset' | 'trialSet', name: string, patch: ProjectValueEdit) {
     if (!step || !evaluationEditor || !ready) return;
     const source = evaluationEditor.source.id;
     const files = [{ address: { kind: 'step' as const, id: step.id }, patches: [patch] }];
@@ -894,7 +902,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       if (!await runRemoval.confirm(filesRemoval(saved.project_id, saved.revision, files, editor.signal))) return;
       editor.editFiles(name, files, { reviewedRevision: saved.revision, dependencies: [{ kind: 'step', id: source }] });
       await editor.flush();
-    });
+    }, field);
   }
 
   /**
@@ -944,7 +952,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         reviewedRevision: reviewed.revision, dependencies: [{ kind: 'step', id: subject.source_step_id }],
       });
       await editor.flush();
-    });
+    }, 'subset');
   }
 
   function editEvaluationCheckpoint(rule: EditableCheckpointRule) {
@@ -974,7 +982,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       if (!await runRemoval.confirm(filesRemoval(saved.project_id, saved.revision, files, editor.signal))) return;
       editor.editFiles(name, files, { reviewedRevision: saved.revision, dependencies });
       await editor.flush();
-    });
+    }, 'checkpoints');
   }
 
   async function applyCheckpointSweepEdit(edit: StudioCheckpointRuleRequest['edit']) {
@@ -988,7 +996,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         reviewed.files, { reviewedRevision: reviewed.revision,
           dependencies: [{ kind: 'step', id: subject.source_step_id }] });
       await editor.flush();
-    });
+    }, 'checkpoints');
   }
 
   function chooseReportFigure(revision: string, figure: ReportFigureSource) {
@@ -1120,12 +1128,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   });
   const nextStep = newStepCommand();
   const runCommands: StudioCommand[] = [runCommand];
-  if (step?.kind === 'train' || step?.kind === 'evaluate') {
-    for (const [id, mode] of [['stop', 'checkpoint'], ['forceStop', 'force']] as const) {
-      const eligible = selectedJobs.filter((job) => jobAllowsCommand(job, id)).map(({ job_id }) => job_id);
-      if (!eligible.length && (id === 'forceStop' || step.kind === 'evaluate')) continue;
-      runCommands.push(bindStudioCommand(id, () => stop(eligible, mode), { enabled: !busy && eligible.length > 0 }));
-    }
+  for (const [id, mode] of [['stop', 'checkpoint'], ['forceStop', 'force']] as const) {
+    const eligible = selectedJobs.filter((job) => jobAllowsCommand(job, id)).map(({ job_id }) => job_id);
+    if (!eligible.length && id === 'forceStop') continue;
+    runCommands.push(bindStudioCommand(id, () => stop(eligible, mode), { enabled: !busy && eligible.length > 0 }));
   }
   if (step?.kind === 'train') {
     if (resumable && jobAllowsCommand(resumable, 'resume')) {
@@ -1356,12 +1362,13 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                     {authoring && <StudioTrainAuthoringForm {...authoring} run={namedRun} runPending={!data && !projection.isError}
                       fieldRows={detailInputs.fieldRows} fieldAxes={detailInputs.fieldAxes} />}
                     {evaluateInputs && <EvaluateSubjectFields step={evaluateInputs} project={saved.project} trains={trainSteps}
-                      picking={elements} subset={subjectInput && inputDetail(subjectInput)}
+                      picking={elements} subset={subjectInput && inputDetail(subjectInput)} refusal={refusedAt('subject')}
                       onEdit={ready && !busy && wholeStep ? editEvaluateSubject : undefined} />}
                     {evaluationCheckpointRule &&
                       <CheckpointRuleEditor key={JSON.stringify(['checkpoint', step.id, variant, checkpointScope])}
                         initial={evaluationCheckpointRule}
                         disabled={!ready || busy} readOnly={Boolean(stepCheckpointRule && subject?.checkpoint_axis)}
+                        refusal={refusedAt('checkpoints')}
                         onSave={editEvaluationCheckpoint}
                         onToSweep={canSweepCheckpoint ? () => { void applyCheckpointSweepEdit({ kind: 'to_sweep' }); } : undefined} />}
                     {evaluationEditor && projection.data && variant && <StudioEvaluateAuthoring key={step.id}
@@ -1369,6 +1376,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                       source={evaluationEditor.source} sourceRows={stepSourceRows(projection.data, evaluationEditor.source.id, variant)}
                       domain={evaluationEditor.domain}
                       editSubject={evaluationEditor.authored.subject.checkpoint === 'last'}
+                      refusals={{ subset: refusedAt('subset'), trialSet: refusedAt('trialSet') }}
                       disabled={!ready || busy} onEdit={editEvaluation}
                       onToRows={freezeAttempts ? freezeEvaluationSubset : undefined} />}
                   </FocusedFields>}

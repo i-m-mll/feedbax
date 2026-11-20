@@ -23,7 +23,7 @@ async function separator(page: Page) {
   });
 }
 
-/** Each drawn view glyph's offset below the separator; a view the step's kind lacks has no glyph. */
+/** Each view glyph's offset below the separator; a view the step's kind lacks is a disabled tab. */
 async function glyphOffsets(page: Page) {
   const { line } = await separator(page);
   const offsets = new Map<string, number>();
@@ -122,11 +122,19 @@ test('the rail separator follows the divider and every view keeps its place', as
     await page.getByRole('tree', { name: 'Steps', exact: true }).getByRole('treeitem', { name: new RegExp(`^${stepOf(kind)}\\b`) }).click();
     for (const name of views) {
       const tab = rail(page).getByRole('tab', { name, exact: true });
-      if ((absent as readonly string[]).includes(name)) await expect(tab).toHaveCount(0);
-      else await expect(tab).not.toHaveAttribute('aria-disabled', 'true');
+      if ((absent as readonly string[]).includes(name)) {
+        await expect(tab).toBeVisible();
+        await expect(tab).toHaveAttribute('aria-disabled', 'true');
+        await expect(tab).toHaveAttribute('tabindex', '-1');
+      } else await expect(tab).not.toHaveAttribute('aria-disabled', 'true');
+    }
+    if (kind === 'evaluate') {
+      await rail(page).getByRole('tab', { name: 'Task', exact: true }).focus();
+      await page.keyboard.press('ArrowDown');
+      await expect(rail(page).getByRole('tab', { name: 'Scene', exact: true })).toBeFocused();
     }
     const offsets = await glyphOffsets(page);
-    expect([...offsets.keys()]).toEqual(views.filter((name) => !(absent as readonly string[]).includes(name)));
+    expect([...offsets.keys()]).toEqual(views);
     expectFixedPlaces(offsets, pitch);
     for (const [name, offset] of offsets) if (trainOffsets.has(name)) expect(offset).toBeCloseTo(trainOffsets.get(name)!, 0);
   }
