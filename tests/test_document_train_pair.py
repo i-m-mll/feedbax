@@ -428,7 +428,7 @@ def test_trial_preparation_distinguishes_effective_scientific_inputs(authored, p
     binding = "steps.train.base.inline.trial_documents.input_overrides.reach_target"
     raw["sweep"] = {"rows": {
         "base": {},
-        "model": {"patches": {f"steps.train.{mass.to_text()}": {"value": 2.0}}},
+        "model": {"patches": {f"documents.reach-model.{mass.to_text()}": {"value": 2.0}}},
         "task": {"patches": {task: {"value": "alternate-task"}}},
         "objective": {"patches": {objective: {"value": 2}}},
         "bad-binding": {"patches": {binding: {"value": "missing-signal"}}},

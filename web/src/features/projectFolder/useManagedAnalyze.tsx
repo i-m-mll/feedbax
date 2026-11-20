@@ -80,7 +80,7 @@ export function useManagedAnalyze({
   const inFlight = useRef(false);
   const cursor = useRef<{ scope: string; point: PresentationPosition }>();
   const shape = step?.kind === 'analyze' ? JSON.stringify([
-    step.base, step.sweep, step.deltas, step.document_overrides, step.inputs?.states,
+    step.base, step.sweep, step.deltas, step.inputs?.states,
   ]) : undefined;
   const authoring = useQuery({
     queryKey: ['studio-analyze', saved.project_id, id, shape],

@@ -270,6 +270,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           if (result.files?.length && !await confirmRunRemoval(sweepValueRuns(result.removed_values))) return undefined;
           const applied = await editor.editModel('Set Value', fieldBody.document, result.command, current, fieldBody.run && {
             step: fieldBody.run.step, chosen_steps: [...chosenSteps], files: result.files ?? [],
+            ...(fieldBody.evaluate_scope?.kind === 'variant' ? { variant: fieldBody.evaluate_scope.variant } : {}),
           });
           return applied.status === 'refused' ? applied.problem.detail : undefined;
         }
@@ -427,11 +428,14 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         setIssue(undefined);
         try {
           let changed: ModelAddress;
-          if (readBody.scope.kind === 'step') {
+          if (readBody.scope.kind === 'step' || readBody.scope.kind === 'variant') {
             const { chosenSteps } = await plan.next(({ revision }) => revision === editor.getSnapshot().saved.revision);
             const applied = await editor.editModel(name, model.id, {
               operation: difference.op === 'set_field' ? difference : { op: 'set_attachment', difference },
-            }, editor.getSnapshot().saved, { step: readBody.run.step, chosen_steps: [...chosenSteps] });
+            }, editor.getSnapshot().saved, {
+              step: readBody.run.step, chosen_steps: [...chosenSteps],
+              ...(readBody.scope.kind === 'variant' ? { variant: readBody.scope.variant } : {}),
+            });
             if (applied.status === 'refused') throw new Error(applied.problem.detail);
             const [first] = applied.changed;
             if (!first) throw new Error('The edit changed nothing.');

@@ -31,10 +31,6 @@ def studio(tmp_path):
         folders = app.state.project_folders
         raw = document_project(authored_documents())
         raw["steps"]["train-b"] = deepcopy(raw["steps"]["train"])
-        # An attachment batch is named by its author, so a batch that shares a document's name is not a reference.
-        raw["steps"]["train-b"]["model_attachments"] = {
-            "reach-model": [{"op": "set_field", "address": MASS, "value": 1.4}],
-        }
         model = raw["documents"]["reach-model"]["payload"]
         controller = model["interior"]["components"]["wrapper"]["interior"]["components"]["controller"]
         reset = ModelAddress.model_validate({
@@ -128,7 +124,6 @@ def test_rename_preserves_document_bytes_and_requests_through_undo(studio):
     for step in STEPS:
         trial = after["project"]["steps"][step]["base"]["inline"]["trial_documents"]
         assert trial["model"] == {"document": "arm"} and "model_name" not in trial
-    assert set(after["project"]["steps"]["train-b"]["model_attachments"]) == {"reach-model"}
     assert after["project"]["sweep"]["rows"]["nominal"]["patches"] == {f"documents.arm.{MASS_TEXT}": {"value": 2.0}}
     assert after["presentation"]["documents"] == {"arm": before["presentation"]["documents"]["reach-model"]}
     # A document's name is outside request identity, so both Train steps keep their results.
@@ -238,14 +233,14 @@ def evaluated(tmp_path):
     with TestClient(app) as client:
         folders = app.state.project_folders
         raw = document_project(authored_documents(), evaluation=True)
-        target = "steps.train." + MASS_TEXT
-        raw["sweep"] = {"axes": {"mass": {"values": {
-            name: {"value": value, "patches": {target: {"value": value}}} for name, value in (("nominal", 1), ("heavy", 2))
+        target = "steps.train.base.inline.training_config.batch_size"
+        raw["sweep"] = {"axes": {"batch": {"values": {
+            name: {"value": value, "patches": {target: {"value": value}}} for name, value in (("nominal", 4), ("heavy", 8))
         }}}}
         raw["steps"]["train"]["group"] = "fitting"
         _save_project(folders, PROJECT, Project.model_validate(raw))
         (folders.root / PROJECT / "presentation.json").write_text(
-            '{"steps": {"train": {"sweep_order": ["mass"]}}}\n',
+            '{"steps": {"train": {"sweep_order": ["batch"]}}}\n',
         )
         yield client, folders
 
@@ -269,9 +264,9 @@ def test_a_step_rename_rewrites_its_references_and_keeps_every_request(evaluated
     steps = after["project"]["steps"]
     assert set(steps) == {"fit", "baseline"} and steps["fit"]["group"] == "fitting"
     assert steps["baseline"]["inputs"]["subject"]["step"] == "fit"
-    targets = {target for value in after["project"]["sweep"]["axes"]["mass"]["values"].values() for target in value["patches"]}
-    assert targets and all(target.startswith("steps.fit.{") for target in targets)
-    assert after["presentation"]["steps"] == {"fit": {"sweep_order": ["mass"]}}
+    targets = {target for value in after["project"]["sweep"]["axes"]["batch"]["values"].values() for target in value["patches"]}
+    assert targets and all(target.startswith("steps.fit.") for target in targets)
+    assert after["presentation"]["steps"] == {"fit": {"sweep_order": ["batch"]}}
     renamed = _files(folders)
     assert "steps/fit.json" in renamed and "steps/train.json" not in renamed
     assert _step_requests(folders, after["revision"]) == {

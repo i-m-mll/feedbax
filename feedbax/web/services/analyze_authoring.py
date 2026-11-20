@@ -190,7 +190,6 @@ def analyze_authoring(
         or not isinstance(step.base, DocumentReference)
         or step.base.pointer
         or step.deltas
-        or step.document_overrides
     ):
         raise ProjectFolderInvalid(f"Analyze step {key.step!r} is swept or has no named analysis document")
     document = project.documents.get(step.base.document)

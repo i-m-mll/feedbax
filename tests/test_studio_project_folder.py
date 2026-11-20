@@ -1623,7 +1623,6 @@ def test_a_continuation_s_edit_of_its_training_document_is_its_own(tmp_path):
         train.number("train-2", _BATCHES, {"kind": "text", "text": "4"})
         assert (root / "documents" / "training.json").read_bytes() == stored
         assert train.reads() == {"train": "training", "other": "training", "train-2": "training-2"}
-        assert not load_text_project(root).project.steps["train-2"].document_overrides
         assert train.requests("train") == parent
         assert _changed(child, train.requests("train-2")) == child.keys()
 
@@ -1673,7 +1672,6 @@ def test_a_sweep_on_a_training_document_step_is_the_step_s_own(tmp_path):
         project = load_text_project(root).project
         assert not project.steps["train"].sweep.axes.get("learning-rate")
         assert (root / "documents" / "training.json").read_bytes() == stored
-        assert not project.steps["train"].document_overrides
         assert project.documents["training-2"].payload["settings"]["optimizer"]["learning_rate"]["value"] == 0.003
         (definition,) = [value for key, value in train.plan().selected_definitions.items() if key.step == "train"]
         assert definition.payload["settings"]["optimizer"]["learning_rate"]["value"] == 0.003

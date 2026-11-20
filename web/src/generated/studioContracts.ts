@@ -950,6 +950,7 @@ export interface ModelEditRequest {
   command: ModelEditCommand;
   step?: string | null;
   chosen_steps?: string[];
+  variant?: string | null;
   files?: StudioProjectFilePatch[];
 }
 
@@ -2506,12 +2507,6 @@ export interface InspectionStatusResponse {
   treescope_version?: string | null;
 }
 
-export type AddModelComponent = {
-  "op": "add_component";
-  "address": ModelAddress;
-  "component": LeafComponent;
-};
-
 export type AnalysisDocument = {
   "schema_version"?: "feedbax.analysis_document.v1";
   "inputs"?: Record<string, AnalyzeDatasetInput | AnalyzeModelInput | AnalyzeTaskInput>;
@@ -2737,13 +2732,7 @@ export type DocumentBase = {
   "document": string;
 };
 
-export type DocumentEdit = SetProjectValue | RemoveProjectValue | EnsureDocumentCollection;
-
 export type DocumentInputReference = InitialModelReference_DocumentReference_ | TaskDocumentReference_DocumentReference_ | ObjectiveDocumentReference_DocumentReference_;
-
-export type DocumentOverridePath = string;
-
-export type DocumentOverrides = Record<string, JsonValue> | Array<DocumentEdit>;
 
 export type DocumentPresentation = {
   "positions"?: Record<string, PresentationPosition>;
@@ -2781,12 +2770,6 @@ export type DuplicateMember = {
   "family": MemberFamily;
   "member": string;
   "name"?: string | null;
-};
-
-export type EnsureDocumentCollection = {
-  "op": "ensure";
-  "path": DocumentOverridePath;
-  "collection": "object" | "array";
 };
 
 export type EnvironmentChange = "arguments" | "rejected_update" | "output_shape_or_dtype" | "numerical_drift" | "nonfinite_outputs";
@@ -3033,13 +3016,6 @@ export type ModelPort = {
   "kind"?: "model";
 };
 
-export type ModelWireDifference = {
-  "op": "add_wire" | "rewire";
-  "address": ModelAddress;
-  "source": ComponentPortEnd | InputBoundaryEnd;
-  "target": ComponentPortEnd | OutputBoundaryEnd;
-};
-
 export type Name = string;
 
 export type NameValue = {
@@ -3238,7 +3214,7 @@ export type RemoveDocumentValue = {
 
 export type RemoveProjectValue = {
   "op": "remove";
-  "path": DocumentOverridePath;
+  "path": DifferencePointer;
 };
 
 export type RemoveValue = {
@@ -3332,7 +3308,7 @@ export type SetDocumentValue = {
 
 export type SetProjectValue = {
   "op": "add" | "replace";
-  "path": DocumentOverridePath;
+  "path": DifferencePointer;
   "value": JsonValue;
 };
 
@@ -3390,8 +3366,6 @@ export type Step = {
   "kind": StepKind;
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
-  "document_overrides"?: Record<string, DocumentOverrides>;
-  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField | AddModelComponent | ModelWireDifference>>;
   "sweep"?: Sweep | null;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
@@ -3475,8 +3449,6 @@ export type StudioAnalyzeStep = {
   "kind": "analyze";
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
-  "document_overrides"?: Record<string, DocumentOverrides>;
-  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField | AddModelComponent | ModelWireDifference>>;
   "sweep"?: Sweep | null;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
@@ -3657,8 +3629,6 @@ export type StudioEvaluateStep = {
   "kind": "evaluate";
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
-  "document_overrides"?: Record<string, DocumentOverrides>;
-  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField | AddModelComponent | ModelWireDifference>>;
   "sweep"?: Sweep | null;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
@@ -3928,8 +3898,6 @@ export type StudioReportStep = {
   "kind": "report";
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
-  "document_overrides"?: Record<string, DocumentOverrides>;
-  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField | AddModelComponent | ModelWireDifference>>;
   "sweep"?: Sweep | null;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
@@ -4031,8 +3999,6 @@ export type StudioTrainStep = {
   "kind": "train";
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
-  "document_overrides"?: Record<string, DocumentOverrides>;
-  "model_attachments"?: Record<string, Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField | AddModelComponent | ModelWireDifference>>;
   "sweep"?: Sweep | null;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
@@ -6013,9 +5979,19 @@ export const ModelEditRequestSchema: z.ZodType<ModelEditRequest> = z.lazy(() =>
       "command": ModelEditCommandSchema,
       "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
       "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
+      "variant": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
       "files": z.array(StudioProjectFilePatchSchema).optional(),
     })
     .strict()
+    .superRefine((input, ctx) => {
+      const value = { ...{"chosen_steps": [], "files": []}, ...input };
+      if (value.variant != null && value.step == null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "A Model edit made in a variant is made for a step",
+        });
+      }
+    })
 ) as unknown as z.ZodType<ModelEditRequest>;
 
 export const ModelEditAppliedSchema: z.ZodType<ModelEditApplied> = z.lazy(() =>
@@ -8755,14 +8731,6 @@ export const InspectionStatusResponseSchema: z.ZodType<InspectionStatusResponse>
     .strict()
 ) as unknown as z.ZodType<InspectionStatusResponse>;
 
-export const AddModelComponentSchema: z.ZodType<AddModelComponent> = z.lazy(() =>
-  z.object({
-    "op": z.literal("add_component"),
-    "address": ModelAddressSchema,
-    "component": LeafComponentSchema,
-  }).strict()
-) as unknown as z.ZodType<AddModelComponent>;
-
 export const AnalysisDocumentSchema: z.ZodType<AnalysisDocument> = z.lazy(() =>
   z.object({
     "schema_version": z.literal("feedbax.analysis_document.v1").optional(),
@@ -9076,21 +9044,9 @@ export const DocumentBaseSchema: z.ZodType<DocumentBase> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<DocumentBase>;
 
-export const DocumentEditSchema: z.ZodType<DocumentEdit> = z.lazy(() =>
-  z.union([SetProjectValueSchema, RemoveProjectValueSchema, EnsureDocumentCollectionSchema])
-) as unknown as z.ZodType<DocumentEdit>;
-
 export const DocumentInputReferenceSchema: z.ZodType<DocumentInputReference> = z.lazy(() =>
   z.union([InitialModelReference_DocumentReference_Schema, TaskDocumentReference_DocumentReference_Schema, ObjectiveDocumentReference_DocumentReference_Schema])
 ) as unknown as z.ZodType<DocumentInputReference>;
-
-export const DocumentOverridePathSchema: z.ZodType<DocumentOverridePath> = z.lazy(() =>
-  z.string().min(1).regex(new RegExp("^(?:/(?:[^~/]|~[01])*)*$"))
-) as unknown as z.ZodType<DocumentOverridePath>;
-
-export const DocumentOverridesSchema: z.ZodType<DocumentOverrides> = z.lazy(() =>
-  z.union([z.record(DocumentOverridePathSchema, jsonValueSchema), z.array(DocumentEditSchema)])
-) as unknown as z.ZodType<DocumentOverrides>;
 
 export const DocumentPresentationSchema: z.ZodType<DocumentPresentation> = z.lazy(() =>
   z.object({
@@ -9141,14 +9097,6 @@ export const DuplicateMemberSchema: z.ZodType<DuplicateMember> = z.lazy(() =>
     "name": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<DuplicateMember>;
-
-export const EnsureDocumentCollectionSchema: z.ZodType<EnsureDocumentCollection> = z.lazy(() =>
-  z.object({
-    "op": z.literal("ensure"),
-    "path": DocumentOverridePathSchema,
-    "collection": z.union([z.literal("object"), z.literal("array")]),
-  }).strict()
-) as unknown as z.ZodType<EnsureDocumentCollection>;
 
 export const EnvironmentChangeSchema: z.ZodType<EnvironmentChange> = z.lazy(() =>
   z.union([z.literal("arguments"), z.literal("rejected_update"), z.literal("output_shape_or_dtype"), z.literal("numerical_drift"), z.literal("nonfinite_outputs")])
@@ -9476,15 +9424,6 @@ export const ModelPortSchema: z.ZodType<ModelPort> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<ModelPort>;
 
-export const ModelWireDifferenceSchema: z.ZodType<ModelWireDifference> = z.lazy(() =>
-  z.object({
-    "op": z.union([z.literal("add_wire"), z.literal("rewire")]),
-    "address": ModelAddressSchema,
-    "source": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]),
-    "target": z.union([ComponentPortEndSchema, OutputBoundaryEndSchema]),
-  }).strict()
-) as unknown as z.ZodType<ModelWireDifference>;
-
 export const NameSchema: z.ZodType<Name> = z.lazy(() =>
   z.string()
 ) as unknown as z.ZodType<Name>;
@@ -9760,7 +9699,7 @@ export const RemoveDocumentValueSchema: z.ZodType<RemoveDocumentValue> = z.lazy(
 export const RemoveProjectValueSchema: z.ZodType<RemoveProjectValue> = z.lazy(() =>
   z.object({
     "op": z.literal("remove"),
-    "path": DocumentOverridePathSchema,
+    "path": DifferencePointerSchema,
   }).strict()
 ) as unknown as z.ZodType<RemoveProjectValue>;
 
@@ -9890,7 +9829,7 @@ export const SetDocumentValueSchema: z.ZodType<SetDocumentValue> = z.lazy(() =>
 export const SetProjectValueSchema: z.ZodType<SetProjectValue> = z.lazy(() =>
   z.object({
     "op": z.union([z.literal("add"), z.literal("replace")]),
-    "path": DocumentOverridePathSchema,
+    "path": DifferencePointerSchema,
     "value": jsonValueSchema,
   }).strict()
 ) as unknown as z.ZodType<SetProjectValue>;
@@ -9968,14 +9907,12 @@ export const StepSchema: z.ZodType<Step> = z.lazy(() =>
     "kind": StepKindSchema,
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
-    "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentOverridesSchema).optional(),
-    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema, AddModelComponentSchema, ModelWireDifferenceSchema]))).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
     "note": z.union([StepNoteSchema, z.null()]).optional(),
     "group": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
-  }).strict()
+  }).strict().superRefine((value, ctx) => { if (('inline' in value.base && value.base.inline != null && 'model_attachments' in value.base.inline) || (value.deltas ?? []).some((delta) => (delta.patches ?? []).some((patch) => patch.path === 'model_attachments' || patch.path.startsWith('model_attachments.')))) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "A step holds no model_attachments; a Model change is a document based on the Model" }); })
 ) as unknown as z.ZodType<Step>;
 
 export const StepBaseSchema: z.ZodType<StepBase> = z.lazy(() =>
@@ -10079,8 +10016,6 @@ export const StudioAnalyzeStepSchema: z.ZodType<StudioAnalyzeStep> = z.lazy(() =
     "kind": z.literal("analyze"),
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
-    "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentOverridesSchema).optional(),
-    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema, AddModelComponentSchema, ModelWireDifferenceSchema]))).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
@@ -10319,8 +10254,6 @@ export const StudioEvaluateStepSchema: z.ZodType<StudioEvaluateStep> = z.lazy(()
     "kind": z.literal("evaluate"),
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
-    "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentOverridesSchema).optional(),
-    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema, AddModelComponentSchema, ModelWireDifferenceSchema]))).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
@@ -10664,8 +10597,6 @@ export const StudioReportStepSchema: z.ZodType<StudioReportStep> = z.lazy(() =>
     "kind": z.literal("report"),
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
-    "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentOverridesSchema).optional(),
-    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema, AddModelComponentSchema, ModelWireDifferenceSchema]))).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
@@ -10795,8 +10726,6 @@ export const StudioTrainStepSchema: z.ZodType<StudioTrainStep> = z.lazy(() =>
     "kind": z.literal("train"),
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
-    "document_overrides": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DocumentOverridesSchema).optional(),
-    "model_attachments": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema, AddModelComponentSchema, ModelWireDifferenceSchema]))).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
