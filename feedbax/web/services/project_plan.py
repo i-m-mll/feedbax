@@ -294,8 +294,8 @@ class ProjectPlanRead:
         def inputs(variant: str, step_id: str) -> Iterator[StudioProjectWindowMapInput]:
             step = plan.steps[variant, step_id]
             for role, binding in (step.inputs if step.inputs is not None else step.authored_inputs).items():
-                subset = plan.subsets.get((variant, step_id, role))
                 for input_id, reference in _step_references(role, binding):
+                    subset = plan.subsets.get((variant, step_id, input_id))
                     axis = next((
                         (name, item) for name, item in step.sweep.axes.items()
                         if isinstance(item, CheckpointRuleAxis)
@@ -538,24 +538,38 @@ class ProjectPlanService:
             raise JobConflict("The saved product could not be authenticated.") from error
 
     def subset_to_rows(self, project_id: str, body: StudioSubsetToRowsRequest) -> StudioSubsetToRowsEdit:
+        """Replace one measured selection of an Evaluate subject with the rows its chosen attempts bound.
+
+        The other selections of the input, and every row they give, are left as they are.
+        """
         from feedbax.web.services.trial_scope import file_value
         from feedbax.web.services.project_folder import preview_authored_files
         from feedbax.contracts.project_plan import compile_project
 
         view = self.read(project_id, revision=body.revision)
-        subset = view.settled.plan.subsets.get((body.variant, body.step, "subject"))
+        before = view.settled.plan
+        subset = before.subsets.get((body.variant, body.step, body.input))
         project = self.folders.read(project_id, revision=body.revision).project
         step = project.steps.get(body.step)
-        subject = step.inputs.get("subject") if step else None
-        if project.sweep is not None or not isinstance(subject, StepReference) or subject.where is None:
+        role, *item = body.input.split(".")
+        binding = step.inputs.get(role) if step and role == "subject" else None
+        index = int(item[0]) if item else None
+        selection = (
+            binding[index] if isinstance(binding, list) and index is not None and index < len(binding)
+            else binding if index is None else None
+        )
+        if project.sweep is not None or not isinstance(selection, StepReference) or selection.where is None:
             raise ProjectFolderInvalid("Choose a locally authored Best input in the base project.")
         if subset is None or not subset.ranks or len(body.attempts) != len(subset.ranks):
             raise ProjectFolderInvalid("Choose one bound attempt for every Best rank.")
+        runs = {
+            run.key: run for run in before.runs if (run.key.variant, run.key.step) == (body.variant, body.step)
+        }
         attempts = set(body.attempts)
         bound = {
             attempt.job_id: attempt.bound_subject
             for key, history in view.attempts_by_run.items()
-            if (key.variant, key.step) == (body.variant, body.step)
+            if key in runs
             for attempt in history if attempt.job_id in attempts and attempt.bound_subject is not None
         }
         by_rank = {member.key: member for member in bound.values()}
@@ -572,13 +586,10 @@ class ProjectPlanService:
         ))
         address = AuthoredFileAddress(kind="step", id=body.step)
         authored = step.model_dump(mode="json", exclude_unset=True)
-        file = file_value(
-            address, authored,
-            ("inputs", "subject", "where"), frozen.model_dump(mode="json", exclude_unset=True),
-        )
-        if subject.checkpoint is None:
-            file.patches.extend(file_value(address, authored, ("inputs", "subject", "checkpoint"), "last").patches)
-        before = view.settled.plan
+        at = ("inputs", "subject", *((str(index),) if index is not None else ()))
+        file = file_value(address, authored, (*at, "where"), frozen.model_dump(mode="json", exclude_unset=True))
+        if selection.checkpoint is None:
+            file.patches.extend(file_value(address, authored, (*at, "checkpoint"), "last").patches)
         after = compile_project(
             preview_authored_files(project, [file]), readers=view.settled.readers,
             operations=self.folders.operations, components=self.folders.components,
@@ -589,15 +600,16 @@ class ProjectPlanService:
             run.key: run for run in after.runs
             if (run.key.variant, run.key.step) == (body.variant, body.step)
         }
-        before_rows = {
-            run.key: run for run in before.runs if (run.key.variant, run.key.step) == (body.variant, body.step)
-        }
         error = "The selected producer rows cannot preserve this Evaluate definition."
-        if selected.keys() != before_rows.keys():
+        if selected.keys() != runs.keys():
             raise ProjectFolderInvalid(error)
         for key, run in selected.items():
             binding = run.inputs["subject"]
-            previous = before_rows[key]
+            previous = runs[key]
+            if previous.inputs["subject"].member.key not in by_rank:
+                if run.request_id != previous.request_id:
+                    raise ProjectFolderInvalid(error)
+                continue
             member = by_rank.get(binding.member.key)
             if (
                 member is None or binding.producer is None

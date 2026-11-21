@@ -190,6 +190,8 @@ class BestRank(ReferenceValue):
     rank: int = Field(gt=0, strict=True)
     candidates: tuple[BestCandidate, ...]
     group: dict[Name, Name] = Field(default_factory=dict, exclude_if=lambda group: not group)
+    selection: Name | None = Field(default=None, exclude_if=lambda selection: selection is None)
+    """The selection this rank belongs to when an input lists several; it qualifies the key."""
 
     @model_validator(mode="after")
     def _slots(self):
@@ -202,10 +204,9 @@ class BestRank(ReferenceValue):
     @property
     def key(self) -> str:
         rank = f"rank-{self.rank}"
-        if not self.group:
-            return rank
-        group_digest = sha256(canonical_json_v2_bytes(self.group)).hexdigest()
-        return f"{rank}-{group_digest}"
+        if self.group:
+            rank = f"{rank}-{sha256(canonical_json_v2_bytes(self.group)).hexdigest()}"
+        return f"{self.selection}/{rank}" if self.selection is not None else rank
 
     def winner(self, scores: Sequence[float]) -> int:
         if len(scores) != len(self.candidates) or any(not isfinite(score) for score in scores):

@@ -797,7 +797,10 @@
           "min"
         ]
       },
-      "rank": {}
+      "rank": {},
+      "selection": {
+        "absent": null
+      }
     },
     "feedbax.contracts.request_refs.CheckpointCadence": {
       "every_k": {},

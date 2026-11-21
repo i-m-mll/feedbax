@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter, OrderedDict
-from collections.abc import Callable, Iterable, Mapping, MutableMapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from functools import cache, cached_property
@@ -1824,10 +1824,10 @@ class _Compiler:
             if isinstance(resolved, ProjectDiagnostic) or resolved.sources is None:
                 return None
             sources = {f"/payload{path}": source for path, source in resolved.sources.items()}
+            for at, subset in self.input_subsets(key, composition, inputs):
+                if subset.source is not None:
+                    sources[pointer((*at, "where"))] = subset.source.origin
             for role, bindings in inputs.items():
-                subset = self.subsets.get((key.variant, key.step, role))
-                if subset is not None and subset.source is not None:
-                    sources[pointer(("inputs", role, "where"))] = subset.source.origin
                 if len(bindings) == 1 and (source := _upstream_source(bindings[0])) is not None:
                     sources[pointer(("inputs", role))] = source
             return SelectedRunDefinition(
@@ -1853,15 +1853,27 @@ class _Compiler:
                 )),
                 tuple(sorted(inputs.items())),
                 tuple(
-                    subset.source.origin
-                    for role in inputs
-                    if (subset := self.subsets.get((key.variant, key.step, role))) is not None
-                    and subset.source is not None
+                    subset.source.origin for _, subset in self.input_subsets(key, composition, inputs)
+                    if subset.source is not None
                 ),
             ),
             self.authored_inputs[key.variant],
             project,
         )
+
+    def input_subsets(
+        self, key: RunKey, composition: StepComposition, inputs: Mapping[str, object],
+    ) -> Iterator[tuple[tuple[str, ...], PlannedSubset]]:
+        """The subset of each selection of the roles in ``inputs``, by the selection's authored path."""
+        for role in inputs:
+            binding = composition.inputs.get(role)
+            items = (
+                ((("inputs", role, str(index)), f"{role}.{index}") for index in range(len(binding)))
+                if isinstance(binding, list) else ((("inputs", role), role),)
+            )
+            for at, input_id in items:
+                if (subset := self.subsets.get((key.variant, key.step, input_id))) is not None:
+                    yield at, subset
 
     def lower_row(
         self,
@@ -2527,13 +2539,12 @@ class _Compiler:
                 for extra in extra_roles
             )
             return ()
-        selected = ((), {}, None) if initial else self.select_input(variant, name, template, role, active)
+        selected = ((), {}, {}) if initial else self.select_input(variant, name, template, role, active)
         if isinstance(selected, ProjectDiagnostic):
             self.diagnostics.append(replace(selected, variant=variant))
             return ()
-        members, omissions, subset = selected
-        if subset is not None:
-            self.subsets[variant, name, role.name] = subset
+        members, omissions, subsets = selected
+        self.record_subsets(variant, name, subsets)
         by_key = {item.member.key: item for item, _ in members}
         subject = template.inputs.get("subject") if kind == "evaluate" else None
         has_checkpoint_axis = kind == "evaluate" and sweep is not None and any(
@@ -2563,7 +2574,7 @@ class _Compiler:
                     producer_key = RunKey(variant, paired_step, inherited_id)
                     if chosen is None and (
                         producer_key in self.excluded_checkpoint_rows
-                        or (subset is not None and isinstance(self.rows.get(producer_key), PlannedRun))
+                        or (subsets and isinstance(self.rows.get(producer_key), PlannedRun))
                     ):
                         # Carry an intentional subset exclusion through inherited checkpoint pairs.
                         self.excluded_checkpoint_rows.add(run_key)
@@ -2753,10 +2764,9 @@ class _Compiler:
             if isinstance(result, ProjectDiagnostic):
                 self.diagnostics.append(replace(result, variant=variant))
                 return ()
-            members, _, subset = result
+            members, _, subsets = result
             selected[role.name] = members
-            if subset is not None:
-                self.subsets[variant, name, role.name] = subset
+            self.record_subsets(variant, name, subsets)
         rows = self.expand_rows(variant, name, template, selected)
         if isinstance(rows, ProjectDiagnostic):
             self.diagnostics.append(rows)
@@ -2845,14 +2855,13 @@ class _Compiler:
             if isinstance(resolved, ProjectDiagnostic):
                 self.diagnostics.append(replace(resolved, variant=variant))
                 return ()
-            members, _, subset = resolved
+            members, _, subsets = resolved
             if isinstance(declaration, AnalyzeModelInput) and reference.checkpoint is None:
                 members = tuple((replace(binding, member=binding.member.model_copy(update={
                     "reference": binding.member.reference.model_copy(update={"select": LastMember()}),
                 })), run) for binding, run in members)
             selected[name_of_role] = members
-            if subset is not None:
-                self.subsets[variant, name, name_of_role] = subset
+            self.record_subsets(variant, name, subsets)
         rows = self.expand_rows(variant, name, template, selected)
         if isinstance(rows, ProjectDiagnostic):
             self.diagnostics.append(rows)
@@ -2945,9 +2954,9 @@ class _Compiler:
 
     def rank_input(
         self, name: str, template: StepComposition, role: _Role, members: _Members,
-        subset: PlannedSubset, reference: StepReference,
+        subset: PlannedSubset, reference: StepReference, at: str, *, listed: bool,
     ) -> tuple[_Members, dict[str, str], PlannedSubset] | ProjectDiagnostic:
-        path = f"inputs.{role.name}.where"
+        path = f"{at}.where"
         terms = subset.terms
         if terms.when is not None:
             return ProjectDiagnostic(
@@ -2963,15 +2972,19 @@ class _Compiler:
         ):
             reason = "Best requires the selected Train's last checkpoint."
         else:
-            return self.rank_groups(name, template, role, members, subset)
+            return self.rank_groups(name, template, role, members, subset, reference, f"{path}.best", listed=listed)
         return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, f"{path}.best", reason, name)
 
     def rank_groups(
         self, name: str, template: StepComposition, role: _Role, members: _Members, subset: PlannedSubset,
+        reference: StepReference, path: str, *, listed: bool,
     ) -> tuple[_Members, dict[str, str], PlannedSubset] | ProjectDiagnostic:
+        """Rank each group of candidates. A rank of a list item names its selection by its candidates, so that the
+        items' ranks are told apart by what they rank, and To Rows can keep the key."""
         best = subset.terms.best
         assert best is not None
-        path = f"inputs.{role.name}.where.best"
+        source = LabelName(reference.step, self.variants[members[0][1].key.variant].steps[reference.step].label) \
+            if members else None
 
         def refusal(detail: str, field: str = path) -> ProjectDiagnostic:
             return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, field, detail, name)
@@ -3028,29 +3041,35 @@ class _Compiler:
                     reference=ProductRef(request_id=producer.request_id, role=role.product_role, select=LastMember()),
                 ))
             ranks = []
+            selection = "members-" + sha256_bytes(canonical_json_v2_bytes([
+                candidate.model_dump(mode="json") for candidate in candidates
+            ])) if listed else None
             for position in range(1, best.k + 1):
                 rank = BestRank(
                     metric=best.by, order=best.order, count=best.k, rank=position, candidates=tuple(candidates),
-                    group=coordinates,
+                    group=coordinates, selection=selection,
                 )
                 ranks.append(rank.key)
                 ranked.append((PlannedInput(
                     None, InputMember(key=rank.key, reference=rank), candidates=tuple(keys),
+                    named=MappingProxyType({"source": source}) if source is not None else MappingProxyType({}),
                 ), grouped[0][1]))
             planned_groups.append(PlannedRankGroup(MappingProxyType(coordinates), tuple(ranks)))
         return tuple(ranked), {}, replace(subset, rank_groups=tuple(planned_groups))
 
     def subset_origin(
-        self, variant: str, step: str, role: str, document: str | None, term: Literal["best", "rows"],
+        self, variant: str, step: str, at: str, document: str | None, term: Literal["best", "rows"],
     ) -> ValueSource:
+        """Where the subset terms of the selection at ``at`` (``inputs.<role>`` or ``inputs.<role>.<i>``) are authored."""
         if document is not None:
             authored = ("documents", document, "payload", term)
             source = ValueSource("document", document, pointer((term,)))
         else:
             steps = self.variants[variant].steps
+            _, role, *item = at.split(".")
             while role not in steps[step].inputs and isinstance(base := steps[step].base, StepBase):
                 step = base.step
-            path = ("inputs", role, "where", term)
+            path = ("inputs", role, *item, "where", term)
             authored = ("steps", step, *path)
             source = ValueSource("step", step, pointer(path), step=step)
         for target in reversed(self.variant_rows[variant].patches):
@@ -3076,6 +3095,8 @@ class _Compiler:
         if subject is not None and subject.producer is not None:
             producer = subject.producer
             return producer, LabelName(producer.step, self.variants[producer.variant].steps[producer.step].label)
+        if subject is not None and "source" in subject.named:
+            return None, subject.named["source"]
         if subject is not None and isinstance(trained := subject.member.reference, ProductRef):
             return None, LabelName(trained.request_id, kind="run")
         if (document := run.document_ids.get(EVALUATION_MODEL)) is not None:
@@ -3118,10 +3139,8 @@ class _Compiler:
         template: StepComposition,
         role: _Role,
         active: tuple[tuple[str, str], ...],
-    ) -> (
-        tuple[_Members, dict[str, str], PlannedSubset | None]
-        | ProjectDiagnostic
-    ):
+    ) -> tuple[_Members, dict[str, str], dict[str, PlannedSubset]] | ProjectDiagnostic:
+        """The role's members and omissions, and the subset of each selection by its input ID."""
         reference = template.inputs.get(role.name)
         if isinstance(reference, list):
             return self.select_list(variant, name, template, role, active, reference)
@@ -3129,7 +3148,12 @@ class _Compiler:
         if isinstance(selected, ProjectDiagnostic):
             return selected
         members, omissions, subset = selected
-        return _identified(members, labelled=_labelled(role, members))[0], omissions, subset
+        subsets = {role.name: subset} if subset is not None else {}
+        return _identified(members, labelled=_labelled(role, members))[0], omissions, subsets
+
+    def record_subsets(self, variant: str, step: str, subsets: Mapping[str, PlannedSubset]) -> None:
+        for input_id, subset in subsets.items():
+            self.subsets[variant, step, input_id] = subset
 
     def select_list(
         self,
@@ -3139,7 +3163,7 @@ class _Compiler:
         role: _Role,
         active: tuple[tuple[str, str], ...],
         references: list[StepReference],
-    ) -> tuple[_Members, dict[str, str], None] | ProjectDiagnostic:
+    ) -> tuple[_Members, dict[str, str], dict[str, PlannedSubset]] | ProjectDiagnostic:
         """Gather the members of several selections; a key given by two of them is qualified by its source's ID."""
         path = f"inputs.{role.name}"
         if not role.gathers:
@@ -3147,16 +3171,15 @@ class _Compiler:
         if not references:
             return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, "list at least one selection", name)
         selections = []
+        subsets = {}
         for index, reference in enumerate(references):
             item = f"{path}.{index}"
             selected = self.select_reference(variant, name, template, role, active, reference, item)
             if isinstance(selected, ProjectDiagnostic):
                 return selected
-            if any(isinstance(binding.member.reference, BestRank) for binding, _ in selected[0]):
-                return ProjectDiagnostic(
-                    ResolutionCode.BAD_REFERENCE, f"{item}.where.best", "Best ranks a single selection", name,
-                )
             selections.extend(selected[0])
+            if selected[2] is not None:
+                subsets[item.removeprefix("inputs.")] = selected[2]
         identified, ids = _identified(tuple(selections), labelled=_labelled(role, tuple(selections)))
         counts = Counter(binding.member.key for binding, _ in identified)
         gathered = []
@@ -3172,7 +3195,7 @@ class _Compiler:
             return ProjectDiagnostic(
                 ResolutionCode.BAD_REFERENCE, path, f"selections repeat the members {repeated!r}", name,
             )
-        return tuple(gathered), {}, None
+        return tuple(gathered), {}, subsets
 
     def select_reference(
         self,
@@ -3425,11 +3448,11 @@ class _Compiler:
         if terms is not None and role.name in {"subject", "states"}:
             if terms.best is not None and role.name == "subject":
                 source = SubsetSource(
-                    self.subset_origin(variant, name, role.name, subset_document, "best"), reference.step,
+                    self.subset_origin(variant, name, path, subset_document, "best"), reference.step,
                 )
             elif reference.row is None and terms.rows is not None:
                 source = SubsetSource(
-                    self.subset_origin(variant, name, role.name, subset_document, "rows"), reference.step,
+                    self.subset_origin(variant, name, path, subset_document, "rows"), reference.step,
                     tuple(SelectedRow(key=key, variant=run.key.variant, row=run.key.row) for key, run in keyed_runs),
                 )
         subset = (
@@ -3442,7 +3465,9 @@ class _Compiler:
             else None
         )
         if terms is not None and (terms.best is not None or terms.when is not None):
-            return self.rank_input(name, template, role, tuple(members), subset, reference)
+            return self.rank_input(
+                name, template, role, tuple(members), subset, reference, path, listed=path != f"inputs.{role.name}",
+            )
         return tuple(members), {}, subset
 
 
