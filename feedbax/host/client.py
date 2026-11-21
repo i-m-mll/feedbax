@@ -437,7 +437,8 @@ class HostClient:
             result = self._call_existing("shutdown", timeout=timeout, mode=mode)
         except HostError as error:
             # An exiting Host removes its address, then releases its lock; a listener that is not one does neither.
-            if error.code != "disconnected" or (self.address.exists() and not self._host_lock_held()):
+            # The lock is read first: once it is free, the address is already gone.
+            if error.code != "disconnected" or (not self._host_lock_held() and self.address.exists()):
                 raise
             result = {"status": "exited", "jobs": []}
         if result["status"] == "deferred":
