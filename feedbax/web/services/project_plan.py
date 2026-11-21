@@ -30,6 +30,7 @@ from feedbax.contracts.jobs import (
     StudioProjectWindowMapCoordinate,
     StudioProjectWindowMapEdge,
     StudioProjectWindowMapElement,
+    StudioProjectWindowMapRequest,
     StudioProjectWindowMapException,
     StudioProjectWindowMapFigure,
     StudioProjectWindowMapInput,
@@ -65,6 +66,7 @@ from feedbax.contracts.project_plan import (
 )
 from feedbax.contracts.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
+from feedbax.contracts.result_address import parse_labels
 from feedbax.contracts.project_sweep import CheckpointRuleAxis
 from feedbax.contracts.request_identity import decode_python_task_selection, decode_request
 from feedbax.contracts.request_refs import (
@@ -112,6 +114,12 @@ class PlanStatusRow:
     label: str
     status: JobStatus
     reason: str | None
+    requests: tuple[PlanStatusRow, ...] = ()
+    """The requests of an element that maps over labels, whose summary this row is."""
+
+    def flattened(self) -> Iterator[PlanStatusRow]:
+        yield self
+        yield from self.requests
 
 
 @dataclass(frozen=True)
@@ -165,15 +173,22 @@ class ProjectPlanRead:
                     element_problems[problem.element].append(problem)
             if isinstance(row, PlannedAnalyzeRun):
                 states = []
-                keys = (*row.elements, *(
-                    ElementKey(row.key, name) for name in element_problems if not row.requests(name)
-                ))
-                for key in keys:
-                    observed = self.light.get(key)
-                    states.append(
-                        PlanStatusRow(key, label, observed.status, observed.reason) if observed is not None
-                        else _planned_status(key, label, element_problems[key.name])
-                    )
+                for name in dict.fromkeys((*(key.name for key in row.elements), *element_problems)):
+                    requests = [
+                        PlanStatusRow(element.key, label, observed.status, observed.reason)
+                        if (observed := self.light.get(element.key)) is not None
+                        else _planned_status(element.key, label, element_problems[name])
+                        for element in row.requests(name)
+                    ]
+                    key = ElementKey(row.key, name)
+                    if not requests:
+                        states.append(_planned_status(key, label, element_problems[name]))
+                    elif len(requests) == 1 and requests[0].key == key:
+                        states.append(requests[0])
+                    else:
+                        states.append(replace(
+                            _analysis_status(key, label, element_problems[name], requests), requests=tuple(requests),
+                        ))
                 yield _analysis_status(row.key, label, problems[row.key], states)
                 yield from states
             elif isinstance(row, PlannedRun):
@@ -253,7 +268,7 @@ class ProjectPlanRead:
                 if shared is None
                 else {path: name for path, name in shared.items() if row.document_ids.get(path) == name}
             )
-        statuses = {row.key: row for row in self.status_rows()}
+        statuses = {item.key: item for row in self.status_rows() for item in row.flattened()}
         elements = plan.elements.values()
         conditions: dict[RequestId, list[str] | None] = {}
         if evaluation_tasks is not None:
@@ -399,18 +414,25 @@ class ProjectPlanRead:
             evaluations=[row for row in self.evaluations.values() if includes(row.key.variant)],
             analysis_elements=[
                 StudioProjectWindowMapElement(
-                    key=StudioSavedTrainKey.model_validate(element.key.run, from_attributes=True),
-                    name=element.key.name, member=element.key.member, kind=element.kind, request_id=element.request_id,
-                    status=statuses[element.key].status, reason=statuses[element.key].reason,
-                    **({"result": light.result, "previous": light.previous, "changed": light.changed}
-                       if (light := self.light.get(element.key)) is not None else {}),
+                    key=StudioSavedTrainKey.model_validate(run, from_attributes=True),
+                    name=name, kind=requests[0].kind,
+                    status=statuses[ElementKey(run, name)].status, reason=statuses[ElementKey(run, name)].reason,
                     figure=StepReference(
-                        step=element.key.run.step, row=element.key.run.row,
-                        element=element.key.name, product=PLOTLY_FIGURE_ROLE,
-                    ) if isinstance(element.outputs.get(PLOTLY_FIGURE_ROLE), PlotlyFigurePort) else None,
+                        step=run.step, row=run.row, element=name, product=PLOTLY_FIGURE_ROLE,
+                    ) if isinstance(requests[0].outputs.get(PLOTLY_FIGURE_ROLE), PlotlyFigurePort) else None,
+                    requests=[
+                        StudioProjectWindowMapRequest(
+                            labels=dict(parse_labels(element.key.member or "")),
+                            request_id=element.request_id,
+                            status=statuses[element.key].status, reason=statuses[element.key].reason,
+                            **({"result": light.result, "previous": light.previous, "changed": light.changed}
+                               if (light := self.light.get(element.key)) is not None else {}),
+                        )
+                        for element in requests
+                    ],
                 )
-                for element in elements
-                if includes(element.key.run.variant)
+                for (run, name), requests in _by_element(elements).items()
+                if includes(run.variant)
             ],
             analysis_figures=[
                 StudioProjectWindowMapFigure(
@@ -423,6 +445,13 @@ class ProjectPlanRead:
             detach_refused=sorted(self.settled.detach_refused),
             regroup_refused=sorted(self.settled.regroup_refused),
         )
+
+def _by_element(elements: Iterable[PlannedElement]) -> dict[tuple[RunKey, str], list[PlannedElement]]:
+    grouped: dict[tuple[RunKey, str], list[PlannedElement]] = {}
+    for element in elements:
+        grouped.setdefault((element.key.run, element.key.name), []).append(element)
+    return grouped
+
 
 class PlanRequestAddressFields(TypedDict):
     key: StudioSavedTrainKey
@@ -459,8 +488,9 @@ def _planned_status(
 
 
 def _analysis_status(
-    key: RunKey, label: str, problems: list[ProjectDiagnostic], elements: list[PlanStatusRow],
+    key: RunKey | ElementKey, label: str, problems: list[ProjectDiagnostic], elements: list[PlanStatusRow],
 ) -> PlanStatusRow:
+    """The summary status of a card's elements, or of a mapped element's requests, as a swept step's runs have."""
     if problems or not elements:
         return _planned_status(key, label, problems)
     for status in (

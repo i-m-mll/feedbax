@@ -143,7 +143,8 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   await expect(analysis.locator('.react-flow__edge')).toHaveCount(3);
   const original = await plan(wired.revision);
   const requests = (projection: typeof original) => Object.fromEntries(
-    projection.analysis_elements!.filter(({ key }) => key.step === 'analyze').map(({ name, request_id }) => [name, request_id]),
+    projection.analysis_elements!.filter(({ key }) => key.step === 'analyze')
+      .map(({ name, requests: [{ request_id }] }) => [name, request_id]),
   );
   expect(Object.keys(requests(original)).sort()).toEqual(['aligned_velocity', 'summarize_velocity', 'velocity_summary']);
   expect(original.problems.filter(({ step }) => step === 'analyze')).toEqual([]);

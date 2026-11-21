@@ -40,6 +40,7 @@ import { savedRunId } from './projectWindowPlan';
 import { placeElement, type Reveal } from './projectWindowProblems';
 import { MentionRow, ProblemRow } from '@/features/projectWindow/StudioProblems';
 import { SavedFigureResult } from './SavedLightProducts';
+import { ElementRequests, requestMember } from './ElementRequests';
 import { generatedName } from './generatedName';
 import type { GestureFailures } from './refusals';
 
@@ -110,6 +111,8 @@ export function useManagedAnalyze({
   const canEdit = canBind && !!analysis && !!document && !!catalog && catalog.document === document &&
     authoring.data?.shape === catalogShape;
   const [inspected, setInspected] = useState<{ scope: string; id: string }>();
+  /** The request of the selected element shown in the inspector, when the element maps over labels. */
+  const [chosenRequest, setChosenRequest] = useState<{ scope: string; element: string; member: string }>();
   const opened = dialog?.scope === scope ? dialog : undefined;
   const operations = analysis?.operations ?? {};
   const figures = analysis?.views ?? {};
@@ -279,7 +282,7 @@ export function useManagedAnalyze({
     ...Object.keys(declarations).map((name) => ({ id: name, selectionId: name, name, glyph: <Database /> })),
     ...[...Object.keys(operations).map((name) => [name, <Sigma />] as const),
       ...Object.keys(figures).map((name) => [name, <ChartLine />] as const)].map(([name, glyph]): CanvasNode => ({
-      id: name, selectionId: name, name: shown(name), glyph, problem: problemOf(name),
+      id: name, selectionId: name, name: shown(name), glyph, problem: problemOf(name), status: planned.get(name)?.status,
       menu: () => elementCommands(name),
       naming: namingNow?.field === 'label' && namingNow.element === name ? {
         commit: (text) => renameElement(name, text), end: () => setNaming(undefined),
@@ -303,7 +306,14 @@ export function useManagedAnalyze({
     landed && Array.isArray(landed.at) && landed.at[0] === element && landed.at[1] === role ? landed.reason : undefined;
   const selectedCommands = selected && (operation || figure) ? elementCommands(selected) : [];
   const selectedProblems = diagnostics.filter((item) => selected && placeElement(item.place) === selected);
-  const selectedPlan = selected ? planned.get(selected) : undefined;
+  const selectedElement = selected ? planned.get(selected) : undefined;
+  const mapped = selectedElement && selectedElement.requests.length > 1;
+  const chosenMember = chosenRequest?.scope === scope && chosenRequest.element === selected ? chosenRequest.member : undefined;
+  /** The request whose status and result the inspector shows: the element's own, or the chosen one of a mapped element. */
+  const selectedPlan = mapped
+    ? selectedElement.requests.find((request) => requestMember(request) === chosenMember)
+    : selectedElement?.requests[0];
+  const shownStatus = selectedPlan ?? selectedElement;
   function writeParameter(path: readonly string[], value: JsonValue) {
     if (!operation || !selected) return;
     const [name, ...rest] = path;
@@ -326,9 +336,11 @@ export function useManagedAnalyze({
       inputs={(operation ?? figure)!.inputs} declarations={declarations} outputs={outputs} picking={selection}
       refusal={(role) => roleRefusal(selected, role)} onWire={canEdit ? (role, source) => wire(selected, role, source) : undefined} />}
     {selectedProblems.map((problem) => <ProblemRow key={problem.path + problem.detail} problem={problem} />)}
-    {selectedPlan && <p role="status">{studioRunStatus(selectedPlan.status)}
-      {selectedPlan.reason && <span className="block text-shell-muted">{selectedPlan.reason}</span>}
+    {shownStatus && <p role="status">{studioRunStatus(shownStatus.status)}
+      {shownStatus.reason && <span className="block text-shell-muted">{shownStatus.reason}</span>}
     </p>}
+    {mapped && selected && <ElementRequests requests={selectedElement.requests} selected={chosenMember}
+      onSelect={(member) => setChosenRequest(member === undefined ? undefined : { scope, element: selected, member })} />}
     {selectedPlan?.changed && <MentionRow place={selectedPlan.changed.place} detail={studioChangeDetail(selectedPlan.changed)} />}
     {operation && definition && key && <div className="grid gap-1">
       <SettingsForm key={selected} schema={definition.parameter_json_schema} value={operation.params ?? {}}

@@ -42,7 +42,9 @@ from feedbax.contracts.project_plan_io import (
 )
 from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic
 from feedbax.contracts.project_sweep import DEFAULT_SWEEP_ROW
-from feedbax.contracts.result_address import AddressProblem, ResultAddress, ResultTarget, project_holders
+from feedbax.contracts.result_address import (
+    AddressProblem, ResultAddress, ResultTarget, parse_labels, project_holders, row_names, row_selector, selects,
+)
 from feedbax.persistence.project_subject import terminal_train_reader
 
 if TYPE_CHECKING:
@@ -58,7 +60,7 @@ def configure_status_parser(parser: argparse.ArgumentParser) -> None:
         help="Project declaration file or directory to search upward (default: current directory).",
     )
     parser.add_argument(
-        "addresses", nargs="*", metavar="[card/]element[@row]",
+        "addresses", nargs="*", metavar="[card/]element[@row][:label=value,...]",
         help="Show only these results. Use . before addresses for the current project.",
     )
     parser.add_argument(
@@ -78,12 +80,17 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _address(key: RunKey | ElementKey) -> str:
-    """The result's address as the commands take it: `card[/element][@row]`, then the variant when not the default."""
+def _address(key: RunKey | ElementKey, plan: ProjectPlan) -> str:
+    """The result's address as the commands take it: `card[/element][@row][:selector]`, then the variant when not the
+    default. A row whose id is not plain is named by its coordinates in the selector, and a mapped request by its
+    member id."""
     run = run_key(key)
+    row = plan.row(run)
+    selector = row_selector(run.row, row.axis_keys, row.coordinates) if row is not None else None
     address = str(ResultTarget(
         run.step, key.name if isinstance(key, ElementKey) else None,
-        None if run.row == DEFAULT_SWEEP_ROW else run.row,
+        None if run.row == DEFAULT_SWEEP_ROW or selector is not None else run.row,
+        (*(selector or ()), *(parse_labels(key.member) if isinstance(key, ElementKey) and key.member else ())),
     ))
     return address if run.variant == DEFAULT_SWEEP_ROW else f"{address} --variant {run.variant}"
 
@@ -119,16 +126,34 @@ def _targets(
     return {variant: tuple(found) for variant, found in targets.items()}
 
 
-def _addressed(key: RunKey | ElementKey, targets: _Targets) -> bool:
-    if targets is None:
-        return True
+def _names(key: RunKey | ElementKey, plan: ProjectPlan) -> dict[str, set[str]]:
+    """What a selector may name a result by: its row's coordinates, and a request's label values by name (all it maps
+    over when it is planned, its member id's when it was removed)."""
     run = run_key(key)
-    return any(
-        run.step == target.card
+    row = plan.row(run)
+    names = row_names(row.axis_keys, row.coordinates) if row is not None else {}
+    if isinstance(key, ElementKey):
+        element = plan.elements.get(key)
+        labels = element.member_labels if element is not None else dict(parse_labels(key.member or ""))
+        for label, name in labels.items():
+            names.setdefault(label, set()).add(name)
+    return names
+
+
+def _addressed(key: RunKey | ElementKey, targets: _Targets, plan: ProjectPlan) -> tuple[ResultTarget, ...] | None:
+    """The targets that name ``key``: all of them when no address is given, else those whose card, row, element and
+    selector match it."""
+    if targets is None:
+        return ()
+    run = run_key(key)
+    named = tuple(
+        target for target in targets.get(run.variant, ())
+        if run.step == target.card
         and (target.row is None or run.row == target.row)
         and (target.element is None or isinstance(key, ElementKey) and key.name == target.element)
-        for target in targets.get(run.variant, ())
+        and (not target.labels or selects(target.labels, _names(key, plan)))
     )
+    return named or None
 
 
 def _output_path(path: Path, text: TextProject, external_paths: set[Path]) -> Path:
@@ -171,11 +196,12 @@ def _write_review(
     changes: Mapping[RunKey | ElementKey, ElementChange],
     current: PlanRequests,
     before: PlanRequests,
+    plan: ProjectPlan,
 ) -> None:
     for key, change in changes.items():
         request = current.entries.get(key) or before.entries[key]
         status = f"changed({change.path})" if change.state == "changed" else change.state
-        upstream = f" upstream={_address(change.upstream)}" if change.upstream else ""
+        upstream = f" upstream={_address(change.upstream, plan)}" if change.upstream else ""
         sources = "".join(
             f" {side}={source.kind}:{source.name}{source.path}" + "".join(
                 f",{name}={value}" for name in ("step", "axis", "value", "variant", "row")
@@ -184,7 +210,7 @@ def _write_review(
             for side, source in (("before", change.before_source), ("after", change.after_source))
             if source is not None
         )
-        output.write(f"{_address(key)} {status} {request.request_id}{sources}{upstream}")
+        output.write(f"{_address(key, plan)} {status} {request.request_id}{sources}{upstream}")
 
 
 def _read_baseline(path: Path) -> tuple[PlanRequests, tuple[str, ...] | None]:
@@ -300,8 +326,8 @@ def _plan(args: argparse.Namespace, output: CommandOutput) -> int:
             raise ProjectReadError(args.check, str(error)) from error
     elif not output.json:
         for key, request in scoped.entries.items():
-            if _addressed(key, targets):
-                output.write(f"{_address(key)} {request.request_id}")
+            if _addressed(key, targets, plan) is not None:
+                output.write(f"{_address(key, plan)} {request.request_id}")
 
     if args.out is not None and not problems:
         destination = _output_path(args.out, text, external_paths)
@@ -332,7 +358,7 @@ def _plan(args: argparse.Namespace, output: CommandOutput) -> int:
             ]
         output.response(result)
     elif before is not None:
-        _write_review(output, {key: change for key, change in changes.items() if _addressed(key, targets)}, scoped, before)
+        _write_review(output, {key: change for key, change in changes.items() if _addressed(key, targets, plan) is not None}, scoped, before, plan)
     return 2 if problems else int(any(change.state != "unchanged" for change in changes.values()))
 
 
@@ -382,25 +408,27 @@ def run_status(args: argparse.Namespace, output: CommandOutput) -> int:
         output.response(view.response(include_window_map=True, variants=variants))
         return 2 if problems else 0
 
-    named: dict[tuple[str | None, str | None, str | None], list[str]] = defaultdict(list)
+    named_problems: dict[tuple[str | None, str | None, str | None], list[str]] = defaultdict(list)
     for problem in view.window_map(variants=variants).problems:
-        named[problem.variant, problem.step, problem.row].append(problem.detail)
+        named_problems[problem.variant, problem.step, problem.row].append(problem.detail)
     output.write("ADDRESS\tROW\tSTATE\tREASON")
+    selected: set[ResultTarget] = set()
     for row in view.status_rows():
-        key = run_key(row.key)
-        if (variants is None or key.variant in variants) and _addressed(row.key, targets):
-            history = view.history.get(row.key) or view.light.get(row.key)
+        for item in row.requests or (row,):
+            key = run_key(item.key)
+            if variants is not None and key.variant not in variants:
+                continue
+            if (named := _addressed(item.key, targets, plan)) is None:
+                continue
+            selected.update(named)
+            history = view.history.get(item.key) or view.light.get(item.key)
             change = history and (history.change if isinstance(history, TrainRowHistory) else history.changed)
-            reason = row.reason or (f"Definition changed at {change.path}." if change and row.status is JobStatus.STALE
-                                    else " | ".join(named[key.variant, key.step, key.row]))
-            output.write(
-                "\t".join(
-                    (
-                        _address(row.key),
-                        _status_cell(row.label),
-                        row.status.value,
-                        _status_cell(reason),
-                    )
-                )
-            )
+            reason = item.reason or (f"Definition changed at {change.path}." if change and item.status is JobStatus.STALE
+                                     else " | ".join(named_problems[key.variant, key.step, key.row]))
+            output.write("\t".join((_address(item.key, plan), _status_cell(item.label), item.status.value, _status_cell(reason))))
+    if unselected := [target for found in (targets or {}).values() for target in found
+                      if target.labels and target not in selected]:
+        output.error("unknown_address", f"{unselected[0]} names nothing.", path=str(unselected[0]),
+                     address=str(unselected[0]))
+        return 2
     return 2 if problems else 0

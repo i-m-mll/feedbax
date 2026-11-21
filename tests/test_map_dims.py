@@ -31,7 +31,9 @@ MASSES = {"nominal": ("light", 0.5), "heavy": ("heavier", 3)}
 def _operations():
     bundle = new_application_registry_bundle()
     source = DistributionSource("map_probe", "map-probe", "1.0")
-    for function in (map_probe.align_each, map_probe.align_over, map_probe.summarize_each):
+    for function in (
+        map_probe.align_each, map_probe.align_over, map_probe.summarize_each, map_probe.pair, map_probe.pair_left,
+    ):
         bundle.operations.register_declaration(
             function, callable_declaration(function), key=f"map_probe.{function.__name__}", source=source,
         )

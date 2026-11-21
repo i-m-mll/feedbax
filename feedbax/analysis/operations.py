@@ -10,7 +10,7 @@ from typing import Annotated, Literal, get_args, get_origin, get_type_hints
 from pydantic import BaseModel
 
 from feedbax.contracts.operation import (
-    DatasetInputPort, DatasetPort, JaxOperation, ModelPort, OperationDefinition, OperationInputPort, TaskPort,
+    DatasetInputPort, DatasetOutputPort, DatasetPort, JaxOperation, ModelPort, OperationDefinition, OperationInputPort, TaskPort,
     WholeDimensions,
 )
 from feedbax.dataset import Dataset
@@ -26,6 +26,8 @@ from feedbax.tasks.registry import PythonTaskInstance
 class DatasetOutput:
     name: str
     port: DatasetPort
+    carries: str | None = None
+    """The input role whose labelled entries the output carries, when roles taken whole carry different ones."""
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -131,6 +133,8 @@ class OperationRegistry:
                     raise TypeError(f"dataset selectors are missing from params: {sorted(missing)}")
                 if isinstance(port.takes, WholeDimensions) and port.takes.parameter not in model.model_fields:
                     raise TypeError(f"dimensions parameter {port.takes.parameter!r} is missing from params")
+        if output.carries is not None and not isinstance(inputs.get(output.carries), DatasetInputPort):
+            raise TypeError(f"output carries {output.carries!r}, which is not a dataset input")
         schema = settings_schema(model)
         definition = OperationDefinition(
             key=key,
@@ -143,7 +147,7 @@ class OperationRegistry:
             parameter_json_schema=schema.parameter_json_schema,
             static_parameters=schema.static_parameters,
             inputs=inputs,
-            outputs={output.name: output.port},
+            outputs={output.name: DatasetOutputPort(**output.port.model_dump(), carries=output.carries)},
             numerical=declaration.numerical,
         )
         self._entries.add(

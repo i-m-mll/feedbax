@@ -42,3 +42,21 @@ def summarize_each(
     params: VelocitySummaryParameters,
 ) -> Annotated[Dataset, DatasetOutput("summary", _SUMMARY)]:
     return summarize_velocity(velocity, params)
+
+
+@operation(settings=VelocitySummaryParameters, label="Pair")
+def pair(
+    left: Annotated[Dataset, DatasetInputPort(**_STATES.model_dump(exclude={"selected_variables"}))],
+    right: Annotated[Dataset, DatasetInputPort(**_VELOCITY.model_dump())],
+    params: VelocitySummaryParameters,
+) -> Annotated[Dataset, DatasetOutput("summary", _SUMMARY)]:
+    return summarize_velocity(right, params)
+
+
+@operation(settings=VelocitySummaryParameters, label="Pair by left")
+def pair_left(
+    left: Annotated[Dataset, DatasetInputPort(**_STATES.model_dump(exclude={"selected_variables"}))],
+    right: Annotated[Dataset, DatasetInputPort(**_VELOCITY.model_dump())],
+    params: VelocitySummaryParameters,
+) -> Annotated[Dataset, DatasetOutput("summary", _SUMMARY, carries="left")]:
+    return summarize_velocity(right, params)

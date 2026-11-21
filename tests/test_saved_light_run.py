@@ -97,7 +97,8 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
             window = expect(client.get(f"{path}/train-runs", params={
                 "revision": rev, "window_map": True,
             })).json()["window_map"]
-            elements = {element["name"]: element for element in window["analysis_elements"]}
+            elements = {element["name"]: request for element in window["analysis_elements"]
+                        for request in element["requests"]}
             (report,) = (row for row in window["rows"] if row["key"]["step"] == "report")
             return elements, report
 
@@ -343,7 +344,7 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
         assert [edge["from_key"] for edge in window["edges"] if edge["to_key"] == address("analyze")] == [
             address("conditions", rows[key]) for key in order
         ]
-        (profile,) = (element for element in window["analysis_elements"] if element["name"] == "profile")
+        (profile,) = (element["requests"][0] for element in window["analysis_elements"] if element["name"] == "profile")
         figure_ref, rendered_figure = proof(profile["request_id"])
         assert rendered_figure.inputs["summary"][0].selection.receipt == summary_ref
         figure = reopened.get(profile["result"]["products"]["figure"])

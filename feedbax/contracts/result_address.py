@@ -1,13 +1,19 @@
-"""Result addresses, ``[card/]element[@row]``, resolved by element key with the card as a qualifier.
+"""Result addresses, ``[card/]element[@row][:label=name,...]``, resolved by element key with the card as a qualifier.
 
 A card is a step, addressed by its key. An operation or figure key is held by one family of Analysis
 documents (a root and the documents based on it), so the element key alone names a result; a card
 qualifier that no longer holds the element still resolves when exactly one card holds it.
+
+The selector after the first ``:`` names requests and rows by what they are, never by digest: a mapped request by
+its label values, by name, and a row by its coordinates (an axis's value id, its drawn value, or an input axis's member
+key). A pair matches when either holds it; the pairs written may be fewer than the request or row holds. A value runs
+from the first ``=`` to the next ``,``, so it may hold ``/``, ``=`` and ``--``. Without a selector an address names every
+request of the element. ``@row`` names a row by its exact id.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 import re
 
@@ -15,13 +21,61 @@ from pydantic import JsonValue
 
 from feedbax.contracts.project import Document, Project, base_chain
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document, compose_step
+from feedbax.contracts.project_sweep import SweepCoordinate, coordinate_text
 
 ANALYSIS_SCHEMA = "feedbax.analysis_document.v1"
 ELEMENT_FAMILIES = ("operations", "views")
 
 _KEY = r"[A-Za-z0-9_][A-Za-z0-9_-]*"
 _ROW = r"[A-Za-z0-9_][A-Za-z0-9_=-]*"
-_ADDRESS = re.compile(rf"^(?:(?P<card>{_KEY})/)?(?P<name>{_KEY})(?:@(?P<row>{_ROW}))?$")
+_HEAD = re.compile(rf"^(?:(?P<card>{_KEY})/)?(?P<name>{_KEY})(?:@(?P<row>{_ROW}))?$")
+_PAIR = re.compile(rf"^(?P<label>{_KEY})=(?P<value>[^,]+)$")
+_GENERATED = re.compile(r"value-[0-9a-f]{64}")
+
+type Labels = tuple[tuple[str, str], ...]
+"""Label or axis values by name, in the order written."""
+
+
+def parse_labels(text: str) -> Labels:
+    """The ``label=value`` pairs of a member id or an address's selector."""
+    pairs = []
+    for pair in text.split(",") if text else ():
+        match = _PAIR.match(pair)
+        if match is None:
+            raise ValueError(f"{pair!r} is not of the form label=value")
+        pairs.append((match["label"], match["value"]))
+    return tuple(pairs)
+
+
+def format_labels(labels: Labels) -> str:
+    return ",".join(f"{label}={name}" for label, name in labels)
+
+
+def selects(selector: Labels, names: Mapping[str, Collection[str]]) -> bool:
+    """Whether what has ``names`` (each label's or axis's accepted values) is what ``selector`` names."""
+    return all(value in names.get(label, ()) for label, value in selector)
+
+
+def row_names(
+    axis_keys: Mapping[str, str], coordinates: Mapping[str, SweepCoordinate],
+) -> dict[str, set[str]]:
+    """Each axis of a row and the values a selector may name it by: its key, value id and drawn value."""
+    names: dict[str, set[str]] = {axis: {key} for axis, key in axis_keys.items()}
+    for axis, coordinate in coordinates.items():
+        names.setdefault(axis, set()).update((coordinate.value_id, coordinate_text(coordinate)))
+    return names
+
+
+def row_selector(
+    row: str, axis_keys: Mapping[str, str], coordinates: Mapping[str, SweepCoordinate],
+) -> Labels | None:
+    """The selector that names a row whose id is not plain (it holds a digest), or None when ``@row`` reads plainly."""
+    if "==" not in row and not _GENERATED.search(row):
+        return None
+    return tuple(
+        (axis, coordinate_text(coordinates[axis]) if _GENERATED.fullmatch(key) and axis in coordinates else key)
+        for axis, key in sorted(axis_keys.items())
+    )
 
 
 @dataclass(frozen=True)
@@ -31,13 +85,20 @@ class ResultAddress:
     card: str | None
     name: str
     row: str | None = None
+    labels: Labels = ()
 
     @classmethod
     def parse(cls, text: str) -> ResultAddress:
-        match = _ADDRESS.match(text)
-        if match is None:
-            raise ValueError(f"{text!r} is not an address of the form [card/]element[@row]")
-        return cls(match["card"], match["name"], match["row"])
+        head, separator, selector = text.partition(":")
+        match = _HEAD.match(head)
+        try:
+            if match is None:
+                raise ValueError(text)
+            return cls(match["card"], match["name"], match["row"], parse_labels(selector) if separator else ())
+        except ValueError:
+            raise ValueError(
+                f"{text!r} is not an address of the form [card/]element[@row][:label=value,...]"
+            ) from None
 
 
 @dataclass(frozen=True)
@@ -47,10 +108,12 @@ class ResultTarget:
     card: str
     element: str | None = None
     row: str | None = None
+    labels: Labels = ()
 
     def __str__(self) -> str:
         address = self.card if self.element is None else f"{self.card}/{self.element}"
-        return address if self.row is None else f"{address}@{self.row}"
+        address = address if self.row is None else f"{address}@{self.row}"
+        return f"{address}:{format_labels(self.labels)}" if self.labels else address
 
 
 @dataclass(frozen=True)
@@ -100,9 +163,9 @@ class ElementHolders:
         if address.card is None and address.name in set(steps):
             if self.holders(address.name):
                 return AddressProblem(f"{address.name!r} names a card and an element.")
-            return ResultTarget(address.name, row=address.row)
+            return ResultTarget(address.name, row=address.row, labels=address.labels)
         card = self.card_of(address.card, address.name)
-        return card if isinstance(card, AddressProblem) else ResultTarget(card, address.name, address.row)
+        return card if isinstance(card, AddressProblem) else ResultTarget(card, address.name, address.row, address.labels)
 
 
 def project_holders(project: Project) -> ElementHolders:

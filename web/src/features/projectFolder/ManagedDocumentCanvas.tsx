@@ -1,14 +1,14 @@
 import dagre from '@dagrejs/dagre';
 import { Handle, Position, ReactFlowProvider, useReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react';
 import { memo, useMemo, useRef, type ReactNode, type Ref } from 'react';
-import { studioAccessibleName } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioRunStatus } from '@/components/activity/studioVocabulary';
 import { StudioCanvas, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { CommandContextMenu } from '@/components/pipeline/CommandContextMenu';
 import { Card, CardHead } from '@/components/ui/Card';
 import { InlineEdit } from '@/components/ui/InlineEdit';
 import { StatusMark } from '@/components/ui/StatusMark';
 import type { StudioCommand } from '@/features/projectWindow/studioCommands';
-import type { PresentationPosition } from '@/generated/studioContracts';
+import type { PresentationPosition, StudioProjectWindowMapElement } from '@/generated/studioContracts';
 
 export type CanvasNode = {
   id: string;
@@ -17,6 +17,8 @@ export type CanvasNode = {
   name: string;
   glyph: ReactNode;
   problem?: string;
+  /** The element's planned status: a mapped element's is the summary of its requests'. */
+  status?: StudioProjectWindowMapElement['status'];
   /** The element's context menu. */
   menu?: () => readonly StudioCommand[];
   /** The name is being edited in place: `commit` takes the new text, `end` leaves the edit. */
@@ -36,7 +38,8 @@ const ElementCard = memo(function ElementCard({ data }: NodeProps<Node<ElementDa
         onEditingChange={(editing) => { if (!editing) data.naming?.end(); }}
         onCommit={(name) => { data.naming?.commit(name); }} />
         : <span className="min-w-0 flex-1 whitespace-nowrap font-medium">{data.name}</span>}
-      {data.problem && <StatusMark status="cannot_run" label={data.problem} />}
+      {data.problem ? <StatusMark status="cannot_run" label={data.problem} />
+        : data.status && <StatusMark status={data.status} label={studioRunStatus(data.status)} />}
     </CardHead>
     <Handle type="source" position={Position.Right} isConnectable={false} className="!opacity-0" />
   </Card>;

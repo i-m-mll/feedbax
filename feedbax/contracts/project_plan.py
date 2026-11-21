@@ -225,6 +225,14 @@ type LabelNames = Mapping[str, Mapping[str, LabelName]]
 """Each step-valued label's value IDs in one request, and what each names."""
 
 
+def label_value_names(labels: Mapping[str, MemberLabel], names: LabelNames) -> dict[str, str]:
+    """Each label's value by name: the key of the step or element a step-valued value names, else its value id."""
+    return {
+        label: named.key if (named := names.get(label, {}).get(value.value_id)) is not None else value.value_id
+        for label, value in labels.items()
+    }
+
+
 @dataclass(frozen=True)
 class PlannedInput:
     producer: RunKey | None
@@ -288,6 +296,9 @@ class PlannedRow:
     kind: StepKind
     label: str | None
     coordinates: Mapping[str, SweepCoordinate]
+    axis_keys: Mapping[str, str] = field(default_factory=dict, kw_only=True)
+    """Each axis of the row's sweep and its value id there, or for an input axis the member key, which an address's
+    selector matches."""
     document_ids: Mapping[str, str] = field(default_factory=dict, kw_only=True)
     document_uses: frozenset[str] = field(default=frozenset(), kw_only=True)
     # Documents an Evaluate row reads through its subject run rather than naming them.
@@ -328,6 +339,18 @@ class PlannedElement:
     """The labelled entries its dataset outputs carry from the stacked inputs it takes whole."""
     label: str | None = None
     """The operation's or figure's display label, which ``element`` prints for an output another card lists."""
+
+    @property
+    def stack_key(self) -> str:
+        """The key of a reader's member that reads this request: its mapped labels by value id, so that only an edit
+        of what the request reads changes it."""
+        return ",".join(f"{label}={value.value_id}" for label, value in self.mapped.items()) or "default"
+
+    @property
+    def member_labels(self) -> dict[str, str]:
+        """Each label this request is one combination of, and the name of its value: a step or element key, or a
+        sweep value id."""
+        return label_value_names(self.mapped, self.names)
 
     @property
     def datasets(self) -> Mapping[str, DatasetPort]:
@@ -536,6 +559,13 @@ class ProjectPlan:
         ):
             return source.task
         return None
+
+    def row(self, key: RunKey) -> PlannedRow | None:
+        return self._rows_by_key.get(key)
+
+    @cached_property
+    def _rows_by_key(self) -> Mapping[RunKey, PlannedRow]:
+        return MappingProxyType({row.key: row for row in self.rows})
 
     @property
     def elements(self) -> Mapping[ElementKey, PlannedElement]:
@@ -2636,7 +2666,9 @@ class _Compiler:
                         self.excluded_checkpoint_rows.add(run_key)
                         continue
             coordinates = MappingProxyType(deepcopy(dict(row.coordinates)))
-            self.rows[run_key] = PlannedRow(run_key, kind, row.label, coordinates)
+            self.rows[run_key] = PlannedRow(
+                run_key, kind, row.label, coordinates, axis_keys=MappingProxyType(dict(row.axis_value_ids)),
+            )
             if initial:
                 if has_checkpoint_axis:
                     self.diagnostics.append(ProjectDiagnostic(
@@ -2801,6 +2833,7 @@ class _Compiler:
         run = PlannedRun(
             key, row.kind, row.label, row.coordinates, encoded.id,
             MappingProxyType(dict(inputs)), MappingProxyType(dict(omissions)), requires,
+            axis_keys=row.axis_keys,
             admission_problem=lowered.admission_problem,
             document_ids=lowered.document_ids,
             document_uses=lowered.document_uses,
@@ -2836,7 +2869,9 @@ class _Compiler:
         for row in rows:
             key = RunKey(variant, name, row.id)
             coordinates = MappingProxyType(deepcopy(dict(row.coordinates)))
-            self.rows[key] = PlannedRow(key, "report", row.label, coordinates)
+            self.rows[key] = PlannedRow(
+                key, "report", row.label, coordinates, axis_keys=MappingProxyType(dict(row.axis_value_ids)),
+            )
             inputs = {}
             for role, candidates in by_role.items():
                 if (member := row.input_keys.get(role)) is not None:
@@ -2926,7 +2961,9 @@ class _Compiler:
         for row in rows:
             key = RunKey(variant, name, row.id)
             coordinates = MappingProxyType(deepcopy(dict(row.coordinates)))
-            self.rows[key] = PlannedRow(key, "analyze", row.label, coordinates)
+            self.rows[key] = PlannedRow(
+                key, "analyze", row.label, coordinates, axis_keys=MappingProxyType(dict(row.axis_value_ids)),
+            )
             inputs = {}
             for role, members in selected.items():
                 chosen = row.input_keys.get(role)
@@ -3002,6 +3039,7 @@ class _Compiler:
         run = PlannedAnalyzeRun(
             key, original.kind, original.label, original.coordinates,
             MappingProxyType(elements), template.requires, MappingProxyType(dict(inputs)), MappingProxyType(figures),
+            axis_keys=original.axis_keys,
             document_ids=MappingProxyType(dict(resolved.document_ids)),
             document_uses=resolved.document_uses,
         )
@@ -3507,7 +3545,7 @@ class _Compiler:
             except ValueError as error:
                 return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, str(error), name)
             for request, element in requests:
-                mapped = element.key.member if element is not None else None
+                mapped = element.stack_key if element is not None and element.key.member is not None else None
                 members.append((
                     PlannedInput(
                         run.key,

@@ -33,13 +33,14 @@ from feedbax.contracts.figure_document import (
 from feedbax.contracts.dataset import FieldDescriptor
 from feedbax.contracts.member_stack import labelled_members, stack_layout
 from feedbax.contracts.operation import (
-    DatasetInputPort, DatasetPort, WholeDimensions, require_dataset_fields, require_dataset_port,
+    DatasetInputPort, DatasetOutputPort, DatasetPort, WholeDimensions, require_dataset_fields, require_dataset_port,
 )
 from feedbax.contracts.project import Document, Payload, json_pointer_parts
 from feedbax.contracts.project_plan import (
     ElementKey,
     LabelName,
     LabelNames,
+    label_value_names,
     PlannedElement,
     PlannedInput,
     RunKey,
@@ -136,6 +137,34 @@ def _stripped(binding: PlannedInput, mapped: Collection[str]) -> PlannedInput:
     return replace(binding, member=binding.member.model_copy(update={"labels": labels}))
 
 
+
+def _carried(entries: Mapping[str, _Entries], outputs: Mapping[str, DatasetPort | PlotlyFigurePort]) -> _Entries:
+    """The labelled entries an operation's output carries from the roles it takes whole: theirs when they are equal,
+    otherwise those of the role its output port names."""
+    distinct: list[_Entries] = []
+    for found in entries.values():
+        if found and found not in distinct:
+            distinct.append(found)
+    if len(distinct) <= 1:
+        return distinct[0] if distinct else ()
+    named = {port.carries for port in outputs.values() if isinstance(port, DatasetOutputPort) and port.carries}
+    if len(named) != 1 or (role := named.pop()) not in entries:
+        roles = sorted(role for role, found in entries.items() if found)
+        raise _ElementIssue("", f"Inputs {roles!r} carry different labels; its output names none of them to carry.")
+    return entries[role]
+
+
+def _member_ids(requests: list[Mapping[str, MemberLabel]], names: LabelNames) -> list[str]:
+    """Each mapped request's member id: its values, by name, of the labels that vary across the element's requests.
+
+    A label varies when two requests hold different values of it; one that only some requests hold, with one value,
+    tells apart nothing another label does not."""
+    named = [label_value_names(mapped, names) for mapped in requests]
+    order = tuple(dict.fromkeys(label for values in named for label in values))
+    varying = [label for label in order if len({values[label] for values in named if label in values}) > 1]
+    return [",".join(f"{label}={values[label]}" for label in varying if label in values) for values in named]
+
+
 class _Lowerer:
     def __init__(
         self,
@@ -227,7 +256,7 @@ class _Lowerer:
                 PlannedInput(
                     self.key,
                     InputMember(
-                        key=producer.key.member or "default",
+                        key=producer.stack_key,
                         reference=ProductRef(request_id=producer.request_id, role=source.product),
                         labels=dict(producer.mapped),
                     ),
@@ -507,7 +536,7 @@ class _Lowerer:
             if not groups:
                 self._record(
                     name, spec, inputs, definition.outputs, element.label, names,
-                    entries=next((found for found in entries.values() if found), ()),
+                    entries=_carried(entries, definition.outputs),
                 )
                 return
             requests = []
@@ -522,23 +551,21 @@ class _Lowerer:
                     if role in combination else bindings
                     for role, bindings in inputs.items()
                 }
-                member = (
-                    "+".join(group.bindings[0].member.key for group in combination.values())
-                    if all(ports[role].takes == "one" for role in combination)
-                    else ",".join(f"{label}={value.value_id}" for label, value in mapped.items())
+                inner = _carried(
+                    {role: self._entries(request[role], f"inputs.{role}") for role in entries}, definition.outputs,
                 )
-                inner = next((found for role in entries if (found := self._entries(request[role], f"inputs.{role}"))), ())
-                requests.append((member, mapped, request, inner))
-            if len({member for member, *_ in requests}) != len(requests):
+                requests.append((mapped, request, inner))
+            members = _member_ids([mapped for mapped, *_ in requests], names)
+            if len(set(members)) != len(requests):
                 raise _ElementIssue("inputs", "Mapped requests repeat one combination of labels.")
-            for member, mapped, request, inner in requests:
+            for member, (mapped, request, inner) in zip(members, requests, strict=True):
                 self._record(
                     name, spec, request, definition.outputs, element.label, names,
                     member=member, mapped=mapped, entries=inner,
                 )
         except _ElementIssue as error:
             self.problem(
-                f"{path}.{error.path}", str(error), name, code=ResolutionCode.BAD_REFERENCE
+                f"{path}.{error.path}" if error.path else path, str(error), name, code=ResolutionCode.BAD_REFERENCE
             )
         except ValueError as error:
             self.problem(path, str(error), name)
