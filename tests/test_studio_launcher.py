@@ -50,7 +50,7 @@ def test_a_test_launcher_and_its_host_exit_with_the_test_runner(tmp_path):
 
         def serving():
             try:
-                with urlopen(f"http://127.0.0.1:{backend}/api/health", timeout=1) as response:
+                with urlopen(f"http://127.0.0.1:{backend}/api/health", timeout=HANG_SECONDS) as response:
                     return response.status == 200
             except (URLError, OSError):
                 return False
