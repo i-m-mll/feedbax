@@ -28,7 +28,7 @@ export function sharedRowTerms(
   if (!members.length) return undefined;
   const axes = Object.fromEntries(step.sweeps.flatMap(({ id, values }) => {
     const selected = new Set<string | undefined>(members.map((member) => member.values[id]));
-    return selected.has(undefined) ? [] : [[id, values.filter((value) => selected.has(value.id)).map(({ id }) => id)]];
+    return selected.has(undefined) || selected.has(unvalued) ? [] : [[id, values.filter((value) => selected.has(value.id)).map(({ id }) => id)]];
   }));
   const selected = new Set(members.map(({ id }) => id));
   const matches = step.runs.filter(({ values }) => Object.entries(axes).every(([axis, ids]) => ids.includes(values[axis])));
@@ -71,6 +71,22 @@ function savedResult(result: { request_id: string; job_id: string; validity?: Pl
 }
 
 const noChecks: ReadonlySet<string> = new Set();
+
+/**
+ * The value an optional axis gives the runs it keeps beside their copies: the axis's first mark, with no name of its
+ * own. It is no value of the authored axis, so no edit names it.
+ */
+export const unvalued = '';
+
+function optionalAxes(project: Project, step: string) {
+  return Object.entries(project.steps?.[step]?.sweep?.axes ?? {}).flatMap(([axis, read]) =>
+    read && 'optional' in read && read.optional ? [axis] : []);
+}
+
+/** The row an optional axis keeps beside the row with `value` on it: its id without that value. */
+function keptRow(row: string, axis: string, value: string) {
+  return row.split('--').filter((part) => part !== `${axis}=${value}`).join('--') || 'default';
+}
 
 export function projectWindowPlan(
   project: Project, saved: StudioSavedTrainRuns | undefined, variant: string | null, checking = noChecks,
@@ -148,6 +164,16 @@ export function projectWindowPlan(
       return { id, label: rowName(id, key.row) };
     }) }] : undefined;
   }
+  const kept = new Map<string, Set<string>>();
+  for (const row of map?.rows ?? []) {
+    if (row.key.variant !== scope) continue;
+    for (const axis of optionalAxes(project, row.key.step)) {
+      const coordinate = row.coordinates[axis];
+      if (!coordinate) continue;
+      const key = JSON.stringify([row.key.step, axis]);
+      kept.set(key, (kept.get(key) ?? new Set()).add(keptRow(row.key.row, axis, coordinate.value_id)));
+    }
+  }
   for (const row of map?.rows ?? []) {
     if (row.key.variant !== scope) continue;
     let sweeps = sweepsByStep.get(row.key.step);
@@ -165,6 +191,12 @@ export function projectWindowPlan(
       if (!entries) sweeps.set(sweep, entries = new Map());
       entries.set(coordinate.value_id, coordinateText(coordinate));
       values[sweep] = coordinate.value_id;
+    }
+    for (const axis of optionalAxes(project, row.key.step)) {
+      if (axis in row.coordinates || !kept.get(JSON.stringify([row.key.step, axis]))?.has(row.key.row)) continue;
+      const entries = sweeps.get(axis) ?? new Map<string, string>();
+      sweeps.set(axis, new Map([[unvalued, ''], ...entries]));
+      values[axis] = unvalued;
     }
     const id = savedRunId(row.key);
     const training = train.get(id);
@@ -233,9 +265,10 @@ export function projectWindowPlan(
       documentIds: projected?.document_ids,
       documentUses: projected?.document_uses,
       inputs,
-      sweeps: [...(sweepsByStep.get(id) ?? [])].map(([id, values]) => ({
-        id, label: id, values: [...values].map(([id, label]) => ({ id, label })),
-      })),
+      sweeps: [...(sweepsByStep.get(id) ?? [])].map(([axis, values]) => {
+        const read = project.steps?.[id]?.sweep?.axes?.[axis];
+        return { id: axis, label: read && 'set' in read ? read.set : axis, values: [...values].map(([id, label]) => ({ id, label })) };
+      }),
       statusCounts: resultCounts(projected?.status_counts ?? {}, runs),
       runs: groupedLabels.size ? runs.map((run) => {
         const rank = evaluations.get(run.id)?.subject_rank_key;

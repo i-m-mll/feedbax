@@ -71,6 +71,8 @@ interface DetailInputs {
   readonly selectedSweepValues: ReadonlyMap<string, ReadonlySet<string>>;
   readonly confirmRunRemoval: ConfirmRunRemoval;
   readonly fieldRows?: readonly string[];
+  /** Whether one value of a named axis or a set's entry is selected, which a Model edit is then stored on. */
+  readonly valueEditing?: boolean;
   readonly fieldAxes?: Record<string, string[]>;
   readonly documentScopes: Readonly<Record<'graph' | 'task', NamedDocumentScope | undefined>>;
   /** Whether the plan read is of the shown revision; a field edit waits for it, since it carries the steps that plan lights. */
@@ -339,8 +341,9 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
           : canEdit || selection?.kind === 'values' || selection?.kind === 'rows')
     )),
     projectionRun: input.step?.kind === 'train' ? input.namedRun : undefined,
-    editable: canEdit && !pending && !saving && !!saved.presentation && input.step?.kind === 'train' &&
-      !!graphScope && !graphScope.localVariant && graphScope.lit.size === graphScope.users.size,
+    editable: !pending && !saving && !!saved.presentation && !outside && (input.valueEditing ||
+      canEdit && input.step?.kind === 'train' &&
+      !!graphScope && !graphScope.localVariant && graphScope.lit.size === graphScope.users.size),
     evaluate: input.step?.kind === 'evaluate' && input.namedRun && input.evaluateScope
       ? { run: input.namedRun, scope: input.evaluateScope } : undefined,
     problem: revealedMember && revealedMember.document === storedId

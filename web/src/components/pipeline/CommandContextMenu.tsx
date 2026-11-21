@@ -34,16 +34,18 @@ export function contextMenuKey(event: KeyboardEvent) {
 const stop = (event: SyntheticEvent) => event.stopPropagation();
 
 /** The context menu of a thing: the commands that take it, opened by a right-click or the context menu keys. */
-export function CommandContextMenu({ commands, trigger, focusAfter }: {
+export function CommandContextMenu({ commands, trigger, focusAfter, onOpen }: {
   commands?: (anchor: Element | undefined) => readonly StudioCommand[];
   trigger: ReactElement;
+  /** Called as the menu opens, before its commands are read: a thing outside the selection is selected first. */
+  onOpen?: () => void;
   /** Where the chosen command wants the keyboard once the menu has closed; the open menu keeps it from going sooner. */
   focusAfter?: () => HTMLElement | null;
 }) {
   const anchor = useRef<Element>();
   if (!commands) return trigger;
   return (
-    <ContextMenu onOpenChangeComplete={(open) => {
+    <ContextMenu onOpenChange={(open) => { if (open) onOpen?.(); }} onOpenChangeComplete={(open) => {
       const target = open ? null : focusAfter?.();
       // The closed menu keeps the page inert until it unmounts, which follows this callback.
       if (target) requestAnimationFrame(() => target.focus());

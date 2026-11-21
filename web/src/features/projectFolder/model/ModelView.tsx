@@ -226,7 +226,11 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const owner = resolved?.owner;
   const interior = owner?.interior;
   const physical = interior?.physical_domain ?? null;
-  const editTopology = editable && !evaluate;
+  /** An Evaluate edits the topology of one selected value's Model; the edit is stored on the value. */
+  const editTopology = editable && (!evaluate || evaluate.scope.kind === 'axis_value');
+  const selectedRuns = evaluate?.scope.kind === 'axis_value'
+    ? { rows: [evaluate.run.row], axes: { [evaluate.scope.axis]: [evaluate.scope.value] } }
+    : !evaluate && fieldRows?.length && fieldAxes ? { rows: [...fieldRows], axes: fieldAxes } : undefined;
   const selectedHere = selected.filter((item) => inGraph(item, graph));
   const selectedIds = new Set(selectedHere.map(addressKey));
   const selection = selectedHere[0];
@@ -406,8 +410,9 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   async function attempt(name: string, operation: Operation, choose = true): Promise<{ address?: ModelAddress; reason: string } | null> {
     if (!model || !editTopology) return { reason: studioReason('unavailable', name) };
     return run(async () => {
-        const scope = projectionRun && { step: projectionRun.step, chosen_steps: [...(await plan.next(({ revision }) =>
-          revision === editor.getSnapshot().saved.revision)).chosenSteps] };
+        const subject = evaluate?.run ?? projectionRun;
+        const scope = subject && { step: subject.step, chosen_steps: [...(await plan.next(({ revision }) =>
+          revision === editor.getSnapshot().saved.revision)).chosenSteps], ...selectedRuns };
         const reviewed = editor.getSnapshot().saved;
         setIssue(undefined);
         try {

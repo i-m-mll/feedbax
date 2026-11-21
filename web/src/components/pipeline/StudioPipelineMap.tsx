@@ -49,7 +49,7 @@ import {
   type PipelineSelectionState,
   type RunSetsByStep,
 } from '@/features/pipeline/selection';
-import { PipelineRunMarks, type ApplyMapSelection } from './PipelineRunMarks';
+import { PipelineRunMarks, type ApplyMapSelection, type AxisMenu } from './PipelineRunMarks';
 import { CommandContextMenu, CommandMenuItems, type RunMenu, type StepMenu } from './CommandContextMenu';
 import {
   compactMapCardWidth,
@@ -118,6 +118,7 @@ export interface StudioPipelineMapProps {
   viewportRef?: Ref<CanvasViewport>;
   fitReady?: boolean;
   runMenu?: RunMenu;
+  axisMenu?: AxisMenu;
   stepMenu?: StepMenu;
   /** An armed reference pick: a card it accepts fills the reference when its head is chosen. */
   pick?: ReferencePick | null;
@@ -297,6 +298,7 @@ const StepCard = memo(function StepCard({
   upstream,
   downstream,
   runMenu,
+  axisMenu,
   stepMenu,
   rename,
   pick,
@@ -320,6 +322,7 @@ const StepCard = memo(function StepCard({
   upstream?: ReadonlySet<string>;
   downstream?: ReadonlySet<string>;
   runMenu?: RunMenu;
+  axisMenu?: AxisMenu;
   stepMenu?: StepMenu;
   rename?: MapStepRename;
   pick?: ReferencePick | null;
@@ -415,6 +418,7 @@ const StepCard = memo(function StepCard({
           downstream={downstream}
           applySelection={applySelection}
           runMenu={runMenu}
+          axisMenu={axisMenu}
           arrange={arrange}
         />
       </div>
@@ -769,6 +773,7 @@ export function StudioPipelineMap({
   viewportRef,
   fitReady,
   runMenu,
+  axisMenu,
   stepMenu,
   rename,
   pick,
@@ -896,6 +901,7 @@ export function StudioPipelineMap({
                     sweepMenu={sweepMenu?.stepId === step.id ? sweepMenu : undefined}
                     onProblems={problemSteps?.has(step.id) ? onProblems : undefined}
                     runMenu={runMenu}
+                    axisMenu={axisMenu}
                     stepMenu={stepMenu}
                     rename={rename}
                     pick={wirePick ?? pick}
