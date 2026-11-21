@@ -64,6 +64,8 @@ class StudioAnalyzeAuthoring(StrictModel):
     operations: list[OperationDefinition]
     states: DatasetPort
     variables: dict[str, dict[str, list[str]]]
+    """Each operation's parameter choices: the matching variables of a dataset selector, and the bound label
+    dimensions of a parameter that lists the dimensions a port takes whole."""
     figure: FigureDocument
     changed: list[Pointer] = Field(default_factory=list)
     """The pointers at which the document's composed content differs from its base's."""
