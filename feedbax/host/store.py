@@ -5,7 +5,7 @@ import json
 import re
 import sqlite3
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Literal, NamedTuple
 from uuid import uuid4
@@ -735,7 +735,7 @@ class Store:
                 return saved
             results, aliases, inserted = [], {}, []
             considered = set()
-            light_parents_by_job: dict[str, tuple[str, ...]] = {}
+            pending_parents: dict[str, tuple[tuple[str, bool], ...]] = {}
             live_drivers: set[str] = set()
             projects = set(record.get("projects", ()))
             if record.get("project"):
@@ -932,14 +932,10 @@ class Store:
                 light_parents = tuple(sorted(
                     aliases.get(edge["job_id"], edge["job_id"]) for edge in job["edges"]
                 )) if light else ()
-                different_light_parents = False
-                if light and matching is not None:
-                    existing = light_parents_by_job.get(matching["id"])
-                    if existing is None:
-                        existing = tuple(row[0] for row in self.db.execute(
-                            "SELECT parent FROM edges WHERE job=? ORDER BY parent", (matching["id"],)
-                        ))
-                    different_light_parents = existing != light_parents
+                different_light_parents = (
+                    light and matching is not None
+                    and self._parents(matching["id"], pending_parents) != light_parents
+                )
                 if by_id is not None:
                     if (by_id["project"], by_id["request"]) != (job["project"], job["request"]):
                         raise HostError(
@@ -947,7 +943,7 @@ class Store:
                         )
                     if different_target or different_light_parents or _canonical_binding_conflicts(job["launch"], by_id["launch"], evaluate=evaluate) or (
                         checkpoint_parents is not None
-                        and self._completion_parents(by_id["id"]) != checkpoint_parents
+                        and frozenset(self._parents(by_id["id"], pending_parents, completion=True)) != checkpoint_parents
                     ):
                         raise HostError(
                             "job_id_conflict", "Job id already names a different canonical binding."
@@ -958,7 +954,7 @@ class Store:
                         job["launch"], live["launch"], evaluate=evaluate, live=True,
                     ) or (
                         checkpoint_parents is not None
-                        and self._completion_parents(live["id"]) != checkpoint_parents
+                        and frozenset(self._parents(live["id"], pending_parents, completion=True)) != checkpoint_parents
                     ):
                         results.append({
                             "run_key": run_key,
@@ -991,8 +987,10 @@ class Store:
                     if deferred_reuse is not None:
                         self.deferred.reserve(row, job, deferred_reuse, deferred_projection)
                     inserted.append((job, item.get("light_definition")))
-                    if light:
-                        light_parents_by_job[job_id] = light_parents
+                    pending_parents[job_id] = tuple(
+                        (aliases.get(edge["job_id"], edge["job_id"]), edge.get("authenticated_completion", False))
+                        for edge in job["edges"]
+                    )
                     if placement is not None:
                         self.append(row, live_evaluate.PLACEMENT_EVENT, placement)
                 aliases[job["id"]] = job_id
@@ -1160,9 +1158,19 @@ class Store:
                 "admission_changed", f"Request {job['request']} succeeded during admission."
             )
 
-    def _completion_parents(self, job_id: str) -> frozenset[str]:
-        return frozenset(row[0] for row in self.db.execute(
-            "SELECT parent FROM edges WHERE job=? AND authenticated_completion", (job_id,)
+    def _parents(
+        self, job_id: str, pending: Mapping[str, tuple[tuple[str, bool], ...]], *, completion: bool = False,
+    ) -> tuple[str, ...]:
+        """The sorted parents of a job, or only its authenticated completion parents.
+
+        A job admitted earlier in the same submission has its edges in `pending`: they are bound after every item.
+        """
+        if (edges := pending.get(job_id)) is not None:
+            return tuple(sorted(parent for parent, authenticated in edges if authenticated or not completion))
+        return tuple(row[0] for row in self.db.execute(
+            "SELECT parent FROM edges WHERE job=?" + (" AND authenticated_completion" if completion else "")
+            + " ORDER BY parent",
+            (job_id,),
         ))
 
     def _best_parents(self, job: dict, checkpoint: dict, aliases: dict[str, str]) -> frozenset[str] | None:
