@@ -1,6 +1,8 @@
 """Revision-bound freezing of a saved measured subject."""
 
-from pydantic import Field
+from typing import Annotated
+
+from pydantic import Field, StringConstraints
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.project_inputs import ProjectName, RowKey
@@ -12,6 +14,8 @@ class StudioSubsetToRowsRequest(StrictModel):
     revision: Sha256
     variant: RowKey
     step: ProjectName
+    input: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_][A-Za-z0-9_-]*(?:\.(?:0|[1-9][0-9]*))?$")]
+    """The selection to freeze: its role, or its role and its index in a list."""
     attempts: list[str] = Field(min_length=1)
 
 

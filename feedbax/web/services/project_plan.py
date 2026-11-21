@@ -22,6 +22,7 @@ from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, PlotlyFigurePo
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.jobs import (
     StudioActivityJob,
+    StudioBoundBestSubject,
     JobStatus,
     StudioBestRankGroup,
     StudioPlanRequest,
@@ -60,7 +61,7 @@ from feedbax.contracts.studio_project import AuthoredFileAddress
 from feedbax.contracts.studio_subset import StudioSubsetToRowsEdit, StudioSubsetToRowsRequest
 from feedbax.contracts.project_io import project_declaration_name
 from feedbax.contracts.project_plan import (
-    ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedRun, RunKey, authored_request_change,
+    ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedInput, PlannedRun, RunKey, authored_request_change,
 )
 from feedbax.contracts.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
@@ -296,8 +297,8 @@ class ProjectPlanRead:
         def inputs(variant: str, step_id: str) -> Iterator[StudioProjectWindowMapInput]:
             step = plan.steps[variant, step_id]
             for role, binding in (step.inputs if step.inputs is not None else step.authored_inputs).items():
-                subset = plan.subsets.get((variant, step_id, role))
                 for input_id, reference in _step_references(role, binding):
+                    subset = plan.subsets.get((variant, step_id, input_id))
                     axis = next((
                         (name, item) for name, item in step.sweep.axes.items()
                         if isinstance(item, CheckpointRuleAxis)
@@ -543,27 +544,41 @@ class ProjectPlanService:
             raise JobConflict("The saved product could not be authenticated.") from error
 
     def subset_to_rows(self, project_id: str, body: StudioSubsetToRowsRequest) -> StudioSubsetToRowsEdit:
+        """Replace one measured selection of an Evaluate subject with the rows its chosen attempts bound.
+
+        The other selections of the input, and every row they give, are left as they are.
+        """
         from feedbax.web.services.trial_scope import file_value
         from feedbax.web.services.project_folder import preview_authored_files
         from feedbax.contracts.project_plan import compile_project
 
         view = self.read(project_id, revision=body.revision)
-        subset = view.settled.plan.subsets.get((body.variant, body.step, "subject"))
+        before = view.settled.plan
+        subset = before.subsets.get((body.variant, body.step, body.input))
         project = self.folders.read(project_id, revision=body.revision).project
         step = project.steps.get(body.step)
-        subject = step.inputs.get("subject") if step else None
-        if project.sweep is not None or not isinstance(subject, StepReference) or subject.where is None:
+        role, *item = body.input.split(".")
+        binding = step.inputs.get(role) if step and role == "subject" else None
+        index = int(item[0]) if item else None
+        selection = (
+            binding[index] if isinstance(binding, list) and index is not None and index < len(binding)
+            else binding if index is None else None
+        )
+        if project.sweep is not None or not isinstance(selection, StepReference) or selection.where is None:
             raise ProjectFolderInvalid("Choose a locally authored Best input in the base project.")
         if subset is None or not subset.ranks or len(body.attempts) != len(subset.ranks):
             raise ProjectFolderInvalid("Choose one bound attempt for every Best rank.")
+        runs = {
+            run.key: run for run in before.runs if (run.key.variant, run.key.step) == (body.variant, body.step)
+        }
         attempts = set(body.attempts)
         bound = {
-            attempt.job_id: attempt.bound_subject
+            attempt.job_id: _planned_bound(attempt.bound_subject, runs[key].inputs.get("subject"))
             for key, history in view.attempts_by_run.items()
-            if (key.variant, key.step) == (body.variant, body.step)
+            if key in runs
             for attempt in history if attempt.job_id in attempts and attempt.bound_subject is not None
         }
-        by_rank = {member.key: member for member in bound.values()}
+        by_rank = {member.key: member for member in bound.values() if member is not None}
         if (
             bound.keys() != attempts or by_rank.keys() != set(subset.ranks)
             or any(
@@ -577,13 +592,10 @@ class ProjectPlanService:
         ))
         address = AuthoredFileAddress(kind="step", id=body.step)
         authored = step.model_dump(mode="json", exclude_unset=True)
-        file = file_value(
-            address, authored,
-            ("inputs", "subject", "where"), frozen.model_dump(mode="json", exclude_unset=True),
-        )
-        if subject.checkpoint is None:
-            file.patches.extend(file_value(address, authored, ("inputs", "subject", "checkpoint"), "last").patches)
-        before = view.settled.plan
+        at = ("inputs", "subject", *((str(index),) if index is not None else ()))
+        file = file_value(address, authored, (*at, "where"), frozen.model_dump(mode="json", exclude_unset=True))
+        if selection.checkpoint is None:
+            file.patches.extend(file_value(address, authored, (*at, "checkpoint"), "last").patches)
         after = compile_project(
             preview_authored_files(project, [file]), readers=view.settled.readers,
             operations=self.folders.operations, components=self.folders.components,
@@ -594,15 +606,16 @@ class ProjectPlanService:
             run.key: run for run in after.runs
             if (run.key.variant, run.key.step) == (body.variant, body.step)
         }
-        before_rows = {
-            run.key: run for run in before.runs if (run.key.variant, run.key.step) == (body.variant, body.step)
-        }
         error = "The selected producer rows cannot preserve this Evaluate definition."
-        if selected.keys() != before_rows.keys():
+        if selected.keys() != runs.keys():
             raise ProjectFolderInvalid(error)
         for key, run in selected.items():
             binding = run.inputs["subject"]
-            previous = before_rows[key]
+            previous = runs[key]
+            if previous.inputs["subject"].member.key not in by_rank:
+                if run.request_id != previous.request_id:
+                    raise ProjectFolderInvalid(error)
+                continue
             member = by_rank.get(binding.member.key)
             if (
                 member is None or binding.producer is None
@@ -858,7 +871,8 @@ def _evaluation_row(
             checkpoint_sources=list(success.checkpoint_sources) or None,
             checkpoint_gaps=list(success.checkpoint_gaps) if success.checkpoint_gaps is not None else None,
             placement=success.evaluation_placement if series is not None else None,
-            bound_subject=success.bound_subject, validity=success.validity, provenance=success.provenance,
+            bound_subject=_planned_bound(success.bound_subject, planned), validity=success.validity,
+            provenance=success.provenance,
         )
     retained = bool(attempts and attempts[-1].collected_evaluate) or (
         success is not None and success.collected_evaluate
@@ -875,8 +889,16 @@ def _evaluation_row(
         can_run=problem is None, trials=trials, result=result, checkpoint_series=series, checkpoint_rule=rule,
         checkpoint_attempt=displayed_attempt.checkpoint_attempt if series is not None and displayed_attempt else None,
         subject_rank_key=reference.key if isinstance(reference, BestRank) and reference.group else None,
-        bound_subject=attempts[-1].bound_subject if attempts else None,
+        bound_subject=_planned_bound(attempts[-1].bound_subject, planned) if attempts else None,
     ), problem
+
+
+def _planned_bound(bound: StudioBoundBestSubject | None, planned: PlannedInput | None) -> StudioBoundBestSubject | None:
+    """An attempt's bound rank, keyed by the member it fills: a request keys a rank by its position, the plan by its
+    selection too."""
+    if bound is None or planned is None:
+        return bound
+    return bound.model_copy(update={"key": planned.member.key})
 
 
 def _train_history(

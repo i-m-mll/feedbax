@@ -4063,6 +4063,7 @@ export type StudioSubsetToRowsRequest = {
   "revision": string;
   "variant": string;
   "step": string;
+  "input": string;
   "attempts": Array<string>;
 };
 
@@ -10949,6 +10950,7 @@ export const StudioSubsetToRowsRequestSchema: z.ZodType<StudioSubsetToRowsReques
     "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
     "variant": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$")),
     "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "input": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*(?:\\.(?:0|[1-9][0-9]*))?$")),
     "attempts": z.array(z.string()).min(1),
   }).strict()
 ) as unknown as z.ZodType<StudioSubsetToRowsRequest>;

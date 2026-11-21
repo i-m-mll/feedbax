@@ -92,7 +92,7 @@ def selection_scope(project, plan, key, rows=(), axes=None) -> RunScope:
 def file_value(address, raw, parts, value):
     parent = raw
     for part in parts[:-1]:
-        parent = parent[part]
+        parent = parent[int(part)] if isinstance(parent, list) else parent[part]
     leaf = parts[-1]
     return StudioProjectFilePatch(address=address, patches=[
         SetProjectValue(op="replace" if leaf in parent else "add", path=pointer(parts), value=value),

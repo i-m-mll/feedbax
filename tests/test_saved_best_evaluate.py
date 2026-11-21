@@ -167,10 +167,10 @@ def test_saved_best_binds_and_freezes_ordered_ranks(host, tmp_path, monkeypatch)
 
     with pytest.raises(ProjectFolderInvalid, match="complete Best selection"):
         service.subset_to_rows(project, StudioSubsetToRowsRequest(
-            revision=saved.revision, variant="default", step="baseline", attempts=[attempts[-1]] * 2,
+            revision=saved.revision, variant="default", step="baseline", input="subject", attempts=[attempts[-1]] * 2,
         ))
     edit = service.subset_to_rows(project, StudioSubsetToRowsRequest(
-        revision=saved.revision, variant="default", step="baseline", attempts=attempts[-2:][::-1],
+        revision=saved.revision, variant="default", step="baseline", input="subject", attempts=attempts[-2:][::-1],
     ))
     snapshot = folders.patch(project, StudioProjectPatchBatch(revision=edit.revision, files=edit.files))
     selected = snapshot.project.steps["baseline"].inputs["subject"].where
