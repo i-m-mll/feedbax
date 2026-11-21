@@ -190,8 +190,6 @@ class BestRank(ReferenceValue):
     rank: int = Field(gt=0, strict=True)
     candidates: tuple[BestCandidate, ...]
     group: dict[Name, Name] = Field(default_factory=dict, exclude_if=lambda group: not group)
-    selection: Name | None = Field(default=None, exclude_if=lambda selection: selection is None)
-    """The selection this rank belongs to when an input lists several; it qualifies the key."""
 
     @model_validator(mode="after")
     def _slots(self):
@@ -206,7 +204,7 @@ class BestRank(ReferenceValue):
         rank = f"rank-{self.rank}"
         if self.group:
             rank = f"{rank}-{sha256(canonical_json_v2_bytes(self.group)).hexdigest()}"
-        return f"{self.selection}/{rank}" if self.selection is not None else rank
+        return rank
 
     def winner(self, scores: Sequence[float]) -> int:
         if len(scores) != len(self.candidates) or any(not isfinite(score) for score in scores):
@@ -225,12 +223,6 @@ class InputMember(ReferenceValue):
     key: Name
     reference: ProductRef | ContentRef | BestRank
     labels: dict[Name, MemberLabel] = Field(default_factory=dict, exclude_if=lambda labels: not labels)
-
-    @model_validator(mode="after")
-    def _rank_key(self):
-        if isinstance(self.reference, BestRank) and self.key != self.reference.key:
-            raise ValueError("Best member key differs from its rank")
-        return self
 
 
 RequestInputs = dict[Name, tuple[InputMember, ...]]

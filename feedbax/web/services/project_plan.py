@@ -22,6 +22,7 @@ from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, PlotlyFigurePo
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.jobs import (
     StudioActivityJob,
+    StudioBoundBestSubject,
     JobStatus,
     StudioBestRankGroup,
     StudioPlanRequest,
@@ -60,7 +61,7 @@ from feedbax.contracts.studio_project import AuthoredFileAddress
 from feedbax.contracts.studio_subset import StudioSubsetToRowsEdit, StudioSubsetToRowsRequest
 from feedbax.contracts.project_io import project_declaration_name
 from feedbax.contracts.project_plan import (
-    ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedRun, RunKey, authored_request_change,
+    ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedInput, PlannedRun, RunKey, authored_request_change,
 )
 from feedbax.contracts.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
@@ -572,12 +573,12 @@ class ProjectPlanService:
         }
         attempts = set(body.attempts)
         bound = {
-            attempt.job_id: attempt.bound_subject
+            attempt.job_id: _planned_bound(attempt.bound_subject, runs[key].inputs.get("subject"))
             for key, history in view.attempts_by_run.items()
             if key in runs
             for attempt in history if attempt.job_id in attempts and attempt.bound_subject is not None
         }
-        by_rank = {member.key: member for member in bound.values()}
+        by_rank = {member.key: member for member in bound.values() if member is not None}
         if (
             bound.keys() != attempts or by_rank.keys() != set(subset.ranks)
             or any(
@@ -870,7 +871,8 @@ def _evaluation_row(
             checkpoint_sources=list(success.checkpoint_sources) or None,
             checkpoint_gaps=list(success.checkpoint_gaps) if success.checkpoint_gaps is not None else None,
             placement=success.evaluation_placement if series is not None else None,
-            bound_subject=success.bound_subject, validity=success.validity, provenance=success.provenance,
+            bound_subject=_planned_bound(success.bound_subject, planned), validity=success.validity,
+            provenance=success.provenance,
         )
     retained = bool(attempts and attempts[-1].collected_evaluate) or (
         success is not None and success.collected_evaluate
@@ -887,8 +889,16 @@ def _evaluation_row(
         can_run=problem is None, trials=trials, result=result, checkpoint_series=series, checkpoint_rule=rule,
         checkpoint_attempt=displayed_attempt.checkpoint_attempt if series is not None and displayed_attempt else None,
         subject_rank_key=reference.key if isinstance(reference, BestRank) and reference.group else None,
-        bound_subject=attempts[-1].bound_subject if attempts else None,
+        bound_subject=_planned_bound(attempts[-1].bound_subject, planned) if attempts else None,
     ), problem
+
+
+def _planned_bound(bound: StudioBoundBestSubject | None, planned: PlannedInput | None) -> StudioBoundBestSubject | None:
+    """An attempt's bound rank, keyed by the member it fills: a request keys a rank by its position, the plan by its
+    selection too."""
+    if bound is None or planned is None:
+        return bound
+    return bound.model_copy(update={"key": planned.member.key})
 
 
 def _train_history(

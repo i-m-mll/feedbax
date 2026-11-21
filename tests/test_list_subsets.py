@@ -46,30 +46,57 @@ def _subjects(plan):
     return {run.key.row: run.inputs["subject"] for run in plan.runs if run.kind == "evaluate"}
 
 
-def test_each_selection_ranks_its_own_step_and_records_its_subset():
+def test_each_selection_ranks_its_own_step_by_name_and_records_its_subset():
     plan = compile_project(Project.model_validate(listed_best()))
     assert not plan.diagnostics, plan.diagnostics
     subsets = {key[2]: subset for key, subset in plan.subsets.items() if key[1] == "baseline"}
     assert set(subsets) == {"subject.0", "subject.1", "subject.2"}
-    assert [len(subsets[item].ranks) for item in ("subject.0", "subject.1")] == [2, 2]
+    assert [subsets[item].ranks for item in ("subject.0", "subject.1")] == [
+        ("train/rank-1", "train/rank-2"), ("train_b/rank-1", "train_b/rank-2"),
+    ]
     assert subsets["subject.2"].document == "chosen" and not subsets["subject.2"].ranks
     subjects = _subjects(plan)
-    assert len(subjects) == 5
-    ranked = {item: {subjects[row].sources[0].step for row in subjects if subjects[row].member.key in subsets[item].ranks}
-              for item in ("subject.0", "subject.1")}
-    assert ranked == {"subject.0": {"train"}, "subject.1": {"train_b"}}
-    assert sum(isinstance(binding.member.reference, ProductRef) for binding in subjects.values()) == 1
+    assert sorted(binding.member.key for binding in subjects.values()) == [
+        "chosen", "train/rank-1", "train/rank-2", "train_b/rank-1", "train_b/rank-2",
+    ]
+    labels = {run.inputs["subject"].member.key: run.label for run in plan.runs if run.kind == "evaluate"}
+    assert labels["train_b/rank-2"] == "subject=train_b, rank 2"
 
     edited = listed_best()
-    edited["steps"]["train_b"]["sweep"] = _rates({"d": 0.004, "e": 0.0006, "f": 0.0015})
-    after_plan = compile_project(Project.model_validate(edited))
-    after = _subjects(after_plan)
+    edited["steps"]["train_b"]["sweep"] = _rates({"d": 0.004, "e": 0.0005, "f": 0.0015, "g": 0.0025})
+    after = compile_project(Project.model_validate(edited))
+    assert not after.diagnostics, after.diagnostics
     before_requests = {run.key.row: run.request_id for run in plan.runs if run.kind == "evaluate"}
-    after_requests = {run.key.row: run.request_id for run in after_plan.runs if run.kind == "evaluate"}
-    kept = {row for row in before_requests if after_requests.get(row) == before_requests[row]}
-    second = {row for row, binding in subjects.items() if binding.member.key in subsets["subject.1"].ranks}
-    assert kept == set(before_requests) - second
-    assert all(after[row].sources[0].step == "train_b" for row in set(after) - kept)
+    after_requests = {run.key.row: run.request_id for run in after.runs if run.kind == "evaluate"}
+    assert after_requests.keys() == before_requests.keys()
+    assert {binding.member.key for binding in _subjects(after).values()} == {
+        binding.member.key for binding in subjects.values()
+    }
+    changed = {subjects[row].member.key for row in before_requests if after_requests[row] != before_requests[row]}
+    assert changed == {"train_b/rank-1", "train_b/rank-2"}
+
+
+def test_a_second_measured_selection_of_one_step_takes_the_next_suffix():
+    raw = listed_best()
+    subject = raw["steps"]["baseline"]["inputs"]["subject"]
+    subject[1] = deepcopy(subject[0])
+    subject[1]["where"]["best"]["order"] = "max"
+    plan = compile_project(Project.model_validate(raw))
+    assert not plan.diagnostics, plan.diagnostics
+    assert plan.subsets["default", "baseline", "subject.1"].ranks == ("train-2/rank-1", "train-2/rank-2")
+
+
+def test_a_refused_best_lands_on_its_own_selection():
+    raw = listed_best()
+    task = deepcopy(raw["documents"]["task"])
+    task["payload"]["validation_trials"] = task["payload"]["validation_trials"][:-1]
+    raw["documents"]["fewer-trials"] = task
+    patches = raw["steps"]["train_b"]["sweep"]["axes"]["rate"]["values"]["e"]["patches"]
+    patches["trial_documents.task"] = {"value": {"document": "fewer-trials"}}
+    problems = compile_project(Project.model_validate(raw)).diagnostics
+    assert problems and {(problem.step, problem.path) for problem in problems} == {
+        ("baseline", "inputs.subject.1.where.best"),
+    }
 
 
 def test_to_rows_freezes_one_selection_and_leaves_the_others_measured(host, tmp_path, monkeypatch):

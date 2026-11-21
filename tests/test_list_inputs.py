@@ -173,12 +173,19 @@ def test_change_key_and_rename_recompute_no_operation_and_redraw_the_figures_tha
             assert printed in spec.names[label].values()
 
 
-def test_a_key_two_selections_share_is_qualified_by_content():
+def test_a_key_two_selections_share_is_qualified_by_its_step_and_kept_across_their_edits():
+    def keys(definition):
+        plan = compile_project(Project.model_validate(definition), operations=_operations())
+        assert not plan.diagnostics, plan.diagnostics
+        (run,) = (run for run in plan.rows if isinstance(run, PlannedAnalyzeRun))
+        return sorted(binding.member.key for binding in run.inputs["states"])
+
     base = _two_model_definition()
-    _, before = _request_ids(base)
-    rekeyed, _ = change_key(deepcopy(base), {}, "steps", "conditions", "conditions_x")
-    _, after = _request_ids(rekeyed)
-    assert {name: after[name] for name in ("align", "summarize")} == {name: before[name] for name in ("align", "summarize")}
+    before = keys(base)
+    assert {key.split("/")[0] for key in before} == {"conditions", "conditions_b"}
+    edited = deepcopy(base)
+    edited["steps"]["conditions_b"]["base"]["inline"]["params"]["seed"] += 1
+    assert keys(edited) == before
 
 
 def test_a_duplicate_step_read_in_place_of_the_original_plans_the_same_operations():

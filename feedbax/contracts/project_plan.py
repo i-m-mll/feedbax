@@ -240,6 +240,8 @@ class PlannedInput:
     """The authored selection that chose this member."""
     named: Mapping[str, LabelName] = field(default_factory=dict)
     """What the member's step-valued labels name. The request identifies each by content (`_identified`)."""
+    best_path: str = field(default="inputs.subject.where.best", compare=False)
+    """Where a ranked member's Best is authored: its role's, or its list item's."""
 
     @property
     def sources(self) -> tuple[RunKey, ...]:
@@ -621,6 +623,14 @@ def _identified(
         }})), run) if binding.named else (binding, run)
         for binding, run in members
     ), ids
+
+
+def _member_label(binding: PlannedInput) -> str:
+    """What a member no row produces reads as: a rank of a list item, its step and its rank; else its key."""
+    rank = binding.member.reference
+    if isinstance(rank, BestRank) and binding.member.key != rank.key and "source" in binding.named:
+        return ", ".join((binding.named["source"].printed, f"rank {rank.rank}"))
+    return binding.member.key
 
 
 def _labelled(role: _Role, members: _Members) -> bool:
@@ -1679,7 +1689,7 @@ class _Compiler:
                     item.coordinates if producer is not None and item.producer is not None else {
                         axis: producer.coordinates[axis] for axis in item.member.reference.group
                     } if producer is not None and isinstance(item.member.reference, BestRank) else {},
-                    producer.label if producer is not None and item.producer is not None else item.member.key,
+                    producer.label if producer is not None and item.producer is not None else _member_label(item),
                     self.checkpoint_horizon(producer.request_id)
                     if checkpoint_axis and role == "subject" and isinstance(producer, PlannedRun) else None,
                 )
@@ -2355,7 +2365,7 @@ class _Compiler:
     ) -> Payload | ProjectDiagnostic:
         def problem(detail: str) -> ProjectDiagnostic:
             return ProjectDiagnostic(
-                ResolutionCode.BAD_REFERENCE, "inputs.subject.where.best", detail, key.step,
+                ResolutionCode.BAD_REFERENCE, subject.best_path, detail, key.step,
                 row=key.row, variant=key.variant,
             )
 
@@ -3000,7 +3010,7 @@ class _Compiler:
 
     def rank_input(
         self, name: str, template: StepComposition, role: _Role, members: _Members,
-        subset: PlannedSubset, reference: StepReference, at: str, *, listed: bool,
+        subset: PlannedSubset, reference: StepReference, at: str,
     ) -> tuple[_Members, dict[str, str], PlannedSubset] | ProjectDiagnostic:
         path = f"{at}.where"
         terms = subset.terms
@@ -3018,15 +3028,13 @@ class _Compiler:
         ):
             reason = "Best requires the selected Train's last checkpoint."
         else:
-            return self.rank_groups(name, template, role, members, subset, reference, f"{path}.best", listed=listed)
+            return self.rank_groups(name, template, role, members, subset, reference, f"{path}.best")
         return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, f"{path}.best", reason, name)
 
     def rank_groups(
         self, name: str, template: StepComposition, role: _Role, members: _Members, subset: PlannedSubset,
-        reference: StepReference, path: str, *, listed: bool,
+        reference: StepReference, path: str,
     ) -> tuple[_Members, dict[str, str], PlannedSubset] | ProjectDiagnostic:
-        """Rank each group of candidates. A rank of a list item names its selection by its candidates, so that the
-        items' ranks are told apart by what they rank, and To Rows can keep the key."""
         best = subset.terms.best
         assert best is not None
         source = LabelName(reference.step, self.variants[members[0][1].key.variant].steps[reference.step].label) \
@@ -3087,18 +3095,16 @@ class _Compiler:
                     reference=ProductRef(request_id=producer.request_id, role=role.product_role, select=LastMember()),
                 ))
             ranks = []
-            selection = "members-" + sha256_bytes(canonical_json_v2_bytes([
-                candidate.model_dump(mode="json") for candidate in candidates
-            ])) if listed else None
             for position in range(1, best.k + 1):
                 rank = BestRank(
                     metric=best.by, order=best.order, count=best.k, rank=position, candidates=tuple(candidates),
-                    group=coordinates, selection=selection,
+                    group=coordinates,
                 )
                 ranks.append(rank.key)
                 ranked.append((PlannedInput(
                     None, InputMember(key=rank.key, reference=rank), candidates=tuple(keys),
                     named=MappingProxyType({"source": source}) if source is not None else MappingProxyType({}),
+                    best_path=path,
                 ), grouped[0][1]))
             planned_groups.append(PlannedRankGroup(MappingProxyType(coordinates), tuple(ranks)))
         return tuple(ranked), {}, replace(subset, rank_groups=tuple(planned_groups))
@@ -3210,7 +3216,13 @@ class _Compiler:
         active: tuple[tuple[str, str], ...],
         references: list[StepReference],
     ) -> tuple[_Members, dict[str, str], dict[str, PlannedSubset]] | ProjectDiagnostic:
-        """Gather the members of several selections; a key given by two of them is qualified by its source's ID."""
+        """Gather the members of several selections.
+
+        Each selection is named by its source: its step's key, or the key of the operation output it reads. A second
+        source of one name, or a second measured selection of one step, takes the next suffix (``train-2``). A ranked
+        member is qualified by its selection's name (``train/rank-1``), and a key two selections share is qualified the
+        same way, so no edit of one selection renames another's members.
+        """
         path = f"inputs.{role.name}"
         if not role.gathers:
             return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, "this input takes one selection", name)
@@ -3218,24 +3230,44 @@ class _Compiler:
             return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, "list at least one selection", name)
         selections = []
         subsets = {}
+        owners: dict[str, list[object]] = {}
+        qualifiers = {}
         for index, reference in enumerate(references):
             item = f"{path}.{index}"
             selected = self.select_reference(variant, name, template, role, active, reference, item)
             if isinstance(selected, ProjectDiagnostic):
                 return selected
-            selections.extend(selected[0])
-            if selected[2] is not None:
-                subsets[item.removeprefix("inputs.")] = selected[2]
-        identified, ids = _identified(tuple(selections), labelled=_labelled(role, tuple(selections)))
-        counts = Counter(binding.member.key for binding, _ in identified)
-        gathered = []
-        for binding, run in identified:
+            members, _, subset = selected
+            source = reference.element or reference.step
+            card = next((binding.producer.step for binding, _ in members if binding.producer is not None), reference.step)
+            owner = index if subset is not None and subset.ranks else card
+            named = owners.setdefault(source, [])
+            if owner not in named:
+                named.append(owner)
+            position = named.index(owner)
+            qualifier = source if position == 0 else f"{source}-{position + 1}"
+            qualifiers.update({id(binding): qualifier for binding, _ in members})
+            if subset is not None and subset.ranks:
+                keys = {key: f"{qualifier}/{key}" for key in subset.ranks}
+                members = tuple(
+                    (replace(binding, member=binding.member.model_copy(update={"key": keys[binding.member.key]})), run)
+                    for binding, run in members
+                )
+                qualifiers.update({id(binding): qualifier for binding, _ in members})
+                subset = replace(subset, rank_groups=tuple(
+                    replace(group, ranks=tuple(keys[key] for key in group.ranks)) for group in subset.rank_groups
+                ))
+            selections.extend(members)
+            if subset is not None:
+                subsets[item.removeprefix("inputs.")] = subset
+        counts = Counter(binding.member.key for binding, _ in selections)
+        qualified = []
+        for binding, run in selections:
             key = binding.member.key
-            if counts[key] > 1:
-                label = "element" if "element" in binding.named else "source"
-                source = ids[label, binding.named[label]]
-                binding = replace(binding, member=binding.member.model_copy(update={"key": f"{source}/{key}"}))
-            gathered.append((binding, run))
+            if counts[key] > 1 and not isinstance(binding.member.reference, BestRank):
+                key = f"{qualifiers[id(binding)]}/{key}"
+            qualified.append((replace(binding, member=binding.member.model_copy(update={"key": key})), run))
+        gathered, _ = _identified(tuple(qualified), labelled=_labelled(role, tuple(qualified)))
         keys = [binding.member.key for binding, _ in gathered]
         if len(set(keys)) != len(keys):
             repeated = sorted(key for key, count in Counter(keys).items() if count > 1)
@@ -3517,9 +3549,7 @@ class _Compiler:
             else None
         )
         if terms is not None and (terms.best is not None or terms.when is not None):
-            return self.rank_input(
-                name, template, role, tuple(members), subset, reference, path, listed=path != f"inputs.{role.name}",
-            )
+            return self.rank_input(name, template, role, tuple(members), subset, reference, path)
         return tuple(members), {}, subset
 
 
