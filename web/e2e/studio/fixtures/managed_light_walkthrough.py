@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import sys
 
+import numpy as np
+
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.request_specs import EvaluationRequestSpec
 from feedbax.desktop.release import AppPaths
@@ -21,9 +23,14 @@ def figure_samples(view: SuccessView, figure: str) -> list[dict]:
     (summary,) = published.receipt.inputs["summary"]
     with open_stored_dataset(view.store, dataset_member(summary), verify=True) as dataset:
         time = dataset.data("state_time").tolist()
+        dims = list(dataset.descriptor.variables["mean"].dims)
+        mean = np.take(np.asarray(dataset.data("mean")), 0, axis=dims.index("checkpoint"))
+        dims.remove("checkpoint")
+        rows = np.moveaxis(mean, dims.index("state_time"), -1).reshape(-1, len(time))
+        conditions = np.asarray(dataset.data("condition")).reshape(-1).tolist()
         return [
             {"name": condition, "x": time, "y": row.tolist()}
-            for condition, row in zip(dataset.data("condition").tolist(), dataset.data("mean")[0], strict=True)
+            for condition, row in zip(conditions, rows, strict=True)
         ]
 
 
