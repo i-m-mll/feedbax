@@ -36,6 +36,11 @@ class DatasetInputPort(DatasetPort):
     takes: Takes = "all"
 
 
+class DatasetOutputPort(DatasetPort):
+    carries: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    """The input role whose labelled entries the output carries, when roles it takes whole carry different ones."""
+
+
 class ModelPort(StrictModel):
     kind: Literal["model"] = "model"
 
@@ -74,7 +79,7 @@ class OperationDefinition(StrictModel):
     parameter_json_schema: dict[str, JsonValue]
     static_parameters: tuple[str, ...]
     inputs: dict[str, OperationInputPort]
-    outputs: dict[str, DatasetPort]
+    outputs: dict[str, DatasetOutputPort]
     numerical: JaxOperation | None = None
 
 def require_dataset_port(actual: DatasetPort, expected: DatasetPort, *, fields: bool = True) -> None:

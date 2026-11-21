@@ -2714,6 +2714,14 @@ export type DatasetInputPort = {
   "takes"?: Takes;
 };
 
+export type DatasetOutputPort = {
+  "schema_ids": Array<string>;
+  "variables"?: Record<string, FieldDescriptor>;
+  "selected_variables"?: Record<string, FieldDescriptor>;
+  "coordinates"?: Record<string, FieldDescriptor>;
+  "carries"?: string | null;
+};
+
 export type DatasetPort = {
   "schema_ids": Array<string>;
   "variables"?: Record<string, FieldDescriptor>;
@@ -3124,7 +3132,7 @@ export type OperationDefinition = {
   "parameter_json_schema": Record<string, JsonValue>;
   "static_parameters": Array<string>;
   "inputs": Record<string, DatasetInputPort | ModelPort | TaskPort>;
-  "outputs": Record<string, DatasetPort>;
+  "outputs": Record<string, DatasetOutputPort>;
   "numerical"?: JaxOperation | null;
 };
 
@@ -3892,17 +3900,13 @@ export type StudioProjectWindowMapEdge = {
 };
 
 export type StudioProjectWindowMapElement = {
-  "result"?: StudioSavedLightResult | null;
-  "previous"?: StudioSavedLightResult | null;
-  "changed"?: StudioDefinitionChange | null;
   "key": StudioSavedTrainKey;
   "name": string;
-  "member"?: string | null;
   "kind": "analyze" | "render";
-  "request_id": string;
   "status": JobStatus;
   "reason"?: string | null;
   "figure"?: StepReference | null;
+  "requests": Array<StudioProjectWindowMapRequest>;
 };
 
 export type StudioProjectWindowMapException = {
@@ -3938,6 +3942,16 @@ export type StudioProjectWindowMapProblem = {
   "address"?: string | null;
   "layer"?: string | null;
   "authored_path"?: string | null;
+};
+
+export type StudioProjectWindowMapRequest = {
+  "result"?: StudioSavedLightResult | null;
+  "previous"?: StudioSavedLightResult | null;
+  "changed"?: StudioDefinitionChange | null;
+  "labels"?: Record<string, string>;
+  "request_id": string;
+  "status": JobStatus;
+  "reason"?: string | null;
 };
 
 export type StudioProjectWindowMapRow = {
@@ -9151,6 +9165,16 @@ export const DatasetInputPortSchema: z.ZodType<DatasetInputPort> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<DatasetInputPort>;
 
+export const DatasetOutputPortSchema: z.ZodType<DatasetOutputPort> = z.lazy(() =>
+  z.object({
+    "schema_ids": z.array(z.string()).min(1),
+    "variables": z.record(z.string(), FieldDescriptorSchema).optional(),
+    "selected_variables": z.record(z.string(), FieldDescriptorSchema).optional(),
+    "coordinates": z.record(z.string(), FieldDescriptorSchema).optional(),
+    "carries": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<DatasetOutputPort>;
+
 export const DatasetPortSchema: z.ZodType<DatasetPort> = z.lazy(() =>
   z.object({
     "schema_ids": z.array(z.string()).min(1),
@@ -9706,7 +9730,7 @@ export const OperationDefinitionSchema: z.ZodType<OperationDefinition> = z.lazy(
     "parameter_json_schema": z.record(z.string(), jsonValueSchema),
     "static_parameters": z.array(z.string()),
     "inputs": z.record(z.string(), z.union([DatasetInputPortSchema, ModelPortSchema, TaskPortSchema])),
-    "outputs": z.record(z.string(), DatasetPortSchema),
+    "outputs": z.record(z.string(), DatasetOutputPortSchema),
     "numerical": z.union([JaxOperationSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<OperationDefinition>;
@@ -10734,17 +10758,13 @@ export const StudioProjectWindowMapEdgeSchema: z.ZodType<StudioProjectWindowMapE
 
 export const StudioProjectWindowMapElementSchema: z.ZodType<StudioProjectWindowMapElement> = z.lazy(() =>
   z.object({
-    "result": z.union([StudioSavedLightResultSchema, z.null()]).optional(),
-    "previous": z.union([StudioSavedLightResultSchema, z.null()]).optional(),
-    "changed": z.union([StudioDefinitionChangeSchema, z.null()]).optional(),
     "key": StudioSavedTrainKeySchema,
     "name": z.string(),
-    "member": z.union([z.string(), z.null()]).optional(),
     "kind": z.union([z.literal("analyze"), z.literal("render")]),
-    "request_id": z.string(),
     "status": JobStatusSchema,
     "reason": z.union([z.string(), z.null()]).optional(),
     "figure": z.union([StepReferenceSchema, z.null()]).optional(),
+    "requests": z.array(StudioProjectWindowMapRequestSchema).min(1),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapElement>;
 
@@ -10790,6 +10810,18 @@ export const StudioProjectWindowMapProblemSchema: z.ZodType<StudioProjectWindowM
     "authored_path": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapProblem>;
+
+export const StudioProjectWindowMapRequestSchema: z.ZodType<StudioProjectWindowMapRequest> = z.lazy(() =>
+  z.object({
+    "result": z.union([StudioSavedLightResultSchema, z.null()]).optional(),
+    "previous": z.union([StudioSavedLightResultSchema, z.null()]).optional(),
+    "changed": z.union([StudioDefinitionChangeSchema, z.null()]).optional(),
+    "labels": z.record(z.string(), z.string()).optional(),
+    "request_id": z.string(),
+    "status": JobStatusSchema,
+    "reason": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMapRequest>;
 
 export const StudioProjectWindowMapRowSchema: z.ZodType<StudioProjectWindowMapRow> = z.lazy(() =>
   z.object({

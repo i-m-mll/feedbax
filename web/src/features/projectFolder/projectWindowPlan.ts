@@ -78,9 +78,10 @@ export function projectWindowPlan(
   const map = saved?.window_map;
   const elementResults = new Map<string, StudioSavedLightResult[]>();
   for (const element of map?.analysis_elements ?? []) {
-    if (!element.result) continue;
+    const results = element.requests.flatMap(({ result }) => result ? [result] : []);
+    if (!results.length) continue;
     const id = savedRunId(element.key);
-    elementResults.set(id, [...elementResults.get(id) ?? [], element.result]);
+    elementResults.set(id, [...elementResults.get(id) ?? [], ...results]);
   }
   const scope = variant ?? planVariants(saved)[0] ?? null;
   const evaluations = new Map(map?.evaluations?.map((row) => [savedRunId(row.key), row]));
