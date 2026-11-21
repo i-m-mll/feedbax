@@ -654,6 +654,7 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   expect(stop.request().postDataJSON()).toEqual({ job_ids: [job], mode: 'checkpoint' });
   await page.keyboard.press('Meta+1');
   await expect(table.getByText('Stopped', { exact: true })).toBeVisible({ timeout: 12_000 });
+  await expect(table.getByRole('row').filter({ hasText: 'Stopped' }).getByText(/^[\d,]+ \/ [\d,]+$/)).toBeVisible();
   await expect(table.getByText('Not run', { exact: true })).toBeVisible();
   await page.keyboard.press('Meta+7');
   await expect(results).toBeFocused();

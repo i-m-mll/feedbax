@@ -175,6 +175,8 @@ export function MetricPlots({ series, objectives = [] }: { series: MetricSeries[
   for (const { stages } of series) {
     for (const { metrics } of stages) for (const { name, vector } of metrics) histories.set(name, histories.get(name) || vector);
   }
+  const [primary] = series;
+  const chained = series.some(({ stages }) => stages.length > 1);
   const plots = histories.size > 0 ? [...histories] : objectives.length > 0 ? [[studioName('objective'), false] as const] : [];
   return (
     <div className="min-w-0 space-y-3">
@@ -187,6 +189,18 @@ export function MetricPlots({ series, objectives = [] }: { series: MetricSeries[
             })),
           }))} />
       ))}
+      {plots.length > 0 && <div className="flex flex-wrap items-baseline justify-end gap-x-3 text-xs text-shell-muted">
+        {chained && !primary?.result && (
+          <ol aria-label={studioName('trainSteps')} className="mr-auto flex flex-wrap gap-x-3">
+            {primary.stages.map(({ label, offset, completed }) => (
+              <li key={offset}>
+                {label}{completed > 0 && ` ${offset + 1}–${offset + completed}`}
+              </li>
+            ))}
+          </ol>
+        )}
+        <span>{studioName(chained ? 'cumulativeUpdates' : 'updates')}</span>
+      </div>}
     </div>
   );
 }
@@ -365,22 +379,18 @@ function MetricPlot({ name, vector, series, objectives }: {
           </g>
         ))}
       </svg>
-      <div className="flex flex-wrap items-baseline justify-end gap-x-3 text-xs text-shell-muted">
+      {(elements.length > 0 || objectives.length > 0 || primary?.result) && <div className="flex flex-wrap items-baseline gap-x-3 text-xs text-shell-muted">
         {elements.length > 0 && <ul aria-label={studioName('elements')} className="mr-auto flex flex-wrap gap-x-3">
-          {elements.map((element) => <li key={element} className="studio-hue" style={elementHue(element)}>{String(element)}</li>)}
+          {elements.map((element) => (
+            <li key={element} className="flex items-center gap-1">
+              <span aria-hidden="true" className="studio-hue w-4 border-t-2 border-current" style={elementHue(element)} />
+              {String(element)}
+            </li>
+          ))}
         </ul>}
         {objectives.length > 0 && <ul aria-label={studioName('objective')} className="mr-auto flex flex-wrap gap-x-3">
           {objectives.map(({ id, label }, index) => <li key={id} className="studio-hue" style={objectiveHue(index)}>{label}</li>)}
         </ul>}
-        {chained && !primary?.result && (
-          <ol aria-label={studioName('trainSteps')} className="mr-auto flex flex-wrap gap-x-3">
-            {primary.stages.map(({ stage: { label, offset, completed } }) => (
-              <li key={offset}>
-                {label}{completed > 0 && ` ${offset + 1}–${offset + completed}`}
-              </li>
-            ))}
-          </ol>
-        )}
         {primary?.result && <ul aria-label={studioAccessibleName('metric', name)} className="mr-auto flex flex-wrap gap-x-3">
           {tracks.map(({ result, dashed, empty }) => result && (
             <li key={result.name} className="flex items-center gap-1">
@@ -390,8 +400,7 @@ function MetricPlot({ name, vector, series, objectives }: {
             </li>
           ))}
         </ul>}
-        <span>{studioName(chained ? 'cumulativeUpdates' : 'updates')}</span>
-      </div>
+      </div>}
     </section>
   );
 }

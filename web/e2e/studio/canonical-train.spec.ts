@@ -151,7 +151,7 @@ test('Mounted saved Train runs a canonical successor through Jobs', { tag: '@rou
     /Updates \d+–1202 .*successor · Local updates \d+–1200/,
   );
   const { last } = evidence.successor.terminal_loss.metrics.train_loss;
-  await expect(results.locator('[aria-description="Last value at update 1202"]')).toHaveText(
+  await expect(results.getByRole('region', { name: 'Metric train_loss', exact: true }).locator('[aria-description="Last value at update 1202"]')).toHaveText(
     formatMetric(last),
   );
   await page.getByRole('button', { name: 'Current Result', exact: true }).click();
@@ -600,7 +600,7 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
     ]);
     await expect(loss.locator(`line[data-attempt="${producer.job_id}"] title`).last()).toHaveText(/Updates \d+–2 .*Local updates \d+–2/);
     await expect(loss.locator(`line[data-attempt="${attempt.job_id}"] title`).last()).toHaveText(/Updates \d+–6 .*Local updates \d+–4/);
-    await expect(results.locator('[aria-description="Last value at update 6"]')).toHaveText(
+    await expect(results.getByRole('region', { name: 'Metric train_loss', exact: true }).locator('[aria-description="Last value at update 6"]')).toHaveText(
       formatMetric(evidence[attempt.job_id].last_loss),
     );
   }
