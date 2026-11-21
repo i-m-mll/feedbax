@@ -128,7 +128,7 @@ function pairedAxesJoined(
   if (!absorbed.length) return { sweeps, runs };
   return {
     sweeps: groups.map(([first, ...rest]): PlanSweepView => !rest.length ? first : {
-      id: first.id,
+      ...first,
       label: [first, ...rest].map(({ label }) => label).join(' · '),
       values: first.values.map((value) => {
         const run = runs.find(({ values }) => values[first.id] === value.id);
@@ -340,6 +340,7 @@ export function projectWindowPlan(
       }
     }
     const runs = runsByStep.get(id) ?? [];
+    const carried = carriedAxes(project, id);
     return {
       id, label: shownName(id, project.steps?.[id]), kind, group,
       documentIds: projected?.document_ids,
@@ -347,12 +348,15 @@ export function projectWindowPlan(
       inputs,
       ...pairedAxesJoined([...(sweepsByStep.get(id) ?? [])].map(([axis, values]) => {
         const read = project.steps?.[id]?.sweep?.axes?.[axis];
-        return { id: axis, label: read && 'set' in read ? read.set : axis, values: [...values].map(([id, label]) => ({ id, label })) };
+        return {
+          id: axis, label: read && 'set' in read ? read.set : axis, values: [...values].map(([id, label]) => ({ id, label })),
+          ...carried.has(axis) && { carried: carried.get(axis) },
+        };
       }), groupedLabels.size ? runs.map((run) => {
         const rank = evaluations.get(run.id)?.subject_rank_key;
         const label = rank && groupedLabels.get(rank);
         return label ? { ...run, label } : run;
-      }) : runs, new Set(Object.keys(project.steps?.[id]?.sweep?.axes ?? {})), carriedAxes(project, id)),
+      }) : runs, new Set(Object.keys(project.steps?.[id]?.sweep?.axes ?? {})), carried),
       statusCounts: resultCounts(projected?.status_counts ?? {}, runs),
     };
   });

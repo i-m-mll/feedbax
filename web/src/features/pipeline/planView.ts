@@ -22,6 +22,8 @@ export interface PlanSweepView {
   readonly id: string;
   readonly label: string;
   readonly values: readonly PlanSweepValueView[];
+  /** For an axis over an input's runs, the axes those runs carry from their steps and upstream. */
+  readonly carried?: ReadonlySet<string>;
 }
 
 /** A retained result of a run whose validity the backend reports. */

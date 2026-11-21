@@ -24,6 +24,8 @@ export interface SelectProps<Value extends string> {
   /** A glyph drawn at the start of the trigger and not in the list, such as the picker's kind. */
   leading?: ReactNode;
   disabled?: boolean;
+  /** Where the keyboard goes when the list closes; the trigger when it gives none. */
+  finalFocus?: () => HTMLElement | null | undefined;
   'aria-label'?: string;
   'aria-labelledby'?: string;
   'aria-describedby'?: string;
@@ -32,7 +34,7 @@ export interface SelectProps<Value extends string> {
 }
 
 export function Select<Value extends string>(
-  { items, value, onValueChange, placeholder, leading, disabled, id, className, ...aria }: SelectProps<Value>,
+  { items, value, onValueChange, placeholder, leading, disabled, finalFocus, id, className, ...aria }: SelectProps<Value>,
 ) {
   const selectedMark = items.find((item) => item.value === value)?.mark;
   return (
@@ -59,7 +61,8 @@ export function Select<Value extends string>(
       </BaseSelect.Trigger>
       <BaseSelect.Portal container={usePopupLayer()}>
         <BaseSelect.Positioner className="z-50 outline-none" sideOffset={4} alignItemWithTrigger={false} align="start">
-          <BaseSelect.Popup className={clsx(popupSurface, 'min-w-[var(--anchor-width)]')}>
+          <BaseSelect.Popup className={clsx(popupSurface, 'min-w-[var(--anchor-width)]')}
+            finalFocus={finalFocus && (() => finalFocus() ?? true)}>
             <BaseSelect.List className="max-h-[var(--available-height)] overflow-y-auto">
               {items.map((item) => (
                 <BaseSelect.Item key={item.value} value={item.value} disabled={item.disabled}
