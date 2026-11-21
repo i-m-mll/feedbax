@@ -1,4 +1,4 @@
-import { useId, type ReactNode } from 'react';
+import { useId, useRef, type ReactNode } from 'react';
 import { useDraft } from '@/hooks/useDraft';
 import { studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
@@ -7,6 +7,7 @@ import { NumberField } from '@/components/ui/NumberField';
 import { Select } from '@/components/ui/Select';
 import { TextField } from '@/components/ui/TextField';
 import { FieldRow } from '@/components/ui/FieldRow';
+import { Section } from '@/components/ui/Section';
 import { ReferenceField, type ReferenceChoice } from '@/components/values/ReferenceField';
 import type { PlanStepView } from '@/features/pipeline/planView';
 import type { ElementSelectionStore } from '@/features/projectWindow/elementSelection';
@@ -16,8 +17,9 @@ import {
 } from '@/generated/studioContracts';
 import type { AuthoredProject } from './authoredEdits';
 import {
-  evaluateSubject, evaluateSubjectEdits, formatCheckpointRule, parseCheckpointRule, validTrialSet,
-  type EditableCheckpointRule, type EvaluateSubject, type TrialDomain, type TrialSet,
+  checkpointDraft, checkpointDraftRule, emptyCheckpointDraft, evaluateSubject, evaluateSubjectEdits, validTrialSet,
+  type CheckpointDraft, type CheckpointDraftField, type CheckpointKind, type EditableCheckpointRule, type EvaluateSubject,
+  type TrialDomain, type TrialSet,
 } from './evaluateAuthoring';
 import {
   documentChoice, documentChoiceId, documentGroup, stepChoice, stepChoiceId, stepGroup,
@@ -27,13 +29,27 @@ import { savedRunId } from './projectWindowPlan';
 import { InputSelections } from './InputSelections';
 import { bindingEdit, changedSelections, stepSelections, subjectAxisEdits } from './selectionEdits';
 import { ScrollFade } from '@/components/ui/ScrollFade';
+import '@/components/values/valueField.css';
 
 type Choice = { id: string; label: string };
 
 /** The Evaluate fields an edit can be refused on; a subset is named by its selection's index. */
-export type EvaluateField = 'subject' | 'checkpoints' | `subset.${number}` | 'trialSet';
+export type EvaluateField = 'subject' | 'checkpoint' | `subset.${number}` | 'trials';
 
-export function CheckpointRuleEditor({ initial, disabled, readOnly, refusal, onSave, onToSweep }: {
+/** A field group's members, one step in; no space at all when the group's control is all there is. */
+const members = 'value-field-parts grid gap-1 empty:hidden';
+const checkpointKinds: readonly CheckpointKind[] = ['last', 'at', 'list', 'every'];
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+/** The field of each kind that a refusal of the step lands on. */
+const firstMember: Record<CheckpointKind, CheckpointDraftField | undefined> = {
+  last: undefined, at: 'at', list: 'updates', every: 'every',
+};
+
+/**
+ * Which updates of the subject's training the Evaluate tests: the kind of rule as the group's control, its updates
+ * beneath. A kind with updates saves once they say a rule; Escape restores the saved one.
+ */
+export function CheckpointEditor({ initial, disabled, readOnly, refusal, onSave, onToSweep }: {
   initial: EditableCheckpointRule;
   disabled: boolean;
   readOnly?: boolean;
@@ -41,36 +57,66 @@ export function CheckpointRuleEditor({ initial, disabled, readOnly, refusal, onS
   onSave(rule: EditableCheckpointRule): void;
   onToSweep?(): void;
 }) {
-  const saved = formatCheckpointRule(initial);
+  const saved = checkpointDraft(initial);
   const [draft, setDraft] = useDraft(saved);
-  const errorId = useId();
-  const parsed = parseCheckpointRule(draft);
-  const reason = 'reason' in parsed ? parsed.reason : undefined;
-  const changed = 'rule' in parsed && formatCheckpointRule(parsed.rule) !== saved;
-
-  function save() {
-    if (!disabled && !readOnly && changed && 'rule' in parsed) onSave(parsed.rule);
+  const ids = useId();
+  const first = useRef<HTMLInputElement>(null);
+  const held = checkpointDraftRule(draft);
+  const fixed = disabled || readOnly;
+  const reason = (field: CheckpointDraftField) => !('rule' in held) && held.field === field ? held.reason
+    : field === firstMember[draft.kind] ? refusal : undefined;
+  function commit(next: CheckpointDraft) {
+    setDraft(next);
+    const result = checkpointDraftRule(next);
+    if (!fixed && 'rule' in result && !same(result.rule, initial)) onSave(result.rule);
   }
-
-  return <fieldset className="grid gap-1" disabled={disabled}>
-    <label className="grid gap-1 font-semibold">
-      {studioName('checkpoints')}
-      <TextField className="font-normal" value={draft} spellCheck={false} readOnly={readOnly} disabled={disabled}
-        aria-invalid={reason !== undefined}
-        aria-describedby={reason ? errorId : undefined}
-        onChange={(event) => setDraft(event.currentTarget.value)}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
-            event.preventDefault();
-            save();
-          }
-        }} />
-    </label>
-    {reason && <p id={errorId} className="text-shell-muted" role="status">{reason}</p>}
-    {refusal && <p role="alert">{refusal}</p>}
-    {!readOnly && <Button className="justify-self-start" disabled={disabled || !changed} onClick={save}>{studioName('applyCheckpoints')}</Button>}
-    {onToSweep && <Button className="justify-self-start" disabled={disabled || draft !== saved} onClick={onToSweep}>{studioName('toSweep')}</Button>}
-  </fieldset>;
+  function number(field: 'at' | 'every' | 'from' | 'through', value: number | null, next: (value: number | null) => CheckpointDraft) {
+    const why = reason(field);
+    return <FieldRow key={field} label={studioName(field === 'at' ? 'update' : field)} htmlFor={`${ids}-${field}`}
+      below={why && <p role="alert">{why}</p>}>
+      <NumberField ref={field === firstMember[draft.kind] ? first : undefined} id={`${ids}-${field}`}
+        min={field === 'at' ? 0 : 1} step={1} value={value} invalid={why !== undefined} disabled={disabled} readOnly={readOnly}
+        onValueChange={(changed) => setDraft(next(changed))} onValueCommitted={(changed) => commit(next(changed))} />
+    </FieldRow>;
+  }
+  const updatesReason = reason('updates');
+  return <div className="contents" onKeyDown={(event) => {
+    if (event.key !== 'Escape' || same(draft, saved)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setDraft(saved);
+  }}><Section level="field" name={studioName('checkpoint')} bodyClassName={members}
+    control={<>
+      <Select aria-label={studioName('checkpoint')} value={draft.kind} disabled={fixed}
+        aria-invalid={draft.kind === 'last' && refusal !== undefined}
+        items={checkpointKinds.map((kind) => ({ value: kind, label: studioName(kind) }))}
+        finalFocus={() => first.current}
+        onValueChange={(kind) => commit(kind === saved.kind ? saved : emptyCheckpointDraft(kind))} />
+      {draft.kind === 'last' && refusal && <p role="alert">{refusal}</p>}
+    </>}>
+      {draft.kind === 'at' && number('at', draft.at, (at) => ({ kind: 'at', at }))}
+      {draft.kind === 'list' && <FieldRow label={studioName('updates')} htmlFor={`${ids}-updates`}
+        below={updatesReason && <p role="alert">{updatesReason}</p>}>
+        <TextField ref={first} id={`${ids}-updates`} value={draft.updates} spellCheck={false} readOnly={readOnly}
+          disabled={disabled} aria-invalid={updatesReason !== undefined}
+          onChange={(event) => setDraft({ kind: 'list', updates: event.currentTarget.value })}
+          onBlur={() => commit(draft)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+              event.preventDefault();
+              commit(draft);
+            }
+          }} />
+      </FieldRow>}
+      {draft.kind === 'every' && <div className="grid grid-cols-3 gap-1">
+        {number('every', draft.every, (every) => ({ ...draft, every }))}
+        {number('from', draft.from, (from) => ({ ...draft, from }))}
+        {number('through', draft.through, (through) => ({ ...draft, through }))}
+      </div>}
+      {onToSweep && <Button className="justify-self-start" disabled={disabled || !same(draft, saved)} onClick={onToSweep}>
+        {studioName('toSweep')}
+      </Button>}
+  </Section></div>;
 }
 
 function Checkboxes({ options, selected, disabled, onToggle }: {
@@ -95,7 +141,7 @@ function BestEditor({ rule, sweeps, disabled, onChange }: {
   disabled: boolean;
   onChange(rule: Best): void;
 }) {
-  return <div className="grid gap-1">
+  return <div className="value-field-parts grid gap-1">
     <label className="grid gap-1">
       {studioName('metric')}
       <TextField value={rule.by} spellCheck={false} onValueChange={(by) => onChange({ ...rule, by })} />
@@ -122,11 +168,20 @@ function BestEditor({ rule, sweeps, disabled, onChange }: {
   </div>;
 }
 
-export function TrialSetEditor({ initial, domain, disabled, refusal, onSave }: {
+/**
+ * Which trials the Evaluate runs: every condition, chosen conditions, or a number sampled from the task. A choice
+ * saves once it names some trials.
+ */
+export function TrialsEditor({ initial, domain, disabled, refusal, onSave }: {
   initial: TrialSet; domain: TrialDomain; disabled: boolean; refusal?: string; onSave(rule: TrialSet): void;
 }) {
   const [rule, setRule] = useDraft(initial);
-  const select = useId();
+  const count = useId();
+  const first = useRef<HTMLInputElement>(null);
+  function commit(next: TrialSet) {
+    setRule(next);
+    if (!disabled && validTrialSet(next, domain) && !same(next, initial)) onSave(next);
+  }
   const choices = domain.kind === 'fixed'
     ? [
       { value: 'every_condition', label: studioName('everyCondition') },
@@ -138,32 +193,32 @@ export function TrialSetEditor({ initial, domain, disabled, refusal, onSave }: {
         ? [{ value: rule.kind, label: studioReason('unavailable', studioName('conditions')), disabled: true }] : [],
       { value: 'sample', label: studioName('sample') },
     ];
-  return <fieldset aria-label={studioName('trialSet')} className="grid gap-1" disabled={disabled}>
-    <label className="grid gap-1 font-semibold">
-      {studioName('trialSet')}
-      <Select id={select} className="font-normal" aria-label={studioName('trialSet')} value={rule.kind} disabled={disabled}
-        items={choices}
+  const sampling = rule.kind === 'sample' && domain.kind === 'sampler';
+  return <Section level="field" name={studioName('trials')} bodyClassName={members}
+    control={<>
+      <Select aria-label={studioName('trials')} value={rule.kind} disabled={disabled} items={choices}
+        aria-invalid={!sampling && refusal !== undefined} finalFocus={() => first.current}
         onValueChange={(kind) => {
+          if (kind === initial.kind) return commit(initial);
           switch (kind) {
-            case 'every_condition': setRule({ kind: 'every_condition' }); break;
-            case 'conditions': setRule({ kind: 'conditions', ids: [] }); break;
-            case 'sample': setRule({ kind: 'sample', count: 1 }); break;
+            case 'every_condition': return commit({ kind: 'every_condition' });
+            case 'conditions': return setRule({ kind: 'conditions', ids: [] });
+            case 'sample': return setRule({ kind: 'sample', count: Number.NaN });
           }
         }} />
-    </label>
-    {rule.kind === 'conditions' && domain.kind === 'fixed' && <Checkboxes
-      options={domain.conditions.map((id) => ({ id, label: id }))}
-      selected={rule.ids} disabled={disabled} onToggle={(id, checked) => setRule({ kind: 'conditions', ids: toggle(rule.ids, id, checked) })} />}
-    {rule.kind === 'sample' && domain.kind === 'sampler' && <label className="grid gap-1">
-      {studioName('sampleCount')}
-      <NumberField min={1} max={10_000}
+      {!sampling && refusal && <p role="alert">{refusal}</p>}
+    </>}>
+    {rule.kind === 'conditions' && domain.kind === 'fixed' && <fieldset disabled={disabled}>
+      <Checkboxes options={domain.conditions.map((id) => ({ id, label: id }))} selected={rule.ids} disabled={disabled}
+        onToggle={(id, checked) => commit({ kind: 'conditions', ids: toggle(rule.ids, id, checked) })} />
+    </fieldset>}
+    {sampling && <FieldRow label={studioName('count')} htmlFor={count} below={refusal && <p role="alert">{refusal}</p>}>
+      <NumberField ref={first} id={count} min={1} max={10_000} step={1} disabled={disabled} invalid={refusal !== undefined}
         value={Number.isNaN(rule.count) ? null : rule.count}
-        onValueChange={(count) => setRule({ kind: 'sample', count: count ?? Number.NaN })} />
-    </label>}
-    <Button className="justify-self-start" disabled={disabled || !validTrialSet(rule, domain) || JSON.stringify(rule) === JSON.stringify(initial)}
-      onClick={() => onSave(rule)}>{studioName('applyTrials')}</Button>
-    {refusal && <p role="alert">{refusal}</p>}
-  </fieldset>;
+        onValueChange={(next) => setRule({ kind: 'sample', count: next ?? Number.NaN })}
+        onValueCommitted={(next) => commit({ kind: 'sample', count: next ?? Number.NaN })} />
+    </FieldRow>}
+  </Section>;
 }
 
 /** A Train selection's restriction: its rows, its sweep values, and Best, written at `where`. */
@@ -204,8 +259,7 @@ export function SubjectSubset({ terms, where, hasWhere, source, sourceRows, disa
     setDraft({ ...draft, rows });
   }
   const sweeps = editRows ? source.sweeps.filter(({ id }) => terms.axes?.[id] !== undefined) : source.sweeps;
-  return <fieldset className="grid gap-1" disabled={disabled}>
-    <legend className="font-semibold">{studioName('subjectSubset')}</legend>
+  return <Section level="field" name={studioName('runs')} bodyClassName={members}><fieldset className="contents" disabled={disabled}>
     {editRows && rows.length > 0 && <Checkboxes options={rows} selected={selectedRows} disabled={disabled} onToggle={toggleRow} />}
     {sweeps.map(({ id, label, values }) => {
       const selected = draft.axes?.[id] ?? values.map((value) => value.id);
@@ -231,7 +285,7 @@ export function SubjectSubset({ terms, where, hasWhere, source, sourceRows, disa
     {onToRows && <Button className="justify-self-start" disabled={disabled || changed} onClick={onToRows}>{studioName('toRows')}</Button>}
     {changed && !hasMembers && <p role="status">{studioReason('emptySelection', studioName('runs'))}</p>}
     {refusal && <p role="alert">{refusal}</p>}
-  </fieldset>;
+  </fieldset></Section>;
 }
 
 /**
