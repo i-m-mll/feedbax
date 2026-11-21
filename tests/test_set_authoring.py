@@ -203,6 +203,33 @@ def test_a_set_made_by_duplicate_run_is_edited_saved_applied_narrowed_and_inline
     assert not any("model_attachments" in path.read_text() for path in (tmp_path / PROJECT).rglob("*.json"))
 
 
+def test_a_copied_set_entry_keeps_its_originals_request_id_on_every_step_reading_the_set(studio):
+    folders, client = studio
+    _duplicate(folders, client, "baseline")
+    _model_edit(folders, client, "baseline", "reach-model", INSERT, ["run=run-2"], {"run": ["run-2"]})
+    assert _duplicate(folders, client, "baseline", ["default"]) == {"axis": "run", "value": "run-3"}
+    _set_edit(folders, client, {"kind": "save_set", "step": "baseline", "axis": "run"})
+    _set_edit(folders, client, {"kind": "apply_set", "step": "other", "set": "set"})
+    unexcepted = _runs(folders, "other")["set=run-2"]
+    revision = folders.read(PROJECT).revision
+    written = client.patch(BASE, json={"revision": revision, "files": [{
+        "address": {"kind": "step", "id": "other"},
+        "patches": [{"op": "add", "path": "/sweep/exceptions", "value": {"slow": {
+            "where": {"rows": ["set=run-2"]},
+            "patches": {"settings.optimizer.learning_rate.value": {"op": "replace", "value": 0.0005}},
+        }}}],
+    }]})
+    assert written.status_code == 200, written.text
+    assert _runs(folders, "other")["set=run-2"] != unexcepted
+
+    copy = _duplicate(folders, client, "other", ["set=run-2"], {"set": ["run-2"]})
+    assert copy == {"axis": "set", "value": "run-4"}
+    other, baseline = _runs(folders, "other"), _runs(folders, "baseline")
+    assert other["set=run-4"] == other["set=run-2"] != other["set=run-3"]
+    assert baseline["run=run-4"] == baseline["run=run-2"] != baseline["run=run-3"]
+    assert sorted(baseline) == ["default", "run=run-2", "run=run-3", "run=run-4"]
+
+
 def test_removing_the_last_copy_removes_the_axis(studio):
     folders, client = studio
     before = _runs(folders, "baseline")
