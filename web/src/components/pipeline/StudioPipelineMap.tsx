@@ -269,11 +269,15 @@ function cardStatus(counts: PlanStepView['statusCounts']): CardStatus | undefine
 }
 
 function NewSweep({ command, menu }: { command: StudioCommand; menu?: SweepMenu }) {
+  // The items stay while the menu closes: removing the chosen one would send focus back to the trigger, away from
+  // where the choice put it.
+  const items = useRef<ReactNode>();
+  if (menu) items.current = menu.items;
   return (
     <Menu open={!!menu} onOpenChange={(open) => { if (open) command.invoke(); else menu?.close(); }}>
       <MenuTrigger render={<IconButton variant="default" size="mark" label={command.label} icon={<Plus aria-hidden="true" />}
         {...commandAttributes(command)} disabled={!command.enabled} />} />
-      <MenuContent aria-label={studioName('newSweep')}>{menu?.items}</MenuContent>
+      <MenuContent aria-label={studioName('newSweep')}>{items.current}</MenuContent>
     </Menu>
   );
 }
@@ -687,7 +691,7 @@ function MapDrawer({ steps, newStep, framed = false, pending = false, selection,
       ? { selection: { kind: 'steps', stepIds: ids }, focus: null } : { selection: null, focus: null });
   };
   return (
-    <nav aria-label={studioName('steps')} {...region} className={`flex min-h-0 flex-col ${framed ? 'h-full' : 'w-52 shrink-0 border-r border-shell-divider bg-shell-chrome'}`}>
+    <nav aria-label={studioName('steps')} {...region} className={`flex min-h-0 flex-col ${framed ? 'h-full' : 'w-52 shrink-0 border-r border-shell-divider bg-shell-sidebar'}`}>
       {newStep && (
         <div className="shrink-0 px-1 pt-1">
           <ListRow role="button" tabIndex={0} glyph={<Plus aria-hidden="true" />} name={studioName('newStep')}
@@ -872,7 +876,7 @@ export function StudioPipelineMap({
       ref={root}
       aria-label={studioName('pipelineMap')}
       {...region}
-      className="relative flex h-full min-h-0 min-w-0 overflow-hidden bg-shell-subtle"
+      className="relative flex h-full min-h-0 min-w-0 overflow-hidden bg-shell-surface"
       onKeyDown={(event) => {
         if (event.key === 'Escape' && state.focus) {
           event.stopPropagation();

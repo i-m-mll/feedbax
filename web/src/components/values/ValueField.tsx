@@ -1,6 +1,6 @@
 import clsx from 'clsx';
 import { Dices, Link, Sigma, Spline } from 'lucide-react';
-import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
+import { useContext, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import type { FieldKind } from '@/generated/studioContracts';
 import { appTip } from '@window-shell/browser/tooltip';
@@ -18,7 +18,10 @@ import { Select } from '@/components/ui/Select';
 import { Section } from '@/components/ui/Section';
 import { popupItem, popupSurface, primaryText, secondaryText } from '@/components/ui/styles';
 import { TextField } from '@/components/ui/TextField';
-import { completions, hasMark, type Completion, type FieldEdit, type FieldModel, type FieldOption } from './fieldModel';
+import {
+  completions, hasMark, kindEdit, kindOffers, type Completion, type FieldEdit, type FieldModel, type FieldOption,
+} from './fieldModel';
+import { FieldIntent } from './fieldIntent';
 import { useFieldGroup } from './fieldGroups';
 import './valueField.css';
 
@@ -84,19 +87,17 @@ function useSubmit(model: FieldModel) {
   return { busy, reason, setReason, submit };
 }
 
-/** The edit that turns the field into `kind`, or none when choosing it only focuses the field's text. */
-function kindEdit(model: FieldModel, kind: FieldKind): FieldEdit | undefined {
-  if (kind === 'sweep' && model.kind !== 'sweep') return { kind: 'to_sweep' };
-  if (kind === 'value' && model.kind === 'sweep' && model.keeps) return { kind: 'to_value', value_id: model.keeps };
-  return undefined;
-}
-
 /**
  * The one field control: a value of any kind its site offers, as an inspector row or a table cell (90 px at its
  * narrowest). The control computes nothing; it sends text or an edit to the model's source and shows the reason a
  * source refuses.
  */
 export function ValueField({ model, form = 'row' }: { model: FieldModel; form?: ValueFieldForm }) {
+  const field = <Field model={model} form={form} />;
+  return model.anchor ? <div data-field={model.anchor} className="contents">{field}</div> : field;
+}
+
+function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
   const { label, type } = model;
   const id = useId();
   const labelId = useId();
@@ -111,10 +112,9 @@ export function ValueField({ model, form = 'row' }: { model: FieldModel; form?: 
     {(reason ?? model.reason) && <p role="alert" id={reasonId}>{reason ?? model.reason}</p>}
   </>;
 
-  function chooseKind(kind: FieldKind, focusText: () => void) {
+  function chooseKind(kind: FieldKind) {
     const edit = kindEdit(model, kind);
     if (edit) void submit(edit);
-    else focusText();
   }
 
   const parameter = type.kind === 'class' && model.kind !== 'sweep' && model.parts?.length === 1 ? model.parts[0] : undefined;
@@ -219,10 +219,9 @@ function ClassValue({ model, parameter, labelId, picker, pickReason }: {
   const shown = reason ?? pickReason ?? parameter.reason ?? model.reason;
   const origin = parameter.origin ?? model.origin;
   const describedBy = [origin && originId, shown && reasonId].filter(Boolean).join(' ') || undefined;
-  function chooseKind(kind: FieldKind, focusText: () => void) {
+  function chooseKind(kind: FieldKind) {
     const edit = kindEdit(parameter, kind);
     if (edit) void submit(edit);
-    else focusText();
   }
   return <section className={clsx('value-field value-field-class grid min-w-0 tabular-nums', parameter.members && 'value-field-class-swept')}
     aria-label={studioFieldLabel('field', model.label)}>
@@ -233,9 +232,11 @@ function ClassValue({ model, parameter, labelId, picker, pickReason }: {
           : model.changed && model.commit ? () => void model.commit!({ kind: 'reset' }).then(setReason) : undefined} />}
       {shown && <p role="alert" id={reasonId}>{shown}</p>}
     </> : undefined}>
-      <ValueText model={parameter} id={id} readOnly={readOnly} describedBy={describedBy} invalid={!!reason}
-        submit={submit} clearReason={() => setReason(undefined)} chooseKind={chooseKind}
-        end={picker} parameterOf={[model.label, parameter.parameter!]} />
+      <div data-field={parameter.anchor} className="contents">
+        <ValueText model={parameter} id={id} readOnly={readOnly} describedBy={describedBy} invalid={!!reason}
+          submit={submit} clearReason={() => setReason(undefined)} chooseKind={chooseKind}
+          end={picker} parameterOf={[model.label, parameter.parameter!]} />
+      </div>
     </FieldRow>
     {(parameter.members || parameter.canList) && <div className="value-field-parts grid gap-1">
       {parameter.members && <Members model={parameter} />}
@@ -248,7 +249,7 @@ function ClassValue({ model, parameter, labelId, picker, pickReason }: {
 function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearReason, chooseKind, end, parameterOf }: {
   model: FieldModel; id: string; readOnly: boolean; describedBy?: string; invalid: boolean;
   submit(edit: FieldEdit): Promise<boolean>; clearReason(): void;
-  chooseKind(kind: FieldKind, focusText: () => void): void;
+  chooseKind(kind: FieldKind): void;
   end?: ReactNode;
   /** The field and parameter whose names make the input's accessible name, for a chosen class's only parameter. */
   parameterOf?: readonly [field: string, parameter: string];
@@ -261,12 +262,21 @@ function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearRea
   const [highlight, setHighlight] = useState(0);
   const [dismissed, setDismissed] = useState(false);
   const listId = useId();
+  const intent = useContext(FieldIntent);
+  /** A kind a command put the field in that no edit has made yet: it is made by the text the field commits. */
+  const [pending, setPending] = useState<FieldKind>();
+  useEffect(() => {
+    if (!intent || intent.target !== model.anchor) return;
+    setPending(intent.kind);
+    const end = input.current?.value.length ?? 0;
+    input.current?.setSelectionRange(end, end);
+  }, [intent?.key]);
   const text = draft ?? model.text ?? '';
   const offered = draft !== undefined && !dismissed && caret !== undefined
     ? completions(model, text.slice(0, caret)) : { token: '', items: [] };
   const open = offered.items.length > 0;
   const mark = hasMark(model);
-  const focusText = () => { input.current?.focus(); input.current?.select(); };
+  const offers = kindOffers(model);
 
   function accept(item: Completion) {
     const start = (caret ?? text.length) - offered.token.length;
@@ -290,7 +300,7 @@ function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearRea
       accept(offered.items[Math.min(highlight, offered.items.length - 1)]);
       return;
     }
-    if (mark && (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey)) {
+    if (mark && offers.length && (event.key === 'ContextMenu' || event.key === 'F10' && event.shiftKey)) {
       event.preventDefault();
       setMenu(true);
       return;
@@ -299,17 +309,22 @@ function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearRea
       event.stopPropagation();
       if (open) { setDismissed(true); return; }
       setDraft(undefined);
+      setPending(undefined);
       clearReason();
       setMenu(false);
     }
     if (event.key === 'Enter' && draft !== undefined) {
       event.preventDefault();
-      void submit({ kind: 'text', text: draft }).then((done) => { if (done) setDraft(undefined); });
+      void submit({ kind: 'text', text: draft }).then((done) => {
+        if (!done) return;
+        setDraft(undefined);
+        setPending(undefined);
+      });
     }
   }
 
-  const markMenu = mark ? <KindMark model={model} readOnly={readOnly} open={menu} onOpenChange={setMenu} finalFocus={input}
-    onChoose={(chosen) => chooseKind(chosen, focusText)} /> : undefined;
+  const markMenu = mark ? <KindMark model={model} kind={pending ?? model.kind} readOnly={readOnly} open={menu}
+    onOpenChange={setMenu} finalFocus={input} onChoose={chooseKind} /> : undefined;
   const differs = model.differs !== undefined ? <output {...appTip(studioName('selectedValue'))} aria-description={model.differs}
     aria-label={studioFieldLabel('selectedValue', label)}>◆</output> : undefined;
   return <>
@@ -323,24 +338,36 @@ function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearRea
       aria-activedescendant={open ? `${listId}-${highlight}` : undefined}
       onValueChange={(value) => { setDraft(value); setDismissed(false); setHighlight(0); clearReason(); }}
       onSelect={(event) => setCaret(event.currentTarget.selectionStart ?? undefined)}
-      onBlur={() => setDismissed(true)}
+      onBlur={() => {
+        setDismissed(true);
+        if (draft === undefined) setPending(undefined);
+      }}
       onKeyDown={onKeyDown} />
     {open && <CompletionList id={listId} anchor={input} items={offered.items} highlight={highlight} onChoose={accept} />}
   </>;
 }
 
-/** A field's kind as a glyph that opens the menu of the kinds its site offers. */
-function KindMark({ model, label = model.label, readOnly, open, onOpenChange, finalFocus, onChoose }: {
-  model: FieldModel; label?: string; readOnly: boolean; open: boolean; onOpenChange(open: boolean): void;
+/**
+ * A field's kind as a glyph that opens the menu of the kinds an edit converts it to. With none, the glyph is only
+ * the kind: a Formula, Draw or Link is read from the field's text.
+ */
+function KindMark({ model, kind = model.kind, label = model.label, readOnly, open, onOpenChange, finalFocus, onChoose }: {
+  model: FieldModel; kind?: FieldKind; label?: string; readOnly: boolean; open: boolean; onOpenChange(open: boolean): void;
   finalFocus: RefObject<HTMLInputElement>; onChoose(kind: FieldKind): void;
 }) {
-  const { kind } = model;
+  const offers = kindOffers(model);
+  if (!offers.length) {
+    return <span role="img" aria-label={studioFieldKindLabel(label, kind)} {...appTip(studioFieldKindLabel(label, kind))}
+      className="flex size-full items-center justify-center text-shell-muted">
+      {kindGlyphs[kind]}
+    </span>;
+  }
   return <Menu open={open} onOpenChange={onOpenChange}>
     <MenuTrigger render={<IconButton size="content" label={studioFieldKindLabel(label, kind)}
       className="flex size-full items-center rounded-control data-[popup-open]:bg-shell-hover"
       icon={kindGlyphs[kind]} />} />
     <MenuContent aria-label={studioFieldLabel('kinds', label)} finalFocus={finalFocus}>
-      {model.kinds.map((offer) => <MenuItem key={offer.kind} disabled={readOnly || !offer.enabled}
+      {offers.map((offer) => <MenuItem key={offer.kind} disabled={readOnly || !offer.enabled}
         glyph={<span className="flex text-shell-muted">{kindGlyphs[offer.kind]}</span>}
         onClick={() => { onOpenChange(false); onChoose(offer.kind); }}>{studioName(offer.kind)}</MenuItem>)}
     </MenuContent>
@@ -353,17 +380,16 @@ function KindMark({ model, label = model.label, readOnly, open, onOpenChange, fi
  */
 function ClassPicker({ model, labelId, inline, readOnly, submit, chooseKind }: {
   model: FieldModel; labelId: string; inline: boolean; readOnly: boolean;
-  submit(edit: FieldEdit): Promise<boolean>; chooseKind(kind: FieldKind, focusText: () => void): void;
+  submit(edit: FieldEdit): Promise<boolean>; chooseKind(kind: FieldKind): void;
 }) {
   const input = useRef<HTMLInputElement>(null);
   const [menu, setMenu] = useState(false);
   if (model.type.kind !== 'class') return null;
   const { options } = model.type;
-  const focusText = () => input.current?.focus();
   // Inline, the picker shares its box with its class's parameter, whose own mark is named by the field.
   const markLabel = inline ? studioParameterLabel(model.label, studioName('type')) : model.label;
   const leading = hasMark(model) ? <KindMark model={model} label={markLabel} readOnly={readOnly} open={menu} onOpenChange={setMenu}
-    finalFocus={input} onChoose={(kind) => chooseKind(kind, focusText)} /> : undefined;
+    finalFocus={input} onChoose={chooseKind} /> : undefined;
   const common = {
     'aria-labelledby': labelId, className: inline ? undefined : 'w-full', inline, disabled: readOnly, leading, inputRef: input,
   };

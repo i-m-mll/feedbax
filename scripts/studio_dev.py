@@ -11,6 +11,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable
 from contextlib import ExitStack, suppress
@@ -19,7 +20,9 @@ from tempfile import mkdtemp
 from typing import BinaryIO
 
 from feedbax.desktop.release import AppPaths
-from feedbax.host import HostClient, HostError
+from feedbax.host import HostClient
+from feedbax.host.io import OWNER_ENV
+from feedbax.host.platform import ProcessExit
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "web"
@@ -50,16 +53,18 @@ def process_exists(pid: int) -> bool:
     return True
 
 
-def wait_for_exit(process: subprocess.Popen, owner: int | None) -> int:
-    if owner is None:
-        return process.wait()
-    while True:
-        if not process_exists(owner):
-            raise SystemExit(0)
-        try:
-            return process.wait(timeout=0.25)
-        except subprocess.TimeoutExpired:
-            continue
+def end_with(owner: int) -> None:
+    """End this launcher, as SIGTERM does, once the process `owner` has exited."""
+    try:
+        watch = ProcessExit(owner)
+    except ProcessLookupError:
+        raise SystemExit(f"The owning test runner {owner} has exited.") from None
+
+    def wait() -> None:
+        watch.wait()
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    threading.Thread(target=wait, name="owner-exit", daemon=True).start()
 
 
 def wait_until(check: Callable[[], bool], description: str, *, timeout: float = 5) -> None:
@@ -81,27 +86,8 @@ def try_test_lock(lease: BinaryIO, mode: int, offset: int) -> bool:
 
 
 def stop_isolated_host(root: Path) -> None:
-    if not root.exists():
-        return
-    host = HostClient(root)
-    try:
-        snapshot = host.jobs_snapshot(start_host=False)
-    except HostError as error:
-        if isinstance(error.__cause__, (FileNotFoundError, ConnectionRefusedError)):
-            return
-        raise
-    active = [job["id"] for job in snapshot["jobs"] if job["outcome"] is None]
-    if active:
-        host.stop(active, "force")
-        wait_until(
-            lambda: all(job["outcome"] is not None for job in host.jobs()),
-            f"Isolated Studio jobs did not settle in {root}",
-        )
-    pid = host.ping()["pid"]
-    if type(pid) is not int or pid <= 1:
-        raise RuntimeError(f"Invalid isolated Studio host PID in {root}")
-    os.kill(pid, signal.SIGTERM)
-    wait_until(lambda: not process_exists(pid), f"Isolated Studio host did not exit in {root}")
+    if root.exists():
+        HostClient(root).shutdown("force")
 
 
 def seed_jax_cache(shared: Path, host_root: Path) -> None:
@@ -196,7 +182,7 @@ def serve(home: Path, args: argparse.Namespace, scope: ExitStack, backend_app: s
         dist = str(paths.cache / "dist")
         build = subprocess.Popen([*vite, "build", "--outDir", dist, "--emptyOutDir"], cwd=WEB)
         scope.callback(stop, build)
-        build_code = wait_for_exit(build, args.owner)
+        build_code = build.wait()
         if build_code:
             return build_code
         front = [*vite, "preview", "--outDir", dist]
@@ -208,13 +194,13 @@ def serve(home: Path, args: argparse.Namespace, scope: ExitStack, backend_app: s
         api = subprocess.Popen([*backend, "--fd", str(fd)], cwd=ROOT, pass_fds=(fd,))
     scope.callback(stop, api)
     if args.backend_only:
-        return wait_for_exit(api, args.owner)
+        return api.wait()
     pid_file = paths.cache / "backend.pid"
     pid_file.write_text(f"{api.pid}\n")
     scope.callback(pid_file.unlink, missing_ok=True)
     web = subprocess.Popen([*front, "--host", HOST, "--port", str(port), "--strictPort"], cwd=WEB)
     scope.callback(stop, web)
-    return wait_for_exit(web, args.owner)
+    return web.wait()
 
 
 def main(*, backend_app: str = "feedbax.web.app:app") -> int:
@@ -237,11 +223,11 @@ def main(*, backend_app: str = "feedbax.web.app:app") -> int:
     args = parser.parse_args()
     if args.backend_only and args.home is None:
         parser.error("--backend-only requires --home")
-    raw_owner = os.environ.get("FEEDBAX_STUDIO_TEST_OWNER_PID")
+    raw_owner = os.environ.get(OWNER_ENV)
     args.owner = None
     if raw_owner is not None:
         if not raw_owner.isdecimal() or int(raw_owner) <= 1:
-            parser.error("FEEDBAX_STUDIO_TEST_OWNER_PID must identify a test runner process")
+            parser.error(f"{OWNER_ENV} must identify a test runner process")
         args.owner = int(raw_owner)
     if args.owner is not None and args.home is None:
         parser.error("a test runner requires --home")
@@ -252,6 +238,8 @@ def main(*, backend_app: str = "feedbax.web.app:app") -> int:
 
     signal.signal(signal.SIGINT, exit_on_signal)
     signal.signal(signal.SIGTERM, exit_on_signal)
+    if args.owner is not None:
+        end_with(args.owner)
     with ExitStack() as scope:
         if args.home is None:
             # Retain the home if cleanup fails and a detached worker may still need it.
@@ -261,8 +249,8 @@ def main(*, backend_app: str = "feedbax.web.app:app") -> int:
         try:
             return serve(home, args, scope, backend_app)
         finally:
+            # A repeated interrupt does not cut the cleanup short; SIGTERM does.
             signal.signal(signal.SIGINT, signal.SIG_IGN)
-            signal.signal(signal.SIGTERM, signal.SIG_IGN)
             scope.close()
             if args.home is None:
                 stop_isolated_host(AppPaths.resolve(instance_root=home).host)

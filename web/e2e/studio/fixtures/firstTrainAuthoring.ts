@@ -2,7 +2,7 @@ import { expect, type APIRequestContext, type Locator, type Page } from '@playwr
 import type { ModelDocument, ObjectiveDocument, PythonTaskSelection, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../../src/generated/studioContracts';
 import { mapStep } from './canonicalTrain';
 import { pick } from './controls';
-import { activate, number, palette, post, readSaved } from './studioKeyboard';
+import { activate, activateMenuItem, number, palette, post, readSaved } from './studioKeyboard';
 import { rootPayload } from './rootPayload';
 
 export async function authorFirstTrain(
@@ -146,9 +146,8 @@ export async function authorFirstTrain(
   await connect(source, output.locator('[aria-label="Port Command"].react-flow__handle'));
 
   await page.keyboard.press('Meta+4');
-  const measure = objective.getByRole('combobox', { name: 'Measure Source', exact: true });
-  await expect(measure).toHaveText('Command');
   await activate(page, objective.getByRole('button', { name: 'Add Term', exact: true }));
+  await activateMenuItem(page, page.getByRole('menu', { name: 'Add Term', exact: true }).getByRole('menuitem', { name: 'Command', exact: true }));
   await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(Command)');
   await setNumber(weight, 2, (project) => {
     const authored = terms(project)[0]?.weight;

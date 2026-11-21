@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures/studio';
-import { type Page } from '@playwright/test';
+import { type Locator, type Page } from '@playwright/test';
 import type { StudioProjectSnapshot } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 
@@ -9,6 +9,17 @@ const views = ['Runs', 'Model', 'Task', 'Objective', 'Training', 'Scene', 'Resul
 const rail = (page: Page) => page.getByRole('navigation', { name: 'Details', exact: true });
 const drawer = (page: Page) => page.getByRole('complementary', { name: 'Map Drawer', exact: true });
 const menu = (page: Page) => page.getByRole('menu');
+
+/** The colour an element is drawn on: its own background, or the nearest ancestor's that has one. */
+function surface(locator: Locator) {
+  return locator.evaluate((element) => {
+    for (let node: Element | null = element; node; node = node.parentElement) {
+      const color = getComputedStyle(node).backgroundColor;
+      if (color !== 'rgba(0, 0, 0, 0)') return color;
+    }
+    return null;
+  });
+}
 
 async function separator(page: Page) {
   return rail(page).evaluate((element) => {
@@ -56,6 +67,10 @@ test('an empty project draws only the bar, the map with its drawer, the rail and
     .filter((element) => !element.closest('[hidden]') && element.getClientRects().length > 0)
     .map((element) => (element as HTMLElement).dataset.studioFocusRegion));
   expect(regions).toEqual(['top', 'map', 'steps', 'rail', 'bottom']);
+  const map = page.getByRole('region', { name: 'Pipeline Map', exact: true });
+  const canvas = await surface(map.getByRole('region', { name: 'Pipeline Map', exact: true }));
+  expect(canvas).toBe(await surface(page.locator('.studio-window-panel')));
+  expect(canvas).not.toBe(await surface(add));
   for (const name of ['Show Both', 'Show Details', 'Show Drawer', 'Show Inspector']) {
     await expect(page.getByRole('button', { name, exact: true })).toHaveAttribute('aria-disabled', 'true');
   }
@@ -76,6 +91,24 @@ test('an empty project draws only the bar, the map with its drawer, the rail and
   await menu(page).getByRole('menuitem', { name: 'Train' }).click();
   await expect(page.getByRole('tabpanel', { name: 'Model', exact: true })).toBeVisible();
   await expect(page.getByRole('dialog')).toHaveCount(0);
+});
+
+test('a library tip moves to the next item the pointer rests on', async ({ page, request }) => {
+  const { snapshot } = await seedManagedProject(request, []);
+  await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
+  await drawer(page).getByRole('button', { name: 'New Step', exact: true }).press('Enter');
+  await menu(page).getByRole('menuitem', { name: 'Train' }).click();
+  const details = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+  await details.getByRole('button', { name: 'Equinox', exact: true }).click();
+  const rows = details.getByRole('listbox', { name: 'Equinox', exact: true }).getByRole('option');
+  const tip = page.locator('[role=presentation][data-side]');
+  for (const index of [0, 1]) {
+    const row = rows.nth(index);
+    await row.hover();
+    await expect(tip).toContainText(await row.innerText());
+    const top = (await row.boundingBox())!.y;
+    await expect.poll(async () => (await tip.boundingBox())!.y).toBeCloseTo(top, 0);
+  }
 });
 
 test('the rail separator follows the divider and every view keeps its place', async ({ page, request, studio }, info) => {

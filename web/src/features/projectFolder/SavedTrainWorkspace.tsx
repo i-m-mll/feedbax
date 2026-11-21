@@ -25,6 +25,7 @@ import { useFollowingQuery } from '@/hooks/useFollowingQuery';
 import { StudioMachineApproval, studioRunMachineControl } from '@/components/pipeline/StudioRunMachine';
 import { SweepExceptions } from '@/components/pipeline/SweepExceptions';
 import { useDrawerSections, useFieldFocus, type FieldFocusRequest } from '@/features/projectWindow/DrawerForms';
+import { FieldIntent } from '@/components/values/fieldIntent';
 import { X } from 'lucide-react';
 import { Button, IconButton } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
@@ -79,7 +80,7 @@ import {
   jsonPointerPath, StudioTrainAuthoringForm, SweepFieldItems, useTrainClassFields, useTrainFieldLabels,
 } from './StudioTrainAuthoringForm';
 import {
-  TrialObjectiveInspector, TrialObjectiveOutline, TrialObjectiveTable, TrialTaskForm, TrialTaskInspector, TrialTaskOutline, useTrialAuthoring,
+  TrialObjectiveAdd, TrialObjectiveInspector, TrialObjectiveOutline, TrialObjectiveTable, TrialTaskForm, TrialTaskInspector, TrialTaskOutline, useTrialAuthoring,
   type TrialChangeScope,
 } from './StudioTrialAuthoring';
 import { documentFamily, useProjectDocuments, type DocumentRole } from './useProjectDocuments';
@@ -1241,12 +1242,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     stepId: sweepStep,
     close: () => setSweepStep(undefined),
     items: <>
-      <SweepFieldItems editor={editor} stepId={sweepStep} onSwept={() => {
+      <SweepFieldItems editor={editor} stepId={sweepStep} onChoose={(anchor) => {
         const current = latestState.current;
         if (current.selection?.kind !== 'values' || current.selection.stepId !== sweepStep) {
           selection.select(selectStep(current, sweepStep));
         }
         setSweepStep(undefined);
+        setWindowState((window) => showProjectWindowView({ ...window, inspectorOpen: true }, 'runs', focusSlot));
+        setFieldFocus({ key: crypto.randomUUID(), step: sweepStep, target: anchor, kind: 'sweep' });
       }} />
       <OfferedSets editor={editor} step={sweepStep} choose={(set) => sets.applySet(sweepStep, set, () => {
         selection.select(selectStep(latestState.current, sweepStep));
@@ -1558,6 +1561,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             const selected = element && { term: element.id, field: element.field };
             return {
               picker: pickDocument('objective', value.objective_document ?? undefined, documentScopes.objective),
+              header: <TrialObjectiveAdd view={value} commit={commit} select={choose(document)} />,
               body: withProblem(<TrialObjectiveTable view={value} commit={commit} selected={selected} select={choose(document)} />),
               drawer: <TrialObjectiveOutline sections={drawerSections} view={value} commit={commit} selected={selected?.term} select={choose(document)} />,
               inspector: <TrialObjectiveInspector view={value} commit={commit} selected={selected} />,
@@ -1708,7 +1712,11 @@ function FocusedFields({ request, onFocused, children }: {
 }) {
   const root = useRef<HTMLDivElement>(null);
   useFieldFocus(root, request, onFocused);
-  return <div ref={root} className="grid content-start gap-3">{children}</div>;
+  const { key, target, kind } = request ?? {};
+  const intent = useMemo(() => key && target && kind ? { key, target, kind } : undefined, [key, target, kind]);
+  return <FieldIntent.Provider value={intent}>
+    <div ref={root} className="grid content-start gap-3">{children}</div>
+  </FieldIntent.Provider>;
 }
 
 function ProblemDestination({ reveal, action, children }: { reveal: Reveal; action?: ReactNode; children: ReactNode }) {

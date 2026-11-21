@@ -1,6 +1,5 @@
 import { useState, useSyncExternalStore } from 'react';
 import { studioName, studioUnit, type StudioNameId } from '@/components/activity/studioVocabulary';
-import { Dialog } from '@/components/ui/Dialog';
 import { NumberField } from '@/components/ui/NumberField';
 import { setRemovalThreshold, useRemovalThreshold } from '@/features/projectFolder/runRemoval';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
@@ -65,12 +64,11 @@ function ThresholdRow() {
   );
 }
 
-export function StudioSettings({ close }: { close(): void }) {
+export function StudioSettings() {
   return (
-    <Dialog ariaLabel={studioName('settings')} onClose={close} manageFocus
-      panelClassName="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-4 gap-y-2 p-4">
+    <div className="grid w-fit grid-cols-[auto_minmax(0,1fr)] items-center gap-x-4 gap-y-2">
       {(Object.keys(rows) as SettingChoice[]).map((choice) => <SettingRow key={choice} choice={choice} />)}
       <ThresholdRow />
-    </Dialog>
+    </div>
   );
 }

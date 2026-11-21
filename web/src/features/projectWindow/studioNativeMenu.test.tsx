@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
-import { ProjectWindow } from './ProjectWindow';
+import { ProjectWindow, ProjectWindowPalette } from './ProjectWindow';
 import { defaultProjectWindowState } from './projectWindowState';
 import { bindStudioCommand, type StudioCommand } from './studioCommands';
 
@@ -13,7 +13,7 @@ function studio(
     bindStudioCommand('run', run), bindStudioCommand('stop', () => {}, { enabled: false }),
   ],
 ) {
-  return <ProjectWindow state={defaultProjectWindowState} onStateChange={() => {}}
+  return <ProjectWindowPalette><ProjectWindow state={defaultProjectWindowState} onStateChange={() => {}}
     projectName={projectName} availableViews={withScene ? ['runs', 'scene'] : ['runs']}
     renderView={() => ({ body: <input aria-label="Training field" /> })}
     map={<button>Map item</button>} mapDrawer={null} compactMap={<button>Compact item</button>}
@@ -21,7 +21,7 @@ function studio(
     commands={[
       ...commands,
       ...(rename ? [bindStudioCommand('rename', rename)] : []),
-    ]} />;
+    ]} /></ProjectWindowPalette>;
 }
 
 function setup() {

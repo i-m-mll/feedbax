@@ -1,7 +1,7 @@
 import { ContextMenu as BaseContextMenu } from '@base-ui/react/context-menu';
 import { Menu as BaseMenu } from '@base-ui/react/menu';
 import clsx from 'clsx';
-import { Check } from 'lucide-react';
+import { Check, ChevronRight } from 'lucide-react';
 import { useRef, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import { popupItem, popupSurface, primaryText, secondaryText } from './styles';
 import { usePopupLayer } from './popupLayer';
@@ -90,6 +90,19 @@ export function MenuItem({ glyph, shortcut, children, className, ...props }: Men
       <span className={primaryText}>{children}</span>
       {shortcut ? <span className={secondaryText}>{shortcut}</span> : null}
     </BaseMenu.Item>
+  );
+}
+
+/** An item that opens a menu of `children` beside it. */
+export function MenuSubmenu({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <BaseMenu.SubmenuRoot>
+      <BaseMenu.SubmenuTrigger className={clsx(popupItem, 'data-[popup-open]:bg-shell-hover')}>
+        <span className={primaryText}>{label}</span>
+        <ChevronRight aria-hidden className="ml-auto text-shell-muted" />
+      </BaseMenu.SubmenuTrigger>
+      <MenuContent side="inline-end" align="start" aria-label={label}>{children}</MenuContent>
+    </BaseMenu.SubmenuRoot>
   );
 }
 
