@@ -169,7 +169,7 @@ type PlotSample = {
 };
 type PlotLine = { element?: number; samples: PlotSample[] };
 
-/** One plot per metric the series report, in the order they report them, the held-out objectives on the first. */
+/** One plot per metric the series report, in the order they report them, and one of the held-out objectives. */
 export function MetricPlots({ series, objectives = [] }: { series: MetricSeries[]; objectives?: ObjectiveTrack[] }) {
   const histories = new Map<string, boolean>();
   for (const { stages } of series) {
@@ -177,19 +177,22 @@ export function MetricPlots({ series, objectives = [] }: { series: MetricSeries[
   }
   const [primary] = series;
   const chained = series.some(({ stages }) => stages.length > 1);
-  const plots = histories.size > 0 ? [...histories] : objectives.length > 0 ? [[studioName('objective'), false] as const] : [];
+  const plots = [...histories];
+  const stagesOf = (name: string | null) => series.map(({ result, stages }) => ({
+    result: name === null ? undefined : result,
+    stages: stages.map(({ metrics, ...stage }) => ({
+      stage, points: name === null ? [] : metrics.find((metric) => metric.name === name)?.points ?? [],
+    })),
+  }));
   return (
     <div className="min-w-0 space-y-3">
-      {plots.map(([name, vector], index) => (
-        <MetricPlot key={name} name={name} vector={vector} objectives={index === 0 ? objectives : []}
-          series={series.map(({ result, stages }) => ({
-            result,
-            stages: stages.map(({ metrics, ...stage }) => ({
-              stage, points: metrics.find((metric) => metric.name === name)?.points ?? [],
-            })),
-          }))} />
+      {plots.map(([name, vector]) => (
+        <MetricPlot key={name} metric={name} vector={vector}
+          objectives={[]} series={stagesOf(name)} />
       ))}
-      {plots.length > 0 && <div className="flex flex-wrap items-baseline justify-end gap-x-3 text-xs text-shell-muted">
+      {objectives.length > 0 && <MetricPlot
+        vector={false} objectives={objectives} series={stagesOf(null)} />}
+      {(plots.length > 0 || objectives.length > 0) && <div className="flex flex-wrap items-baseline justify-end gap-x-3 text-xs text-shell-muted">
         {chained && !primary?.result && (
           <ol aria-label={studioName('trainSteps')} className="mr-auto flex flex-wrap gap-x-3">
             {primary.stages.map(({ label, offset, completed }) => (
@@ -231,8 +234,9 @@ function plotLines(samples: (Omit<PlotSample, 'reading' | 'band'> & { elements: 
   }));
 }
 
-function MetricPlot({ name, vector, series, objectives }: {
-  name: string;
+function MetricPlot({ metric, vector, series, objectives }: {
+  /** The metric plotted; none for the held-out objectives' plot. */
+  metric?: string;
   vector: boolean;
   series: { result?: MetricSeries['result']; stages: { stage: PlotStage; points: MetricObservation[] }[] }[];
   objectives: ObjectiveTrack[];
@@ -288,9 +292,9 @@ function MetricPlot({ name, vector, series, objectives }: {
   const color = (element: number | undefined) => element === undefined
     ? { className: 'text-shell-foreground' } : { className: 'studio-hue', style: elementHue(element) };
   return (
-    <section ref={ref} aria-label={studioAccessibleName('metric', name)} className="min-w-0 space-y-1">
+    <section ref={ref} aria-label={metric === undefined ? studioName('heldOutObjective') : studioAccessibleName('metric', metric)} className="min-w-0 space-y-1">
       <div className="flex justify-between gap-2 text-xs font-medium">
-        <h4>{name}</h4>
+        <h4>{metric ?? studioName('heldOutObjective')}</h4>
         {latest && !primary?.result && (
           <span className="tabular-nums" aria-description={studioFormat('lastValueAtUpdate', { end: latest.update })}>
             {formatMetric(latest.reading.last)}
@@ -300,7 +304,7 @@ function MetricPlot({ name, vector, series, objectives }: {
       <svg
         viewBox={`0 0 ${plotWidth} ${plotHeight}`}
         role="img"
-        aria-label={studioAccessibleName('metric', name)}
+        aria-label={metric === undefined ? studioName('heldOutObjective') : studioAccessibleName('metric', metric)}
         className="h-[148px] w-full rounded border border-shell-divider bg-shell-surface"
       >
         {banded ? <desc>{studioFormat('metricElementBand', { count: banded.count })}</desc>
@@ -343,7 +347,7 @@ function MetricPlot({ name, vector, series, objectives }: {
                       className="opacity-50" stroke="currentColor"
                       strokeDasharray={dashed ? '4 3' : undefined} vectorEffect="non-scaling-stroke">
                       <title>{[
-                        element !== undefined && `${name}[${element}]`,
+                        element !== undefined && `${metric}[${element}]`,
                         studioFormat('metricInterval', {
                           start: stage.offset + first + 1, end: update, count,
                           min: formatMetric(min), max: formatMetric(max),
@@ -391,12 +395,12 @@ function MetricPlot({ name, vector, series, objectives }: {
         {objectives.length > 0 && <ul aria-label={studioName('objective')} className="mr-auto flex flex-wrap gap-x-3">
           {objectives.map(({ id, label }, index) => <li key={id} className="studio-hue" style={objectiveHue(index)}>{label}</li>)}
         </ul>}
-        {primary?.result && <ul aria-label={studioAccessibleName('metric', name)} className="mr-auto flex flex-wrap gap-x-3">
+        {primary?.result && <ul aria-label={metric === undefined ? studioName('heldOutObjective') : studioAccessibleName('metric', metric)} className="mr-auto flex flex-wrap gap-x-3">
           {tracks.map(({ result, dashed, empty }) => result && (
             <li key={result.name} className="flex items-center gap-1">
               <span aria-hidden="true" className={`w-4 border-t-2 ${dashed ? 'border-dashed' : ''}`} />
               {studioName(result.name)}{empty &&
-                <span role="status">{studioReason('unavailable', name)}</span>}
+                <span role="status">{studioReason('unavailable', metric ?? studioName('heldOutObjective'))}</span>}
             </li>
           ))}
         </ul>}
