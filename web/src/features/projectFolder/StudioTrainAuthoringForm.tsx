@@ -8,8 +8,8 @@ import {
 import { studioName, studioSweptParameterMissing } from '@/components/activity/studioVocabulary';
 import { CatalogPicker } from '@/components/ui/CatalogPicker';
 import { FieldRow } from '@/components/ui/FieldRow';
-import { MenuItem } from '@/components/ui/Menu';
-import { SettingsForm } from '@/components/values/SettingsForm';
+import { MenuItem, MenuSubmenu } from '@/components/ui/Menu';
+import { settingsFields } from '@/components/values/SettingsForm';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import { Origin, ValueField } from '@/components/values/ValueField';
 import { pointer } from '@/components/values/adapters/jsonSchema';
@@ -24,7 +24,7 @@ import type {
   AuthoredFileAddress, FieldResetEdit, JsonValue, StudioAuthoringField, StudioClassField, StudioSavedTrainKey, StudioTrainAuthoringRequest,
   TrainFieldRequest, TrainFieldView,
 } from '@/generated/studioContracts';
-import type { ChangeMark, FieldCommit, FieldKindOffer } from '@/components/values/fieldModel';
+import type { ChangeMark, FieldCommit, FieldKindOffer, FieldModel } from '@/components/values/fieldModel';
 import type { ClassProjection } from '@/components/values/adapters/jsonSchema';
 import { modelDocumentId, sameAuthoredFile, type AuthoredProject } from './authoredEdits';
 import { ProjectEditConflictError, type ProjectEditController, type ProjectEditValidation } from './projectEditController';
@@ -171,24 +171,50 @@ function useTrainFields(
   return { fields, edit: editable ? edit : undefined };
 }
 
-/** The step's fields a sweep can start from, as items of the menu at the end of its card's shape line. */
-export function SweepFieldItems({ editor, stepId, onSwept }: {
-  editor: ProjectEditController; stepId: string; onSwept(): void;
-}) {
-  const { fields, edit } = useTrainFields(editor, stepId);
-  const sweepable = fields.data?.fields?.filter((field) => field.can_sweep && !field.sweep) ?? [];
-  return <>{sweepable.map((field) => <MenuItem key={field.id} disabled={!edit}
-    onClick={() => { void edit?.(field.id, { kind: 'to_sweep' }).then((reason) => { if (!reason) onSwept(); }); }}>
-    {field.label}
-  </MenuItem>)}</>;
+/** A field a sweep can start from, or a group of them as the Inspector's form groups them. */
+type SweepTarget =
+  | { readonly kind: 'field'; readonly label: string; readonly anchor: string }
+  | { readonly kind: 'group'; readonly label: string; readonly members: readonly SweepTarget[] };
+
+/** The targets among `model` and its parts: a group with one target is that target. */
+function sweepTargets(model: FieldModel): SweepTarget[] {
+  if (model.parts?.length && model.type.kind !== 'vector' || model.type.kind === 'group' || model.type.kind === 'list') {
+    const members = (model.parts ?? []).flatMap(sweepTargets);
+    return members.length > 1 ? [{ kind: 'group', label: model.label, members }] : members;
+  }
+  const offered = model.kind !== 'sweep' && model.kinds.some(({ kind, enabled }) => kind === 'sweep' && enabled);
+  return offered && model.anchor ? [{ kind: 'field', label: model.label, anchor: model.anchor }] : [];
 }
 
-function choiceField(field: StudioAuthoringField, commit?: (value: JsonValue) => Promise<string | undefined>, changed?: ChangeMark) {
-  return rawField({
-    id: field.id, label: field.label, value: field.value, changed,
-    type: field.control?.kind === 'choice' ? { kind: 'choice', options: field.control.options } : { kind: 'readOnly' },
-    change: field.control ? commit : undefined,
-  });
+function SweepTargetItem({ target, onChoose }: { target: SweepTarget; onChoose(anchor: string): void }) {
+  return target.kind === 'field'
+    ? <MenuItem onClick={() => onChoose(target.anchor)}>{target.label}</MenuItem>
+    : <MenuSubmenu label={target.label}>
+      {target.members.map((member) => <SweepTargetItem key={member.label} target={member} onChoose={onChoose} />)}
+    </MenuSubmenu>;
+}
+
+/**
+ * The step's fields a sweep can start from, as items of the menu at the end of its card's shape line, nested as the
+ * Inspector's form nests them. Choosing one goes to the field; the sweep is made by the text it commits.
+ */
+export function SweepFieldItems({ editor, stepId, onChoose }: {
+  editor: ProjectEditController; stepId: string; onChoose(anchor: string): void;
+}) {
+  const form = useTrainForm({ editor, stepId });
+  return <>{form.fields.flatMap(sweepTargets).map((target) =>
+    <SweepTargetItem key={target.label} target={target} onChoose={onChoose} />)}</>;
+}
+
+function choiceField(field: StudioAuthoringField, commit?: (value: JsonValue) => Promise<string | undefined>, changed?: ChangeMark): FieldModel {
+  return {
+    ...rawField({
+      id: field.id, label: field.label, value: field.value, changed,
+      type: field.control?.kind === 'choice' ? { kind: 'choice', options: field.control.options } : { kind: 'readOnly' },
+      change: field.control ? commit : undefined,
+    }),
+    anchor: field.id,
+  };
 }
 
 /** Where a Train step starts: its Model, or another Train step's last checkpoint. */
@@ -231,7 +257,11 @@ function CheckpointStart({ editor, stepId, step, trains, picking, editable }: {
   </FieldRow>;
 }
 
-export function StudioTrainAuthoringForm(props: Props) {
+/**
+ * A Train step's form for the runs `props` selects: its definition, and its fields in the order and nesting the
+ * Inspector draws them, each with its anchor. The Add Sweep menu reads the same fields for the whole step.
+ */
+function useTrainForm(props: Props) {
   const { editor, stepId, onChooseSweepValue } = props;
   const selection = props.selection ?? { kind: 'steps', stepIds: [stepId] };
   const { saved, pending, outside } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
@@ -300,7 +330,7 @@ export function StudioTrainAuthoringForm(props: Props) {
   const projected = numeric.fields.data?.fields ?? [];
   const members = (sweepId?: string) => new Set(props.step && sweepId && selection.kind !== 'steps'
     ? selectedRuns(props.step, selection).map((row) => row.values[sweepId]).filter(Boolean) : []);
-  const fieldModel = (field: TrainFieldView) => fromFieldView(field, {
+  const fieldModel = (field: TrainFieldView): FieldModel => ({ ...fromFieldView(field, {
     id: JSON.stringify([projectId, stepId, props.fieldRows, field.id]),
     commit: numeric.edit && ((edit) => numeric.edit!(field.id, edit)),
     changed: field.changed ? {
@@ -310,14 +340,14 @@ export function StudioTrainAuthoringForm(props: Props) {
     selectedMembers: members(field.sweep?.id),
     chooseMember: field.sweep && onChooseSweepValue
       ? (valueId, extend) => onChooseSweepValue(field.sweep!.id, valueId, extend) : undefined,
-  });
-  const fields = shown?.fields ?? [];
-  const methodField = fields.find(({ id }) => id === '/method');
+  }), anchor: field.id });
+  const definedFields = shown?.fields ?? [];
+  const methodField = definedFields.find(({ id }) => id === '/method');
   const methods = catalogEntries(catalog.data, 'training_methods');
   const method = catalog.data?.registries.training_methods?.entries
     .find((entry) => 'key' in entry && entry.key === methodField?.value);
   const settingsSchema = method && 'settings_schema' in method ? method.settings_schema : undefined;
-  const choices = fields.filter(({ id, control }) => id !== '/method' && id !== settingsPrefix && control?.kind !== 'number' && shows(id));
+  const choices = definedFields.filter(({ id, control }) => id !== '/method' && id !== settingsPrefix && control?.kind !== 'number' && shows(id));
   const steps = projected.filter(({ id }) => !id.startsWith(settingsPrefix + '/') && shows(id));
   const byPath = new Map(projected.map((field) => [field.id, field]));
   const editable = !!current && !pending && !outside;
@@ -360,6 +390,39 @@ export function StudioTrainAuthoringForm(props: Props) {
     } };
   }
 
+  const fields: FieldModel[] = [
+    ...choices.map((field) => choiceField(field,
+      editable ? (value) => apply({ change: { field: field.id, value } }, field.label) : undefined, changedAt(field.id))),
+    ...steps.map(fieldModel),
+    ...settingsSchema && shown?.settings ? settingsFields({
+      schema: settingsSchema, value: shown.settings,
+      anchor: (path) => settingsPrefix + pointer(path),
+      mixed: (path) => isMixed(settingsPrefix + pointer(path)),
+      changed: (path) => changedAt(settingsPrefix + pointer(path)),
+      projected: (path) => {
+        const field = byPath.get(settingsPrefix + pointer(path));
+        return field && fieldModel(field);
+      },
+      write: editable ? (path, value) => apply({ change: { field: settingsPrefix + pointer(path), value } }, humanizeLabel(path.at(-1) ?? '')) : undefined,
+      choose: editable ? (path, key) => apply({ change: { field: settingsPrefix + pointer(path), value: key } }, humanizeLabel(path.at(-1) ?? '')) : undefined,
+      classed: (path) => {
+        const field = classFields.get(settingsPrefix + pointer(path));
+        return field && classProjection(field);
+      },
+    }) : [],
+  ];
+  return {
+    shown, refusal, editable, methodField, methods, methodChange, methodReason, setMethodReason, methodLabel, methodOrigin,
+    isMixed, apply, fields, definition, numeric, catalog,
+  };
+}
+
+export function StudioTrainAuthoringForm(props: Props) {
+  const { editor, stepId } = props;
+  const {
+    shown, refusal, editable, methodField, methods, methodChange, methodReason, setMethodReason, methodLabel, methodOrigin,
+    isMixed, apply, fields, definition, numeric, catalog,
+  } = useTrainForm(props);
   if (refusal !== undefined) return null;
   return (
     <StudioRegion state={studioReadState('definition', shown && numeric.fields.data,
@@ -383,25 +446,7 @@ export function StudioTrainAuthoringForm(props: Props) {
             disabled={!editable || !methodField.control}
             onChoose={(key) => { void apply({ change: { field: '/method', value: key } }, methodField.label).then(setMethodReason); }} />
         </FieldRow></div>}
-        {choices.map((field) => <div key={field.id} data-field={field.id} className="contents"><ValueField model={choiceField(field,
-          editable ? (value) => apply({ change: { field: field.id, value } }, field.label) : undefined, changedAt(field.id))} /></div>)}
-        {steps.map((field) => { const model = fieldModel(field); return <div key={model.id} data-field={field.id} className="contents">
-          <ValueField model={model} />
-        </div>; })}
-        {settingsSchema && shown?.settings && <SettingsForm schema={settingsSchema} value={shown.settings}
-          anchor={(path) => settingsPrefix + pointer(path)}
-          mixed={(path) => isMixed(settingsPrefix + pointer(path))}
-          changed={(path) => changedAt(settingsPrefix + pointer(path))}
-          projected={(path) => {
-            const field = byPath.get(settingsPrefix + pointer(path));
-            return field && fieldModel(field);
-          }}
-          write={editable ? (path, value) => apply({ change: { field: settingsPrefix + pointer(path), value } }, humanizeLabel(path.at(-1) ?? '')) : undefined}
-          choose={editable ? (path, key) => apply({ change: { field: settingsPrefix + pointer(path), value: key } }, humanizeLabel(path.at(-1) ?? '')) : undefined}
-          classed={(path) => {
-            const field = classFields.get(settingsPrefix + pointer(path));
-            return field && classProjection(field);
-          }} />}
+        {fields.map((model) => <ValueField key={model.id} model={model} />)}
       </section>
     </StudioRegion>
   );

@@ -138,7 +138,7 @@ function DrawerDemo({ content }: { content: 'short' | 'overflowing' }) {
   const [card] = useState(() => createHoverCardHandle<string>());
   return (
     <State name={content}>
-      <div className="h-96 w-64 rounded-control border border-shell-divider" data-testid={`drawer-${content}`}>
+      <div className="h-96 w-64 rounded-control border border-shell-divider bg-shell-sidebar" data-testid={`drawer-${content}`}>
         {shown ? <SectionStack>
           <Section name="Library" {...fold('library')}
             actions={<IconButton size="mark" label="New Component" icon={<Plus />} />}

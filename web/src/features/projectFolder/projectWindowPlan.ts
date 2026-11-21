@@ -129,6 +129,7 @@ function pairedAxesJoined(
   return {
     sweeps: groups.map(([first, ...rest]): PlanSweepView => !rest.length ? first : {
       id: first.id,
+      input: first.input,
       label: [first, ...rest].map(({ label }) => label).join(' · '),
       values: first.values.map((value) => {
         const run = runs.find(({ values }) => values[first.id] === value.id);
@@ -347,7 +348,10 @@ export function projectWindowPlan(
       inputs,
       ...pairedAxesJoined([...(sweepsByStep.get(id) ?? [])].map(([axis, values]) => {
         const read = project.steps?.[id]?.sweep?.axes?.[axis];
-        return { id: axis, label: read && 'set' in read ? read.set : axis, values: [...values].map(([id, label]) => ({ id, label })) };
+        return {
+          id: axis, label: read && 'set' in read ? read.set : axis, input: !read || 'input' in read || undefined,
+          values: [...values].map(([id, label]) => ({ id, label })),
+        };
       }), groupedLabels.size ? runs.map((run) => {
         const rank = evaluations.get(run.id)?.subject_rank_key;
         const label = rank && groupedLabels.get(rank);

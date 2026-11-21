@@ -1,6 +1,6 @@
 import { PreviewCard } from '@base-ui/react/preview-card';
 import clsx from 'clsx';
-import { useEffect, useRef, type ComponentProps, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import { popupSurface } from './styles';
 import { usePopupLayer } from './popupLayer';
 
@@ -32,7 +32,7 @@ export interface HoverCardProps<Payload> {
 export function HoverCard<Payload>({ handle, children, beside, className }: HoverCardProps<Payload>) {
   const layer = usePopupLayer();
   const actions = useRef<PreviewCard.Root.Actions>(null);
-  const trigger = useRef<Element>();
+  const [trigger, setTrigger] = useState<Element | null>(null);
   const blocked = useRef({ dragging: false, scrolledAt: -Infinity });
   useEffect(() => {
     const state = blocked.current;
@@ -49,23 +49,20 @@ export function HoverCard<Payload>({ handle, children, beside, className }: Hove
       document.removeEventListener('dragend', dropped, true);
     };
   }, []);
-  const anchor = () => {
-    const row = trigger.current;
-    if (!row) return null;
-    const region = beside?.(row) ?? row;
-    return {
-      contextElement: row,
-      getBoundingClientRect: () => {
-        const { left, width } = region.getBoundingClientRect();
-        const { top, height } = row.getBoundingClientRect();
-        return new DOMRect(left, top, width, height);
-      },
-    };
-  };
+  const region = useRef(beside);
+  region.current = beside;
+  const anchor = useMemo(() => trigger && {
+    contextElement: trigger,
+    getBoundingClientRect: () => {
+      const { left, width } = (region.current?.(trigger) ?? trigger).getBoundingClientRect();
+      const { top, height } = trigger.getBoundingClientRect();
+      return new DOMRect(left, top, width, height);
+    },
+  }, [trigger]);
   return <PreviewCard.Root handle={handle} actionsRef={actions} onOpenChange={(open, details) => {
     const { dragging, scrolledAt } = blocked.current;
     if (open && (dragging || performance.now() - scrolledAt < scrollQuiet)) details.cancel();
-    else if (open) trigger.current = details.trigger;
+    else if (open && details.trigger) setTrigger(details.trigger);
   }}>
     {({ payload }) => payload === undefined ? null : <PreviewCard.Portal container={layer}>
       <PreviewCard.Positioner className="pointer-events-none z-50 outline-none" side="right" align="start" sideOffset={4}

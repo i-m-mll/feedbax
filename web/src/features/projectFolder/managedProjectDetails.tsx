@@ -307,7 +307,7 @@ function useSceneDetail({
 
 export function useManagedProjectDetails(input: DetailInputs): Record<DetailName, ManagedProjectDetail> {
   const { editor, stepId, selection, variantId, focus, activeView } = input;
-  const { saved, draft, outside, pending, saving } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
+  const { saved, draft, outside } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const subjectScope = JSON.stringify([saved.project_id, stepId, variantId]);
   const scope = JSON.stringify([subjectScope, selection, focus]);
   const base = stepId ? directTrainStep(draft, stepId) : null;
@@ -339,13 +339,12 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     planCurrent: input.planCurrent,
     fieldRows: input.fieldRows,
     fieldAxes: input.fieldAxes,
-    fieldEditable: !outside && !pending && !saving && Boolean(input.namedRun && (
+    fieldEditable: !outside && Boolean(input.namedRun && (
       input.step?.kind === 'evaluate' ? input.evaluateScope
         : input.step?.kind === 'train' && (saved.project.sweep ? canEdit && graphScope?.localVariant
           : canEdit || selection?.kind === 'values' || selection?.kind === 'rows')
     )),
     projectionRun: input.step?.kind === 'train' ? input.namedRun : undefined,
-    editable: !pending && !saving && topologyApplies,
     topologyApplies,
     evaluate: input.step?.kind === 'evaluate' && input.namedRun && input.evaluateScope
       ? { run: input.namedRun, scope: input.evaluateScope } : undefined,
