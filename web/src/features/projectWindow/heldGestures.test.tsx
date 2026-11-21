@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
 import { act, render } from '@testing-library/react';
-import { expect, it } from 'vitest';
-import { useHeldGestures, useWindowCommands } from './heldGestures';
+import { expect, it, vi } from 'vitest';
+import { holdWhile, useHeldGestures, useWindowCommands } from './heldGestures';
 import { bindStudioCommand, type StudioCommand } from './studioCommands';
 
 interface State {
@@ -98,4 +98,19 @@ it('runs a view command at once while unsettled, unless a gesture made before it
   expect(log).toEqual(['model']);
   act(() => view.rerender(<Workspace settled />));
   expect(log).toEqual(['model', 'undo', 'model']);
+});
+
+it('outside a workspace, holds a gesture made while a request is in flight and runs it once the request is done', async () => {
+  vi.useFakeTimers();
+  const log: string[] = [];
+  const stop = bindStudioCommand('stop', () => log.push('stop'), { instance: 'job' });
+  let finish!: () => void;
+  const request = holdWhile(() => new Promise<void>((resolve) => { finish = resolve; }));
+  stop.invoke();
+  expect(log).toEqual([]);
+  finish();
+  await request;
+  await vi.runAllTimersAsync();
+  expect(log).toEqual(['stop']);
+  vi.useRealTimers();
 });

@@ -1,6 +1,7 @@
 import { expect, test } from './fixtures/studio';
 import type { StudioProjectSnapshot } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture } from './fixtures/canonicalTrain';
+import type { Page } from '@playwright/test';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -92,4 +93,59 @@ test('a gesture made while the window connects runs once it connects', async ({ 
   release();
 
   await expect.poll(() => runs).toEqual([['train']]);
+});
+
+/** Holds the requests `matches` picks until `release` is called. */
+async function holdRequests(page: Page, matches: (url: URL, method: string) => boolean) {
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  await page.route((url) => matches(url, ''), async (route) => {
+    if (!matches(new URL(route.request().url()), route.request().method())) return route.fallback();
+    await released;
+    await route.fallback();
+  });
+  return release;
+}
+
+/** Chooses New Step in the palette with Enter, as a keyboard user does, and checks that its menu opens once released. */
+async function newStepFromPalette(page: Page, release: () => void) {
+  await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
+  const palette = page.getByRole('dialog', { name: 'Command Palette', exact: true });
+  await palette.getByRole('combobox').fill('New Step');
+  await expect(palette.getByRole('option', { name: 'New Step', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await palette.getByRole('combobox').press('Enter');
+  await expect(palette).toBeHidden();
+  const kinds = page.getByRole('menu').locator('[data-step-insert]');
+  await expect(kinds).toHaveCount(0);
+  release();
+  // It offers the kinds of the selection it finds; made from the keyboard, it starts on the first one offered.
+  await expect(page.getByRole('menu').locator('[data-step-insert]:not([data-disabled])').first()).toBeFocused();
+}
+
+test('New Step chosen in the palette while the window connects opens once it connects', async ({ page, studio }) => {
+  const projectId: string = JSON.parse(await runProjectFixture(
+    'web.e2e.studio.fixtures.canonical_evaluate', 'seed-step-rename', studio.home, 'held-palette-connecting',
+  ));
+  const release = await holdRequests(page, (url) => url.pathname === '/api/events');
+  await page.goto(`/?project=${encodeURIComponent(projectId)}`);
+  await mapStep(page, 'train').click();
+  await expect(page.getByRole('table', { name: 'Runs', exact: true }).getByText('Not run', { exact: true }).first()).toBeVisible();
+  await newStepFromPalette(page, release);
+});
+
+test('New Step chosen in the palette while the plan of an edit loads opens once it loads', async ({ page, studio }) => {
+  const projectId: string = JSON.parse(await runProjectFixture(
+    'web.e2e.studio.fixtures.canonical_evaluate', 'seed-step-rename', studio.home, 'held-palette-plan',
+  ));
+  const projectPath = `/api/projects/${projectId}`;
+  await page.goto(`/?project=${encodeURIComponent(projectId)}`);
+  await mapStep(page, 'train').click();
+  await expect(page.getByRole('table', { name: 'Runs', exact: true }).getByText('Not run', { exact: true }).first()).toBeVisible();
+  // The plan of the duplicate's revision does not arrive until released.
+  const release = await holdRequests(page, (url, method) => url.pathname === `${projectPath}/train-runs` && method !== 'POST');
+  const saved = page.waitForResponse((response) => new URL(response.url()).pathname === `${projectPath}/members/command`);
+  await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: /^Duplicate Step train\b/ }).click();
+  expect((await saved).ok()).toBe(true);
+  await newStepFromPalette(page, release);
 });

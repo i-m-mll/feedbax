@@ -43,6 +43,19 @@ interface Gesture {
   readonly id: string;
   readonly key: string;
   readonly window: boolean;
+  /** What each registered gesture context read when the gesture was made. */
+  readonly context: readonly unknown[];
+}
+
+/** Module state a command reads from the gesture that invokes it, such as the control and the input that made it. */
+const contexts: { capture(): unknown; restore(value: unknown): void }[] = [];
+
+/**
+ * Registers state a command reads from the event that invoked it. A held gesture keeps what `capture` read when it was
+ * made, and `restore` puts it back just before the gesture runs.
+ */
+export function gestureContext<T>(capture: () => T, restore: (value: T) => void) {
+  contexts.push({ capture, restore: restore as (value: unknown) => void });
 }
 
 interface Binding {
@@ -55,9 +68,11 @@ interface Binding {
 const bindings = new WeakMap<object, Binding>();
 
 const gate = {
-  /** Whether a workspace is mounted and holds gestures. */
+  /** Whether a workspace is mounted; it settles and runs what is held. */
   active: false,
   settled: true,
+  /** Work started with `holdWhile` and not yet done; gestures wait for it as for the workspace. */
+  working: 0,
   held: new HeldGestures<Gesture>(),
   /** The latest binding of each object command's key. */
   bound: new Map<string, HeldTarget>(),
@@ -81,21 +96,54 @@ export function bindGesture(command: object, key: string, target: HeldTarget, vi
  */
 export function invokeGesture(command: { readonly id: string }) {
   const { key, target, view } = bindings.get(command)!;
-  if (!gate.active) {
-    if (target.enabled) target.perform();
-    return;
-  }
-  if (gate.held.size || (!gate.settled && !view)) {
-    gate.held.hold({ id: command.id, key, window: gate.window.includes(command) });
+  if (gate.held.size || ((!gate.settled || gate.working > 0) && !view)) {
+    gate.held.hold({
+      id: command.id, key, window: gate.window.includes(command), context: contexts.map(({ capture }) => capture()),
+    });
     return;
   }
   if (target.enabled) run(target);
 }
 
 function run(target: HeldTarget) {
-  gate.settled = false;
+  if (gate.active) gate.settled = false;
   target.perform();
   gate.rerender?.();
+}
+
+/** Runs the next held gesture, resolved to the command of the state now. */
+function runNext() {
+  return gate.held.runNext((gesture) => {
+    const target = resolve(gesture);
+    return target && {
+      enabled: target.enabled,
+      perform: () => {
+        contexts.forEach(({ restore }, index) => restore(gesture.context[index]));
+        run(target);
+      },
+    };
+  });
+}
+
+/**
+ * Runs `work`, holding gestures made until it is done as the workspace holds those made while it settles. Outside a
+ * workspace, what is held runs once the work is done and its result has rendered.
+ */
+export async function holdWhile<T>(work: () => Promise<T>): Promise<T> {
+  gate.working += 1;
+  try {
+    return await work();
+  } finally {
+    gate.working -= 1;
+    if (gate.active) gate.rerender?.();
+    else setTimeout(drainOutside);
+  }
+}
+
+/** Outside a workspace, runs one held gesture per task, so each finds the state the one before it rendered. */
+function drainOutside() {
+  if (gate.active || gate.working || !runNext()) return;
+  setTimeout(drainOutside);
 }
 
 function resolve({ id, key, window }: Gesture): HeldTarget | undefined {
@@ -136,11 +184,8 @@ export function useHeldGestures(settled: boolean, failed: boolean) {
     if (failed) gate.held.discard();
   }, [failed]);
   useEffect(() => {
-    if (!settled || !gate.held.size) return;
-    gate.held.runNext((gesture) => {
-      const target = resolve(gesture);
-      return target && { enabled: target.enabled, perform: () => run(target) };
-    });
+    if (!settled || gate.working || !gate.held.size) return;
+    runNext();
     rerender();
   });
 }

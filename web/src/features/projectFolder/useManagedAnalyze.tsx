@@ -109,10 +109,11 @@ export function useManagedAnalyze({
   const catalog = authoring.data?.review;
   /** Whether its commands apply; a gesture made while the workspace is unsettled waits for it. */
   const bindApplies = !!step && wholeStep && !outside;
-  const editApplies = bindApplies && !!analysis && !!document && !!catalog && catalog.document === document &&
-    authoring.data?.shape === catalogShape;
+  const catalogReady = !!catalog && catalog.document === document && authoring.data?.shape === catalogShape;
+  /** A catalog still being read may yet allow the edit; the workspace waits for it, so a command made then is held. */
+  const editApplies = bindApplies && !!analysis && !!document && (authoring.isFetching || catalogReady);
   const canBind = bindApplies && !pending && !busy;
-  const canEdit = editApplies && !pending && !busy;
+  const canEdit = bindApplies && !!analysis && !!document && catalogReady && !pending && !busy;
   const [inspected, setInspected] = useState<{ scope: string; id: string }>();
   /** The request of the selected element shown in the inspector, when the element maps over labels. */
   const [chosenRequest, setChosenRequest] = useState<{ scope: string; element: string; member: string }>();

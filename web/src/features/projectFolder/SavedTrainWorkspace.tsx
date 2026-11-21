@@ -199,6 +199,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const jobs = useStudioJobs();
   const connectionKind = useConnection().kind;
   const connected = connectionKind === 'connected';
+  /** A window that cannot reach the service; one still connecting may yet, and a gesture made then waits. */
+  const reachable = connectionKind !== 'unreachable';
   const queries = useQueryClient();
   const actions = useStudioJobActions();
   const [windowState, setWindowState] = useProjectWindowState(saved.project_id);
@@ -278,6 +280,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const variant = selection.variantId ?? variants[0] ?? null;
   const missingVariant = selection.variantId !== null && !variants.includes(selection.variantId);
   const primaryVariant = variant !== null && variant === variants[0];
+  /** Whether a command of the primary variant applies: until a plan names the variants it may, and a gesture waits. */
+  const variantApplies = projection.data ? primaryVariant : true;
   const plan = useMemo(() => projectWindowPlan(saved.project, projection.data, variant, validity.checking),
     [saved.project, projection.data, variant, validity.checking]);
   const shownPlan = useMemo(() => planWithRefusal(planWithRefusal(plan, readRefusal), refusal), [plan, readRefusal, refusal]);
@@ -293,7 +297,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const runRemoval = useRunRemovalDialog(data);
   const sets = setAuthoring({
     editor, project: saved.project, enabled: !!data && !pending && !outside && connected && primaryVariant && !busy,
-    applies: !outside && connected && primaryVariant,
+    applies: !outside && reachable && variantApplies,
     perform, state: () => latestState.current, select: (next) => selection.select(next),
   });
   const axisMenu: AxisMenu = (stepId, axis) => ({
@@ -416,8 +420,11 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const shownResult = focusedResult(projection.data, step?.id, state.focus?.runId, runIds, resultAttempt);
   const ready = Boolean(data && !pending && !outside && connected && !projection.error);
   const canAuthorContinuation = ready && primaryVariant;
-  /** Whether the plan's commands apply. A gesture made while the workspace is unsettled is held until it settles. */
-  const applies = Boolean(projection.data && !outside && connected && !projection.error);
+  /**
+   * Whether the plan's commands apply. Only lasting conditions count: a plan still loading or a window still
+   * connecting leaves the workspace unsettled, and a gesture made then is held until it settles.
+   */
+  const applies = Boolean((projection.data || projection.isPending) && !outside && reachable && !projection.error);
   /** The stopped attempt of a focused single run whose checkpoints an Evaluate can use, in the plan it was read from. */
   const stoppedAttempt = ({ row, attempt }: ReturnType<typeof focusedResult>, source: StudioSavedTrainRuns | undefined) =>
     !saved.project.sweep && windowState.mode !== 'map' &&
@@ -472,6 +479,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const remoteMachine = requestedMachine && requestedMachine !== localMachine ? requestedMachine : undefined;
   const machineReady = !remoteMachine || !machineCatalog.isError && machineCatalog.data?.targets.some(({ profile, availability }) =>
     profile.id === remoteMachine && availability.state === 'ready');
+  /** Whether the chosen machine's catalog is still being read, which leaves the workspace unsettled. */
+  const machinePending = !!remoteMachine && machineCatalog.isFetching;
   const evaluationAuthoring = wholeStep && authored && ordinaryEvaluation(authored);
   const evaluationSources = evaluationAuthoring ? evaluationAuthoring.subjects.flatMap((selection) => {
     const source = plan.steps.find(({ id }) => id === selection.reference.step);
@@ -650,7 +659,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   });
   /** A window still connecting, at load or after a loss, has not settled; one that cannot reach the service has. */
   const workspaceSettled = connectionKind !== 'connecting' && !busy && !(pending && !snapshot.error) && !snapshot.saving &&
-    !planPending && !projection.isPending && analyze.settled;
+    !planPending && !projection.isPending && !machinePending && analyze.settled;
   useHeldGestures(workspaceSettled, !!snapshot.error);
   const jobsById = new Map(jobs.data?.jobs.map((job) => [job.job_id, job]));
   const evaluationRequests = new Map(evaluationRows.map(({ key, request_id }) => [savedRunId(key), request_id]));
@@ -972,7 +981,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         { stepId: row.key.step, selection: { kind: 'rows', stepId: row.key.step, runIds: [stoppedSubject.runId] } },
         data, stoppedSubject),
     });
-  }, { enabled: Boolean(applies && primaryVariant && checkpointAttempt === stoppedSubject.jobId) });
+  }, { enabled: Boolean(applies && variantApplies && checkpointAttempt === stoppedSubject.jobId) });
 
   const evaluateInputs = authored?.kind === 'evaluate' ? authored : undefined;
   const trainSteps = plan.steps.filter(({ kind }) => kind === 'train');
@@ -1152,7 +1161,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   }
 
   function stepInsertion(source?: PipelineMapStepSource): { kinds: StepInsertion; enabled: boolean } | undefined {
-    if (!primaryVariant) return undefined;
+    if (!variantApplies) return undefined;
+    /** The plan the insertion is read from: the last one while the current revision's loads, which is the current
+     * one by the time a gesture made meanwhile runs. */
+    const known = data ?? projection.data;
     if (!source) {
       const chosen = state.selection?.kind === 'steps'
         ? state.selection.stepIds.length === 1 ? { stepId: state.selection.stepIds[0], selection: null } : undefined
@@ -1166,18 +1178,18 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       }) }, enabled: applies };
     }
     const sourceStep = plan.steps.find(({ id }) => id === source.stepId);
-    if (sourceStep?.kind === 'evaluate' && data) {
+    if (sourceStep?.kind === 'evaluate' && known) {
       const rows = source.selection ? selectedRuns(sourceStep, source.selection) : sourceStep.runs;
-      const input = analyzeInput(sourceStep, rows, data, !!saved.project.sweep);
+      const input = analyzeInput(sourceStep, rows, known, !!saved.project.sweep);
       if (!input) return undefined;
       return { kinds: { analyze: () => void perform(async () => {
-        const id = await createAnalyze(editor, data.revision, input);
+        const id = await createAnalyze(editor, known.revision, input);
         commandScope.selectCreatedStep(id, 'analysis');
       }, refuseStep(source.stepId)) }, enabled: applies };
     }
-    if (sourceStep?.kind === 'analyze' && data) {
+    if (sourceStep?.kind === 'analyze' && known) {
       const rows = new Set((source.selection ? selectedRuns(sourceStep, source.selection) : sourceStep.runs).map(({ id }) => id));
-      const figures = (data?.window_map?.analysis_elements ?? []).filter(isReportFigureSource)
+      const figures = (known.window_map?.analysis_elements ?? []).filter(isReportFigureSource)
         .filter(({ key }) => rows.has(savedRunId(key)));
       if (!figures.length) return undefined;
       const selected = step?.id === sourceStep.id && namedRun && figures.find(({ key, name }) =>
@@ -1193,9 +1205,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     return {
       kinds: {
         train: () => void perform(async () => { await onNewStep(source, commandScope); }, refuseStep(source.stepId)),
-        ...(data && managedTrialDomain(data, runs) && { evaluate: () => evaluateTrain(source, data) }),
+        ...(known && managedTrialDomain(known, runs) && { evaluate: () => evaluateTrain(source, known) }),
       },
-      enabled: applies && primaryVariant,
+      enabled: applies && variantApplies,
     };
   }
 
@@ -1341,7 +1353,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const problemCommand = bindStudioCommand('problems', () => openProjectProblems());
   const retryCommand = bindStudioCommand('retry', retry);
   const runCommand = bindStudioCommand('run', run, {
-    enabled: applies && !machineQuote && Boolean(machineReady) && runnableRows.length > 0,
+    enabled: applies && !machineQuote && (machinePending || Boolean(machineReady)) && (planPending || runnableRows.length > 0),
     name: selectedJobs.length === 1 && selectedJobs[0].target?.kind === 'session' && selectedJobs[0].status === 'failed'
       ? 'rerun' : 'run',
   });
