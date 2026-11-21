@@ -1,5 +1,5 @@
 import { useId } from 'react';
-import { studioName } from '@/components/activity/studioVocabulary';
+import { studioCountOf, studioName } from '@/components/activity/studioVocabulary';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { ReferenceField, type ReferenceChoice, type ReferenceGroup } from '@/components/values/ReferenceField';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
@@ -12,6 +12,8 @@ import type { AuthoredProject } from './authoredEdits';
 import {
   documentChoice, documentChoiceId, documentGroup, stepChoice, stepChoiceId, stepGroup,
 } from './referenceChoices';
+import { InputSelections } from './InputSelections';
+import { changedSelections, stepSelections } from './selectionEdits';
 
 type Declaration = NonNullable<AnalysisDocument['inputs']>[string];
 type Source = StepInput | OperationDataset;
@@ -36,8 +38,8 @@ function boundChoice(binding: InputBinding | null | undefined, steps: readonly P
   return step ? stepChoice(step) : { id: stepChoiceId(reference.data.step), label: reference.data.step };
 }
 
-/** The binding of an Analyze step's input role to a step's output or a document of the role's kind. */
-export function AnalyzeRoleBinding({ role, kind, binding, project, steps, picking, refusal, onBind }: {
+/** The binding of an Analyze step's input role to a step's output or a document of the role's kind. A dataset role takes a list. */
+export function AnalyzeRoleBinding({ role, kind, binding, project, steps, inputs, picking, refusal, problem, onBind }: {
   role: string;
   /** Why the last binding was refused. */
   refusal?: string;
@@ -45,14 +47,44 @@ export function AnalyzeRoleBinding({ role, kind, binding, project, steps, pickin
   binding: InputBinding | null | undefined;
   project: AuthoredProject;
   steps: readonly PlanStepView[];
+  /** The plan's inputs of the step, whose subsets the selections' rows show. */
+  inputs?: PlanStepView['inputs'];
   picking: ElementSelectionStore;
+  /** Why the plan refuses selection `index` of the role. */
+  problem?: (index: number) => string | undefined;
   onBind?: (binding: InputBinding) => void;
 }) {
   const labelId = useId();
   const label = humanizeLabel(role);
+  const groups = roleGroups(project, steps, kind);
+  const selections = kind === 'dataset' ? stepSelections(binding) : undefined;
+  if (selections) {
+    const listed = Array.isArray(binding);
+    const stepOf = (choice: { id: string }) => steps.find(({ id }) => stepChoiceId(id) === choice.id);
+    return <InputSelections label={label} labelId={labelId} groups={groups} picking={picking} refusal={refusal}
+      rows={selections.map((reference, index) => {
+        const subset = inputs?.find(({ id }) => id === (listed ? `${role}.${index}` : role))?.subset;
+        return {
+          value: boundChoice(reference, steps),
+          problem: listed ? problem?.(index) : undefined,
+          detail: subset && <div className="px-control-inline text-shell-muted">
+            {[...subset.terms, studioCountOf(subset.count, subset.total)].join(' · ')}
+          </div>,
+        };
+      })}
+      onChange={onBind && ((gesture) => {
+        if (gesture.kind === 'remove') return onBind(changedSelections(selections, gesture));
+        const step = stepOf(gesture.choice);
+        if (!step) return;
+        if (gesture.kind === 'add') onBind(changedSelections(selections, { kind: 'add', reference: { step: step.id } }));
+        else if (step.id !== selections[gesture.index].step) {
+          onBind(changedSelections(selections, { kind: 'replace', index: gesture.index, step: step.id }));
+        }
+      })} />;
+  }
   return <FieldRow label={label} labelId={labelId} below={refusal && <p role="alert">{refusal}</p>}>
     <ReferenceField label={label} aria-labelledby={labelId} picking={picking}
-      groups={roleGroups(project, steps, kind)} value={boundChoice(binding, steps)}
+      groups={groups} value={boundChoice(binding, steps)}
       onChoose={onBind && ((choice) => {
         const step = steps.find(({ id }) => stepChoiceId(id) === choice.id);
         if (step) onBind(kind === 'model' ? { step: step.id, checkpoint: 'last' } : { step: step.id });

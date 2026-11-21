@@ -251,6 +251,16 @@
   transform: translateY(-50%);
 }
 
+/* A card's output handle, from which a wire is dragged, shows while the card is hovered or has the keyboard. */
+.studio-map-handle {
+  opacity: 0;
+}
+
+.studio-map-card:hover .studio-map-handle,
+.studio-map-card:focus-within .studio-map-handle {
+  opacity: 1;
+}
+
 /* Card styles: one root attribute (`data-card`, an appearance setting) over the shared Card. */
 [data-card='ring'] {
   --card-selected-head-fill: transparent;

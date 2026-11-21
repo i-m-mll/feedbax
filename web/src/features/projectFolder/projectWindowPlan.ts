@@ -106,6 +106,16 @@ export function projectWindowPlan(
   const stepSources = new Map(map?.steps.filter(({ variant }) => variant === scope).map(({ step_id, inputs }) =>
     [step_id, inputs.find(({ id }) => id === 'subject')?.source_step_id]));
   const train = new Map(saved?.rows.map((row) => [savedRunId(row.key), row]));
+  /** The Train steps an Evaluate step's subject gathers from, when it gathers from several. */
+  const gathered = new Map(map?.steps.filter(({ variant }) => variant === scope).flatMap(({ step_id, inputs }) => {
+    const sources = new Set(inputs.filter(({ id }) => id === 'subject' || id.startsWith('subject.'))
+      .map(({ source_step_id }) => source_step_id));
+    return sources.size > 1 ? [[step_id, sources] as const] : [];
+  }));
+  /** The Train step that made each gathered Evaluate run's model, the run's `model` label. */
+  const models = new Map((map?.edges ?? []).flatMap(({ from_key, to_key }) =>
+    to_key.variant === scope && gathered.get(to_key.step)?.has(from_key.step)
+      ? [[savedRunId(to_key), from_key.step] as const] : []));
   const sweepsByStep = new Map<string, Map<string, Map<string, string>>>();
   const runsByStep = new Map<string, PlanRunView[]>();
   function addRun(step: string, run: PlanRunView) {
@@ -143,6 +153,13 @@ export function projectWindowPlan(
     let sweeps = sweepsByStep.get(row.key.step);
     if (!sweeps) sweepsByStep.set(row.key.step, sweeps = new Map());
     const values: Record<string, string> = {};
+    const model = models.get(savedRunId(row.key));
+    if (model !== undefined && !('model' in row.coordinates)) {
+      let entries = sweeps.get('model');
+      if (!entries) sweeps.set('model', entries = new Map());
+      entries.set(model, shownName(model, project.steps?.[model]));
+      values.model = model;
+    }
     for (const [sweep, coordinate] of Object.entries(row.coordinates)) {
       let entries = sweeps.get(sweep);
       if (!entries) sweeps.set(sweep, entries = new Map());

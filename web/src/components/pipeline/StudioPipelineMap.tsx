@@ -10,6 +10,7 @@ import {
   useState,
   type KeyboardEvent,
   type MouseEvent,
+  type PointerEvent,
   type ReactNode,
   type Ref,
 } from 'react';
@@ -120,11 +121,18 @@ export interface StudioPipelineMapProps {
   stepMenu?: StepMenu;
   /** An armed reference pick: a card it accepts fills the reference when its head is chosen. */
   pick?: ReferencePick | null;
+  /** Wires dragged from a card's output to a card that takes it as one more selection of an input. */
+  connect?: MapConnect;
   rename?: MapStepRename;
   /** Go into a step: its views, with the keyboard in the slot that shows its Runs. */
   onEnterStep?: (stepId: string) => void;
   /** The plan shown is of an earlier revision while the shown revision's plan is read. */
   pending?: boolean;
+}
+
+export interface MapConnect {
+  accepts(source: string, target: string): boolean;
+  connect(source: string, target: string): void;
 }
 
 export type MapRenameSurface = 'card' | 'line';
@@ -292,6 +300,7 @@ const StepCard = memo(function StepCard({
   stepMenu,
   rename,
   pick,
+  connectable,
   enterStep,
 }: {
   step: PlanStepView;
@@ -314,6 +323,8 @@ const StepCard = memo(function StepCard({
   stepMenu?: StepMenu;
   rename?: MapStepRename;
   pick?: ReferencePick | null;
+  /** A wire can be dragged from the card's output. */
+  connectable?: boolean;
   enterStep?: (stepId: string) => void;
 }) {
   const id = useId();
@@ -364,6 +375,8 @@ const StepCard = memo(function StepCard({
       <CardHead className="relative flex items-center">
         <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'in')} className="pointer-events-none absolute -left-px top-1/2" />
         <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'out')} className="pointer-events-none absolute -right-px top-1/2" />
+        {connectable && <span aria-hidden="true" data-map-handle={step.id}
+          className="studio-map-handle nopan absolute -right-1.5 top-1/2 z-10 size-3 -translate-y-1/2 cursor-crosshair rounded-full border border-shell-muted bg-shell-chrome" />}
         {renamingStep(rename, step.id, 'card') ? (
           <div className="studio-map-card__head flex w-full px-3 py-2"><StepName step={step} rename={rename} /></div>
         ) : <CommandContextMenu commands={stepMenu && (() => stepMenu(step, () => rename?.setEditing({ stepId: step.id, surface: 'card' })))}
@@ -431,6 +444,12 @@ const StepCard = memo(function StepCard({
 
 type MapLayout = ReturnType<typeof layoutPipelineMap>;
 
+/** Where a wire is dropped: the card under the pointer, or none. */
+function dropTarget(event: PointerEvent<Element>) {
+  const card = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('[data-map-step]');
+  return card?.dataset.mapStep ?? null;
+}
+
 function MapDiagram({
   layout,
   children,
@@ -438,6 +457,7 @@ function MapDiagram({
   strongEdges,
   viewportRef,
   fitReady,
+  wiring,
 }: {
   layout: MapLayout;
   children: (compact: boolean) => ReactNode;
@@ -445,8 +465,11 @@ function MapDiagram({
   strongEdges: ReadonlySet<string>;
   viewportRef?: Ref<CanvasViewport>;
   fitReady?: boolean;
+  /** A wire dragged from a card's handle: `start` with its card, `end` with the card it was dropped on. */
+  wiring?: { start(source: string): void; end(source: string, target: string | null): void };
 }) {
   const [grid, setGrid] = useState<HTMLDivElement | null>(null);
+  const [wire, setWire] = useState<{ source: string; from: { x: number; y: number }; to: { x: number; y: number } }>();
   const { ref, width, height } = useElementSize<HTMLDivElement>();
   const { getViewport } = useReactFlow();
   const fullHeights = useRef(new Map<string, number>());
@@ -491,13 +514,45 @@ function MapDiagram({
   const bounds = useMemo(() => geometry?.width && geometry.height
     ? { x: 0, y: 0, width: geometry.width, height: geometry.height } : null,
   [geometry?.width, geometry?.height]);
+  const local = (x: number, y: number) => {
+    const origin = grid!.getBoundingClientRect();
+    const { zoom } = getViewport();
+    return { x: (x - origin.left) / zoom, y: (y - origin.top) / zoom };
+  };
+  const wireEvents = wiring && grid ? {
+    onPointerDown: (event: PointerEvent<HTMLDivElement>) => {
+      const handle = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-map-handle]') : null;
+      if (!handle || event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      handle.setPointerCapture(event.pointerId);
+      const bounds = handle.getBoundingClientRect();
+      const from = local(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+      const source = handle.dataset.mapHandle!;
+      setWire({ source, from, to: from });
+      wiring.start(source);
+    },
+    onPointerMove: (event: PointerEvent<HTMLDivElement>) => {
+      if (wire) setWire({ ...wire, to: local(event.clientX, event.clientY) });
+    },
+    onPointerUp: (event: PointerEvent<HTMLDivElement>) => {
+      if (!wire) return;
+      setWire(undefined);
+      wiring.end(wire.source, dropTarget(event));
+    },
+    onPointerCancel: () => {
+      if (!wire) return;
+      setWire(undefined);
+      wiring.end(wire.source, null);
+    },
+  } : undefined;
   return (
     <div ref={ref} className="min-h-0 min-w-0 flex-1" data-map-canvas>
       <StudioCanvas contentBounds={bounds} viewportRef={viewportRef} navigateContent minZoom={0.02}
         fitReady={fitReady !== false && geometry?.compact === compact && !!width && !!height}
         elementsSelectable={false} nodesFocusable={false} edgesFocusable={false} onPaneClick={clearFocus}>
         <ViewportPortal>
-          <div ref={setGrid} className="pointer-events-none relative isolate grid w-max items-start"
+          <div ref={setGrid} {...wireEvents} className="pointer-events-none relative isolate grid w-max items-start"
             style={{ gridTemplateColumns: `repeat(${layout.columns.length}, max-content)`,
               columnGap: mapColumnGap, padding: mapPadding }}>
             <svg aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full">
@@ -511,6 +566,8 @@ function MapDiagram({
                 data-map-edge={id} data-map-emphasis={strongEdges.has(id) ? 'strong' : 'light'}
                 className={`studio-map-edge ${strongEdges.has(id) ? 'text-shell-muted' : 'text-shell-divider'}`}
                 strokeWidth={strongEdges.has(id) ? 2 : 1.5} />)}
+              {wire && <path data-map-wire={wire.source} stroke="currentColor" fill="none" strokeWidth={2}
+                className="text-shell-muted" d={`M ${wire.from.x} ${wire.from.y} L ${wire.to.x} ${wire.to.y}`} />}
             </svg>
             {children(compact)}
           </div>
@@ -715,10 +772,23 @@ export function StudioPipelineMap({
   stepMenu,
   rename,
   pick,
+  connect,
   onEnterStep,
   pending = false,
 }: StudioPipelineMapProps) {
   const region = useRegionPending(pending);
+  const [wiringFrom, setWiringFrom] = useState<string | null>(null);
+  const wirePick = useMemo<ReferencePick | null>(() => wiringFrom && connect ? {
+    accepts: (target) => target.kind === 'step' && connect.accepts(wiringFrom, target.step),
+    choose: () => {},
+  } : null, [wiringFrom, connect]);
+  const wiring = useMemo(() => connect && {
+    start: setWiringFrom,
+    end: (source: string, target: string | null) => {
+      setWiringFrom(null);
+      if (target && connect.accepts(source, target)) connect.connect(source, target);
+    },
+  }, [connect]);
   const current = useRef(state);
   useLayoutEffect(() => { current.current = state; }, [state]);
   const applySelection = useCallback<ApplyMapSelection>((change) => {
@@ -802,7 +872,7 @@ export function StudioPipelineMap({
             />
           )}
           <ReactFlowProvider><MapDiagram layout={layout} clearFocus={clearFocus}
-            strongEdges={strongEdges} viewportRef={viewportRef} fitReady={fitReady}>
+            strongEdges={strongEdges} viewportRef={viewportRef} fitReady={fitReady} wiring={wiring}>
             {(compact) => layout.columns.map((steps, index) => (
               <div key={index} data-canvas-column={index} className="relative flex flex-col items-start" style={{ gap: mapRowGap }}>
                 {steps.map((step) => (
@@ -828,7 +898,8 @@ export function StudioPipelineMap({
                     runMenu={runMenu}
                     stepMenu={stepMenu}
                     rename={rename}
-                    pick={pick}
+                    pick={wirePick ?? pick}
+                    connectable={!!connect && !pick && !(compact && step.id !== primaryStep)}
                     enterStep={onEnterStep}
                   />
                 ))}
