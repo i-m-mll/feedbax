@@ -61,3 +61,35 @@ test('gestures made while an edit saves run in order once it saves', async ({ pa
   await expect(modelTab).toHaveAttribute('aria-selected', 'true');
   expect(await steps()).toEqual(['baseline', 'train', 'train-2']);
 });
+
+/** A gesture made while the window is still connecting runs once it connects. */
+test('a gesture made while the window connects runs once it connects', async ({ page, studio }) => {
+  const projectId: string = JSON.parse(await runProjectFixture(
+    'web.e2e.studio.fixtures.canonical_evaluate', 'seed-step-rename', studio.home, 'held-connecting',
+  ));
+  const runsPath = `/api/projects/${projectId}/train-runs`;
+  const runs: string[][] = [];
+  page.on('request', (sent) => {
+    if (sent.method() === 'POST' && new URL(sent.url()).pathname === runsPath) {
+      runs.push((sent.postDataJSON() as { run_keys: { step: string }[] }).run_keys.map(({ step }) => step));
+    }
+  });
+  // The event stream does not open until released, so the window stays connecting.
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  await page.route((url) => url.pathname === '/api/events', async (route) => {
+    await released;
+    await route.fallback();
+  });
+
+  await page.goto(`/?project=${encodeURIComponent(projectId)}`);
+  await mapStep(page, 'train').click();
+  // The plan has arrived; only the connection is still settling.
+  await expect(page.getByRole('table', { name: 'Runs', exact: true }).getByText('Not run', { exact: true }).first()).toBeVisible();
+  await page.keyboard.press('Meta+R');
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  expect(runs).toEqual([]);
+  release();
+
+  await expect.poll(() => runs).toEqual([['train']]);
+});

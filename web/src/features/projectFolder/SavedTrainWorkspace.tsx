@@ -197,7 +197,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const snapshot = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const { saved, configuration, pending, outside } = snapshot;
   const jobs = useStudioJobs();
-  const connected = useConnection().kind === 'connected';
+  const connectionKind = useConnection().kind;
+  const connected = connectionKind === 'connected';
   const queries = useQueryClient();
   const actions = useStudioJobActions();
   const [windowState, setWindowState] = useProjectWindowState(saved.project_id);
@@ -647,8 +648,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     wholeStep, focused: windowState.mode !== 'map' && focusView === 'document',
     failures: stepFailures(step?.kind === 'report' ? step.id : undefined),
   });
-  const workspaceSettled = !busy && !(pending && !snapshot.error) && !snapshot.saving && !planPending &&
-    !projection.isPending && analyze.settled;
+  /** A window still connecting, at load or after a loss, has not settled; one that cannot reach the service has. */
+  const workspaceSettled = connectionKind !== 'connecting' && !busy && !(pending && !snapshot.error) && !snapshot.saving &&
+    !planPending && !projection.isPending && analyze.settled;
   useHeldGestures(workspaceSettled, !!snapshot.error);
   const jobsById = new Map(jobs.data?.jobs.map((job) => [job.job_id, job]));
   const evaluationRequests = new Map(evaluationRows.map(({ key, request_id }) => [savedRunId(key), request_id]));
