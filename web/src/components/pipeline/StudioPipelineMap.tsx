@@ -39,7 +39,7 @@ import { ListRow } from '@/components/ui/ListRow';
 import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
 import { Menu, MenuContent, MenuTrigger } from '@/components/ui/Menu';
 import { useElementSize } from '@/hooks/useElementSize';
-import type { PlanStepView, PlanSweepView, PlanView } from '@/features/pipeline/planView';
+import type { PlanStepView, PlanView } from '@/features/pipeline/planView';
 import {
   extendsSelection,
   selectionButton,
@@ -59,12 +59,12 @@ import {
   layoutPipelineMap,
   mapAnchor,
   mapCardWidth,
-  mapColumnGap,
   mapEdgePair,
-  mapPadding,
-  mapRowGap,
   mapStepLineage,
   orderedMapSweeps,
+  placePipelineMap,
+  type MapLayout,
+  type MapPlacement,
   type PipelineCardPresentation,
 } from './pipelineMapLayout';
 
@@ -229,7 +229,7 @@ function StatusCounts({ id, counts, refusal, onProblems }: {
         const problem = status === 'cannot_run' && onProblems;
         const refused = status === 'cannot_run' ? refusal : undefined;
         if (count <= 0 && !problem && !refused) return null;
-        const mark = <><StatusMark status={status} label={studioRunStatus(status)} />{count > 0 && <>{' '}{count}</>}</>;
+        const mark = <>{count > 0 && <>{count}{' '}</>}<StatusMark status={status} label={studioRunStatus(status)} /></>;
         return problem
           ? <Button variant="bare" size="content" key={status} className={className} aria-haspopup="dialog"
             aria-description={refused} {...refused && appTip(studioRunReason({ reason: refused }))}
@@ -447,17 +447,23 @@ const StepCard = memo(function StepCard({
   );
 });
 
-type MapLayout = ReturnType<typeof layoutPipelineMap>;
-
 /** Where a wire is dropped: the card under the pointer, or none. */
 function dropTarget(event: PointerEvent<Element>) {
   const card = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>('[data-map-step]');
   return card?.dataset.mapStep ?? null;
 }
 
+/** A card's height before it is measured; it is measured before the first paint. */
+const unmeasuredCardHeight = 96;
+
+function sameHeights(a: ReadonlyMap<string, number>, b: ReadonlyMap<string, number>) {
+  return a.size === b.size && [...a].every(([id, height]) => b.get(id) === height);
+}
+
 function MapDiagram({
   layout,
-  children,
+  card,
+  primaryStep,
   clearFocus,
   strongEdges,
   viewportRef,
@@ -465,7 +471,9 @@ function MapDiagram({
   wiring,
 }: {
   layout: MapLayout;
-  children: (compact: boolean) => ReactNode;
+  card: (step: PlanStepView, compact: boolean) => ReactNode;
+  /** In compact density, the step whose card stays full. */
+  primaryStep?: string;
   clearFocus: () => void;
   strongEdges: ReadonlySet<string>;
   viewportRef?: Ref<CanvasViewport>;
@@ -478,11 +486,18 @@ function MapDiagram({
   const { ref, width, height } = useElementSize<HTMLDivElement>();
   const { getViewport } = useReactFlow();
   const fullHeights = useRef(new Map<string, number>());
+  const [heights, setHeights] = useState<ReadonlyMap<string, number>>(() => new Map());
   const visibleSize = useRef({ width: 0, height: 0 });
   if (width && height) visibleSize.current = { width, height };
   const compact = !fullMapFits(
-    layout.columns, visibleSize.current.width, visibleSize.current.height, fullHeights.current,
+    placePipelineMap(layout, ({ id }) => ({ width: mapCardWidth, height: fullHeights.current.get(id) ?? unmeasuredCardHeight })),
+    visibleSize.current.width, visibleSize.current.height,
   );
+  const compactCard = (step: PlanStepView) => compact && step.id !== primaryStep;
+  const placement: MapPlacement = useMemo(() => placePipelineMap(layout, ({ id }) => ({
+    width: compact && id !== primaryStep ? compactMapCardWidth : mapCardWidth,
+    height: heights.get(id) ?? unmeasuredCardHeight,
+  })), [layout, heights, compact, primaryStep]);
   const [geometry, setGeometry] = useState<{
     width: number; height: number; compact: boolean;
     paths: readonly { id: string; d: string }[];
@@ -493,9 +508,13 @@ function MapDiagram({
       const origin = grid.getBoundingClientRect();
       const { zoom } = getViewport();
       const positions = new Map<string, { x: number; y: number }>();
-      for (const card of grid.querySelectorAll<HTMLElement>('[data-map-density="full"]')) {
-        if (card.offsetHeight) fullHeights.current.set(card.dataset.mapStep!, card.offsetHeight);
+      const measured = new Map<string, number>();
+      for (const card of grid.querySelectorAll<HTMLElement>('[data-map-card]')) {
+        if (!card.offsetHeight) continue;
+        measured.set(card.dataset.mapStep!, card.offsetHeight);
+        if (card.dataset.mapDensity === 'full') fullHeights.current.set(card.dataset.mapStep!, card.offsetHeight);
       }
+      setHeights((prior) => sameHeights(prior, measured) ? prior : measured);
       for (const anchor of grid.querySelectorAll<HTMLElement>('[data-map-anchor]')) {
         const bounds = anchor.getBoundingClientRect();
         positions.set(anchor.dataset.mapAnchor!, { x: (bounds.left - origin.left) / zoom, y: (bounds.top - origin.top) / zoom });
@@ -515,7 +534,7 @@ function MapDiagram({
     observer.observe(grid);
     for (const card of grid.querySelectorAll('[data-map-card]')) observer.observe(card);
     return () => observer.disconnect();
-  }, [grid, layout.edges, compact, getViewport]);
+  }, [grid, layout.edges, compact, placement, getViewport]);
   const bounds = useMemo(() => geometry?.width && geometry.height
     ? { x: 0, y: 0, width: geometry.width, height: geometry.height } : null,
   [geometry?.width, geometry?.height]);
@@ -557,9 +576,8 @@ function MapDiagram({
         fitReady={fitReady !== false && geometry?.compact === compact && !!width && !!height}
         elementsSelectable={false} nodesFocusable={false} edgesFocusable={false} onPaneClick={clearFocus}>
         <ViewportPortal>
-          <div ref={setGrid} {...wireEvents} className="pointer-events-none relative isolate grid w-max items-start"
-            style={{ gridTemplateColumns: `repeat(${layout.columns.length}, max-content)`,
-              columnGap: mapColumnGap, padding: mapPadding }}>
+          <div ref={setGrid} {...wireEvents} className="pointer-events-none relative isolate"
+            style={{ width: placement.width, height: placement.height }}>
             <svg aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full">
               <defs>
                 <linearGradient id="studio-map-turbo-edge" gradientUnits="userSpaceOnUse" x1={0} x2={geometry?.width ?? 1} y1={0} y2={0}>
@@ -574,7 +592,16 @@ function MapDiagram({
               {wire && <path data-map-wire={wire.source} stroke="currentColor" fill="none" strokeWidth={2}
                 className="text-shell-muted" d={`M ${wire.from.x} ${wire.from.y} L ${wire.to.x} ${wire.to.y}`} />}
             </svg>
-            {children(compact)}
+            {layout.columns.map((steps, index) => (
+              <div key={index} data-canvas-column={index} className="absolute top-0 h-full"
+                style={{ left: placement.columns[index].x, width: placement.columns[index].width }}>
+                {steps.map((step) => (
+                  <div key={step.id} className="absolute left-0" style={{ top: placement.cards.get(step.id)!.y }}>
+                    {card(step, compactCard(step))}
+                  </div>
+                ))}
+              </div>
+            ))}
           </div>
         </ViewportPortal>
       </StudioCanvas>
@@ -607,7 +634,7 @@ function stepTrailing(step: PlanStepView, applySelection: ApplyMapSelection) {
         const runIds = step.runs.filter(({ state }) => state === worst.status).map(({ id }) => id);
         applySelection(() => ({ selection: { kind: 'rows', stepId: step.id, runIds }, focus: null }));
       }}>
-      <StatusMark status={worst.status} label={studioRunStatus(worst.status)} />{shown !== undefined && <>{' '}{shown}</>}
+      {shown !== undefined && <>{shown}{' '}</>}<StatusMark status={worst.status} label={studioRunStatus(worst.status)} />
     </Button>
   );
 }
@@ -880,42 +907,36 @@ export function StudioPipelineMap({
               stepMenu={stepMenu}
             />
           )}
-          <ReactFlowProvider><MapDiagram layout={layout} clearFocus={clearFocus}
-            strongEdges={strongEdges} viewportRef={viewportRef} fitReady={fitReady} wiring={wiring}>
-            {(compact) => layout.columns.map((steps, index) => (
-              <div key={index} data-canvas-column={index} className="relative flex flex-col items-start" style={{ gap: mapRowGap }}>
-                {steps.map((step) => (
-                  <StepCard
-                    key={step.id}
-                    step={step}
-                    selection={stepSelection(state.selection, step.id)}
-                    presentation={presentation?.[step.id] ?? emptyPresentation}
-                    applySelection={applySelection}
-                    chooseStep={chooseStep}
-                    documentScope={documentScope}
-                    reached={reached?.has(step.id)}
-                    compact={compact && step.id !== primaryStep}
-                    dimmed={!documentScope && selectedSteps.length > 0 &&
-                      !ancestry.upstream.has(step.id) && !ancestry.downstream.has(step.id)}
-                    upstream={upstream?.get(step.id)}
-                    downstream={downstream?.get(step.id)}
-                    onPresentationChange={onPresentationChange}
-                    newStep={newStepCommand?.({ stepId: step.id, selection: stepRunSelection(state.selection, step.id) }, step.label)}
-                    newSweep={newSweepCommand?.(step.id, step.label)}
-                    sweepMenu={sweepMenu?.stepId === step.id ? sweepMenu : undefined}
-                    onProblems={problemSteps?.has(step.id) ? onProblems : undefined}
-                    runMenu={runMenu}
-                    axisMenu={axisMenu}
-                    stepMenu={stepMenu}
-                    rename={rename}
-                    pick={wirePick ?? pick}
-                    connectable={!!connect && !pick && !(compact && step.id !== primaryStep)}
-                    enterStep={onEnterStep}
-                  />
-                ))}
-              </div>
-            ))}
-          </MapDiagram></ReactFlowProvider>
+          <ReactFlowProvider><MapDiagram layout={layout} clearFocus={clearFocus} primaryStep={primaryStep}
+            strongEdges={strongEdges} viewportRef={viewportRef} fitReady={fitReady} wiring={wiring}
+            card={(step, compact) => (
+              <StepCard
+                step={step}
+                selection={stepSelection(state.selection, step.id)}
+                presentation={presentation?.[step.id] ?? emptyPresentation}
+                applySelection={applySelection}
+                chooseStep={chooseStep}
+                documentScope={documentScope}
+                reached={reached?.has(step.id)}
+                compact={compact}
+                dimmed={!documentScope && selectedSteps.length > 0 &&
+                  !ancestry.upstream.has(step.id) && !ancestry.downstream.has(step.id)}
+                upstream={upstream?.get(step.id)}
+                downstream={downstream?.get(step.id)}
+                onPresentationChange={onPresentationChange}
+                newStep={newStepCommand?.({ stepId: step.id, selection: stepRunSelection(state.selection, step.id) }, step.label)}
+                newSweep={newSweepCommand?.(step.id, step.label)}
+                sweepMenu={sweepMenu?.stepId === step.id ? sweepMenu : undefined}
+                onProblems={problemSteps?.has(step.id) ? onProblems : undefined}
+                runMenu={runMenu}
+                axisMenu={axisMenu}
+                stepMenu={stepMenu}
+                rename={rename}
+                pick={wirePick ?? pick}
+                connectable={!!connect && !pick && !compact}
+                enterStep={onEnterStep}
+              />
+            )} /></ReactFlowProvider>
         </>
       )}
     </section>

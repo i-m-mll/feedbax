@@ -248,11 +248,11 @@
   flex-shrink: 0;
 }
 
-/* A control attached to a card's edge sits wholly outside its border and selection ring. */
+/* A control attached to a card's edge sits just outside its selection ring, at most half as far from its card as from the next column's. */
 .studio-card__attached {
   position: absolute;
   top: 50%;
-  left: calc(100% + var(--card-selected-outset) + var(--card-selected-width) + 4px);
+  left: calc(100% + var(--card-selected-outset) + var(--card-selected-width) + 1px);
   transform: translateY(-50%);
 }
 
