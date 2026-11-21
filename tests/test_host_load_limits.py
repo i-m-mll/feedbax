@@ -8,7 +8,7 @@ import threading
 
 import pytest
 
-from feedbax.contracts.operation import DatasetPort, OperationDefinition
+from feedbax.contracts.operation import DatasetOutputPort, OperationDefinition
 from feedbax.contracts.request_identity import encode_request
 from feedbax.contracts.request_refs import InputMember, ProductRef
 from feedbax.contracts.figure_document import FigureDocument
@@ -77,7 +77,7 @@ def test_host_admits_a_light_job_with_edges_without_importing_jax(tmp_path, monk
     definition = OperationDefinition(
         key="fixture.series", owner="fixture", owner_version="1", label="Series", description="Test input",
         param_schema=[], parameter_json_schema={},
-        static_parameters=(), inputs={}, outputs={"series": DatasetPort(schema_ids=(schema,))},
+        static_parameters=(), inputs={}, outputs={"series": DatasetOutputPort(schema_ids=(schema,))},
     ).model_dump(mode="json")
     series = store_request(blobs, encode_request(AnalysisRequestSpec(analysis_type="fixture.series", params={}), {}))
     figures = FigureDocument.model_validate({
