@@ -133,6 +133,15 @@ test('authors a set across runs: Duplicate Run, Save Set, a set as a sweep, Inli
     expect(status).not.toBe('succeeded');
   }
 
+  // A refused Save Set lands on the axis's label, not on the step.
+  const sets = (url: URL) => url.pathname === path + '/authoring/sets';
+  await page.route(sets, (route) => route.fulfill({ status: 422, json: { detail: 'The axis holds no values.' } }));
+  await sweepLabel(card('pair'), 'run').click();
+  await page.getByRole('menuitem', { name: 'Save Set', exact: true }).click();
+  await expect(sweepLabel(card('pair'), 'run')).toHaveAccessibleDescription('The axis holds no values.');
+  await expect(page.locator('[aria-description="The axis holds no values."]')).toHaveCount(1);
+  await page.unroute(sets);
+
   // Save Set: the axis reads the new set `set`.
   await sweepLabel(card('pair'), 'run').click();
   await page.getByRole('menuitem', { name: 'Save Set', exact: true }).click();

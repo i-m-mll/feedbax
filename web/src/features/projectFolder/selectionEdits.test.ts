@@ -10,7 +10,7 @@ it('changes a selection without carrying the old step restriction, and writes a 
     { step: 'a', checkpoint: 'last' as const, where: { rows: [] } },
     { step: 'b', checkpoint: { at: 4 } },
   ];
-  expect(changedSelections(selections, { kind: 'replace', index: 0, step: 'c' }))
+  expect(changedSelections(selections, { kind: 'replace', index: 0, reference: { step: 'c' } }))
     .toEqual([{ step: 'c', checkpoint: 'last' }, selections[1]]);
   expect(changedSelections(selections, { kind: 'remove', index: 0 })).toEqual(selections[1]);
 });

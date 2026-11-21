@@ -120,8 +120,8 @@ export function useModelSelection(store: ElementSelectionStore, document: string
 }
 
 /**
- * The selected element of one document without an element grammar, as one id. `reveal`, when it changes, selects
- * `revealedId`.
+ * The selected elements of one document without an element grammar, as ids; `selectedId` is the one selected element,
+ * when only one is. `reveal`, when it changes, selects `revealedId`.
  */
 export function useNamedSelection(store: ElementSelectionStore, document: string | undefined, reveal?: object, revealedId?: string) {
   const selection = useStore(store, (state) => state.selection);
@@ -131,12 +131,16 @@ export function useNamedSelection(store: ElementSelectionStore, document: string
     handled.current = reveal;
     store.setState({ selection: [{ document, element: { kind: 'named', id: revealedId } }] });
   }, [document, reveal, revealedId, store]);
-  const first = selection[0];
+  const selectedIds = useMemo(() => selection.flatMap((item) => document && !isModelAddress(item) &&
+    item.document === document ? [item.element.id] : []), [document, selection]);
   return {
-    selectedId: document && first && !isModelAddress(first) && first.document === document ? first.element.id : null,
-    onSelect: (id: string | null) => {
+    selectedId: selectedIds.length === 1 ? selectedIds[0] : null,
+    selectedIds,
+    /** Selects `id`, or with `extend` toggles it among the selected elements. */
+    onSelect: (id: string | null, extend = false) => {
       if (!document) return;
-      store.setState({ selection: id === null ? [] : [{ document, element: { kind: 'named', id } }] });
+      if (id === null) store.setState({ selection: [] });
+      else selectElement(store, { document, element: { kind: 'named', id } }, extend);
     },
   };
 }

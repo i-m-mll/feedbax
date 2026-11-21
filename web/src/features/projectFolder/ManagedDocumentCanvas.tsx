@@ -7,6 +7,7 @@ import { CommandContextMenu } from '@/components/pipeline/CommandContextMenu';
 import { Card, CardHead } from '@/components/ui/Card';
 import { InlineEdit } from '@/components/ui/InlineEdit';
 import { StatusMark } from '@/components/ui/StatusMark';
+import { extendsSelection } from '@/features/pipeline/selection';
 import type { StudioCommand } from '@/features/projectWindow/studioCommands';
 import type { PresentationPosition, StudioProjectWindowMapElement } from '@/generated/studioContracts';
 
@@ -52,8 +53,10 @@ const cardHeight = 34;
 const cardWidth = (name: string) => Math.max(150, 56 + name.length * 8);
 
 type CanvasProps = {
-  selectedId: string | null;
-  onSelect: (id: string | null) => void;
+  /** The selected items' selection ids. */
+  selectedIds: readonly string[];
+  /** Selects an item, or with `extend` toggles it among the selected items; null clears the selection. */
+  onSelect: (id: string | null, extend?: boolean) => void;
   items: readonly CanvasNode[];
   connections: readonly Edge[];
   positions?: Record<string, PresentationPosition>;
@@ -72,9 +75,12 @@ export function ManagedDocumentCanvas(props: CanvasProps) {
 }
 
 const labelPlate: [number, number] = [8, 3];
+const multiSelectionKeys = ['Meta', 'Control', 'Shift'];
 
-function Canvas({ items, connections, positions, selectedId, onSelect, openAt, rememberPoint, placing, viewportRef, pick, drop }: CanvasProps) {
+function Canvas({ items, connections, positions, selectedIds, onSelect, openAt, rememberPoint, placing, viewportRef, pick, drop }: CanvasProps) {
   const { screenToFlowPosition } = useReactFlow();
+  // A selection change carries no modifiers; the gesture that made it records them.
+  const extend = useRef(false);
   const { nodes, edges } = useMemo(() => {
     const layout = new dagre.graphlib.Graph().setGraph({ rankdir: 'LR', ranksep: 40, nodesep: 24 }).setDefaultEdgeLabel(() => ({}));
     items.forEach(({ id, name }) => layout.setNode(id, { width: cardWidth(name), height: cardHeight }));
@@ -93,18 +99,20 @@ function Canvas({ items, connections, positions, selectedId, onSelect, openAt, r
     return { nodes, edges };
   }, [items, connections, positions]);
   const shownNodes = useMemo(() => nodes.map((node) => ({
-    ...node, selected: !pick && selectedId === node.data.selectionId,
-    data: { ...node.data, selected: !pick && selectedId === node.data.selectionId },
+    ...node, selected: !pick && selectedIds.includes(node.data.selectionId),
+    data: { ...node.data, selected: !pick && selectedIds.includes(node.data.selectionId) },
     ...pick && {
       selectable: false,
       domAttributes: { 'data-pick': pick.accepts(node.data.selectionId) ? 'allowed' : 'refused' } as Node['domAttributes'],
     },
-  })), [nodes, selectedId, pick]);
+  })), [nodes, selectedIds, pick]);
   // A label sits on a canvas-coloured plate wide enough that the edge visibly stops short of the text.
   const shownEdges = useMemo(() => edges.map((edge) => ({
-    ...edge, selected: selectedId === edge.id, labelBgPadding: labelPlate,
-  })), [edges, selectedId]);
+    ...edge, selected: selectedIds.includes(edge.id), labelBgPadding: labelPlate,
+  })), [edges, selectedIds]);
   return <div className="h-full min-h-0"
+    onPointerDownCapture={(event) => { extend.current = extendsSelection(event); }}
+    onKeyDownCapture={(event) => { extend.current = extendsSelection(event); }}
     onPointerMove={(event) => {
       if (openAt) rememberPoint?.(screenToFlowPosition({ x: event.clientX, y: event.clientY }));
     }}
@@ -124,15 +132,16 @@ function Canvas({ items, connections, positions, selectedId, onSelect, openAt, r
       }
     }}>
     <StudioCanvas nodes={shownNodes} nodeTypes={nodeTypes} edges={shownEdges} fitNewContent lockAutoFit={placing} viewportRef={viewportRef}
-      zoomOnDoubleClick={!openAt}
+      zoomOnDoubleClick={!openAt} multiSelectionKeyCode={multiSelectionKeys}
       onNodeClick={pick ? (_, node) => {
         const id = nodes.find((item) => item.id === node.id)?.data.selectionId;
         if (id !== undefined && pick.accepts(id)) pick.choose(id);
       } : undefined}
       onNodesChange={(changes) => {
-        const change = changes.find((item) => item.type === 'select' && item.selected);
+        // An extending gesture toggles the one node it reaches; a plain one selects the node it reaches.
+        const change = changes.find((item) => item.type === 'select' && (extend.current || item.selected));
         const node = change?.type === 'select' ? nodes.find(({ id }) => id === change.id) : undefined;
-        if (node) onSelect(node.data.selectionId);
+        if (node) onSelect(node.data.selectionId, extend.current);
       }}
       onEdgesChange={(changes) => {
         const change = changes.find((item) => item.type === 'select' && item.selected);

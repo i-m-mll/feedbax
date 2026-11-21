@@ -86,7 +86,8 @@ export function setAuthoring({ editor, project, enabled, perform, state, select 
     const read = authoredAxis(project, step, axis);
     if (!read) return [];
     const command = (id: 'saveSet' | 'inlineSet', kind: 'save_set' | 'inline_set') => bindStudioCommand(id, () => {
-      void perform(async () => { await store(studioAccessibleName(id, axis), { kind, step, axis }); }, refuseStep(step));
+      void perform(async () => { await store(studioAccessibleName(id, axis), { kind, step, axis }); },
+        (reason) => ({ kind: 'axis', step, axis, reason }));
     }, { subject: axis, enabled });
     return 'set' in read ? [command('inlineSet', 'inline_set')] : 'values' in read ? [command('saveSet', 'save_set')] : [];
   }

@@ -9,6 +9,7 @@ import {
   studioFormat,
   studioFormatParts,
   studioName,
+  studioRunReason,
   studioRunStatus,
   type StudioResultState,
 } from '@/components/activity/studioVocabulary';
@@ -44,6 +45,8 @@ export type ApplyMapSelection = (change: (state: PipelineSelectionState) => Pipe
 export type AxisMenu = (stepId: string, axis: string) => {
   readonly picker?: DocumentPickerModel;
   readonly commands: readonly StudioCommand[];
+  /** Why the axis's last command was refused. */
+  readonly refusal?: string;
 };
 
 type Place = 'rows' | 'columns' | 'folded';
@@ -102,7 +105,9 @@ function MapAxisLabel({
           className={clsx('studio-map-axis !shrink aria-expanded:bg-shell-selected', folded && '![flex-shrink:1000000]')}
           data-place={place}
           aria-label={studioAccessibleName('sweep', `${sweep.label} ${count}`)}
-          {...appTip(studioAccessibleName('sweep', `${sweep.label} ${count}`))}
+          aria-description={authored?.refusal}
+          {...appTip(authored?.refusal ? studioRunReason({ reason: authored.refusal })
+            : studioAccessibleName('sweep', `${sweep.label} ${count}`))}
           draggable={Boolean(exchange)}
           onDragStart={(event) => {
             dragging.current = sweep.id;
@@ -118,6 +123,7 @@ function MapAxisLabel({
             <span className="truncate">{sweep.label}</span>
             <span>{parts.slice(nameAt + 1)}</span>
           </span>
+          {authored?.refusal && <StatusMark status="cannot_run" label={studioRunStatus('cannot_run')} />}
         </Button>
       } />
       <MenuContent aria-label={studioAccessibleName('sweep', sweep.label)}>

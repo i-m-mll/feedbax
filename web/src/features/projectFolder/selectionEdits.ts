@@ -13,18 +13,20 @@ export function stepSelections(binding: InputBinding | null | undefined): StepRe
 
 export type SelectionChange =
   | { kind: 'add'; reference: StepReference }
-  | { kind: 'replace'; index: number; step: string }
+  /** `reference` names a step, or an operation's output in an Analyze card. */
+  | { kind: 'replace'; index: number; reference: Pick<StepReference, 'step' | 'element' | 'product'> }
   | { kind: 'remove'; index: number };
 
 /**
- * The binding after `change`. A selection whose step changes keeps its checkpoint and drops its restriction, which
- * names the old step's runs. A list of one is written as its one reference.
+ * The binding after `change`. A selection whose step changes keeps its checkpoint, when it still reads a step's
+ * output, and drops its restriction, which names the old step's runs. A list of one is written as its one reference.
  */
 export function changedSelections(selections: readonly StepReference[], change: SelectionChange): InputBinding {
   const next = change.kind === 'add' ? [...selections, change.reference]
     : change.kind === 'remove' ? selections.filter((_, index) => index !== change.index)
       : selections.map((reference, index) => index !== change.index ? reference : {
-        step: change.step, ...(reference.checkpoint != null && { checkpoint: reference.checkpoint }),
+        ...change.reference,
+        ...(reference.checkpoint != null && change.reference.element == null && { checkpoint: reference.checkpoint }),
       });
   return next.length === 1 ? next[0] : next;
 }
