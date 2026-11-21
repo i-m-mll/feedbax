@@ -48,8 +48,7 @@ from feedbax.runtime._graph_key_schedule import model_initialization_key
 from feedbax.training.method_runtime import TrainingLoop, initialize_method, replica_value
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.web.services.project_folder import ProjectFolderService
-from feedbax.web.services.evaluate_attachment import prepare_evaluate_attachment
-from feedbax.contracts.model_edit import EvaluateAttachmentRequest
+from feedbax.contracts.model_edit import ModelEditRequest
 from feedbax.web.services.project_plan import ProjectPlanService
 from feedbax.web.app import create_app
 from tests.test_canonical_evaluate_admission import _save_project
@@ -1069,9 +1068,7 @@ def test_nested_evaluate_variation_uses_scoped_wire_ids(monkeypatch):
     from tests.test_document_train_pair import authored_documents, document_project
 
     raw = document_project(authored_documents(), evaluation=True)
-    owner = _attachment_owner("decode") | {"composites": ["wrapper", "controller"]}
-    record = _add_attachment(owner, "scale", None)
-    _swept_records(raw, "baseline", [record])
+    _swept_attachments(raw, "baseline", "decode", [_scale_attachment("scale", 0.5)])
     memo = ProjectPlanMemo()
     train_key = RunKey("default", "train", "default")
     encode = Mock(wraps=request_identity.encode_request)
@@ -1108,37 +1105,19 @@ def test_nested_evaluate_variation_uses_scoped_wire_ids(monkeypatch):
     )
     assert executable.graph.nodes["wrapper"].nodes["controller"].nodes[incoming.target_node].scale == 0.5
 
-    trial = raw["steps"]["train"]["base"]["inline"]["trial_documents"]
-    model = raw["documents"].pop("reach-model")
-    raw["documents"]["renamed"] = model
-    trial["model"] = {"document": "renamed"}
+    raw["documents"]["renamed"] = raw["documents"].pop("reach-model")
+    raw["steps"]["train"]["base"]["inline"]["trial_documents"]["model"] = {"document": "renamed"}
+    baseline = raw["steps"]["baseline"]
+    baseline["base"]["inline"]["trial_documents"]["model"] = {"document": "renamed"}
+    patches = baseline["sweep"]["axes"]["edit"]["values"]["on"]["patches"]
+    baseline["sweep"]["axes"]["edit"]["values"]["on"]["patches"] = {
+        path.replace("documents.reach-model.", "documents.renamed."): patch for path, patch in patches.items()
+    }
     renamed, calls = compile_incrementally()
     assert calls == 0
     assert renamed.requests == plan.requests and renamed.documents == plan.documents
     source_path = "/payload/trial_documents/model/step_seconds"
     assert renamed.sources[train_key][source_path].name == "renamed"
-
-    trial["model"] = model["payload"]
-    inlined, calls = compile_incrementally()
-    assert calls == 0
-    assert inlined.requests == plan.requests and inlined.documents == plan.documents
-    assert inlined.sources[train_key][source_path].kind == "step"
-
-    record["owner"] = owner | {"composites": ["wrapper", "missing"]}
-    invalid, calls = compile_incrementally()
-    assert calls == 0
-    assert not any(run.kind == "evaluate" for run in invalid.runs)
-    problem, = invalid.diagnostics
-    assert problem.document is None
-    assert problem.model_address.composites == ("wrapper", "missing")
-    assert "composite no longer exists" in problem.detail
-
-    trial["model"] = {"document": "renamed"}
-    rebound, calls = compile_incrementally()
-    assert calls == 0
-    problem, = rebound.diagnostics
-    assert problem.document == "renamed"
-    assert problem.model_address.composites == ("wrapper", "missing")
 
 
 def test_train_model_attachment_rebinds_a_pointer_with_the_same_authored_value():
@@ -1175,88 +1154,59 @@ def test_train_model_attachment_rebinds_a_pointer_with_the_same_authored_value()
     assert train_request(0.01) != before
 
 
-@pytest.mark.parametrize(("kind", "scope"), [
-    ("port", {"kind": "rows", "rows": ["seed=control"]}),
-    ("port", {"kind": "axis_value", "axis": "seed", "value": "control"}),
+@pytest.mark.parametrize("selection", [
+    {"rows": ["seed=control"]},
+    {"rows": ["seed=control"], "axes": {"seed": ["control"]}},
 ])
-def test_addressed_evaluate_attachment_is_a_step_edit(tmp_path, kind, scope):
+def test_an_evaluate_attachment_for_selected_runs_changes_only_their_request(tmp_path, selection):
     raw = _model_project()
-    variant, selected = "default", "default"
-    if scope["kind"] in {"rows", "axis_value"}:
-        raw["steps"]["baseline"]["sweep"] = {"axes": {"seed": {"values": {
-            "control": {"patches": {"params.seed": {"op": "replace", "value": 2}}},
-            "comparison": {"patches": {"params.seed": {"op": "replace", "value": 3}}},
-        }}}}
-        selected = "seed=control"
+    raw["steps"]["baseline"]["sweep"] = {"axes": {"seed": {"values": {
+        "control": {"patches": {"params.seed": {"op": "replace", "value": 2}}},
+        "comparison": {"patches": {"params.seed": {"op": "replace", "value": 3}}},
+    }}}}
+    selected = RunKey("default", "baseline", "seed=control")
     project = Project.model_validate(raw)
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "nested", project)
     before = folders.read_plan("nested", revision=None)
-    element = (
-        {"kind": "wire", "id": "decode"} if kind == "wire" else
-        {"kind": "port", "end": {"owner": "component", "component": "cell", "port": "output", "direction": "output"}}
-    )
-    with TestClient(create_app(projects_dir=tmp_path)) as client:
-        base = "/api/projects/nested"
-        selection = {
-            "revision": before.revision,
-            "run": {"step": "baseline", "row": selected, "variant": variant},
-            "scope": scope,
-        }
-        record = {
-            "op": "add", "after": None,
-            "owner": {"composites": ["wrapper", "controller"], "element": element},
-            "attachment": {"kind": "intervention", "id": "condition", "operation": "Scale", "fields": {"factor": 0.5}},
-        }
-        body = selection | {"difference": record}
-        reply = client.post(f"{base}/model/evaluate-attachment", json=body)
+    owner = {"composites": ["wrapper", "controller"], "element": {
+        "kind": "port", "end": {"owner": "component", "component": "cell", "port": "output", "direction": "output"},
+    }}
+    attachment = {"kind": "intervention", "id": "condition", "operation": "Scale", "fields": {"factor": 0.5}}
+
+    def edit(client, difference):
+        snapshot = folders.read("nested")
+        reply = client.post("/api/projects/nested/model/edit", json={
+            "revision": snapshot.revision, "presentation_revision": snapshot.presentation_revision,
+            "document": "reach-model", "step": "baseline",
+            "command": {"operation": {"op": "set_attachment", "difference": difference}},
+        } | selection)
         assert reply.status_code == 200, reply.text
-        edited = reply.json()
-        assert edited["changed"]["element"]["id"] == "condition"
-        assert folders.read("nested").project == project
-        invalid = deepcopy(body)
-        invalid["difference"]["owner"]["composites"].append("missing")
-        refused = client.post(f"{base}/model/evaluate-attachment", json=invalid)
-        assert refused.status_code == 422
-        assert refused.json()["detail"]["address"]["element"]["id"] == "condition"
-        assert refused.json()["detail"]["address"]["composites"][-1] == "missing"
-        committed = client.patch(base, json={"revision": before.revision, **edited["file"]})
-        assert committed.status_code == 200, committed.text
-        assert client.post(f"{base}/model/evaluate-attachment", json=body).status_code == 409
-    after = folders.read_plan("nested", revision=None)
+        return reply.json()["result"]
+
+    def requests():
+        return {run.key: run.request_id for run in folders.read_plan("nested", revision=None).plan.runs}
+
     prior = {run.key: run.request_id for run in before.plan.runs}
-    result = {run.key: run.request_id for run in after.plan.runs}
-    assert result.keys() == prior.keys()
-    assert {key for key in prior if result[key] != prior[key]} == {RunKey(variant, "baseline", selected)}
-    assert folders.read("nested").project.documents == project.documents
-    stored = tmp_path / "nested" / "steps/baseline.json"
-    saved = stored.read_text()
-    assert '"after": null' in saved
-    assert "_model_attachment_" not in saved and "graph.subgraphs" not in saved
     with TestClient(create_app(projects_dir=tmp_path)) as client:
-        selection["revision"] = after.revision
-        reopened = client.post(f"{base}/model/evaluate-attachments", json=selection)
-        assert reopened.status_code == 200, reopened.text
-        assert reopened.json()["records"] == reopened.json()["effective"]
-        assert reopened.json()["records"][0]["attachment"]["fields"] == {"factor": 0.5}
-        change = {
-            "op": "change", "address": edited["changed"],
-            "attachment": record["attachment"] | {"fields": {"factor": 0.25}},
-        }
-        changed = client.post(f"{base}/model/evaluate-attachment", json=selection | {"difference": change})
-        assert changed.status_code == 200, changed.text
-        committed = client.patch(base, json={"revision": after.revision, **changed.json()["file"]})
-        assert committed.status_code == 200, committed.text
-        updated = folders.read_plan("nested", revision=None)
-        selected_key = RunKey(variant, "baseline", selected)
-        assert {run.key for run in updated.plan.runs if run.request_id != result[run.key]} == {selected_key}
-        selection["revision"] = updated.revision
-        remove = {"op": "remove", "address": edited["changed"]}
-        removed = client.post(f"{base}/model/evaluate-attachment", json=selection | {"difference": remove})
-        assert removed.status_code == 200, removed.text
-        assert client.patch(base, json={"revision": updated.revision, **removed.json()["file"]}).status_code == 200
-        restored = folders.read_plan("nested", revision=None)
-        assert {run.key: run.request_id for run in restored.plan.runs} == prior
+        missing = edit(client, {"op": "add", "after": None, "owner": owner | {
+            "composites": ["wrapper", "controller", "missing"]}, "attachment": attachment})
+        assert missing["status"] == "refused"
+        added = edit(client, {"op": "add", "after": None, "owner": owner, "attachment": attachment})
+        assert added["status"] == "applied", added
+        result = requests()
+        assert result.keys() == prior.keys()
+        assert {key for key in prior if result[key] != prior[key]} == {selected}
+        assert folders.read("nested").project.documents == project.documents
+        assert "model_attachments" not in (tmp_path / "nested" / "steps/baseline.json").read_text()
+        address = added["changed"][0]
+        changed = edit(client, {"op": "change", "address": address, "attachment": attachment | {"fields": {"factor": 0.25}}})
+        assert changed["status"] == "applied", changed
+        updated = requests()
+        assert {key for key in updated if updated[key] != result[key]} == {selected}
+        removed = edit(client, {"op": "remove", "address": address})
+        assert removed["status"] == "applied", removed
+    assert requests() == prior
 
 
 # The ids the variant's evaluation had at a9b3bb7d, where the change was stored in the step's payload.
@@ -1308,10 +1258,17 @@ def test_a_variant_edit_of_an_evaluation_is_a_document_the_variant_points_it_at(
     }
 
 
-def _swept_records(raw, step, records):
-    """Give ``step`` one sweep value, ``edit=on``, holding the addressed Model ``records``."""
+def _swept_attachments(raw, step, wire, attachments):
+    """Give ``step`` its own reference to the Model and one sweep value, ``edit=on``, putting ``attachments`` first on
+    the controller's ``wire``."""
+    authored = _model_controller(raw)["wires"][wire]
+    raw["steps"][step]["base"]["inline"]["trial_documents"] = {"model": {"document": "reach-model"}}
+    target = "documents.reach-model.payload.interior.components.wrapper.interior.components.controller.interior"
     raw["steps"][step]["sweep"] = {"axes": {"edit": {"values": {"on": {"patches": {
-        "model_attachments.step": {"op": "add", "value": records},
+        f"{target}.wires.{wire}.attachments": {
+            "op": "replace" if "attachments" in authored else "add",
+            "value": [*attachments, *authored.get("attachments", [])],
+        },
     }}}}}}
 
 
@@ -1340,7 +1297,7 @@ def _model_controller(raw):
     ]["controller"]["interior"]
 
 
-def test_evaluate_attachment_order_and_identity_follow_effective_graph():
+def test_evaluate_attachment_order_follows_effective_graph():
     raw = _model_project()
     owner = _attachment_owner("carry")
     records = [
@@ -1348,89 +1305,24 @@ def test_evaluate_attachment_order_and_identity_follow_effective_graph():
         _add_attachment(owner, "second", None, 0.25),
         _add_attachment(owner, "following", "carry"),
     ]
-    _swept_records(raw, "baseline", records)
     source = ModelDocument.model_validate(raw["documents"]["reach-model"]["payload"])
-    components = ComponentRegistry()
     resolved = resolve_effective_model(
-        source, components, tuple(MODEL_ATTACHMENT_BATCHES.validate_python({"step": records})["step"]),
+        source, ComponentRegistry(), tuple(MODEL_ATTACHMENT_BATCHES.validate_python({"step": records})["step"]),
     )
-    def chain(model):
-        wrapper = model.interior.components["wrapper"]
-        controller = wrapper.interior.components["controller"]
-        return [item.id for item in controller.interior.wires["carry"].attachments]
-
-    assert chain(resolved) == ["first", "second", "carry", "following"]
-
-    memo = ProjectPlanMemo()
-
-    def evaluate_id():
-        plan = compile_project(Project.model_validate(raw), memo=memo)
-        assert not plan.diagnostics
-        return next(run.request_id for run in plan.runs if run.kind == "evaluate")
-
-    expected = evaluate_id()
-    records[1]["after"] = "first"
-    assert evaluate_id() == expected
-    records[1]["after"] = "carry"
-    assert evaluate_id() != expected
+    controller = resolved.interior.components["wrapper"].interior.components["controller"]
+    assert [item.id for item in controller.interior.wires["carry"].attachments] == ["first", "second", "carry", "following"]
 
 
-def test_evaluate_attachment_can_reorder_a_saved_record(tmp_path):
+@pytest.mark.parametrize("path", ["model_attachments.step", "model_attachments"])
+def test_a_sweep_that_writes_model_attachments_is_refused(path):
     raw = _model_project()
     owner = _attachment_owner("carry")
-    folders = ProjectFolderService(tmp_path)
-    _save_project(folders, "nested", Project.model_validate(raw))
-    with TestClient(create_app(projects_dir=tmp_path)) as client:
-        base = "/api/projects/nested"
-        selection = {
-            "revision": folders.read_plan("nested", revision=None).revision,
-            "scope": {"kind": "rows", "rows": ["default"]},
-            "run": {"step": "baseline", "row": "default", "variant": "default"},
-        }
-        added = client.post(f"{base}/model/evaluate-attachment", json=selection | {
-            "difference": _add_attachment(owner, "condition", None),
-        })
-        assert added.status_code == 200, added.text
-        assert client.patch(base, json={"revision": selection["revision"], **added.json()["file"]}).status_code == 200
-        before = folders.read_plan("nested", revision=None)
-        selection["revision"] = before.revision
-        changed = client.post(f"{base}/model/evaluate-attachment", json=selection | {"difference": {
-            "op": "change", "address": _attachment_address(owner, "condition"),
-            "attachment": _scale_attachment("condition", 0.5), "after": "carry",
-        }})
-        assert changed.status_code == 200, changed.text
-        assert client.patch(base, json={"revision": before.revision, **changed.json()["file"]}).status_code == 200
-        after = folders.read_plan("nested", revision=None)
-        reopened = client.post(f"{base}/model/evaluate-attachments", json=selection | {"revision": after.revision})
-        assert reopened.json()["records"][0]["after"] == "carry"
-    old = {run.kind: run.request_id for run in before.plan.runs}
-    new = {run.kind: run.request_id for run in after.plan.runs}
-    assert new["train"] == old["train"]
-    assert new["evaluate"] != old["evaluate"]
-
-
-@pytest.mark.parametrize(("invalid", "reason"), [
-    ("missing-wire", "wire no longer exists"),
-    ("missing-anchor", "anchor 'missing' no longer exists"),
-    ("duplicate", "ID repeats"),
-    ("cycle", "anchor cycle"),
-    ("removed-anchor", "anchor 'carry' no longer exists"),
-])
-def test_evaluate_attachment_plan_refusals_are_addressed(invalid, reason):
-    raw = _model_project()
-    owner = _attachment_owner("missing" if invalid == "missing-wire" else "carry")
-    identity = "carry" if invalid == "duplicate" else "condition"
-    anchor = {
-        "missing-anchor": "missing", "removed-anchor": "carry", "cycle": "condition",
-    }.get(invalid)
-    records = [_add_attachment(owner, identity, anchor)]
-    if invalid == "removed-anchor":
-        records.append({"op": "remove", "address": _attachment_address(owner, "carry")})
-    _swept_records(raw, "baseline", records)
+    raw["steps"]["baseline"]["sweep"] = {"axes": {"edit": {"values": {"on": {"patches": {
+        path: {"op": "add", "value": [_add_attachment(owner, "condition", None)]},
+    }}}}}}
     plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
     problem, = plan.diagnostics
-    assert reason in problem.detail
-    assert problem.model_address == ModelAddress.model_validate(_attachment_address(owner, identity))
+    assert problem.step == "baseline" and "model_attachments" in problem.detail
     assert [run.kind for run in plan.runs] == ["train"]
 
 
@@ -1786,15 +1678,15 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
             },
             {"op": "remove", "address": _attachment_address(owner, "train-extra")},
         ):
-            edit = prepare_evaluate_attachment(folders, project, EvaluateAttachmentRequest.model_validate({
-                "revision": plan.revision,
-                "run": {"step": "baseline", "row": "default", "variant": "default"},
-                "difference": difference, "scope": {"kind": "rows", "rows": ["default"]},
+            snapshot = folders.read(project)
+            applied = folders.edit_model(project, ModelEditRequest.model_validate({
+                "revision": snapshot.revision, "presentation_revision": snapshot.presentation_revision,
+                "document": "reach-model", "step": "baseline", "rows": ["default"],
+                "command": {"operation": {"op": "set_attachment", "difference": difference}},
             }), registry.components)
-            patch, = edit.file.patches
-            raw["steps"]["baseline"][patch.path.removeprefix("/")] = patch.value
-            _save_project(folders, project, Project.model_validate(raw))
-            plan = folders.read_plan(project, revision=None)
+            assert applied.result.status == "applied", applied.result
+        raw = folders.read(project).project.model_dump(mode="json", by_alias=True, exclude_unset=True)
+        plan = folders.read_plan(project, revision=None)
         assert next(run.request_id for run in plan.plan.runs if run.kind == "train") == train_before
     assert main(["plan", str(folders.root / project)]) == 0
     assert not plan.plan.diagnostics

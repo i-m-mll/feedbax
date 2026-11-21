@@ -577,3 +577,26 @@ def test_an_axis_conditioned_on_itself_is_refused_naming_the_axes(conditions):
         expand_sweep(Sweep.model_validate({"axes": axes}))
     assert refused.value.code == SweepExpansionCode.INVALID_CONDITION
     assert all(repr(name) in refused.value.detail for name in conditions)
+
+
+@pytest.mark.parametrize(("where", "expected"), [
+    (None, ["rate=a", "rate=a--run=run-2", "rate=b", "rate=b--run=run-2"]),
+    ({"axes": {"rate": ["b"]}}, ["rate=a", "rate=b", "rate=b--run=run-2"]),
+])
+def test_an_optional_axis_keeps_each_row_it_applies_to_and_adds_one_per_value(where, expected):
+    from feedbax.contracts.project_sweep import Sweep, expand_sweep
+
+    sweep = Sweep.model_validate({"axes": {
+        "rate": {"values": {"a": {}, "b": {}}},
+        "run": {"values": {"run-2": {}}, "optional": True} | ({"where": where} if where else {}),
+    }})
+    rows = expand_sweep(sweep)
+    assert [row.id for row in rows] == expected
+    assert rows[0].label == "rate=a"
+
+
+def test_an_optional_axis_on_a_single_run_keeps_the_default_row():
+    from feedbax.contracts.project_sweep import DEFAULT_SWEEP_ROW, Sweep, expand_sweep
+
+    rows = expand_sweep(Sweep.model_validate({"axes": {"run": {"values": {"run-2": {}}, "optional": True}}}))
+    assert [(row.id, row.label) for row in rows] == [(DEFAULT_SWEEP_ROW, None), ("run=run-2", "run=run-2")]
