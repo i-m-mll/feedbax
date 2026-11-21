@@ -3048,6 +3048,12 @@ export type MatrixCompositionDelta = {
 
 export type MemberFamily = "documents" | "steps";
 
+export type MergeCards = {
+  "kind": "merge";
+  "member": string;
+  "others": Array<string>;
+};
+
 export type ModelPort = {
   "kind"?: "model";
 };
@@ -3413,6 +3419,12 @@ export type SourcePath = {
   "path": string;
 };
 
+export type SplitCard = {
+  "kind": "split";
+  "member": string;
+  "elements": Array<string>;
+};
+
 export type StartsChanged = {
   "kind"?: "arguments";
   "slots": Array<string>;
@@ -3755,7 +3767,7 @@ export type StudioInputPlace = {
 export type StudioMemberCommand = {
   "revision": Sha256;
   "presentation_revision": Sha256;
-  "command": RenameMember | ChangeKey | DuplicateMember | DetachMember;
+  "command": RenameMember | ChangeKey | DuplicateMember | DetachMember | SplitCard | MergeCards;
 };
 
 export type StudioMemberCommandResult = {
@@ -3859,6 +3871,7 @@ export type StudioProjectWindowMap = {
   "analysis_elements"?: Array<StudioProjectWindowMapElement>;
   "analysis_figures"?: Array<StudioProjectWindowMapFigure>;
   "detach_refused"?: Array<string>;
+  "regroup_refused"?: Array<string>;
 };
 
 export type StudioProjectWindowMapCoordinate = {
@@ -9577,6 +9590,14 @@ export const MemberFamilySchema: z.ZodType<MemberFamily> = z.lazy(() =>
   z.union([z.literal("documents"), z.literal("steps")])
 ) as unknown as z.ZodType<MemberFamily>;
 
+export const MergeCardsSchema: z.ZodType<MergeCards> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("merge"),
+    "member": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "others": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1),
+  }).strict()
+) as unknown as z.ZodType<MergeCards>;
+
 export const ModelPortSchema: z.ZodType<ModelPort> = z.lazy(() =>
   z.object({
     "kind": z.literal("model").optional(),
@@ -10078,6 +10099,14 @@ export const SourcePathSchema: z.ZodType<SourcePath> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<SourcePath>;
 
+export const SplitCardSchema: z.ZodType<SplitCard> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("split"),
+    "member": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "elements": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1),
+  }).strict()
+) as unknown as z.ZodType<SplitCard>;
+
 export const StartsChangedSchema: z.ZodType<StartsChanged> = z.lazy(() =>
   z.object({
     "kind": z.literal("arguments").optional(),
@@ -10529,7 +10558,7 @@ export const StudioMemberCommandSchema: z.ZodType<StudioMemberCommand> = z.lazy(
   z.object({
     "revision": Sha256Schema,
     "presentation_revision": Sha256Schema,
-    "command": z.union([RenameMemberSchema, ChangeKeySchema, DuplicateMemberSchema, DetachMemberSchema]),
+    "command": z.union([RenameMemberSchema, ChangeKeySchema, DuplicateMemberSchema, DetachMemberSchema, SplitCardSchema, MergeCardsSchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioMemberCommand>;
 
@@ -10665,6 +10694,7 @@ export const StudioProjectWindowMapSchema: z.ZodType<StudioProjectWindowMap> = z
     "analysis_elements": z.array(StudioProjectWindowMapElementSchema).optional(),
     "analysis_figures": z.array(StudioProjectWindowMapFigureSchema).optional(),
     "detach_refused": z.array(z.string()).optional(),
+    "regroup_refused": z.array(z.string()).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMap>;
 
