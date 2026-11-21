@@ -25,6 +25,8 @@ export interface SetAuthoringInputs {
   readonly project: Project;
   /** Whether set edits can be made now: the plan is current and the default variant is shown. */
   readonly enabled: boolean;
+  /** Whether its commands apply; a command's gesture made while the workspace is unsettled waits for it. */
+  readonly applies: boolean;
   readonly perform: Perform;
   readonly state: () => PipelineSelectionState;
   readonly select: (state: PipelineSelectionState) => void;
@@ -41,7 +43,7 @@ function runKey(run: PlanRunView) {
   return { variant, step, row };
 }
 
-export function setAuthoring({ editor, project, enabled, perform, state, select }: SetAuthoringInputs) {
+export function setAuthoring({ editor, project, enabled, applies, perform, state, select }: SetAuthoringInputs) {
   const refuseStep = (step: string) => (reason: string): Refusal => ({ kind: 'step', step, reason });
 
   async function store(name: string, command: SetCommand): Promise<StudioSetEdit | undefined> {
@@ -76,8 +78,8 @@ export function setAuthoring({ editor, project, enabled, perform, state, select 
         if (edit?.selected) select(selectSweepValue(state(), step.id, edit.selected.axis, edit.selected.value));
       }, (reason) => ({ kind: 'runs', reasons: Object.fromEntries(runs.map(({ id }) => [id, reason])) }));
     }, {
-      subject: step.label,
-      enabled: enabled && runs.length > 0 && (step.kind === 'train' || step.kind === 'evaluate'),
+      subject: step.label, instance: JSON.stringify(chosen?.map(({ id }) => id) ?? null),
+      enabled: applies && runs.length > 0 && (step.kind === 'train' || step.kind === 'evaluate'),
     });
   }
 
@@ -88,7 +90,7 @@ export function setAuthoring({ editor, project, enabled, perform, state, select 
     const command = (id: 'saveSet' | 'inlineSet', kind: 'save_set' | 'inline_set') => bindStudioCommand(id, () => {
       void perform(async () => { await store(studioAccessibleName(id, axis), { kind, step, axis }); },
         (reason) => ({ kind: 'axis', step, axis, reason }));
-    }, { subject: axis, enabled });
+    }, { subject: axis, instance: step, enabled: applies });
     return 'set' in read ? [command('inlineSet', 'inline_set')] : 'values' in read ? [command('saveSet', 'save_set')] : [];
   }
 

@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { studioAccessibleName, studioName, type StudioNameId } from '@/components/activity/studioVocabulary';
 import type { AppearanceCommandId } from '@/appearance/appearance';
+import { bindGesture, invokeGesture } from './heldGestures';
 import { projectWindowViews, type ProjectWindowView } from './projectWindowState';
 
 interface Shortcut {
@@ -84,6 +85,16 @@ const selectionCommands = new Set<StudioCommandId>([
   'modelCopy', 'modelCut', 'modelPaste',
 ]);
 
+/**
+ * Commands that change only how the window shows the workspace. They read nothing the workspace is settling, so one
+ * runs at once while the workspace is unsettled, unless a gesture made before it is still held.
+ */
+const viewCommands = new Set<StudioCommandId>([
+  ...projectWindowViews, 'commandPalette', 'settings', 'showMap', 'showBoth', 'showDetails', 'showSteps', 'showDrawer',
+  'showInspector', 'splitDetails', 'switchSlot', 'back', 'forward', 'nextRegion', 'previousRegion', 'activity', 'problems',
+  'fitView', 'zoomIn', 'zoomOut',
+]);
+
 export interface StudioCommand {
   readonly id: StudioCommandId;
   readonly name: StudioNameId;
@@ -92,26 +103,52 @@ export interface StudioCommand {
   /** The accessible name, with the command's subject. */
   readonly label: string;
   readonly glyph?: LucideIcon;
+  /** Whether the command applies to what is selected; the workspace being unsettled disables nothing. */
   readonly enabled: boolean;
   readonly selectionScoped: boolean;
   readonly shortcut?: Shortcut;
+  /** Runs the command, or holds it until the workspace settles and runs it then if it still applies. */
   invoke(): void;
 }
 
-export function bindStudioCommand<Id extends StudioCommandId>(
-  id: Id,
-  perform: () => void,
-  { enabled = true, name = id, subject, keyboard = true, glyph = glyphs[id] }:
-    { enabled?: boolean; name?: StudioNameId; subject?: string; keyboard?: boolean; glyph?: LucideIcon } = {},
+interface BindingOptions {
+  enabled?: boolean;
+  name?: StudioNameId;
+  subject?: string;
+  keyboard?: boolean;
+  glyph?: LucideIcon;
+  /** Tells apart bindings of one command and name with one subject, such as Close Slot of each slot. */
+  instance?: string;
+}
+
+function studioCommand<Id extends StudioCommandId>(
+  id: Id, perform: () => void, options: BindingOptions, bound: boolean,
 ): StudioCommand & { readonly id: Id } {
+  const { enabled = true, name = id, subject, keyboard = true, glyph = glyphs[id], instance = '' } = options;
   const viewPosition = projectWindowViews.indexOf(id as ProjectWindowView) + 1;
   const shortcut = (shortcuts as Partial<Record<StudioCommandId, Shortcut>>)[id] ??
     (viewPosition > 0 && viewPosition <= 9 ? primary(String(viewPosition)) : undefined);
-  return {
+  const label = studioAccessibleName(name, subject);
+  const command: StudioCommand & { readonly id: Id } = {
     id, name, enabled, selectionScoped: selectionCommands.has(id), shortcut: keyboard ? shortcut : undefined,
-    title: studioName(name), label: studioAccessibleName(name, subject), glyph,
-    invoke: () => { if (enabled) perform(); },
+    title: studioName(name), label, glyph,
+    invoke: () => invokeGesture(command),
   };
+  const key = bound ? JSON.stringify([id, name, label, instance]) : '';
+  bindGesture(command, key, { enabled, perform }, viewCommands.has(id));
+  return command;
+}
+
+/** A command of the current state; a gesture held under it runs the latest binding of the same command. */
+export function bindStudioCommand<Id extends StudioCommandId>(
+  id: Id, perform: () => void, options: BindingOptions = {},
+): StudioCommand & { readonly id: Id } {
+  return studioCommand(id, perform, options, true);
+}
+
+/** A command shown where nothing binds it; it never applies, and a held gesture never resolves to it. */
+export function unboundStudioCommand<Id extends StudioCommandId>(id: Id): StudioCommand & { readonly id: Id } {
+  return studioCommand(id, () => {}, { enabled: false }, false);
 }
 
 export function shortcutLabel(shortcut: Shortcut) {

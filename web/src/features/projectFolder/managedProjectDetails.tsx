@@ -326,6 +326,10 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
   const revealedMember = placeMember(reveal?.place);
   const canEdit = selection?.kind === 'steps' && selection.stepIds.length === 1 && selection.stepIds[0] === stepId && !outside;
   const graphScope = input.documentScopes.graph;
+  /** Whether the Model's topology commands apply; a gesture made while the workspace is unsettled waits for it. */
+  const topologyApplies = !!saved.presentation && !outside && (input.valueEditing ||
+    canEdit && input.step?.kind === 'train' &&
+    !!graphScope && !graphScope.localVariant && graphScope.lit.size === graphScope.users.size);
   const storedView = useStoredModelView({
     model: activeView === 'model' ? stored : undefined, editor, saved, elements: input.elements,
     active: activeView === 'model',
@@ -341,9 +345,8 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
           : canEdit || selection?.kind === 'values' || selection?.kind === 'rows')
     )),
     projectionRun: input.step?.kind === 'train' ? input.namedRun : undefined,
-    editable: !pending && !saving && !!saved.presentation && !outside && (input.valueEditing ||
-      canEdit && input.step?.kind === 'train' &&
-      !!graphScope && !graphScope.localVariant && graphScope.lit.size === graphScope.users.size),
+    editable: !pending && !saving && topologyApplies,
+    topologyApplies,
     evaluate: input.step?.kind === 'evaluate' && input.namedRun && input.evaluateScope
       ? { run: input.namedRun, scope: input.evaluateScope } : undefined,
     problem: revealedMember && revealedMember.document === storedId

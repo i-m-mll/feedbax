@@ -35,6 +35,7 @@ import type { PipelineCardPresentation } from '@/components/pipeline/pipelineMap
 import type { PlanRunView, PlanStepView, PlanView } from '@/features/pipeline/planView';
 import { selectRun, selectStep, selectSweepValue, selectedRuns, type PipelineSelection, type PipelineSelectionState } from '@/features/pipeline/selection';
 import { ProjectWindow } from '@/features/projectWindow/ProjectWindow';
+import { useHeldGestures } from '@/features/projectWindow/heldGestures';
 import { ProblemRow, StudioProblems } from '@/features/projectWindow/StudioProblems';
 import { holds } from './model/modelGraph';
 import { bindStudioCommand, commandAttributes, jobAllowsCommand, type StudioCommand } from '@/features/projectWindow/studioCommands';
@@ -291,6 +292,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const runRemoval = useRunRemovalDialog(data);
   const sets = setAuthoring({
     editor, project: saved.project, enabled: !!data && !pending && !outside && connected && primaryVariant && !busy,
+    applies: !outside && connected && primaryVariant,
     perform, state: () => latestState.current, select: (next) => selection.select(next),
   });
   const axisMenu: AxisMenu = (stepId, axis) => ({
@@ -413,6 +415,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const shownResult = focusedResult(projection.data, step?.id, state.focus?.runId, runIds, resultAttempt);
   const ready = Boolean(data && !pending && !outside && connected && !projection.error);
   const canAuthorContinuation = ready && primaryVariant;
+  /** Whether the plan's commands apply. A gesture made while the workspace is unsettled is held until it settles. */
+  const applies = Boolean(projection.data && !outside && connected && !projection.error);
   /** The stopped attempt of a focused single run whose checkpoints an Evaluate can use, in the plan it was read from. */
   const stoppedAttempt = ({ row, attempt }: ReturnType<typeof focusedResult>, source: StudioSavedTrainRuns | undefined) =>
     !saved.project.sweep && windowState.mode !== 'map' &&
@@ -643,6 +647,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     wholeStep, focused: windowState.mode !== 'map' && focusView === 'document',
     failures: stepFailures(step?.kind === 'report' ? step.id : undefined),
   });
+  const workspaceSettled = !busy && !(pending && !snapshot.error) && !snapshot.saving && !planPending &&
+    !projection.isPending && analyze.settled;
+  useHeldGestures(workspaceSettled, !!snapshot.error);
   const jobsById = new Map(jobs.data?.jobs.map((job) => [job.job_id, job]));
   const evaluationRequests = new Map(evaluationRows.map(({ key, request_id }) => [savedRunId(key), request_id]));
   const selectedJobs = state.selection ? [
@@ -963,7 +970,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         { stepId: row.key.step, selection: { kind: 'rows', stepId: row.key.step, runIds: [stoppedSubject.runId] } },
         data, stoppedSubject),
     });
-  }, { enabled: Boolean(canAuthorContinuation && !busy && checkpointAttempt === stoppedSubject.jobId) });
+  }, { enabled: Boolean(applies && primaryVariant && checkpointAttempt === stoppedSubject.jobId) });
 
   const evaluateInputs = authored?.kind === 'evaluate' ? authored : undefined;
   const trainSteps = plan.steps.filter(({ kind }) => kind === 'train');
@@ -1154,7 +1161,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       return { kinds: { train: () => void perform(async () => {
         const id = await createTrain(editor, revision);
         commandScope.selectCreatedStep(id, 'model');
-      }) }, enabled: ready && !busy };
+      }) }, enabled: applies };
     }
     const sourceStep = plan.steps.find(({ id }) => id === source.stepId);
     if (sourceStep?.kind === 'evaluate' && data) {
@@ -1164,7 +1171,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       return { kinds: { analyze: () => void perform(async () => {
         const id = await createAnalyze(editor, data.revision, input);
         commandScope.selectCreatedStep(id, 'analysis');
-      }, refuseStep(source.stepId)) }, enabled: ready && !busy };
+      }, refuseStep(source.stepId)) }, enabled: applies };
     }
     if (sourceStep?.kind === 'analyze' && data) {
       const rows = new Set((source.selection ? selectedRuns(sourceStep, source.selection) : sourceStep.runs).map(({ id }) => id));
@@ -1177,7 +1184,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         const choice = selected || (figures.length === 1 ? figures[0] : undefined);
         if (choice) chooseReportFigure(saved.revision, choice);
         else setReportChoices({ revision: saved.revision, figures });
-      } }, enabled: ready && !busy };
+      } }, enabled: applies };
     }
     if (!onNewStep || sourceStep?.kind !== 'train') return undefined;
     const runs = source.selection ? selectedRuns(sourceStep, source.selection) : sourceStep.runs;
@@ -1186,19 +1193,19 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         train: () => void perform(async () => { await onNewStep(source, commandScope); }, refuseStep(source.stepId)),
         ...(data && managedTrialDomain(data, runs) && { evaluate: () => evaluateTrain(source, data) }),
       },
-      enabled: canAuthorContinuation && !busy,
+      enabled: applies && primaryVariant,
     };
   }
 
   function newStepCommand(source?: PipelineMapStepSource, subject?: string) {
     const insertion = stepInsertion(source);
     return insertion && bindStudioCommand('newStep', () => openStepMenu(insertion.kinds),
-      { enabled: insertion.enabled, subject });
+      { enabled: insertion.enabled, subject, instance: JSON.stringify(source ?? null) });
   }
 
   function newSweepCommand(stepId: string, subject?: string) {
     if (!canAuthorSweep(stepId)) return undefined;
-    return bindStudioCommand('newSweep', () => setSweepStep(stepId), { enabled: ready && !busy, subject });
+    return bindStudioCommand('newSweep', () => setSweepStep(stepId), { enabled: applies, subject, instance: stepId });
   }
   const sweepMenu = sweepStep ? {
     stepId: sweepStep,
@@ -1272,7 +1279,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         }, refuseStep(member));
       }, {
         subject: cards.map(({ label }) => label).join(', '),
-        enabled: documentEditable && !busy && cards.every(({ kind, id }) => kind === 'analyze' && !refused.has(id)),
+        enabled: !outside && cards.every(({ kind, id }) => kind === 'analyze' && !refused.has(id)),
       }),
     ];
   }
@@ -1283,14 +1290,18 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     requestSlotFocus((count) => count + 1);
   };
   /** The commands on a step: its context menu, and the palette's for the selected step. */
-  const stepCommands: StepMenu = (target, startRename = () => setRenamingStep({ stepId: target.id, surface: mapSurface })) => [
-    bindStudioCommand('renameStep', startRename, { subject: target.label, enabled: !!renameStep && !busy }),
+  const stepCommands: StepMenu = (target, rename = {
+    start: () => setRenamingStep({ stepId: target.id, surface: mapSurface }), surface: mapSurface,
+  }) => [
+    bindStudioCommand('renameStep', rename.start, {
+      subject: target.label, instance: JSON.stringify([target.id, rename.surface]), enabled: !outside,
+    }),
     bindStudioCommand('changeKey', () => {
       selection.select(selectStep(state, target.id));
       if (windowState.mode === 'map') setWindowState((current) => showProjectWindowView(current, 'runs', focusSlot));
       setKeyingStep(target.id);
-    }, { subject: target.label, enabled: !!changeStepKey && !busy }),
-    bindStudioCommand('duplicateStep', () => duplicateStep?.(target.id), { subject: target.label, enabled: !!duplicateStep && !busy }),
+    }, { subject: target.label, instance: target.id, enabled: !outside }),
+    bindStudioCommand('duplicateStep', () => duplicateStep?.(target.id), { subject: target.label, instance: target.id, enabled: !outside }),
     ...mergeCommand(target),
   ];
   /** A wire dragged on the map from `source` to `target` adds a selection of `source` to an input of `target`. */
@@ -1328,7 +1339,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const problemCommand = bindStudioCommand('problems', () => openProjectProblems());
   const retryCommand = bindStudioCommand('retry', retry);
   const runCommand = bindStudioCommand('run', run, {
-    enabled: ready && !busy && !machineQuote && Boolean(machineReady) && runnableRows.length > 0,
+    enabled: applies && !machineQuote && Boolean(machineReady) && runnableRows.length > 0,
     name: selectedJobs.length === 1 && selectedJobs[0].target?.kind === 'session' && selectedJobs[0].status === 'failed'
       ? 'rerun' : 'run',
   });
@@ -1337,13 +1348,13 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   for (const [id, mode] of [['stop', 'checkpoint'], ['forceStop', 'force']] as const) {
     const eligible = selectedJobs.filter((job) => jobAllowsCommand(job, id)).map(({ job_id }) => job_id);
     if (!eligible.length && id === 'forceStop') continue;
-    runCommands.push(bindStudioCommand(id, () => stop(eligible, mode), { enabled: !busy && eligible.length > 0 }));
+    runCommands.push(bindStudioCommand(id, () => stop(eligible, mode), { enabled: eligible.length > 0 }));
   }
   if (step?.kind === 'train') {
     if (resumable && jobAllowsCommand(resumable, 'resume')) {
       runCommands.push(bindStudioCommand('resume', () => {
         void perform(async () => { await actions.resume(resumable.job_id); }, refuseRuns([resumable.run_key]));
-      }, { enabled: !busy }));
+      }));
     }
     runCommands.push(bindStudioCommand('openRun', () => { if (exactRow) showRun(exactRow.key); }, { enabled: !!exactJob }));
   }
@@ -1351,7 +1362,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     if (!step || step.sweeps.length < 2) return undefined;
     return bindStudioCommand('pivot', () => setPivotSlots((current) => ({
       ...current, [slot]: current[slot] === step.id ? undefined : step.id,
-    })));
+    })), { instance: slot });
   }
   const commands = [
     bindStudioCommand('rename', () => {
@@ -1362,7 +1373,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         setRename({ name: editor.getSnapshot().configuration.project, revision });
       });
     }, {
-      enabled: !busy && !outside,
+      enabled: !outside,
     }),
     ...runCommands,
     ...(step ? validity.commands(selectedRuns(step, state.selection)) : []),
@@ -1376,11 +1387,11 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     step && newSweepCommand(step.id),
     windowState.mode !== 'map' && focusView === 'runs' && pivotCommand(focusSlot),
     bindStudioCommand('undo', () => { void moveHistory('undo'); }, {
-      enabled: !!snapshot.undoName && !busy && !snapshot.saving && !outside,
+      enabled: !!snapshot.undoName && !outside,
       subject: snapshot.undoName === studioName('outsideChange') ? snapshot.undoName : undefined,
     }),
     bindStudioCommand('redo', () => { void moveHistory('redo'); }, {
-      enabled: !!snapshot.redoName && !busy && !snapshot.saving && !outside,
+      enabled: !!snapshot.redoName && !outside,
       subject: snapshot.redoName === studioName('outsideChange') ? snapshot.redoName : undefined,
     }),
     bindStudioCommand('clearFocus', () => selection.select({ ...state, focus: null }), { enabled: !!state.focus }),

@@ -136,16 +136,16 @@ function ActivityRun({
       {failure && <p role="alert" className="text-xs text-shell-status-failure">{failure}</p>}
       <div className="flex flex-wrap gap-2">
         {jobAllowsCommand(job, 'stop') && (
-          <ActivityCommand name="stop" pending={pending} onClick={() => void stop('checkpoint')} />
+          <ActivityCommand name="stop" job={job.job_id} pending={pending} onClick={() => void stop('checkpoint')} />
         )}
         {jobAllowsCommand(job, 'forceStop') && (
-          <ActivityCommand name="forceStop" pending={pending} onClick={() => void stop('force')} />
+          <ActivityCommand name="forceStop" job={job.job_id} pending={pending} onClick={() => void stop('force')} />
         )}
         {jobAllowsCommand(job, 'resume') && (
-          <ActivityCommand name="resume" pending={pending} onClick={() => void resume()} />
+          <ActivityCommand name="resume" job={job.job_id} pending={pending} onClick={() => void resume()} />
         )}
         {!live && !job.seen && (
-          <ActivityCommand name="dismiss" pending={pending} onClick={() => void execute(acknowledge)} />
+          <ActivityCommand name="dismiss" job={job.job_id} pending={pending} onClick={() => void execute(acknowledge)} />
         )}
       </div>
     </li>
@@ -208,14 +208,17 @@ function ActivityMachine({ machine }: { machine: StudioRemoteSession }) {
 
 function ActivityCommand({
   name,
+  job,
   pending,
   onClick,
 }: {
   name: 'stop' | 'forceStop' | 'resume' | 'dismiss';
+  /** The job the command acts on, which tells apart the commands of each row. */
+  job: string;
   pending: boolean;
   onClick: () => void;
 }) {
-  const command = bindStudioCommand(name, onClick, { enabled: !pending, keyboard: false });
+  const command = bindStudioCommand(name, onClick, { enabled: !pending, keyboard: false, instance: job });
   return (
     <Button {...commandAttributes(command)} disabled={!command.enabled} onClick={command.invoke}>
       {studioName(name)}

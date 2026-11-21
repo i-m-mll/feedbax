@@ -107,9 +107,12 @@ export function useManagedAnalyze({
     staleTime: 30_000,
   });
   const catalog = authoring.data?.review;
-  const canBind = !!step && wholeStep && !pending && !outside && !busy;
-  const canEdit = canBind && !!analysis && !!document && !!catalog && catalog.document === document &&
+  /** Whether its commands apply; a gesture made while the workspace is unsettled waits for it. */
+  const bindApplies = !!step && wholeStep && !outside;
+  const editApplies = bindApplies && !!analysis && !!document && !!catalog && catalog.document === document &&
     authoring.data?.shape === catalogShape;
+  const canBind = bindApplies && !pending && !busy;
+  const canEdit = editApplies && !pending && !busy;
   const [inspected, setInspected] = useState<{ scope: string; id: string }>();
   /** The request of the selected element shown in the inspector, when the element maps over labels. */
   const [chosenRequest, setChosenRequest] = useState<{ scope: string; element: string; member: string }>();
@@ -248,7 +251,7 @@ export function useManagedAnalyze({
   const addCommand = bindStudioCommand('addComponent', () => {
     if (focusedView === 'figures') addFigure();
     else open('add', cursor.current?.scope === scope ? cursor.current.point : undefined);
-  }, { name: focusedView === 'figures' ? 'addFigure' : 'addOperation', enabled: canEdit });
+  }, { name: focusedView === 'figures' ? 'addFigure' : 'addOperation', enabled: editApplies });
   function wire(element: string, role: string, source: Source) {
     if (!key) return;
     void perform(() => save(humanizeLabel(role), { kind: 'wire', element, role, source }), canEdit, [element, role]);
@@ -268,10 +271,11 @@ export function useManagedAnalyze({
 
   const removeCommand = bindStudioCommand('modelRemove', () => {
     if (selected) void perform(() => save(studioName('modelRemove'), { kind: 'remove', element: selected }));
-  }, { enabled: canEdit && !!(operation || figure) });
+  }, { enabled: editApplies && !!(operation || figure) });
 
   const shown = (name: string) => shownName(name, operations[name] ?? figures[name]);
-  const canName = canBind && !!analysis && !!document;
+  const nameApplies = bindApplies && !!analysis && !!document;
+  const canName = nameApplies && !pending && !busy;
   const namingNow = naming?.scope === scope ? naming : undefined;
   function renameElement(name: string, text: string) {
     const label = text === name ? null : text;
@@ -302,16 +306,16 @@ export function useManagedAnalyze({
           { kind: 'split', member: key.step, elements: [...elements] }, editor.getSnapshot().saved);
         if (liveScope.current === scope) selectElement(null);
       }, canName);
-    }, { subject: key && shownName(key.step, draft.steps?.[key.step]), enabled: canName && !!key && !refused && elements.length > 0 && elements.length < elementKeys.length });
+    }, { subject: key && shownName(key.step, draft.steps?.[key.step]), enabled: nameApplies && !!key && !refused && elements.length > 0 && elements.length < elementKeys.length });
   }
   /** The commands on an operation or figure: its context menu, and the palette's for the selected one. */
   const elementCommands = (name: string) => [
     bindStudioCommand('renameElement', () => setNaming({ scope, element: name, field: 'label' }),
-      { subject: shown(name), enabled: canName }),
+      { subject: shown(name), instance: name, enabled: nameApplies }),
     bindStudioCommand('changeKey', () => {
       selectElement(name);
       setNaming({ scope, element: name, field: 'key' });
-    }, { subject: shown(name), enabled: canName }),
+    }, { subject: shown(name), instance: name, enabled: nameApplies }),
     splitCommand(chosenElements.includes(name) ? chosenElements : [name]),
   ];
   const problemOf = (name: string) => diagnostics.find((item) => placeElement(item.place) === name)?.detail;
@@ -445,6 +449,8 @@ export function useManagedAnalyze({
     </li>;
   })}</ul>;
   return {
+    /** Whether no edit of its own is in flight and its catalog is read. */
+    settled: !busy && !authoring.isFetching,
     selectedFigure: figure ? selected : undefined,
     analysis: {
       body: <CanvasStrip viewport={viewport}><div className="min-h-0 flex-1">

@@ -10,7 +10,13 @@ import { shortcutLabel, type StudioCommand } from '@/features/projectWindow/stud
 export type RunMenu = (runs: readonly PlanRunView[], anchor: Element | undefined) => readonly StudioCommand[];
 
 /** The commands on a step; `rename` starts the edit of its name where the menu was opened. */
-export type StepMenu = (step: PlanStepView, rename?: () => void) => readonly StudioCommand[];
+/** A step's commands; `rename` starts renaming it on the surface the menu opened on. */
+export type StepMenu = (step: PlanStepView, rename?: StepRename) => readonly StudioCommand[];
+export interface StepRename {
+  readonly start: () => void;
+  /** The surface renaming starts on, which tells apart the Rename Step of each surface. */
+  readonly surface: string;
+}
 
 /** A menu's items, read when the menu draws them. */
 export function CommandMenuItems({ commands }: { commands: () => readonly StudioCommand[] }) {

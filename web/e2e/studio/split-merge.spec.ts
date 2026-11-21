@@ -80,10 +80,11 @@ test('splits an Analyze card into three and merges it back, recomputing nothing'
       await element(name).click(index ? { modifiers: ['Shift'] } : undefined);
     }
     await fromMenu(element(chosen.at(-1)!), 'Split');
+    // The Split waits for anything the workspace is still settling, then saves the new card.
+    const added = async () => Object.keys((await snapshot()).project.steps ?? {}).filter((id) => !before.includes(id));
+    await expect.poll(added).toHaveLength(1);
     await saved();
-    const steps = (await snapshot()).project.steps ?? {};
-    const [created] = Object.keys(steps).filter((id) => !before.includes(id));
-    expect(created).toBeTruthy();
+    const [created] = await added();
     await expect(page.locator(`[data-map-step="${created}"]`)).toBeVisible();
     return created;
   }
@@ -126,8 +127,8 @@ test('splits an Analyze card into three and merges it back, recomputing nothing'
   await mapStep(page, middle).click({ modifiers: ['Shift'] });
   await mapStep(page, last).click({ modifiers: ['Shift'] });
   await fromMenu(mapStep(page, last), 'Merge');
-  await saved();
   await expect(page.locator(`[data-map-step="${middle}"]`)).toHaveCount(0);
+  await saved();
   expect((await snapshot()).project).toEqual(original.project);
   const merged = await settled();
   expect(merged.requests).toEqual(initial.requests);
@@ -135,7 +136,9 @@ test('splits an Analyze card into three and merges it back, recomputing nothing'
   await reportShowsFigure();
 
   // A card whose document a second card reads cannot be split.
+  const unsplit = Object.keys((await snapshot()).project.steps ?? {}).length;
   await fromMenu(mapStep(page, 'analyze'), 'Duplicate Step');
+  await expect.poll(async () => Object.keys((await snapshot()).project.steps ?? {}).length).toBe(unsplit + 1);
   await saved();
   await expect.poll(async () => (await windowMap()).regroup_refused).toContain('analyze');
   await mapStep(page, 'analyze').click();

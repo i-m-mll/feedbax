@@ -63,9 +63,6 @@ test('authors an ordered shared Report from a planned Analyze figure', async ({ 
   await page.getByRole('tab', { name: 'Figures', exact: true }).click();
   await expect(figures.getByText('Reach-aligned velocity', { exact: true })).toBeVisible();
   await figures.getByRole('button', { name: 'profile', exact: true }).click();
-  // New Step does nothing while the plan is pending or the workspace is busy, so the palette waits for it.
-  await expect(page.locator('[data-map-step="analyze"]').getByRole('button', { name: 'New Step analyze', exact: true }))
-    .toBeEnabled();
   await palette('New Step');
   await chooseStepKind(page, 'Report', true);
   await expect(document.getByRole('textbox', { name: 'Report Title' })).toHaveValue('Profile');

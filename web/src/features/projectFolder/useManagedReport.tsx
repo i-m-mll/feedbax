@@ -68,8 +68,9 @@ export function useManagedReport({
   const shared = document && (plan.steps.some(({ id, documentUses }) => id !== stepId && documentUses?.includes(document))
     || Object.entries(draft.steps ?? {}).some(([id, { base }]) => id !== stepId && 'document' in base && base.document === document));
   const direct = !step?.sweep && !step?.deltas?.length;
-  const editable = !!report && !!document && wholeStep && direct &&
-    projection?.revision === saved.revision && !pending && !outside && !shared;
+  /** Whether its commands apply; a gesture made while the workspace is unsettled waits for it. */
+  const applies = !!report && !!document && wholeStep && direct && !outside && !shared;
+  const editable = applies && projection?.revision === saved.revision && !pending;
   const figures = projection?.window_map?.analysis_elements?.filter(isReportFigureSource)
     .filter(({ key }) => key.variant === variant) ?? [];
   const inputs = step?.inputs ?? {};
@@ -133,7 +134,7 @@ export function useManagedReport({
         setSelection(remaining.length ? { scope, index: Math.min(index, remaining.length - 1) } : undefined);
       }
     }, {
-      enabled: editable && !!block && (id === 'remove' || target >= 0 && target < blocks.length),
+      enabled: applies && !!block && (id === 'remove' || target >= 0 && target < blocks.length),
       subject: block ? String(index + 1) : undefined,
     });
   }
@@ -142,13 +143,13 @@ export function useManagedReport({
   const addText = bindStudioCommand('addText', () => {
     setRefusal(undefined);
     setDialog({ scope, revision: saved.revision, kind: 'text' });
-  }, { enabled: editable });
+  }, { enabled: applies });
   const addFigure = bindStudioCommand('addFigure', () => {
     setFigureChoice(null);
     setRefusal(undefined);
     setDialog({ scope, revision: saved.revision, kind: 'figure' });
   }, {
-    enabled: editable && figures.length > 0,
+    enabled: applies && figures.length > 0,
   });
   const commands = focused && report ? [
     addText, addFigure,
