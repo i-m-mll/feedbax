@@ -4,7 +4,8 @@
 fixed: it is started with the environment captured at session start, each test's keys are namespaced
 (`run_job`, `token`), every job still live when a test ends is stopped, and the policy read at session start
 is restored. A test that finds a different Host answering, or none, fails and the Host is replaced.
-`FEEDBAX_TEST_PRIVATE_HOSTS=1` gives every test its own Host through the same fixture.
+`FEEDBAX_TEST_PRIVATE_HOSTS=1` gives every test its own Host through the same fixture. Every Host a test starts,
+directly or through a child process, has its pytest process as owner and exits when that process exits.
 
 A test starts a Host only where it has said it will. Every start by a `HostClient` in this process is
 recorded, and a test that is not marked `round` fails for each start at a root outside its `private_hosts`
@@ -39,6 +40,7 @@ import pytest
 
 from feedbax.host import AdmissionItem, HostClient, HostError, Job, Launch
 from feedbax.host import client as _client_module
+from feedbax.host.io import OWNER_ENV
 from tests.support.hang import HANG_SECONDS
 
 T = TypeVar("T")
@@ -89,6 +91,7 @@ def _recorded_launch(root: Path, env: Mapping[str, str] | None = None) -> subpro
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    os.environ[OWNER_ENV] = str(os.getpid())
     _client_module.launch_host = _recorded_launch
 
 

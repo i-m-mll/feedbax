@@ -349,7 +349,8 @@ export function projectWindowPlan(
       ...pairedAxesJoined([...(sweepsByStep.get(id) ?? [])].map(([axis, values]) => {
         const read = project.steps?.[id]?.sweep?.axes?.[axis];
         return {
-          id: axis, label: read && 'set' in read ? read.set : axis, values: [...values].map(([id, label]) => ({ id, label })),
+          id: axis, label: read && 'set' in read ? read.set : axis, input: !read || 'input' in read || undefined,
+          values: [...values].map(([id, label]) => ({ id, label })),
           ...carried.has(axis) && { carried: carried.get(axis) },
         };
       }), groupedLabels.size ? runs.map((run) => {

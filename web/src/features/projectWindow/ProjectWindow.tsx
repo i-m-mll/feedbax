@@ -1,11 +1,11 @@
 import {
   BarChart3, Columns2, Crosshair, FileText, GitBranch, Image, List,
-  Map as SceneIcon, PanelBottom, PanelTop, Rows2, Settings2, Target, Workflow, X,
+  Map as SceneIcon, PanelBottom, PanelTop, Rows2, Settings, Settings2, Target, Workflow, X,
   type LucideIcon,
 } from 'lucide-react';
 import { StudioLogo } from '../../components/StudioLogo';
 import {
-  useEffect, useId, useLayoutEffect, useRef, useState,
+  createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState,
   type CSSProperties, type Dispatch, type ReactNode, type SetStateAction,
 } from 'react';
 import { appTip, installTooltips } from '@window-shell/browser/tooltip';
@@ -93,7 +93,7 @@ const modes = [
 ] as const;
 
 const slots = ['primary', 'secondary'] as const;
-const regionOrder = ['top', 'map', 'steps', 'rail', 'drawer', ...slots, 'inspector', 'bottom'] as const;
+const regionOrder = ['top', 'map', 'steps', 'rail', 'drawer', ...slots, 'inspector', 'settings', 'bottom'] as const;
 type WindowRegion = typeof regionOrder[number];
 
 function WindowButton({ command, icon: Icon = command.glyph!, pressed, controls, tab, placement = tab ? 'right' : 'bottom' }: {
@@ -123,6 +123,24 @@ function focusRegion(root: HTMLElement | null, region: WindowRegion) {
   return !!target;
 }
 
+type PaletteScope = 'project' | 'activity';
+
+const PaletteState = createContext<[PaletteScope | null, Dispatch<SetStateAction<PaletteScope | null>>] | null>(null);
+
+/**
+ * Whether the command palette is open, and for which scope. It is held above the windows of a page, so a palette opened
+ * in the window drawn while the project loads stays open in the window that replaces it.
+ */
+export function ProjectWindowPalette({ children }: { children: ReactNode }) {
+  return <PaletteState.Provider value={useState<PaletteScope | null>(null)}>{children}</PaletteState.Provider>;
+}
+
+function usePaletteState() {
+  const state = useContext(PaletteState);
+  if (!state) throw new Error('A ProjectWindow is drawn outside ProjectWindowPalette.');
+  return state;
+}
+
 export function ProjectWindow({
   state, onStateChange, projectName, saveStatus, availableViews, renderView, map, mapDrawer, compactMap,
   onBack, onForward, commands, mapCommands, focusRequest, variant, overlay, clock, failure, problems, activity,
@@ -141,8 +159,11 @@ export function ProjectWindow({
   const { ref: panel, width, height } = useElementSize<HTMLElement>();
   const [preview, setPreview] = useState<ProjectWindowSizePreview>({});
   const [requestedFocus, setRequestedFocus] = useState<{ region: WindowRegion }>();
-  const [paletteScope, setPaletteScope] = useState<'project' | 'activity' | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [paletteScope, setPaletteScope] = usePaletteState();
+  const settingsRegion = useRef<HTMLElement>(null);
+  const mapSection = useRef<HTMLElement>(null);
+  const divider = useRef<HTMLDivElement>(null);
+  const detailsSection = useRef<HTMLElement>(null);
   const [railFocus, setRailFocus] = useState<ProjectWindowView | null>(null);
   const [mapHasFocus, setMapHasFocus] = useState(false);
   const pointerTransition = useRef<{ slot: ProjectWindowSlot }>();
@@ -181,6 +202,31 @@ export function ProjectWindow({
   const slotWidth = (slot: ProjectWindowSlot) => folded
     ? (slot === focusedSlot ? fit.primarySize : fit.secondary.size)
     : slot === 'primary' ? fit.primarySize : fit.secondary.size;
+
+  // Settings covers what the main area showed when it opened, and closes once a gesture shows something else there.
+  const shown = JSON.stringify([mode, primaryView, secondaryView, focusedSlot,
+    state.mapDrawerOpen, state.detailsDrawerOpen, state.inspectorOpen]);
+  const [settingsOver, setSettingsOver] = useState<string | null>(null);
+  if (settingsOver !== null && settingsOver !== shown) setSettingsOver(null);
+  const settingsOpen = settingsOver !== null;
+
+  useLayoutEffect(() => {
+    [mapSection, divider, detailsSection].forEach(({ current }) => { current!.inert = settingsOpen; });
+  }, [settingsOpen]);
+
+  function toggleSettings() {
+    if (!settingsOpen) {
+      setSettingsOver(shown);
+      moveFocus('settings');
+      return;
+    }
+    closeSettings();
+  }
+
+  function closeSettings() {
+    if (settingsRegion.current?.contains(document.activeElement)) moveFocus(detailsVisible ? focusedSlot : 'map');
+    setSettingsOver(null);
+  }
 
   useLayoutEffect(() => {
     if (requestedFocus && !focusRegion(root.current, requestedFocus.region)) {
@@ -222,6 +268,7 @@ export function ProjectWindow({
   }, [onStateChange]);
 
   function activateView(view: ProjectWindowView) {
+    setSettingsOver(null);
     onStateChange((previous) => showProjectWindowView(previous, view, focusedSlot));
     moveFocus(focusedSlot);
   }
@@ -271,8 +318,8 @@ export function ProjectWindow({
       moveFocus(target === 'details' ? focusedSlot : 'map');
     }, { enabled: target === 'map' || availableViews.length > 0 }),
   }));
-  const back = bindStudioCommand('back', () => onBack?.(), { enabled: !!onBack });
-  const forward = bindStudioCommand('forward', () => onForward?.(), { enabled: !!onForward });
+  const back = bindStudioCommand('back', () => { setSettingsOver(null); onBack?.(); }, { enabled: !!onBack });
+  const forward = bindStudioCommand('forward', () => { setSettingsOver(null); onForward?.(); }, { enabled: !!onForward });
   const steps = bindStudioCommand('showSteps', () => {
     onStateChange((previous) => ({
       ...previous, mode: previous.mode === 'details' ? 'both' : previous.mode, mapDrawerOpen: !mapDrawerVisible,
@@ -301,7 +348,7 @@ export function ProjectWindow({
     const scope = document.activeElement?.closest('[data-studio-activity-panel]') ? 'activity' : 'project';
     setPaletteScope((open) => open ? null : scope);
   });
-  const settings = bindStudioCommand('settings', () => setSettingsOpen((open) => !open), { name: 'openSettings' });
+  const settings = bindStudioCommand('settings', toggleSettings);
   const viewportIds = new Set<StudioCommand['id']>(mapCommands?.map(({ id }) => id));
   const separator = mode === 'map' ? '100%' : `${mode === 'both' ? fit.mapHeight.size : compactMapHeight}px`;
   const viewportCommands = fullMapVisible && (mapHasFocus || !commands.some(({ id }) => viewportIds.has(id)))
@@ -399,12 +446,11 @@ export function ProjectWindow({
           {paletteScope && <StudioCommandPalette
             commands={paletteScope === 'activity' ? paletteCommands.filter((command) => !command.selectionScoped) : paletteCommands}
             close={() => setPaletteScope(null)} />}
-          {settingsOpen && <StudioSettings close={() => setSettingsOpen(false)} />}
           {overlay}
         </div>
       </header>
       <main ref={panel} className="shell-frame__content studio-window-panel" style={{ gridTemplateRows: panelRows }}>
-        <section id={ids.map} className="studio-window-map" aria-label={studioName('pipelineMap')}>
+        <section ref={mapSection} id={ids.map} className="studio-window-map" aria-label={studioName('pipelineMap')}>
           <div className="studio-window-map__full" hidden={!fullMapVisible}>
             <div data-studio-focus-region="map" tabIndex={-1} className="min-h-0 min-w-0 flex-1 overflow-hidden">
               {regionBody('pipelineMap', map)}
@@ -424,7 +470,7 @@ export function ProjectWindow({
             {regionBody('pipelineMap', compactMap)}
           </ScrollFade>}
         </section>
-        <div className="studio-window-panel__divider">
+        <div ref={divider} className="studio-window-panel__divider">
           {mode === 'both' && fit.mapHeight.open && (
             <ResizeSeparator label={studioName('panelHeight')} controls={ids.map} axis="y" direction={1}
               layout={fit.mapHeight} className="studio-window-resize studio-window-resize--row" {...resizeProps('mapHeight')} />
@@ -464,7 +510,7 @@ export function ProjectWindow({
               if (!command.enabled) {
                 return <WindowButton key={view} command={command} icon={viewGlyphs[view]} tab={{ id: tabId(view), tabbable: false }} />;
               }
-              const selected = shownViews[focusedSlot] === view;
+              const selected = !settingsOpen && shownViews[focusedSlot] === view;
               return (
                 <WindowButton key={view} command={command} icon={viewGlyphs[view]} controls={selected ? ids[focusedSlot] : undefined}
                   pressed={selected} tab={{ id: tabId(view), tabbable: tabView === view }} />
@@ -472,7 +518,7 @@ export function ProjectWindow({
             })}
           </div>}
         </nav>
-        <section id={ids.details} className="studio-window-details" hidden={!detailsVisible} aria-label={studioName('details')}>
+        <section ref={detailsSection} id={ids.details} className="studio-window-details" hidden={!detailsVisible} aria-label={studioName('details')}>
           <aside id={ids.detailsDrawer} data-studio-focus-region="drawer" tabIndex={-1} aria-label={studioName('detailsDrawer')} className="studio-window-side"
             hidden={!detailsDrawerVisible} style={{ width: fit.detailsDrawer.size }}>
             <ScrollFade className="studio-window-side__contents" data-populated={focusedRegion?.drawer ? '' : undefined}>
@@ -540,9 +586,24 @@ export function ProjectWindow({
             )}
           </aside>
         </section>
+        {settingsOpen && (
+          <section ref={settingsRegion} className="studio-window-settings" aria-label={studioName('settings')}
+            data-studio-focus-region="settings" tabIndex={-1}
+            onKeyDown={(event) => {
+              if (event.key !== 'Escape' || event.defaultPrevented) return;
+              event.preventDefault();
+              closeSettings();
+            }}>
+            <h2 className="sr-only">{studioName('settings')}</h2>
+            <StudioSettings />
+          </section>
+        )}
       </main>
       <footer className="shell-frame__footer studio-window-bottom" data-studio-focus-region="bottom" tabIndex={-1}>
         <StudioRegionBoundary name="bottomBar">
+          <div className="studio-window-bottom__corner">
+            <WindowButton command={settings} icon={Settings} pressed={settingsOpen} placement="right" />
+          </div>
           <div className="studio-window-bottom__left">
             <WindowButton command={drawer} pressed={detailsDrawerVisible} controls={ids.detailsDrawer} />
           </div>

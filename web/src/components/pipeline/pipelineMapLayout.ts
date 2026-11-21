@@ -24,16 +24,9 @@ export const mapColumnGap = 36;
 export const mapRowGap = 12;
 export const mapPadding = 16;
 
-export function fullMapFits(
-  columns: readonly (readonly PlanStepView[])[], width: number, height: number,
-  measured: ReadonlyMap<string, number>,
-) {
-  if (!width || !height) return true;
-  const padding = 2 * mapPadding;
-  const fullWidth = columns.length * mapCardWidth + Math.max(0, columns.length - 1) * mapColumnGap + padding;
-  return fullWidth <= width && columns.every((column) =>
-    column.reduce((sum, step) => sum + (measured.get(step.id) ?? 96), 0) +
-    Math.max(0, column.length - 1) * mapRowGap + padding <= height);
+/** Whether the cards, placed at full size, fit a region of this size at natural scale. */
+export function fullMapFits(placement: MapPlacement, width: number, height: number) {
+  return !width || !height || (placement.width <= width && placement.height <= height);
 }
 
 export function mapStepLineage(
@@ -114,16 +107,78 @@ export function layoutPipelineMap(plan: PlanView) {
     }
   }
   const columns: PlanStepView[][] = [];
-  for (const step of plan.steps) {
-    const column = depth.get(step.id)!;
-    (columns[column] ??= []).push(step);
+  for (const step of plan.steps) (columns[depth.get(step.id)!] ??= []).push(step);
+  const order = new Map<string, number>();
+  for (const column of columns) {
+    const first = (step: PlanStepView) => Math.min(...[...upstream.get(step.id)!].map((id) => order.get(id) ?? Infinity));
+    column.sort((a, b) => first(a) - first(b) || byKey(a.id, b.id));
+    for (const step of column) order.set(step.id, order.size);
   }
   return { columns, edges: [...edges.values()], upstream, downstream };
 }
 
-/** The card's sweeps in label order: the first runs down, the second across, the rest are folded. Unless arranged, the longer of the first two runs across. */
+function byKey(a: string, b: string) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+export type MapLayout = ReturnType<typeof layoutPipelineMap>;
+
+export interface MapPoint {
+  readonly x: number;
+  readonly y: number;
+}
+
+/** Where the cards sit: each column's left edge and width, each card's top-left corner, and the extent with padding. */
+export interface MapPlacement {
+  readonly columns: readonly { readonly x: number; readonly width: number }[];
+  readonly cards: ReadonlyMap<string, MapPoint>;
+  readonly width: number;
+  readonly height: number;
+}
+
+/**
+ * A card's place is a function of the cards upstream of it, so that a changed connection moves the card that changed
+ * and what is downstream of it, and nothing upstream. In each column, in order, a card's top is its first upstream
+ * card's top, or just below the cards placed before it in its column when that place is taken.
+ */
+export function placePipelineMap(
+  { columns, upstream }: Pick<MapLayout, 'columns' | 'upstream'>,
+  size: (step: PlanStepView) => { readonly width: number; readonly height: number },
+): MapPlacement {
+  const cards = new Map<string, MapPoint>();
+  const order = new Map(columns.flat().map(({ id }, index) => [id, index]));
+  const placed: { x: number; width: number }[] = [];
+  let x = mapPadding;
+  let bottom = mapPadding;
+  for (const column of columns) {
+    const width = Math.max(0, ...column.map((step) => size(step).width));
+    let next = mapPadding;
+    for (const step of column) {
+      const first = [...upstream.get(step.id) ?? []]
+        .sort((a, b) => order.get(a)! - order.get(b)!)
+        .find((id) => cards.has(id));
+      const y = Math.max(first ? cards.get(first)!.y : mapPadding, next);
+      cards.set(step.id, { x, y });
+      next = y + size(step).height + mapRowGap;
+      bottom = Math.max(bottom, next - mapRowGap);
+    }
+    placed.push({ x, width });
+    x += width + mapColumnGap;
+  }
+  return {
+    columns: placed,
+    cards,
+    width: (placed.length ? x - mapColumnGap : mapPadding) + mapPadding,
+    height: bottom + mapPadding,
+  };
+}
+
+/**
+ * The card's sweeps in label order: the first runs down, the second across, the rest are folded. Unless arranged, the
+ * longer of the first two runs across. An input axis with one value is not drawn; a sweep authored on the step always is.
+ */
 export function orderedMapSweeps(step: PlanStepView, presentation: PipelineCardPresentation) {
-  const byId = new Map(step.sweeps.map((sweep) => [sweep.id, sweep]));
+  const byId = new Map(step.sweeps.filter((sweep) => !sweep.input || sweep.values.length > 1).map((sweep) => [sweep.id, sweep]));
   const order = new Set([...(presentation.sweepOrder ?? []), ...byId.keys()]);
   const sweeps = [...order].flatMap((id) => {
     const sweep = byId.get(id);

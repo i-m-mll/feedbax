@@ -212,6 +212,11 @@
   outline: none;
 }
 
+/* With an earlier drawer section open, a folded last section rests on its region's bottom edge, which is its border. */
+[data-section='drawer'][data-open] ~ [data-section='drawer']:last-child:not([data-open]) > [data-section-header] {
+  border-bottom-width: 0;
+}
+
 [data-region-pending] {
   opacity: var(--studio-region-pending-opacity);
 }
@@ -243,11 +248,11 @@
   flex-shrink: 0;
 }
 
-/* A control attached to a card's edge sits wholly outside its border and selection ring. */
+/* A control attached to a card's edge sits just outside its selection ring, at most half as far from its card as from the next column's. */
 .studio-card__attached {
   position: absolute;
   top: 50%;
-  left: calc(100% + var(--card-selected-outset) + var(--card-selected-width) + 4px);
+  left: calc(100% + var(--card-selected-outset) + var(--card-selected-width) + 1px);
   transform: translateY(-50%);
 }
 
