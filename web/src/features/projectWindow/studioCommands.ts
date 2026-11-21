@@ -118,7 +118,10 @@ interface BindingOptions {
   subject?: string;
   keyboard?: boolean;
   glyph?: LucideIcon;
-  /** Tells apart bindings of one command and name with one subject, such as Close Slot of each slot. */
+  /**
+   * The object the command acts on, such as a step's key or a slot. A gesture held on the command resolves by it rather
+   * than by the subject, which is a shown name and can change before the gesture runs.
+   */
   instance?: string;
 }
 
@@ -135,7 +138,7 @@ function studioCommand<Id extends StudioCommandId>(
     title: studioName(name), label, glyph,
     invoke: () => invokeGesture(command),
   };
-  const key = bound ? JSON.stringify([id, name, label, instance]) : '';
+  const key = bound ? JSON.stringify([id, name, instance || label]) : '';
   bindGesture(command, key, { enabled, perform }, viewCommands.has(id));
   return command;
 }

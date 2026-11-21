@@ -5,6 +5,7 @@ import type {
   StudioSavedTrainRuns, WorkspaceReplayTrial,
 } from '../../src/generated/studioContracts';
 import { savedRunId } from '../../src/features/projectFolder/projectWindowPlan';
+import { conditionLabels } from '../../src/features/projectFolder/evaluateAuthoring';
 import { authorEvaluateConditions } from './fixtures/authorEvaluateConditions';
 import { captureStudioWindow, chooseSweepValue, drawnRunLabel, enter, mapStep, runName, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
@@ -161,7 +162,7 @@ async function showTrial(page: Page, path: string, row: StudioSavedEvaluationRow
   await reveal(page, 'Drawer');
   const trials = drawer.getByRole('combobox', { name: 'Trials' });
   const response = posted(page, path, trialId);
-  await pick(trials, trialId);
+  await pick(trials, conditionLabels(row.trials).get(trialId)!);
   const reply = await response;
   expect(reply.ok(), await reply.text()).toBe(true);
   expect(reply.request().postDataJSON()).toMatchObject({
@@ -963,6 +964,7 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
   }
   const finiteResult = finiteRow.result!;
   const trialId = finiteRow.trials[trialIndex];
+  const trialLabel = conditionLabels(finiteRow.trials).get(trialId)!;
   const finiteReplay = { revision, key: finiteRow.key, job_id: finiteResult.job_id, trial: trialId };
   expect((await request.post(replayPath, { data: finiteReplay })).status()).toBe(422);
   for (const { coordinate, samples } of fromCheckpoint.checkpoints) {
@@ -980,7 +982,7 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
   await expect(checkpoints).toHaveText('2');
   const finiteTrials = page.getByRole('combobox', { name: 'Trials', exact: true });
   let selectedReplay = posted(page, replayPath, trialId);
-  await pick(finiteTrials, trialId);
+  await pick(finiteTrials, trialLabel);
   let selected = await selectedReplay;
   expect(selected.ok(), await selected.text()).toBe(true);
   expect(selected.request().postDataJSON()).toMatchObject({ checkpoint: 2 });
@@ -999,7 +1001,7 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
   await expect(cursors).toHaveCount(2);
   const clock = footer(page).getByRole('group', { name: 'Clock', exact: true });
   await expect(clock).toHaveCount(1);
-  await expect(page.getByRole('combobox', { name: 'Trials', exact: true })).toHaveText(trialId);
+  await expect(page.getByRole('combobox', { name: 'Trials', exact: true })).toHaveText(trialLabel);
   // Each slot projects the same trial into its own fitted viewport.
   const frame = (end: boolean) => cursors.evaluateAll((points, end) => points.map((point) => {
     const cursor = point as SVGCircleElement;
