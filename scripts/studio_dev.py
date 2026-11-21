@@ -11,7 +11,6 @@ import signal
 import socket
 import subprocess
 import sys
-import threading
 import time
 from collections.abc import Callable
 from contextlib import ExitStack, suppress
@@ -22,7 +21,7 @@ from typing import BinaryIO
 from feedbax.desktop.release import AppPaths
 from feedbax.host import HostClient
 from feedbax.host.io import OWNER_ENV
-from feedbax.host.platform import ProcessExit
+from feedbax.host.platform import end_with
 
 ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "web"
@@ -41,8 +40,28 @@ def stop(process: subprocess.Popen) -> None:
             process.wait()
 
 
+_held: list[int] | None = None
+
+
 def exit_on_signal(signum: int, _frame: object) -> None:
+    if _held is not None:
+        _held.append(signum)
+        return
     raise SystemExit(128 + signum)
+
+
+def spawn(scope: ExitStack, command: list[str], **options) -> subprocess.Popen:
+    """Start a child that `scope` stops; a signal that arrives meanwhile ends the launcher once it is registered."""
+    global _held
+    _held = []
+    try:
+        process = subprocess.Popen(command, **options)
+        scope.callback(stop, process)
+    finally:
+        held, _held = _held, None
+    if held:
+        raise SystemExit(128 + held[0])
+    return process
 
 
 def process_exists(pid: int) -> bool:
@@ -51,20 +70,6 @@ def process_exists(pid: int) -> bool:
     except ProcessLookupError:
         return False
     return True
-
-
-def end_with(owner: int) -> None:
-    """End this launcher, as SIGTERM does, once the process `owner` has exited."""
-    try:
-        watch = ProcessExit(owner)
-    except ProcessLookupError:
-        raise SystemExit(f"The owning test runner {owner} has exited.") from None
-
-    def wait() -> None:
-        watch.wait()
-        os.kill(os.getpid(), signal.SIGTERM)
-
-    threading.Thread(target=wait, name="owner-exit", daemon=True).start()
 
 
 def wait_until(check: Callable[[], bool], description: str, *, timeout: float = 5) -> None:
@@ -171,7 +176,13 @@ def serve(home: Path, args: argparse.Namespace, scope: ExitStack, backend_app: s
     # Saved-project reads observe the host without starting it, so the launcher starts it.
     HostClient(paths.host).ping()
 
-    backend = [sys.executable, "-B", "-m", "uvicorn", backend_app]
+    # The backend ends with this launcher however it ends, SIGKILL included.
+    backend = [
+        sys.executable, "-B", "-c",
+        "import sys; from feedbax.host.platform import end_with; end_with(int(sys.argv.pop(1)));"
+        " from uvicorn.main import main; main()",
+        str(os.getpid()), backend_app,
+    ]
     vite = ["bun", "--bun", "vite"]
     front = vite
     if args.preview_from:
@@ -180,8 +191,7 @@ def serve(home: Path, args: argparse.Namespace, scope: ExitStack, backend_app: s
         front = [*vite, "preview", "--outDir", str(args.preview_from.resolve())]
     if args.preview:
         dist = str(paths.cache / "dist")
-        build = subprocess.Popen([*vite, "build", "--outDir", dist, "--emptyOutDir"], cwd=WEB)
-        scope.callback(stop, build)
+        build = spawn(scope, [*vite, "build", "--outDir", dist, "--emptyOutDir"], cwd=WEB)
         build_code = build.wait()
         if build_code:
             return build_code
@@ -191,15 +201,13 @@ def serve(home: Path, args: argparse.Namespace, scope: ExitStack, backend_app: s
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listener.bind((HOST, backend_port))
         fd = listener.fileno()
-        api = subprocess.Popen([*backend, "--fd", str(fd)], cwd=ROOT, pass_fds=(fd,))
-    scope.callback(stop, api)
+        api = spawn(scope, [*backend, "--fd", str(fd)], cwd=ROOT, pass_fds=(fd,))
     if args.backend_only:
         return api.wait()
     pid_file = paths.cache / "backend.pid"
     pid_file.write_text(f"{api.pid}\n")
     scope.callback(pid_file.unlink, missing_ok=True)
-    web = subprocess.Popen([*front, "--host", HOST, "--port", str(port), "--strictPort"], cwd=WEB)
-    scope.callback(stop, web)
+    web = spawn(scope, [*front, "--host", HOST, "--port", str(port), "--strictPort"], cwd=WEB)
     return web.wait()
 
 

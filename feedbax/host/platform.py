@@ -5,7 +5,9 @@ import ctypes
 import os
 import re
 import select
+import signal
 import sys
+import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -133,3 +135,18 @@ class ProcessExit:
             self._queue.close()
         else:
             os.close(self._fd)
+
+
+def end_with(pid: int) -> None:
+    """Send this process SIGTERM once the process `pid` has exited, at once when it already has."""
+    try:
+        watch = ProcessExit(pid)
+    except ProcessLookupError:
+        os.kill(os.getpid(), signal.SIGTERM)
+        return
+
+    def wait() -> None:
+        watch.wait()
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    threading.Thread(target=wait, name=f"end-with-{pid}", daemon=True).start()
