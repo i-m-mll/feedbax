@@ -9,7 +9,8 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanRead
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_list_inputs import _two_model_definition
-from tests.test_map_dims import MASSES, _card, _compile, _install_probe, _operations_of, _plan
+from tests.test_list_subsets import listed_best
+from tests.test_map_dims import MASSES, _card, _compile, _operations_of, _plan
 
 PROJECT = "mapped"
 
@@ -66,14 +67,13 @@ def _status(capsys, root, *addresses):
 
 
 def test_a_mapped_element_is_one_entry_in_each_projection_and_addresses_select_its_requests(
-    tmp_path, monkeypatch, capsys,
+    probe_operations, tmp_path, monkeypatch, capsys,
 ):
-    operations = _install_probe(tmp_path, monkeypatch)
     monkeypatch.setattr(
         HostClient, "jobs_snapshot", lambda self, **_: {"cursor": 0, "oldest_cursor": 0, "jobs": []},
     )
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(tmp_path / "host"))
-    folders = ProjectFolderService(tmp_path / "projects", operations=operations)
+    folders = ProjectFolderService(tmp_path / "projects", operations=probe_operations)
     root = tmp_path / "projects" / PROJECT
     _save_project(folders, PROJECT, Project.model_validate(_mapped()))
 
@@ -100,4 +100,20 @@ def test_a_mapped_element_is_one_entry_in_each_projection_and_addresses_select_i
 
     for row in _status(capsys, root, "conditions"):
         assert "==" not in row and "@" not in row.partition(":")[2]
+        assert _status(capsys, root, row) == [row]
+
+
+def test_a_ranked_list_row_is_printed_and_selected_by_its_rank_key(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(
+        HostClient, "jobs_snapshot", lambda self, **_: {"cursor": 0, "oldest_cursor": 0, "jobs": []},
+    )
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(tmp_path / "host"))
+    folders = ProjectFolderService(tmp_path / "projects")
+    root = tmp_path / "projects" / "ranked"
+    _save_project(folders, "ranked", Project.model_validate(listed_best()))
+
+    printed = _status(capsys, root, "baseline")
+    assert "baseline:subject=train/rank-1" in printed
+    assert _status(capsys, root, "baseline:subject=train/rank-1") == ["baseline:subject=train/rank-1"]
+    for row in printed:
         assert _status(capsys, root, row) == [row]
