@@ -157,10 +157,9 @@ class _KeyedMember(StrictModel):
 
 
 class RenameMember(_KeyedMember):
-    """Set or clear the display label of a step, operation or figure; no key, reference, run or request changes."""
+    """Set or clear the label of a document, step, operation or figure; no key, reference, run or request changes."""
 
     kind: Literal["rename"]
-    family: Literal["steps", "elements"]
     label: NonemptyText | None
 
 

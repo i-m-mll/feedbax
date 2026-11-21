@@ -359,6 +359,7 @@ class PlannedStep:
     authored_inputs: Mapping[str, InputBinding | None]
     inputs: Mapping[str, InputBinding] | None = None
     sweep: Sweep | None = field(default=None, compare=False)
+    label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -2480,7 +2481,7 @@ class _Compiler:
         project = self.variants[variant]
         authored = project.steps[name]
         kind = authored.kind
-        step = PlannedStep(kind, authored.group, MappingProxyType(deepcopy(authored.inputs)))
+        step = PlannedStep(kind, authored.group, MappingProxyType(deepcopy(authored.inputs)), label=authored.label)
         self.steps[variant, name] = step
         wanted = self.wanted_sources.get((variant, name), set())
         role = _ROLES.get(kind)

@@ -93,7 +93,7 @@ export interface PlanView {
   readonly edges: readonly PlanRunEdge[];
 }
 
-/** What Studio calls a step, operation or figure: its label, or its key when it has none. */
+/** What Studio calls a document, step, operation or figure: its label, or its key when it has none. */
 export function shownName(key: string, labelled?: { readonly label?: string | null } | null) {
   return labelled?.label ?? key;
 }
