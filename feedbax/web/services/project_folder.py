@@ -158,11 +158,22 @@ class ProjectFolderService(ProjectFolder):
     ) -> ModelEditResponse:
         from feedbax.contracts.model_edit import ModelEditApplied, ModelEditProblem, ModelEditRefused, ModelEditResponse
 
-        from feedbax.web.services.trial_scope import model_document_store
+        from feedbax.web.services.trial_scope import model_document_store, row_model, scoped_model_store
 
-        result = self.apply_model_command(
-            project_id, body, components, partial(model_document_store, self, self.project_id(project_id)),
-        )
+        project_id = self.project_id(project_id)
+        if body.rows:
+            if body.files:
+                raise ProjectFolderInvalid("A Model edit for selected runs writes no step files alongside it.")
+            row = row_model(self, project_id, self.read(project_id, revision=body.revision).project, body)
+            result = self.apply_model_command(
+                project_id, body, components, lambda project, body, before, after: scoped_model_store(
+                    project, body, row, after,
+                ), source=row.content,
+            )
+        else:
+            result = self.apply_model_command(
+                project_id, body, components, partial(model_document_store, self, project_id),
+            )
         if isinstance(result, ModelEditProblem):
             return ModelEditResponse(result=ModelEditRefused(status="refused", problem=result))
         change = result.change

@@ -8,23 +8,20 @@ import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-async function addIntervention(page: Page, projectPath: string, scope: object) {
+async function addIntervention(page: Page, projectPath: string, selection: { rows: string[]; axes?: object }) {
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   await inspector.getByRole('button', { name: 'Add Attachment', exact: true }).click();
   const button = page.getByRole('menuitem', { name: 'Add Intervention', exact: true });
-  const committed = page.waitForResponse((response) => response.request().method() === 'PATCH' &&
-    new URL(response.url()).pathname === projectPath, { timeout: 8_000 });
-  // A refused preparation produces no PATCH. Report that refusal first.
-  void committed.catch(() => {});
-  const [prepared] = await Promise.all([
+  const [edited] = await Promise.all([
     page.waitForResponse((response) => response.request().method() === 'POST' &&
-      new URL(response.url()).pathname === `${projectPath}/model/evaluate-attachment`, { timeout: 8_000 }),
+      new URL(response.url()).pathname === `${projectPath}/model/edit`, { timeout: 8_000 }),
     button.click(),
   ]);
-  expect(prepared.request().postDataJSON().scope).toEqual(scope);
-  expect(prepared.ok(), await prepared.text()).toBe(true);
-  const response = await committed;
-  expect(response.ok(), await response.text()).toBe(true);
+  const body = edited.request().postDataJSON();
+  expect({ rows: body.rows, ...(body.axes ? { axes: body.axes } : {}) }).toEqual(selection);
+  expect(edited.ok(), await edited.text()).toBe(true);
+  const { result } = await edited.json() as ModelEditResponse;
+  expect(result.status, result.status === 'refused' ? result.problem.detail : '').toBe('applied');
 }
 
 test('authors and reopens an addressed Model through the project history', async ({ page, request }) => {
@@ -237,11 +234,11 @@ test('an Evaluate attachment for the step is stored in a document based on the s
   const evaluation = page.getByRole('article', { name: 'Evaluate baseline' });
   await chooseSweepValue(evaluation, 'seed', 'control');
   await outlineRow(page, 'Cell.output → Readout.input').click();
-  await addIntervention(page, projectPath, { kind: 'axis_value', axis: 'seed', value: 'control' });
+  await addIntervention(page, projectPath, { rows: ['seed=control'], axes: { seed: ['control'] } });
   await mapStep(page, 'baseline').click();
   await evaluation.locator('.studio-map-run-mark').and(evaluation.getByRole('button', { name: /^Select seed comparison/ })).click();
   await outlineRow(page, 'Cell.output → Readout.input').click();
-  await addIntervention(page, projectPath, { kind: 'rows', rows: ['seed=comparison'] });
+  await addIntervention(page, projectPath, { rows: ['seed=comparison'] });
   await expect(model.getByRole('button', { name: 'Attachment Scale', exact: true })).toHaveCount(2);
 });
 

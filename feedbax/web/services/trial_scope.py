@@ -15,8 +15,9 @@ from feedbax.contracts.model_edit import (
     EvaluateAttachmentAxis, EvaluateAttachmentRows, EvaluateAttachmentStep, EvaluateAttachmentVariant,
 )
 from feedbax.contracts.project import (
-    BasedDocument, Document, DocumentBase, DocumentEdit, DocumentReference, InlineBase, Payload, Project,
-    DifferenceNotApplied, RemoveDocumentValue, RemoveProjectValue, SetProjectValue, StepBase, apply_differences,
+    BasedDocument, Differences, Document, DocumentBase, DocumentEdit, DocumentReference, InlineBase, Payload, Project,
+    DifferenceNotApplied, RemoveDocumentValue, RemoveProjectValue, SetDocumentValue, SetProjectValue, StepBase,
+    apply_differences,
     apply_document_edit, based_on, diff,
     document_edit_value, json_pointer_parts, same_json,
 )
@@ -28,7 +29,7 @@ from feedbax.contracts.project_resolution import (
 )
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_sweep import (
-    AxisCondition, NamedAxis, SetValue, RemoveValue, _compose_writes,
+    AxisCondition, NamedAxis, SetAxis, SetValue, RemoveValue, _compose_writes,
 )
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.studio_project import AuthoredFileAddress, CreateNamedDocument, StudioProjectFilePatch
@@ -958,3 +959,208 @@ def _scoped_runs(project, plan, key: RunKey, scope: RunScope, chosen: Collection
         )
     }
     return reached_runs(plan, variants, picked, reached - {key.step})
+
+
+@dataclass(frozen=True)
+class SelectedValue:
+    """The selected runs as one value of a named axis of the step: an inline axis's value, or a set's entry."""
+
+    axis: str
+    value: str
+    set: str | None
+    """The Set document the axis reads, when it reads one."""
+
+
+def selected_value(project: Project, step: str, scope: RunScope) -> SelectedValue | None:
+    """The value of a named axis whose runs are the runs ``scope`` selects, when they are exactly one."""
+    sweep = project.steps[step].sweep
+    if isinstance(scope, EvaluateAttachmentAxis):
+        return SelectedValue(scope.axis, scope.value, None)
+    if isinstance(scope, SweepValuesScope) and len(scope.axes) == 1 and sweep is not None:
+        (axis, values), = scope.axes.items()
+        named = sweep.axes.get(axis)
+        if len(values) == 1 and isinstance(named, SetAxis):
+            return SelectedValue(axis, values[0], named.set)
+    return None
+
+
+def set_readers(project: Project, name: str) -> frozenset[str]:
+    """The steps whose sweep has an axis reading the Set document ``name``, and the steps based on them."""
+    direct = {
+        step for step, authored in project.steps.items() if authored.sweep is not None and any(
+            isinstance(axis, SetAxis) and axis.set == name for axis in authored.sweep.axes.values()
+        )
+    }
+    return frozenset(direct) | base_descendants(project, direct)
+
+
+@dataclass(frozen=True)
+class RowModel:
+    """The Model the first selected run reads as ``document``, and where an edit for the selection is stored."""
+
+    content: Payload
+    scope: RunScope
+    follows: bool
+    """The run reads the Model through its subject, so the step is given a reference of its own to it."""
+
+
+def row_model(folders, project_id: str, project: Project, body) -> RowModel:
+    """The Model a Model edit for ``body.rows`` of ``body.step`` is applied to: the first row's copy of the document."""
+    plan = folders.read_plan(project_id, revision=body.revision).plan
+    key = RunKey(plan.variants[0], body.step, body.rows[0])
+    scope = selection_scope(project, plan, key, tuple(body.rows), body.axes or None)
+    selected = folders.read_plan(project_id, revision=body.revision, source_runs=(key,)).plan
+    definition = selected.selected_definitions.get(key)
+    row = next((row for row in selected.rows if row.key == key), None)
+    from feedbax.project_model_selection import selected_model
+
+    content = selected_model(definition, body.document) if definition is not None else None
+    if isinstance(content, dict):
+        return RowModel(content, scope, False)
+    if row is not None and body.document in row.followed_documents:
+        named = selected_value(project, body.step, scope)
+        content = _composed(project, body.document)
+        if named is not None:
+            content = _value_model(project, body.step, named, body.document)
+        return RowModel(content, scope, True)
+    raise ProjectFolderInvalid(f"The selected runs do not read {body.document}.")
+
+
+def _value_differences(project: Project, step: str, named: SelectedValue, document: str) -> Differences:
+    """The differences the selected value makes to ``document``."""
+    if named.set is not None:
+        from feedbax.contracts.set_document import read_set
+
+        try:
+            entry = read_set(project.documents.get, named.set).entries.get(named.value)
+        except ValueError as error:
+            raise ProjectFolderInvalid(str(error)) from error
+        if entry is None:
+            raise ProjectFolderInvalid(f"{named.set} has no entry {named.value}.")
+        return dict(entry.differences)
+    axis = project.steps[step].sweep.axes.get(named.axis)
+    value = axis.values.get(named.value) if isinstance(axis, NamedAxis) else None
+    if value is None:
+        raise ProjectFolderInvalid("The selected value is not a named value authored on this step.")
+    prefix = f"documents.{document}.payload."
+    return {
+        pointer(tuple(path.removeprefix(prefix).split("."))): (
+            SetDocumentValue(value=write.value) if isinstance(write, SetValue) else RemoveDocumentValue(op="remove")
+        )
+        for path, write in value.patches.items() if write is not None and path.startswith(prefix)
+    }
+
+
+def _value_model(project: Project, step: str, named: SelectedValue, document: str) -> Payload:
+    try:
+        return apply_differences(_composed(project, document), _value_differences(project, step, named, document))
+    except DifferenceNotApplied as error:
+        raise ProjectFolderInvalid(f"The selected value does not apply to {document}: {error}") from error
+
+
+def _payload_target(document: str, path: str) -> str:
+    parts = json_pointer_parts(path)
+    if any(not part or "." in part for part in parts):
+        raise ProjectFolderInvalid(f"{path} has a key a sweep patch cannot name.")
+    return ".".join(("documents", document, "payload", *parts))
+
+
+def _value_patches(base: Payload, document: str, differences: Differences) -> dict[str, Any]:
+    """``differences`` of ``document``'s composed content ``base`` as sweep patches into its payload."""
+    return {
+        _payload_target(document, path): (
+            {"op": "replace" if _holds(base, json_pointer_parts(path)) else "add", "value": record.value}
+            if isinstance(record, SetDocumentValue) else {"op": "remove"}
+        )
+        for path, record in differences.items()
+    }
+
+
+def scoped_model_store(project: Project, body, row: RowModel, after: Payload) -> StoredEdit:
+    """Store a Model edit of the selected runs' copy of ``body.document``, ``row.content`` before it and ``after``.
+
+    On one value of a named axis the value holds its differences from the document: on its patches when the axis is
+    inline, on the set's entry when it reads a set, which is then an edit of the set for the chosen steps. Any other
+    selection holds the change on the sweep's exception for it.
+    """
+    step = body.step
+    document = body.document
+    delta = diff(row.content, _in_form_of(row.content, after))
+    address = AuthoredFileAddress(kind="step", id=step)
+    authored = project.steps[step]
+    raw = authored.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    stored = StoredEdit([], reached=frozenset({step}))
+    named = selected_value(project, step, row.scope)
+    if named is None:
+        writes = [
+            OverridePatch(path=_payload_target(document, path), op="remove") if isinstance(record, RemoveDocumentValue)
+            else OverridePatch(
+                path=_payload_target(document, path), value=record.value,
+                op="replace" if _holds(row.content, json_pointer_parts(path)) else "add",
+            )
+            for path, record in delta.items()
+        ]
+        if writes:
+            stored = stored.then([_selection_file(address, raw, authored, row.scope, writes)])
+    else:
+        base = _composed(project, document)
+        try:
+            edited = apply_differences(_value_model(project, step, named, document), delta)
+        except DifferenceNotApplied as error:
+            raise ProjectFolderInvalid(f"The edit does not apply to the selected value: {error}") from error
+        differences = diff(base, edited)
+        if named.set is None:
+            value = raw["sweep"]["axes"][named.axis]["values"][named.value]
+            prefix = f"documents.{document}.payload."
+            patches = {path: write for path, write in value.get("patches", {}).items() if not path.startswith(prefix)}
+            stored = stored.then([file_value(
+                address, raw, ("sweep", "axes", named.axis, "values", named.value, "patches"),
+                patches | _value_patches(base, document, differences),
+            )])
+        else:
+            stored = stored + set_entry_write(project, named.set, named.value, differences, {step, *body.chosen_steps})
+    if row.follows:
+        stored = stored.then([_step_file(
+            project, step, address, raw, authored, [_slot_write(authored_payload(project, step), "model", document)],
+        )])
+    return stored
+
+
+def set_entry_write(
+    project: Project, name: str, entry: str, differences: Differences, chosen: Collection[str],
+) -> StoredEdit:
+    """Give the set ``name``'s ``entry`` ``differences`` for the ``chosen`` steps among those that read it.
+
+    The set holds the edit when every step it would change is chosen; otherwise a set based on it holds it, and the
+    chosen steps' axes read that set.
+    """
+    content = _composed(project, name)
+    entries = content.get("entries", {})
+    if entry not in entries:
+        raise ProjectFolderInvalid(f"{name} has no entry {entry}.")
+    updated = entries[entry] | {"differences": {
+        path: value.model_dump(mode="json", exclude_unset=True) for path, value in differences.items()
+    }}
+    edits = content_edits(content, content | {"entries": entries | {entry: updated}})
+    return set_document_write(project, name, edits, chosen)
+
+
+def set_document_write(project: Project, name: str, edits: Sequence[DocumentEdit], chosen: Collection[str]) -> StoredEdit:
+    """Store ``edits`` of the Set document ``name`` for the ``chosen`` steps by the document rule; a step pointed at a
+    new set has its axis read it."""
+    chosen = frozenset(chosen)
+    stores = _document_stores(project, name, edits, chosen, lambda document: set_readers(project, document), set())
+    files = list(stores.files)
+    view = preview_stored(project, StoredEdit(files, tuple(stores.created)))
+    for step, mapping in stores.pointing.items():
+        authored = view.steps[step]
+        raw = authored.model_dump(mode="json", by_alias=True, exclude_unset=True)
+        axes = {
+            axis: mapping[read.set] for axis, read in (authored.sweep.axes.items() if authored.sweep else ())
+            if isinstance(read, SetAxis) and read.set in mapping
+        }
+        if not axes:
+            raise ProjectFolderInvalid(f"{step} reads the set through the step it is based on.")
+        address = AuthoredFileAddress(kind="step", id=step)
+        files.extend(file_value(address, raw, ("sweep", "axes", axis, "set"), new) for axis, new in axes.items())
+    return StoredEdit(merged_files(files), tuple(stores.created), chosen | set_readers(project, name))

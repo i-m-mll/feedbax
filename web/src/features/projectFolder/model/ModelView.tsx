@@ -3,7 +3,7 @@ import { MarkerType, type OnConnectStart } from '@xyflow/react';
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
 import { useStore } from 'zustand';
 import { fetchComponents } from '@/api/components';
-import { editEvaluateAttachment, projectModelFields, readEvaluateAttachments, readModelProjection, reviewModelConnections } from '@/api/projectFolders';
+import { projectModelFields, readEvaluateAttachments, readModelProjection, reviewModelConnections } from '@/api/projectFolders';
 import { ApiRequestError, apiErrorMessage, isRefusal } from '@/api/request';
 import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
 import { studioAccessibleName, studioEvaluateValueSource, studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
@@ -26,7 +26,8 @@ import type { FieldModel } from '@/components/values/fieldModel';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { bindStudioCommand, commandAttributes } from '@/features/projectWindow/studioCommands';
 import type {
-  ComponentDefinition, EvaluateAttachmentReadRequest, EvaluateAttachmentRequest, JsonValue,
+  AddModelAttachment, ChangeModelAttachment, ComponentDefinition, EvaluateAttachmentReadRequest, JsonValue,
+  RemoveModelAttachment, SetField,
   ModelAddress, ModelClipboard, ModelConnectionReview, ModelDocument, ModelEditCommand, ModelFieldRequest, ModelPosition, StudioProjectSnapshot, StudioSavedTrainKey,
 } from '@/generated/studioContracts';
 import { ModelAddressSchema, ModelDocumentSchema, ModelEditProblemSchema } from '@/generated/studioContracts';
@@ -45,7 +46,7 @@ import { modelOutline } from './modelOutline';
 import { sweepValueRuns, type ConfirmRunRemoval } from '../runRemoval';
 
 type Operation = ModelEditCommand['operation'];
-type Difference = EvaluateAttachmentRequest['difference'];
+type Difference = AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField;
 type Props = {
   model?: { id: string; value: ModelDocument };
   saved: StudioProjectSnapshot;
@@ -442,29 +443,21 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         try {
           let changed: ModelAddress;
           let shown = model.id;
-          if (readBody.scope.kind === 'step' || readBody.scope.kind === 'variant') {
-            const { chosenSteps } = await plan.next(({ revision }) => revision === editor.getSnapshot().saved.revision);
-            const applied = await editor.editModel(name, model.id, {
-              operation: difference.op === 'set_field' ? difference : { op: 'set_attachment', difference },
-            }, editor.getSnapshot().saved, {
-              step: readBody.run.step, chosen_steps: [...chosenSteps],
-              ...(readBody.scope.kind === 'variant' ? { variant: readBody.scope.variant } : {}),
-            });
-            if (applied.status === 'refused') throw new Error(applied.problem.detail);
-            shown = follow(applied) ?? shown;
-            const [first] = applied.changed;
-            if (!first) throw new Error('The edit changed nothing.');
-            changed = first;
-          } else {
-            const result = await editEvaluateAttachment(saved.project_id, { ...readBody, difference }, editor.signal);
-            if (result.revision !== saved.revision) throw new Error('The selected Evaluate revision changed.');
-            editor.editFiles(name, [result.file], {
-              reviewedRevision: saved.revision,
-              dependencies: [{ kind: 'document', id: model.id }],
-            });
-            await editor.flush();
-            changed = result.changed;
-          }
+          const { scope } = readBody;
+          const { chosenSteps } = await plan.next(({ revision }) => revision === editor.getSnapshot().saved.revision);
+          const applied = await editor.editModel(name, model.id, {
+            operation: difference.op === 'set_field' ? difference : { op: 'set_attachment', difference },
+          }, editor.getSnapshot().saved, {
+            step: readBody.run.step, chosen_steps: [...chosenSteps],
+            ...(scope.kind === 'variant' ? { variant: scope.variant } : {}),
+            ...(scope.kind === 'rows' ? { rows: [...scope.rows] } : {}),
+            ...(scope.kind === 'axis_value' ? { rows: [readBody.run.row], axes: { [scope.axis]: [scope.value] } } : {}),
+          });
+          if (applied.status === 'refused') throw new Error(applied.problem.detail);
+          shown = follow(applied) ?? shown;
+          const [first] = applied.changed;
+          if (!first) throw new Error('The edit changed nothing.');
+          changed = first;
           if (difference.op !== 'set_field') {
             selectElement(state, { document: shown, address: difference.op === 'remove' ? at(changed, { kind: 'graph' }) : changed });
           }
@@ -815,9 +808,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     ? effective.get(addressKey(attachmentOwner))?.find(({ id }) => id === element.id) : undefined;
   const ownerAddress = selection && (element?.kind === 'wire' || element?.kind === 'port') ? selection : attachmentOwner;
   const chain = ownerAddress && effective.get(addressKey(ownerAddress));
-  const authored = attachments.data?.records ?? [];
   function isAuthored(address: ModelAddress) {
-    return fromDifference(address) || authored.some((record) => addressKey(record.op === 'add' ? attachmentAddress(record.owner, record.attachment.id) : record.address) === addressKey(address));
+    return fromDifference(address);
   }
   async function updateAttachment(address: ModelAddress, item: Attachment) {
     const difference = { op: 'change', address, attachment: item } as const;

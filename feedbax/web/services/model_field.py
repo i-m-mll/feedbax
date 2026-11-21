@@ -13,9 +13,7 @@ from feedbax.contracts.model_document import (
     MODEL_DOCUMENT_SCHEMA_ID, CompositeComponent, DelayAttachment, InterventionAttachment, LeafComponent, ModelDocument,
 )
 from feedbax.contracts.model_edit import (
-    EvaluateAttachmentReadRequest, EvaluateAttachmentRequest, EvaluateAttachmentRows, EvaluateAttachmentStep,
-    EvaluateAttachmentVariant,
-    ModelEditCommand, SetField,
+    EvaluateAttachmentReadRequest, EvaluateAttachmentRows, EvaluateAttachmentStep, ModelEditCommand, SetField,
 )
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project import BasedDocument, InlineBase, SetProjectValue, base_chain
@@ -33,9 +31,7 @@ from feedbax.expression_text import print_field
 from feedbax.studio.authoring_sweeps import SweepTarget, FieldSweeps
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
 from feedbax.studio.selection import merged_files
-from feedbax.web.services.evaluate_attachment import (
-    EvaluateAttachmentRefused, evaluate_reading, prepare_evaluate_attachment,
-)
+from feedbax.web.services.evaluate_sources import read_evaluate_model
 from feedbax.web.services.model_projection import selected_model
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
 from feedbax.web.services.trial_scope import reached_steps, scoped_file, selection_scope, variant_file
@@ -265,7 +261,7 @@ def model_fields(
         evaluate = EvaluateAttachmentReadRequest(revision=body.revision, run=body.run, scope=body.evaluate_scope)
         key = RunKey(body.run.variant, body.run.step, body.run.row)
         plan = folders.read_plan(project_id, revision=body.revision, source_runs=(key,)).plan
-        reading = evaluate_reading(
+        reading = read_evaluate_model(
             folders, project_id, evaluate, components, selected=plan, model_document=body.document,
         )
         effective_model = reading.state.resolved_model
@@ -395,15 +391,8 @@ def model_fields(
         else:
             value = result.model_dump(mode="json")
     difference = SetField(op="set_field", address=field.address, value=value)
-    if evaluate is not None and isinstance(evaluate.scope, EvaluateAttachmentStep | EvaluateAttachmentVariant):
-        return ModelFieldResponse(command=ModelEditCommand(operation=difference))
     if evaluate is not None:
-        request = EvaluateAttachmentRequest(**evaluate.model_dump(), difference=difference)
-        try:
-            edit = prepare_evaluate_attachment(folders, project_id, request, components)
-        except EvaluateAttachmentRefused as error:
-            return ModelFieldResponse(problems=[Problem(code=ProblemCode.STRUCTURE, reason=error.problem.detail)])
-        return ModelFieldResponse(files=[edit.file])
+        return ModelFieldResponse(command=ModelEditCommand(operation=difference))
     if variant is not None:
         if body.rows or plan is None or not plan.document_users(variant, owner_name) <= reached_steps(
             project, set(body.chosen_steps) or {body.run.step},

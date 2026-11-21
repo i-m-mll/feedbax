@@ -26,6 +26,7 @@ from feedbax.contracts.project_inputs import (
     CheckpointRule,
     NonemptyText,
     ProjectName,
+    RowKey,
     StepReference,
     SubsetSelectionError,
     SweepExceptionTerms,
@@ -169,9 +170,21 @@ class SweepException(PatchSet):
 
 
 class AxisCondition(StrictModel):
-    """The rows an axis applies to: those whose value on each named axis of the same sweep is one of those listed."""
+    """The rows an axis applies to, by the terms an exception's ``where`` takes: those whose value on each named axis,
+    or on a coordinate an input axis carries, is one of those listed, and that are among ``rows`` when it is given.
 
-    axes: dict[ProjectName, Annotated[list[ProjectName], Field(min_length=1)]] = Field(min_length=1)
+    ``rows`` names the rows the step has without this axis; an axis conditioned on rows divides its rows after every
+    conditioned axis authored before it.
+    """
+
+    axes: dict[ProjectName, Annotated[list[ProjectName], Field(min_length=1)]] = Field(default_factory=dict)
+    rows: Annotated[list[RowKey], Field(min_length=1)] | None = Field(default=None, exclude_if=lambda rows: rows is None)
+
+    @model_validator(mode="after")
+    def _has_terms(self) -> AxisCondition:
+        if not self.axes and self.rows is None:
+            raise ValueError("a condition names axis values or rows")
+        return self
 
 
 class NamedAxis(StrictModel):
@@ -671,6 +684,7 @@ def _condition(axis: Axis) -> AxisCondition | None:
 def _conditional_order(axes: Mapping[str, Axis]) -> tuple[str, ...]:
     """The conditioned axes, each after the conditioned axes it depends on; a condition names other axes only."""
     graph: dict[str, set[str]] = {}
+    earlier: list[str] = []
     for name, axis in axes.items():
         if (where := _condition(axis)) is None:
             continue
@@ -680,12 +694,10 @@ def _conditional_order(axes: Mapping[str, Axis]) -> tuple[str, ...]:
                     SweepExpansionCode.INVALID_CONDITION, f"sweep.axes.{name}.where.axes.{other}",
                     f"axis {name!r} is conditioned on itself",
                 )
-            if other not in axes:
-                raise SweepExpansionError(
-                    SweepExpansionCode.INVALID_CONDITION, f"sweep.axes.{name}.where.axes.{other}",
-                    f"unknown axis {other!r}",
-                )
-        graph[name] = {other for other in where.axes if _condition(axes[other]) is not None}
+        graph[name] = {other for other in where.axes if other in axes and _condition(axes[other]) is not None}
+        if where.rows is not None:
+            graph[name] |= set(earlier)
+        earlier.append(name)
     try:
         return tuple(TopologicalSorter(graph).static_order())
     except CycleError as error:
@@ -1119,7 +1131,8 @@ def _condition_picks(name: str, where: AxisCondition, rows: Sequence[ExpandedRow
     try:
         picked = {
             id(row) for row in select_sweep_exception_rows(
-                SweepExceptionTerms(axes=where.axes), rows, key=lambda row: row.id,
+                SweepExceptionTerms(axes=where.axes, rows=where.rows) if where.rows is not None
+                else SweepExceptionTerms(axes=where.axes), rows, key=lambda row: row.id,
                 coordinates=lambda row: {axis: value.value_id for axis, value in row.coordinates.items()},
             )
         }
