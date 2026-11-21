@@ -273,7 +273,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
       await openView(page, 'results');
     }
     const results = page.locator('[data-slot="secondary"]').getByRole('region', { name: 'Results', exact: true }).last();
-    await expect(results.getByRole('img', { name: 'Loss', exact: true }).locator('polyline')).toHaveCount(1);
+    await expect(results.getByRole('img', { name: 'Metric train_loss', exact: true }).locator('polyline')).toHaveCount(1);
     await expect(results.getByRole('list', { name: 'Train steps' }).getByRole('listitem')).toHaveText([
       `train 1–${sourceUpdates}`, `${child} ${sourceUpdates + 1}–${childUpdates}`,
     ]);

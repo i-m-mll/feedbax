@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { StudioRegion, useRegionPending, type StudioRegionState } from '@/components/activity/StudioRegion';
-import { StudioTrainResults, type TrainLossResult } from '@/components/activity/StudioTrainResults';
+import { StudioTrainResults, type TrainMetricResult } from '@/components/activity/StudioTrainResults';
 import { studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
 import { Section } from '@/components/ui/Section';
@@ -28,12 +28,13 @@ function ResultDetail({ name, result }: { name: 'currentResult' | 'previousResul
 }
 
 /**
- * The run the Results show, read from one plan: the focused row of the step with its chosen or latest attempt, the
- * step's evaluations among the targeted runs, and the one of them in focus.
+ * The run the Results show, read from one plan: the focused row of the step, or its only row, with its chosen or
+ * latest attempt, the step's evaluations among the targeted runs, and the one of them in focus.
  */
 export function focusedResult(source: StudioSavedTrainRuns | undefined, stepId: string | undefined, focusRunId: string | null | undefined,
   runIds: ReadonlySet<string>, chosen: { runId: string; jobId: string } | undefined) {
-  const row = source?.rows.find(({ key }) => key.step === stepId && savedRunId(key) === focusRunId);
+  const rows = source?.rows.filter(({ key }) => key.step === stepId) ?? [];
+  const row = rows.find(({ key }) => savedRunId(key) === focusRunId) ?? (rows.length === 1 ? rows[0] : undefined);
   const selectedAttempt = row && chosen?.runId === savedRunId(row.key)
     ? row.attempts.find(({ job_id }) => job_id === chosen.jobId) : undefined;
   const scene = source?.window_map?.evaluations?.filter(({ key }) => key.step === stepId && runIds.has(savedRunId(key))) ?? [];
@@ -45,7 +46,7 @@ function TrainResults({ row, attempt, ...plot }: Omit<Parameters<typeof StudioTr
   attempt: SavedRow['attempts'][number] | undefined;
 }) {
   const [comparing, setComparing] = useState(false);
-  const results: TrainLossResult[] = [
+  const results: TrainMetricResult[] = [
     ...(row.result ? [{ name: 'currentResult', result: row.result } as const] : []),
     ...(row.previous ? [{ name: 'previousResult', result: row.previous } as const] : []),
   ];

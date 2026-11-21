@@ -77,7 +77,7 @@ test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from A
     const jobId = item.job_id!;
     await runs(page).getByRole('button').first().click();
     await openResultsSlot(page);
-    const plot = page.getByRole('img', { name: 'Loss', exact: true });
+    const plot = page.getByRole('img', { name: 'Metric train_loss', exact: true });
     await expect(plot.locator('line title').filter({ hasText: /samples?/ }).first()).toBeAttached({ timeout: 14_000 });
 
     await page.getByRole('button', { name: 'Activity', exact: true }).click();

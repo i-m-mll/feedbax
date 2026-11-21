@@ -149,7 +149,7 @@ test('Machine approval reviews the saved selection and collects the remote resul
   await mapStep(page, 'train').click();
   await runs.getByRole('rowheader', { name: runName('train') }).getByRole('button').click();
   await page.getByRole('button', { name: 'Open Run', exact: true }).click();
-  await expect(page.getByRole('img', { name: 'Loss', exact: true }).locator(`line[data-attempt="${attempt.job_id}"]`).first())
+  await expect(page.getByRole('img', { name: 'Metric train_loss', exact: true }).locator(`line[data-attempt="${attempt.job_id}"]`).first())
     .toBeAttached();
 });
 

@@ -1,7 +1,9 @@
 import { expect, test } from './fixtures/studio';
 import { type APIRequestContext } from '@playwright/test';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
-import { authorLearningRateSweep, enter, fixture, mapStep, seedManagedProject, sweepLabel } from './fixtures/canonicalTrain';
+import {
+  authorLearningRateSweep, enter, fixture, mapStep, openResultsSlot, seedManagedProject, sweepLabel,
+} from './fixtures/canonicalTrain';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -269,4 +271,42 @@ test('an authored component range reopens as its exact rule and To List keeps ro
   await expect(field.getByRole('textbox', { name: 'Mass', exact: true })).toHaveValue(/^1\.000123456789, .+, 2\.000987654321$/);
   const { plan: listed } = await readPlan(request, projectPath);
   expect(listed.rows).toEqual(authored.rows);
+});
+
+test('a press on a run\'s row shows that run\'s Results, and a reload keeps it', { tag: '@round' }, async ({ page, request }) => {
+  test.setTimeout(45_000);
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await mapStep(page, 'train').click();
+  const table = page.getByRole('table', { name: 'Runs' });
+  const rate = page.getByRole('region', { name: 'Learning Rate field', exact: true });
+  await authorLearningRateSweep(rate);
+  await enter(rate.getByRole('textbox', { name: 'Learning Rate Value', exact: true }), '0.001, 0.003');
+  await expect(table).toHaveAttribute('aria-rowcount', '3');
+  const admission = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === `${projectPath}/train-runs`);
+  await page.getByRole('button', { name: 'Run', exact: true }).click();
+  const accepted = await admission;
+  expect(accepted.status(), await accepted.text()).toBe(202);
+  const jobs = ((await accepted.json()) as { items: { job_id: string }[] }).items.map(({ job_id }) => job_id);
+  await expect(table.getByText('Done', { exact: true })).toHaveCount(2, { timeout: 25_000 });
+
+  await openResultsSlot(page);
+  const results = page.locator('[data-slot="secondary"]').getByRole('region', { name: 'Results', exact: true }).last();
+  const shown = async () => {
+    const history = results.getByRole('img', { name: 'Metric train_loss', exact: true }).locator('line[data-attempt]');
+    await expect(history.first()).toBeAttached({ timeout: 10_000 });
+    return await history.first().getAttribute('data-attempt');
+  };
+  const status = (index: number) => table.locator('tbody tr[data-index]').nth(index).getByRole('cell').filter({ hasText: 'Done' });
+  await status(0).click();
+  const first = await shown();
+  await status(1).click();
+  await expect.poll(shown).not.toBe(first);
+  const second = await shown();
+  expect(jobs).toEqual(expect.arrayContaining([first, second]));
+
+  await page.reload();
+  await expect(table.locator('tbody tr[data-index]').nth(1).getByRole('button').first()).toHaveAttribute('aria-current', 'true');
+  await expect.poll(shown).toBe(second);
 });

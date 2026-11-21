@@ -6,7 +6,7 @@ import { isolatedTest as test } from './fixtures/studio';
 import { hostPid, processExists } from './fixtures/studioRecovery';
 
 function lossCurve(page: Page) {
-  return page.getByRole('img', { name: 'Loss', exact: true }).locator('polyline');
+  return page.getByRole('img', { name: 'Metric train_loss', exact: true }).locator('polyline');
 }
 
 test.use({ viewport: { width: 1440, height: 900 } });

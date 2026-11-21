@@ -114,7 +114,7 @@ test('shares live Jobs across windows and observes the four-slot queue', { tag: 
     }
     await row(second, first).getByRole('button', { name: runName(rowLabel(first)) }).click();
     await openResultsSlot(second);
-    await expect(second.getByRole('img', { name: 'Loss', exact: true }).locator('line title').first()).toBeAttached();
+    await expect(second.getByRole('img', { name: 'Metric train_loss', exact: true }).locator('line title').first()).toBeAttached();
 
     await page.reload();
     const activity = page.getByRole('region', { name: 'Activity', exact: true });

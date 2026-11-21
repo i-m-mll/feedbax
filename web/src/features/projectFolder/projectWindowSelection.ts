@@ -81,6 +81,8 @@ export function useProjectWindowSelection(initialStepId: string | null) {
 
   return {
     ...current,
+    /** Whether anything has been selected since the window opened. */
+    edited: history.entries.length > 1,
     select: (pipeline: PipelineSelectionState, variantId?: string | null) => change((entry) => ({
       variantId: variantId === undefined ? entry.variantId : variantId,
       pipeline, stepId: subject(pipeline, entry.stepId),
