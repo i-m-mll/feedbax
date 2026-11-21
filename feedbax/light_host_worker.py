@@ -27,7 +27,7 @@ from feedbax.contracts.request_specs import (
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.dataset import Dataset
 from feedbax.contracts.member_stack import labelled_members
-from feedbax.dataset_sweep import stack_dataset_members
+from feedbax.dataset_sweep import dataset_entries, stack_dataset_members
 from feedbax.host.completion import read_completion_bindings
 from feedbax.host.io import append
 from feedbax.host.model_checkpoint_input import bind_managed_inputs
@@ -78,7 +78,8 @@ def _dataset_inputs(
     bindings: Bindings,
     stack: ExitStack,
 ) -> dict[str, Dataset]:
-    """Each role's dataset: its labelled members stacked by their labels, or its one unlabelled member."""
+    """Each role's dataset: its labelled members, and the labelled entries of those that are stacks, stacked by their
+    labels; or its one unlabelled member."""
     datasets = {}
     for role, members in bindings.items():
         labelled = {member.key: member for member in labelled_members(request.inputs[role])}
@@ -94,10 +95,12 @@ def _dataset_inputs(
                 else stack.enter_context(open_stored_dataset(store, ref))
             )
             inputs.append((labelled[member.key], dataset))
-        if any(member.coordinates for member, _ in inputs):
-            datasets[role] = stack_dataset_members(inputs)
-        else:
+        if len(inputs) == 1 and not inputs[0][0].coordinates:
             ((_, datasets[role]),) = inputs
+        else:
+            datasets[role] = stack_dataset_members(
+                [entry for member, dataset in inputs for entry in dataset_entries(member, dataset)]
+            )
     return datasets
 
 

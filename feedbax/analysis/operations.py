@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from feedbax.contracts.operation import (
     DatasetInputPort, DatasetPort, JaxOperation, ModelPort, OperationDefinition, OperationInputPort, TaskPort,
+    WholeDimensions,
 )
 from feedbax.dataset import Dataset
 from feedbax.contracts.task_document import TaskDocument
@@ -128,6 +129,8 @@ class OperationRegistry:
             if isinstance(port, DatasetInputPort):
                 if missing := port.selected_variables.keys() - model.model_fields.keys():
                     raise TypeError(f"dataset selectors are missing from params: {sorted(missing)}")
+                if isinstance(port.takes, WholeDimensions) and port.takes.parameter not in model.model_fields:
+                    raise TypeError(f"dimensions parameter {port.takes.parameter!r} is missing from params")
         schema = settings_schema(model)
         definition = OperationDefinition(
             key=key,

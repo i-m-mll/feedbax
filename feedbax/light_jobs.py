@@ -176,13 +176,14 @@ def validate_light_requirements(request: DecodedRequest, definition: OperationDe
                 raise ValueError(f"Operation input {role!r} differs from its declared {port.kind} port")
         if len(members) > 1 and (
             isinstance(spec, ReportRequestSpec) or not all(
-                isinstance(member.reference, ProductRef)
-                and member.reference.role == "states"
-                and member.reference.request_id.startswith("evaluate:")
+                isinstance(member.reference, ProductRef) and (
+                    member.reference.request_id.startswith("analyze:")
+                    or member.reference.role == "states" and member.reference.request_id.startswith("evaluate:")
+                )
                 for member in members
             )
         ):
-            raise ValueError(f"Multiple members of {role!r} must supply saved Evaluate states")
+            raise ValueError(f"Multiple members of {role!r} must supply saved Evaluate states or operation datasets")
         for member in members:
             reference = member.reference
             if isinstance(reference, ProductRef):

@@ -6,8 +6,10 @@ from feedbax.contracts.analysis_document import AnalysisDocument, DatasetSource,
 from feedbax.contracts.dataset import FieldDescriptor
 from feedbax.contracts.figure_document import validate_figure_bindings
 from feedbax.contracts.operation import (
+    DatasetInputPort,
     DatasetPort,
     OperationDefinition,
+    WholeDimensions,
     require_dataset_fields,
     require_dataset_port,
 )
@@ -167,9 +169,15 @@ def analyze_edit(
     return stored
 
 
-def _variable_choices(definition: OperationDefinition, states: DatasetPort) -> dict[str, list[str]]:
+def _variable_choices(
+    definition: OperationDefinition, states: DatasetPort, dimensions: list[str],
+) -> dict[str, list[str]]:
+    """Each parameter's choices: the matching variables of a dataset selector, and the bound label dimensions of a
+    parameter that lists the dimensions a port takes whole."""
     choices: dict[str, list[str]] = {}
     for port in definition.inputs.values():
+        if isinstance(port, DatasetInputPort) and isinstance(port.takes, WholeDimensions):
+            choices[port.takes.parameter] = dimensions
         if not isinstance(port, DatasetPort) or states.schema_ids[0] not in port.schema_ids:
             continue
         for parameter, required in port.selected_variables.items():
@@ -266,6 +274,11 @@ def analyze_authoring(
             raise ValueError(f"Run {key.row!r} no longer belongs to step {key.step!r}.")
         registry = service.jobs.registries.operations
         definitions = list(registry.definitions())
+        dimensions = sorted({
+            label
+            for row in plan.rows if row.key == key and isinstance(row, PlannedAnalyzeRun)
+            for bindings in row.inputs.values() for binding in bindings for label in binding.member.labels
+        })
         stored = analyze_edit(
             project, plan, key, step.base.document, body.change, frozenset(body.chosen_steps), registry, states,
             readers=view.settled.readers, figure_templates=service.jobs.registries.figure_templates,
@@ -278,7 +291,7 @@ def analyze_authoring(
         operations=definitions,
         states=states,
         variables={
-            definition.key: _variable_choices(definition, states) for definition in definitions
+            definition.key: _variable_choices(definition, states, dimensions) for definition in definitions
         },
         figure=VelocitySummary(VelocitySummarySettings()),
         changed=changed_from_base(project, step.base.document),

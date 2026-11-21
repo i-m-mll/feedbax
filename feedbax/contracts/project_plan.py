@@ -32,7 +32,6 @@ from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.model_input import DocumentInput, InitialModelSource, authored_document_input, encode_document_input
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.model_values import model_owner_problem
-from feedbax.contracts.dataset import FieldDescriptor
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.studio_place import path_parts, variation_targets
 from feedbax.contracts.project import (
@@ -157,8 +156,11 @@ class RunKey:
 
 @dataclass(frozen=True)
 class ElementKey:
+    """One request of an Analyze element: the element itself, or one combination of the labels it maps over."""
+
     run: RunKey
     name: str
+    member: str | None = None
 
     def payload_path(self, kind: RequestKind) -> str:
         family = "operations" if kind == "analyze" else "views"
@@ -194,8 +196,11 @@ class PlannedSubset:
         return tuple(rank for group in self.rank_groups for rank in group.ranks)
 
 
-STEP_LABELS = ("source", "model")
-"""The member labels whose values are named things of the project; a request identifies them by content."""
+STEP_LABELS = ("source", "model", "element")
+"""The member labels whose values are named things of the project; a request identifies them by content.
+
+``source`` is the step whose states the data came from, ``model`` the Train step, and ``element`` the operation
+output a listed member came from."""
 
 RESERVED_LABELS = frozenset({*STEP_LABELS, "variant", "member"})
 
@@ -208,6 +213,8 @@ class LabelName:
     key: str
     label: str | None = None
     kind: Literal["step", "run", "document", "element"] = "step"
+    card: str | None = None
+    """The Analyze card holding an element, which tells apart elements of one key in two cards."""
 
     @property
     def printed(self) -> str:
@@ -223,6 +230,8 @@ class PlannedInput:
     producer: RunKey | None
     member: InputMember
     producer_element: str | None = None
+    producer_member: str | None = None
+    """The mapped request of ``producer_element`` this member reads, when the element maps over labels."""
     candidates: tuple[RunKey, ...] = ()
     terminal: TerminalTrainSubject | None = None
     coordinates: Mapping[str, SweepCoordinate] = field(default_factory=dict)
@@ -238,7 +247,10 @@ class PlannedInput:
 
     @property
     def element(self) -> ElementKey | None:
-        return ElementKey(self.producer, self.producer_element) if self.producer and self.producer_element else None
+        return (
+            ElementKey(self.producer, self.producer_element, self.producer_member)
+            if self.producer and self.producer_element else None
+        )
 
 
 def plan_document_input(
@@ -307,10 +319,13 @@ class PlannedElement:
     outputs: Mapping[str, DatasetPort | PlotlyFigurePort]
     names: LabelNames = field(default_factory=dict)
     """What the step-valued label values of this request and of the operations it reads name."""
-    labels: Mapping[str, FieldDescriptor] = field(default_factory=dict)
-    """The label coordinates its dataset outputs carry from the stacked inputs it reads."""
+    mapped: Mapping[str, MemberLabel] = field(default_factory=dict)
+    """The labels this request is one combination of, when its element maps over them; a reader's member carries
+    them."""
+    entries: tuple[SweepInputMember, ...] = ()
+    """The labelled entries its dataset outputs carry from the stacked inputs it takes whole."""
     label: str | None = None
-    """The operation's or figure's display label, which ``source`` prints for an output another card reads."""
+    """The operation's or figure's display label, which ``element`` prints for an output another card lists."""
 
     @property
     def datasets(self) -> Mapping[str, DatasetPort]:
@@ -333,10 +348,15 @@ def planned_input_groups(
 
 @dataclass(frozen=True)
 class PlannedAnalyzeRun(PlannedRow):
-    elements: Mapping[str, PlannedElement]
+    elements: Mapping[ElementKey, PlannedElement]
+    """Each request of each element, one per element unless the element maps over labels."""
     requires: tuple[str, ...]
     inputs: Mapping[str, tuple[PlannedInput, ...]]
     figures: Mapping[str, FigureDocument]
+
+    def requests(self, name: str) -> tuple[PlannedElement, ...]:
+        """The requests of the element ``name``, in plan order."""
+        return tuple(element for key, element in self.elements.items() if key.name == name)
 
 
 @dataclass(frozen=True)
@@ -517,9 +537,9 @@ class ProjectPlan:
     @property
     def elements(self) -> Mapping[ElementKey, PlannedElement]:
         return MappingProxyType({
-            element.key: element
+            key: element
             for row in self.rows if isinstance(row, PlannedAnalyzeRun)
-            for element in row.elements.values()
+            for key, element in row.elements.items()
         })
 
     @property
@@ -603,14 +623,17 @@ def _identified(
 
 
 def _labelled(role: _Role, members: _Members) -> bool:
-    """Whether a role's members carry their labels: an Evaluate's always, and operation outputs when they are several.
+    """Whether a role's members carry their labels: an Evaluate's always, and operation outputs when several
+    elements are listed.
 
     One operation output read alone is the dataset the same wire reads inside one card, so a Split that cuts the
     wire changes no request.
     """
     if role.producer_kind != "evaluate":
         return False
-    return len(members) > 1 or any(binding.producer_element is None for binding, _ in members)
+    if any(binding.producer_element is None for binding, _ in members):
+        return True
+    return len({(binding.producer, binding.producer_element) for binding, _ in members}) > 1
 
 
 def _checkpoint(rule: CheckpointRule | None, *, horizon: int | None = None) -> ProductSelector | None:
@@ -2922,7 +2945,7 @@ class _Compiler:
             inputs,
             evaluations,
             {
-                producer: self.rows[producer.run].elements[producer.name]
+                producer: self.rows[producer.run].elements[producer]
                 for sources in inputs.values() for source in sources
                 if (producer := source.element) is not None
             },
@@ -3163,7 +3186,8 @@ class _Compiler:
         for binding, run in identified:
             key = binding.member.key
             if counts[key] > 1:
-                source = ids["source", binding.named["source"]]
+                label = "element" if "element" in binding.named else "source"
+                source = ids[label, binding.named[label]]
                 binding = replace(binding, member=binding.member.model_copy(update={"key": f"{source}/{key}"}))
             gathered.append((binding, run))
         keys = [binding.member.key for binding, _ in gathered]
@@ -3380,47 +3404,52 @@ class _Compiler:
                 return ProjectDiagnostic(
                     ResolutionCode.BAD_REFERENCE, f"{path}.checkpoint", str(error), name,
                 )
+            requests: tuple[tuple[RequestId, PlannedElement | None], ...]
             if isinstance(run, PlannedAnalyzeRun):
                 assert reference.element is not None
-                element = run.elements.get(reference.element)
+                elements = run.requests(reference.element)
                 port = DatasetPort if role.operation_outputs else PlotlyFigurePort
-                if element is None or not isinstance(element.outputs.get(role.product_role), port):
+                if not elements or not all(isinstance(element.outputs.get(role.product_role), port) for element in elements):
                     address = f"{run.key.variant}/{run.key.step}/{run.key.row}/{reference.element}"
                     return ProjectDiagnostic(
                         ResolutionCode.BAD_REFERENCE, f"{path}.element",
                         f"{address} has no planned {role.product_role!r} product", name,
                     )
-                request = element.request_id
+                requests = tuple((element.request_id, element) for element in elements)
             else:
-                request = run.request_id
+                requests = ((run.request_id, None),)
             try:
                 coordinates = self.member_coordinates(run)
                 labels, named = self.member_labels(run, coordinates, gathers_variants=reference.variants is not None)
                 if role.operation_outputs and element_input:
-                    named["source"] = LabelName(reference.element, element.label, kind="element")
+                    del named["source"]
+                    named["element"] = LabelName(reference.element, elements[0].label, kind="element", card=run.key.step)
                 elif role.producer_kind != "evaluate":
                     labels = {}
             except ValueError as error:
                 return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, str(error), name)
-            members.append((
-                PlannedInput(
-                    run.key,
-                    InputMember(
-                        key=key,
-                        reference=ProductRef(
-                            request_id=request,
-                            role=role.product_role,
-                            select=selector,
+            for request, element in requests:
+                mapped = element.key.member if element is not None else None
+                members.append((
+                    PlannedInput(
+                        run.key,
+                        InputMember(
+                            key=key if mapped is None else mapped if len(keyed_runs) == 1 else f"{key}/{mapped}",
+                            reference=ProductRef(
+                                request_id=request,
+                                role=role.product_role,
+                                select=selector,
+                            ),
+                            labels=labels | (dict(element.mapped) if element is not None else {}),
                         ),
-                        labels=labels,
+                        producer_element=reference.element,
+                        producer_member=mapped,
+                        coordinates=MappingProxyType(coordinates),
+                        selection=reference,
+                        named=MappingProxyType(named),
                     ),
-                    producer_element=reference.element,
-                    coordinates=MappingProxyType(coordinates),
-                    selection=reference,
-                    named=MappingProxyType(named),
-                ),
-                run,
-            ))
+                    run,
+                ))
         source = None
         if terms is not None and role.name in {"subject", "states"}:
             if terms.best is not None and role.name == "subject":
