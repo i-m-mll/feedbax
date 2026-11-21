@@ -30,6 +30,8 @@ export interface SchemaContext {
   readonly mixed?: (path: readonly string[]) => boolean;
   /** The source's account of the class-valued field at this path, where it has one. */
   readonly classed?: (path: readonly string[]) => ClassProjection | undefined;
+  /** The `data-field` of the value at this path, by which a command that goes to it finds it. */
+  readonly anchor?: (path: readonly string[]) => string;
 }
 
 /**
@@ -125,9 +127,10 @@ export function setIn(value: JsonValue | undefined, path: readonly string[], nex
  */
 export function fromJsonSchema(key: string, property: JsonValue, value: JsonValue | undefined, context: SchemaContext,
   path: readonly string[] = [key]): FieldModel {
+  const anchor = context.anchor?.(path);
   const projection = context.projected?.(path);
-  if (projection) return { ...projection, path };
-  const field = { ...declaredField(key, property, value, context, path), path };
+  if (projection) return { ...projection, path, anchor };
+  const field = { ...declaredField(key, property, value, context, path), path, anchor };
   return context.mixed?.(path) && field.type.kind !== 'group' ? { ...field, value: null, text: null } : field;
 }
 

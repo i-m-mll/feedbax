@@ -1,16 +1,18 @@
+import { appTip } from '@window-shell/browser/tooltip';
 import clsx from 'clsx';
+import { Plus } from 'lucide-react';
 import { useId, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { catalogEntries, readStudioTrialAuthoring, useAuthoringCatalog } from '@/api/studioAuthoring';
 import { apiErrorMessage } from '@/api/request';
-import { studioAccessibleName, studioDefinitionStatus, studioEvaluateValueSource, studioName, studioReason } from '@/components/activity/studioVocabulary';
-import { Button } from '@/components/ui/Button';
+import { studioAccessibleName, studioDefinitionStatus, studioEvaluateValueSource, studioName, studioReason, studioRunReason } from '@/components/activity/studioVocabulary';
+import { IconButton } from '@/components/ui/Button';
 import { Inspector } from '@/components/ui/Inspector';
-import { MenuItem } from '@/components/ui/Menu';
+import { Menu, MenuContent, MenuItem, MenuTrigger } from '@/components/ui/Menu';
+import { StatusMark } from '@/components/ui/StatusMark';
 import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
 import type { ChangeMark, FieldModel } from '@/components/values/fieldModel';
 import { Drawer, DrawerSection, type DrawerSections } from '@/features/projectWindow/DrawerForms';
-import { Select } from '@/components/ui/Select';
 import { Table, TableCell, TableHeaderCell } from '@/components/ui/Table';
 import { CatalogPicker } from '@/components/ui/CatalogPicker';
 import { FieldRow } from '@/components/ui/FieldRow';
@@ -198,7 +200,7 @@ export function TrialTaskInspector({ view, commit, selected }: { view: StudioTri
 
 /** A term's fields, by the column that shows them. */
 type TermField = 'name' | 'enabled' | 'measure' | 'window' | 'weight' | 'reduction';
-const columns = ['name', 'enabled', 'measure', 'window', 'weight'] as const satisfies readonly TermField[];
+const columns = ['name', 'measure', 'window', 'weight', 'enabled'] as const satisfies readonly TermField[];
 const columnNames = { name: 'term', enabled: 'enabled', measure: 'measure', window: 'window', weight: 'weight' } as const;
 
 function termFields(view: StudioTrialAuthoring, term: ObjectiveTerm, index: number, commit?: Commit): Record<TermField, FieldModel> {
@@ -252,42 +254,58 @@ export interface TermSelection {
   field?: string;
 }
 
-export function TrialObjectiveTable({ view, commit, selected, select }: {
-  view: StudioTrialAuthoring; commit?: Commit; selected?: TermSelection; select(term: string, field?: string): void;
+/** Add Term: a plus that lists every quantity a term can measure; the term added penalises its squared size. */
+export function TrialObjectiveAdd({ view, commit, select }: {
+  view: StudioTrialAuthoring; commit?: Commit; select(term: string): void;
 }) {
-  const [error, setError] = useState<string>();
-  const [source, setSource] = useState('');
+  const [refusal, setRefusal] = useState<string>();
   const terms = view.objective?.terms ?? [];
   const sources = [...view.outputs.map(({ value }) => value), ...view.variables, ...view.signals]
     .filter(({ type }) => type.base === 'real' || type.base === 'integer');
-  const chosen = sources.find(({ id }) => id === source) ?? sources[0];
-  return <ScrollFade className="grid gap-3 p-3 text-sm">
-    <div className="flex items-center gap-2">
-      <Select className="min-w-0" aria-label={studioName('measureSource')} value={chosen?.id ?? null} disabled={!commit || !sources.length}
-        items={sources.map(({ id, name }) => ({ value: id, label: humanizeLabel(name) }))} onValueChange={setSource} />
-      <Button disabled={!commit || !chosen} onClick={async () => {
-        if (!commit || !chosen) return;
-        const id = crypto.randomUUID();
-        const value = {
-          id, name: humanizeLabel(chosen.name),
-          measure: { kind: 'call', function: 'sqnorm', args: [{ kind: 'name', reference: chosen.id }] },
-          measure_type: { base: 'real', dimensions: Object.fromEntries(
-            Object.entries(chosen.type.dimensions ?? {}).map(([name, exponent]) => [name, exponent * 2]),
-          ) },
-          weight: { kind: 'literal', value: 1 }, epochs: [], enabled: true,
-        } satisfies JsonValue;
-        const edits = terms.length
-          ? [write('/terms/-', value, false)]
-          : [write('/terms', [value], has(view.objective ?? {}, 'terms'))];
-        const reason = await commit(studioName('addTerm'), { kind: 'objective', edits });
-        setError(reason);
-        if (!reason) select(id);
-      }}>{studioName('addTerm')}</Button>
-    </div>
-    {error && <p role="alert">{error}</p>}
+  const add = async (chosen: (typeof sources)[number]) => {
+    if (!commit) return;
+    const id = crypto.randomUUID();
+    const value = {
+      id, name: humanizeLabel(chosen.name),
+      measure: { kind: 'call', function: 'sqnorm', args: [{ kind: 'name', reference: chosen.id }] },
+      measure_type: { base: 'real', dimensions: Object.fromEntries(
+        Object.entries(chosen.type.dimensions ?? {}).map(([name, exponent]) => [name, exponent * 2]),
+      ) },
+      weight: { kind: 'literal', value: 1 }, epochs: [], enabled: true,
+    } satisfies JsonValue;
+    const edits = terms.length
+      ? [write('/terms/-', value, false)]
+      : [write('/terms', [value], has(view.objective ?? {}, 'terms'))];
+    const reason = await commit(studioName('addTerm'), { kind: 'objective', edits });
+    setRefusal(reason);
+    if (!reason) select(id);
+  };
+  return <>
+    <Menu>
+      <MenuTrigger render={<IconButton variant="ghost" label={studioName('addTerm')} icon={<Plus aria-hidden="true" />}
+        disabled={!commit || !sources.length} aria-description={refusal} />} />
+      <MenuContent aria-label={studioName('addTerm')}>
+        {sources.map((source) => <MenuItem key={source.id} onClick={() => { void add(source); }}>
+          {humanizeLabel(source.name)}
+        </MenuItem>)}
+      </MenuContent>
+    </Menu>
+    {refusal && <span role="alert" className="inline-flex" {...appTip(studioRunReason({ reason: refusal }))}>
+      <StatusMark status="cannot_run" label={refusal} />
+    </span>}
+  </>;
+}
+
+export function TrialObjectiveTable({ view, commit, selected, select }: {
+  view: StudioTrialAuthoring; commit?: Commit; selected?: TermSelection; select(term: string, field?: string): void;
+}) {
+  const terms = view.objective?.terms ?? [];
+  return <ScrollFade axis="both" className="h-full min-h-0 [--fade-inset-top:var(--row-height)]">
     <Table aria-label={studioName('objectiveTerms')}>
-      <thead><tr>{columns.map((id) =>
-        <TableHeaderCell scope="col" key={id}>{studioName(columnNames[id])}</TableHeaderCell>)}
+      <thead className="sticky top-0 z-10"><tr>{columns.map((id) =>
+        <TableHeaderCell scope="col" key={id} className={clsx(id === 'enabled' && 'w-0 text-center')}>
+          {studioName(columnNames[id])}
+        </TableHeaderCell>)}
       </tr></thead>
       <tbody>{terms.map((term, index) => {
         const fields = termFields(view, term, index, commit);

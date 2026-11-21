@@ -16,3 +16,10 @@
 .value-field-class-swept .field-end {
   flex-shrink: 1;
 }
+
+/* A boolean in a table cell is centred in its column, on the line of the cells' controls. */
+.value-field-cell:has(> [role='checkbox']) {
+  justify-items: center;
+  grid-template-rows: var(--control-height);
+  align-items: center;
+}

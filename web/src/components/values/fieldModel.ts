@@ -66,6 +66,8 @@ export interface FieldModel {
   readonly id: string;
   /** The value's path in the schema of the form that draws it, when a form built it from a schema. */
   readonly path?: readonly string[];
+  /** The `data-field` of the field's row, by which a command that goes to the field finds it. */
+  readonly anchor?: string;
   readonly label: string;
   readonly type: FieldType;
   readonly unit?: string;
@@ -98,6 +100,21 @@ export interface FieldModel {
 
 export function hasMark(model: FieldModel) {
   return model.kinds.length > 1 || model.kinds.some(({ kind }) => kind !== 'value');
+}
+
+/**
+ * The edit that turns the field into `kind`, where one does. Formula, Draw, Shape and Link have none: the kind is
+ * read from the text, so the mark shows them and no command makes them.
+ */
+export function kindEdit(model: FieldModel, kind: FieldKind): FieldKindEdit | undefined {
+  if (kind === 'sweep' && model.kind !== 'sweep') return { kind: 'to_sweep' };
+  if (kind === 'value' && model.kind === 'sweep' && model.keeps) return { kind: 'to_value', value_id: model.keeps };
+  return undefined;
+}
+
+/** The kinds the field's kind menu offers: those an edit converts it to. */
+export function kindOffers(model: FieldModel) {
+  return model.kinds.filter(({ kind }) => kindEdit(model, kind));
 }
 
 export function typeText({ base, shape }: ValueType) {
