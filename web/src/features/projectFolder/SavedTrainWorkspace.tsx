@@ -48,7 +48,7 @@ import {
   type StudioActivityJob, type StudioJobSubmission, type StudioMachineQuote, type StudioProjectDocument, type StudioProjectWindowMapProblem,
   type StudioSavedTrainKey, type StudioSavedTrainRuns,
   type StudioCheckpointRuleRequest, type JsonValue, type SweepExceptionTerms, type StudioPlanReviewSource, type StudioProjectWindowMapException, type ModelAddress, type PatchValue,
-  type StudioClassField,
+  type StudioClassField, type Project,
 } from '@/generated/studioContracts';
 import { useConnection } from '@/api/connection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
@@ -192,6 +192,19 @@ export default function StudioProjectWorkspace({
   return <ManagedProjectWindow session={load.session} onNewStep={onNewStep} />;
 }
 
+/**
+ * The project and plan the map draws together: the plan with the project it was compiled from. While a newer
+ * revision's plan is read, the previous plan is drawn with its own project, and both switch when the new plan arrives.
+ */
+function useCompiledPair(revision: string, project: Project, runs: StudioSavedTrainRuns | undefined) {
+  const compiled = useRef<{ revision: string; project: Project }>();
+  if (runs?.revision === revision) compiled.current = { revision, project };
+  const earlier = runs && runs.revision !== revision
+    ? compiled.current?.revision === runs.revision ? compiled.current.project : undefined
+    : project;
+  return useMemo(() => earlier ? { project: earlier, runs } : { project, runs: undefined }, [earlier, project, runs]);
+}
+
 function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession } & ProjectWindowCommands) {
   const stoppedCheckpointId = useId();
   const { editor } = session;
@@ -283,8 +296,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const primaryVariant = variant !== null && variant === variants[0];
   /** Whether a command of the primary variant applies: until a plan names the variants it may, and a gesture waits. */
   const variantApplies = projection.data ? primaryVariant : true;
-  const plan = useMemo(() => projectWindowPlan(saved.project, projection.data, variant, validity.checking),
-    [saved.project, projection.data, variant, validity.checking]);
+  const planSource = useCompiledPair(saved.revision, saved.project, projection.data);
+  const plan = useMemo(() => projectWindowPlan(planSource.project, planSource.runs, variant, validity.checking),
+    [planSource, variant, validity.checking]);
   const shownPlan = useMemo(() => planWithRefusal(planWithRefusal(plan, readRefusal), refusal), [plan, readRefusal, refusal]);
   const activityResultState = useMemo<ActivityResultState>(() => {
     const states = new Map(plan.steps.flatMap(({ runs }) => runs.flatMap(({ state, results }) =>
