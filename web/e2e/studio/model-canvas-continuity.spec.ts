@@ -1,6 +1,9 @@
 import { expect, test } from './fixtures/studio';
 import type { Page, Route } from '@playwright/test';
-import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import type { ModelDocument } from '../../src/generated/studioContracts';
+import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { readSaved } from './fixtures/studioKeyboard';
+import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -96,4 +99,40 @@ test('a Model card renamed while its ports load keeps the name field focused', a
   await expect.poll(() => card.evaluate((element) => element.innerHTML)).not.toBe(before);
   await expect(name).toBeFocused();
   await expect(name).toHaveValue(/Renamed$/);
+});
+
+/** A field stays editable while another edit saves, and an edit made in it then lands once that save completes. */
+test('a Model field edited while a card move saves stays editable and saves after it', async ({ page, request }) => {
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  const move = await hold(page, `${projectPath}/model/edit`, (body) =>
+    (body as { command?: { operation?: { op?: string } } }).command?.operation?.op === 'move_cards');
+  const model = await openModel(page, snapshot.project_id);
+  const card = model.locator('.react-flow__node[data-id="cell"]');
+  await card.locator('header').click();
+  const hidden = page.getByRole('complementary', { name: 'Inspector', exact: true })
+    .getByRole('textbox', { name: 'Hidden size', exact: true });
+  await expect(hidden).toBeEditable();
+  const original = await hidden.inputValue();
+  const next = original === '17' ? '19' : '17';
+
+  const header = (await card.locator('header').boundingBox())!;
+  await page.mouse.move(header.x + 20, header.y + header.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(header.x + 60, header.y + header.height / 2 + 40, { steps: 6 });
+  await page.mouse.up();
+  await move.sent;
+  await expect(hidden).toBeEditable();
+  await enter(hidden, next);
+  const cell = async () => {
+    const saved = await readSaved(request, projectPath);
+    const document = rootPayload(saved.project.documents?.['point-mass']) as unknown as ModelDocument;
+    const component = document.interior.components?.cell;
+    return component?.kind === 'leaf' ? component.fields?.hidden_size : undefined;
+  };
+  expect(String(await cell())).toBe(original);
+
+  move.release();
+  await expect.poll(cell).toBe(Number(next));
+  await expect(hidden).toHaveValue(next);
+  await expect(hidden).toBeEditable();
 });

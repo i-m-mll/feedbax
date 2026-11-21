@@ -55,6 +55,7 @@ type Props = {
   active: boolean;
   /** Whether the Model's topology can be edited; an edit made while the workspace saves or loads runs when it settles. */
   topologyApplies: boolean;
+  /** Whether the Model's fields can be edited; an edit made while the workspace saves runs when it settles. */
   fieldEditable: boolean;
   fieldChosenSteps?: ReadonlySet<string>;
   /** Whether the plan read is of the shown revision, so that `fieldChosenSteps` names the steps it chooses. */
@@ -247,8 +248,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     ? selectedHere.every((item) => item.element.kind === 'component') ? selectedHere : []
     : selection?.element.kind === 'attachment' || selection?.element.kind === 'component' ? [selection]
     : !selection ? [graph] : [];
-  const canEvaluate = Boolean(fieldEditable && readBody && attachments.data?.editable &&
-    attachments.data.revision === saved.revision);
+  const canEvaluate = Boolean(fieldEditable && readBody && attachments.data?.editable);
   const canEditField = evaluate ? canEvaluate : fieldEditable;
   const fieldRun = evaluate?.run ?? projectionRun;
   const fieldBodies = model && shownModel && !libraryItem ? fieldOwners.map((owner) => ({
@@ -268,7 +268,6 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         && JSON.stringify(previousBody.rows) === JSON.stringify(fieldBody.rows) ? previous : undefined;
     },
   })) });
-  const fieldsPlaceholder = fieldQueries.some((query) => query.isPlaceholderData);
   const fieldsError = fieldQueries.find((query) => query.error)?.error ?? null;
   const fieldsData = fieldQueries.every((query) => query.data) ? fieldQueries.map((query) => query.data!) : undefined;
   /**
@@ -276,7 +275,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
    * edit carries the steps that plan lights.
    */
   async function editField(fieldBody: FieldBody, address: ModelAddress, edit: NonNullable<ModelFieldRequest['edit']>) {
-    if (!canEditField || fieldsPlaceholder) return studioReason('unavailable', studioName('field'));
+    if (!canEditField) return studioReason('unavailable', studioName('field'));
     return run(async () => {
       const { chosenSteps } = await plan.next(({ revision }) => revision === editor.getSnapshot().saved.revision);
       const current = editor.getSnapshot().saved;
@@ -323,12 +322,12 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       exceptions,
       changed: field.changed ? {
         text: changedText,
-        reset: canEditField && !fieldsPlaceholder ? () => editField(fieldBody, field.address, { kind: 'reset' }) : undefined,
+        reset: canEditField ? () => editField(fieldBody, field.address, { kind: 'reset' }) : undefined,
       } : undefined,
       source: attachments.data?.field_sources?.[addressKey(field.address)] ??
         attachments.data?.field_sources?.[addressKey(fieldBody.owner)] ??
         attachments.data?.source ?? undefined,
-      commit: canEditField && !fieldsPlaceholder ? (edit) => editField(fieldBody, field.address, edit) : undefined,
+      commit: canEditField ? (edit) => editField(fieldBody, field.address, edit) : undefined,
       rowSelection: !!fieldRows?.length,
       multipleRows: !evaluate && (fieldRows?.length ?? 0) > 1,
       selectedMembers: field.sweep ? selectedSweepValues?.get(field.sweep.id) : undefined,
@@ -450,7 +449,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   }
 
   async function applyEvaluate(name: string, difference: Difference, onField = false): Promise<string | undefined> {
-    if (!model || !readBody || !attachments.data || attachments.data.revision !== saved.revision) {
+    if (!model || !readBody || !attachments.data) {
       return studioReason('unavailable', name);
     }
     return run(async () => {
