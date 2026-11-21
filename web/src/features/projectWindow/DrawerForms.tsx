@@ -39,10 +39,11 @@ export function DrawerSection({ sections, id, initially = true, forceOpen, ...pr
     onOpenChange={(open) => sections.setOpen(id, open)} />;
 }
 
+/** A control that holds a value; a command in a field's header (`.field-row-actions`) is not one. */
 const field = [
   'input:not([disabled]):not([type="hidden"]):not([readonly]):not([aria-hidden="true"])', 'textarea:not([disabled])',
   'select:not([disabled])', '[role="combobox"]:not([aria-disabled="true"])',
-].join(', ');
+].map((item) => `${item}:not(.field-row-actions *)`).join(', ');
 const inspectorField = field.split(', ').map((item) => `[data-studio-focus-region="inspector"] ${item}`).join(', ');
 
 /** Return on a drawer row with nothing inside it: focus moves to the inspector's first field once the inspector shows it. */

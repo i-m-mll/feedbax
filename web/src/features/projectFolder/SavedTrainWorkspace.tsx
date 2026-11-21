@@ -50,7 +50,7 @@ import {
   type StudioActivityJob, type StudioJobSubmission, type StudioMachineQuote, type StudioProjectDocument, type StudioProjectWindowMapProblem,
   type StudioSavedTrainKey, type StudioSavedTrainRuns,
   type StudioCheckpointRuleRequest, type JsonValue, type SweepExceptionTerms, type StudioPlanReviewSource, type StudioProjectWindowMapException, type ModelAddress, type PatchValue,
-  type StudioClassField,
+  type StudioClassField, type Project,
 } from '@/generated/studioContracts';
 import { useConnection } from '@/api/connection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
@@ -71,7 +71,7 @@ import { bestRankGroups, projectWindowPlan, planVariants, savedRunId, stepSource
 import { placeField, placeMember, placeView, removeGraphVariation, type Reveal } from './projectWindowProblems';
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
 import { planWithRefusal, problemKey, type GestureFailures, type Refusal } from './refusals';
-import { CheckpointRuleEditor, EvaluateSubjectFields, SubjectSubset, TrialSetEditor, type EvaluateField } from './StudioEvaluateAuthoring';
+import { CheckpointEditor, EvaluateSubjectFields, SubjectSubset, TrialsEditor, type EvaluateField } from './StudioEvaluateAuthoring';
 import { connection, selectionProblem } from './selectionEdits';
 import { StudioEvaluationAttemptDetails } from './StudioEvaluationResults';
 import { focusedResult, SavedResults } from './SavedResults';
@@ -194,6 +194,19 @@ export default function StudioProjectWorkspace({
   return <ManagedProjectWindow session={load.session} onNewStep={onNewStep} />;
 }
 
+/**
+ * The project and plan the map draws together: the plan with the project it was compiled from. While a newer
+ * revision's plan is read, the previous plan is drawn with its own project, and both switch when the new plan arrives.
+ */
+function useCompiledPair(revision: string, project: Project, runs: StudioSavedTrainRuns | undefined) {
+  const compiled = useRef<{ revision: string; project: Project }>();
+  if (runs?.revision === revision) compiled.current = { revision, project };
+  const earlier = runs && runs.revision !== revision
+    ? compiled.current?.revision === runs.revision ? compiled.current.project : undefined
+    : project;
+  return useMemo(() => earlier ? { project: earlier, runs } : { project, runs: undefined }, [earlier, project, runs]);
+}
+
 function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession } & ProjectWindowCommands) {
   const stoppedCheckpointId = useId();
   const { editor } = session;
@@ -285,8 +298,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const primaryVariant = variant !== null && variant === variants[0];
   /** Whether a command of the primary variant applies: until a plan names the variants it may, and a gesture waits. */
   const variantApplies = projection.data ? primaryVariant : true;
-  const plan = useMemo(() => projectWindowPlan(saved.project, projection.data, variant, validity.checking),
-    [saved.project, projection.data, variant, validity.checking]);
+  const planSource = useCompiledPair(saved.revision, saved.project, projection.data);
+  const plan = useMemo(() => projectWindowPlan(planSource.project, planSource.runs, variant, validity.checking),
+    [planSource, variant, validity.checking]);
   const shownPlan = useMemo(() => planWithRefusal(planWithRefusal(plan, readRefusal), refusal), [plan, readRefusal, refusal]);
   const activityResultState = useMemo<ActivityResultState>(() => {
     const states = new Map(plan.steps.flatMap(({ runs }) => runs.flatMap(({ state, results }) =>
@@ -1005,8 +1019,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   /** A selection of the subject, whose detail is drawn on its row of the subject field. */
   const subjectSelection = (id: string) => !!evaluateInputs && (id === 'subject' || id.startsWith('subject.'));
   /** The steps this step reads, each a link, and the inputs no field of the step draws. */
-  const listedInputs = step?.inputs.filter(({ id, sourceStepId }) =>
-    sourceStepId || !evaluateInputs || !['subject', 'task', 'objective'].includes(id)) ?? [];
+  const listedInputs = step?.inputs.filter(({ id, sourceStepId }) => !subjectSelection(id) &&
+    (sourceStepId || !evaluateInputs || !['task', 'objective'].includes(id))) ?? [];
   function inputDetail({ id, subset }: PlanStepView['inputs'][number]) {
     return <>
       {id === 'subject' && subjectCheckpoint !== undefined &&
@@ -1038,7 +1052,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     }, refuseField('subject'));
   }
 
-  function editEvaluation(field: Exclude<EvaluateField, 'subject' | 'checkpoints'>, name: string, patch: ProjectValueEdit) {
+  function editEvaluation(field: Exclude<EvaluateField, 'subject' | 'checkpoint'>, name: string, patch: ProjectValueEdit) {
     if (!step || !evaluationEditor || !ready) return;
     const dependencies = [...new Set(evaluationEditor.subjects.map(({ source }) => source.id))]
       .map((id) => ({ kind: 'step' as const, id }));
@@ -1151,7 +1165,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       if (!await runRemoval.confirm(filesRemoval(saved.project_id, saved.revision, files, editor.signal))) return;
       editor.editFiles(name, files, { reviewedRevision: saved.revision, dependencies });
       await editor.flush();
-    }, refuseField('checkpoints'));
+    }, refuseField('checkpoint'));
   }
 
   async function applyCheckpointSweepEdit(edit: StudioCheckpointRuleRequest['edit']) {
@@ -1165,7 +1179,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         reviewed.files, { reviewedRevision: reviewed.revision,
           dependencies: [{ kind: 'step', id: subject.source_step_id }] });
       await editor.flush();
-    }, refuseField('checkpoints'));
+    }, refuseField('checkpoint'));
   }
 
   function chooseReportFigure(revision: string, figure: ReportFigureSource) {
@@ -1648,15 +1662,15 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                       }}
                       onEdit={ready && !busy && wholeStep ? editEvaluateSubject : undefined} />}
                     {evaluationCheckpointRule &&
-                      <CheckpointRuleEditor key={JSON.stringify(['checkpoint', step.id, variant, checkpointScope])}
+                      <CheckpointEditor key={JSON.stringify(['checkpoint', step.id, variant, checkpointScope])}
                         initial={evaluationCheckpointRule}
                         disabled={!ready || busy} readOnly={Boolean(stepCheckpointRule && subject?.checkpoint_axis)}
-                        refusal={refusedAt('checkpoints')}
+                        refusal={refusedAt('checkpoint')}
                         onSave={editEvaluationCheckpoint}
                         onToSweep={canSweepCheckpoint ? () => { void applyCheckpointSweepEdit({ kind: 'to_sweep' }); } : undefined} />}
-                    {evaluationEditor?.domain && <TrialSetEditor key={step.id} initial={evaluationEditor.authored.trialSet}
-                      domain={evaluationEditor.domain} disabled={!ready || busy} refusal={refusedAt('trialSet')}
-                      onSave={(rule) => editEvaluation('trialSet', studioName('applyTrials'),
+                    {evaluationEditor?.domain && <TrialsEditor key={step.id} initial={evaluationEditor.authored.trialSet}
+                      domain={evaluationEditor.domain} disabled={!ready || busy} refusal={refusedAt('trials')}
+                      onSave={(rule) => editEvaluation('trials', studioName('trials'),
                         { op: 'replace', path: '/base/inline/params/trial_set', value: rule })} />}
                   </FocusedFields>}
                 attachments={(exceptions.length > 0 || listedInputs.length > 0) && <>
@@ -1671,7 +1685,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                         <span className="text-shell-muted">{input.label}</span>
                         {source && <>{' · '}{source.label}</>}
                       </InspectorRow>
-                      {!subjectSelection(input.id) && inputDetail(input)}
+                      {inputDetail(input)}
                     </li>;
                   })}</ul>}
                 </>} />,

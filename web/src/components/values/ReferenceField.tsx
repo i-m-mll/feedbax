@@ -34,7 +34,7 @@ export interface ReferenceFieldProps {
   picking?: ElementSelectionStore;
   /** The visible label that names the field's trigger, popup and filter. */
   'aria-labelledby': string;
-  /** The field adds a selection to a list: it holds no value, and its trigger is the list's `+`. */
+  /** The field adds a selection to a list: it holds no value, and its trigger is a `+` glyph in the list's header. */
   adds?: boolean;
   className?: string;
 }
@@ -61,19 +61,19 @@ export function ReferenceField({ label, groups, value, onChoose, picking, adds, 
       disabled={disabled}
       autoHighlight
     >
-      <Combobox.Trigger {...(adds ? { 'aria-label': studioAccessibleName('add', label) } : aria)}
-        className={clsx(fieldFrame, 'h-control min-w-0 flex-1 cursor-default select-none items-center gap-1 pr-control-inline',
-          !value?.glyph && 'pl-control-inline',
-          'hover:[&:not([data-disabled])]:bg-shell-hover data-[popup-open]:bg-shell-hover', focusRing, glyph, disabledLook)}>
-        {value?.glyph && <span aria-hidden="true" className={leadingSlot}>{value.glyph}</span>}
-        {adds ? <Plus aria-hidden="true" className="text-shell-muted" />
-          : <span className="min-w-0 flex-1 truncate text-left">{value?.label ?? '—'}</span>}
-        {!adds && <ChevronDown aria-hidden="true" className="text-shell-muted" />}
-      </Combobox.Trigger>
+      {adds ? <Combobox.Trigger render={<IconButton size="mark" label={studioAccessibleName('add', label)} icon={<Plus />} />} />
+        : <Combobox.Trigger {...aria}
+          className={clsx(fieldFrame, 'h-control min-w-0 flex-1 cursor-default select-none items-center gap-1 pr-control-inline',
+            !value?.glyph && 'pl-control-inline',
+            'hover:[&:not([data-disabled])]:bg-shell-hover data-[popup-open]:bg-shell-hover', focusRing, glyph, disabledLook)}>
+          {value?.glyph && <span aria-hidden="true" className={leadingSlot}>{value.glyph}</span>}
+          <span className="min-w-0 flex-1 truncate text-left">{value?.label ?? '—'}</span>
+          <ChevronDown aria-hidden="true" className="text-shell-muted" />
+        </Combobox.Trigger>}
       <Combobox.Portal container={usePopupLayer()}>
-        <Combobox.Positioner className="z-50 outline-none" sideOffset={4} align="start">
+        <Combobox.Positioner className="z-50 outline-none" sideOffset={4} align={adds ? 'end' : 'start'}>
           <Combobox.Popup aria-labelledby={aria['aria-labelledby']}
-            className={clsx(popupSurface, 'grid min-w-[var(--anchor-width)] max-w-[var(--available-width)] gap-1')}>
+            className={clsx(popupSurface, 'grid max-w-[var(--available-width)] gap-1', adds ? 'w-56' : 'min-w-[var(--anchor-width)]')}>
             <Combobox.Input aria-labelledby={aria['aria-labelledby']} className={clsx(fieldFrame, fieldInput, 'h-control')} />
             <Combobox.List className="max-h-[min(22rem,var(--available-height))] overflow-y-auto empty:hidden">
               {(group: { value: string; items: readonly ReferenceChoice[] }) => (
@@ -97,7 +97,8 @@ export function ReferenceField({ label, groups, value, onChoose, picking, adds, 
         </Combobox.Positioner>
       </Combobox.Portal>
     </Combobox.Root>
-    {picking && pickable.size > 0 && <IconButton label={studioAccessibleName('pick', adds ? studioAccessibleName('add', label) : label)} icon={<Crosshair />}
+    {picking && pickable.size > 0 && <IconButton size={adds ? 'mark' : 'control'} icon={<Crosshair />}
+      label={studioAccessibleName('pick', adds ? studioAccessibleName('add', label) : label)}
       pressed={armed.on} disabled={disabled} onClick={armed.toggle} />}
   </div>;
 }

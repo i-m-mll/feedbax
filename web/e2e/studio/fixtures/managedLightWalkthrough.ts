@@ -200,7 +200,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const settled = evaluationRows(await plan(context), subsetStep);
   const beforeWidening = await attempts();
   expect(beforeWidening).toEqual([...beforeSubset, ...admitted].sort());
-  const subset = stepInspector(page).getByRole('group', { name: 'Subject Subset', exact: true });
+  const subset = stepInspector(page).getByRole('region', { name: 'Runs', exact: true });
   const fast = subset.getByRole('checkbox', { name: '0.003', exact: true });
   await activate(page, fast, 'Space');
   await expect(fast).toBeChecked();

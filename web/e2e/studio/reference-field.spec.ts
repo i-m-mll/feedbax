@@ -125,20 +125,18 @@ test('Evaluate edits that remove runs ask first and keep the other results', { t
     ...(runs.window_map?.evaluations ?? []).map(({ key, request_id }) => [key.step + '/' + key.row, request_id]),
   ]);
   const before = requests(await plan());
-  const trialSet = page.getByRole('group', { name: 'Trial Set', exact: true });
+  const trialSet = page.getByRole('region', { name: 'Trials', exact: true });
   const removal = page.getByRole('dialog', { name: /^Remove \d+ runs?\?$/ });
-  const apply = async () => {
-    await pick(trialSet.getByRole('combobox'), 'Selected Conditions');
-    await trialSet.getByRole('checkbox').first().check();
-    await trialSet.getByRole('button', { name: 'Apply Trials', exact: true }).click();
-  };
-  await apply();
+  const condition = trialSet.getByRole('checkbox').first();
+  await pick(trialSet.getByRole('combobox'), 'Selected Conditions');
+  await condition.check();
   await expect(removal).toContainText('Existing results remain on disk but disappear from the project.');
   await removal.getByRole('button', { name: 'Cancel', exact: true }).click();
   expect(requests(await plan())).toEqual(before);
 
+  await condition.uncheck();
   const removed = await saved(page, project, async () => {
-    await apply();
+    await condition.check();
     await removal.getByRole('button', { name: 'Remove', exact: true }).click();
   });
   const after = requests(await plan());
