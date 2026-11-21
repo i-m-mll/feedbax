@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import type { StudioProjectSnapshot } from '../../src/generated/studioContracts';
-import { mapStep, runProjectFixture } from './fixtures/canonicalTrain';
+import { mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import type { Page } from '@playwright/test';
 
 test.use({ viewport: { width: 1440, height: 900 } });
@@ -148,4 +148,23 @@ test('New Step chosen in the palette while the plan of an edit loads opens once 
   await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: /^Duplicate Step train\b/ }).click();
   expect((await saved).ok()).toBe(true);
   await newStepFromPalette(page, release);
+});
+
+test('entering a Model composite while an edit saves happens at once', async ({ page, request, studio }) => {
+  const { projectPath, configuration } = await seedManagedProject(request, []);
+  await runProjectFixture('web.e2e.studio.fixtures.stored_model', studio.home, configuration.project, 'sweep');
+  const opened = await request.get(`${projectPath}/open`);
+  expect(opened.ok(), await opened.text()).toBe(true);
+  await page.goto(`/?project=${encodeURIComponent((await opened.json()).snapshot.project_id)}`);
+  await mapStep(page, 'baseline').click();
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
+  await expect(model.locator('[data-id="wrapper"] header')).toBeVisible();
+  // The duplicate's save is held, so the workspace stays unsettled.
+  const release = await holdRequests(page, (url) => url.pathname === `${projectPath}/members/command`);
+  await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: /^Duplicate Step baseline\b/ }).click();
+  await model.locator('[data-id="wrapper"] header').dblclick();
+  await expect(model.locator('[data-id="controller"] header')).toBeVisible();
+  release();
 });

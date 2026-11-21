@@ -86,13 +86,14 @@ const selectionCommands = new Set<StudioCommandId>([
 ]);
 
 /**
- * Commands that change only how the window shows the workspace. They read nothing the workspace is settling, so one
- * runs at once while the workspace is unsettled, unless a gesture made before it is still held.
+ * Commands that change only how the window shows the workspace, such as which view, region or Model graph it shows.
+ * They read nothing the workspace is settling, so one runs at once while the workspace is unsettled, unless a gesture
+ * made before it is still held.
  */
 const viewCommands = new Set<StudioCommandId>([
   ...projectWindowViews, 'commandPalette', 'settings', 'showMap', 'showBoth', 'showDetails', 'showSteps', 'showDrawer',
   'showInspector', 'splitDetails', 'switchSlot', 'back', 'forward', 'nextRegion', 'previousRegion', 'activity', 'problems',
-  'fitView', 'zoomIn', 'zoomOut',
+  'fitView', 'zoomIn', 'zoomOut', 'enter', 'leave',
 ]);
 
 export interface StudioCommand {
