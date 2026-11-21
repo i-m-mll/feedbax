@@ -51,6 +51,12 @@ function triggerParts({ control, labelledBy }: ReturnType<typeof controlOf>, nod
   return [current, ...labels.filter((label): label is HTMLElement => !!label && node.contains(label))];
 }
 
+/** The elements that draw `item`: itself, or for a `display: contents` wrapper (a field's anchor), its children's. */
+function boxed(item: Node): Element[] {
+  if (!(item instanceof Element)) return [];
+  return getComputedStyle(item).display === 'contents' ? [...item.children].flatMap(boxed) : [item];
+}
+
 /**
  * Shows what a user's action in `node` brings in below its trigger (the fields of a newly chosen class, an unfolded
  * group, a new list item) by the least movement: until the content ends at the bottom of the clear area, but never
@@ -105,8 +111,8 @@ function revealEdits(node: HTMLElement) {
     for (const record of records) {
       const shown = record.type === 'childList' ? [...record.addedNodes]
         : record.target instanceof Element && !record.target.hasAttribute('hidden') ? [record.target] : [];
-      for (const item of shown) {
-        if (!(item instanceof Element) || item.closest(unasked)) continue;
+      for (const item of shown.flatMap(boxed)) {
+        if (item.closest(unasked)) continue;
         const extent = document.createRange();
         if (item.contains(last)) extent.setStartAfter(last);
         else if (last.compareDocumentPosition(item) & Node.DOCUMENT_POSITION_FOLLOWING) extent.setStartBefore(item);

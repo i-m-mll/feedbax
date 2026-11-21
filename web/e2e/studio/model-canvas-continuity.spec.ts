@@ -1,32 +1,15 @@
 import { expect, test } from './fixtures/studio';
-import type { Page, Route } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import type { ModelDocument } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { readSaved } from './fixtures/studioKeyboard';
 import { rootPayload } from './fixtures/rootPayload';
+import { hold } from './fixtures/heldRequest';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
 type Box = { x: number; y: number; width: number; height: number };
 type FrameWindow = Window & { cardFrames?: Box[]; stopCardFrames?: () => void };
-
-/** Holds the first request to `path` whose body `matches`, until `release` is called. */
-async function hold(page: Page, path: string, matches: (body: unknown) => boolean) {
-  let release!: () => void;
-  const released = new Promise<void>((resolve) => { release = resolve; });
-  let arrived!: () => void;
-  const sent = new Promise<void>((resolve) => { arrived = resolve; });
-  let held = false;
-  await page.route((url) => url.pathname === path, async (route: Route) => {
-    if (!held && matches(route.request().postDataJSON())) {
-      held = true;
-      arrived();
-      await released;
-    }
-    await route.fallback();
-  });
-  return { sent, release };
-}
 
 async function openModel(page: Page, projectId: string) {
   await page.goto(`/?project=${projectId}`);

@@ -203,6 +203,27 @@ test('Add Sweep goes to a nested field and sweeps it only by the text it commits
   await expect.poll(async () => Object.keys((await sweep())?.axes ?? {}).length).toBe(Object.keys(before?.axes ?? {}).length + 1);
 });
 
+// Catches the kind menu's Sweep writing a sweep before any values are typed.
+test("a field's kind menu puts it in Sweep kind and writes nothing until its text is committed", async ({ page, request }) => {
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  const train = async () => ((await (await request.get(projectPath)).json()) as StudioProjectSnapshot).project.steps?.train;
+  await page.goto(`/?project=${snapshot.project_id}`);
+  const b2 = page.getByRole('region', { name: 'B2 field', exact: true });
+  const text = b2.getByRole('textbox', { name: 'B2', exact: true });
+  await expect(text).toBeEditable();
+  const value = await text.inputValue();
+  const before = await train();
+  await b2.getByRole('button', { name: 'B2 kind: Value', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Sweep', exact: true }).click();
+  await expect(text).toBeFocused();
+  await expect(b2.getByRole('button', { name: 'B2 kind: Sweep', exact: true })).toBeVisible();
+  await expect(text).toHaveValue(value);
+  expect(await train()).toEqual(before);
+  await page.keyboard.press('Escape');
+  await expect(b2.getByRole('button', { name: 'B2 kind: Value', exact: true })).toBeVisible();
+  expect(await train()).toEqual(before);
+});
+
 test('an addressed Model numeric field authors a step sweep from the inspector', async ({ page, request }) => {
   const [model, task, objective, train] = await fixture('ordinary-files', '2');
   const { snapshot, projectPath } = await seedManagedProject(request, [model, task, objective, train]);

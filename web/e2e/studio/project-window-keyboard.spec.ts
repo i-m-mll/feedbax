@@ -143,7 +143,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   await activate(page, rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true }));
   await activateMenuItem(page, page.getByRole('menuitem', { name: 'Sweep', exact: true }));
   const rateText = rate.getByRole('textbox', { name: 'Learning Rate Value', exact: true });
-  await expect(rateText).toHaveValue('0.001,');
+  await expect(rateText).toBeFocused();
   await number(page, rateText, '0.001, 0.002, 0.003');
   await expect(rate.getByText('0.003', { exact: true })).toBeVisible();
   const swept = await savedProject();
@@ -563,7 +563,7 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   const rateText = rate.getByRole('textbox', { name: 'Learning Rate Value', exact: true });
   await activate(page, rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true }));
   await activateMenuItem(page, page.getByRole('menuitem', { name: 'Sweep', exact: true }));
-  await expect(rateText).toHaveValue('0.001,');
+  await expect(rateText).toBeFocused();
   await number(page, rateText, '0.001, 0.002, 0.003');
   await expect(rate.getByText('0.003', { exact: true })).toBeVisible();
   const savedSweep = await request.get(projectPath);

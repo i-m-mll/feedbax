@@ -135,6 +135,31 @@ export function managedTrialDomain(projection: StudioSavedTrainRuns | undefined,
     : { kind: 'sampler' };
 }
 
+/**
+ * Each condition of a cohort named by the task variables that vary across it, as `name=value`. A condition is
+ * identified by the canonical JSON of its variables; an id that is not a JSON object is its own name.
+ */
+export function conditionLabels(ids: readonly string[]): ReadonlyMap<string, string> {
+  const parsed = ids.map((id) => {
+    try {
+      const value: unknown = JSON.parse(id);
+      return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+    } catch {
+      return undefined;
+    }
+  });
+  const text = (value: unknown) => typeof value === 'string' ? value : JSON.stringify(value);
+  const names = [...new Set(parsed.flatMap((variables) => Object.keys(variables ?? {})))];
+  const varying = names.filter((name) => new Set(parsed.map((variables) => text(variables?.[name]))).size > 1);
+  const shown = varying.length ? varying : names;
+  return new Map(ids.map((id, index) => {
+    const variables = parsed[index];
+    if (!variables) return [id, id];
+    const terms = shown.filter((name) => name in variables).map((name) => `${name}=${text(variables[name])}`);
+    return [id, terms.join(' ') || id];
+  }));
+}
+
 export function validTrialSet(rule: TrialSet, domain: TrialDomain | undefined): boolean {
   if (rule.kind === 'sample') {
     return domain?.kind === 'sampler' && Number.isInteger(rule.count) && rule.count >= 1 && rule.count <= 10_000;
