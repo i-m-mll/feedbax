@@ -77,7 +77,7 @@ import {
   jsonPointerPath, StudioTrainAuthoringForm, SweepFieldItems, useTrainClassFields, useTrainFieldLabels,
 } from './StudioTrainAuthoringForm';
 import {
-  TrialObjectiveInspector, TrialObjectiveOutline, TrialObjectiveTable, TrialTaskForm, TrialTaskInspector, TrialTaskOutline, useTrialAuthoring,
+  TrialObjectiveAdd, TrialObjectiveInspector, TrialObjectiveOutline, TrialObjectiveTable, TrialTaskForm, TrialTaskInspector, TrialTaskOutline, useTrialAuthoring,
   type TrialChangeScope,
 } from './StudioTrialAuthoring';
 import { documentFamily, useProjectDocuments, type DocumentRole } from './useProjectDocuments';
@@ -1542,6 +1542,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             const selected = element && { term: element.id, field: element.field };
             return {
               picker: pickDocument('objective', value.objective_document ?? undefined, documentScopes.objective),
+              header: <TrialObjectiveAdd view={value} commit={commit} select={choose(document)} />,
               body: withProblem(<TrialObjectiveTable view={value} commit={commit} selected={selected} select={choose(document)} />),
               drawer: <TrialObjectiveOutline sections={drawerSections} view={value} commit={commit} selected={selected?.term} select={choose(document)} />,
               inspector: <TrialObjectiveInspector view={value} commit={commit} selected={selected} />,

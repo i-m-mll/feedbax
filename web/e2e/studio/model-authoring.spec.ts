@@ -4,7 +4,6 @@ import type {
   ModelDocument, StudioJobEventHistory, StudioJobSnapshot, StudioJobSubmission, StudioProjectDocument, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
 import { enter, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
-import { pick } from './fixtures/controls';
 import { palette } from './fixtures/studioKeyboard';
 import { rootPayload } from './fixtures/rootPayload';
 
@@ -174,8 +173,8 @@ test('authors a managed Train in an empty folder and reopens its result', async 
 
   await expect(output.locator('[aria-label="Port Command"].react-flow__handle')).toBeVisible();
   await tab('Objective').click();
-  await pick(objective.getByRole('combobox', { name: 'Measure Source', exact: true }), 'Command');
   await objective.getByRole('button', { name: 'Add Term', exact: true }).click();
+  await page.getByRole('menu', { name: 'Add Term', exact: true }).getByRole('menuitem', { name: 'Command', exact: true }).click();
   await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(Command)');
   await enter(objective.getByRole('textbox', { name: 'Weight', exact: true }), '2');
   await expect.poll(async () => rootPayload((await saved()).project.documents?.objective)).toMatchObject({
