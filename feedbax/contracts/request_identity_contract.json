@@ -972,6 +972,9 @@
     },
     "feedbax.contracts.request_specs.RenderRequestSpec": {
       "document": {},
+      "names": {
+        "absent": {}
+      },
       "numerical_settings": {
         "absent": {}
       }

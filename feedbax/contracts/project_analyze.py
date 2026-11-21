@@ -26,13 +26,21 @@ from feedbax.contracts.figure_document import (
     FigureTemplateRef,
     PlotlyFigurePort,
     is_figure_document_pin,
+    layer_encodings,
     validate_figure_bindings,
 )
 from feedbax.contracts.dataset import FieldDescriptor
 from feedbax.contracts.member_stack import labelled_members, stack_layout
 from feedbax.contracts.operation import DatasetPort, require_dataset_fields, require_dataset_port
 from feedbax.contracts.project import Document, Payload, json_pointer_parts
-from feedbax.contracts.project_plan import ElementKey, PlannedElement, PlannedInput, RunKey
+from feedbax.contracts.project_plan import (
+    ElementKey,
+    LabelName,
+    LabelNames,
+    PlannedElement,
+    PlannedInput,
+    RunKey,
+)
 from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode, compose_document
 from feedbax.contracts.request_identity import EncodedRequest, encode_request
 from feedbax.contracts.request_refs import InputMember, ProductRef
@@ -48,6 +56,35 @@ from feedbax.plugins.declarations import missing_declaration
 if TYPE_CHECKING:
     from feedbax.analysis.operations import OperationRegistry
     from feedbax.plot.templates import FigureTemplateRegistry
+
+
+def _names(inputs: Mapping[str, tuple[PlannedInput, ...]]) -> dict[str, dict[str, LabelName]]:
+    """What each step-valued label value ID of ``inputs`` names."""
+    names: dict[str, dict[str, LabelName]] = {}
+    for bindings in inputs.values():
+        for binding in bindings:
+            for label, name in binding.named.items():
+                if (value := binding.member.labels.get(label)) is not None:
+                    names.setdefault(label, {})[value.value_id] = name
+    return names
+
+
+def _merged(*tables: LabelNames) -> dict[str, dict[str, LabelName]]:
+    merged: dict[str, dict[str, LabelName]] = {}
+    for table in tables:
+        for label, names in table.items():
+            merged.setdefault(label, {}).update(names)
+    return merged
+
+
+def _printed_labels(figure: FigureDocument) -> set[str]:
+    """The coordinates a figure splits or selects by, whose names it therefore prints or matches."""
+    used = set()
+    for layer in figure.layers:
+        used.update(layer.group, layer.select)
+        for _, encoding in layer_encodings(layer):
+            used.update(getattr(encoding, "select", {}))
+    return used
 
 
 class _ElementIssue(ValueError):
@@ -215,6 +252,17 @@ class _Lowerer:
         inputs: Mapping[str, tuple[PlannedInput, ...]],
         outputs: Mapping[str, DatasetPort | PlotlyFigurePort],
     ) -> None:
+        names = _merged(*(
+            self.elements[binding.producer_element].names
+            for bindings in inputs.values() for binding in bindings
+            if binding.producer == self.key and binding.producer_element in self.elements
+        ), _names(inputs))
+        if isinstance(spec, RenderRequestSpec):
+            printed = _printed_labels(spec.document)
+            spec = spec.model_copy(update={"names": {
+                label: {value_id: name.printed for value_id, name in values.items()}
+                for label, values in sorted(names.items()) if label in printed
+            }})
         encoded = encode_request(
             spec, {role: tuple(binding.member for binding in bindings) for role, bindings in inputs.items()}
         )
@@ -225,6 +273,7 @@ class _Lowerer:
             encoded.id,
             MappingProxyType(dict(inputs)),
             MappingProxyType(dict(outputs)),
+            MappingProxyType({label: MappingProxyType(values) for label, values in names.items()}),
         )
         self.encoded.append(encoded)
 

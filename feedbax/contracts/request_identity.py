@@ -203,6 +203,11 @@ def request_id(
     return kind + ":" + sha256_bytes(canonical_json_v2_bytes(preimage))
 
 
+def _member_labels(member: InputMember) -> dict[str, Any]:
+    """A member's labels, which decide how a stacked input is laid out and so are part of what is computed."""
+    return member.model_dump(mode="json", include={"labels"})
+
+
 def _request_preimage(
     kind: RequestKind, spec: dict[str, Any], inputs: RequestInputs, storage_schema: str,
 ) -> dict[str, Any]:
@@ -220,6 +225,7 @@ def _request_preimage(
                     if isinstance(member.reference, ContentRef)
                     else encode(member.reference, type(member.reference), pins)
                 ),
+                **_member_labels(member),
             }
             for member in members
         ]
@@ -445,8 +451,9 @@ def effective_binding_id(request: DecodedRequest, inputs: EffectiveInputs) -> Ef
                     "key": member.key,
                     "content": member.content.model_dump(mode="json"),
                     "descriptor": member.descriptor,
+                    **_member_labels(source),
                 }
-                for member in members
+                for member, source in zip(members, request.inputs[role], strict=True)
             ]
             for role, members in inputs.items()
         },

@@ -19,6 +19,7 @@ from feedbax.contracts import request_identity
 from feedbax.contracts._request_codec import same_typed_value
 from feedbax.contracts.analysis_document import AnalyzeDatasetInput, AnalyzeInput, AnalyzeModelInput, AnalyzeTaskInput
 from feedbax.contracts.base import sha256_bytes
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.expression_values import Problem, ValueBase
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, FigureDocument, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
@@ -89,6 +90,7 @@ from feedbax.contracts.project_sweep import (
     SetAxis,
     Sweep,
     SweepCoordinate,
+    SweepExpansionCode,
     SweepExpansionError,
     SweepInputMember,
     checkpoint_rule_write,
@@ -191,6 +193,30 @@ class PlannedSubset:
         return tuple(rank for group in self.rank_groups for rank in group.ranks)
 
 
+STEP_LABELS = ("source", "model")
+"""The member labels whose values are named things of the project; a request identifies them by content."""
+
+RESERVED_LABELS = frozenset({*STEP_LABELS, "variant", "member"})
+
+
+@dataclass(frozen=True)
+class LabelName:
+    """What a step-valued label value names: a step, a stored Train run by its request, or the Model document of
+    a model that was never trained."""
+
+    key: str
+    label: str | None = None
+    kind: Literal["step", "run", "document"] = "step"
+
+    @property
+    def printed(self) -> str:
+        return self.label or self.key
+
+
+type LabelNames = Mapping[str, Mapping[str, LabelName]]
+"""Each step-valued label's value IDs in one request, and what each names."""
+
+
 @dataclass(frozen=True)
 class PlannedInput:
     producer: RunKey | None
@@ -202,6 +228,8 @@ class PlannedInput:
     """What the producer row is about, carried by an input axis and paired by a zip."""
     selection: StepReference | None = field(default=None, compare=False)
     """The authored selection that chose this member."""
+    named: Mapping[str, LabelName] = field(default_factory=dict)
+    """What the member's step-valued labels name. The request identifies each by content (`_identified`)."""
 
     @property
     def sources(self) -> tuple[RunKey, ...]:
@@ -276,6 +304,8 @@ class PlannedElement:
     request_id: RequestId
     inputs: Mapping[str, tuple[PlannedInput, ...]]
     outputs: Mapping[str, DatasetPort | PlotlyFigurePort]
+    names: LabelNames = field(default_factory=dict)
+    """What the step-valued label values of this request and of the operations it reads name."""
 
     @property
     def datasets(self) -> Mapping[str, DatasetPort]:
@@ -532,6 +562,37 @@ DOCUMENTS: TypeAdapter[dict[str, Document]] = TypeAdapter(dict[str, Document])
 
 type _CompiledRun = PlannedRun | PlannedAnalyzeRun
 type _Members = tuple[tuple[PlannedInput, _CompiledRun | None], ...]
+
+
+def _identified(
+    members: _Members, *, labelled: bool,
+) -> tuple[_Members, dict[tuple[str, LabelName], str]]:
+    """Give each step-valued label value an ID that digests the references of the members sharing it.
+
+    The ID names no step, so Change Key and Rename leave every request alone, while members from one step still
+    share one value. Two values whose members are the same requests, such as a step and its duplicate, are told
+    apart by their order. A ``labelled`` role's members carry the IDs as labels, ahead of their other labels.
+    """
+    sharing: dict[tuple[str, LabelName], set[str]] = {}
+    for binding, _ in members:
+        reference = canonical_json_v2_bytes(binding.member.reference.model_dump(mode="json")).decode()
+        for label, name in binding.named.items():
+            sharing.setdefault((label, name), set()).add(reference)
+    ids: dict[tuple[str, LabelName], str] = {}
+    taken: Counter[tuple[str, str]] = Counter()
+    for (label, name), references in sharing.items():
+        digest = "members-" + sha256_bytes(canonical_json_v2_bytes(sorted(references)))
+        taken[label, digest] += 1
+        ids[label, name] = digest if taken[label, digest] == 1 else f"{digest}-{taken[label, digest]}"
+    if not labelled:
+        return members, ids
+    return tuple(
+        (replace(binding, member=binding.member.model_copy(update={"labels": {
+            **{label: MemberLabel(value_id=ids[label, name]) for label, name in binding.named.items()},
+            **binding.member.labels,
+        }})), run) if binding.named else (binding, run)
+        for binding, run in members
+    ), ids
 
 
 def _checkpoint(rule: CheckpointRule | None, *, horizon: int | None = None) -> ProductSelector | None:
@@ -1648,6 +1709,12 @@ class _Compiler:
                         composition.sweep, read_document or self.variants[variant].documents.get,
                         model_slot(resolved.payload, resolved.document_ids, resolved.document_pointers),
                     )
+                for axis_name, axis in (composition.sweep.axes if composition.sweep is not None else {}).items():
+                    if axis_name in RESERVED_LABELS and not isinstance(axis, InputAxis):
+                        raise SweepExpansionError(
+                            SweepExpansionCode.COORDINATE_CONFLICT, f"sweep.axes.{axis_name}",
+                            f"{axis_name!r} is the name of a member label",
+                        )
                 exception_matches: dict[str, tuple[str, ...]] = {}
                 rows = expand_sweep(
                     composition.sweep, inputs=fanout,
@@ -2978,40 +3045,48 @@ class _Compiler:
             return None
         return self.terminal_sources.setdefault(terminal.request_id, terminal)
 
-    def step_coordinate(self, key: RunKey) -> SweepCoordinate:
-        return SweepCoordinate(key.step, self.variants[key.variant].steps[key.step].label)
+    def subject_model(self, run: _CompiledRun) -> tuple[RunKey | None, LabelName] | None:
+        """What an Evaluate row's ``model`` names: its subject's Train step or stored run, or its untrained Model."""
+        if not isinstance(run, PlannedRun) or run.kind != "evaluate":
+            return None
+        subject = run.inputs.get("subject")
+        if subject is not None and subject.producer is not None:
+            producer = subject.producer
+            return producer, LabelName(producer.step, self.variants[producer.variant].steps[producer.step].label)
+        if subject is not None and isinstance(trained := subject.member.reference, ProductRef):
+            return None, LabelName(trained.request_id, kind="run")
+        if (document := run.document_ids.get(EVALUATION_MODEL)) is not None:
+            return None, LabelName(document, kind="document")
+        return None
 
     def member_coordinates(self, run: _CompiledRun) -> dict[str, SweepCoordinate]:
         """What a gathered row is about: its coordinates, and for an Evaluate row the ``model`` it evaluates."""
         coordinates = dict(run.coordinates)
-        subject = run.inputs.get("subject") if isinstance(run, PlannedRun) and run.kind == "evaluate" else None
-        if subject is None or subject.producer is None:
+        if (model := self.subject_model(run)) is None:
             return coordinates
-        trained = self.rows[subject.producer]
-        for label, coordinate in {"model": self.step_coordinate(subject.producer), **trained.coordinates}.items():
+        producer, name = model
+        trained = self.rows[producer].coordinates if producer is not None else {}
+        for label, coordinate in {"model": SweepCoordinate(name.key, name.label), **trained}.items():
             prior = coordinates.setdefault(label, coordinate)
             if prior.value_id != coordinate.value_id:
                 raise ValueError(
-                    f"{run.key.step}/{run.key.row} and its subject {subject.producer.step!r} "
+                    f"{run.key.step}/{run.key.row} and its subject {name.key!r} "
                     f"give label {label!r} different values"
                 )
         return coordinates
 
     def member_labels(
         self, run: _CompiledRun, coordinates: Mapping[str, SweepCoordinate], *, gathers_variants: bool,
-    ) -> dict[str, MemberLabel]:
-        """The labels a stacked dataset carries: where the member came from, then what it is about."""
-        labels = {"source": self.step_coordinate(run.key)}
-        if gathers_variants:
-            labels["variant"] = SweepCoordinate(run.key.variant)
+    ) -> tuple[dict[str, MemberLabel], dict[str, LabelName]]:
+        """The labels a stacked dataset carries: the content labels, and the step-valued ones by what they name."""
+        named = {"source": LabelName(run.key.step, self.variants[run.key.variant].steps[run.key.step].label)}
+        if (model := self.subject_model(run)) is not None:
+            named["model"] = model[1]
+        labels = {"variant": MemberLabel(value_id=run.key.variant)} if gathers_variants else {}
         for label, coordinate in coordinates.items():
-            if label in labels:
-                raise ValueError(f"Axis {label!r} of {run.key.step!r} uses the name of a member label")
-            labels[label] = coordinate
-        return {
-            label: MemberLabel(value_id=coordinate.value_id, value=coordinate.value)
-            for label, coordinate in labels.items()
-        }
+            if label not in named:
+                labels[label] = MemberLabel(value_id=coordinate.value_id, value=coordinate.value)
+        return labels, named
 
     def select_input(
         self,
@@ -3027,7 +3102,11 @@ class _Compiler:
         reference = template.inputs.get(role.name)
         if isinstance(reference, list):
             return self.select_list(variant, name, template, role, active, reference)
-        return self.select_reference(variant, name, template, role, active, reference, f"inputs.{role.name}")
+        selected = self.select_reference(variant, name, template, role, active, reference, f"inputs.{role.name}")
+        if isinstance(selected, ProjectDiagnostic):
+            return selected
+        members, omissions, subset = selected
+        return _identified(members, labelled=role.producer_kind == "evaluate")[0], omissions, subset
 
     def select_list(
         self,
@@ -3038,7 +3117,7 @@ class _Compiler:
         active: tuple[tuple[str, str], ...],
         references: list[StepReference],
     ) -> tuple[_Members, dict[str, str], None] | ProjectDiagnostic:
-        """Gather the members of several selections; a key given by two of them is qualified by its step."""
+        """Gather the members of several selections; a key given by two of them is qualified by its source's ID."""
         path = f"inputs.{role.name}"
         if not role.gathers:
             return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, "this input takes one selection", name)
@@ -3054,15 +3133,16 @@ class _Compiler:
                 return ProjectDiagnostic(
                     ResolutionCode.BAD_REFERENCE, f"{item}.where.best", "Best ranks a single selection", name,
                 )
-            selections.append((reference.step, selected[0]))
-        counts = Counter(binding.member.key for _, members in selections for binding, _ in members)
+            selections.extend(selected[0])
+        identified, ids = _identified(tuple(selections), labelled=role.producer_kind == "evaluate")
+        counts = Counter(binding.member.key for binding, _ in identified)
         gathered = []
-        for step, members in selections:
-            for binding, run in members:
-                key = binding.member.key
-                if counts[key] > 1:
-                    binding = replace(binding, member=binding.member.model_copy(update={"key": f"{step}/{key}"}))
-                gathered.append((binding, run))
+        for binding, run in identified:
+            key = binding.member.key
+            if counts[key] > 1:
+                source = ids["source", binding.named["source"]]
+                binding = replace(binding, member=binding.member.model_copy(update={"key": f"{source}/{key}"}))
+            gathered.append((binding, run))
         keys = [binding.member.key for binding, _ in gathered]
         if len(set(keys)) != len(keys):
             repeated = sorted(key for key, count in Counter(keys).items() if count > 1)
@@ -3289,9 +3369,9 @@ class _Compiler:
                 request = run.request_id
             try:
                 coordinates = self.member_coordinates(run)
-                labels = self.member_labels(
-                    run, coordinates, gathers_variants=reference.variants is not None,
-                ) if role.producer_kind == "evaluate" else {}
+                labels, named = self.member_labels(run, coordinates, gathers_variants=reference.variants is not None)
+                if role.producer_kind != "evaluate":
+                    labels = {}
             except ValueError as error:
                 return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, str(error), name)
             members.append((
@@ -3309,6 +3389,7 @@ class _Compiler:
                     producer_element=reference.element,
                     coordinates=MappingProxyType(coordinates),
                     selection=reference,
+                    named=MappingProxyType(named),
                 ),
                 run,
             ))
