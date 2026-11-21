@@ -114,6 +114,29 @@ def _exceptions_copied(sweep: dict[str, Any], copies: dict[str, str]) -> dict[st
     return exceptions
 
 
+def _entry_copied(project: Project, name: str, readers, value: str, copy: str) -> list[StudioProjectFilePatch]:
+    """Each reader of the set ``name`` with its own exceptions naming the copy of entry ``value`` beside its original."""
+    axes = {
+        axis for step in readers if (sweep := project.steps[step].sweep) is not None
+        for axis, read in sweep.axes.items() if isinstance(read, SetAxis) and read.set == name
+    }
+    files = []
+    for step in sorted(readers):
+        address, raw = _step_raw(project, step)
+        sweep = raw.get("sweep") or {}
+        rows = {
+            row for exception in sweep.get("exceptions", {}).values()
+            for row in ((exception or {}).get("where") or {}).get("rows") or ()
+        }
+        copies = {
+            row: copied for row in rows for axis in axes
+            if (copied := _recolumned(row, axis, value, copy)) != row
+        }
+        if copies:
+            files.append(_with_sweep(address, raw, sweep, copies))
+    return files
+
+
 def _with_sweep(address, raw, sweep: dict[str, Any], copies: dict[str, str]) -> StudioProjectFilePatch:
     exceptions = _exceptions_copied(sweep, copies)
     return file_value(address, raw, ("sweep",), sweep | ({"exceptions": exceptions} if exceptions else {}))
@@ -145,7 +168,9 @@ def _duplicate_run(folders, project_id, revision, project: Project, command: Dup
         copy = _copy_key(named.value, entries.__contains__)
         entry = {name: item for name, item in entries[named.value].items() if name != "label"}
         edits = content_edits(content, content | {"entries": entries | {copy: entry}})
-        stored = set_document_write(project, named.set, edits, set_readers(project, named.set))
+        readers = set_readers(project, named.set)
+        stored = set_document_write(project, named.set, edits, readers)
+        stored = stored.then(_entry_copied(project, named.set, readers, named.value, copy))
         return stored, StudioAxisValue(axis=named.axis, value=copy)
     if named is not None:
         values = axes[named.axis]["values"]
