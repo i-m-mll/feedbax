@@ -2966,7 +2966,7 @@ export type InputAxis = {
   "input": string;
 };
 
-export type InputBinding = Reference | Array<Reference> | Record<string, Reference>;
+export type InputBinding = Reference | Array<StepReference>;
 
 export type InputDifference = {
   "kind"?: "input";
@@ -9464,7 +9464,7 @@ export const InputAxisSchema: z.ZodType<InputAxis> = z.lazy(() =>
 ) as unknown as z.ZodType<InputAxis>;
 
 export const InputBindingSchema: z.ZodType<InputBinding> = z.lazy(() =>
-  z.union([ReferenceSchema, z.array(ReferenceSchema), z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), ReferenceSchema)])
+  z.union([ReferenceSchema, z.array(StepReferenceSchema)])
 ) as unknown as z.ZodType<InputBinding>;
 
 export const InputDifferenceSchema: z.ZodType<InputDifference> = z.lazy(() =>

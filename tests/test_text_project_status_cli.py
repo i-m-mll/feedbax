@@ -97,21 +97,21 @@ def test_cli_and_studio_verify_saved_status_and_authored_history(host, tmp_path,
             return " | ".join(problem.detail for problem in mounted.problems if (problem.step, problem.row) == (step, "default"))
 
         changed = f"Definition changed at {history.change.path}." if history.change and state is JobStatus.STALE else None
-        assert table["default/train/default"] == ("default", state.value, history.reason or changed or named("train"))
+        assert table["train"] == ("default", state.value, history.reason or changed or named("train"))
         evaluation = studio.evaluations[RunKey("default", "baseline", "default")]
         assert evaluation.result is None
-        assert table["default/baseline/default"][1:] == (evaluation.status.value, evaluation.reason or named("baseline"))
+        assert table["baseline"][1:] == (evaluation.status.value, evaluation.reason or named("baseline"))
         mounted_rows = {
-            f"{item.key.variant}/{item.key.step}/{item.key.row}": item.status
-            for item in mounted.rows if item.status is not None
+            item.key.step: item.status
+            for item in mounted.rows if item.status is not None and item.key.row == item.key.variant == "default"
         }
         assert all(table[address][1] == status for address, status in mounted_rows.items())
         counts = {item.step_id: item.status_counts for item in mounted.steps}
         assert counts["train"] == {history.status.value: 1}
         assert counts["baseline"] == {evaluation.status.value: 1}
         (profile,) = (item for item in mounted.analysis_elements if item.name == "profile")
-        assert table["default/analyze/default/profile"][1] == profile.status == "not_run"
-        assert mounted_rows["default/report/default"] == "not_run"
+        assert table["analyze/profile"][1] == profile.status == "not_run"
+        assert mounted_rows["report"] == "not_run"
         return history
 
     assert compare(JobStatus.SUCCEEDED).result is not None
@@ -167,12 +167,12 @@ def test_status_displays_failed_element_with_valid_siblings(tmp_path, monkeypatc
     assert main(["status", str(root)]) == 2
     output = capsys.readouterr()
     table = _status_table(output.out)
-    assert table["default/analyze/default"][1] == "cannot_run"
-    assert table["default/analyze/default/profile"][1] == "not_run"
-    assert table["default/analyze/default/bad"][1] == "cannot_run"
-    _, state, reason = table["default/analyze/default/unused"]
+    assert table["analyze"][1] == "cannot_run"
+    assert table["analyze/profile"][1] == "not_run"
+    assert table["analyze/bad"][1] == "cannot_run"
+    _, state, reason = table["analyze/unused"]
     assert state == "cannot_run" and "feedbax.unknown" in reason
-    assert table["default/report/default"][1] == "not_run"
+    assert table["report"][1] == "not_run"
     assert "steps/analyze.json" in output.err
     assert "documents/bad-figure.json:payload.layers.0.style.band_alpha" in output.err
     assert _files(root) == files
@@ -184,7 +184,7 @@ def test_status_displays_failed_element_with_valid_siblings(tmp_path, monkeypatc
     )
     mounted = service.read(root.name, revision=read_text_project_snapshot(root).revision).window_map()
     (analyze,) = (row for row in mounted.rows if row.key.step == "analyze")
-    assert analyze.status == table["default/analyze/default"][1]
+    assert analyze.status == table["analyze"][1]
     (step,) = (step for step in mounted.steps if step.step_id == "analyze")
     assert step.status_counts == {"cannot_run": 1}
     assert any(

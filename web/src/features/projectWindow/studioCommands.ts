@@ -43,6 +43,7 @@ const shortcuts = {
   modelSelectAll: primary('A'),
   modelRemove: { key: 'Backspace' },
   renameStep: { key: 'F2' },
+  renameElement: { key: 'F2' },
   modelRename: { key: 'F2' },
   modelDuplicate: primary('D'),
   modelGroup: primary('G'),
@@ -69,7 +70,7 @@ const glyphs: Partial<Record<StudioCommandId, LucideIcon>> = {
 };
 
 export type StudioCommandId = keyof typeof shortcuts | ProjectWindowView | AppearanceCommandId |
-  'check' | 'accept' | 'newStep' | 'newSweep' | 'duplicateStep' | 'openRun' | 'resume' | 'forceStop' | 'activity' | 'problems' | 'retry' |
+  'check' | 'accept' | 'newStep' | 'newSweep' | 'duplicateStep' | 'changeKey' | 'openRun' | 'resume' | 'forceStop' | 'activity' | 'problems' | 'retry' |
   'pivot' | 'dismiss' | 'connectPorts' | 'exposeOutput' |
   'flip' | 'enter' | 'collapseAll' | 'lock' | 'addDelay' | 'addIntervention' | 'addProbe' | 'addWaypoint' | 'removeWaypoint' |
   'addText' | 'addFigure' | 'moveEarlier' | 'moveLater' | 'remove' |
@@ -79,7 +80,7 @@ const selectionCommands = new Set<StudioCommandId>([
   'run', 'stop', 'forceStop', 'resume', 'openRun', 'check', 'accept', 'newStep', 'newSweep', 'pivot',
   'addComponent', 'connectPorts', 'exposeOutput', 'addText', 'addFigure', 'moveEarlier', 'moveLater', 'remove',
   'flip', 'enter', 'leave', 'collapseAll', 'lock', 'addDelay', 'addIntervention', 'addProbe', 'addWaypoint', 'removeWaypoint',
-  'renameStep', 'duplicateStep', 'modelSelectAll', 'modelRemove', 'modelRename', 'modelDuplicate', 'modelGroup', 'modelUngroup',
+  'renameStep', 'renameElement', 'changeKey', 'duplicateStep', 'modelSelectAll', 'modelRemove', 'modelRename', 'modelDuplicate', 'modelGroup', 'modelUngroup',
   'modelCopy', 'modelCut', 'modelPaste',
 ]);
 
@@ -169,7 +170,7 @@ export function studioCommandContext(target: EventTarget | null, paletteOpen: bo
 
 /** Commands that act on a canvas's selection; a focused text field keeps their keys. */
 const canvasCommands = new Set<StudioCommandId>([
-  'renameStep', 'addComponent', 'leave', 'modelSelectAll', 'modelRemove', 'modelRename', 'modelDuplicate', 'modelGroup',
+  'renameStep', 'renameElement', 'addComponent', 'leave', 'modelSelectAll', 'modelRemove', 'modelRename', 'modelDuplicate', 'modelGroup',
   'modelUngroup', 'modelCopy', 'modelCut', 'modelPaste',
 ]);
 

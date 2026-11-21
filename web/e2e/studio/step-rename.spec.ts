@@ -7,7 +7,7 @@ test.use({ viewport: { width: 1440, height: 900 } });
 
 const runs = (page: Page) => page.getByRole('table', { name: 'Runs', exact: true });
 
-test('renaming a Train step keeps its runs and its Evaluate reader Done, and one Undo restores it', { tag: '@round' }, async ({ page, request, studio }) => {
+test('renaming a Train step labels it, changing its key keeps its runs and its Evaluate reader Done, and one Undo restores it', { tag: '@round' }, async ({ page, request, studio }) => {
   test.setTimeout(90_000);
   const projectId: string = JSON.parse(await runProjectFixture(
     'web.e2e.studio.fixtures.canonical_evaluate', 'seed-step-rename', studio.home, 'step-rename',
@@ -63,13 +63,24 @@ test('renaming a Train step keeps its runs and its Evaluate reader Done, and one
   await mapStep(page, 'train').press('F2');
   const name = page.locator('[data-map-step="train"]').getByRole('textbox', { name: 'Rename train', exact: true });
   await expect(name).toBeFocused();
-  await name.fill('baseline');
+  await name.fill('Fit');
   await name.press('Enter');
-  await expect(name).toBeFocused();
-  await name.fill('fit');
-  await name.press('Enter');
+  await expect(mapStep(page, 'train')).toBeFocused();
+  await expect.poll(async () => (await saved()).project.steps?.train.label).toBe('Fit');
+  const labelled = await saved();
+  expect({ ...labelled.project, steps: { ...labelled.project.steps, train: before.project.steps!.train } }).toEqual(before.project);
+  expect(await statuses()).toEqual({ train: 'succeeded', baseline: 'succeeded' });
+  await command('Undo');
+  await expect.poll(async () => (await saved()).project).toEqual(before.project);
 
-  await expect(mapStep(page, 'fit')).toBeFocused();
+  await mapStep(page, 'train').click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Change Key', exact: true }).click();
+  const key = page.getByRole('complementary', { name: 'Inspector', exact: true })
+    .getByRole('textbox', { name: 'Change Key train', exact: true });
+  await expect(key).toBeFocused();
+  await key.fill('fit');
+  await key.press('Enter');
+
   await expect.poll(async () => Object.keys((await saved()).project.steps ?? {}).sort()).toEqual(['baseline', 'fit']);
   const renamed = await saved();
   expect(renamed.file_revisions.filter(({ address }) => address.kind === 'step').map(({ address }) => address.id).sort())

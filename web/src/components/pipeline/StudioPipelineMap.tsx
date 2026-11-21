@@ -244,7 +244,7 @@ function StepName({ step, rename }: { step: PlanStepView; rename?: MapStepRename
 }
 
 function StepNameEdit({ step, rename }: { step: PlanStepView; rename: MapStepRename }) {
-  return <InlineEdit value={step.id} editing className="font-medium"
+  return <InlineEdit value={step.label} editing className="font-medium"
     aria-label={studioAccessibleName('rename', step.label)}
     onEditingChange={(next) => { if (!next) rename.setEditing(null); }}
     onCommit={(name) => rename.commit(step.id, name)} />;

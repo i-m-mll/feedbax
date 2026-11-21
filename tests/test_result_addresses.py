@@ -142,9 +142,11 @@ def test_status_by_card_element_and_by_element_agree(tmp_path, monkeypatch, caps
             outputs[command, address] = capsys.readouterr().out
         assert len({outputs[command, address] for address in ("analyze/profile", "profile", "summary/profile@default")}) == 1
     (line,) = outputs["status", "profile"].splitlines()[1:]
-    assert line.startswith("default/summary/default/profile\t")
+    assert line.startswith("summary/profile\t")
     (line,) = outputs["plan", "profile"].splitlines()
-    assert line.startswith("default/summary/default/profile render:")
+    assert line.startswith("summary/profile render:")
+    assert main(["plan", str(root), line.split()[0]]) == 0
+    assert capsys.readouterr().out == outputs["plan", "profile"]
     assert main(["status", str(root), "summary"]) == 0
     assert len(capsys.readouterr().out.splitlines()) == 1 + 4
     assert main(["status", str(root), "nothing"]) == 2

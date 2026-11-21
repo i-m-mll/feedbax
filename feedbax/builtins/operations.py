@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Annotated, Literal
 
 import jax
@@ -13,9 +14,9 @@ from feedbax.analysis.aligned import project_onto_direction
 from feedbax.analysis.operations import DatasetOutput, operation
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.dataset import FieldDescriptor
-from feedbax.contracts.operation import DatasetPort, require_dataset_fields
+from feedbax.analysis.operation_runtime import verify_dataset
+from feedbax.contracts.operation import DatasetPort
 from feedbax.dataset import Dataset, Variable
-from feedbax.dataset_sweep import CONDITION_MEMBER, CONDITION_PROVENANCE
 from feedbax.contracts.rollout import RAW_STATES_SCHEMA, STATES_SCHEMA
 
 
@@ -104,37 +105,21 @@ class VelocitySummaryParameters(StrictModel):
     )
 
 
-def _require_dataset(dataset: Dataset, port: DatasetPort, params: StrictModel) -> None:
-    descriptor = dataset.descriptor
-    if descriptor.schema_id not in port.schema_ids:
-        raise ValueError(f"Dataset schema {descriptor.schema_id!r} is not one of {port.schema_ids}.")
-    require_dataset_fields(descriptor.variables, port.variables)
-    for parameter, field in port.selected_variables.items():
-        require_dataset_fields(descriptor.variables, {getattr(params, parameter): field})
-    require_dataset_fields(descriptor.coords, port.coordinates)
-
-
-def _product(port: DatasetPort, source: Dataset, arrays) -> Dataset:
-    coords = {
-        name: Variable(source.data(name), field.dims, units=field.units)
-        for name, field in port.coordinates.items()
-    }
+def _product(port: DatasetPort, source: Dataset, stacking: tuple[str, ...], arrays) -> Dataset:
+    """The declared variables after the source's stacking dimensions, with every source coordinate they span."""
+    dims = {*stacking, *(dim for field in port.variables.values() for dim in field.dims)}
     descriptor = source.descriptor
-    provenance = descriptor.attrs.get(CONDITION_PROVENANCE)
-    attrs = {}
-    if provenance is not None:
-        member = descriptor.coords[CONDITION_MEMBER]
-        coords[CONDITION_MEMBER] = Variable(source.data(CONDITION_MEMBER), member.dims)
-        attrs[CONDITION_PROVENANCE] = provenance
-        if "source_graph_sha256" in descriptor.attrs:
-            attrs["source_graph_sha256"] = descriptor.attrs["source_graph_sha256"]
+    coords = {
+        name: Variable(source.data(name), field.dims, units=field.units, quantity=field.quantity, frame=field.frame)
+        for name, field in descriptor.coords.items()
+        if set(field.dims) <= dims
+    }
     return Dataset.from_arrays(
         {
-            name: Variable(arrays[name], field.dims, units=field.units, frame=field.frame)
+            name: Variable(arrays[name], (*stacking, *field.dims), units=field.units, frame=field.frame)
             for name, field in port.variables.items()
         },
         coords=coords,
-        attrs=attrs,
         schema_id=port.schema_ids[0],
     )
 
@@ -145,7 +130,11 @@ def aligned_velocity(
     params: AlignedVelocityParameters,
 ) -> Annotated[Dataset, DatasetOutput("velocity", _VELOCITY)]:
     """Project world velocity along and across the direction from reset to the selected target."""
-    _require_dataset(states, _STATES, params)
+    stacking = verify_dataset(states, _STATES, params)
+    if any(states.descriptor.coords[name].dims != (dim,) for name, dim in (
+        ("state_time", "state_time"), ("transition_start", "transition"), ("transition_end", "transition"),
+    )):
+        raise ValueError("Stacked members must share their state and transition times.")
     state_time = np.asarray(states.data("state_time"))
     if (
         len(state_time) < 2
@@ -157,7 +146,7 @@ def aligned_velocity(
         raise ValueError("Transition times must span successive reset-inclusive state samples.")
     if params.target_transition >= len(state_time) - 1:
         raise ValueError("target_transition is outside the retained transitions.")
-    members = (slice(None),) * len(_MEMBER_AXES)
+    members = (slice(None),) * (len(stacking) + len(_MEMBER_AXES))
     reset = np.asarray(states.data(params.position, (*members, 0)))
     goal = np.asarray(states.data(params.target, (*members, params.target_transition)))
     velocity = np.asarray(states.data(params.velocity))
@@ -169,14 +158,13 @@ def aligned_velocity(
         raise ValueError("Reach direction must have finite nonzero length and velocity must be finite.")
     projected = project_onto_direction(velocity, direction)
     return _product(
-        _VELOCITY, states,
+        _VELOCITY, states, stacking,
         {"parallel_velocity": projected[..., 0], "lateral_velocity": projected[..., 1]},
     )
 
 
-@jax.jit
-def _summarize_trials(values, ddof, bounds_scale):
-    trial_axis = _STATE_AXES.index("trial")
+@partial(jax.jit, static_argnums=3)
+def _summarize_trials(values, ddof, bounds_scale, trial_axis):
     count = values.shape[trial_axis]
     mean = jnp.mean(values, axis=trial_axis)
     sd = jnp.std(values, axis=trial_axis, ddof=ddof)
@@ -196,11 +184,12 @@ def summarize_velocity(
     params: VelocitySummaryParameters,
 ) -> Annotated[Dataset, DatasetOutput("summary", _SUMMARY)]:
     """Summarize one velocity component over trials at each checkpoint, condition, and sample."""
-    _require_dataset(velocity, _VELOCITY, params)
+    stacking = verify_dataset(velocity, _VELOCITY, params)
+    trial_axis = len(stacking) + _STATE_AXES.index("trial")
     values = np.asarray(velocity.data(params.variable))
-    if values.shape[_STATE_AXES.index("trial")] <= params.ddof:
+    if values.shape[trial_axis] <= params.ddof:
         raise ValueError("Trial count must exceed ddof.")
     if not np.isfinite(values).all():
         raise ValueError("Trial summary requires finite velocity values.")
-    result = _summarize_trials(values, jnp.asarray(params.ddof), jnp.asarray(params.bounds_scale))
-    return _product(_SUMMARY, velocity, result)
+    result = _summarize_trials(values, jnp.asarray(params.ddof), jnp.asarray(params.bounds_scale), trial_axis)
+    return _product(_SUMMARY, velocity, stacking, result)

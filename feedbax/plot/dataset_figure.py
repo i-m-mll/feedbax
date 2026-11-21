@@ -131,6 +131,9 @@ def _encoded(source: _Source, encoding: Encoding, positions: Positions) -> _Samp
                 dimensions.pop(axis)
             else:
                 data = np.take(data, indices, axis=axis)
+        elif data.shape[axis] == 1 and len(dimensions) > 1:
+            data = np.take(data, 0, axis=axis)
+            dimensions.pop(axis)
     if len(dimensions) > 1 or not data.size:
         raise ValueError(
             f"Field {name!r} requires nonempty scalar or one-dimensional samples, got {dimensions}."

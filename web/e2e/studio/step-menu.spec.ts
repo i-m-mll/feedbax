@@ -7,9 +7,9 @@ test.use({ viewport: { width: 1440, height: 900 } });
 
 const menu = (page: Page) => page.getByRole('menu');
 
-/** The step menu lists Rename Step and Duplicate Step, with Rename's key at the right. */
+/** The step menu lists Rename Step, Change Key and Duplicate Step, with Rename's key at the right. */
 async function expectStepMenu(page: Page) {
-  await expect(menu(page).getByRole('menuitem')).toHaveText(['Rename StepF2', 'Duplicate Step']);
+  await expect(menu(page).getByRole('menuitem')).toHaveText(['Rename StepF2', 'Change Key', 'Duplicate Step']);
 }
 
 test('a step\'s context menu opens on its card, its drawer row and its name in Runs, and acts on that step', async ({ page, request, studio }) => {

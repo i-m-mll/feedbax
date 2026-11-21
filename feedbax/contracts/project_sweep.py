@@ -534,7 +534,7 @@ class _SweepPlan:
     sizes: Mapping[str, int]
     exceptions: Mapping[str, SweepException]
     sets: SweepSets = field(default_factory=dict)
-    dimensions: tuple[tuple[tuple[str, ...], int], ...] = ()
+    dimensions: tuple[_Dimension, ...] = ()
     manual: tuple[Mapping[str, str], ...] | None = None
     conditional: tuple[str, ...] = ()
     """The axes with a condition, each after the axes it is conditioned on. The combination is of the others."""
@@ -544,7 +544,7 @@ class _SweepPlan:
         """The rows the combination generates, before the conditional axes divide some of them."""
         if self.manual is not None:
             return len(self.manual)
-        return math.prod(size for _, size in self.dimensions) if self.axes else 0
+        return math.prod(len(steps) for _, steps in self.dimensions) if self.axes else 0
 
     @property
     def row_count(self) -> int:
@@ -569,11 +569,11 @@ class _SweepPlan:
                     resolved[name] = lookup[name][key]
                 yield resolved
             return
-        for indices in product(*(range(size) for _, size in self.dimensions)):
+        for steps in product(*(steps for _, steps in self.dimensions)):
             yield {
                 name: choices[name][index]
-                for (names, _), index in zip(self.dimensions, indices, strict=True)
-                for name in names
+                for (names, _), indices in zip(self.dimensions, steps, strict=True)
+                for name, index in zip(names, indices, strict=True)
             }
 
 
@@ -619,9 +619,50 @@ def _axis_size(name: str, axis: Axis, inputs: SweepInputs, sets: SweepSets) -> i
             )
 
 
+type _Dimension = tuple[tuple[str, ...], tuple[tuple[int, ...], ...]]
+"""Axes that vary together, and the value index of each axis at each step."""
+
+
+def _label_pairs(path: str, names: Sequence[str], members: Sequence[Sequence[SweepInputMember]]) -> tuple[tuple[int, ...], ...]:
+    """Pair the members of zipped inputs whose shared varying labels are equal, one to one."""
+    every = [member for group in members for member in group]
+    shared = [
+        label for label in every[0].coordinates if all(label in member.coordinates for member in every)
+        and not all(len({member.coordinates[label].value_id for member in group}) <= 1 for group in members)
+    ]
+    if not shared and any(len(group) > 1 for group in members):
+        raise SweepExpansionError(
+            SweepExpansionCode.INVALID_COMBINATION, path, f"zipped inputs {list(names)} share no varying label",
+        )
+    indices = []
+    for name, group in zip(names, members, strict=True):
+        keys: dict[tuple[str, ...], int] = {}
+        for index, member in enumerate(group):
+            key = tuple(member.coordinates[label].value_id for label in shared)
+            if keys.setdefault(key, index) != index:
+                raise SweepExpansionError(
+                    SweepExpansionCode.INVALID_COMBINATION, path,
+                    f"input axis {name!r} has several members labelled {dict(zip(shared, key, strict=True))}",
+                )
+        indices.append(keys)
+    if any(keys.keys() != indices[0].keys() for keys in indices[1:]):
+        raise SweepExpansionError(
+            SweepExpansionCode.INVALID_COMBINATION, path,
+            f"zipped inputs {list(names)} do not pair one to one by {shared}",
+        )
+    return tuple(tuple(keys[key] for keys in indices) for key in indices[0])
+
+
 def _zip_dimension(
-    path: str, names: Sequence[str], sizes: Mapping[str, int]
-) -> tuple[tuple[str, ...], int]:
+    path: str, names: Sequence[str], sizes: Mapping[str, int], axes: Mapping[str, Axis], inputs: SweepInputs,
+) -> _Dimension:
+    roles = [axes[name].input for name in names if isinstance(axes[name], InputAxis)]
+    if roles:
+        if len(roles) != len(names):
+            raise SweepExpansionError(
+                SweepExpansionCode.INVALID_COMBINATION, path, "zip pairs input axes by label, with input axes only",
+            )
+        return tuple(names), _label_pairs(path, names, [inputs[role] or () for role in roles])
     lengths = {name: sizes[name] for name in names}
     if len(set(lengths.values())) != 1:
         raise SweepExpansionError(
@@ -629,18 +670,23 @@ def _zip_dimension(
             path,
             f"zip requires equal axis lengths, got {lengths}",
         )
-    return tuple(names), next(iter(lengths.values()))
+    return tuple(names), tuple((index,) * len(names) for index in range(next(iter(lengths.values()))))
+
+
+def _cross_dimension(name: str, size: int) -> _Dimension:
+    return (name,), tuple((index,) for index in range(size))
 
 
 def _dimensions(
-    sizes: Mapping[str, int], combination: Literal["cross", "zip"] | GroupCombination
-) -> tuple[tuple[tuple[str, ...], int], ...]:
+    sizes: Mapping[str, int], combination: Literal["cross", "zip"] | GroupCombination,
+    axes: Mapping[str, Axis], inputs: SweepInputs,
+) -> tuple[_Dimension, ...]:
     if not sizes and isinstance(combination, str):
         return ()
     if combination == "cross":
-        return tuple(((name,), size) for name, size in sizes.items())
+        return tuple(_cross_dimension(name, size) for name, size in sizes.items())
     if combination == "zip":
-        return (_zip_dimension("sweep.combination", tuple(sizes), sizes),)
+        return (_zip_dimension("sweep.combination", tuple(sizes), sizes, axes, inputs),)
 
     dimensions = []
     used: set[str] = set()
@@ -659,9 +705,9 @@ def _dimensions(
                 )
             used.add(name)
         if group.mode == "zip":
-            dimensions.append(_zip_dimension(path, group.axes, sizes))
+            dimensions.append(_zip_dimension(path, group.axes, sizes, axes, inputs))
         else:
-            dimensions.extend(((name,), sizes[name]) for name in group.axes)
+            dimensions.extend(_cross_dimension(name, sizes[name]) for name in group.axes)
     if missing := sizes.keys() - used:
         raise SweepExpansionError(
             SweepExpansionCode.INVALID_COMBINATION,
@@ -758,7 +804,7 @@ def _plan(sweep: Sweep | None, inputs: SweepInputs, sets: SweepSets | None = Non
 
     if not isinstance(combination, ManualCombination):
         return _SweepPlan(
-            axes, rows, every, exceptions, sets or {}, dimensions=_dimensions(sizes, combination),
+            axes, rows, every, exceptions, sets or {}, dimensions=_dimensions(sizes, combination, axes, inputs),
             conditional=conditional,
         )
     if not sizes:

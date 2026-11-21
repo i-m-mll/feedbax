@@ -10,6 +10,7 @@ import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas
 import { Button } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
 import { Inspector } from '@/components/ui/Inspector';
+import { KeyField } from '@/components/ui/KeyField';
 import { TextField } from '@/components/ui/TextField';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import { SettingsForm } from '@/components/values/SettingsForm';
@@ -28,7 +29,9 @@ import { ManagedDocumentCanvas, type CanvasNode } from './ManagedDocumentCanvas'
 import {
   choosePick, useNamedSelection, usePick, type ElementSelectionStore,
 } from '@/features/projectWindow/elementSelection';
-import type { PlanStepView } from '@/features/pipeline/planView';
+import { shownName, type PlanStepView } from '@/features/pipeline/planView';
+import { heldElementKeys } from './analysisElements';
+import { isMemberName } from './projectMemberName';
 import { AnalyzeElementInputs, AnalyzeRoleBinding } from './AnalyzeReferences';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import type { ChangeMark } from '@/components/values/fieldModel';
@@ -40,6 +43,7 @@ import { generatedName } from './generatedName';
 import type { GestureFailures } from './refusals';
 
 type Source = OperationElement['inputs'][string];
+type RefusalPlace = 'dialog' | readonly [string, string] | { readonly key: string };
 
 const operationDragType = 'application/x-feedbax-operation';
 const figureItem = 'velocity_summary';
@@ -78,8 +82,10 @@ export function useManagedAnalyze({
   const [dialog, setDialog] = useState<{ scope: string; mode: 'add'; point?: PresentationPosition }>();
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
-  /** The refused gesture's own place, when it has one: the open dialog, or a role field as `[element, role]`. */
-  const [refusal, setRefusal] = useState<{ scope: string; at: 'dialog' | readonly [string, string]; reason: string }>();
+  /** The refused gesture's own place, when it has one: the open dialog, a role field as `[element, role]`, or a key. */
+  const [refusal, setRefusal] = useState<{ scope: string; at: RefusalPlace; reason: string }>();
+  /** The operation or figure whose label (on its canvas card) or key (in the inspector) is being edited. */
+  const [naming, setNaming] = useState<{ scope: string; element: string; field: 'label' | 'key' }>();
   const inFlight = useRef(false);
   const cursor = useRef<{ scope: string; point: PresentationPosition }>();
   const shape = step?.kind === 'analyze' ? JSON.stringify([
@@ -117,7 +123,7 @@ export function useManagedAnalyze({
   const roles = selectedFigure ? selectedFigure.data.map((name) => ({ name, kind: 'dataset' as const }))
     : Object.entries(definition?.inputs ?? {}).map(([name, port]) => ({ name, kind: port.kind ?? 'dataset' }));
   const outputs = Object.entries(operations).map(([name, value]) => ({
-    element: name, products: Object.keys(definitions.get(value.operation)?.outputs ?? {}),
+    element: name, name: shownName(name, value), products: Object.keys(definitions.get(value.operation)?.outputs ?? {}),
   }));
   const selectedInput = selected ? declarations[selected] : undefined;
   const armed = usePick(selection);
@@ -140,7 +146,7 @@ export function useManagedAnalyze({
     setDialog({ scope, mode, point });
   }
 
-  async function perform(work: () => Promise<void>, allowed = canEdit, at?: 'dialog' | readonly [string, string]) {
+  async function perform(work: () => Promise<void>, allowed = canEdit, at?: RefusalPlace) {
     if (!allowed || inFlight.current) return;
     inFlight.current = true;
     setBusy(true);
@@ -188,7 +194,8 @@ export function useManagedAnalyze({
   }
   function add(kind: 'operations' | 'views', stem: string, value: JsonValue, point?: PresentationPosition) {
     void perform(async () => {
-      const name = generatedName(stem, (name) => name === 'states' || name in operations || name in figures);
+      const held = heldElementKeys(draft.documents, saved.composed);
+      const name = generatedName(stem, (name) => name === 'states' || name in declarations || held.has(name));
       const label = studioName(kind === 'operations' ? 'addOperation' : 'addFigure');
       await save(label, set([kind, name], value));
       setDialog(undefined);
@@ -232,11 +239,46 @@ export function useManagedAnalyze({
     if (selected) void perform(() => save(studioName('modelRemove'), { kind: 'remove', element: selected }));
   }, { enabled: canEdit && !!(operation || figure) });
 
+  const shown = (name: string) => shownName(name, operations[name] ?? figures[name]);
+  const canName = canBind && !!analysis && !!document;
+  const namingNow = naming?.scope === scope ? naming : undefined;
+  function renameElement(name: string, text: string) {
+    const label = text === name ? null : text;
+    if (!document || label === ((operations[name] ?? figures[name])?.label ?? null)) return;
+    void perform(async () => {
+      await editor.memberCommand(studioAccessibleName('rename', shown(name)),
+        { kind: 'rename', family: 'elements', document, member: name, label }, editor.getSnapshot().saved);
+    }, canName);
+  }
+  function changeElementKey(name: string, key: string) {
+    if (!document || !isMemberName(key)) return false;
+    void perform(async () => {
+      await editor.memberCommand(studioAccessibleName('changeKey', shown(name)),
+        { kind: 'change_key', family: 'elements', document, member: name, key }, editor.getSnapshot().saved);
+      if (liveScope.current === scope) element.onSelect(key);
+    }, canName, { key: name });
+    return true;
+  }
+  /** The commands on an operation or figure: its context menu, and the palette's for the selected one. */
+  const elementCommands = (name: string) => [
+    bindStudioCommand('renameElement', () => setNaming({ scope, element: name, field: 'label' }),
+      { subject: shown(name), enabled: canName }),
+    bindStudioCommand('changeKey', () => {
+      selectElement(name);
+      setNaming({ scope, element: name, field: 'key' });
+    }, { subject: shown(name), enabled: canName }),
+  ];
   const problemOf = (name: string) => diagnostics.find((item) => placeElement(item.place) === name)?.detail;
   const items: CanvasNode[] = [
     ...Object.keys(declarations).map((name) => ({ id: name, selectionId: name, name, glyph: <Database /> })),
-    ...Object.keys(operations).map((name) => ({ id: name, selectionId: name, name, glyph: <Sigma />, problem: problemOf(name) })),
-    ...Object.keys(figures).map((name) => ({ id: name, selectionId: name, name, glyph: <ChartLine />, problem: problemOf(name) })),
+    ...[...Object.keys(operations).map((name) => [name, <Sigma />] as const),
+      ...Object.keys(figures).map((name) => [name, <ChartLine />] as const)].map(([name, glyph]): CanvasNode => ({
+      id: name, selectionId: name, name: shown(name), glyph, problem: problemOf(name),
+      menu: () => elementCommands(name),
+      naming: namingNow?.field === 'label' && namingNow.element === name ? {
+        commit: (text) => renameElement(name, text), end: () => setNaming(undefined),
+      } : undefined,
+    })),
   ];
   const canvas = useRef<CanvasViewport>(null);
   /** A based document is laid out as its base is, where it does not place an element itself. */
@@ -250,9 +292,10 @@ export function useManagedAnalyze({
       const label = product === role ? role : product + ' → ' + role;
       return { id: JSON.stringify([target, role]), source: from, target, label: label === from ? undefined : label };
     }));
-  const shown = refusal?.scope === scope ? refusal : undefined;
+  const landed = refusal?.scope === scope ? refusal : undefined;
   const roleRefusal = (element: string, role: string) =>
-    shown && shown.at !== 'dialog' && shown.at[0] === element && shown.at[1] === role ? shown.reason : undefined;
+    landed && Array.isArray(landed.at) && landed.at[0] === element && landed.at[1] === role ? landed.reason : undefined;
+  const selectedCommands = selected && (operation || figure) ? elementCommands(selected) : [];
   const selectedProblems = diagnostics.filter((item) => selected && placeElement(item.place) === selected);
   const selectedPlan = selected ? planned.get(selected) : undefined;
   function writeParameter(path: readonly string[], value: JsonValue) {
@@ -261,8 +304,13 @@ export function useManagedAnalyze({
     const next = setIn(operation.params?.[name], rest, value);
     void perform(() => save(humanizeLabel(name), set(['operations', selected, 'params', name], next)));
   }
-  const inspector = selected && (operation || figure || selectedInput) && <Inspector name={selected}
+  const inspector = selected && (operation || figure || selectedInput) && <Inspector name={shown(selected)}
     type={operation ? operation.operation : figure ? studioName('figures') : humanizeLabel(selectedInput!.kind ?? 'dataset')}>
+    {(operation || figure) && <KeyField value={selected} name={shown(selected)}
+      editing={namingNow?.field === 'key' && namingNow.element === selected}
+      onEditingChange={(editing) => setNaming(editing ? { scope, element: selected, field: 'key' } : undefined)}
+      onCommit={(key) => changeElementKey(selected, key)}
+      refusal={landed && typeof landed.at === 'object' && 'key' in landed.at && landed.at.key === selected ? landed.reason : undefined} />}
     {selected && selectedInput && <AnalyzeRoleBinding role={selected} kind={selectedInput.kind} binding={step?.inputs?.[selected]}
       project={saved.project} steps={steps} picking={selection} refusal={roleRefusal(selected, selected)}
       onBind={canBind ? (binding) => bind(selected, binding) : undefined} />}
@@ -333,7 +381,7 @@ export function useManagedAnalyze({
     const caption = figureDefinition(name, view.figure)?.caption;
     const result = planned.get(name);
     return <li key={name} className="flex items-center gap-2">
-      <Button pressed={selected === name} onClick={() => selectElement(name)}>{name}</Button>
+      <Button pressed={selected === name} onClick={() => selectElement(name)}>{shown(name)}</Button>
       {caption && <span>{caption}</span>}
       {result && <span>{studioRunStatus(result.status)}</span>}
     </li>;
@@ -354,11 +402,11 @@ export function useManagedAnalyze({
       {figure && selected && selectedPlan && <SavedFigureResult key={JSON.stringify([scope, selected])}
         history={selectedPlan} name={selected} />}
     </>, drawer, inspector: libraryInspector || (figure ? inspector : undefined) },
-    commands: document && focusedView === 'analysis' ? [addCommand, removeCommand, ...viewport]
-      : document && focusedView === 'figures' ? [addCommand, removeCommand] : [],
+    commands: document && focusedView === 'analysis' ? [addCommand, removeCommand, ...selectedCommands, ...viewport]
+      : document && focusedView === 'figures' ? [addCommand, removeCommand, ...selectedCommands] : [],
     overlay: opened && <Dialog ariaLabel={studioName('addOperation')}
       manageFocus panelClassName="grid w-[min(26rem,90vw)] gap-3" onClose={() => setDialog(undefined)}>
-      {shown?.at === 'dialog' && <p role="alert">{shown.reason}</p>}
+      {landed?.at === 'dialog' && <p role="alert">{landed.reason}</p>}
       <TextField data-dialog-autofocus aria-label={studioName('operations')} value={query} onValueChange={setQuery} />
       {catalog?.operations.filter(({ label }) => label.toLowerCase().includes(query.toLowerCase()))
         .map((entry) => <Button key={entry.key} variant="ghost" align="start" disabled={!canEdit}
