@@ -34,6 +34,14 @@ def _raw():
     over["inputs"]["subject"]["step"] = "five"
     over["sweep"] = {"axes": {"model": {"input": "subject"}}}
     raw["steps"]["over"] = over
+    pair = deepcopy(over)
+    pair["inputs"]["subject"]["where"] = {"rows": [
+        {"key": key, "variant": "default", "row": row} for key, row in (("a", "rate=r1"), ("b", "rate=r3"))
+    ]}
+    raw["steps"]["pair"] = pair
+    one = deepcopy(raw["steps"]["baseline"])
+    one["inputs"]["subject"] |= {"step": "five", "row": "rate=r2"}
+    raw["steps"]["one"] = one
     return raw
 
 
@@ -113,6 +121,22 @@ def test_duplicate_run_selected_by_a_carried_coordinate_is_conditioned_on_it(stu
     assert sorted(key for key, row in after.items() if row.coordinates["rate"].value_id == "r3") == sorted(
         key for key, row in after.items() if "run" in row.coordinates and row.coordinates["rate"].value_id == "r3"
     )
+
+
+def test_duplicate_run_keeps_the_steps_that_select_its_runs_by_id_on_the_same_runs(studio):
+    folders, client = studio
+    before = {step: _runs(folders, step) for step in ("pair", "one")}
+    assert len(before["pair"]) == 2
+    _duplicate(folders, client, "five")
+    assert len(_runs(folders, "five")) == 10
+    assert {step: _runs(folders, step) for step in ("pair", "one")} == before
+    project = folders.read(PROJECT).project
+    assert project.steps["one"].inputs["subject"].where.rows[0].model_dump() == {
+        "key": "rate=r2", "variant": "default", "row": "rate=r2--run=run",
+    }
+    assert [row.row for row in project.steps["pair"].inputs["subject"].where.rows] == [
+        "rate=r1--run=run", "rate=r3--run=run",
+    ]
 
 
 def test_a_set_made_by_duplicate_run_is_edited_saved_applied_narrowed_and_inlined(studio, tmp_path):

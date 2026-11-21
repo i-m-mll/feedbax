@@ -144,7 +144,53 @@ def _duplicate_run(folders, project_id, revision, project: Project, command: Dup
             exception = exception | {"where": where}
         exceptions[exception_name] = exception
     updated = sweep | {"axes": axes | {name: axis}} | ({"exceptions": exceptions} if exceptions else {})
-    return StoredEdit([file_value(address, raw, ("sweep",), updated)]), StudioAxisValue(axis=name, value="run-2")
+    files = [file_value(address, raw, ("sweep",), updated), *_readers_kept(project, plan, step, divided, name)]
+    return StoredEdit(files), StudioAxisValue(axis=name, value="run-2")
+
+
+def _readers_kept(
+    project: Project, plan, step: str, divided: set[str], axis: str,
+) -> list[StudioProjectFilePatch]:
+    """Keep every step that names a row of ``step`` by id on the original of that row, which becomes ``axis=run``.
+
+    A `StepBase.row` is rewritten. A `StepReference` keeps each selected row's member key, which its reader's rows and
+    requests are keyed by, so its `row` shorthand becomes the single row of its `where`.
+    """
+    def kept(value):
+        if isinstance(value, list):
+            return [kept(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        value = {key: kept(item) for key, item in value.items()}
+        if value.get("step") != step:
+            return value
+        if value.get("row") in divided:
+            if len(plan.variants) > 1:
+                raise ProjectFolderInvalid(f"A step names run {value['row']} of {step} in every variant.")
+            value["where"] = {"rows": [{"key": value["row"], "variant": plan.variants[0], "row": value["row"]}]}
+            del value["row"]
+        where = value.get("where")
+        if isinstance(where, dict) and "subset" in where and _composed(project, where["subset"]).get("rows"):
+            raise ProjectFolderInvalid(f"Subset {where['subset']} names runs of {step} by id.")
+        if isinstance(where, dict) and where.get("rows"):
+            value["where"] = where | {"rows": [
+                row | {"row": _divided(row["row"], axis, "run")} if row["row"] in divided else row
+                for row in where["rows"]
+            ]}
+        return value
+
+    files = []
+    for name in project.steps:
+        address, raw = _step_raw(project, name)
+        patches = []
+        base = raw.get("base")
+        if isinstance(base, dict) and base.get("step") == step and base.get("row") in divided:
+            patches += file_value(address, raw, ("base", "row"), _divided(base["row"], axis, "run")).patches
+        if "inputs" in raw and (inputs := kept(raw["inputs"])) != raw["inputs"]:
+            patches += file_value(address, raw, ("inputs",), inputs).patches
+        if patches:
+            files.append(StudioProjectFilePatch(address=address, patches=patches))
+    return files
 
 
 def _save_set(project: Project, command: SaveSet) -> StoredEdit:
