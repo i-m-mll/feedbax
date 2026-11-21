@@ -3,6 +3,8 @@ from pathlib import Path
 import socket
 import subprocess
 import sys
+from urllib.error import URLError
+from urllib.request import urlopen
 
 import psutil
 
@@ -22,16 +24,17 @@ def _free_port() -> int:
 
 
 def test_a_test_launcher_and_its_host_exit_with_the_test_runner(tmp_path):
-    """The Studio e2e fixture's launch, whose runner is killed: nothing it started is left in its home."""
+    """The Studio e2e fixture's launch, whose runner is killed once it serves: no process it started survives."""
     home = tmp_path / "home"
     build = tmp_path / "dist"
     build.mkdir()
     (build / "index.html").write_text("<!doctype html>")
     runner = subprocess.Popen([sys.executable, "-c", HELD_UNTIL_STOPPED])
+    backend = _free_port()
     with (tmp_path / "launcher.log").open("wb") as log:
         launcher = subprocess.Popen(
             [sys.executable, "-B", "-m", "scripts.studio_dev", "--home", str(home),
-             "--port", str(_free_port()), "--backend-port", str(_free_port()),
+             "--port", str(_free_port()), "--backend-port", str(backend),
              "--remove-test-home", "--preview-from", str(build)],
             cwd=REPO, env=os.environ | {OWNER_ENV: str(runner.pid)}, stdout=log, stderr=log,
         )
@@ -45,12 +48,18 @@ def test_a_test_launcher_and_its_host_exit_with_the_test_runner(tmp_path):
             except HostError:
                 return None
 
-        pid = wait_until(answering)
+        def serving():
+            try:
+                with urlopen(f"http://127.0.0.1:{backend}/api/health", timeout=1) as response:
+                    return response.status == 200
+            except (URLError, OSError):
+                return False
+
+        wait_until(serving)
+        launched = [answering(), *(child.pid for child in psutil.Process(launcher.pid).children(recursive=True))]
     finally:
         runner.kill()
         runner.wait()
     launcher.wait(timeout=HANG_SECONDS)
-    wait_until(lambda: not psutil.pid_exists(pid))
+    assert wait_until(lambda: not any(psutil.pid_exists(pid) for pid in launched))
     assert not home.exists()
-    assert not [process.pid for process in psutil.process_iter(["cmdline"])
-                if any(str(home) in part for part in process.info["cmdline"] or ())]
