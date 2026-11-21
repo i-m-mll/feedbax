@@ -34,6 +34,7 @@ import {
 } from './pipelineMapLayout';
 import { CommandContextMenu, CommandMenuItems, type RunMenu } from './CommandContextMenu';
 import type { DocumentPickerModel } from '@/features/projectWindow/DocumentPicker';
+import { useCommandSource } from '@/features/projectWindow/heldGestures';
 import type { StudioCommand } from '@/features/projectWindow/studioCommands';
 import { Button } from '@/components/ui/Button';
 import { Menu, MenuContent, MenuItem, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuTrigger } from '@/components/ui/Menu';
@@ -86,6 +87,7 @@ function MapAxisLabel({
   // A key's modifiers do not reach the click a menu item synthesizes from it.
   const extendByKey = useRef(false);
   const authored = axisMenu?.(step.id, sweep.id);
+  useCommandSource(axisMenu && (() => axisMenu(step.id, sweep.id)));
   const picker = authored?.picker;
   function drop(event: DragEvent) {
     const from = dragging.current;

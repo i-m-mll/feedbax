@@ -2,7 +2,8 @@
 
 import { act, render } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
-import { holdWhile, useHeldGestures, useWindowCommands } from './heldGestures';
+import { useState } from 'react';
+import { holdWhile, useCommandSource, useHeldGestures, useWindowCommands } from './heldGestures';
 import { bindStudioCommand, type StudioCommand } from './studioCommands';
 
 interface State {
@@ -100,17 +101,70 @@ it('runs a view command at once while unsettled, unless a gesture made before it
   expect(log).toEqual(['model', 'undo', 'model']);
 });
 
+it('does nothing for a held gesture on an object no longer mounted, and runs one whose object is', () => {
+  const log: string[] = [];
+  const stops: Record<string, StudioCommand> = {};
+  function Row({ job }: { job: string }) {
+    stops[job] = bindStudioCommand('stop', () => log.push(job), { instance: job });
+    return null;
+  }
+  function Workspace({ settled, jobs }: { settled: boolean; jobs: readonly string[] }) {
+    useHeldGestures(settled, false);
+    return jobs.map((job) => <Row key={job} job={job} />);
+  }
+  const view = render(<Workspace settled={false} jobs={['a', 'b']} />);
+  act(() => stops.a.invoke());
+  act(() => stops.b.invoke());
+  act(() => view.rerender(<Workspace settled jobs={['b']} />));
+  expect(log).toEqual(['b']);
+});
+
+it('resolves a held gesture from a closed menu among the commands its mounted source makes', () => {
+  const log: string[] = [];
+  let rename: StudioCommand | undefined;
+  function Menu({ name }: { name: string }) {
+    useCommandSource(() => bindStudioCommand('renameStep', () => log.push(name), { subject: 'train' }));
+    return null;
+  }
+  function Workspace({ settled, menu }: { settled: boolean; menu: string | null }) {
+    useHeldGestures(settled, false);
+    return menu && <Menu name={menu} />;
+  }
+  const view = render(<Workspace settled={false} menu="first" />);
+  // The open menu draws its items, and the gesture is made on one; the menu has closed when the workspace settles.
+  act(() => { rename = bindStudioCommand('renameStep', () => log.push('first'), { subject: 'train' }); });
+  act(() => rename!.invoke());
+  act(() => view.rerender(<Workspace settled menu="second" />));
+  expect(log).toEqual(['second']);
+  act(() => view.rerender(<Workspace settled={false} menu="second" />));
+  act(() => rename!.invoke());
+  act(() => view.rerender(<Workspace settled menu={null} />));
+  expect(log).toEqual(['second']);
+});
+
 it('outside a workspace, holds a gesture made while a request is in flight and runs it once the request is done', async () => {
   vi.useFakeTimers();
   const log: string[] = [];
-  const stop = bindStudioCommand('stop', () => log.push('stop'), { instance: 'job' });
+  let stop: StudioCommand | undefined;
   let finish!: () => void;
-  const request = holdWhile(() => new Promise<void>((resolve) => { finish = resolve; }));
-  stop.invoke();
+  let request!: Promise<void>;
+  function Row() {
+    const [pending, setPending] = useState(false);
+    stop = bindStudioCommand('stop', () => log.push('stop'), { instance: 'job' });
+    request ??= holdWhile(async () => {
+      await new Promise<void>((resolve) => { finish = resolve; });
+      setPending(!pending);
+    });
+    return null;
+  }
+  render(<Row />);
+  act(() => stop!.invoke());
   expect(log).toEqual([]);
-  finish();
-  await request;
-  await vi.runAllTimersAsync();
+  await act(async () => {
+    finish();
+    await request;
+  });
+  await act(() => vi.runAllTimersAsync());
   expect(log).toEqual(['stop']);
   vi.useRealTimers();
 });

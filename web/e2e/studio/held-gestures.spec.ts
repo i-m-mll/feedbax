@@ -168,3 +168,39 @@ test('entering a Model composite while an edit saves happens at once', async ({ 
   await expect(model.locator('[data-id="controller"] header')).toBeVisible();
   release();
 });
+
+test('Rename chosen from an Analyze canvas menu while an edit saves opens a field that takes the new name', async ({ page, studio }) => {
+  const project: string = JSON.parse(await runProjectFixture(
+    'web.e2e.studio.fixtures.managed_report', 'seed_labels', studio.home, 'held-canvas-rename',
+  ));
+  const projectPath = `/api/projects/${project}`;
+  const analysis = page.getByRole('tabpanel', { name: 'Analysis', exact: true });
+  await page.goto(`/?project=${encodeURIComponent(project)}`);
+  await mapStep(page, 'analyze').dblclick();
+  await page.getByRole('tab', { name: 'Analysis', exact: true }).click();
+  const summarize = analysis.getByRole('group', { name: 'Select summarize', exact: true });
+  await expect(summarize).toBeVisible();
+
+  // The step's rename saves while held; the operation's Rename, made meanwhile, waits for it and the state it leaves.
+  const release = await holdRequests(page, (url) => url.pathname === `${projectPath}/members/command`);
+  await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
+  const palette = page.getByRole('dialog', { name: 'Command Palette', exact: true });
+  await palette.getByRole('combobox').fill('Rename Step');
+  await palette.getByRole('combobox').press('Enter');
+  const stepName = page.locator('[data-map-step="analyze"]').getByRole('textbox', { name: 'Rename analyze', exact: true });
+  await stepName.fill('Velocity');
+  await stepName.press('Enter');
+  await summarize.click({ button: 'right' });
+  await page.getByRole('menuitem', { name: /^Rename\b/ }).click();
+  const operationName = analysis.getByRole('textbox', { name: 'Rename summarize', exact: true });
+  await expect(operationName).toHaveCount(0);
+  const saved = page.waitForResponse((response) => new URL(response.url()).pathname === `${projectPath}/members/command`);
+  release();
+  expect((await saved).ok()).toBe(true);
+  await expect(page.locator('[data-map-step="analyze"]').getByText('Velocity', { exact: true })).toBeVisible();
+
+  await expect(operationName).toBeFocused();
+  await operationName.fill('Summary');
+  await operationName.press('Enter');
+  await expect(analysis.getByRole('group', { name: 'Select Summary', exact: true })).toBeVisible();
+});

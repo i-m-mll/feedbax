@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useReducer } from 'react';
+import { useEffect, useLayoutEffect, useReducer, useRef } from 'react';
 
 /** What a held gesture resolves to when it runs: whether it applies then, and what it does. */
 export interface HeldTarget {
@@ -37,12 +37,15 @@ export class HeldGestures<Gesture> {
 /**
  * A held gesture. One made on a window command (by key, the palette or the window's menu) resolves to the window's
  * command of that id when it runs, acting on the selection it finds; one made on an object's own command (its button
- * or context menu) resolves to the latest binding of that object's command.
+ * or context menu) resolves to that object's command as bound while the gesture runs, and does nothing when no
+ * mounted object binds it.
  */
 interface Gesture {
   readonly id: string;
   readonly key: string;
   readonly window: boolean;
+  /** The bindings made before the gesture. */
+  readonly at: number;
   /** What each registered gesture context read when the gesture was made. */
   readonly context: readonly unknown[];
 }
@@ -67,6 +70,29 @@ interface Binding {
 
 const bindings = new WeakMap<object, Binding>();
 
+/** How many bindings have been made; a binding's count orders it among them. */
+let bindCount = 0;
+
+/** The command factories of mounted menus whose items are not drawn while closed. */
+const sources = new Set<{ current: (() => unknown) | undefined }>();
+
+/**
+ * Registers the factory of commands a component draws only on demand, such as a closed menu's. A gesture held on one of
+ * them resolves among what the factory makes while the component is mounted.
+ */
+export function useCommandSource(factory: (() => unknown) | undefined) {
+  const source = useRef(factory);
+  useLayoutEffect(() => {
+    source.current = factory;
+  });
+  useLayoutEffect(() => {
+    sources.add(source);
+    return () => {
+      sources.delete(source);
+    };
+  }, []);
+}
+
 const gate = {
   /** Whether a workspace is mounted; it settles and runs what is held. */
   active: false,
@@ -74,8 +100,12 @@ const gate = {
   /** Work started with `holdWhile` and not yet done; gestures wait for it as for the workspace. */
   working: 0,
   held: new HeldGestures<Gesture>(),
-  /** The latest binding of each object command's key. */
-  bound: new Map<string, HeldTarget>(),
+  /** The latest binding of each object command's key, with its count. */
+  bound: new Map<string, { readonly target: HeldTarget; readonly at: number }>(),
+  /** The bindings made before the workspace's latest render; the mounted objects' bindings follow them. */
+  rendered: 0,
+  /** The bindings made when the workspace last committed. */
+  committed: 0,
   /** The window's commands as last rendered. */
   window: [] as readonly { readonly id: string }[],
   rerender: undefined as (() => void) | undefined,
@@ -84,7 +114,8 @@ const gate = {
 /** Records what `command` does, and makes it the latest binding of `key` unless the key is empty. */
 export function bindGesture(command: object, key: string, target: HeldTarget, view = false) {
   bindings.set(command, { key, target, view });
-  if (key) gate.bound.set(key, target);
+  bindCount += 1;
+  if (key) gate.bound.set(key, { target, at: bindCount });
 }
 
 /**
@@ -98,7 +129,8 @@ export function invokeGesture(command: { readonly id: string }) {
   const { key, target, view } = bindings.get(command)!;
   if (gate.held.size || ((!gate.settled || gate.working > 0) && !view)) {
     gate.held.hold({
-      id: command.id, key, window: gate.window.includes(command), context: contexts.map(({ capture }) => capture()),
+      id: command.id, key, window: gate.window.includes(command), at: bindCount,
+      context: contexts.map(({ capture }) => capture()),
     });
     return;
   }
@@ -146,8 +178,19 @@ function drainOutside() {
   setTimeout(drainOutside);
 }
 
-function resolve({ id, key, window }: Gesture): HeldTarget | undefined {
-  if (!window) return gate.bound.get(key);
+/**
+ * The command a held gesture runs now. An object's command must have been bound since the workspace last rendered,
+ * which every mounted object does by rendering or through its command source; outside a workspace, since the gesture.
+ */
+function resolve({ id, key, window, at }: Gesture): HeldTarget | undefined {
+  if (!window) {
+    const since = gate.active ? Math.max(at, gate.rendered) : at;
+    const mounted = () => {
+      const found = gate.bound.get(key);
+      return found && found.at > since ? found.target : undefined;
+    };
+    return mounted() ?? (sources.forEach(({ current }) => current?.()), mounted());
+  }
   const command = gate.window.find((item) => item.id === id);
   return command && bindings.get(command)?.target;
 }
@@ -179,6 +222,8 @@ export function useHeldGestures(settled: boolean, failed: boolean) {
   }, []);
   useLayoutEffect(() => {
     gate.settled = settled;
+    gate.rendered = gate.committed;
+    gate.committed = bindCount;
   });
   useEffect(() => {
     if (failed) gate.held.discard();
