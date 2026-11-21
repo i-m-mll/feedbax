@@ -34,7 +34,9 @@ from feedbax.studio.selection import merged_files
 from feedbax.web.services.evaluate_sources import read_evaluate_model
 from feedbax.web.services.model_projection import selected_model
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
-from feedbax.web.services.trial_scope import reached_steps, scoped_file, selection_scope, variant_file
+from feedbax.web.services.trial_scope import (
+    reached_steps, scoped_file, selected_value, selection_scope, variant_file,
+)
 
 
 @dataclass(frozen=True)
@@ -373,7 +375,7 @@ def model_fields(
             files=merged_files([*files, step_file(result)]), removed_values=prepared.removed,
             command=ModelEditCommand(operation=field_value) if field_value is not None else None,
         )
-    if scope is not None:
+    if scope is not None and selected_value(project, body.run.step, scope) is None:
         if axis is None or axis.target.patch_path is None:
             return ModelFieldResponse(problems=[Problem(
                 code=ProblemCode.STRUCTURE, reason="This field has no writable sweep destination.",

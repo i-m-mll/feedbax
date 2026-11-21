@@ -50,7 +50,7 @@ test('a step\'s context menu opens on its card, its drawer row and its name in R
   await renames(cardRename, mapStep(page, 'train'));
 
   await card.locator('[data-result-run]').first().click({ button: 'right' });
-  await expect(menu(page).getByRole('menuitem')).toHaveText(['Check', 'Accept']);
+  await expect(menu(page).getByRole('menuitem')).toHaveText(['Check', 'Accept', 'Duplicate Run']);
   await page.keyboard.press('Escape');
 
   await page.locator('[data-map-canvas]').click({ button: 'right', position: { x: 8, y: 8 } });

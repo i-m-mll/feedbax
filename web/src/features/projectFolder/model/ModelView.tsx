@@ -95,12 +95,12 @@ function sameSubject(previous: unknown, next: object | false | undefined) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-/** The runs an Evaluate Model edit is for, as a model edit names them. */
-function evaluateEditRuns(scope: EvaluateModelRequest['scope'], run: StudioSavedTrainKey) {
+/** The runs an Evaluate Model edit is for, as a model edit names them; `rows` are the runs of a selected value. */
+function evaluateEditRuns(scope: EvaluateModelRequest['scope'], run: StudioSavedTrainKey, rows?: readonly string[]) {
   return {
     ...(scope.kind === 'variant' ? { variant: scope.variant } : {}),
     ...(scope.kind === 'rows' ? { rows: [...scope.rows] } : {}),
-    ...(scope.kind === 'axis_value' ? { rows: [run.row], axes: { [scope.axis]: [scope.value] } } : {}),
+    ...(scope.kind === 'axis_value' ? { rows: rows?.length ? [...rows] : [run.row], axes: { [scope.axis]: [scope.value] } } : {}),
   };
 }
 
@@ -237,7 +237,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const physical = interior?.physical_domain ?? null;
   /** An Evaluate edits the topology of one selected value's Model; the edit is stored on the value. */
   const editTopology = editable && (!evaluate || evaluate.scope.kind === 'axis_value');
-  const selectedRuns = evaluate?.scope.kind === 'axis_value' ? evaluateEditRuns(evaluate.scope, evaluate.run)
+  const selectedRuns = evaluate?.scope.kind === 'axis_value' ? evaluateEditRuns(evaluate.scope, evaluate.run, fieldRows)
     : !evaluate && fieldRows?.length && fieldAxes ? { rows: [...fieldRows], axes: fieldAxes } : undefined;
   const selectedHere = selected.filter((item) => inGraph(item, graph));
   const selectedIds = new Set(selectedHere.map(addressKey));
@@ -288,7 +288,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           if (result.files?.length && !await confirmRunRemoval(sweepValueRuns(result.removed_values))) return undefined;
           const applied = await editor.editModel('Set Value', fieldBody.document, result.command, current, fieldBody.run && {
             step: fieldBody.run.step, chosen_steps: [...chosenSteps], files: result.files ?? [],
-            ...(fieldBody.evaluate_scope ? evaluateEditRuns(fieldBody.evaluate_scope, fieldBody.run) : {}),
+            ...(fieldBody.evaluate_scope ? evaluateEditRuns(fieldBody.evaluate_scope, fieldBody.run, fieldRows)
+              : fieldBody.rows?.length && fieldBody.axes ? { rows: fieldBody.rows, axes: fieldBody.axes } : {}),
           });
           follow(applied);
           return applied.status === 'refused' ? applied.problem.detail : undefined;
@@ -461,7 +462,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           const applied = await editor.editModel(name, model.id, {
             operation: difference.op === 'set_field' ? difference : { op: 'set_attachment', difference },
           }, editor.getSnapshot().saved, {
-            step: readBody.run.step, chosen_steps: [...chosenSteps], ...evaluateEditRuns(scope, readBody.run),
+            step: readBody.run.step, chosen_steps: [...chosenSteps], ...evaluateEditRuns(scope, readBody.run, fieldRows),
           });
           if (applied.status === 'refused') throw new Error(applied.problem.detail);
           shown = follow(applied) ?? shown;

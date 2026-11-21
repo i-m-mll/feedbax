@@ -1,4 +1,4 @@
-"""Seed a Train step with one run, a Train step over two learning rates, and an Evaluate step over the second."""
+"""Seed an Evaluate step over two Train steps' models, and a third Train step that reads the same Model."""
 
 import json
 import sys
@@ -14,12 +14,12 @@ def seed(home: str, project_id: str):
     steps = raw["steps"]
     for name in ("baseline", "report", "analyze"):
         steps.pop(name, None)
-    steps["train_b"] = deepcopy(steps["train"]) | {"sweep": {"axes": {"rate": {
-        "path": "settings.optimizer.learning_rate.value", "values": [0.001, 0.003],
-    }}}}
+    steps["train_b"] = deepcopy(steps["train"])
+    steps["train_b"]["base"]["inline"]["settings"]["optimizer"]["learning_rate"]["value"] = 0.003
+    steps["other"] = deepcopy(steps["train"])
     evaluate = steps.pop("conditions")
-    evaluate.pop("sweep")
-    evaluate["inputs"]["subject"] = {"step": "train_b", "checkpoint": "last"}
+    evaluate["sweep"] = {"axes": {"subject": {"input": "subject"}}}
+    evaluate["inputs"]["subject"] = [{"step": "train", "checkpoint": "last"}, {"step": "train_b", "checkpoint": "last"}]
     steps["pair"] = evaluate
     for name in ("velocity-analysis", "velocity-figure", "velocity-report"):
         raw["documents"].pop(name, None)
