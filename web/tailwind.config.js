@@ -24,7 +24,7 @@ export default {
           field: 'var(--neutral-alpha-10)',
           foreground: 'var(--text-primary)',
           muted: 'var(--text-muted)',
-          'chrome-muted': 'var(--text-chrome-muted)',
+          category: 'var(--studio-category-text)',
           hover: 'var(--surface-hover)',
           'row-hover': 'var(--row-hover-fill)',
           'row-selected': 'var(--row-selected-fill)',
