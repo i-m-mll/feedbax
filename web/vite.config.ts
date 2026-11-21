@@ -9,6 +9,7 @@ import { Agent } from 'node:http';
 import type { Plugin } from 'vite';
 import { buildSync } from 'esbuild';
 import { appearanceBootEntry } from './entries';
+import { mandibleInterfaceNotes } from './mandible-notes';
 
 const isE2E = process.env.VITE_FEEDBAX_E2E === '1';
 const isDesktop = process.env.VITE_FEEDBAX_DESKTOP === '1';
@@ -100,6 +101,7 @@ export default defineConfig({
   plugins: [
     appearanceBoot(),
     react(),
+    isE2E ? [] : mandibleInterfaceNotes(),
     isDesktop ? desktopResources() : VitePWA({
       registerType: 'autoUpdate',
       workbox: {
