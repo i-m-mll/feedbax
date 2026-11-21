@@ -12,7 +12,7 @@ export function TableHeaderCell({ className, ...props }: ThHTMLAttributes<HTMLTa
   return (
     <th
       className={clsx(
-        'sticky top-0 h-row whitespace-nowrap border-b border-shell-divider bg-shell-chrome px-row-inline text-left text-sm font-medium text-shell-muted',
+        'sticky top-0 h-row whitespace-nowrap border-b border-shell-divider bg-shell-header px-row-inline text-left text-sm font-medium text-shell-muted',
         centred,
         className,
       )}
