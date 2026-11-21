@@ -86,8 +86,9 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
   await page.getByRole('menu', { name: 'Add Sweep' }).getByRole('menuitem', { name: 'Seed', exact: true }).click();
   const seed = page.getByRole('region', { name: 'Seed field', exact: true });
   const seedText = seed.getByRole('textbox', { name: 'Seed', exact: true });
-  await expect(seedText).toHaveValue(/^\d+,$/);
-  await enter(seedText, `${(await seedText.inputValue()).replace(/,$/, '')}, 9`);
+  await expect(seedText).toBeFocused();
+  await expect(seedText).toHaveValue(/^\d+$/);
+  await enter(seedText, `${await seedText.inputValue()}, 9`);
   await expect(table).toHaveAttribute('aria-rowcount', '7');
   await expect(card.getByRole('button', { name: 'Sweep seed 2', exact: true })).toBeVisible();
   // Unarranged, the longer of the first two sweeps runs across, so seed comes first.
@@ -168,6 +169,36 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
   expect(base && 'inline' in base ? base.inline : {}).toMatchObject({
     settings: { optimizer: { learning_rate: { value: 0.00275 } } },
   });
+});
+
+// Catches a sweep written before its values are typed, and a nested field the command does not reach.
+test('Add Sweep goes to a nested field and sweeps it only by the text it commits', async ({ page, request }) => {
+  const files = await fixture('ordinary-files', '2');
+  const { snapshot, projectPath } = await seedManagedProject(request, files);
+  const sweep = async () => ((await (await request.get(projectPath)).json()) as StudioProjectSnapshot).project.steps?.train.sweep;
+  await page.goto(`/?project=${snapshot.project_id}`);
+  const card = page.getByRole('article', { name: 'Train train' });
+  const b1 = page.getByRole('region', { name: 'B1 field', exact: true });
+  const text = b1.getByRole('textbox', { name: 'B1', exact: true });
+  const chooseB1 = async () => {
+    await card.getByRole('button', { name: 'Add Sweep train' }).click();
+    await page.getByRole('menu', { name: 'Add Sweep' }).getByRole('menuitem', { name: 'Optimizer', exact: true }).click();
+    await page.getByRole('menu', { name: 'Optimizer' }).getByRole('menuitem', { name: 'B1', exact: true }).click();
+    await expect(text).toBeFocused();
+    await expect(b1.getByRole('button', { name: 'B1 kind: Sweep', exact: true })).toBeVisible();
+  };
+  const before = await sweep();
+  await chooseB1();
+  expect(await sweep()).toEqual(before);
+  await page.keyboard.press('Escape');
+  await expect(b1.getByRole('button', { name: 'B1 kind: Value', exact: true })).toBeVisible();
+  await expect(text).toHaveValue('0.9');
+  expect(await sweep()).toEqual(before);
+
+  await chooseB1();
+  await enter(text, '1e-3, 1e-2');
+  await expect(b1.getByRole('button', { name: /^Select B1 / })).toHaveText(['0.001', '0.01']);
+  await expect.poll(async () => Object.keys((await sweep())?.axes ?? {}).length).toBe(Object.keys(before?.axes ?? {}).length + 1);
 });
 
 test('an addressed Model numeric field authors a step sweep from the inspector', async ({ page, request }) => {

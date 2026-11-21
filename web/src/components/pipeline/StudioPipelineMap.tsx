@@ -269,11 +269,15 @@ function cardStatus(counts: PlanStepView['statusCounts']): CardStatus | undefine
 }
 
 function NewSweep({ command, menu }: { command: StudioCommand; menu?: SweepMenu }) {
+  // The items stay while the menu closes: removing the chosen one would send focus back to the trigger, away from
+  // where the choice put it.
+  const items = useRef<ReactNode>();
+  if (menu) items.current = menu.items;
   return (
     <Menu open={!!menu} onOpenChange={(open) => { if (open) command.invoke(); else menu?.close(); }}>
       <MenuTrigger render={<IconButton variant="default" size="mark" label={command.label} icon={<Plus aria-hidden="true" />}
         {...commandAttributes(command)} disabled={!command.enabled} />} />
-      <MenuContent aria-label={studioName('newSweep')}>{menu?.items}</MenuContent>
+      <MenuContent aria-label={studioName('newSweep')}>{items.current}</MenuContent>
     </Menu>
   );
 }

@@ -129,7 +129,7 @@ def authoring_surface(
         StudioAuthoringDeclaration(
             key=method.key,
             settings_schema=method.settings_model.model_json_schema(),
-            label=method.label or method.update.__name__,
+            label=method.label or method.key,
             renamed_from=method.renamed_from,
         )
         for record in method_records

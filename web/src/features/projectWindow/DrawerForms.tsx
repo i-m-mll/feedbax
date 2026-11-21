@@ -1,5 +1,6 @@
 import { useLayoutEffect, useMemo, useRef, type Dispatch, type ReactNode, type RefObject, type SetStateAction } from 'react';
 import { Section, SectionStack, type SectionProps } from '@/components/ui/Section';
+import type { FieldKind } from '@/generated/studioContracts';
 import {
   sectionOpen, withSectionOpen, type ProjectWindowSection, type ProjectWindowState,
 } from './projectWindowState';
@@ -51,10 +52,21 @@ export function focusInspectorField(frames = 30) {
   else if (frames > 0) requestAnimationFrame(() => focusInspectorField(frames - 1));
 }
 
-/** A request to put the keyboard on a field: the one whose `data-field` is `target`, or else the first with a `data-field`. */
+/**
+ * A request to put the keyboard on a field: the one whose `data-field` is `target`, or else the first with a
+ * `data-field`; and, with `kind`, to put that field in that kind until it commits its text.
+ */
 export interface FieldFocusRequest {
   readonly key: string;
   readonly target?: string;
+  readonly kind?: FieldKind;
+}
+
+/** Unfolds each folded section between `root` and `element`. */
+function unfold(element: Element, root: Element) {
+  for (let body = element.closest('[hidden]'); body && root.contains(body); body = body.parentElement?.closest('[hidden]') ?? null) {
+    root.querySelector<HTMLElement>(`[aria-controls="${CSS.escape(body.id)}"][aria-expanded="false"]`)?.click();
+  }
 }
 
 /** Puts the keyboard on the requested field of `root` as soon as `root` shows a field. */
@@ -70,6 +82,7 @@ export function useFieldFocus(root: RefObject<HTMLElement>, request: FieldFocusR
       // the first field of any kind when the fields shown do not include it.
       const scope = target === undefined ? '[data-field]' : `[data-field="${CSS.escape(target)}"]`;
       const named = element.querySelector(scope);
+      if (named) unfold(named, element);
       const shown = named === null && (element.querySelector('[data-field]') !== null ||
         element.querySelector('[aria-busy="true"]') === null);
       const chosen = named || shown ? element.querySelector<HTMLElement>(named ? `${scope} :is(${field})` : field) : null;
@@ -81,7 +94,7 @@ export function useFieldFocus(root: RefObject<HTMLElement>, request: FieldFocusR
     if (attempt()) return;
     const observer = new MutationObserver(() => { if (attempt()) observer.disconnect(); });
     observer.observe(element, {
-      childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'readonly', 'aria-disabled', 'aria-busy'],
+      childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'readonly', 'aria-disabled', 'aria-busy', 'hidden'],
     });
     return () => observer.disconnect();
   }, [request?.key]);
