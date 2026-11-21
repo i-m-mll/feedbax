@@ -2,7 +2,7 @@ import { expect, test } from './fixtures/studio';
 import { type Page } from '@playwright/test';
 import { authorLearningRateSweep, captureStudioWindow, chooseSweepValue, chooseTrainSuccessor, fixture, mapStep, openResultsSlot, runName, seedManagedProject } from './fixtures/canonicalTrain';
 import { scanStudio } from './fixtures/studioAccessibility';
-import { formatTrainingLoss } from '../../src/components/activity/studioPlot';
+import { formatMetric } from '../../src/components/activity/studioPlot';
 import type {
   StudioActivityJob,
   StudioJobEventHistory,
@@ -103,7 +103,7 @@ test('Mounted saved Train runs a canonical successor through Jobs', { tag: '@rou
   await openResultsSlot(page);
   await expect(runButton).toBeVisible();
   const results = page.locator('[data-slot="secondary"]').getByRole('region', { name: 'Results', exact: true }).last();
-  const loss = results.getByRole('img', { name: 'Loss', exact: true });
+  const loss = results.getByRole('img', { name: 'Metric train_loss', exact: true });
   await expect(loss.locator(`line[data-attempt="${stoppedJob}"] title`).first()).toBeAttached({ timeout: 14_000 });
   const stop = await request.post('/api/jobs/stop', { data: { job_ids: [stoppedJob], mode: 'checkpoint' } });
   expect(stop.status(), await stop.text()).toBe(202);
@@ -151,8 +151,8 @@ test('Mounted saved Train runs a canonical successor through Jobs', { tag: '@rou
     /Updates \d+–1202 .*successor · Local updates \d+–1200/,
   );
   const { last } = evidence.successor.terminal_loss.metrics.train_loss;
-  await expect(results.locator('[aria-description="Last loss at update 1202"]')).toHaveText(
-    formatTrainingLoss(last),
+  await expect(results.locator('[aria-description="Last value at update 1202"]')).toHaveText(
+    formatMetric(last),
   );
   await page.getByRole('button', { name: 'Current Result', exact: true }).click();
   const successorResult = page.getByRole('region', { name: 'Current Result' }).first();
@@ -231,14 +231,14 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
     return (await rows()).find(({ key }) => key.step === 'train')!;
   }
   const results = page.getByRole('tabpanel', { name: 'Results', exact: true });
-  const loss = results.getByRole('img', { name: 'Loss', exact: true });
+  const loss = results.getByRole('img', { name: 'Metric train_loss', exact: true });
   const observed = () => fixture('observe-history', studio.home, id, snapshot.revision);
   type LossSample = { update: number; value: number };
   async function expectLoss(jobId: string, expected: LossSample[]) {
     const series = loss.locator(`[data-result-attempt="${jobId}"]`);
     await expect(series.locator('polyline')).toBeAttached();
-    await expect.poll(() => series.locator('line[data-update][data-loss]').evaluateAll((points) =>
-      points.map((point) => ({ update: Number(point.getAttribute('data-update')), value: Number(point.getAttribute('data-loss')) })),
+    await expect.poll(() => series.locator('line[data-update][data-value]').evaluateAll((points) =>
+      points.map((point) => ({ update: Number(point.getAttribute('data-update')), value: Number(point.getAttribute('data-value')) })),
     )).toEqual(expected);
     await expect.poll(() => series.locator('polyline').evaluate((line: SVGPolylineElement) => line.points.numberOfItems))
       .toBe(expected.length);
@@ -368,8 +368,8 @@ test('Saved Train compares authenticated receipts after a partial run and stoppe
   await expectLoss(changedJob, evidence.loss.current);
   expect(withheld).toBe(evidence.loss.previous.length);
   await expect(loss.locator(`[data-result-attempt="${firstJob}"] polyline`)).toHaveCount(0);
-  await expect(results.getByRole('list', { name: 'Loss', exact: true })
-    .getByRole('listitem').filter({ hasText: 'Previous Result' }).getByRole('status')).toHaveText('Loss unavailable');
+  await expect(results.getByRole('list', { name: 'Metric train_loss', exact: true })
+    .getByRole('listitem').filter({ hasText: 'Previous Result' }).getByRole('status')).toHaveText('train_loss unavailable');
   console.info('Mounted saved Train history', JSON.stringify(evidence));
 });
 
@@ -558,7 +558,7 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   await mapStep(page, childId).click();
   await expect(table.getByText('Done', { exact: true })).toHaveCount(2);
   const results = page.locator('[data-slot="secondary"]').getByRole('region', { name: 'Results', exact: true }).last();
-  const loss = results.getByRole('img', { name: 'Loss', exact: true });
+  const loss = results.getByRole('img', { name: 'Metric train_loss', exact: true });
   const evidence = await fixture(
     'observe-swept', studio.home, id, ...successorRows.map(({ attempts }) => attempts[0].job_id),
   );
@@ -600,15 +600,15 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
     ]);
     await expect(loss.locator(`line[data-attempt="${producer.job_id}"] title`).last()).toHaveText(/Updates \d+–2 .*Local updates \d+–2/);
     await expect(loss.locator(`line[data-attempt="${attempt.job_id}"] title`).last()).toHaveText(/Updates \d+–6 .*Local updates \d+–4/);
-    await expect(results.locator('[aria-description="Last loss at update 6"]')).toHaveText(
-      formatTrainingLoss(evidence[attempt.job_id].last_loss),
+    await expect(results.locator('[aria-description="Last value at update 6"]')).toHaveText(
+      formatMetric(evidence[attempt.job_id].last_loss),
     );
   }
   const rail = page.getByRole('navigation', { name: 'Details', exact: true });
   await page.locator('[data-slot="secondary"]').getByRole('button', { name: 'Close Slot', exact: true }).click();
   await rail.getByRole('tab', { name: 'Results', exact: true }).click();
   await page.getByRole('button', { name: 'Show Details', exact: true }).click();
-  const desktopLoss = page.locator('[data-slot="primary"]').getByRole('img', { name: 'Loss', exact: true });
+  const desktopLoss = page.locator('[data-slot="primary"]').getByRole('img', { name: 'Metric train_loss', exact: true });
   await expect(desktopLoss.locator('text').filter({ hasText: /^6$/ })).toBeVisible();
   const desktopWidth = await desktopLoss.evaluate((svg: SVGSVGElement) => svg.viewBox.baseVal.width);
   expect(desktopWidth).toBeGreaterThan(700);

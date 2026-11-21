@@ -4,12 +4,12 @@ export const plotWidth = 240;
 export const plotHeight = 126;
 const plotInset = 8;
 
-const conciseLoss = new Intl.NumberFormat(undefined, { maximumSignificantDigits: 4 });
-const scientificLoss = new Intl.NumberFormat(undefined, { notation: 'scientific', maximumSignificantDigits: 4 });
+const concise = new Intl.NumberFormat(undefined, { maximumSignificantDigits: 4 });
+const scientific = new Intl.NumberFormat(undefined, { notation: 'scientific', maximumSignificantDigits: 4 });
 
-export function formatTrainingLoss(value: number) {
+export function formatMetric(value: number) {
   const magnitude = Math.abs(value);
-  return (magnitude > 0 && (magnitude < 0.001 || magnitude >= 10_000) ? scientificLoss : conciseLoss).format(value);
+  return (magnitude > 0 && (magnitude < 0.001 || magnitude >= 10_000) ? scientific : concise).format(value);
 }
 
 export function projectSeries(series: readonly Point[][], preserveAspect = false) {
@@ -41,11 +41,13 @@ export function projectSeries(series: readonly Point[][], preserveAspect = false
   ]));
 }
 
-export function PlotTrack({ points, dashed }: { points: Point[]; dashed?: boolean }) {
+export function PlotTrack({ points, dashed, className = 'text-shell-foreground' }: {
+  points: Point[]; dashed?: boolean; className?: string;
+}) {
   const last = points[points.length - 1];
   if (!last) return null;
   return (
-    <g className="text-shell-foreground">
+    <g className={className}>
       <polyline
         points={points.map(([x, y]) => `${x},${y}`).join(' ')}
         fill="none"

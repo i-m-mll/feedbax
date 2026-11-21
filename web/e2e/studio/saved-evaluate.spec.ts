@@ -787,7 +787,7 @@ test('authors and replays Evaluate from the selected stopped Train checkpoint', 
   await plans(page).getByRole('button').first().click();
   await page.getByRole('button', { name: 'Open Run', exact: true }).click();
   const results = page.getByRole('tabpanel', { name: 'Results', exact: true });
-  await expect(results.getByRole('img', { name: 'Loss', exact: true }).locator('line title').first())
+  await expect(results.getByRole('img', { name: 'Metric train_loss', exact: true }).locator('line title').first())
     .toBeAttached({ timeout: 18_000 });
   const stop = posted(page, '/api/jobs/stop');
   await page.keyboard.press('Meta+Period');

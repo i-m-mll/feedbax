@@ -21,6 +21,9 @@ import { DocumentPicker, type DocumentEditing } from "@/features/projectWindow/D
 
 const gutter = "w-px pl-1 pr-2 text-right";
 
+/** The controls inside a run's row; a press anywhere else on the row chooses the run. */
+const rowControls = "button, a, input, select, textarea, [role=button], [role=menuitem], [contenteditable=true]";
+
 const byteSize = new Intl.NumberFormat(undefined, { style: "unit", unit: "byte", unitDisplay: "narrow" });
 
 export interface RunSelectionProps {
@@ -181,6 +184,10 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
                 related={relatedIds?.has(run.id)}
                 aria-rowindex={item.index + 2}
                 onKeyDown={(event) => { if (!event.defaultPrevented) navigate(event, item.index); }}
+                onClick={(event) => {
+                  const control = (event.target as Element).closest(rowControls);
+                  if (!event.defaultPrevented && (!control || !event.currentTarget.contains(control))) selectRow.onClick(event);
+                }}
                 className="studio-run-row"
               >
                 <TableRowHeader className={gutter}>
@@ -207,7 +214,8 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
                   <StudioRunStatus status={run.state} {...appTip(studioRunReason({ ...run, reason }))} />
                 </TableCell>
                 <TableCell tabIndex={-1} className={cellFocus}>
-                  {run.status === "running" && run.progress && <StudioRunProgress progress={run.progress} etaSeconds={run.etaSeconds} />}
+                  {(run.status === "running" || run.status === "stopped") && run.progress &&
+                    <StudioRunProgress progress={run.progress} etaSeconds={run.status === "running" ? run.etaSeconds : undefined} />}
                   {run.status === "collecting" && <StudioCollectionProgress progress={run.collectionProgress} />}
                   {run.sizeBytes !== undefined && byteSize.format(run.sizeBytes)}
                 </TableCell>

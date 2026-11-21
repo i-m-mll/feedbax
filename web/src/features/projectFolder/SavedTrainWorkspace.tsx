@@ -33,7 +33,9 @@ import { TextField } from '@/components/ui/TextField';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type { PipelineCardPresentation } from '@/components/pipeline/pipelineMapLayout';
 import type { PlanRunView, PlanStepView, PlanView } from '@/features/pipeline/planView';
-import { selectRun, selectStep, selectSweepValue, selectedRuns, type PipelineSelection, type PipelineSelectionState } from '@/features/pipeline/selection';
+import {
+  emptyPipelineSelection, selectRun, selectStep, selectSweepValue, selectedRuns, type PipelineSelection, type PipelineSelectionState,
+} from '@/features/pipeline/selection';
 import { ProjectWindow } from '@/features/projectWindow/ProjectWindow';
 import { useHeldGestures } from '@/features/projectWindow/heldGestures';
 import { ProblemRow, StudioProblems } from '@/features/projectWindow/StudioProblems';
@@ -308,6 +310,20 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const state = data ? settledWindowSelection(plan, selection.pipeline) : selection.pipeline;
   const latestState = useRef(state);
   latestState.current = state;
+  const savedFocus = windowState.focus;
+  const restoredFocus = useRef(false);
+  useEffect(() => {
+    if (restoredFocus.current || !savedFocus) return;
+    restoredFocus.current = true;
+    if (!selection.edited) selection.select(selectRun(emptyPipelineSelection, savedFocus));
+  }, [savedFocus, selection]);
+  const focusStep = state.focus?.stepId;
+  const focusRun = state.focus?.runId;
+  useEffect(() => {
+    if (!selection.edited) return;
+    setWindowState((current) => current.focus?.stepId === focusStep && current.focus?.runId === focusRun ? current
+      : { ...current, focus: focusStep === undefined || focusRun === undefined ? undefined : { stepId: focusStep, runId: focusRun } });
+  }, [focusStep, focusRun, selection.edited, setWindowState]);
   const singleStep = state.selection?.kind === 'steps' && state.selection.stepIds.length === 1 && state.selection.stepIds[0] === step?.id;
   const wholeStep = singleStep && primaryVariant;
   /** The selected values as an edit names them; the runs an optional axis keeps are named by row. */
