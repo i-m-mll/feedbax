@@ -70,32 +70,51 @@ class _MetricReduction:
         self.last = value
 
 
-_MetricReductions = dict[str, "_MetricReduction | _MetricReductions"]
+_MetricReductions = dict[str, Any]
+"""Each metric's reduction: a `_MetricReduction` per number, mirroring the metric's mappings and lists."""
+
+
+def _accumulate_metric(reduction: Any, value: Any, name: str) -> Any:
+    if isinstance(value, Mapping):
+        if reduction is None:
+            reduction = {}
+        if not isinstance(reduction, dict):
+            raise ValueError(f"Studio metric {name!r} changed structure")
+        for key, item in value.items():
+            reduction[key] = _accumulate_metric(reduction.get(key), item, f"{name}.{key}")
+    elif isinstance(value, list):
+        if reduction is None:
+            reduction = [None] * len(value)
+        if not isinstance(reduction, list) or len(reduction) != len(value):
+            raise ValueError(f"Studio metric {name!r} changed structure")
+        for index, item in enumerate(value):
+            reduction[index] = _accumulate_metric(reduction[index], item, f"{name}[{index}]")
+    elif type(value) in (int, float):
+        if reduction is None:
+            return _MetricReduction(1, value, value, value, value)
+        if not isinstance(reduction, _MetricReduction):
+            raise ValueError(f"Studio metric {name!r} changed structure")
+        reduction.add(value)
+    return reduction
 
 
 def _accumulate_metrics(reductions: _MetricReductions, metrics: Mapping[str, Any]) -> None:
     for name, value in metrics.items():
-        if isinstance(value, Mapping):
-            nested = reductions.setdefault(name, {})
-            if not isinstance(nested, dict):
-                raise ValueError(f"Studio metric {name!r} changed structure")
-            _accumulate_metrics(nested, value)
-        elif type(value) in (int, float):
-            reduction = reductions.get(name)
-            if reduction is None:
-                reductions[name] = _MetricReduction(1, value, value, value, value)
-            elif isinstance(reduction, _MetricReduction):
-                reduction.add(value)
-            else:
-                raise ValueError(f"Studio metric {name!r} changed structure")
+        reductions[name] = _accumulate_metric(reductions.get(name), value, name)
+
+
+def _serialize_reduction(reduction: Any) -> Any:
+    if isinstance(reduction, _MetricReduction):
+        return asdict(reduction)
+    if isinstance(reduction, dict):
+        return {name: _serialize_reduction(item) for name, item in reduction.items()}
+    if isinstance(reduction, list):
+        return [_serialize_reduction(item) for item in reduction]
+    return None
 
 
 def _serialize_reductions(reductions: _MetricReductions) -> dict[str, Any]:
-    return {
-        name: asdict(reduction) if isinstance(reduction, _MetricReduction)
-        else _serialize_reductions(reduction)
-        for name, reduction in reductions.items()
-    }
+    return {name: _serialize_reduction(reduction) for name, reduction in reductions.items()}
 
 
 class _Events:

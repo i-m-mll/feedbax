@@ -35,7 +35,7 @@ export async function authorAndRecoverTrain(page: Page, request: APIRequestConte
   const job = async (id: string) => (await jobs()).find(({ job_id }) => job_id === id);
   const runs = page.getByRole('tabpanel', { name: 'Runs', exact: true });
   const results = page.getByRole('tabpanel', { name: 'Results', exact: true });
-  const loss = results.getByRole('img', { name: 'Loss', exact: true });
+  const loss = results.getByRole('img', { name: 'Metric train_loss', exact: true });
   const line = (id: string) => loss.locator(`line[data-attempt="${id}"] title`);
   const selectRun = async () => {
     await activate(page, mapStep(page, 'train'));

@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 import type { StudioEvaluationObjectiveSeries, StudioJobEvent } from '@/generated/studioContracts';
 import { heldOutTracks } from './heldOutObjective';
-import { studioRunHistory } from './StudioTrainingLoss';
+import { studioRunHistory } from './StudioTrainMetrics';
 
 it('keeps loss intervals and held-out objectives across repeated checkpoint resumes', () => {
   const request = 'train:source';
@@ -34,7 +34,8 @@ it('keeps loss intervals and held-out objectives across repeated checkpoint resu
   interval(latest, 112, 116, 2, 1);
 
   const history = studioRunHistory(latest, attempts, events);
-  expect(history.loss.map(({ jobId, interval, end, value }) => [jobId, interval?.start, end, value])).toEqual([
+  expect(history.metrics.map(({ name }) => name)).toEqual(['train_loss']);
+  expect(history.metrics[0].points.map(({ jobId, start, end, elements: [reading] }) => [jobId, start, end, reading?.value])).toEqual([
     ['first', 90, 96, 8], ['first', 96, 100, 6], ['resumed', 100, 112, 4], ['latest', 112, 116, 2],
   ]);
   expect(history.stageStart).toBe(90);
@@ -64,4 +65,33 @@ it('keeps loss intervals and held-out objectives across repeated checkpoint resu
   expect(total?.segments.map((segment) => segment.map(({ update, value }) => [update, value]))).toEqual([
     [[10, 3], [22, 2], [26, 1]],
   ]);
+});
+
+it('reads every metric a method names, a vector metric as one series per element', () => {
+  const attempt = { job_id: 'witness', continues: null };
+  const events: StudioJobEvent[] = [];
+  const reduction = (value: number) => ({ count: 2, mean: value, min: value - 1, max: value + 1, last: value });
+  events.push({
+    cursor: 1, kind: 'progress', project_id: 'project', request_id: 'train', job_id: attempt.job_id,
+    data: { completed_updates: 0, metrics: {} },
+  });
+  for (const [start, end] of [[0, 2], [2, 4], [4, 6]]) {
+    events.push({
+      cursor: events.length + 1, kind: 'progress', project_id: 'project', request_id: 'train', job_id: attempt.job_id,
+      data: {
+        completed_updates: end, metrics: { price: end, losses: [end, -end], note: 'text' },
+        metric_interval: {
+          start_exclusive: start, end_inclusive: end,
+          metrics: { price: reduction(end), losses: [reduction(end), reduction(-end)], note: null },
+        },
+      },
+    });
+  }
+
+  const { metrics } = studioRunHistory(attempt, [attempt], events);
+  expect(metrics.map(({ name, vector, points }) => [name, vector, points.map(({ elements }) => elements.map((e) => e?.value))]))
+    .toEqual([
+      ['price', false, [[2], [4], [6]]],
+      ['losses', true, [[2, -2], [4, -4], [6, -6]]],
+    ]);
 });

@@ -50,7 +50,7 @@
   --studio-scene-guide: #917967;
   --studio-scene-outline: var(--text-muted);
   --studio-scene-grid: color-mix(in srgb, var(--app-divider) 60%, var(--surface-main));
-  --studio-objective-lightness: 0.48;
+  --studio-hue-lightness: 0.48;
   /* Mandible's --text-chrome-muted, darkened to the nearest grey that reads at 4.5:1 on the main and sidebar surfaces. */
   --studio-category-text: #747474;
   --studio-shadow-soft: 0 12px 32px rgba(15, 23, 42, 0.08);
@@ -73,15 +73,15 @@
   --studio-kind-report: #797775;
   --studio-scene-feature: #99688a;
   --studio-scene-guide: #8a7260;
-  --studio-objective-lightness: 0.68;
+  --studio-hue-lightness: 0.68;
   --studio-category-text: #838383;
   --studio-shadow-soft: 0 12px 32px rgba(0, 0, 0, 0.32);
   --studio-shadow-lift: 0 18px 40px rgba(0, 0, 0, 0.44);
   --segment-raised: var(--neutral-alpha-12);
 }
 
-.studio-objective {
-  color: oklch(var(--studio-objective-lightness) 0.16 var(--studio-objective-hue));
+.studio-hue {
+  color: oklch(var(--studio-hue-lightness) 0.16 var(--studio-hue));
 }
 
 :root[data-face='work-sans'] { --font-ui: 'Work Sans Variable', system-ui, sans-serif; }
