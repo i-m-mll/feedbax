@@ -857,7 +857,7 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
   const conditions = single.filter(({ key }) => key.step === 'conditions');
   expect(conditions).toHaveLength(2);
   const activityRun = conditions[1];
-  const activityLabel = labels.get(JSON.stringify(activityRun.key))!;
+  const activityLabel = `${activityRun.key.step} · ${labels.get(JSON.stringify(activityRun.key))!}`;
   await chooseStep(page, 'conditions');
   await plans(page).getByRole('button', { name: runName(drawn(activityRun.key)) }).click();
   await expect(plans(page).getByText('Done', { exact: true }).first()).toBeVisible();

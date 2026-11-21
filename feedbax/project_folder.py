@@ -1199,7 +1199,7 @@ class ProjectFolder:
             return self._snapshot(folder.location, text)
 
     def member_command(self, project_id: str, body: StudioMemberCommand) -> StudioMemberCommandResult:
-        """Label a step, operation or figure, change a member's key, duplicate or detach a member, or split or merge
+        """Label a member, change its key, duplicate or detach it, or split or merge
         Analyze cards, in one write.
 
         A key change, a split and a merge rewrite the references and presentation they move; a label changes no
@@ -1218,10 +1218,12 @@ class ProjectFolder:
             shown = dict(shown_before)
 
             def composed(name: str) -> dict:
+                """The document ``name`` as a root document holding its composed payload, under its own label."""
                 document = compose_document(text.project.documents.get, name)
                 if isinstance(document, ProjectDiagnostic):
                     raise ProjectFolderInvalid(f"{name} cannot be composed: {document.detail}")
-                return document.model_dump(mode="json", by_alias=True)
+                label = text.project.documents[name].label
+                return document.model_dump(mode="json", by_alias=True) | ({"label": label} if label else {})
 
             def element_keys() -> set[str]:
                 return {

@@ -25,9 +25,14 @@ ${command}
   return stdout.trim();
 }
 
-function row(page: Page, label: string) {
+/** The run's row label: Activity records a run as `<step> · <row label>`, and its step's Runs table names it by the row. */
+function rowLabel(job: { label: string; stage_id: string }) {
+  return job.label.slice(`${job.stage_id} · `.length);
+}
+
+function row(page: Page, job: { label: string; stage_id: string }) {
   return page.locator('[data-slot="primary"]').getByRole('table', { name: 'Runs', exact: true }).getByRole('row').filter({
-    has: page.getByRole('button', { name: runName(label) }),
+    has: page.getByRole('button', { name: runName(rowLabel(job)) }),
   });
 }
 
@@ -92,7 +97,7 @@ test('shares live Jobs across windows and observes the four-slot queue', { tag: 
     const initial = await jobs();
     const queued = initial.filter((job) => job.status === 'queued');
     const first = initial.find((job) => job.status === 'running' || job.status === 'starting')!;
-    await expect(row(page, first.label).getByRole('progressbar')).toHaveAttribute('value', /[1-9]/, {
+    await expect(row(page, first).getByRole('progressbar')).toHaveAttribute('value', /[1-9]/, {
       timeout: 15_000,
     });
 
@@ -104,10 +109,10 @@ test('shares live Jobs across windows and observes the four-slot queue', { tag: 
     for (const job of queued) {
       expect(job.reason).toBeTruthy();
       for (const window of [page, second]) {
-        await expect(row(window, job.label).getByText('Queued', { exact: true })).toBeVisible();
+        await expect(row(window, job).getByText('Queued', { exact: true })).toBeVisible();
       }
     }
-    await row(second, first.label).getByRole('button', { name: runName(first.label) }).click();
+    await row(second, first).getByRole('button', { name: runName(rowLabel(first)) }).click();
     await openResultsSlot(second);
     await expect(second.getByRole('img', { name: 'Loss', exact: true }).locator('line title').first()).toBeAttached();
 
@@ -182,15 +187,15 @@ raise TimeoutError("No isolated sibling published a checkpoint")
     await second.reload();
     await mapStep(second, 'train').click();
     await second.getByRole('tab', { name: 'Runs', exact: true }).click();
-    await expect(row(second, sibling.label).getByText('Stopped', { exact: true })).toBeVisible();
-    await expect(row(second, interrupted.label).getByText('Interrupted', { exact: true })).toBeVisible();
+    await expect(row(second, sibling).getByText('Stopped', { exact: true })).toBeVisible();
+    await expect(row(second, interrupted).getByText('Interrupted', { exact: true })).toBeVisible();
     await second.getByRole('button', { name: 'Activity', exact: true }).click();
     await expect(secondAttempt(interrupted.label).getByRole('button', { name: 'Resume', exact: true })).toBeEnabled();
     await expect.poll(async () => {
       const current = await jobs();
       return current.find((job) => job.job_id === attempt.job_id)?.progress?.completed_updates ?? 0;
     }, { timeout: 15_000 }).toBeGreaterThan(stopped!.progress!.completed_updates);
-    await expect(row(second, first.label).getByRole('progressbar')).toHaveAttribute('value', /[1-9]/);
+    await expect(row(second, first).getByRole('progressbar')).toHaveAttribute('value', /[1-9]/);
     const after = await jobs();
     expect(after.find((job) => job.job_id === first.job_id)?.outcome).toEqual(stopped?.outcome);
     expect(after).toHaveLength(rates.length + 1);
