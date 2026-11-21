@@ -438,17 +438,22 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     const source = plan.steps.find(({ id }) => id === selection.reference.step);
     return source ? [{ ...selection, source }] : [];
   }) : undefined;
-  const subject = authoredMap?.steps.find(({ step_id, variant: id }) => step_id === step?.id && id === variant)
-    ?.inputs.find(({ id }) => id === 'subject');
+  const mapInputs = authoredMap?.steps.find(({ step_id, variant: id }) => step_id === step?.id && id === variant)?.inputs;
+  const subject = mapInputs?.find(({ id }) => id === 'subject');
   const subjectSubset = subject?.subset;
   const rankGroups = bestRankGroups(subjectSubset);
   const rankedSubjects = rankGroups.length ? authoredMap?.evaluations?.flatMap(({ key, bound_subject }) =>
     key.variant === variant && key.step === step?.id && bound_subject ? [bound_subject] : []) ?? [] : [];
-  const subjectsByRank = new Map(rankedSubjects.map((bound) => [bound.key, bound]));
-  const freezeAttempts = rankGroups.length && rankGroups.every(({ ranks }) => {
-    const snapshots = ranks.map((key) => subjectsByRank.get(key)?.selection_sha256);
-    return snapshots.every(Boolean) && new Set(snapshots).size === 1;
-  }) ? rankGroups.flatMap(({ ranks }) => ranks.map((key) => subjectsByRank.get(key)!.consumer_job_id)) : undefined;
+  const boundByRank = new Map(authoredMap?.evaluations?.flatMap(({ key, bound_subject }) =>
+    key.variant === variant && key.step === step?.id && bound_subject ? [[bound_subject.key, bound_subject]] : []));
+  /** The attempts To Rows freezes a measured selection to: one per rank, each group's from one selection. */
+  function freezeAttempts(inputId: string) {
+    const groups = bestRankGroups(mapInputs?.find(({ id }) => id === inputId)?.subset);
+    return groups.length && groups.every(({ ranks }) => {
+      const snapshots = ranks.map((key) => boundByRank.get(key)?.selection_sha256);
+      return snapshots.every(Boolean) && new Set(snapshots).size === 1;
+    }) ? groups.flatMap(({ ranks }) => ranks.map((key) => boundByRank.get(key)!.consumer_job_id)) : undefined;
+  }
   const subjectIds = subject && rankGroups.length
     ? new Set(rankedSubjects.map((bound) => savedRunId({ ...bound, step: subject.source_step_id })))
     : subjectSubset?.members && new Set(subjectSubset.members.map(savedRunId));
@@ -1039,18 +1044,18 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     }, (reason) => ({ kind: 'exception', step: step.id, exception: id, reason }));
   }
 
-  function freezeEvaluationSubset() {
-    if (!step || !variant || !subject || !freezeAttempts || !ready) return;
+  function freezeEvaluationSubset(inputId: string, source: string, attempts: string[], index: number) {
+    if (!step || !variant || !ready) return;
     void perform(async () => {
       const reviewed = await prepareSubsetToRows(saved.project_id, {
-        revision: saved.revision, variant, step: step.id, attempts: freezeAttempts,
+        revision: saved.revision, variant, step: step.id, input: inputId, attempts,
       }, editor.signal);
       if (!await runRemoval.confirm(filesRemoval(saved.project_id, reviewed.revision, reviewed.files, editor.signal))) return;
       editor.editFiles(studioName('toRows'), reviewed.files, {
-        reviewedRevision: reviewed.revision, dependencies: [{ kind: 'step', id: subject.source_step_id }],
+        reviewedRevision: reviewed.revision, dependencies: [{ kind: 'step', id: source }],
       });
       await editor.flush();
-    }, refuseField('subset.0'));
+    }, refuseField(`subset.${index}`));
   }
 
   function editEvaluationCheckpoint(rule: EditableCheckpointRule) {
@@ -1516,19 +1521,22 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                       picking={elements} refusal={refusedAt('subject')}
                       selection={(index, reference) => {
                         const listed = Array.isArray(evaluateInputs.inputs?.subject);
-                        const input = step.inputs.find(({ id }) => id === (listed ? `subject.${index}` : 'subject'));
+                        const inputId = listed ? `subject.${index}` : 'subject';
+                        const input = step.inputs.find(({ id }) => id === inputId);
                         const subset = evaluationEditor?.subjects[index];
+                        const attempts = freezeAttempts(inputId);
                         return {
                           problem: listed ? selectionProblem(authoredMap?.problems ?? [], step.id, variant, 'subject', index) : undefined,
                           detail: <>
                             {input && inputDetail(input)}
-                            {subset && projection.data && variant && reference.checkpoint === 'last' && <SubjectSubset
+                            {subset?.terms && projection.data && variant && reference.checkpoint === 'last' && <SubjectSubset
                               key={JSON.stringify([step.id, index, subset.source.id])}
                               terms={subset.terms} where={subset.where} hasWhere={reference.where !== undefined}
                               source={subset.source} sourceRows={stepSourceRows(projection.data, subset.source.id, variant)}
                               disabled={!ready || busy} refusal={refusedAt(`subset.${index}`)}
                               onEdit={(name, patch) => editEvaluation(`subset.${index}`, name, patch)}
-                              onToRows={!listed && freezeAttempts ? freezeEvaluationSubset : undefined} />}
+                              onToRows={attempts
+                                ? () => freezeEvaluationSubset(inputId, reference.step, attempts, index) : undefined} />}
                           </>,
                         };
                       }}

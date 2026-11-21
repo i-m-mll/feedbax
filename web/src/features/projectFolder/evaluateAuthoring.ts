@@ -125,7 +125,8 @@ function addressedModelAxis(axis: Axis) {
 /** A selection of an Evaluate subject that Studio edits: its reference, its restriction, and where that is written. */
 export interface EvaluationSubject {
   readonly reference: StepReference;
-  readonly terms: SubsetTerms;
+  /** The selection's own terms; a named subset has none to edit. */
+  readonly terms?: SubsetTerms;
   /** The pointer of the selection's `where`. */
   readonly where: string;
 }
@@ -140,8 +141,9 @@ export function ordinaryEvaluation(step: Step): { subjects: EvaluationSubject[];
   for (const [index, reference] of selections.entries()) {
     if ((editableCheckpointRule(reference.checkpoint) === undefined && !axes.some((axis) => 'checkpoint_rule' in axis)) ||
         reference.row != null || reference.variants != null) return undefined;
-    const terms = reference.where ?? {};
-    if ('subset' in terms || terms.when) return undefined;
+    const where = reference.where ?? {};
+    if (!('subset' in where) && where.when) return undefined;
+    const terms = 'subset' in where ? undefined : where;
     subjects.push({ reference, terms, where: listed ? `/inputs/subject/${index}/where` : '/inputs/subject/where' });
   }
   const sweep = step.sweep;

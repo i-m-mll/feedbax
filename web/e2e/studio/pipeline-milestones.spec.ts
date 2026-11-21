@@ -357,7 +357,7 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   expect(prepared.ok(), await prepared.text()).toBe(true);
   const preparedBody = prepared.request().postDataJSON();
   expect(preparedBody).toEqual({
-    revision: expect.stringMatching(/^[a-f0-9]{64}$/), variant: 'default', step: 'evaluate',
+    revision: expect.stringMatching(/^[a-f0-9]{64}$/), variant: 'default', step: 'evaluate', input: 'subject',
     attempts: completed.map(({ result }) => result!.job_id),
   });
   expect(frozen).toMatchObject({
