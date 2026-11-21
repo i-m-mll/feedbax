@@ -12,6 +12,7 @@ from feedbax.expression_registry import FunctionInfo
 from feedbax.contracts.operation import OperationDefinition
 from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName, StepReference
+from feedbax.contracts.request_refs import Name
 from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
 
@@ -143,7 +144,7 @@ class StudioRunSelection(StrictModel):
 
     run: StudioSavedTrainKey | None = None
     rows: list[str] = Field(default_factory=list)
-    axes: dict[ProjectName, Annotated[list[ProjectName], Field(min_length=1)]] = Field(default_factory=dict)
+    axes: dict[ProjectName, Annotated[list[Name], Field(min_length=1)]] = Field(default_factory=dict)
     chosen_steps: list[ProjectName] = Field(default_factory=list)
 
 
