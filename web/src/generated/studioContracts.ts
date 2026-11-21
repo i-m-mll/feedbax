@@ -3062,6 +3062,7 @@ export type NameValue = {
 export type NamedAxis = {
   "values": Record<string, AxisValue | null>;
   "where"?: AxisCondition | null;
+  "optional"?: boolean;
 };
 
 export type NamedFileCreation = CreateNamedDocument | CreateNamedStep;
@@ -3356,6 +3357,7 @@ export type SelectedRow = {
 export type SetAxis = {
   "set": string;
   "where"?: AxisCondition | null;
+  "optional"?: boolean;
 };
 
 export type SetDocumentValue = {
@@ -9596,6 +9598,7 @@ export const NamedAxisSchema: z.ZodType<NamedAxis> = z.lazy(() =>
   z.object({
     "values": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([AxisValueSchema, z.null()])),
     "where": z.union([AxisConditionSchema, z.null()]).optional(),
+    "optional": z.boolean().optional(),
   }).strict()
 ) as unknown as z.ZodType<NamedAxis>;
 
@@ -10000,6 +10003,7 @@ export const SetAxisSchema: z.ZodType<SetAxis> = z.lazy(() =>
   z.object({
     "set": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "where": z.union([AxisConditionSchema, z.null()]).optional(),
+    "optional": z.boolean().optional(),
   }).strict()
 ) as unknown as z.ZodType<SetAxis>;
 

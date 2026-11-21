@@ -75,15 +75,52 @@ def _with_axes(address, raw, axes: dict[str, Any]) -> StudioProjectFilePatch:
 
 
 def _copy_key(value: str, taken) -> str:
-    return generated_name(re.sub(r"-\d+$", "", value) or value, taken)
+    """The first free ``<base>-N`` for a copy of ``value``, whose base is ``value`` without its suffix."""
+    base = re.sub(r"-\d+$", "", value) or value
+    return generated_name(base, lambda key: key == base or taken(key))
 
 
 def _divided(row: str, axis: str, value: str) -> str:
+    """The id of the row an optional axis adds beside ``row`` for ``value``."""
     parts = [] if row == DEFAULT_SWEEP_ROW else row.split("--")
     return "--".join(sorted([*parts, f"{axis}={value}"], key=lambda part: part.partition("=")[0]))
 
 
+def _recolumned(row: str, axis: str, value: str, copy: str) -> str:
+    """The id of ``row`` with its value ``value`` on ``axis`` replaced by ``copy``."""
+    return "--".join(f"{axis}={copy}" if part == f"{axis}={value}" else part for part in row.split("--"))
+
+
+def _kept_rows(rows, axis: str) -> set[str]:
+    """The rows an optional axis applies to: each is kept with no value on the axis, beside its copies."""
+    ids = {row.key.row for row in rows}
+    return {
+        row.key.row for row in rows if axis not in row.coordinates and any(
+            other.coordinates.get(axis) is not None and _divided(row.key.row, axis, other.coordinates[axis].value_id)
+            == other.key.row for other in rows
+        )
+    } & ids
+
+
+def _exceptions_copied(sweep: dict[str, Any], copies: dict[str, str]) -> dict[str, Any]:
+    """The step's exceptions, each that names an original row by id also naming its copy."""
+    exceptions = {}
+    for name, exception in sweep.get("exceptions", {}).items():
+        where = (exception or {}).get("where") or {}
+        if where.get("rows"):
+            named = [*where["rows"], *(copies[row] for row in where["rows"] if row in copies)]
+            exception = exception | {"where": where | {"rows": list(dict.fromkeys(named))}}
+        exceptions[name] = exception
+    return exceptions
+
+
+def _with_sweep(address, raw, sweep: dict[str, Any], copies: dict[str, str]) -> StudioProjectFilePatch:
+    exceptions = _exceptions_copied(sweep, copies)
+    return file_value(address, raw, ("sweep",), sweep | ({"exceptions": exceptions} if exceptions else {}))
+
+
 def _duplicate_run(folders, project_id, revision, project: Project, command: DuplicateRun):
+    """Copy each selected run: a value is added to an axis, and no existing run changes its id."""
     if command.run is None:
         raise ProjectFolderInvalid("Duplicate Run names a run of the step.")
     plan = folders.read_plan(project_id, revision=revision).plan
@@ -91,13 +128,17 @@ def _duplicate_run(folders, project_id, revision, project: Project, command: Dup
     if key.variant != plan.variants[0]:
         raise ProjectFolderInvalid("Duplicate Run is made in the default variant.")
     step = key.step
-    rows = {row.key.row for row in plan.rows if (row.key.variant, row.key.step) == (key.variant, step)}
-    if key.row not in rows:
+    rows = [row for row in plan.rows if (row.key.variant, row.key.step) == (key.variant, step)]
+    ids = {row.key.row for row in rows}
+    if key.row not in ids:
         raise ProjectFolderInvalid("The selected run no longer belongs to this step.")
-    whole = not command.rows or set(command.rows) == rows
+    selected = set(command.rows) or {key.row}
+    whole = not command.rows or selected == ids
     scope = None if whole else selection_scope(project, plan, key, tuple(command.rows), command.axes or None)
     named = selected_value(project, step, scope) if scope is not None else None
     address, raw = _step_raw(project, step)
+    sweep = raw.get("sweep") or {}
+    axes = sweep.get("axes", {})
     if named is not None and named.set is not None:
         content = _composed(project, named.set)
         entries = content["entries"]
@@ -107,90 +148,57 @@ def _duplicate_run(folders, project_id, revision, project: Project, command: Dup
         stored = set_document_write(project, named.set, edits, set_readers(project, named.set))
         return stored, StudioAxisValue(axis=named.axis, value=copy)
     if named is not None:
-        values = raw["sweep"]["axes"][named.axis]["values"]
+        values = axes[named.axis]["values"]
         copy = _copy_key(named.value, values.__contains__)
         value = {name: item for name, item in values[named.value].items() if name != "label"}
-        file = file_value(address, raw, ("sweep", "axes", named.axis, "values", copy), value)
-        return StoredEdit([file]), StudioAxisValue(axis=named.axis, value=copy)
-    sweep = raw.get("sweep") or {}
+        copies = {row: _recolumned(row, named.axis, named.value, copy) for row in selected}
+        updated = sweep | {"axes": axes | {named.axis: axes[named.axis] | {"values": values | {copy: value}}}}
+        return StoredEdit([_with_sweep(address, raw, updated, copies)]), StudioAxisValue(axis=named.axis, value=copy)
     authored = project.steps[step].sweep
     if authored is not None and isinstance(authored.combination, ManualCombination) or sweep.get("rows"):
         raise ProjectFolderInvalid("Duplicate Run needs a sweep whose axes are crossed.")
-    axes = sweep.get("axes", {})
+    for name, axis in (authored.axes.items() if authored is not None else ()):
+        if isinstance(axis, NamedAxis | SetAxis) and axis.optional and selected == _kept_rows(rows, name):
+            return _optional_value_added(project, address, raw, name, axis, selected)
     name = generated_name("run", axes.__contains__)
-    axis: dict[str, Any] = {"values": {"run": {}, "run-2": {}}}
-    divided = rows
+    value = generated_name(name, name.__eq__)
+    axis: dict[str, Any] = {"values": {value: {}}, "optional": True}
     if isinstance(scope, SweepValuesScope):
         axis["where"] = {"axes": {other: sorted(set(ids)) for other, ids in sorted(scope.axes.items())}}
-        divided = {
-            row.key.row for row in plan.rows if (row.key.variant, row.key.step) == (key.variant, step) and all(
+        picked = {
+            row.key.row for row in rows if all(
                 (coordinate := row.coordinates.get(other)) is not None and coordinate.value_id in ids
                 for other, ids in scope.axes.items()
             )
         }
     elif isinstance(scope, EvaluateAttachmentRows):
         axis["where"] = {"rows": sorted(set(scope.rows))}
-        divided = set(scope.rows)
+        picked = set(scope.rows)
     elif scope is not None:
         raise ProjectFolderInvalid("Duplicate Run is made for runs of the default variant.")
-    exceptions = {}
-    for exception_name, exception in sweep.get("exceptions", {}).items():
-        where = (exception or {}).get("where") or {}
-        if "rows" in where:
-            where = where | {"rows": [
-                renamed for row in where["rows"]
-                for renamed in ((_divided(row, name, "run"), _divided(row, name, "run-2")) if row in divided else (row,))
-            ]}
-            exception = exception | {"where": where}
-        exceptions[exception_name] = exception
-    updated = sweep | {"axes": axes | {name: axis}} | ({"exceptions": exceptions} if exceptions else {})
-    files = [file_value(address, raw, ("sweep",), updated), *_readers_kept(project, plan, step, divided, name)]
-    return StoredEdit(files), StudioAxisValue(axis=name, value="run-2")
+    else:
+        picked = ids
+    copies = {row: _divided(row, name, value) for row in picked}
+    updated = sweep | {"axes": axes | {name: axis}}
+    return StoredEdit([_with_sweep(address, raw, updated, copies)]), StudioAxisValue(axis=name, value=value)
 
 
-def _readers_kept(
-    project: Project, plan, step: str, divided: set[str], axis: str,
-) -> list[StudioProjectFilePatch]:
-    """Keep every step that names a row of ``step`` by id on the original of that row, which becomes ``axis=run``.
-
-    A `StepBase.row` is rewritten. A `StepReference` keeps each selected row's member key, which its reader's rows and
-    requests are keyed by, so its `row` shorthand becomes the single row of its `where`.
-    """
-    def kept(value):
-        if isinstance(value, list):
-            return [kept(item) for item in value]
-        if not isinstance(value, dict):
-            return value
-        value = {key: kept(item) for key, item in value.items()}
-        if value.get("step") != step:
-            return value
-        if value.get("row") in divided:
-            if len(plan.variants) > 1:
-                raise ProjectFolderInvalid(f"A step names run {value['row']} of {step} in every variant.")
-            value["where"] = {"rows": [{"key": value["row"], "variant": plan.variants[0], "row": value["row"]}]}
-            del value["row"]
-        where = value.get("where")
-        if isinstance(where, dict) and "subset" in where and _composed(project, where["subset"]).get("rows"):
-            raise ProjectFolderInvalid(f"Subset {where['subset']} names runs of {step} by id.")
-        if isinstance(where, dict) and where.get("rows"):
-            value["where"] = where | {"rows": [
-                row | {"row": _divided(row["row"], axis, "run")} if row["row"] in divided else row
-                for row in where["rows"]
-            ]}
-        return value
-
-    files = []
-    for name in project.steps:
-        address, raw = _step_raw(project, name)
-        patches = []
-        base = raw.get("base")
-        if isinstance(base, dict) and base.get("step") == step and base.get("row") in divided:
-            patches += file_value(address, raw, ("base", "row"), _divided(base["row"], axis, "run")).patches
-        if "inputs" in raw and (inputs := kept(raw["inputs"])) != raw["inputs"]:
-            patches += file_value(address, raw, ("inputs",), inputs).patches
-        if patches:
-            files.append(StudioProjectFilePatch(address=address, patches=patches))
-    return files
+def _optional_value_added(project: Project, address, raw, name: str, axis, kept: set[str]):
+    """Another copy of the rows an optional axis applies to: a value with no differences."""
+    sweep = raw["sweep"]
+    if isinstance(axis, SetAxis):
+        content = _composed(project, axis.set)
+        entries = content["entries"]
+        value = generated_name(name, lambda key: key == name or key in entries)
+        edits = content_edits(content, content | {"entries": entries | {value: {"differences": {}}}})
+        return set_document_write(project, axis.set, edits, set_readers(project, axis.set)), StudioAxisValue(
+            axis=name, value=value,
+        )
+    values = sweep["axes"][name]["values"]
+    value = generated_name(name, lambda key: key == name or key in values)
+    updated = sweep | {"axes": sweep["axes"] | {name: sweep["axes"][name] | {"values": values | {value: {}}}}}
+    copies = {row: _divided(row, name, value) for row in kept}
+    return StoredEdit([_with_sweep(address, raw, updated, copies)]), StudioAxisValue(axis=name, value=value)
 
 
 def _save_set(project: Project, command: SaveSet) -> StoredEdit:
@@ -209,7 +217,10 @@ def _save_set(project: Project, command: SaveSet) -> StoredEdit:
         schema=SET_DOCUMENT_SCHEMA_ID, payload=document.model_dump(mode="json", exclude_unset=True),
     ))
     address, raw = _step_raw(project, command.step)
-    reading = {"set": name} | ({"where": axis.where.model_dump(mode="json")} if axis.where is not None else {})
+    reading = (
+        {"set": name} | ({"where": axis.where.model_dump(mode="json")} if axis.where is not None else {})
+        | ({"optional": True} if axis.optional else {})
+    )
     file = file_value(address, raw, ("sweep", "axes", command.axis), reading)
     return StoredEdit([file], (created,))
 
@@ -223,6 +234,7 @@ def _inline_set(project: Project, command: InlineSet) -> StoredEdit:
         raise ProjectFolderInvalid(f"{command.step} reads no Model document of its own.")
     try:
         inline = axis_from_set(read_set(project.documents.get, axis.set), *model, axis.where)
+        inline.optional = axis.optional
     except ValueError as error:
         raise ProjectFolderInvalid(str(error)) from error
     address, raw = _step_raw(project, command.step)
@@ -247,6 +259,10 @@ def _remove_value(project: Project, command: RemoveAxisValue) -> StoredEdit:
         entries = content["entries"]
         if command.value not in entries:
             raise ProjectFolderInvalid(f"{axis.set} has no entry {command.value}.")
+        if len(entries) == 1 and axis.optional:
+            return StoredEdit([_with_axes(address, raw, {
+                name: item for name, item in raw["sweep"]["axes"].items() if name != command.axis
+            })])
         if len(entries) == 1:
             raise ProjectFolderInvalid("A set keeps at least one entry.")
         kept = {name: entry for name, entry in entries.items() if name != command.value}
@@ -258,7 +274,9 @@ def _remove_value(project: Project, command: RemoveAxisValue) -> StoredEdit:
     values = {name: value for name, value in raw["sweep"]["axes"][command.axis]["values"].items() if name != command.value}
     remaining = [value for value in values.values() if value is not None]
     axes = dict(raw["sweep"]["axes"])
-    if len(remaining) == 1 and not remaining[0].get("patches") and remaining[0].get("value") is None:
+    if not remaining or len(remaining) == 1 and not axis.optional and not remaining[0].get("patches") and remaining[
+        0
+    ].get("value") is None:
         axes.pop(command.axis)
     else:
         axes[command.axis] = axes[command.axis] | {"values": values}

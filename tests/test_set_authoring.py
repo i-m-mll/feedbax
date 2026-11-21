@@ -118,25 +118,40 @@ def test_duplicate_run_selected_by_a_carried_coordinate_is_conditioned_on_it(stu
     _duplicate(folders, client, "over", [row], {"rate": ["r3"]})
     after = _rows(folders, "over")
     assert len(after) == 6
-    assert sorted(key for key, row in after.items() if row.coordinates["rate"].value_id == "r3") == sorted(
-        key for key, row in after.items() if "run" in row.coordinates and row.coordinates["rate"].value_id == "r3"
-    )
+    copies = [key for key, row in after.items() if "run" in row.coordinates]
+    assert [after[key].coordinates["rate"].value_id for key in copies] == ["r3"]
+    assert row in after and "run" not in after[row].coordinates
 
 
-def test_duplicate_run_keeps_the_steps_that_select_its_runs_by_id_on_the_same_runs(studio):
+def test_duplicate_run_keeps_every_run_and_every_reader_of_it(studio):
     folders, client = studio
-    before = {step: _runs(folders, step) for step in ("pair", "one")}
+    readers = ("pair", "one", "over")
+    before = {step: _runs(folders, step) for step in ("five", *readers)}
+    authored = {step: folders.read(PROJECT).project.steps[step] for step in readers}
     assert len(before["pair"]) == 2
     _duplicate(folders, client, "five")
-    assert len(_runs(folders, "five")) == 10
-    assert {step: _runs(folders, step) for step in ("pair", "one")} == before
-    project = folders.read(PROJECT).project
-    assert project.steps["one"].inputs["subject"].where.rows[0].model_dump() == {
-        "key": "rate=r2", "variant": "default", "row": "rate=r2--run=run",
-    }
-    assert [row.row for row in project.steps["pair"].inputs["subject"].where.rows] == [
-        "rate=r1--run=run", "rate=r3--run=run",
-    ]
+    after = {step: _runs(folders, step) for step in ("five", *readers)}
+    assert len(after["five"]) == 10 and before["five"].items() <= after["five"].items()
+    assert set(after["five"].values()) == set(before["five"].values())
+    assert {step: after[step] for step in ("pair", "one")} == {step: before[step] for step in ("pair", "one")}
+    assert before["over"].items() <= after["over"].items() and len(after["over"]) == 10
+    assert {step: folders.read(PROJECT).project.steps[step] for step in readers} == authored
+
+
+def test_a_reader_of_every_run_keeps_its_own_exceptions_after_a_duplicate(studio):
+    folders, client = studio
+    row = sorted(_runs(folders, "over"))[0]
+    revision = folders.read(PROJECT).revision
+    written = client.patch(BASE, json={"revision": revision, "files": [{
+        "address": {"kind": "step", "id": "over"},
+        "patches": [{"op": "add", "path": "/sweep/exceptions", "value": {"drop": {"where": {"rows": [row]}, "exclude": True}}}],
+    }]})
+    assert written.status_code == 200, written.text
+    assert len(_runs(folders, "over")) == 4
+    _duplicate(folders, client, "five")
+    plan = folders.read_plan(PROJECT, revision=None).plan
+    assert not [problem for problem in plan.diagnostics if problem.step == "over"]
+    assert row not in _runs(folders, "over") and len(_runs(folders, "over")) == 9
 
 
 def test_a_set_made_by_duplicate_run_is_edited_saved_applied_narrowed_and_inlined(studio, tmp_path):
@@ -147,7 +162,7 @@ def test_a_set_made_by_duplicate_run_is_edited_saved_applied_narrowed_and_inline
     assert _duplicate(folders, client, "baseline") == {"axis": "run", "value": "run-2"}
     assert _duplicate(folders, client, "baseline", ["run=run-2"], {"run": ["run-2"]}) == {"axis": "run", "value": "run-3"}
     copies = _runs(folders, "baseline")
-    assert sorted(copies) == ["run=run", "run=run-2", "run=run-3"]
+    assert sorted(copies) == ["default", "run=run-2", "run=run-3"]
     assert set(copies.values()) == {original}
 
     _model_edit(folders, client, "baseline", "reach-model", INSERT, ["run=run-2"], {"run": ["run-2"]})
@@ -159,13 +174,14 @@ def test_a_set_made_by_duplicate_run_is_edited_saved_applied_narrowed_and_inline
     created = _set_edit(folders, client, {"kind": "save_set", "step": "baseline", "axis": "run"})["created"]
     assert [item["id"] for item in created] == ["set"]
     assert _runs(folders, "baseline") == edited
+    assert folders.read(PROJECT).project.steps["baseline"].sweep.axes["run"].optional
 
     revision = folders.read(PROJECT).revision
     offered = client.post(f"{BASE}/authoring/sets-offered", json={"revision": revision, "step": "other"})
     assert offered.json() == {"sets": ["set"]}
     _set_edit(folders, client, {"kind": "apply_set", "step": "other", "set": "set"})
     other = _runs(folders, "other")
-    assert sorted(other) == ["set=run", "set=run-2", "set=run-3"]
+    assert sorted(other) == ["set=run-2", "set=run-3"]
 
     field = {"op": "set_field", "address": {"composites": [], "element": {
         "kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"],
@@ -181,7 +197,8 @@ def test_a_set_made_by_duplicate_run_is_edited_saved_applied_narrowed_and_inline
     assert result["snapshot"]["revision"] == folders.read(PROJECT).revision
 
     _set_edit(folders, client, {"kind": "inline_set", "step": "baseline", "axis": "run"})
-    assert "set" not in folders.read(PROJECT).project.steps["baseline"].sweep.axes["run"].model_fields_set
+    inlined = folders.read(PROJECT).project.steps["baseline"].sweep.axes["run"]
+    assert "set" not in inlined.model_fields_set and inlined.optional
     assert _runs(folders, "baseline") == edited
     assert not any("model_attachments" in path.read_text() for path in (tmp_path / PROJECT).rglob("*.json"))
 

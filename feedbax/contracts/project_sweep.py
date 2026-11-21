@@ -190,6 +190,9 @@ class AxisCondition(StrictModel):
 class NamedAxis(StrictModel):
     values: dict[ProjectName, AxisValue | None]
     where: AxisCondition | None = None
+    optional: bool = Field(default=False, exclude_if=lambda optional: not optional)
+    """A row an optional axis applies to is kept as it is, with no value on the axis, and one row per value is added
+    beside it."""
 
 
 class InputAxis(StrictModel):
@@ -245,6 +248,7 @@ class SetAxis(StrictModel):
 
     set: ProjectName
     where: AxisCondition | None = None
+    optional: bool = Field(default=False, exclude_if=lambda optional: not optional)
 
 
 type Axis = NamedAxis | InputAxis | ListedAxis | RangeAxis | SampledAxis | CheckpointRuleAxis | SetAxis
@@ -361,8 +365,11 @@ def inherit_sweep(
                     values.pop(key, None)
                 else:
                     values[key] = _merge_value(values.get(key), value, author)
-            where = axis.where if "where" in axis.model_fields_set or not isinstance(prior, NamedAxis) else prior.where
-            axes[name] = NamedAxis(values=values, where=where)
+            kept = {
+                field: getattr(axis if field in axis.model_fields_set or not isinstance(prior, NamedAxis) else prior, field)
+                for field in ("where", "optional")
+            }
+            axes[name] = NamedAxis(values=values, **kept)
         elif isinstance(axis, (GeneratedAxis, CheckpointRuleAxis)) and author is not None:
             generated = axis.model_copy()
             generated._author = author
@@ -681,12 +688,28 @@ def _condition(axis: Axis) -> AxisCondition | None:
     return axis.where if isinstance(axis, NamedAxis | GeneratedAxis | SetAxis) else None
 
 
+def _optional(axis: Axis) -> bool:
+    return isinstance(axis, NamedAxis | SetAxis) and axis.optional
+
+
+def _divides(axis: Axis) -> bool:
+    """Whether the axis adds rows to the combination of the others, rather than being one of its factors."""
+    return _condition(axis) is not None or _optional(axis)
+
+
 def _conditional_order(axes: Mapping[str, Axis]) -> tuple[str, ...]:
-    """The conditioned axes, each after the conditioned axes it depends on; a condition names other axes only."""
+    """The conditioned and optional axes, each after those it depends on; a condition names other axes only.
+
+    An optional axis without a condition applies to every row, so it follows every such axis authored before it.
+    """
     graph: dict[str, set[str]] = {}
     earlier: list[str] = []
     for name, axis in axes.items():
+        if not _divides(axis):
+            continue
         if (where := _condition(axis)) is None:
+            graph[name] = set(earlier)
+            earlier.append(name)
             continue
         for other in where.axes:
             if other == name:
@@ -694,7 +717,7 @@ def _conditional_order(axes: Mapping[str, Axis]) -> tuple[str, ...]:
                     SweepExpansionCode.INVALID_CONDITION, f"sweep.axes.{name}.where.axes.{other}",
                     f"axis {name!r} is conditioned on itself",
                 )
-        graph[name] = {other for other in where.axes if other in axes and _condition(axes[other]) is not None}
+        graph[name] = {other for other in where.axes if other in axes and _divides(axes[other])}
         if where.rows is not None:
             graph[name] |= set(earlier)
         earlier.append(name)
@@ -968,7 +991,7 @@ def _generated_row_id(values: Mapping[str, str]) -> str:
 def _expanded(axes: Mapping[str, Axis], selection: Mapping[str, _AxisChoice]) -> ExpandedRow:
     """The row of one value per axis in ``selection``; an axis it has no value on is absent from its ID and label."""
     axis_value_ids = {name: choice.key for name, choice in selection.items()}
-    row_id = _generated_row_id(axis_value_ids)
+    row_id = _generated_row_id(axis_value_ids) if axis_value_ids else DEFAULT_SWEEP_ROW
     coordinates: dict[str, SweepCoordinate] = {}
     patches: dict[str, PatchValue] = {}
     origins: dict[str, PatchOrigin] = {}
@@ -1013,7 +1036,7 @@ def _expanded(axes: Mapping[str, Axis], selection: Mapping[str, _AxisChoice]) ->
             patches[path] = patch
         authors.update(choice.patch_authors)
     return ExpandedRow(
-        row_id, ", ".join(labels), coordinates, patches, bindings, origins, authors, axis_value_ids
+        row_id, ", ".join(labels) or None, coordinates, patches, bindings, origins, authors, axis_value_ids
     )
 
 
@@ -1147,16 +1170,20 @@ def _condition_picks(name: str, where: AxisCondition, rows: Sequence[ExpandedRow
 def _conditioned(
     plan: _SweepPlan, choices: Mapping[str, Sequence[_AxisChoice]], max_rows: int,
 ) -> list[tuple[dict[str, _AxisChoice], ExpandedRow]]:
-    """The combination's rows, each row a conditional axis picks divided into one row per value of the axis."""
+    """The combination's rows, each row a conditional axis picks divided into one row per value of the axis.
+
+    A row an optional axis picks is kept, and one row per value of the axis is added after it.
+    """
     pairs = [(selection, _expanded(plan.axes, selection)) for selection in plan.selections(choices)]
     for name in plan.conditional:
-        where = _condition(plan.axes[name])
-        assert where is not None
-        picks = _condition_picks(name, where, [row for _, row in pairs])
+        axis = plan.axes[name]
+        where = _condition(axis)
+        picks = (True,) * len(pairs) if where is None else _condition_picks(name, where, [row for _, row in pairs])
         divided = []
         for (selection, row), picked in zip(pairs, picks, strict=True):
-            if not picked:
+            if not picked or _optional(axis):
                 divided.append((selection, row))
+            if not picked:
                 continue
             for choice in choices[name]:
                 chosen = selection | {name: choice}
