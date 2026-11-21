@@ -101,9 +101,10 @@ def check_typed_payload(schema_id: str, payload: JsonValue) -> None:
 
 
 class RootDocument(StrictModel):
-    """A document whose file holds its whole payload."""
+    """A document whose file holds its whole payload. ``label`` is only what Studio shows, and enters no request."""
 
     schema_id: NonemptyText = Field(alias="schema")
+    label: NonemptyText | None = Field(default=None, exclude_if=lambda value: value is None)
     payload: JsonValue
 
     @model_validator(mode="after")
@@ -139,10 +140,12 @@ class BasedDocument(StrictModel):
     """A document whose payload is its base's composed payload with ``differences`` applied.
 
     Each difference sets or removes the value at one JSON pointer into the payload. No difference
-    lies under another, and none passes through a list: a list is one value.
+    lies under another, and none passes through a list: a list is one value. ``label`` is the document's own, not
+    its base's, and enters no request.
     """
 
     schema_id: NonemptyText = Field(alias="schema")
+    label: NonemptyText | None = Field(default=None, exclude_if=lambda value: value is None)
     base: DocumentBase
     differences: Differences = Field(default_factory=dict)
 

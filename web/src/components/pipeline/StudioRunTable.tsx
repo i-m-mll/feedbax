@@ -16,7 +16,7 @@ import { ScrollFade } from "@/components/ui/ScrollFade";
 import { Table, TableCell, TableHeaderCell, TableRow, TableRowHeader } from "@/components/ui/Table";
 import { CommandContextMenu, type RunMenu } from "./CommandContextMenu";
 import type { AxisMenu } from "./PipelineRunMarks";
-import { DocumentPicker } from "@/features/projectWindow/DocumentPicker";
+import { DocumentPicker, type DocumentEditing } from "@/features/projectWindow/DocumentPicker";
 
 const gutter = "w-px pl-1 pr-2 text-right";
 
@@ -60,7 +60,7 @@ interface TableProps extends RunSelectionProps {
 
 /** A sweep's column head: the axis, the set it reads, and the axis's context menu. */
 function AxisHead({ step, sweep, axisMenu }: { step: string; sweep: PlanSweepView; axisMenu?: AxisMenu }) {
-  const [editing, setEditing] = useState<string>();
+  const [editing, setEditing] = useState<DocumentEditing>();
   const authored = axisMenu?.(step, sweep.id);
   const head = <TableHeaderCell scope="col">
     {authored?.picker ? <DocumentPicker model={authored.picker} editing={editing} setEditing={setEditing} /> : sweep.label}

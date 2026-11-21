@@ -139,7 +139,7 @@ function MapAxisLabel({
           <MenuSeparator />
           <MenuRadioGroup value={picker.document}
             onValueChange={(next: string) => { if (next !== picker.document) picker.choose?.(next); }}>
-            {picker.documents.map(({ name, depth }) => <MenuRadioItem key={name} value={name} disabled={!picker.choose}>
+            {picker.documents.map(({ key, name, depth }) => <MenuRadioItem key={key} value={key} disabled={!picker.choose}>
               <span style={depth ? { paddingInlineStart: `${depth}rem` } : undefined}>{name}</span>
             </MenuRadioItem>)}
           </MenuRadioGroup>

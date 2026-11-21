@@ -2602,6 +2602,7 @@ export type Base = InlineBase | DocumentReference | StepBase | RunBase | Externa
 
 export type BasedDocument = {
   "schema": string;
+  "label"?: string | null;
   "base": DocumentBase;
   "differences"?: Differences;
 };
@@ -3273,7 +3274,7 @@ export type RemoveValue = {
 };
 
 export type RenameMember = {
-  "family": "steps" | "elements";
+  "family": KeyedFamily;
   "member": string;
   "document"?: string | null;
   "kind": "rename";
@@ -3308,6 +3309,7 @@ export type ReportText = {
 
 export type RootDocument = {
   "schema": string;
+  "label"?: string | null;
   "payload": JsonValue;
 };
 
@@ -8983,6 +8985,7 @@ export const BaseSchema: z.ZodType<Base> = z.lazy(() =>
 export const BasedDocumentSchema: z.ZodType<BasedDocument> = z.lazy(() =>
   z.object({
     "schema": z.string().min(1),
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "base": DocumentBaseSchema,
     "differences": DifferencesSchema.optional(),
   }).strict()
@@ -9902,7 +9905,7 @@ export const RemoveValueSchema: z.ZodType<RemoveValue> = z.lazy(() =>
 
 export const RenameMemberSchema: z.ZodType<RenameMember> = z.lazy(() =>
   z.object({
-    "family": z.union([z.literal("steps"), z.literal("elements")]),
+    "family": KeyedFamilySchema,
     "member": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "document": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
     "kind": z.literal("rename"),
@@ -9949,6 +9952,7 @@ export const ReportTextSchema: z.ZodType<ReportText> = z.lazy(() =>
 export const RootDocumentSchema: z.ZodType<RootDocument> = z.lazy(() =>
   z.object({
     "schema": z.string().min(1),
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "payload": jsonValueSchema,
   }).strict()
 ) as unknown as z.ZodType<RootDocument>;

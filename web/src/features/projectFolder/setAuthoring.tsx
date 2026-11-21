@@ -4,7 +4,7 @@ import { studioAccessibleName, studioName } from '@/components/activity/studioVo
 import type { BarControl } from '@/components/ui/CommandBar';
 import { MenuGroup, MenuGroupLabel, MenuItem, MenuRadioGroup, MenuRadioItem, MenuSeparator } from '@/components/ui/Menu';
 import { Select } from '@/components/ui/Select';
-import type { PlanRunView, PlanStepView } from '@/features/pipeline/planView';
+import { shownName, type PlanRunView, type PlanStepView } from '@/features/pipeline/planView';
 import { selectSweepValue, selectedRuns, type PipelineSelectionState } from '@/features/pipeline/selection';
 import type { DocumentPickerModel } from '@/features/projectWindow/DocumentPicker';
 import { bindStudioCommand, type StudioCommand } from '@/features/projectWindow/studioCommands';
@@ -102,7 +102,8 @@ export function setAuthoring({ editor, project, enabled, perform, state, select 
       patches: [{ op: 'replace', path: authoredPointer(['sweep', 'axes', axis, 'set']), value: next }],
     }], { reviewedRevision: editor.getSnapshot().saved.revision, dependencies: [{ kind: 'document', id: next }] });
     return {
-      label: 'setDocument', document, documents: documentTreeOf(project, [setSchema]),
+      label: 'setDocument', document, name: shownName(document, project.documents?.[document]),
+      documents: documentTreeOf(project, [setSchema]),
       choose: enabled ? (next) => {
         void perform(async () => {
           const stored = await point(next);
@@ -123,10 +124,16 @@ export function setAuthoring({ editor, project, enabled, perform, state, select 
         }, refuseStep(step));
         return copy;
       } : undefined,
-      rename: enabled ? (name) => {
+      rename: enabled ? (label) => {
         void perform(async () => {
           await editor.memberCommand(studioAccessibleName('rename', kind),
-            { kind: 'change_key', family: 'documents', member: document, key: name }, editor.getSnapshot().saved);
+            { kind: 'rename', family: 'documents', member: document, label }, editor.getSnapshot().saved);
+        }, refuseStep(step));
+      } : undefined,
+      changeKey: enabled ? (key) => {
+        void perform(async () => {
+          await editor.memberCommand(studioAccessibleName('changeKey', kind),
+            { kind: 'change_key', family: 'documents', member: document, key }, editor.getSnapshot().saved);
         }, refuseStep(step));
       } : undefined,
       detach: enabled && 'base' in (project.documents?.[document] ?? {}) ? () => {

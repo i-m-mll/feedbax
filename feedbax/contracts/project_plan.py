@@ -359,6 +359,7 @@ class PlannedStep:
     authored_inputs: Mapping[str, InputBinding | None]
     inputs: Mapping[str, InputBinding] | None = None
     sweep: Sweep | None = field(default=None, compare=False)
+    label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -844,6 +845,23 @@ def _train_model_definition(definition: SelectedRunDefinition, model: _ModelSour
             if not definition.document_ids.get("payload." + ".".join(prefix)):
                 sources[pointer(("payload", *prefix, *field))] = source
     return replace(definition, payload=payload, sources=MappingProxyType(sources))
+
+
+def _refused_difference(
+    model: _EvaluationModel, trained: ModelDocument, components: ComponentRegistry, functions,
+) -> ModelAddress | None:
+    """Address the first of an Evaluate Model document's differences that the trained model refuses on its own."""
+    from feedbax.compiler.model_attachment import lower_evaluate_attachments
+
+    for pointer, difference in model.differences.items():
+        try:
+            evaluated = ModelDocument.model_validate(
+                apply_differences(trained.model_dump(mode="json"), {pointer: difference}),
+            )
+            lower_evaluate_attachments(trained, evaluated, None, components, (), functions=functions)
+        except ValueError:
+            return ModelAddress.at_stored_path(json_pointer_parts(pointer))
+    return None
 
 
 def _model_difference_problem(
@@ -2439,9 +2457,14 @@ class _Compiler:
                     )
                 except ValueError as error:
                     return _model_difference_problem(key, model.document, None, str(error), path=EVALUATION_MODEL)
-            before, lowered, derived = lower_evaluate_attachments(
-                model_source.model, evaluated, None, components, differences, functions=self.functions,
-            )
+            try:
+                before, lowered, derived = lower_evaluate_attachments(
+                    model_source.model, evaluated, None, components, differences, functions=self.functions,
+                )
+            except ValueError as error:
+                if model is not None and not isinstance(error, ModelCompilationProblem):
+                    address = _refused_difference(model, model_source.model, components, self.functions)
+                raise
             raw_params = payload["params"]
             params = authored_rollout_settings(raw_params)
             if not derived:
@@ -2480,7 +2503,7 @@ class _Compiler:
         project = self.variants[variant]
         authored = project.steps[name]
         kind = authored.kind
-        step = PlannedStep(kind, authored.group, MappingProxyType(deepcopy(authored.inputs)))
+        step = PlannedStep(kind, authored.group, MappingProxyType(deepcopy(authored.inputs)), label=authored.label)
         self.steps[variant, name] = step
         wanted = self.wanted_sources.get((variant, name), set())
         role = _ROLES.get(kind)
