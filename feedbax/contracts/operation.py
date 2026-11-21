@@ -19,8 +19,26 @@ class DatasetPort(StrictModel):
     coordinates: dict[str, FieldDescriptor] = Field(default_factory=dict)
 
 
+class WholeDimensions(StrictModel):
+    """The operation parameter whose value lists the label dimensions the port takes whole."""
+
+    parameter: str = Field(min_length=1)
+
+
+type Takes = Literal["all", "one"] | WholeDimensions
+"""What a dataset port takes of each label dimension of what is bound: the whole stack (``all``), one member
+(``one``), or the dimensions a parameter lists. The operation is one request per combination of the labels it takes
+one element of."""
+
+
 class DatasetInputPort(DatasetPort):
     kind: Literal["dataset"] = "dataset"
+    takes: Takes = "all"
+
+
+class DatasetOutputPort(DatasetPort):
+    carries: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    """The input role whose labelled entries the output carries, when roles it takes whole carry different ones."""
 
 
 class ModelPort(StrictModel):
@@ -61,7 +79,7 @@ class OperationDefinition(StrictModel):
     parameter_json_schema: dict[str, JsonValue]
     static_parameters: tuple[str, ...]
     inputs: dict[str, OperationInputPort]
-    outputs: dict[str, DatasetPort]
+    outputs: dict[str, DatasetOutputPort]
     numerical: JaxOperation | None = None
 
 def require_dataset_port(actual: DatasetPort, expected: DatasetPort, *, fields: bool = True) -> None:

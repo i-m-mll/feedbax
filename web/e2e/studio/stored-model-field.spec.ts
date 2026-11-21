@@ -91,6 +91,7 @@ test('edits and reopens a stored Model field sweep through project history', asy
   await model.focus();
   await page.keyboard.press('Meta+Shift+Z');
   await expect.poll(async () => JSON.stringify(axis(await saved()))).toContain('"value":100');
+  await expect(hidden).toHaveValue('64, 100, 128');
 
   await enter(hidden, '100');
   await expect(inspector.getByRole('button', { name: 'Hidden size kind: Value', exact: true })).toBeVisible();

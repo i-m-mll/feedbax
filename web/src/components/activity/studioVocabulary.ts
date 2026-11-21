@@ -255,7 +255,7 @@ export function studioPlaceName(place: StudioPlace | null) {
     case 'task': return place.parameter ? humanizeLabel(place.parameter) : studioName('task');
     case 'objective': return studioName('objective');
     case 'training': return place.setting ? humanizeLabel(place.setting) : studioName('training');
-    case 'method': return studioName('trainingMethod');
+    case 'method': return place.setting ? humanizeLabel(place.setting.split('.').at(-1)!) : studioName('trainingMethod');
     case 'analysis': return humanizeLabel(place.element);
     case 'input': return humanizeLabel(place.role);
     case 'step': return place.field ? humanizeLabel(place.field) : studioName('step');

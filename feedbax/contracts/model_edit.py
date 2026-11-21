@@ -8,7 +8,7 @@ from pydantic import Field, StringConstraints, model_validator
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.model_address import ModelAddress, ModelElementId, SignalSource, SignalTarget
-from feedbax.contracts.model_attachment import EditableModelDifference, ModelAttachmentDifference, SetField as SetField
+from feedbax.contracts.model_attachment import ModelAttachmentDifference, SetField as SetField
 from feedbax.contracts.model_document import (
     CompositeComponent, LeafComponent, ModelName, ModelPhysicalConnection,
     ModelDocument, ModelWire, PhysicalPort, SignalInput, SignalOutput, SignalType,
@@ -16,6 +16,7 @@ from feedbax.contracts.model_document import (
 from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import ProjectName, RowKey
+from feedbax.contracts.request_refs import Name
 from feedbax.contracts.studio_project import StudioProjectSnapshot
 from feedbax.contracts.studio_project import StudioProjectFilePatch
 
@@ -271,6 +272,10 @@ class ModelEditRequest(StrictModel):
     made for ``step`` and the ``chosen_steps``, in ``variant`` when it names one other than the default, whose row then
     holds it. ``files`` are step-file patches written in the same transaction, ahead of the command, such as the removal
     of the sweep whose kept value the command sets.
+
+    ``rows`` selects runs of ``step`` in the default variant, ``axes`` the sweep values they are exactly the runs of:
+    the edit applies to the first row's Model and is stored for the selected runs, on the value when they are one value
+    of a named axis or a set's entry, and otherwise on the sweep's exception for them.
     """
 
     revision: Sha256
@@ -280,12 +285,18 @@ class ModelEditRequest(StrictModel):
     step: ProjectName | None = None
     chosen_steps: list[ProjectName] = Field(default_factory=list)
     variant: ProjectName | None = None
+    rows: list[RowKey] = Field(default_factory=list)
+    axes: dict[ProjectName, list[Name]] = Field(default_factory=dict)
     files: list[StudioProjectFilePatch] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _variant_has_step(self) -> ModelEditRequest:
         if self.variant is not None and self.step is None:
             raise ValueError("A Model edit made in a variant is made for a step")
+        if (self.rows or self.axes) and (self.step is None or self.variant is not None):
+            raise ValueError("A Model edit for selected runs is made for a step's runs in the default variant")
+        if self.axes and not self.rows:
+            raise ValueError("Sweep values are given with their runs")
         return self
 
 
@@ -298,40 +309,36 @@ class ModelUndoRequest(StrictModel):
     token: ModelUndoToken
 
 
-class EvaluateAttachmentStep(StrictModel):
+class StepRuns(StrictModel):
     kind: Literal["step"]
 
 
-class EvaluateAttachmentAxis(StrictModel):
+class AxisValueRuns(StrictModel):
     kind: Literal["axis_value"]
     axis: ProjectName
     value: ProjectName
 
 
-class EvaluateAttachmentRows(StrictModel):
+class ListedRuns(StrictModel):
     kind: Literal["rows"]
     rows: Annotated[tuple[RowKey, ...], Field(min_length=1)]
 
 
-class EvaluateAttachmentVariant(StrictModel):
+class VariantRuns(StrictModel):
     kind: Literal["variant"]
     variant: ProjectName
 
 
-EvaluateAttachmentScope = Annotated[
-    EvaluateAttachmentStep | EvaluateAttachmentAxis | EvaluateAttachmentRows | EvaluateAttachmentVariant,
+SelectedRuns = Annotated[
+    StepRuns | AxisValueRuns | ListedRuns | VariantRuns,
     Field(discriminator="kind"),
 ]
 
 
-class EvaluateAttachmentReadRequest(StrictModel):
+class EvaluateModelRequest(StrictModel):
     revision: Sha256
     run: StudioSavedTrainKey
-    scope: EvaluateAttachmentScope
-
-
-class EvaluateAttachmentRequest(EvaluateAttachmentReadRequest):
-    difference: EditableModelDifference
+    scope: SelectedRuns
 
 
 class StudioEvaluateValueSource(StrictModel):
@@ -339,10 +346,9 @@ class StudioEvaluateValueSource(StrictModel):
     step: ProjectName
 
 
-class EvaluateAttachmentState(StrictModel):
+class EvaluateModelState(StrictModel):
     revision: Sha256
     editable: bool
-    records: tuple[ModelAttachmentDifference, ...]
     effective: tuple[ModelAttachmentDifference, ...]
     resolved_model: ModelDocument | None = None
     source: StudioEvaluateValueSource | None = None
@@ -350,12 +356,6 @@ class EvaluateAttachmentState(StrictModel):
     changed_from: ProjectName | None = None
     """The nearest document the read Model document shares with the subject's, when they differ: what the
     evaluation changes is the read document's differences from it."""
-
-
-class EvaluateAttachmentEdit(StrictModel):
-    revision: Sha256
-    changed: ModelAddress
-    file: StudioProjectFilePatch
 
 
 class ModelEditApplied(StrictModel):

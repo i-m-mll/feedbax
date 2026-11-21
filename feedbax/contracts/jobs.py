@@ -360,6 +360,8 @@ class StudioProjectWindowMapProblem(StrictModel):
 class StudioPlanRequestAddress(StrictModel):
     key: StudioSavedTrainKey
     element: str | None = None
+    member: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    """The mapped request of ``element``, when the element maps over labels."""
 
 
 class StudioPlanRequest(StudioPlanRequestAddress):
@@ -392,14 +394,28 @@ class StudioProjectWindowMapFigure(StrictModel):
     caption: str | None
 
 
-class StudioProjectWindowMapElement(StudioSavedLightHistory):
-    key: StudioSavedTrainKey
-    name: str
-    kind: Literal["analyze", "render"]
+class StudioProjectWindowMapRequest(StudioSavedLightHistory):
+    """One request of an Analyze element."""
+
+    labels: dict[str, str] = Field(default_factory=dict, exclude_if=lambda value: not value)
+    """The request's member id, when its element maps over labels: the names of the values of the labels that vary
+    across the element's requests, by label, in label order."""
     request_id: str
     status: JobStatus
     reason: str | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+class StudioProjectWindowMapElement(StrictModel):
+    """An operation or figure of an Analyze row, with its requests: one, or one per combination of the labels it
+    maps over. Its status is their summary."""
+
+    key: StudioSavedTrainKey
+    name: str
+    kind: Literal["analyze", "render"]
+    status: JobStatus
+    reason: str | None = Field(default=None, exclude_if=lambda value: value is None)
     figure: StepReference | None = Field(default=None, exclude_if=lambda value: value is None)
+    requests: list[StudioProjectWindowMapRequest] = Field(min_length=1)
 
 
 class StudioProjectWindowMap(StrictModel):
@@ -414,6 +430,8 @@ class StudioProjectWindowMap(StrictModel):
     analysis_figures: list[StudioProjectWindowMapFigure] = Field(default_factory=list, exclude_if=lambda value: not value)
     detach_refused: list[str] = Field(default_factory=list)
     """Based documents whose Detach would leave an Evaluate step's Model document sharing no document with its subject's."""
+    regroup_refused: list[str] = Field(default_factory=list)
+    """Analyze cards whose Split and Merge are disabled: their document is shared or based, or they are swept."""
 
 
 class StudioSavedTrainRuns(StrictModel):

@@ -414,11 +414,13 @@ export interface StudioSavedTrainRuns {
 export interface StudioPlanRequestAddress {
   key: StudioSavedTrainKey;
   element?: string | null;
+  member?: string | null;
 }
 
 export interface StudioPlanReviewEntry {
   key: StudioSavedTrainKey;
   element?: string | null;
+  member?: string | null;
   request_id: string;
   state: "unchanged" | "changed" | "added" | "removed";
   path?: string | null;
@@ -795,40 +797,26 @@ export interface DuplicateComponents {
   op: "duplicate";
 }
 
-export interface EvaluateAttachmentAxis {
+export interface AxisValueRuns {
   kind: "axis_value";
   axis: string;
   value: string;
 }
 
-export interface EvaluateAttachmentEdit {
-  revision: string;
-  changed: ModelAddress;
-  file: StudioProjectFilePatch;
-}
-
-export interface EvaluateAttachmentReadRequest {
+export interface EvaluateModelRequest {
   revision: string;
   run: StudioSavedTrainKey;
-  scope: EvaluateAttachmentStep | EvaluateAttachmentAxis | EvaluateAttachmentRows | EvaluateAttachmentVariant;
+  scope: StepRuns | AxisValueRuns | ListedRuns | VariantRuns;
 }
 
-export interface EvaluateAttachmentRequest {
-  revision: string;
-  run: StudioSavedTrainKey;
-  scope: EvaluateAttachmentStep | EvaluateAttachmentAxis | EvaluateAttachmentRows | EvaluateAttachmentVariant;
-  difference: AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField;
-}
-
-export interface EvaluateAttachmentRows {
+export interface ListedRuns {
   kind: "rows";
   rows: string[];
 }
 
-export interface EvaluateAttachmentState {
+export interface EvaluateModelState {
   revision: string;
   editable: boolean;
-  records: Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment>;
   effective: Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment>;
   resolved_model?: ModelDocument | null;
   source?: StudioEvaluateValueSource | null;
@@ -841,11 +829,11 @@ export interface StudioEvaluateValueSource {
   step: string;
 }
 
-export interface EvaluateAttachmentStep {
+export interface StepRuns {
   kind: "step";
 }
 
-export interface EvaluateAttachmentVariant {
+export interface VariantRuns {
   kind: "variant";
   variant: string;
 }
@@ -952,6 +940,8 @@ export interface ModelEditRequest {
   step?: string | null;
   chosen_steps?: string[];
   variant?: string | null;
+  rows?: string[];
+  axes?: Record<string, string[]>;
   files?: StudioProjectFilePatch[];
 }
 
@@ -1040,7 +1030,7 @@ export interface ModelFieldRequest {
   revision: string;
   document: string;
   owner: ModelAddress;
-  evaluate_scope?: EvaluateAttachmentStep | EvaluateAttachmentAxis | EvaluateAttachmentRows | EvaluateAttachmentVariant | null;
+  evaluate_scope?: StepRuns | AxisValueRuns | ListedRuns | VariantRuns | null;
   address?: ModelAddress | null;
   edit?: FieldTextEdit | FieldKindEdit | FieldNameEdit | FieldResetEdit | null;
 }
@@ -2535,6 +2525,12 @@ export type AnalyzeTaskInput = {
   "kind": "task";
 };
 
+export type ApplySet = {
+  "kind": "apply_set";
+  "step": string;
+  "set": string;
+};
+
 export type AttemptProvenance = {
   "feedbax_commit": string;
   "feedbax_dirty": boolean;
@@ -2549,10 +2545,11 @@ export type AuthoredFileAddress = {
   "id": string;
 };
 
-export type Axis = NamedAxis | InputAxis | ListedAxis | RangeAxis | SampledAxis | CheckpointRuleAxis;
+export type Axis = NamedAxis | InputAxis | ListedAxis | RangeAxis | SampledAxis | CheckpointRuleAxis | SetAxis;
 
 export type AxisCondition = {
-  "axes": Record<string, Array<string>>;
+  "axes"?: Record<string, Array<string>>;
+  "rows"?: Array<string> | null;
 };
 
 export type AxisGroup = {
@@ -2607,6 +2604,7 @@ export type Base = InlineBase | DocumentReference | StepBase | RunBase | Externa
 
 export type BasedDocument = {
   "schema": string;
+  "label"?: string | null;
   "base": DocumentBase;
   "differences"?: Differences;
 };
@@ -2637,6 +2635,14 @@ export type Cell = {
   "first_epoch": string;
   "last_epoch": string;
   "value": Expression;
+};
+
+export type ChangeKey = {
+  "family": KeyedFamily;
+  "member": string;
+  "document"?: string | null;
+  "kind": "change_key";
+  "key": string;
 };
 
 export type CheckDomain = "code" | "environment";
@@ -2705,6 +2711,15 @@ export type DatasetInputPort = {
   "selected_variables"?: Record<string, FieldDescriptor>;
   "coordinates"?: Record<string, FieldDescriptor>;
   "kind"?: "dataset";
+  "takes"?: Takes;
+};
+
+export type DatasetOutputPort = {
+  "schema_ids": Array<string>;
+  "variables"?: Record<string, FieldDescriptor>;
+  "selected_variables"?: Record<string, FieldDescriptor>;
+  "coordinates"?: Record<string, FieldDescriptor>;
+  "carries"?: string | null;
 };
 
 export type DatasetPort = {
@@ -2739,6 +2754,8 @@ export type Document = RootDocument | BasedDocument;
 export type DocumentBase = {
   "document": string;
 };
+
+export type DocumentEdit = SetProjectValue | RemoveProjectValue | EnsureDocumentCollection;
 
 export type DocumentInputReference = InitialModelReference_DocumentReference_ | TaskDocumentReference_DocumentReference_ | ObjectiveDocumentReference_DocumentReference_;
 
@@ -2778,6 +2795,20 @@ export type DuplicateMember = {
   "family": MemberFamily;
   "member": string;
   "name"?: string | null;
+};
+
+export type DuplicateRun = {
+  "run"?: StudioSavedTrainKey | null;
+  "rows"?: Array<string>;
+  "axes"?: Record<string, Array<string>>;
+  "chosen_steps"?: Array<string>;
+  "kind": "duplicate_run";
+};
+
+export type EnsureDocumentCollection = {
+  "op": "ensure";
+  "path": DifferencePointer;
+  "collection": "object" | "array";
 };
 
 export type EnvironmentChange = "arguments" | "rejected_update" | "output_shape_or_dtype" | "numerical_drift" | "nonfinite_outputs";
@@ -2866,6 +2897,7 @@ export type FigureDocumentView = {
 
 export type FigureElement = {
   "figure": FigureDocument | FigureTemplateRef | DocumentReference;
+  "label"?: string | null;
   "inputs": Record<string, StepInput | OperationDataset>;
 };
 
@@ -2936,11 +2968,17 @@ export type InlineBase = {
   "inline": Payload;
 };
 
+export type InlineSet = {
+  "kind": "inline_set";
+  "step": string;
+  "axis": string;
+};
+
 export type InputAxis = {
   "input": string;
 };
 
-export type InputBinding = Reference | Array<Reference> | Record<string, Reference>;
+export type InputBinding = Reference | Array<StepReference>;
 
 export type InputDifference = {
   "kind"?: "input";
@@ -2957,6 +2995,8 @@ export type JaxOperation = {
 };
 
 export type JobStatus = "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+
+export type KeyedFamily = "documents" | "steps" | "elements";
 
 export type Level = 0 | 1 | 2;
 
@@ -3020,6 +3060,12 @@ export type MatrixCompositionDelta = {
 
 export type MemberFamily = "documents" | "steps";
 
+export type MergeCards = {
+  "kind": "merge";
+  "member": string;
+  "others": Array<string>;
+};
+
 export type ModelPort = {
   "kind"?: "model";
 };
@@ -3034,6 +3080,7 @@ export type NameValue = {
 export type NamedAxis = {
   "values": Record<string, AxisValue | null>;
   "where"?: AxisCondition | null;
+  "optional"?: boolean;
 };
 
 export type NamedFileCreation = CreateNamedDocument | CreateNamedStep;
@@ -3085,12 +3132,13 @@ export type OperationDefinition = {
   "parameter_json_schema": Record<string, JsonValue>;
   "static_parameters": Array<string>;
   "inputs": Record<string, DatasetInputPort | ModelPort | TaskPort>;
-  "outputs": Record<string, DatasetPort>;
+  "outputs": Record<string, DatasetOutputPort>;
   "numerical"?: JaxOperation | null;
 };
 
 export type OperationElement = {
   "operation": string;
+  "label"?: string | null;
   "inputs": Record<string, StepInput | OperationDataset>;
   "params"?: Record<string, JsonValue>;
 };
@@ -3216,6 +3264,13 @@ export type RegistryDifference = {
   "after": RegistryBinding | null;
 };
 
+export type RemoveAxisValue = {
+  "kind": "remove_value";
+  "step": string;
+  "axis": string;
+  "value": string;
+};
+
 export type RemoveDocumentValue = {
   "op": "remove";
 };
@@ -3230,10 +3285,11 @@ export type RemoveValue = {
 };
 
 export type RenameMember = {
-  "kind": "rename";
-  "family": MemberFamily;
+  "family": KeyedFamily;
   "member": string;
-  "name": string;
+  "document"?: string | null;
+  "kind": "rename";
+  "label": string | null;
 };
 
 export type ReplayDeclarationAddress = {
@@ -3264,6 +3320,7 @@ export type ReportText = {
 
 export type RootDocument = {
   "schema": string;
+  "label"?: string | null;
   "payload": JsonValue;
 };
 
@@ -3295,6 +3352,12 @@ export type SampledAxis = {
   "draws"?: Record<string, JsonValue> | null;
 };
 
+export type SaveSet = {
+  "kind": "save_set";
+  "step": string;
+  "axis": string;
+};
+
 export type Scalar = boolean | number;
 
 export type ScopedValue = {
@@ -3308,6 +3371,12 @@ export type SelectedRow = {
   "key": string;
   "variant": string;
   "row": string;
+};
+
+export type SetAxis = {
+  "set": string;
+  "where"?: AxisCondition | null;
+  "optional"?: boolean;
 };
 
 export type SetDocumentValue = {
@@ -3363,6 +3432,12 @@ export type SourcePath = {
   "path": string;
 };
 
+export type SplitCard = {
+  "kind": "split";
+  "member": string;
+  "elements": Array<string>;
+};
+
 export type StartsChanged = {
   "kind"?: "arguments";
   "slots": Array<string>;
@@ -3372,6 +3447,7 @@ export type StateReset = "trial" | "epoch";
 
 export type Step = {
   "kind": StepKind;
+  "label"?: string | null;
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "sweep"?: Sweep | null;
@@ -3441,20 +3517,41 @@ export type StudioAnalyzeAuthoring = {
   "revision": Sha256;
   "document": string;
   "operations": Array<OperationDefinition>;
-  "states": DatasetPort;
+  "states": DatasetPort | null;
   "variables": Record<string, Record<string, Array<string>>>;
   "figure": FigureDocument;
+  "changed"?: Array<Pointer>;
   "files"?: Array<StudioProjectFilePatch>;
+  "created"?: Array<CreateNamedDocument>;
+};
+
+export type StudioAnalyzeChange = StudioAnalyzeWire | StudioAnalyzeEdit | StudioAnalyzeRemove | StudioAnalyzeReset;
+
+export type StudioAnalyzeEdit = {
+  "kind": "edit";
+  "edits": Array<DocumentEdit>;
+};
+
+export type StudioAnalyzeRemove = {
+  "kind": "remove";
+  "element": string;
 };
 
 export type StudioAnalyzeRequest = {
   "revision": Sha256;
   "key": StudioSavedTrainKey;
-  "wire"?: StudioAnalyzeWire | null;
+  "change"?: StudioAnalyzeChange | null;
+  "chosen_steps"?: Array<string>;
+};
+
+export type StudioAnalyzeReset = {
+  "kind": "reset";
+  "paths": Array<Pointer>;
 };
 
 export type StudioAnalyzeStep = {
   "kind": "analyze";
+  "label"?: string | null;
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "sweep"?: Sweep | null;
@@ -3465,6 +3562,7 @@ export type StudioAnalyzeStep = {
 };
 
 export type StudioAnalyzeWire = {
+  "kind": "wire";
   "element": string;
   "role": string;
   "source": StepInput | OperationDataset;
@@ -3556,6 +3654,11 @@ export type StudioAuthoringSurface = {
   "training_methods": Array<StudioAuthoringDeclaration>;
 };
 
+export type StudioAxisValue = {
+  "axis": string;
+  "value": string;
+};
+
 export type StudioBestRankGroup = {
   "coordinates": Record<string, string>;
   "ranks": Array<string>;
@@ -3586,7 +3689,7 @@ export type StudioCheckpointRuleRequest = {
 export type StudioCheckpointRuleSet = {
   "kind": "set";
   "rule": "last" | BatchCheckpoint | UpdateRule;
-  "scope": EvaluateAttachmentAxis | EvaluateAttachmentRows;
+  "scope": AxisValueRuns | ListedRuns;
 };
 
 export type StudioCheckpointRuleToSweep = {
@@ -3635,6 +3738,7 @@ export type StudioDefinitionChange = {
 
 export type StudioEvaluateStep = {
   "kind": "evaluate";
+  "label"?: string | null;
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "sweep"?: Sweep | null;
@@ -3676,7 +3780,7 @@ export type StudioInputPlace = {
 export type StudioMemberCommand = {
   "revision": Sha256;
   "presentation_revision": Sha256;
-  "command": RenameMember | DuplicateMember | DetachMember;
+  "command": RenameMember | ChangeKey | DuplicateMember | DetachMember | SplitCard | MergeCards;
 };
 
 export type StudioMemberCommandResult = {
@@ -3687,6 +3791,7 @@ export type StudioMemberCommandResult = {
 export type StudioMethodPlace = {
   "part": "method";
   "document": string | null;
+  "setting"?: string | null;
 };
 
 export type StudioModelPlace = {
@@ -3703,6 +3808,7 @@ export type StudioObjectivePlace = {
 export type StudioPlanRequest = {
   "key": StudioSavedTrainKey;
   "element"?: string | null;
+  "member"?: string | null;
   "request_id": string;
 };
 
@@ -3780,6 +3886,7 @@ export type StudioProjectWindowMap = {
   "analysis_elements"?: Array<StudioProjectWindowMapElement>;
   "analysis_figures"?: Array<StudioProjectWindowMapFigure>;
   "detach_refused"?: Array<string>;
+  "regroup_refused"?: Array<string>;
 };
 
 export type StudioProjectWindowMapCoordinate = {
@@ -3794,16 +3901,13 @@ export type StudioProjectWindowMapEdge = {
 };
 
 export type StudioProjectWindowMapElement = {
-  "result"?: StudioSavedLightResult | null;
-  "previous"?: StudioSavedLightResult | null;
-  "changed"?: StudioDefinitionChange | null;
   "key": StudioSavedTrainKey;
   "name": string;
   "kind": "analyze" | "render";
-  "request_id": string;
   "status": JobStatus;
   "reason"?: string | null;
   "figure"?: StepReference | null;
+  "requests": Array<StudioProjectWindowMapRequest>;
 };
 
 export type StudioProjectWindowMapException = {
@@ -3839,6 +3943,16 @@ export type StudioProjectWindowMapProblem = {
   "address"?: string | null;
   "layer"?: string | null;
   "authored_path"?: string | null;
+};
+
+export type StudioProjectWindowMapRequest = {
+  "result"?: StudioSavedLightResult | null;
+  "previous"?: StudioSavedLightResult | null;
+  "changed"?: StudioDefinitionChange | null;
+  "labels"?: Record<string, string>;
+  "request_id": string;
+  "status": JobStatus;
+  "reason"?: string | null;
 };
 
 export type StudioProjectWindowMapRow = {
@@ -3904,6 +4018,7 @@ export type StudioReplayPresentation = {
 
 export type StudioReportStep = {
   "kind": "report";
+  "label"?: string | null;
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "sweep"?: Sweep | null;
@@ -3928,6 +4043,27 @@ export type StudioSavedLightResult = {
   "provenance"?: AttemptProvenance | null;
 };
 
+export type StudioSetEdit = {
+  "revision": string;
+  "files": Array<StudioProjectFilePatch>;
+  "created"?: Array<CreateNamedDocument>;
+  "selected"?: StudioAxisValue | null;
+};
+
+export type StudioSetEditRequest = {
+  "revision": string;
+  "command": DuplicateRun | SaveSet | InlineSet | ApplySet | RemoveAxisValue;
+};
+
+export type StudioSetsOffered = {
+  "sets": Array<string>;
+};
+
+export type StudioSetsOfferedRequest = {
+  "revision": string;
+  "step": string;
+};
+
 export type StudioStepPlace = {
   "part": "step";
   "field"?: string | null;
@@ -3942,6 +4078,7 @@ export type StudioSubsetToRowsRequest = {
   "revision": string;
   "variant": string;
   "step": string;
+  "input": string;
   "attempts": Array<string>;
 };
 
@@ -4006,6 +4143,7 @@ export type StudioTrainStartRequest = {
 
 export type StudioTrainStep = {
   "kind": "train";
+  "label"?: string | null;
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "sweep"?: Sweep | null;
@@ -4054,7 +4192,7 @@ export type StudioTrialAuthoringRequest = {
   "revision": Sha256;
   "run": StudioSavedTrainKey;
   "change"?: StudioTrialDocumentEdit | StudioTrialDocumentReset | StudioTrialBindingEdit | StudioTrialSelectDocument | StudioTrialExpressionEdit | null;
-  "scope"?: StudioTrialStepScope | EvaluateAttachmentAxis | EvaluateAttachmentRows | null;
+  "scope"?: StudioTrialStepScope | AxisValueRuns | ListedRuns | null;
 };
 
 export type StudioTrialBindingEdit = {
@@ -4168,6 +4306,8 @@ export type SweepSample = {
 
 export type SweepTarget = string;
 
+export type Takes = "all" | "one" | WholeDimensions;
+
 export type TaskDocument = {
   "id": string;
   "variables": Array<Variable>;
@@ -4273,6 +4413,10 @@ export type When = {
   "metric": string;
   "op": "lt" | "le" | "eq" | "ne" | "ge" | "gt";
   "value": number;
+};
+
+export type WholeDimensions = {
+  "parameter": string;
 };
 
 export const acausalReportDefaults = {
@@ -5022,6 +5166,7 @@ export const StudioPlanRequestAddressSchema: z.ZodType<StudioPlanRequestAddress>
     .object({
       "key": StudioSavedTrainKeySchema,
       "element": z.string().nullable().optional(),
+      "member": z.string().nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioPlanRequestAddress>;
@@ -5031,6 +5176,7 @@ export const StudioPlanReviewEntrySchema: z.ZodType<StudioPlanReviewEntry> = z.l
     .object({
       "key": StudioSavedTrainKeySchema,
       "element": z.string().nullable().optional(),
+      "member": z.string().nullable().optional(),
       "request_id": z.string(),
       "state": z.union([z.literal("unchanged"), z.literal("changed"), z.literal("added"), z.literal("removed")]),
       "path": z.string().nullable().optional(),
@@ -5703,7 +5849,7 @@ export const DuplicateComponentsSchema: z.ZodType<DuplicateComponents> = z.lazy(
     .strict()
 ) as unknown as z.ZodType<DuplicateComponents>;
 
-export const EvaluateAttachmentAxisSchema: z.ZodType<EvaluateAttachmentAxis> = z.lazy(() =>
+export const AxisValueRunsSchema: z.ZodType<AxisValueRuns> = z.lazy(() =>
   z
     .object({
       "kind": z.literal("axis_value"),
@@ -5711,54 +5857,32 @@ export const EvaluateAttachmentAxisSchema: z.ZodType<EvaluateAttachmentAxis> = z
       "value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     })
     .strict()
-) as unknown as z.ZodType<EvaluateAttachmentAxis>;
+) as unknown as z.ZodType<AxisValueRuns>;
 
-export const EvaluateAttachmentEditSchema: z.ZodType<EvaluateAttachmentEdit> = z.lazy(() =>
-  z
-    .object({
-      "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
-      "changed": ModelAddressSchema,
-      "file": StudioProjectFilePatchSchema,
-    })
-    .strict()
-) as unknown as z.ZodType<EvaluateAttachmentEdit>;
-
-export const EvaluateAttachmentReadRequestSchema: z.ZodType<EvaluateAttachmentReadRequest> = z.lazy(() =>
+export const EvaluateModelRequestSchema: z.ZodType<EvaluateModelRequest> = z.lazy(() =>
   z
     .object({
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
       "run": StudioSavedTrainKeySchema,
-      "scope": z.union([EvaluateAttachmentStepSchema, EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema, EvaluateAttachmentVariantSchema]),
+      "scope": z.union([StepRunsSchema, AxisValueRunsSchema, ListedRunsSchema, VariantRunsSchema]),
     })
     .strict()
-) as unknown as z.ZodType<EvaluateAttachmentReadRequest>;
+) as unknown as z.ZodType<EvaluateModelRequest>;
 
-export const EvaluateAttachmentRequestSchema: z.ZodType<EvaluateAttachmentRequest> = z.lazy(() =>
-  z
-    .object({
-      "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
-      "run": StudioSavedTrainKeySchema,
-      "scope": z.union([EvaluateAttachmentStepSchema, EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema, EvaluateAttachmentVariantSchema]),
-      "difference": z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema, SetFieldSchema]),
-    })
-    .strict()
-) as unknown as z.ZodType<EvaluateAttachmentRequest>;
-
-export const EvaluateAttachmentRowsSchema: z.ZodType<EvaluateAttachmentRows> = z.lazy(() =>
+export const ListedRunsSchema: z.ZodType<ListedRuns> = z.lazy(() =>
   z
     .object({
       "kind": z.literal("rows"),
       "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).min(1),
     })
     .strict()
-) as unknown as z.ZodType<EvaluateAttachmentRows>;
+) as unknown as z.ZodType<ListedRuns>;
 
-export const EvaluateAttachmentStateSchema: z.ZodType<EvaluateAttachmentState> = z.lazy(() =>
+export const EvaluateModelStateSchema: z.ZodType<EvaluateModelState> = z.lazy(() =>
   z
     .object({
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
       "editable": z.boolean(),
-      "records": z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema])),
       "effective": z.array(z.union([AddModelAttachmentSchema, ChangeModelAttachmentSchema, RemoveModelAttachmentSchema])),
       "resolved_model": ModelDocumentSchema.nullable().optional(),
       "source": StudioEvaluateValueSourceSchema.nullable().optional(),
@@ -5766,7 +5890,7 @@ export const EvaluateAttachmentStateSchema: z.ZodType<EvaluateAttachmentState> =
       "changed_from": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
     })
     .strict()
-) as unknown as z.ZodType<EvaluateAttachmentState>;
+) as unknown as z.ZodType<EvaluateModelState>;
 
 export const StudioEvaluateValueSourceSchema: z.ZodType<StudioEvaluateValueSource> = z.lazy(() =>
   z
@@ -5777,22 +5901,22 @@ export const StudioEvaluateValueSourceSchema: z.ZodType<StudioEvaluateValueSourc
     .strict()
 ) as unknown as z.ZodType<StudioEvaluateValueSource>;
 
-export const EvaluateAttachmentStepSchema: z.ZodType<EvaluateAttachmentStep> = z.lazy(() =>
+export const StepRunsSchema: z.ZodType<StepRuns> = z.lazy(() =>
   z
     .object({
       "kind": z.literal("step"),
     })
     .strict()
-) as unknown as z.ZodType<EvaluateAttachmentStep>;
+) as unknown as z.ZodType<StepRuns>;
 
-export const EvaluateAttachmentVariantSchema: z.ZodType<EvaluateAttachmentVariant> = z.lazy(() =>
+export const VariantRunsSchema: z.ZodType<VariantRuns> = z.lazy(() =>
   z
     .object({
       "kind": z.literal("variant"),
       "variant": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     })
     .strict()
-) as unknown as z.ZodType<EvaluateAttachmentVariant>;
+) as unknown as z.ZodType<VariantRuns>;
 
 export const AddModelAttachmentSchema: z.ZodType<AddModelAttachment> = z.lazy(() =>
   z
@@ -5992,11 +6116,13 @@ export const ModelEditRequestSchema: z.ZodType<ModelEditRequest> = z.lazy(() =>
       "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
       "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
       "variant": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
+      "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).optional(),
+      "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1))).optional(),
       "files": z.array(StudioProjectFilePatchSchema).optional(),
     })
     .strict()
     .superRefine((input, ctx) => {
-      const value = { ...{"chosen_steps": [], "files": []}, ...input };
+      const value = { ...{"chosen_steps": [], "rows": [], "axes": {}, "files": []}, ...input };
       if (value.variant != null && value.step == null) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -6140,12 +6266,12 @@ export const ModelFieldRequestSchema: z.ZodType<ModelFieldRequest> = z.lazy(() =
     .object({
       "run": StudioSavedTrainKeySchema.nullable().optional(),
       "rows": z.array(z.string()).optional(),
-      "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1)).optional(),
+      "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1)).min(1)).optional(),
       "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
       "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
       "owner": ModelAddressSchema,
-      "evaluate_scope": z.union([EvaluateAttachmentStepSchema, EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema, EvaluateAttachmentVariantSchema]).nullable().optional(),
+      "evaluate_scope": z.union([StepRunsSchema, AxisValueRunsSchema, ListedRunsSchema, VariantRunsSchema]).nullable().optional(),
       "address": ModelAddressSchema.nullable().optional(),
       "edit": z.union([FieldTextEditSchema, FieldKindEditSchema, FieldNameEditSchema, FieldResetEditSchema]).nullable().optional(),
     })
@@ -6313,7 +6439,7 @@ export const TrainFieldRequestSchema: z.ZodType<TrainFieldRequest> = z.lazy(() =
     .object({
       "run": StudioSavedTrainKeySchema.nullable().optional(),
       "rows": z.array(z.string()).optional(),
-      "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1)).optional(),
+      "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1)).min(1)).optional(),
       "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
       "field": z.string().nullable().optional(),
@@ -8782,6 +8908,14 @@ export const AnalyzeTaskInputSchema: z.ZodType<AnalyzeTaskInput> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<AnalyzeTaskInput>;
 
+export const ApplySetSchema: z.ZodType<ApplySet> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("apply_set"),
+    "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "set": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<ApplySet>;
+
 export const AttemptProvenanceSchema: z.ZodType<AttemptProvenance> = z.lazy(() =>
   z.object({
     "feedbax_commit": z.string().min(1),
@@ -8801,12 +8935,13 @@ export const AuthoredFileAddressSchema: z.ZodType<AuthoredFileAddress> = z.lazy(
 ) as unknown as z.ZodType<AuthoredFileAddress>;
 
 export const AxisSchema: z.ZodType<Axis> = z.lazy(() =>
-  z.union([NamedAxisSchema, InputAxisSchema, ListedAxisSchema, RangeAxisSchema, SampledAxisSchema, CheckpointRuleAxisSchema])
+  z.union([NamedAxisSchema, InputAxisSchema, ListedAxisSchema, RangeAxisSchema, SampledAxisSchema, CheckpointRuleAxisSchema, SetAxisSchema])
 ) as unknown as z.ZodType<Axis>;
 
 export const AxisConditionSchema: z.ZodType<AxisCondition> = z.lazy(() =>
   z.object({
-    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1)).refine((entries) => Object.keys(entries).length >= 1, { message: 'expected at least 1 entries' }),
+    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1)).min(1)).optional(),
+    "rows": z.union([z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).min(1), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<AxisCondition>;
 
@@ -8879,6 +9014,7 @@ export const BaseSchema: z.ZodType<Base> = z.lazy(() =>
 export const BasedDocumentSchema: z.ZodType<BasedDocument> = z.lazy(() =>
   z.object({
     "schema": z.string().min(1),
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "base": DocumentBaseSchema,
     "differences": DifferencesSchema.optional(),
   }).strict()
@@ -8921,6 +9057,16 @@ export const CellSchema: z.ZodType<Cell> = z.lazy(() =>
     "value": ExpressionSchema,
   }).strict()
 ) as unknown as z.ZodType<Cell>;
+
+export const ChangeKeySchema: z.ZodType<ChangeKey> = z.lazy(() =>
+  z.object({
+    "family": KeyedFamilySchema,
+    "member": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "document": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+    "kind": z.literal("change_key"),
+    "key": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<ChangeKey>;
 
 export const CheckDomainSchema: z.ZodType<CheckDomain> = z.lazy(() =>
   z.union([z.literal("code"), z.literal("environment")])
@@ -9017,8 +9163,19 @@ export const DatasetInputPortSchema: z.ZodType<DatasetInputPort> = z.lazy(() =>
     "selected_variables": z.record(z.string(), FieldDescriptorSchema).optional(),
     "coordinates": z.record(z.string(), FieldDescriptorSchema).optional(),
     "kind": z.literal("dataset").optional(),
+    "takes": TakesSchema.optional(),
   }).strict()
 ) as unknown as z.ZodType<DatasetInputPort>;
+
+export const DatasetOutputPortSchema: z.ZodType<DatasetOutputPort> = z.lazy(() =>
+  z.object({
+    "schema_ids": z.array(z.string()).min(1),
+    "variables": z.record(z.string(), FieldDescriptorSchema).optional(),
+    "selected_variables": z.record(z.string(), FieldDescriptorSchema).optional(),
+    "coordinates": z.record(z.string(), FieldDescriptorSchema).optional(),
+    "carries": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<DatasetOutputPort>;
 
 export const DatasetPortSchema: z.ZodType<DatasetPort> = z.lazy(() =>
   z.object({
@@ -9066,6 +9223,10 @@ export const DocumentBaseSchema: z.ZodType<DocumentBase> = z.lazy(() =>
     "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
   }).strict()
 ) as unknown as z.ZodType<DocumentBase>;
+
+export const DocumentEditSchema: z.ZodType<DocumentEdit> = z.lazy(() =>
+  z.union([SetProjectValueSchema, RemoveProjectValueSchema, EnsureDocumentCollectionSchema])
+) as unknown as z.ZodType<DocumentEdit>;
 
 export const DocumentInputReferenceSchema: z.ZodType<DocumentInputReference> = z.lazy(() =>
   z.union([InitialModelReference_DocumentReference_Schema, TaskDocumentReference_DocumentReference_Schema, ObjectiveDocumentReference_DocumentReference_Schema])
@@ -9120,6 +9281,24 @@ export const DuplicateMemberSchema: z.ZodType<DuplicateMember> = z.lazy(() =>
     "name": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<DuplicateMember>;
+
+export const DuplicateRunSchema: z.ZodType<DuplicateRun> = z.lazy(() =>
+  z.object({
+    "run": z.union([StudioSavedTrainKeySchema, z.null()]).optional(),
+    "rows": z.array(z.string()).optional(),
+    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1)).min(1)).optional(),
+    "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
+    "kind": z.literal("duplicate_run"),
+  }).strict()
+) as unknown as z.ZodType<DuplicateRun>;
+
+export const EnsureDocumentCollectionSchema: z.ZodType<EnsureDocumentCollection> = z.lazy(() =>
+  z.object({
+    "op": z.literal("ensure"),
+    "path": DifferencePointerSchema,
+    "collection": z.union([z.literal("object"), z.literal("array")]),
+  }).strict()
+) as unknown as z.ZodType<EnsureDocumentCollection>;
 
 export const EnvironmentChangeSchema: z.ZodType<EnvironmentChange> = z.lazy(() =>
   z.union([z.literal("arguments"), z.literal("rejected_update"), z.literal("output_shape_or_dtype"), z.literal("numerical_drift"), z.literal("nonfinite_outputs")])
@@ -9234,6 +9413,7 @@ export const FigureDocumentViewSchema: z.ZodType<FigureDocumentView> = z.lazy(()
 export const FigureElementSchema: z.ZodType<FigureElement> = z.lazy(() =>
   z.object({
     "figure": z.union([FigureDocumentSchema, FigureTemplateRefSchema, DocumentReferenceSchema]),
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([StepInputSchema, OperationDatasetSchema])),
   }).strict()
 ) as unknown as z.ZodType<FigureElement>;
@@ -9325,6 +9505,14 @@ export const InlineBaseSchema: z.ZodType<InlineBase> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<InlineBase>;
 
+export const InlineSetSchema: z.ZodType<InlineSet> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("inline_set"),
+    "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<InlineSet>;
+
 export const InputAxisSchema: z.ZodType<InputAxis> = z.lazy(() =>
   z.object({
     "input": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
@@ -9332,7 +9520,7 @@ export const InputAxisSchema: z.ZodType<InputAxis> = z.lazy(() =>
 ) as unknown as z.ZodType<InputAxis>;
 
 export const InputBindingSchema: z.ZodType<InputBinding> = z.lazy(() =>
-  z.union([ReferenceSchema, z.array(ReferenceSchema), z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), ReferenceSchema)])
+  z.union([ReferenceSchema, z.array(StepReferenceSchema)])
 ) as unknown as z.ZodType<InputBinding>;
 
 export const InputDifferenceSchema: z.ZodType<InputDifference> = z.lazy(() =>
@@ -9356,6 +9544,10 @@ export const JaxOperationSchema: z.ZodType<JaxOperation> = z.lazy(() =>
 export const JobStatusSchema: z.ZodType<JobStatus> = z.lazy(() =>
   z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")])
 ) as unknown as z.ZodType<JobStatus>;
+
+export const KeyedFamilySchema: z.ZodType<KeyedFamily> = z.lazy(() =>
+  z.union([z.literal("documents"), z.literal("steps"), z.literal("elements")])
+) as unknown as z.ZodType<KeyedFamily>;
 
 export const LevelSchema: z.ZodType<Level> = z.lazy(() =>
   z.union([z.literal(0), z.literal(1), z.literal(2)])
@@ -9441,6 +9633,14 @@ export const MemberFamilySchema: z.ZodType<MemberFamily> = z.lazy(() =>
   z.union([z.literal("documents"), z.literal("steps")])
 ) as unknown as z.ZodType<MemberFamily>;
 
+export const MergeCardsSchema: z.ZodType<MergeCards> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("merge"),
+    "member": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "others": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1),
+  }).strict()
+) as unknown as z.ZodType<MergeCards>;
+
 export const ModelPortSchema: z.ZodType<ModelPort> = z.lazy(() =>
   z.object({
     "kind": z.literal("model").optional(),
@@ -9462,6 +9662,7 @@ export const NamedAxisSchema: z.ZodType<NamedAxis> = z.lazy(() =>
   z.object({
     "values": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([AxisValueSchema, z.null()])),
     "where": z.union([AxisConditionSchema, z.null()]).optional(),
+    "optional": z.boolean().optional(),
   }).strict()
 ) as unknown as z.ZodType<NamedAxis>;
 
@@ -9531,7 +9732,7 @@ export const OperationDefinitionSchema: z.ZodType<OperationDefinition> = z.lazy(
     "parameter_json_schema": z.record(z.string(), jsonValueSchema),
     "static_parameters": z.array(z.string()),
     "inputs": z.record(z.string(), z.union([DatasetInputPortSchema, ModelPortSchema, TaskPortSchema])),
-    "outputs": z.record(z.string(), DatasetPortSchema),
+    "outputs": z.record(z.string(), DatasetOutputPortSchema),
     "numerical": z.union([JaxOperationSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<OperationDefinition>;
@@ -9539,6 +9740,7 @@ export const OperationDefinitionSchema: z.ZodType<OperationDefinition> = z.lazy(
 export const OperationElementSchema: z.ZodType<OperationElement> = z.lazy(() =>
   z.object({
     "operation": z.string().min(1),
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([StepInputSchema, OperationDatasetSchema])),
     "params": z.record(z.string(), jsonValueSchema).optional(),
   }).strict()
@@ -9713,6 +9915,15 @@ export const RegistryDifferenceSchema: z.ZodType<RegistryDifference> = z.lazy(()
   }).strict()
 ) as unknown as z.ZodType<RegistryDifference>;
 
+export const RemoveAxisValueSchema: z.ZodType<RemoveAxisValue> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("remove_value"),
+    "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<RemoveAxisValue>;
+
 export const RemoveDocumentValueSchema: z.ZodType<RemoveDocumentValue> = z.lazy(() =>
   z.object({
     "op": z.literal("remove"),
@@ -9734,10 +9945,11 @@ export const RemoveValueSchema: z.ZodType<RemoveValue> = z.lazy(() =>
 
 export const RenameMemberSchema: z.ZodType<RenameMember> = z.lazy(() =>
   z.object({
-    "kind": z.literal("rename"),
-    "family": MemberFamilySchema,
+    "family": KeyedFamilySchema,
     "member": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-    "name": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "document": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+    "kind": z.literal("rename"),
+    "label": z.union([z.string().min(1), z.null()]),
   }).strict()
 ) as unknown as z.ZodType<RenameMember>;
 
@@ -9780,6 +9992,7 @@ export const ReportTextSchema: z.ZodType<ReportText> = z.lazy(() =>
 export const RootDocumentSchema: z.ZodType<RootDocument> = z.lazy(() =>
   z.object({
     "schema": z.string().min(1),
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "payload": jsonValueSchema,
   }).strict()
 ) as unknown as z.ZodType<RootDocument>;
@@ -9822,6 +10035,14 @@ export const SampledAxisSchema: z.ZodType<SampledAxis> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<SampledAxis>;
 
+export const SaveSetSchema: z.ZodType<SaveSet> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("save_set"),
+    "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<SaveSet>;
+
 export const ScalarSchema: z.ZodType<Scalar> = z.lazy(() =>
   z.union([z.boolean(), z.number().int().safe(), z.number().finite()])
 ) as unknown as z.ZodType<Scalar>;
@@ -9842,6 +10063,14 @@ export const SelectedRowSchema: z.ZodType<SelectedRow> = z.lazy(() =>
     "row": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$")),
   }).strict()
 ) as unknown as z.ZodType<SelectedRow>;
+
+export const SetAxisSchema: z.ZodType<SetAxis> = z.lazy(() =>
+  z.object({
+    "set": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "where": z.union([AxisConditionSchema, z.null()]).optional(),
+    "optional": z.boolean().optional(),
+  }).strict()
+) as unknown as z.ZodType<SetAxis>;
 
 export const SetDocumentValueSchema: z.ZodType<SetDocumentValue> = z.lazy(() =>
   z.object({
@@ -9914,6 +10143,14 @@ export const SourcePathSchema: z.ZodType<SourcePath> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<SourcePath>;
 
+export const SplitCardSchema: z.ZodType<SplitCard> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("split"),
+    "member": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "elements": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1),
+  }).strict()
+) as unknown as z.ZodType<SplitCard>;
+
 export const StartsChangedSchema: z.ZodType<StartsChanged> = z.lazy(() =>
   z.object({
     "kind": z.literal("arguments").optional(),
@@ -9928,6 +10165,7 @@ export const StateResetSchema: z.ZodType<StateReset> = z.lazy(() =>
 export const StepSchema: z.ZodType<Step> = z.lazy(() =>
   z.object({
     "kind": StepKindSchema,
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
@@ -9992,7 +10230,7 @@ export const StepReferenceSchema: z.ZodType<StepReference> = z.lazy(() =>
 
 export const StoreSubsetSchema: z.ZodType<StoreSubset> = z.lazy(() =>
   z.object({
-    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")))).optional(),
+    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1))).optional(),
     "best": z.union([BestSchema, z.null()]).optional(),
     "when": z.union([WhenSchema, z.null()]).optional(),
     "rows": z.array(SelectedRowSchema).optional(),
@@ -10019,24 +10257,53 @@ export const StudioAnalyzeAuthoringSchema: z.ZodType<StudioAnalyzeAuthoring> = z
     "revision": Sha256Schema,
     "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "operations": z.array(OperationDefinitionSchema),
-    "states": DatasetPortSchema,
+    "states": z.union([DatasetPortSchema, z.null()]),
     "variables": z.record(z.string(), z.record(z.string(), z.array(z.string()))),
     "figure": FigureDocumentSchema,
+    "changed": z.array(PointerSchema).optional(),
     "files": z.array(StudioProjectFilePatchSchema).optional(),
+    "created": z.array(CreateNamedDocumentSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioAnalyzeAuthoring>;
+
+export const StudioAnalyzeChangeSchema: z.ZodType<StudioAnalyzeChange> = z.lazy(() =>
+  z.union([StudioAnalyzeWireSchema, StudioAnalyzeEditSchema, StudioAnalyzeRemoveSchema, StudioAnalyzeResetSchema])
+) as unknown as z.ZodType<StudioAnalyzeChange>;
+
+export const StudioAnalyzeEditSchema: z.ZodType<StudioAnalyzeEdit> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("edit"),
+    "edits": z.array(DocumentEditSchema).min(1),
+  }).strict()
+) as unknown as z.ZodType<StudioAnalyzeEdit>;
+
+export const StudioAnalyzeRemoveSchema: z.ZodType<StudioAnalyzeRemove> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("remove"),
+    "element": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<StudioAnalyzeRemove>;
 
 export const StudioAnalyzeRequestSchema: z.ZodType<StudioAnalyzeRequest> = z.lazy(() =>
   z.object({
     "revision": Sha256Schema,
     "key": StudioSavedTrainKeySchema,
-    "wire": z.union([StudioAnalyzeWireSchema, z.null()]).optional(),
+    "change": z.union([StudioAnalyzeChangeSchema, z.null()]).optional(),
+    "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioAnalyzeRequest>;
+
+export const StudioAnalyzeResetSchema: z.ZodType<StudioAnalyzeReset> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("reset"),
+    "paths": z.array(PointerSchema).min(1),
+  }).strict()
+) as unknown as z.ZodType<StudioAnalyzeReset>;
 
 export const StudioAnalyzeStepSchema: z.ZodType<StudioAnalyzeStep> = z.lazy(() =>
   z.object({
     "kind": z.literal("analyze"),
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
@@ -10049,6 +10316,7 @@ export const StudioAnalyzeStepSchema: z.ZodType<StudioAnalyzeStep> = z.lazy(() =
 
 export const StudioAnalyzeWireSchema: z.ZodType<StudioAnalyzeWire> = z.lazy(() =>
   z.object({
+    "kind": z.literal("wire"),
     "element": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "role": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "source": z.union([StepInputSchema, OperationDatasetSchema]),
@@ -10169,6 +10437,13 @@ export const StudioAuthoringSurfaceSchema: z.ZodType<StudioAuthoringSurface> = z
   }).strict()
 ) as unknown as z.ZodType<StudioAuthoringSurface>;
 
+export const StudioAxisValueSchema: z.ZodType<StudioAxisValue> = z.lazy(() =>
+  z.object({
+    "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<StudioAxisValue>;
+
 export const StudioBestRankGroupSchema: z.ZodType<StudioBestRankGroup> = z.lazy(() =>
   z.object({
     "coordinates": z.record(z.string(), z.string()),
@@ -10208,7 +10483,7 @@ export const StudioCheckpointRuleSetSchema: z.ZodType<StudioCheckpointRuleSet> =
   z.object({
     "kind": z.literal("set"),
     "rule": z.union([z.literal("last"), BatchCheckpointSchema, UpdateRuleSchema]),
-    "scope": z.union([EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema]),
+    "scope": z.union([AxisValueRunsSchema, ListedRunsSchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioCheckpointRuleSet>;
 
@@ -10275,6 +10550,7 @@ export const StudioDefinitionChangeSchema: z.ZodType<StudioDefinitionChange> = z
 export const StudioEvaluateStepSchema: z.ZodType<StudioEvaluateStep> = z.lazy(() =>
   z.object({
     "kind": z.literal("evaluate"),
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
@@ -10326,7 +10602,7 @@ export const StudioMemberCommandSchema: z.ZodType<StudioMemberCommand> = z.lazy(
   z.object({
     "revision": Sha256Schema,
     "presentation_revision": Sha256Schema,
-    "command": z.union([RenameMemberSchema, DuplicateMemberSchema, DetachMemberSchema]),
+    "command": z.union([RenameMemberSchema, ChangeKeySchema, DuplicateMemberSchema, DetachMemberSchema, SplitCardSchema, MergeCardsSchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioMemberCommand>;
 
@@ -10341,6 +10617,7 @@ export const StudioMethodPlaceSchema: z.ZodType<StudioMethodPlace> = z.lazy(() =
   z.object({
     "part": z.literal("method"),
     "document": z.union([z.string(), z.null()]),
+    "setting": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioMethodPlace>;
 
@@ -10363,6 +10640,7 @@ export const StudioPlanRequestSchema: z.ZodType<StudioPlanRequest> = z.lazy(() =
   z.object({
     "key": StudioSavedTrainKeySchema,
     "element": z.union([z.string(), z.null()]).optional(),
+    "member": z.union([z.string(), z.null()]).optional(),
     "request_id": z.string(),
   }).strict()
 ) as unknown as z.ZodType<StudioPlanRequest>;
@@ -10462,6 +10740,7 @@ export const StudioProjectWindowMapSchema: z.ZodType<StudioProjectWindowMap> = z
     "analysis_elements": z.array(StudioProjectWindowMapElementSchema).optional(),
     "analysis_figures": z.array(StudioProjectWindowMapFigureSchema).optional(),
     "detach_refused": z.array(z.string()).optional(),
+    "regroup_refused": z.array(z.string()).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMap>;
 
@@ -10482,16 +10761,13 @@ export const StudioProjectWindowMapEdgeSchema: z.ZodType<StudioProjectWindowMapE
 
 export const StudioProjectWindowMapElementSchema: z.ZodType<StudioProjectWindowMapElement> = z.lazy(() =>
   z.object({
-    "result": z.union([StudioSavedLightResultSchema, z.null()]).optional(),
-    "previous": z.union([StudioSavedLightResultSchema, z.null()]).optional(),
-    "changed": z.union([StudioDefinitionChangeSchema, z.null()]).optional(),
     "key": StudioSavedTrainKeySchema,
     "name": z.string(),
     "kind": z.union([z.literal("analyze"), z.literal("render")]),
-    "request_id": z.string(),
     "status": JobStatusSchema,
     "reason": z.union([z.string(), z.null()]).optional(),
     "figure": z.union([StepReferenceSchema, z.null()]).optional(),
+    "requests": z.array(StudioProjectWindowMapRequestSchema).min(1),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapElement>;
 
@@ -10537,6 +10813,18 @@ export const StudioProjectWindowMapProblemSchema: z.ZodType<StudioProjectWindowM
     "authored_path": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapProblem>;
+
+export const StudioProjectWindowMapRequestSchema: z.ZodType<StudioProjectWindowMapRequest> = z.lazy(() =>
+  z.object({
+    "result": z.union([StudioSavedLightResultSchema, z.null()]).optional(),
+    "previous": z.union([StudioSavedLightResultSchema, z.null()]).optional(),
+    "changed": z.union([StudioDefinitionChangeSchema, z.null()]).optional(),
+    "labels": z.record(z.string(), z.string()).optional(),
+    "request_id": z.string(),
+    "status": JobStatusSchema,
+    "reason": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMapRequest>;
 
 export const StudioProjectWindowMapRowSchema: z.ZodType<StudioProjectWindowMapRow> = z.lazy(() =>
   z.object({
@@ -10618,6 +10906,7 @@ export const StudioReplayPresentationSchema: z.ZodType<StudioReplayPresentation>
 export const StudioReportStepSchema: z.ZodType<StudioReportStep> = z.lazy(() =>
   z.object({
     "kind": z.literal("report"),
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
@@ -10647,6 +10936,35 @@ export const StudioSavedLightResultSchema: z.ZodType<StudioSavedLightResult> = z
   }).strict()
 ) as unknown as z.ZodType<StudioSavedLightResult>;
 
+export const StudioSetEditSchema: z.ZodType<StudioSetEdit> = z.lazy(() =>
+  z.object({
+    "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "files": z.array(StudioProjectFilePatchSchema),
+    "created": z.array(CreateNamedDocumentSchema).optional(),
+    "selected": z.union([StudioAxisValueSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioSetEdit>;
+
+export const StudioSetEditRequestSchema: z.ZodType<StudioSetEditRequest> = z.lazy(() =>
+  z.object({
+    "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "command": z.union([DuplicateRunSchema, SaveSetSchema, InlineSetSchema, ApplySetSchema, RemoveAxisValueSchema]),
+  }).strict()
+) as unknown as z.ZodType<StudioSetEditRequest>;
+
+export const StudioSetsOfferedSchema: z.ZodType<StudioSetsOffered> = z.lazy(() =>
+  z.object({
+    "sets": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))),
+  }).strict()
+) as unknown as z.ZodType<StudioSetsOffered>;
+
+export const StudioSetsOfferedRequestSchema: z.ZodType<StudioSetsOfferedRequest> = z.lazy(() =>
+  z.object({
+    "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<StudioSetsOfferedRequest>;
+
 export const StudioStepPlaceSchema: z.ZodType<StudioStepPlace> = z.lazy(() =>
   z.object({
     "part": z.literal("step"),
@@ -10666,6 +10984,7 @@ export const StudioSubsetToRowsRequestSchema: z.ZodType<StudioSubsetToRowsReques
     "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
     "variant": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$")),
     "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "input": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*(?:\\.(?:0|[1-9][0-9]*))?$")),
     "attempts": z.array(z.string()).min(1),
   }).strict()
 ) as unknown as z.ZodType<StudioSubsetToRowsRequest>;
@@ -10722,7 +11041,7 @@ export const StudioTrainAuthoringRequestSchema: z.ZodType<StudioTrainAuthoringRe
   z.object({
     "run": z.union([StudioSavedTrainKeySchema, z.null()]).optional(),
     "rows": z.array(z.string()).optional(),
-    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1)).optional(),
+    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1)).min(1)).optional(),
     "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
     "revision": Sha256Schema,
     "change": z.union([StudioAuthoringChangeSchema, z.null()]).optional(),
@@ -10748,6 +11067,7 @@ export const StudioTrainStartRequestSchema: z.ZodType<StudioTrainStartRequest> =
 export const StudioTrainStepSchema: z.ZodType<StudioTrainStep> = z.lazy(() =>
   z.object({
     "kind": z.literal("train"),
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
@@ -10802,7 +11122,7 @@ export const StudioTrialAuthoringRequestSchema: z.ZodType<StudioTrialAuthoringRe
     "revision": Sha256Schema,
     "run": StudioSavedTrainKeySchema,
     "change": z.union([z.union([StudioTrialDocumentEditSchema, StudioTrialDocumentResetSchema, StudioTrialBindingEditSchema, StudioTrialSelectDocumentSchema, StudioTrialExpressionEditSchema]), z.null()]).optional(),
-    "scope": z.union([z.union([StudioTrialStepScopeSchema, EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema]), z.null()]).optional(),
+    "scope": z.union([z.union([StudioTrialStepScopeSchema, AxisValueRunsSchema, ListedRunsSchema]), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialAuthoringRequest>;
 
@@ -10890,7 +11210,7 @@ export const StudioTrialStepScopeSchema: z.ZodType<StudioTrialStepScope> = z.laz
 
 export const SubsetTermsSchema: z.ZodType<SubsetTerms> = z.lazy(() =>
   z.object({
-    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")))).optional(),
+    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1))).optional(),
     "best": z.union([BestSchema, z.null()]).optional(),
     "when": z.union([WhenSchema, z.null()]).optional(),
     "rows": z.array(SelectedRowSchema).optional(),
@@ -10917,7 +11237,7 @@ export const SweepExceptionSchema: z.ZodType<SweepException> = z.lazy(() =>
 
 export const SweepExceptionTermsSchema: z.ZodType<SweepExceptionTerms> = z.lazy(() =>
   z.object({
-    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")))).optional(),
+    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1))).optional(),
     "best": z.union([BestSchema, z.null()]).optional(),
     "when": z.union([WhenSchema, z.null()]).optional(),
     "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).optional(),
@@ -10952,6 +11272,10 @@ export const SweepSampleSchema: z.ZodType<SweepSample> = z.lazy(() =>
 export const SweepTargetSchema: z.ZodType<SweepTarget> = z.lazy(() =>
   z.string().regex(new RegExp("^(?:(?:(?:steps|documents)\\.[A-Za-z0-9_][A-Za-z0-9_-]*\\.)?\\{[\\s\\S]+\\}|[^.]+(?:\\.[^.]+)*)$"))
 ) as unknown as z.ZodType<SweepTarget>;
+
+export const TakesSchema: z.ZodType<Takes> = z.lazy(() =>
+  z.union([z.union([z.literal("all"), z.literal("one")]), WholeDimensionsSchema])
+) as unknown as z.ZodType<Takes>;
 
 export const TaskDocumentSchema: z.ZodType<TaskDocument> = z.lazy(() =>
   z.object({
@@ -11100,6 +11424,12 @@ export const WhenSchema: z.ZodType<When> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<When>;
 
+export const WholeDimensionsSchema: z.ZodType<WholeDimensions> = z.lazy(() =>
+  z.object({
+    "parameter": z.string().min(1),
+  }).strict()
+) as unknown as z.ZodType<WholeDimensions>;
+
 export const contractSchemas = {
   KeepOpen: KeepOpenSchema,
   CloseWhenIdle: CloseWhenIdleSchema,
@@ -11174,10 +11504,8 @@ export const contractSchemas = {
   ModelFieldResponse: ModelFieldResponseSchema,
   TrainFieldRequest: TrainFieldRequestSchema,
   TrainFieldResponse: TrainFieldResponseSchema,
-  EvaluateAttachmentRequest: EvaluateAttachmentRequestSchema,
-  EvaluateAttachmentReadRequest: EvaluateAttachmentReadRequestSchema,
-  EvaluateAttachmentState: EvaluateAttachmentStateSchema,
-  EvaluateAttachmentEdit: EvaluateAttachmentEditSchema,
+  EvaluateModelRequest: EvaluateModelRequestSchema,
+  EvaluateModelState: EvaluateModelStateSchema,
   ModelUndoRequest: ModelUndoRequestSchema,
   ReceiptValidity: ReceiptValiditySchema,
   ValidityAction: ValidityActionSchema,
@@ -11194,6 +11522,10 @@ export const contractSchemas = {
   StudioCheckpointRuleRequest: StudioCheckpointRuleRequestSchema,
   StudioSubsetToRowsEdit: StudioSubsetToRowsEditSchema,
   StudioSubsetToRowsRequest: StudioSubsetToRowsRequestSchema,
+  StudioSetEditRequest: StudioSetEditRequestSchema,
+  StudioSetEdit: StudioSetEditSchema,
+  StudioSetsOfferedRequest: StudioSetsOfferedRequestSchema,
+  StudioSetsOffered: StudioSetsOfferedSchema,
   StudioRemovedRuns: StudioRemovedRunsSchema,
   StudioRemovedRunsRequest: StudioRemovedRunsRequestSchema,
   FieldTextResult: FieldTextResultSchema,
@@ -11333,10 +11665,8 @@ export interface ContractTypeMap {
   ModelFieldResponse: ModelFieldResponse;
   TrainFieldRequest: TrainFieldRequest;
   TrainFieldResponse: TrainFieldResponse;
-  EvaluateAttachmentRequest: EvaluateAttachmentRequest;
-  EvaluateAttachmentReadRequest: EvaluateAttachmentReadRequest;
-  EvaluateAttachmentState: EvaluateAttachmentState;
-  EvaluateAttachmentEdit: EvaluateAttachmentEdit;
+  EvaluateModelRequest: EvaluateModelRequest;
+  EvaluateModelState: EvaluateModelState;
   ModelUndoRequest: ModelUndoRequest;
   ReceiptValidity: ReceiptValidity;
   ValidityAction: ValidityAction;
@@ -11353,6 +11683,10 @@ export interface ContractTypeMap {
   StudioCheckpointRuleRequest: StudioCheckpointRuleRequest;
   StudioSubsetToRowsEdit: StudioSubsetToRowsEdit;
   StudioSubsetToRowsRequest: StudioSubsetToRowsRequest;
+  StudioSetEditRequest: StudioSetEditRequest;
+  StudioSetEdit: StudioSetEdit;
+  StudioSetsOfferedRequest: StudioSetsOfferedRequest;
+  StudioSetsOffered: StudioSetsOffered;
   StudioRemovedRuns: StudioRemovedRuns;
   StudioRemovedRunsRequest: StudioRemovedRunsRequest;
   FieldTextResult: FieldTextResult;

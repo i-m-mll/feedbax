@@ -7,7 +7,7 @@ from collections.abc import Callable
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from feedbax.contracts.model_edit import (
-    EvaluateAttachmentEdit, EvaluateAttachmentReadRequest, EvaluateAttachmentRequest, EvaluateAttachmentState,
+    EvaluateModelRequest, EvaluateModelState,
     ModelConnectionReview, ModelConnectionReviewRequest,
     ModelProjection, ModelProjectionRequest,
     ModelEditRequest, ModelEditResponse, ModelUndoRequest,
@@ -36,6 +36,7 @@ from feedbax.contracts.studio_project import (
     StudioProjectRevision,
     StudioProjectSnapshot,
 )
+from feedbax.contracts.studio_sets import StudioSetEdit, StudioSetEditRequest, StudioSetsOffered, StudioSetsOfferedRequest
 from feedbax.contracts.studio_trials import StudioTrialAuthoring, StudioTrialAuthoringRequest
 from feedbax.contracts.studio_checkpoint_rule import StudioCheckpointRuleEdit, StudioCheckpointRuleRequest
 from feedbax.contracts.studio_subset import StudioSubsetToRowsEdit, StudioSubsetToRowsRequest
@@ -195,6 +196,24 @@ def prepare_subset_to_rows(
     return _project_response(response, lambda: request.app.state.project_plan.subset_to_rows(project_id, body))
 
 
+@router.post("/{project_id}/authoring/sets", response_model_exclude_unset=True)
+def prepare_set_edit(
+    project_id: ProjectName, body: StudioSetEditRequest, request: Request, response: Response,
+) -> StudioSetEdit:
+    from feedbax.web.services.set_authoring import set_edit
+
+    return _project_response(response, lambda: set_edit(request.app.state.project_folders, project_id, body))
+
+
+@router.post("/{project_id}/authoring/sets-offered")
+def read_sets_offered(
+    project_id: ProjectName, body: StudioSetsOfferedRequest, request: Request, response: Response,
+) -> StudioSetsOffered:
+    from feedbax.web.services.set_authoring import sets_offered_to
+
+    return _project_response(response, lambda: sets_offered_to(request.app.state.project_folders, project_id, body))
+
+
 @router.post("/{project_id}/authoring/removed-runs")
 def review_removed_runs(
     project_id: ProjectName, body: StudioRemovedRunsRequest, request: Request, response: Response,
@@ -331,34 +350,17 @@ def undo_model(
     )
 
 
-@router.post("/{project_id}/model/evaluate-attachment")
-def evaluate_attachment(
-    project_id: ProjectName, body: EvaluateAttachmentRequest, request: Request, response: Response,
-) -> EvaluateAttachmentEdit:
-    from feedbax.web.services.evaluate_attachment import EvaluateAttachmentRefused, prepare_evaluate_attachment
+@router.post("/{project_id}/model/evaluate-model", response_model_exclude_unset=True)
+def read_evaluate_model(
+    project_id: ProjectName, body: EvaluateModelRequest, request: Request, response: Response,
+) -> EvaluateModelState:
+    from feedbax.web.services.evaluate_sources import read_evaluate_model
 
     try:
         return _project_response(
-            response, lambda: prepare_evaluate_attachment(
-                request.app.state.project_folders, project_id, body,
-                request.app.state.bootstrap_state.bundle.components,
-            ),
-        )
-    except EvaluateAttachmentRefused as error:
-        raise HTTPException(422, detail=error.problem.model_dump(mode="json"), headers=_NO_STORE) from error
-
-
-@router.post("/{project_id}/model/evaluate-attachments", response_model_exclude_unset=True)
-def evaluate_attachments(
-    project_id: ProjectName, body: EvaluateAttachmentReadRequest, request: Request, response: Response,
-) -> EvaluateAttachmentState:
-    from feedbax.web.services.evaluate_attachment import read_evaluate_attachments
-
-    try:
-        return _project_response(
-            response, lambda: read_evaluate_attachments(
+            response, lambda: read_evaluate_model(
                 request.app.state.project_folders, project_id, body, request.app.state.bootstrap_state.bundle.components,
-            ),
+            ).state,
         )
     except (KeyError, ValueError) as error:
         raise HTTPException(422, detail=str(error), headers=_NO_STORE) from error

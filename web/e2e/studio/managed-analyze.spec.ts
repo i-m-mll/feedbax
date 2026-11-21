@@ -91,12 +91,22 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   await item('Aligned velocity').click();
   if (!await inspector.isVisible()) await page.getByRole('button', { name: 'Show Inspector', exact: true }).click();
   await expect(inspector.getByText('Aligned velocity', { exact: true })).toBeVisible();
+  // The catalog reread each edit starts is held until both adds are saved: an edit does not wait for it.
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const reviews = (url: URL) => url.pathname === reviewPath;
+  await page.route(reviews, async (route) => {
+    if (!route.request().postDataJSON()?.change) await held;
+    await route.fallback();
+  });
   await edit(() => page.keyboard.press('Enter'));
   await expect(search).toHaveValue('velocity');
   await expect(item('Aligned velocity')).toBeFocused();
   await page.keyboard.press('ArrowDown');
   await expect(item('Trial summary')).toBeFocused();
   await edit(() => page.keyboard.press('Enter'));
+  release();
+  await page.unroute(reviews);
   await expect(item('Trial summary')).toBeFocused();
   await analysis.getByRole('group', { name: 'Select aligned_velocity', exact: true }).click();
   for (const [field, label] of [
@@ -112,7 +122,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   await edit(() => enter(inspector.getByRole('textbox', { name: 'Bounds Scale', exact: true }), '1.5'));
   const beforeRefusal = await edit(() => enter(inspector.getByRole('textbox', { name: 'Ddof', exact: true }), '0'));
   const refusal = page.waitForResponse((response) => new URL(response.url()).pathname === reviewPath &&
-    Boolean(response.request().postDataJSON()?.wire));
+    response.request().postDataJSON()?.change?.kind === 'wire');
   await pick(role('Velocity'), 'states');
   expect((await refusal).status()).toBe(422);
   // The refusal lands on the role field it was made in.
@@ -133,7 +143,8 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   await expect(analysis.locator('.react-flow__edge')).toHaveCount(3);
   const original = await plan(wired.revision);
   const requests = (projection: typeof original) => Object.fromEntries(
-    projection.analysis_elements!.filter(({ key }) => key.step === 'analyze').map(({ name, request_id }) => [name, request_id]),
+    projection.analysis_elements!.filter(({ key }) => key.step === 'analyze')
+      .map(({ name, requests: [{ request_id }] }) => [name, request_id]),
   );
   expect(Object.keys(requests(original)).sort()).toEqual(['aligned_velocity', 'summarize_velocity', 'velocity_summary']);
   expect(original.problems.filter(({ step }) => step === 'analyze')).toEqual([]);

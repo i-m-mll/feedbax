@@ -20,7 +20,7 @@ import type { ResolvedScene } from '@/features/scenario/projections';
 import { primaryWorkspaceReplayTrack, workspaceReplayFrameIndex, workspaceReplaySampleAt } from '@/features/scenario/workspaceReplay';
 import {
   DocumentReferenceSchema, ModelDocumentSchema,
-  type EvaluateAttachmentReadRequest, type GraphInterior, type ModelDocument, type StudioSavedEvaluationRow,
+  type EvaluateModelRequest, type GraphInterior, type ModelDocument, type StudioSavedEvaluationRow,
   type StudioSavedTrainKey, type WorkspaceReplayTrial, type StudioProjectWindowMapProblem, type ModelAddress,
 } from '@/generated/studioContracts';
 import { modelDocumentId, directTrainStep } from './authoredEdits';
@@ -71,6 +71,8 @@ interface DetailInputs {
   readonly selectedSweepValues: ReadonlyMap<string, ReadonlySet<string>>;
   readonly confirmRunRemoval: ConfirmRunRemoval;
   readonly fieldRows?: readonly string[];
+  /** Whether one value of a named axis or a set's entry is selected, which a Model edit is then stored on. */
+  readonly valueEditing?: boolean;
   readonly fieldAxes?: Record<string, string[]>;
   readonly documentScopes: Readonly<Record<'graph' | 'task', NamedDocumentScope | undefined>>;
   /** Whether the plan read is of the shown revision; a field edit waits for it, since it carries the steps that plan lights. */
@@ -79,7 +81,7 @@ interface DetailInputs {
   readonly elements: ElementSelectionStore;
   readonly modelPath?: { document: string; path: string[] };
   readonly setModelPath: (document: string, path: string[]) => void;
-  readonly evaluateScope?: EvaluateAttachmentReadRequest['scope'];
+  readonly evaluateScope?: EvaluateModelRequest['scope'];
   readonly modelSource?: string;
   readonly modelProblems?: readonly StudioProjectWindowMapProblem[];
   readonly drawerSections: DrawerSections;
@@ -324,6 +326,10 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
   const revealedMember = placeMember(reveal?.place);
   const canEdit = selection?.kind === 'steps' && selection.stepIds.length === 1 && selection.stepIds[0] === stepId && !outside;
   const graphScope = input.documentScopes.graph;
+  /** Whether the Model's topology commands apply; a gesture made while the workspace is unsettled waits for it. */
+  const topologyApplies = !!saved.presentation && !outside && (input.valueEditing ||
+    canEdit && input.step?.kind === 'train' &&
+    !!graphScope && !graphScope.localVariant && graphScope.lit.size === graphScope.users.size);
   const storedView = useStoredModelView({
     model: activeView === 'model' ? stored : undefined, editor, saved, elements: input.elements,
     active: activeView === 'model',
@@ -339,8 +345,8 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
           : canEdit || selection?.kind === 'values' || selection?.kind === 'rows')
     )),
     projectionRun: input.step?.kind === 'train' ? input.namedRun : undefined,
-    editable: canEdit && !pending && !saving && !!saved.presentation && input.step?.kind === 'train' &&
-      !!graphScope && !graphScope.localVariant && graphScope.lit.size === graphScope.users.size,
+    editable: !pending && !saving && topologyApplies,
+    topologyApplies,
     evaluate: input.step?.kind === 'evaluate' && input.namedRun && input.evaluateScope
       ? { run: input.namedRun, scope: input.evaluateScope } : undefined,
     problem: revealedMember && revealedMember.document === storedId

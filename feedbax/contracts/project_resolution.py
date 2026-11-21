@@ -959,6 +959,14 @@ class _Resolver:
                         self.variant_sources, ("steps", author, *axis_path, "path")
                     )
                     return source, first_source(target_override) or path_override
+            case "set_entry":
+                axis, value, document = ids
+                difference = pointer(tuple(path.split(".")[3:]))
+                target = ("entries", value, "differences", difference, "value")
+                source = ValueSource(
+                    "document", document, pointer(target), step=author, axis=axis, value=value,
+                )
+                return source, source_at(self.variant_sources, ("documents", document, "payload", *target))
             case "exception":
                 (exception,) = ids
                 target = ("sweep", "exceptions", exception, "patches", path, "value")
@@ -1014,12 +1022,11 @@ class _Resolver:
                     continue
                 if not isinstance(payload, dict):
                     raise ValueError("a root document reference is atomic")
-                if patch.path.startswith(MODEL_ATTACHMENTS + ".") and MODEL_ATTACHMENTS not in payload:
-                    payload = payload | {MODEL_ATTACHMENTS: {}}
-                    if origins is not None:
-                        origins = patch_source(origins, OverridePatch(
-                            path=MODEL_ATTACHMENTS, op="add", value={},
-                        ), source_shape({}, None))
+                if patch.path == MODEL_ATTACHMENTS or patch.path.startswith(MODEL_ATTACHMENTS + "."):
+                    raise ValueError(
+                        f"A sweep writes no {MODEL_ATTACHMENTS}; a Model difference is a patch into the Model document's"
+                        " payload",
+                    )
                 if patch.op != "remove":
                     patch = patch.model_copy(update={"value": _pack(patch.value, patch.path, name)})
                 payload = apply_override_patch_copy(payload, patch)

@@ -1,33 +1,30 @@
-"""Stack bound dataset members along the authored project sweep coordinates."""
+"""Stack gathered dataset members along their labels."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from itertools import product
-from math import prod
+from collections.abc import Sequence
+from typing import cast
 
 import numpy as np
 from pydantic import JsonValue
 
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.dataset import DatasetDescriptor, FieldDescriptor
-from feedbax.contracts.project_sweep import (
-    SweepCoordinate,
-    SweepInputMember,
-    sweep_value_identity_bytes,
-)
-from feedbax.dataset import Dataset, Index, Variable
+from feedbax.contracts.member_stack import MEMBER, StackLayout, stack_layout
+from feedbax.contracts.project_sweep import SweepCoordinate, SweepInputMember
+from feedbax.dataset import Dataset, Variable
 
 
-CONDITION_PROVENANCE = "condition_provenance"
-CONDITION_MEMBER = "member"
-_CONDITION_ATTRIBUTES = ("effective_graph_sha256", "effective_task_sha256", "variation_sha256")
-
-
-def _host_values(values: Sequence[JsonValue]) -> np.ndarray:
+def _host_values(values: Sequence[JsonValue], shape: tuple[int, ...] | None = None) -> np.ndarray:
     array = np.empty(len(values), dtype=object)
     for index, value in enumerate(values):
         array[index] = value
+    return array if shape is None else array.reshape(shape)
+
+
+def _scalar(value: JsonValue) -> np.ndarray:
+    array = np.empty((), dtype=object)
+    array[()] = value
     return array
 
 
@@ -54,223 +51,143 @@ def _axis_fields(
     return fields
 
 
-def _sweep_layout(
-    members: Sequence[SweepInputMember],
-) -> tuple[dict[str, int], dict[str, Variable]]:
-    by_axis: dict[str, dict[str, SweepCoordinate]] = {}
-    for member in members:
-        for name, coordinate in member.coordinates.items():
-            if name == "member":
-                raise ValueError("Sweep axis 'member' is reserved for the bound member dimension")
-            values = by_axis.setdefault(name, {})
-            prior = values.setdefault(coordinate.value_id, coordinate)
-            if prior is not coordinate and (
-                prior.label != coordinate.label
-                or sweep_value_identity_bytes(prior.value)
-                != sweep_value_identity_bytes(coordinate.value)
-            ):
-                raise ValueError(
-                    f"Sweep axis {name!r} gives {coordinate.value_id!r} conflicting values"
-                )
-
-    axes = tuple(by_axis)
-    rows = [member.coordinates for member in members]
-    if (
-        axes
-        and all(row.keys() == by_axis.keys() for row in rows)
-        and len(rows) == prod(len(values) for values in by_axis.values())
-        and all(
-            tuple(row[axis].value_id for axis in axes) == ids
-            for row, ids in zip(rows, product(*by_axis.values()), strict=True)
-        )
-    ):
-        dimensions = {axis: len(by_axis[axis]) for axis in axes}
-        coords = {
-            "member": Variable(
-                np.asarray([member.key for member in members]).reshape(tuple(dimensions.values())),
-                axes,
-            )
-        }
-        for axis in axes:
-            coords.update(_axis_fields(axis, axis, tuple(by_axis[axis].values())))
-        return dimensions, coords
-
-    coords = {"member": Variable(np.asarray([member.key for member in members]), ("member",))}
-    for axis in axes:
-        coords.update(_axis_fields(axis, "member", [row.get(axis) for row in rows]))
-    return {"member": len(members)}, coords
+def _label_coords(layout: StackLayout) -> dict[str, Variable]:
+    keys = [member.key for member in layout.members]
+    if not layout.dimensions:
+        coords = {MEMBER: Variable(_scalar(keys[0]), ())}
+    else:
+        coords = {MEMBER: Variable(np.asarray(keys).reshape(tuple(layout.dimensions.values())), layout.dims(MEMBER))}
+    for name in layout.varying:
+        if layout.values:
+            coords.update(_axis_fields(name, name, layout.values[name]))
+        else:
+            coords.update(_axis_fields(name, MEMBER, [member.coordinates.get(name) for member in layout.members]))
+    for name, coordinate in layout.constant.items():
+        coords[name] = Variable(_scalar(coordinate.value_id), ())
+        if coordinate.label is not None:
+            coords[f"{name}.label"] = Variable(_scalar(coordinate.label), ())
+        if coordinate.value is not None:
+            coords[f"{name}.value"] = Variable(_scalar(coordinate.value), ())
+    return coords
 
 
-def _stack_fields(
-    fields: Sequence[Mapping[str, FieldDescriptor]], axes: tuple[str, ...]
-) -> dict[str, FieldDescriptor]:
-    baseline = fields[0]
-    if any(member.keys() != baseline.keys() for member in fields[1:]):
-        raise ValueError("Dataset sweep members have different field names")
-    stacked = {}
-    for name, prototype in baseline.items():
-        for member in fields[1:]:
-            other = member[name]
-            if (prototype.inline_values is None) != (other.inline_values is None) or (
-                prototype.dims,
-                prototype.units,
-                prototype.quantity,
-                prototype.frame,
-            ) != (other.dims, other.units, other.quantity, other.frame):
-                raise ValueError(f"Dataset sweep members disagree on field {name!r}")
-        inline_values = (
-            tuple(value for member in fields for value in member[name].inline_values or ())
+def _same_field(left: FieldDescriptor, right: FieldDescriptor) -> bool:
+    return (left.dims, left.units, left.quantity, left.frame) == (
+        right.dims, right.units, right.quantity, right.frame,
+    ) and (left.inline_values is None) == (right.inline_values is None)
+
+
+def _spanning(values: np.ndarray, axes: tuple[str, ...]) -> tuple[np.ndarray, tuple[str, ...]]:
+    """Values stacked on ``axes``, keeping only the stacking axes along which they vary."""
+    kept = []
+    for axis, name in reversed(tuple(enumerate(axes))):
+        first = np.take(values, [0], axis=axis)
+        if np.all(values == first):
+            values = np.take(values, 0, axis=axis)
+        else:
+            kept.append(name)
+    return values, tuple(reversed(kept))
+
+
+def _member_coordinate(
+    name: str, datasets: Sequence[Dataset], shape: tuple[int, ...], axes: tuple[str, ...],
+) -> Variable | None:
+    """A dataset coordinate stacked on the stacking axes it varies along, or None when every member shares it."""
+    fields = [dataset.descriptor.coords[name] for dataset in datasets]
+    base = fields[0]
+    if any(not _same_field(base, other) for other in fields[1:]):
+        raise ValueError(f"Dataset members disagree on field {name!r}")
+    arrays = [np.asarray(dataset.data(name)) for dataset in datasets]
+    if all(array.dtype == arrays[0].dtype and np.array_equal(array, arrays[0]) for array in arrays[1:]):
+        return None
+    values, kept = _spanning(np.stack(arrays).reshape((*shape, *arrays[0].shape)), axes)
+    return Variable(values, (*kept, *base.dims), units=base.units, quantity=base.quantity, frame=base.frame)
+
+
+def _stacked(fields: Sequence[FieldDescriptor], axes: tuple[str, ...], name: str) -> FieldDescriptor:
+    prototype = fields[0]
+    if any(not _same_field(prototype, other) for other in fields[1:]):
+        raise ValueError(f"Dataset members disagree on field {name!r}")
+    return FieldDescriptor(
+        dims=(*axes, *prototype.dims),
+        units=prototype.units,
+        quantity=prototype.quantity,
+        frame=prototype.frame,
+        inline_values=(
+            tuple(value for field in fields for value in field.inline_values or ())
             if prototype.inline_values is not None
             else None
-        )
-        stacked[name] = FieldDescriptor(
-            dims=(*axes, *prototype.dims),
-            units=prototype.units,
-            quantity=prototype.quantity,
-            frame=prototype.frame,
-            inline_values=inline_values,
-        )
-    return stacked
-
-
-def join_rollout_conditions(inputs: Sequence[tuple[str, Dataset]]) -> Dataset:
-    """Join ordered singleton rollouts on their existing condition dimension."""
-    if len(inputs) < 2:
-        raise ValueError("Joining rollout conditions requires at least two members")
-    keys, datasets = zip(*inputs, strict=True)
-    descriptors = [dataset.descriptor for dataset in datasets]
-    base = descriptors[0]
-    axis = "condition"
-    if (
-        len(set(keys)) != len(keys)
-        or CONDITION_MEMBER in base.variables or CONDITION_MEMBER in base.coords
-        or CONDITION_PROVENANCE in base.attrs
-        or base.dimensions.get(axis) != 1
-        or axis not in base.coords or base.coords[axis].dims != (axis,)
-    ):
-        raise ValueError("Selected rollout states require distinct member keys and singleton condition coordinates")
-    shared = []
-    provenance = {}
-    for key, item in zip(keys, descriptors, strict=True):
-        if (
-            item.dimensions != base.dimensions or item.schema_id != base.schema_id
-            or item.variables.keys() != base.variables.keys() or item.coords.keys() != base.coords.keys()
-        ):
-            raise ValueError(f"Selected rollout member {key!r} has an incompatible dataset layout")
-        attrs = item.attrs.copy()
-        provenance[key] = {name: attrs.pop(name) for name in _CONDITION_ATTRIBUTES if name in attrs}
-        shared.append(attrs)
-    if any(canonical_json_v2_bytes(attrs) != canonical_json_v2_bytes(shared[0]) for attrs in shared[1:]):
-        raise ValueError("Selected rollout members have incompatible shared dataset attributes")
-
-    def field(name: str, prototype: FieldDescriptor) -> FieldDescriptor:
-        varies = axis in prototype.dims
-        for key, item, dataset in zip(keys[1:], descriptors[1:], datasets[1:], strict=True):
-            other = item.field(name)
-            normalized = other.model_copy(update={"inline_values": prototype.inline_values}) if varies else other
-            if normalized != prototype or (other.inline_values is None) != (prototype.inline_values is None):
-                raise ValueError(f"Selected rollout member {key!r} disagrees on dataset field {name!r}")
-            if name in base.coords and not varies and prototype.inline_values is None:
-                first = np.asarray(datasets[0].data(name))
-                actual = np.asarray(dataset.data(name))
-                if first.dtype != actual.dtype or not np.array_equal(first, actual):
-                    raise ValueError(f"Selected rollout member {key!r} disagrees on coordinate {name!r}")
-        if not varies or prototype.inline_values is None:
-            return prototype
-        values = np.concatenate(
-            [np.asarray(dataset.data(name)) for dataset in datasets], axis=prototype.dims.index(axis)
-        )
-        return prototype.model_copy(update={"inline_values": tuple(values.ravel().tolist())})
-
-    coords = {name: field(name, prototype) for name, prototype in base.coords.items()}
-    conditions = coords[axis].inline_values
-    if conditions is None or any(not isinstance(value, str) for value in conditions) or len(set(conditions)) != len(keys):
-        raise ValueError("Selected rollouts must supply distinct condition IDs")
-    coords[CONDITION_MEMBER] = FieldDescriptor(dims=(axis,), inline_values=keys)
-    descriptor = DatasetDescriptor(
-        dimensions={**base.dimensions, axis: len(keys)},
-        variables={name: field(name, prototype) for name, prototype in base.variables.items()},
-        coords=coords,
-        schema_id=base.schema_id,
-        attrs={**shared[0], CONDITION_PROVENANCE: provenance},
-    )
-
-    def load(name: str, index: Index) -> np.ndarray:
-        dims = base.field(name).dims
-        if axis not in dims:
-            first = np.asarray(datasets[0].data(name, index))
-            if name in base.variables:
-                for key, dataset in zip(keys[1:], datasets[1:], strict=True):
-                    actual = np.asarray(dataset.data(name, index))
-                    if first.dtype != actual.dtype or not np.array_equal(first, actual):
-                        raise ValueError(f"Selected rollout member {key!r} disagrees on variable {name!r}")
-            return first
-        position = dims.index(axis)
-        padded = (*index, *(slice(None),) * max(0, position + 1 - len(index)))
-        selected = range(len(datasets))[padded[position]]
-        before, after = padded[:position], padded[position + 1:]
-        if isinstance(selected, int):
-            return np.asarray(datasets[selected].data(name, (*before, 0, *after)))
-        if not selected:
-            return np.asarray(datasets[0].data(name, (*before, slice(0, 0), *after)))
-        arrays = [np.asarray(datasets[i].data(name, (*before, slice(None), *after))) for i in selected]
-        if any(array.dtype != arrays[0].dtype for array in arrays[1:]):
-            raise ValueError(f"Selected rollout members have different dtypes for {name!r}")
-        stacked_axis = sum(isinstance(item, slice) for item in before)
-        return np.concatenate(arrays, axis=stacked_axis)
-
-    return Dataset.bind(
-        descriptor,
-        tensor_shapes={name: descriptor.shape(name) for name in descriptor.tensor_names},
-        load_tensor=load,
+        ),
     )
 
 
 def stack_dataset_members(
     inputs: Sequence[tuple[SweepInputMember, Dataset]],
 ) -> Dataset:
-    """Assemble equal-layout members without reading their numerical fields.
+    """Stack equal-layout members along their labels without reading their variables.
 
-    An ordered complete product has one dimension per sweep axis. Other
-    selections retain their original order on the member dimension.
+    Labels that vary over the members are the leading dimensions: one per label when
+    the members are their complete product in order, else one ``member`` dimension.
+    Labels equal in every member are scalar coordinates. Dataset coordinates equal in
+    every member are kept once; the others, and the attributes that differ, are stacked
+    on only the stacking dimensions along which they vary.
     """
     if not inputs:
-        raise ValueError("A dataset sweep needs at least one member")
+        raise ValueError("A dataset stack needs at least one member")
     members, datasets = zip(*inputs, strict=True)
-    if len({member.key for member in members}) != len(members):
-        raise ValueError("A dataset sweep cannot bind the same member key twice")
-
-    dimensions, coords = _sweep_layout(members)
+    layout = stack_layout(members)
+    dimensions = dict(layout.dimensions)
+    added = _label_coords(layout)
     axes = tuple(dimensions)
-    coordinate_data = Dataset.from_arrays({}, coords=coords)
+    shape = tuple(dimensions.values())
     descriptors = [dataset.descriptor for dataset in datasets]
     base = descriptors[0]
-    collisions = (set(dimensions) | coords.keys()) & (
+    for descriptor in descriptors[1:]:
+        if (
+            descriptor.dimensions != base.dimensions or descriptor.schema_id != base.schema_id
+            or descriptor.variables.keys() != base.variables.keys()
+            or descriptor.coords.keys() != base.coords.keys()
+        ):
+            raise ValueError("Dataset members have different layouts or schema IDs")
+
+    attrs = {}
+    for name in dict.fromkeys(name for descriptor in descriptors for name in descriptor.attrs):
+        values = [descriptor.attrs.get(name) for descriptor in descriptors]
+        if all(canonical_json_v2_bytes(value) == canonical_json_v2_bytes(values[0]) for value in values[1:]):
+            attrs[name] = values[0]
+        else:
+            added[name] = Variable(*_spanning(_host_values(values, shape), axes))
+    collisions = (set(dimensions) | added.keys()) & (
         base.dimensions.keys() | base.variables.keys() | base.coords.keys()
     )
     if collisions:
-        raise ValueError(f"Sweep coordinates collide with dataset names: {sorted(collisions)}")
-    for descriptor in descriptors[1:]:
-        if descriptor.dimensions != base.dimensions or descriptor.schema_id != base.schema_id:
-            raise ValueError("Dataset sweep members have different dimensions or schema IDs")
-        if canonical_json_v2_bytes(descriptor.attrs) != canonical_json_v2_bytes(base.attrs):
-            raise ValueError("Dataset sweep metadata differs; declare varying values as fields")
+        raise ValueError(f"Member labels collide with dataset names: {sorted(collisions)}")
+    for name in base.coords:
+        if (stacked := _member_coordinate(name, datasets, shape, axes)) is not None:
+            added[name] = stacked
+    label_data = Dataset.from_arrays({}, coords=added)
+    shared = base.coords.keys() - added.keys()
 
     descriptor = DatasetDescriptor(
         dimensions={**dimensions, **base.dimensions},
-        variables=_stack_fields([item.variables for item in descriptors], axes),
+        variables={
+            name: _stacked([item.variables[name] for item in descriptors], axes, name)
+            for name in base.variables
+        },
         coords={
-            **coordinate_data.descriptor.coords,
-            **_stack_fields([item.coords for item in descriptors], axes),
+            **label_data.descriptor.coords,
+            **{name: base.coords[name] for name in base.coords if name in shared},
         },
         schema_id=base.schema_id,
-        attrs=base.attrs,
+        attrs=attrs,
     )
-    positions = np.arange(len(datasets)).reshape(tuple(dimensions.values()))
+    positions = np.arange(len(datasets)).reshape(shape)
 
     def load(name: str, index: tuple[int | slice, ...]) -> np.ndarray:
-        if name in coords:
-            return np.asarray(coordinate_data.data(name, index))
+        if name in added:
+            return np.asarray(label_data.data(name, index))
+        if name in shared:
+            return np.asarray(datasets[0].data(name, index))
         selected = positions[index[: len(axes)]]
         inner_index = index[len(axes) :]
         if np.ndim(selected) == 0:
@@ -283,7 +200,7 @@ def stack_dataset_members(
             for position in selected.flat
         ]
         if any(array.dtype != arrays[0].dtype for array in arrays[1:]):
-            raise ValueError(f"Dataset sweep members have different dtypes for {name!r}")
+            raise ValueError(f"Dataset members have different dtypes for {name!r}")
         return np.stack(arrays).reshape((*selected.shape, *arrays[0].shape))
 
     return Dataset.bind(
@@ -291,3 +208,76 @@ def stack_dataset_members(
         tensor_shapes={name: descriptor.shape(name) for name in descriptor.tensor_names},
         load_tensor=load,
     )
+
+
+def _is_label(name: str, field: FieldDescriptor, axes: tuple[str, ...]) -> bool:
+    return "." not in name and set(field.dims) <= set(axes) and field.inline_values is not None and all(
+        value is None or isinstance(value, str) for value in field.inline_values
+    )
+
+
+def dataset_entries(
+    member: SweepInputMember, dataset: Dataset,
+) -> list[tuple[SweepInputMember, Dataset]]:
+    """The labelled entries of a stacked dataset, each keyed by its inner key qualified by ``member`` and carrying
+    its inner labels and ``member``'s; a dataset that is no stack is the one entry ``member``."""
+    descriptor = dataset.descriptor
+    if MEMBER not in descriptor.coords:
+        return [(member, dataset)]
+    axes = descriptor.coords[MEMBER].dims
+    labels = {MEMBER} | {
+        name for name, field in descriptor.coords.items() if _is_label(name, field, axes)
+    }
+    labels |= {f"{label}.{part}" for label in labels for part in ("label", "value")} & descriptor.coords.keys()
+    fields = {**descriptor.variables, **descriptor.coords}
+
+    def leading(name: str) -> tuple[str, ...]:
+        stacked = tuple(dim for dim in fields[name].dims if dim in axes)
+        if fields[name].dims[: len(stacked)] != stacked:
+            raise ValueError(f"Field {name!r} does not lead with its stacking dimensions")
+        return stacked
+
+    entries = []
+    for position in np.ndindex(*(descriptor.dimensions[axis] for axis in axes)):
+        at = dict(zip(axes, position, strict=True))
+
+        def prefix(name: str) -> tuple[int, ...]:
+            return tuple(at[dim] for dim in leading(name))
+
+        def value(name: str) -> JsonValue:
+            return np.asarray(dataset.data(name, prefix(name))).tolist()
+
+        inner = {
+            name: SweepCoordinate(
+                str(value(name)),
+                cast(str | None, value(f"{name}.label")) if f"{name}.label" in labels else None,
+                value(f"{name}.value") if f"{name}.value" in labels else None,
+            )
+            for name in labels if name != MEMBER and "." not in name and value(name) is not None
+        }
+        if shared := sorted(inner.keys() & member.coordinates.keys()):
+            raise ValueError(f"Member {member.key!r} already carries the labels {shared!r}")
+        kept = {}
+        for name, field in fields.items():
+            if name in labels:
+                continue
+            inline = field.inline_values
+            if inline is not None and leading(name):
+                inline = tuple(np.asarray(dataset.data(name, prefix(name))).ravel().tolist())
+            kept[name] = field.model_copy(update={"dims": field.dims[len(leading(name)):], "inline_values": inline})
+        view = DatasetDescriptor(
+            dimensions={dim: size for dim, size in descriptor.dimensions.items() if dim not in axes},
+            variables={name: kept[name] for name in descriptor.variables},
+            coords={name: kept[name] for name in descriptor.coords if name in kept},
+            schema_id=descriptor.schema_id,
+            attrs=descriptor.attrs,
+        )
+
+        def load(name: str, index: tuple[int | slice, ...], prefix=prefix) -> np.ndarray:
+            return np.asarray(dataset.data(name, (*prefix(name), *index)))
+
+        entries.append((
+            SweepInputMember(f"{member.key}/{value(MEMBER)}", {**member.coordinates, **inner}),
+            Dataset.bind(view, tensor_shapes={name: view.shape(name) for name in view.tensor_names}, load_tensor=load),
+        ))
+    return entries

@@ -92,12 +92,19 @@ def check_typed_payload(schema_id: str, payload: JsonValue) -> None:
         ObjectiveDocument.model_validate(payload)
     elif schema_id == TRAINING_DOCUMENT_SCHEMA_ID:
         TrainingDocument.model_validate(payload)
+    else:
+        # A Set holds Differences, so its module imports this one.
+        from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID, SetDocument
+
+        if schema_id == SET_DOCUMENT_SCHEMA_ID:
+            SetDocument.model_validate(payload)
 
 
 class RootDocument(StrictModel):
-    """A document whose file holds its whole payload."""
+    """A document whose file holds its whole payload. ``label`` is only what Studio shows, and enters no request."""
 
     schema_id: NonemptyText = Field(alias="schema")
+    label: NonemptyText | None = Field(default=None, exclude_if=lambda value: value is None)
     payload: JsonValue
 
     @model_validator(mode="after")
@@ -117,6 +124,14 @@ class RemoveDocumentValue(StrictModel):
 type Differences = dict[DifferencePointer, SetDocumentValue | RemoveDocumentValue]
 
 
+def check_disjoint(differences: Differences) -> None:
+    """Refuse a difference that lies under another."""
+    paths = sorted(json_pointer_parts(path) for path in differences)
+    for outer, inner in zip(paths, paths[1:]):
+        if inner[: len(outer)] == outer:
+            raise ValueError(f"difference {pointer(inner)!r} lies under {pointer(outer)!r}")
+
+
 class DocumentBase(StrictModel):
     document: ProjectName
 
@@ -125,19 +140,18 @@ class BasedDocument(StrictModel):
     """A document whose payload is its base's composed payload with ``differences`` applied.
 
     Each difference sets or removes the value at one JSON pointer into the payload. No difference
-    lies under another, and none passes through a list: a list is one value.
+    lies under another, and none passes through a list: a list is one value. ``label`` is the document's own, not
+    its base's, and enters no request.
     """
 
     schema_id: NonemptyText = Field(alias="schema")
+    label: NonemptyText | None = Field(default=None, exclude_if=lambda value: value is None)
     base: DocumentBase
     differences: Differences = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _disjoint_differences(self) -> BasedDocument:
-        paths = sorted(json_pointer_parts(path) for path in self.differences)
-        for outer, inner in zip(paths, paths[1:]):
-            if inner[: len(outer)] == outer:
-                raise ValueError(f"difference {pointer(inner)!r} lies under {pointer(outer)!r}")
+        check_disjoint(self.differences)
         return self
 
 
@@ -265,7 +279,11 @@ class StepNote(StrictModel):
 
 
 class Step(StrictModel):
+    """A card. Its key (the dict key, or the file stem in a text project) is how the project refers to it;
+    ``label`` is only what Studio and the CLI show, and enters no request, run key or reference."""
+
     kind: StepKind
+    label: NonemptyText | None = Field(default=None, exclude_if=lambda value: value is None)
     base: Base
     deltas: list[MatrixCompositionDelta] = Field(default_factory=list)
     sweep: Sweep | None = None

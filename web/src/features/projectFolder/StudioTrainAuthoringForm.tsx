@@ -389,6 +389,7 @@ export function StudioTrainAuthoringForm(props: Props) {
           <ValueField model={model} />
         </div>; })}
         {settingsSchema && shown?.settings && <SettingsForm schema={settingsSchema} value={shown.settings}
+          anchor={(path) => settingsPrefix + pointer(path)}
           mixed={(path) => isMixed(settingsPrefix + pointer(path))}
           changed={(path) => changedAt(settingsPrefix + pointer(path))}
           projected={(path) => {

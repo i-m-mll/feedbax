@@ -815,6 +815,9 @@
     },
     "feedbax.contracts.request_refs.InputMember": {
       "key": {},
+      "labels": {
+        "absent": {}
+      },
       "reference": {
         "families": [
           "best_rank",
@@ -830,6 +833,12 @@
           "last"
         ]
       }
+    },
+    "feedbax.contracts.request_refs.MemberLabel": {
+      "value": {
+        "absent": null
+      },
+      "value_id": {}
     },
     "feedbax.contracts.request_refs.NamedMember": {
       "kind": {
@@ -963,6 +972,9 @@
     },
     "feedbax.contracts.request_specs.RenderRequestSpec": {
       "document": {},
+      "names": {
+        "absent": {}
+      },
       "numerical_settings": {
         "absent": {}
       }

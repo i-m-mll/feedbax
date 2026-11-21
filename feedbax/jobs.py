@@ -615,7 +615,7 @@ class JobService(PlanJobReader):
                         )
                         items[name] = _rejected(name, f"The selected Evaluate request changed at {path}.")
                         continue
-                    data = _plan_run_data(name, run)
+                    data = _plan_run_data(name, current.plan, run)
                     try:
                         params, checkpoint = self.evaluation_parameters(current.plan, run)
                         planned = run.inputs["subject"]
@@ -685,7 +685,7 @@ class JobService(PlanJobReader):
                     if planned is None or planned.member.reference != binding.checkpoint:
                         raise ValueError("The saved Plan disagrees with the encoded checkpoint input.")
                     checkpoints[name] = ((planned.producer, binding.checkpoint.request_id),)
-                data = _plan_run_data(name, run)
+                data = _plan_run_data(name, current.plan, run)
                 runs[name] = data | {"request_id": run.request_id}
                 items[name] = self._training_item(
                     project, run.request_id, spec, data, current.store_path,
@@ -838,9 +838,9 @@ class JobService(PlanJobReader):
                 parents.setdefault(reference.request_id, Edge(anchor, authenticated_completion=exact_checkpoint))
 
         name = plan_attempt_key(node.key)
-        data = _plan_run_data(name, row)
+        data = _plan_run_data(name, plan, row)
         if isinstance(node, PlannedElement):
-            data["label"] = f"{data['label']} · {node.key.name}"
+            data["label"] = f"{data['label']} · {node.label or node.key.name}"
         store_document_inputs(store, decoded.inputs, plan.documents.__getitem__)
         payload = LightDelivery(
             project_id=project, manifest_root=Path(store.root), request=store_request(store, encoded),
@@ -1962,7 +1962,9 @@ class JobService(PlanJobReader):
 def plan_attempt_key(key: RunKey | ElementKey) -> str:
     run = key.run if isinstance(key, ElementKey) else key
     address = plan_run_key(run.variant, run.step, run.row)
-    return f"{address}/elements/{key.name}" if isinstance(key, ElementKey) else address
+    if not isinstance(key, ElementKey):
+        return address
+    return f"{address}/elements/{key.name}" + (f"/members/{key.member}" if key.member is not None else "")
 
 
 def _saved_plan_command(
@@ -2020,12 +2022,14 @@ def _planned_light_runs(
     return result
 
 
-def _plan_run_data(name: str, run: PlannedRow) -> dict[str, Any]:
+def _plan_run_data(name: str, plan: ProjectPlan, run: PlannedRow) -> dict[str, Any]:
+    """What a job records of its run at submission; ``label`` is the run's name as Studio showed it then."""
+    step = plan.steps[run.key.variant, run.key.step].label or run.key.step
     return {
         "run_key": name,
         "stage_id": run.key.step,
         "scenario_id": run.key.variant,
-        "label": run.label or run.key.step,
+        "label": f"{step} · {run.label}" if run.label else step,
         "coordinates": {axis: coordinate.value for axis, coordinate in run.coordinates.items()},
     }
 

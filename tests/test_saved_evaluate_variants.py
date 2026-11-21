@@ -93,12 +93,17 @@ def test_two_crossed_wire_insertions_compose_through_saved_plan(tmp_path):
     first = next(wire for wire in graph.wires if wire.target_node == "plant")
     second = next(wire for wire in graph.wires if wire.target_node == "wrapper")
     baseline = deepcopy(definition["steps"]["baseline"])
+    baseline["base"]["inline"]["trial_documents"] = {"model": {"document": "reach-model"}}
     axes = {}
     for name, wire in (("first", first), ("second", second)):
-        owner = _attachment_owner(wire.authored_id()) | {"composites": []}
-        attachment = _add_attachment(owner, name, None)
+        identity = wire.authored_id()
+        authored = definition["documents"]["reach-model"]["payload"]["interior"]["wires"][identity]
+        attachment = _add_attachment(_attachment_owner(identity), name, None)["attachment"]
         axes[name] = {"values": {"inserted": {"patches": {
-            f"model_attachments.{name}": {"op": "add", "value": [attachment]},
+            f"documents.reach-model.payload.interior.wires.{identity}.attachments": {
+                "op": "replace" if "attachments" in authored else "add",
+                "value": [attachment, *authored.get("attachments", [])],
+            },
         }}}}
     baseline["sweep"] = {"axes": axes}
     project = Project.model_validate(definition | {"steps": {

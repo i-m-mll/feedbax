@@ -5,7 +5,7 @@ import pytest
 
 from feedbax.contracts.project_sweep import Sweep, SweepCoordinate, SweepInputMember, expand_sweep
 from feedbax.dataset import Dataset, Variable
-from feedbax.dataset_sweep import join_rollout_conditions, stack_dataset_members
+from feedbax.dataset_sweep import stack_dataset_members
 
 
 def _bound_members():
@@ -64,7 +64,8 @@ def test_complete_sweep_keeps_axis_ids_values_and_selects_only_the_needed_member
     assert dataset.data("arm").tolist() == ["second", "first"]
     assert dataset.data("arm.label").tolist() == ["B", "A"]
     assert dataset.data("member", (1, 0)).item() == inputs[2][0].key
-    assert dataset.data("trial", (1, 0)).tolist() == ["left", "right"]
+    assert dataset.descriptor.coords["trial"].dims == ("trial",)
+    assert dataset.data("trial").tolist() == ["left", "right"]
 
     np.testing.assert_array_equal(dataset.data("plant.position", (1, 0, 1)), [23, 24, 25])
     assert reads == [(inputs[2][0].key, "plant.position", (1,))]
@@ -115,25 +116,25 @@ def test_sweep_name_collision_and_conflicting_id_are_refused():
         )
 
 
-def test_joined_rollout_keeps_condition_axis_and_refuses_coordinate_drift():
+def test_same_condition_models_stack_on_labels_and_share_equal_coordinates():
     reads = []
 
-    def rollout(condition, offset, trials=("right", "left")):
+    def rollout(model, condition, offset):
         resident = Dataset.from_arrays(
             {"v": Variable((np.arange(6) + offset).reshape((1, 1, 2, 3)), (
                 "checkpoint", "condition", "trial", "state_time",
             ))},
             coords={
                 "condition": Variable(np.asarray([condition]), ("condition",)),
-                "trial": Variable(np.asarray(trials), ("trial",)),
+                "trial": Variable(np.asarray(["right", "left"]), ("trial",)),
                 "state_time": Variable(np.asarray([0., 0.1, 0.2]), ("state_time",)),
             },
-            attrs={"state_lifetime": "trial", "variation_sha256": condition},
+            attrs={"state_lifetime": "trial", "source_graph_sha256": model},
         )
 
         def load(name, index):
             if name == "v":
-                reads.append(condition)
+                reads.append((model, condition))
             return resident.data(name, index)
 
         return Dataset.bind(
@@ -141,19 +142,36 @@ def test_joined_rollout_keeps_condition_axis_and_refuses_coordinate_drift():
             load_tensor=load,
         )
 
-    heavy, control = rollout("b", 10), rollout("a", 0)
-    joined = join_rollout_conditions([("heavy", heavy), ("control", control)])
+    def member(model, mass):
+        return SweepInputMember(f"{model}-{mass}", {
+            "source": SweepCoordinate("conditions"),
+            "model": SweepCoordinate(model),
+            "mass": SweepCoordinate(mass, value={"heavy": 2.0, "nominal": 1.0}[mass]),
+        })
+
+    inputs = [
+        (member(model, mass), rollout(model, mass, 10 * index))
+        for index, (model, mass) in enumerate(
+            (model, mass) for model in ("fast", "slow") for mass in ("heavy", "nominal")
+        )
+    ]
+    data = stack_dataset_members(inputs)
     assert reads == []
-    assert joined.data("member").tolist() == ["heavy", "control"]
-    assert joined.data("condition").tolist() == ["b", "a"]
-    assert joined.data("trial").tolist() == ["right", "left"]
-    assert joined.descriptor.attrs["condition_provenance"] == {
-        "heavy": {"variation_sha256": "b"}, "control": {"variation_sha256": "a"},
-    }
-    np.testing.assert_array_equal(joined.data("v", (0, 1, 0)), [0, 1, 2])
-    assert reads == ["a"]
-    np.testing.assert_array_equal(joined.data("v", (0, slice(None, None, -1), 0)), [[0, 1, 2], [10, 11, 12]])
-    with pytest.raises(ValueError, match="coordinate|field 'trial'"):
-        join_rollout_conditions([("heavy", heavy), ("control", rollout("a", 0, ("left", "right")))])
-    with pytest.raises(ValueError, match="distinct condition IDs"):
-        join_rollout_conditions([("heavy", heavy), ("alias", heavy)])
+    assert data.descriptor.variables["v"].dims == ("model", "mass", "checkpoint", "condition", "trial", "state_time")
+    assert data.data("model").tolist() == ["fast", "slow"]
+    assert data.data("mass.value").tolist() == [2.0, 1.0]
+    assert data.data("source").item() == "conditions"
+    assert data.descriptor.coords["trial"].dims == ("trial",)
+    assert data.descriptor.coords["condition"].dims == ("mass", "condition")
+    assert data.data("condition").tolist() == [["heavy"], ["nominal"]]
+    assert data.descriptor.attrs == {"state_lifetime": "trial"}
+    assert data.descriptor.coords["source_graph_sha256"].dims == ("model",)
+    assert data.data("source_graph_sha256").tolist() == ["fast", "slow"]
+    np.testing.assert_array_equal(data.data("v", (1, 0, 0, 0, 1)), [23, 24, 25])
+    assert reads == [("slow", "heavy")]
+
+    single = stack_dataset_members(inputs[:1])
+    assert single.descriptor.variables["v"].dims == ("checkpoint", "condition", "trial", "state_time")
+    assert single.data("model").item() == "fast"
+    with pytest.raises(ValueError, match="collide.*condition"):
+        stack_dataset_members([(SweepInputMember("one", {"condition": SweepCoordinate("x")}), inputs[0][1])])

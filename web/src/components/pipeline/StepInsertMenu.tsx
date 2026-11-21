@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import { studioStep } from '@/components/activity/studioVocabulary';
 import { Menu, MenuContent, MenuItem, type MenuContentProps } from '@/components/ui/Menu';
+import { gestureContext } from '@/features/projectWindow/heldGestures';
 
 export const stepKinds = ['train', 'evaluate', 'analyze', 'report'] as const;
 export type StepKind = typeof stepKinds[number];
@@ -14,12 +15,19 @@ let fromKeyboard = false;
 // A command does not know which control invoked it; the event being dispatched does.
 function recordOrigin(event: Event) {
   const target = event.target instanceof Element ? event.target : null;
-  origin = event.type === 'contextmenu' && event instanceof MouseEvent && (event.clientX || event.clientY)
+  record(event.type === 'contextmenu' && event instanceof MouseEvent && (event.clientX || event.clientY)
     ? { x: event.clientX, y: event.clientY }
-    : target?.closest('[data-command-id]') ?? target;
-  fromKeyboard = event.type === 'keydown';
+    : target?.closest('[data-command-id]') ?? target, event.type === 'keydown');
+}
+
+function record(from: Element | Point | null, keyboard: boolean) {
+  origin = from;
+  fromKeyboard = keyboard;
   setTimeout(() => { origin = null; fromKeyboard = false; });
 }
+
+// A New Step held while the workspace settles opens where, and as, the gesture that made it would have.
+gestureContext(() => ({ origin, fromKeyboard }), (made) => record(made.origin, made.fromKeyboard));
 
 if (typeof document !== 'undefined') {
   for (const type of ['click', 'keydown', 'contextmenu']) document.addEventListener(type, recordOrigin, true);

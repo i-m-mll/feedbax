@@ -1,7 +1,7 @@
 """Prepare checkpoint-rule edits through the saved Plan and file editor."""
 
 from feedbax.contracts.manifest import OverridePatch
-from feedbax.contracts.model_edit import EvaluateAttachmentAxis
+from feedbax.contracts.model_edit import AxisValueRuns
 from feedbax.contracts.project import RemoveProjectValue
 from feedbax.contracts.project_inputs import StepReference
 from feedbax.contracts.project_plan import RunKey, compile_project
@@ -54,7 +54,7 @@ def prepare_checkpoint_rule_edit(
         scope = edit.scope
         rule = edit.model_dump(mode="json", by_alias=True, exclude_none=True)["rule"]
         writes = [OverridePatch(path=CHECKPOINT_RULE_TARGET, op="replace", value=rule)]
-        if isinstance(scope, EvaluateAttachmentAxis):
+        if isinstance(scope, AxisValueRuns):
             selected = {
                 row_key for row_key, row in rows.items()
                 if (coordinate := row.coordinates.get(scope.axis)) is not None and coordinate.value_id == scope.value

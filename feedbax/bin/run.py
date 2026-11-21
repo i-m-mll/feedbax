@@ -17,7 +17,7 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
         "project_dir", nargs="?", type=Path, default=Path("."),
         help="Project declaration file or directory. Use . before selectors for the current project.",
     )
-    parser.add_argument("runs", nargs="*", metavar="step[@row]")
+    parser.add_argument("runs", nargs="*", metavar="step[@row][:axis=value,...]")
     parser.add_argument(
         "--label", default=os.environ.get("FEEDBAX_ACTOR_LABEL"),
         help="Label the submission (default: FEEDBAX_ACTOR_LABEL).",
@@ -29,6 +29,7 @@ def run_saved_project(args: argparse.Namespace, output: CommandOutput) -> int:
     from feedbax.contracts.jobs import StudioSubmissionActor
     from feedbax.contracts.project_io import ProjectReadError, locate_text_project, project_declaration_name
     from feedbax.contracts.project_plan import PlannedAnalyzeRun, PlannedRun
+    from feedbax.contracts.result_address import ResultAddress, row_names, selects
     from feedbax.host import HostClient, HostError
     from feedbax.jobs import JobConflict, JobService
     from feedbax.plugins.bootstrap import BootstrapError
@@ -55,10 +56,17 @@ def run_saved_project(args: argparse.Namespace, output: CommandOutput) -> int:
         ]
         selected = dict.fromkeys(keys) if not args.runs else {}
         for selector in args.runs:
-            step, separator, row = selector.partition("@")
+            try:
+                address = ResultAddress.parse(selector)
+            except ValueError as error:
+                output.error("unknown_run", str(error), path=selector, address=selector)
+                return 2
+            rows = {row.key: row for row in reviewed.plan.rows}
             matches = [
                 key for key in keys
-                if key.step == step and (not separator or key.row == row)
+                if address.card is None and key.step == address.name
+                and (address.row is None or key.row == address.row)
+                and selects(address.labels, row_names(rows[key].axis_keys, rows[key].coordinates))
             ]
             if not matches:
                 output.error(

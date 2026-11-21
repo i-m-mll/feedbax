@@ -1,5 +1,7 @@
 import { studioFormat, studioName, studioOpeningStage, studioOpeningStep } from '@/components/activity/studioVocabulary';
-import { runResultState, type PlanResultView, type PlanRunView, type PlanStepView, type PlanView } from '@/features/pipeline/planView';
+import {
+  runResultState, shownName, type PlanResultView, type PlanRunView, type PlanStepView, type PlanSweepView, type PlanView,
+} from '@/features/pipeline/planView';
 import type {
   Project, SelectedRow, StudioSavedLightResult, StudioBestRankGroup, StudioBoundBestSubject, StudioProjectWindowMapCoordinate, StudioProjectWindowMapSubset, StudioSavedTrainRuns,
   SubsetTerms,
@@ -28,7 +30,7 @@ export function sharedRowTerms(
   if (!members.length) return undefined;
   const axes = Object.fromEntries(step.sweeps.flatMap(({ id, values }) => {
     const selected = new Set<string | undefined>(members.map((member) => member.values[id]));
-    return selected.has(undefined) ? [] : [[id, values.filter((value) => selected.has(value.id)).map(({ id }) => id)]];
+    return selected.has(undefined) || selected.has(unvalued) ? [] : [[id, values.filter((value) => selected.has(value.id)).map(({ id }) => id)]];
   }));
   const selected = new Set(members.map(({ id }) => id));
   const matches = step.runs.filter(({ values }) => Object.entries(axes).every(([axis, ids]) => ids.includes(values[axis])));
@@ -72,15 +74,109 @@ function savedResult(result: { request_id: string; job_id: string; validity?: Pl
 
 const noChecks: ReadonlySet<string> = new Set();
 
+/**
+ * The value an optional axis gives the runs it keeps beside their copies: the axis's first mark, with no name of its
+ * own. It is no value of the authored axis, so no edit names it.
+ */
+export const unvalued = '';
+
+function optionalAxes(project: Project, step: string) {
+  return Object.entries(project.steps?.[step]?.sweep?.axes ?? {}).flatMap(([axis, read]) =>
+    read && 'optional' in read && read.optional ? [axis] : []);
+}
+
+/** The row an optional axis keeps beside the row with `value` on it: its id without that value. */
+function keptRow(row: string, axis: string, value: string) {
+  return row.split('--').filter((part) => part !== `${axis}=${value}`).join('--') || 'default';
+}
+
+/** Whether every run has a value of both axes, and each axis's value determines the other's. */
+function paired(a: string, b: string, runs: readonly PlanRunView[]) {
+  const forward = new Map<string, string>();
+  const backward = new Map<string, string>();
+  for (const { values } of runs) {
+    const [x, y] = [values[a], values[b]];
+    if (x === undefined || y === undefined || x === unvalued || y === unvalued) return false;
+    if ((forward.get(x) ?? y) !== y || (backward.get(y) ?? x) !== x) return false;
+    forward.set(x, y);
+    backward.set(y, x);
+  }
+  return forward.size > 1;
+}
+
+/**
+ * The step's axes as the map draws them: input axes that vary together over its runs, as those of zipped list
+ * inputs do, are one axis, whose values are labelled by each. It is named by the axis the step authors, when one does;
+ * two authored axes stay apart, and so do an authored input axis and an axis its own input carries, whose values
+ * already label the input's.
+ */
+function pairedAxesJoined(
+  sweeps: readonly PlanSweepView[], runs: readonly PlanRunView[], authored: ReadonlySet<string>,
+  carried: ReadonlyMap<string, ReadonlySet<string>>,
+) {
+  const apart = (a: string, b: string) => (authored.has(a) && authored.has(b)) ||
+    !!carried.get(a)?.has(b) || !!carried.get(b)?.has(a);
+  const groups: PlanSweepView[][] = [];
+  for (const sweep of sweeps) {
+    const group = groups.find((group) => paired(group[0].id, sweep.id, runs) &&
+      !group.some(({ id }) => apart(id, sweep.id)));
+    if (!group) groups.push([sweep]);
+    else if (authored.has(sweep.id)) group.unshift(sweep);
+    else group.push(sweep);
+  }
+  const absorbed = groups.flatMap((group) => group.slice(1).map(({ id }) => id));
+  if (!absorbed.length) return { sweeps, runs };
+  return {
+    sweeps: groups.map(([first, ...rest]): PlanSweepView => !rest.length ? first : {
+      id: first.id,
+      label: [first, ...rest].map(({ label }) => label).join(' · '),
+      values: first.values.map((value) => {
+        const run = runs.find(({ values }) => values[first.id] === value.id);
+        return { id: value.id, label: [value.label, ...rest.map((sweep) =>
+          sweep.values.find(({ id }) => id === run?.values[sweep.id])?.label ?? '')].join(' · ') };
+      }),
+    }),
+    runs: runs.map((run) => ({
+      ...run, values: Object.fromEntries(Object.entries(run.values).filter(([axis]) => !absorbed.includes(axis))),
+    })),
+  };
+}
+
+/** Each input axis the step authors, with the axes the runs of its input carry from their steps and upstream. */
+function carriedAxes(project: Project, stepId: string): Map<string, Set<string>> {
+  const steps = project.steps ?? {};
+  function upstream(step: string, seen: Set<string>): string[] {
+    if (seen.has(step)) return [];
+    seen.add(step);
+    const read = steps[step];
+    const sources = Object.values(read?.inputs ?? {}).flatMap((binding) => Array.isArray(binding) ? binding : [binding]);
+    return [
+      ...Object.keys(read?.sweep?.axes ?? {}),
+      ...sources.flatMap((source) => source && typeof source === 'object' && 'step' in source
+        ? upstream(source.step, seen) : []),
+    ];
+  }
+  const carried = new Map<string, Set<string>>();
+  for (const [axis, read] of Object.entries(steps[stepId]?.sweep?.axes ?? {})) {
+    if (!read || typeof read !== 'object' || !('input' in read)) continue;
+    const binding = steps[stepId]?.inputs?.[read.input];
+    const sources = Array.isArray(binding) ? binding : binding ? [binding] : [];
+    carried.set(axis, new Set(sources.flatMap((source) => source && typeof source === 'object' && 'step' in source
+      ? upstream(source.step, new Set([stepId])) : [])));
+  }
+  return carried;
+}
+
 export function projectWindowPlan(
   project: Project, saved: StudioSavedTrainRuns | undefined, variant: string | null, checking = noChecks,
 ): PlanView {
   const map = saved?.window_map;
   const elementResults = new Map<string, StudioSavedLightResult[]>();
   for (const element of map?.analysis_elements ?? []) {
-    if (!element.result) continue;
+    const results = element.requests.flatMap(({ result }) => result ? [result] : []);
+    if (!results.length) continue;
     const id = savedRunId(element.key);
-    elementResults.set(id, [...elementResults.get(id) ?? [], element.result]);
+    elementResults.set(id, [...elementResults.get(id) ?? [], ...results]);
   }
   const scope = variant ?? planVariants(saved)[0] ?? null;
   const evaluations = new Map(map?.evaluations?.map((row) => [savedRunId(row.key), row]));
@@ -106,6 +202,16 @@ export function projectWindowPlan(
   const stepSources = new Map(map?.steps.filter(({ variant }) => variant === scope).map(({ step_id, inputs }) =>
     [step_id, inputs.find(({ id }) => id === 'subject')?.source_step_id]));
   const train = new Map(saved?.rows.map((row) => [savedRunId(row.key), row]));
+  /** The Train steps an Evaluate step's subject gathers from, when it gathers from several. */
+  const gathered = new Map(map?.steps.filter(({ variant }) => variant === scope).flatMap(({ step_id, inputs }) => {
+    const sources = new Set(inputs.filter(({ id }) => id === 'subject' || id.startsWith('subject.'))
+      .map(({ source_step_id }) => source_step_id));
+    return sources.size > 1 ? [[step_id, sources] as const] : [];
+  }));
+  /** The Train step that made each gathered Evaluate run's model, the run's `model` label. */
+  const models = new Map((map?.edges ?? []).flatMap(({ from_key, to_key }) =>
+    to_key.variant === scope && gathered.get(to_key.step)?.has(from_key.step)
+      ? [[savedRunId(to_key), from_key.step] as const] : []));
   const sweepsByStep = new Map<string, Map<string, Map<string, string>>>();
   const runsByStep = new Map<string, PlanRunView[]>();
   function addRun(step: string, run: PlanRunView) {
@@ -138,16 +244,39 @@ export function projectWindowPlan(
       return { id, label: rowName(id, key.row) };
     }) }] : undefined;
   }
+  const kept = new Map<string, Set<string>>();
+  for (const row of map?.rows ?? []) {
+    if (row.key.variant !== scope) continue;
+    for (const axis of optionalAxes(project, row.key.step)) {
+      const coordinate = row.coordinates[axis];
+      if (!coordinate) continue;
+      const key = JSON.stringify([row.key.step, axis]);
+      kept.set(key, (kept.get(key) ?? new Set()).add(keptRow(row.key.row, axis, coordinate.value_id)));
+    }
+  }
   for (const row of map?.rows ?? []) {
     if (row.key.variant !== scope) continue;
     let sweeps = sweepsByStep.get(row.key.step);
     if (!sweeps) sweepsByStep.set(row.key.step, sweeps = new Map());
     const values: Record<string, string> = {};
+    const model = models.get(savedRunId(row.key));
+    if (model !== undefined && !('model' in row.coordinates)) {
+      let entries = sweeps.get('model');
+      if (!entries) sweeps.set('model', entries = new Map());
+      entries.set(model, shownName(model, project.steps?.[model]));
+      values.model = model;
+    }
     for (const [sweep, coordinate] of Object.entries(row.coordinates)) {
       let entries = sweeps.get(sweep);
       if (!entries) sweeps.set(sweep, entries = new Map());
       entries.set(coordinate.value_id, coordinateText(coordinate));
       values[sweep] = coordinate.value_id;
+    }
+    for (const axis of optionalAxes(project, row.key.step)) {
+      if (axis in row.coordinates || !kept.get(JSON.stringify([row.key.step, axis]))?.has(row.key.row)) continue;
+      const entries = sweeps.get(axis) ?? new Map<string, string>();
+      sweeps.set(axis, new Map([[unvalued, ''], ...entries]));
+      values[axis] = unvalued;
     }
     const id = savedRunId(row.key);
     const training = train.get(id);
@@ -212,19 +341,19 @@ export function projectWindowPlan(
     }
     const runs = runsByStep.get(id) ?? [];
     return {
-      id, label: id, kind, group,
+      id, label: shownName(id, project.steps?.[id]), kind, group,
       documentIds: projected?.document_ids,
       documentUses: projected?.document_uses,
       inputs,
-      sweeps: [...(sweepsByStep.get(id) ?? [])].map(([id, values]) => ({
-        id, label: id, values: [...values].map(([id, label]) => ({ id, label })),
-      })),
-      statusCounts: resultCounts(projected?.status_counts ?? {}, runs),
-      runs: groupedLabels.size ? runs.map((run) => {
+      ...pairedAxesJoined([...(sweepsByStep.get(id) ?? [])].map(([axis, values]) => {
+        const read = project.steps?.[id]?.sweep?.axes?.[axis];
+        return { id: axis, label: read && 'set' in read ? read.set : axis, values: [...values].map(([id, label]) => ({ id, label })) };
+      }), groupedLabels.size ? runs.map((run) => {
         const rank = evaluations.get(run.id)?.subject_rank_key;
         const label = rank && groupedLabels.get(rank);
         return label ? { ...run, label } : run;
-      }) : runs,
+      }) : runs, new Set(Object.keys(project.steps?.[id]?.sweep?.axes ?? {})), carriedAxes(project, id)),
+      statusCounts: resultCounts(projected?.status_counts ?? {}, runs),
     };
   });
   return {

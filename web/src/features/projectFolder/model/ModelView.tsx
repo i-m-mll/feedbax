@@ -3,7 +3,7 @@ import { MarkerType, type OnConnectStart } from '@xyflow/react';
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
 import { useStore } from 'zustand';
 import { fetchComponents } from '@/api/components';
-import { editEvaluateAttachment, projectModelFields, readEvaluateAttachments, readModelProjection, reviewModelConnections } from '@/api/projectFolders';
+import { projectModelFields, readEvaluateModel, readModelProjection, reviewModelConnections } from '@/api/projectFolders';
 import { ApiRequestError, apiErrorMessage, isRefusal } from '@/api/request';
 import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
 import { studioAccessibleName, studioEvaluateValueSource, studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
@@ -26,7 +26,8 @@ import type { FieldModel } from '@/components/values/fieldModel';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { bindStudioCommand, commandAttributes } from '@/features/projectWindow/studioCommands';
 import type {
-  ComponentDefinition, EvaluateAttachmentReadRequest, EvaluateAttachmentRequest, JsonValue,
+  AddModelAttachment, ChangeModelAttachment, ComponentDefinition, EvaluateModelRequest, JsonValue,
+  RemoveModelAttachment, SetField,
   ModelAddress, ModelClipboard, ModelConnectionReview, ModelDocument, ModelEditCommand, ModelFieldRequest, ModelPosition, StudioProjectSnapshot, StudioSavedTrainKey,
 } from '@/generated/studioContracts';
 import { ModelAddressSchema, ModelDocumentSchema, ModelEditProblemSchema } from '@/generated/studioContracts';
@@ -45,7 +46,7 @@ import { modelOutline } from './modelOutline';
 import { sweepValueRuns, type ConfirmRunRemoval } from '../runRemoval';
 
 type Operation = ModelEditCommand['operation'];
-type Difference = EvaluateAttachmentRequest['difference'];
+type Difference = AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment | SetField;
 type Props = {
   model?: { id: string; value: ModelDocument };
   saved: StudioProjectSnapshot;
@@ -53,6 +54,8 @@ type Props = {
   elements: ElementSelectionStore;
   active: boolean;
   editable: boolean;
+  /** Whether the topology commands apply, apart from the workspace settling. */
+  topologyApplies: boolean;
   fieldEditable: boolean;
   fieldChosenSteps?: ReadonlySet<string>;
   /** Whether the plan read is of the shown revision, so that `fieldChosenSteps` names the steps it chooses. */
@@ -61,7 +64,7 @@ type Props = {
   fieldAxes?: Record<string, string[]>;
   selectedSweepValues?: ReadonlyMap<string, ReadonlySet<string>>;
   confirmRunRemoval: ConfirmRunRemoval;
-  evaluate?: Omit<EvaluateAttachmentReadRequest, 'revision'>;
+  evaluate?: Omit<EvaluateModelRequest, 'revision'>;
   problem?: { address: ModelAddress; reason: string };
   problems?: readonly { address: ModelAddress; reason: string }[];
   projectionRun?: StudioSavedTrainKey;
@@ -92,6 +95,15 @@ function sameSubject(previous: unknown, next: object | false | undefined) {
   const { revision: _previous, ...a } = previous as { revision?: string };
   const { revision: _next, ...b } = next as { revision?: string };
   return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** The runs an Evaluate Model edit is for, as a model edit names them; `rows` are the runs of a selected value. */
+function evaluateEditRuns(scope: EvaluateModelRequest['scope'], run: StudioSavedTrainKey, rows?: readonly string[]) {
+  return {
+    ...(scope.kind === 'variant' ? { variant: scope.variant } : {}),
+    ...(scope.kind === 'rows' ? { rows: [...scope.rows] } : {}),
+    ...(scope.kind === 'axis_value' ? { rows: rows?.length ? [...rows] : [run.row], axes: { [scope.axis]: [scope.value] } } : {}),
+  };
 }
 
 function currentGraph(composites: string[]): ModelAddress {
@@ -163,7 +175,7 @@ function LeafChoices({ definitions, query, choose, disabled }: {
   </section>)}</>;
 }
 
-export function useStoredModelView({ model, saved, editor, elements: state, active, editable, fieldEditable, fieldChosenSteps, planCurrent, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, evaluate, problem, problems, projectionRun, path, setPath, sections, openProblems, exceptions }: Props) {
+export function useStoredModelView({ model, saved, editor, elements: state, active, editable, topologyApplies, fieldEditable, fieldChosenSteps, planCurrent, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, evaluate, problem, problems, projectionRun, path, setPath, sections, openProblems, exceptions }: Props) {
   const selected = useModelSelection(state, model?.id);
   const pick = useStore(state, (current) => current.pick);
   const reveal = useStore(state, (current) => current.reveal);
@@ -209,8 +221,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     ...(projection.data?.objective_ports ?? []).map((address) => [addressKey(address), 'objective'] as const),
   ]), [projection.data]);
   const attachments = useQuery({
-    queryKey: ['model-evaluate-attachments', saved.project_id, readBody],
-    queryFn: ({ signal }) => readEvaluateAttachments(saved.project_id, readBody!, signal),
+    queryKey: ['model-evaluate-model', saved.project_id, readBody],
+    queryFn: ({ signal }) => readEvaluateModel(saved.project_id, readBody!, signal),
     enabled: active && !!model && !!readBody,
     placeholderData: (previous, query) => sameSubject(query?.queryKey[2], readBody) ? previous : undefined,
   });
@@ -225,7 +237,11 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const owner = resolved?.owner;
   const interior = owner?.interior;
   const physical = interior?.physical_domain ?? null;
-  const editTopology = editable && !evaluate;
+  /** An Evaluate edits the topology of one selected value's Model; the edit is stored on the value. */
+  const editTopology = editable && (!evaluate || evaluate.scope.kind === 'axis_value');
+  const topologyCommand = topologyApplies && (!evaluate || evaluate.scope.kind === 'axis_value');
+  const selectedRuns = evaluate?.scope.kind === 'axis_value' ? evaluateEditRuns(evaluate.scope, evaluate.run, fieldRows)
+    : !evaluate && fieldRows?.length && fieldAxes ? { rows: [...fieldRows], axes: fieldAxes } : undefined;
   const selectedHere = selected.filter((item) => inGraph(item, graph));
   const selectedIds = new Set(selectedHere.map(addressKey));
   const selection = selectedHere[0];
@@ -275,7 +291,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           if (result.files?.length && !await confirmRunRemoval(sweepValueRuns(result.removed_values))) return undefined;
           const applied = await editor.editModel('Set Value', fieldBody.document, result.command, current, fieldBody.run && {
             step: fieldBody.run.step, chosen_steps: [...chosenSteps], files: result.files ?? [],
-            ...(fieldBody.evaluate_scope?.kind === 'variant' ? { variant: fieldBody.evaluate_scope.variant } : {}),
+            ...(fieldBody.evaluate_scope ? evaluateEditRuns(fieldBody.evaluate_scope, fieldBody.run, fieldRows)
+              : fieldBody.rows?.length && fieldBody.axes ? { rows: fieldBody.rows, axes: fieldBody.axes } : {}),
           });
           follow(applied);
           return applied.status === 'refused' ? applied.problem.detail : undefined;
@@ -405,8 +422,9 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   async function attempt(name: string, operation: Operation, choose = true): Promise<{ address?: ModelAddress; reason: string } | null> {
     if (!model || !editTopology) return { reason: studioReason('unavailable', name) };
     return run(async () => {
-        const scope = projectionRun && { step: projectionRun.step, chosen_steps: [...(await plan.next(({ revision }) =>
-          revision === editor.getSnapshot().saved.revision)).chosenSteps] };
+        const subject = evaluate?.run ?? projectionRun;
+        const scope = subject && { step: subject.step, chosen_steps: [...(await plan.next(({ revision }) =>
+          revision === editor.getSnapshot().saved.revision)).chosenSteps], ...selectedRuns };
         const reviewed = editor.getSnapshot().saved;
         setIssue(undefined);
         try {
@@ -442,29 +460,18 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         try {
           let changed: ModelAddress;
           let shown = model.id;
-          if (readBody.scope.kind === 'step' || readBody.scope.kind === 'variant') {
-            const { chosenSteps } = await plan.next(({ revision }) => revision === editor.getSnapshot().saved.revision);
-            const applied = await editor.editModel(name, model.id, {
-              operation: difference.op === 'set_field' ? difference : { op: 'set_attachment', difference },
-            }, editor.getSnapshot().saved, {
-              step: readBody.run.step, chosen_steps: [...chosenSteps],
-              ...(readBody.scope.kind === 'variant' ? { variant: readBody.scope.variant } : {}),
-            });
-            if (applied.status === 'refused') throw new Error(applied.problem.detail);
-            shown = follow(applied) ?? shown;
-            const [first] = applied.changed;
-            if (!first) throw new Error('The edit changed nothing.');
-            changed = first;
-          } else {
-            const result = await editEvaluateAttachment(saved.project_id, { ...readBody, difference }, editor.signal);
-            if (result.revision !== saved.revision) throw new Error('The selected Evaluate revision changed.');
-            editor.editFiles(name, [result.file], {
-              reviewedRevision: saved.revision,
-              dependencies: [{ kind: 'document', id: model.id }],
-            });
-            await editor.flush();
-            changed = result.changed;
-          }
+          const { scope } = readBody;
+          const { chosenSteps } = await plan.next(({ revision }) => revision === editor.getSnapshot().saved.revision);
+          const applied = await editor.editModel(name, model.id, {
+            operation: difference.op === 'set_field' ? difference : { op: 'set_attachment', difference },
+          }, editor.getSnapshot().saved, {
+            step: readBody.run.step, chosen_steps: [...chosenSteps], ...evaluateEditRuns(scope, readBody.run, fieldRows),
+          });
+          if (applied.status === 'refused') throw new Error(applied.problem.detail);
+          shown = follow(applied) ?? shown;
+          const [first] = applied.changed;
+          if (!first) throw new Error('The edit changed nothing.');
+          changed = first;
           if (difference.op !== 'set_field') {
             selectElement(state, { document: shown, address: difference.op === 'remove' ? at(changed, { kind: 'graph' }) : changed });
           }
@@ -517,7 +524,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     setPath(path);
   }
   function enterComposite(id: string, subject?: string) {
-    return bindStudioCommand('enter', () => go([...currentPath, id]), { subject });
+    return bindStudioCommand('enter', () => go([...currentPath, id]), { subject, instance: id });
   }
   function keyboardConnect(port: Port) {
     if (!model || locked || !editTopology || port.direction !== 'output') return;
@@ -815,9 +822,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     ? effective.get(addressKey(attachmentOwner))?.find(({ id }) => id === element.id) : undefined;
   const ownerAddress = selection && (element?.kind === 'wire' || element?.kind === 'port') ? selection : attachmentOwner;
   const chain = ownerAddress && effective.get(addressKey(ownerAddress));
-  const authored = attachments.data?.records ?? [];
   function isAuthored(address: ModelAddress) {
-    return fromDifference(address) || authored.some((record) => addressKey(record.op === 'add' ? attachmentAddress(record.owner, record.attachment.id) : record.address) === addressKey(address));
+    return fromDifference(address);
   }
   async function updateAttachment(address: ModelAddress, item: Attachment) {
     const difference = { op: 'change', address, attachment: item } as const;
@@ -870,9 +876,9 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       address.element.end.owner !== 'boundary';
     if (!(wire || signalPort) || !(editTopology || canEvaluate)) return [];
     return [
-      ...(wire && editTopology ? [bindStudioCommand('addDelay', () => addAttachment(address, 'delay'))] : []),
-      ...(wire || source ? [bindStudioCommand('addIntervention', () => addAttachment(address, 'intervention'))] : []),
-      bindStudioCommand('addProbe', () => addAttachment(address, 'probe')),
+      ...(wire && editTopology ? [bindStudioCommand('addDelay', () => addAttachment(address, 'delay'), { instance: addressKey(address) })] : []),
+      ...(wire || source ? [bindStudioCommand('addIntervention', () => addAttachment(address, 'intervention'), { instance: addressKey(address) })] : []),
+      bindStudioCommand('addProbe', () => addAttachment(address, 'probe'), { instance: addressKey(address) }),
     ];
   }
 
@@ -881,9 +887,9 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const isCollapsed = !!collapsed?.[graphId];
   const collapse = bindStudioCommand('collapseAll', () => {
     void apply(studioName(isCollapsed ? 'expandAll' : 'collapseAll'), { op: 'collapse_graph', graph, collapsed: !isCollapsed }, false);
-  }, { name: isCollapsed ? 'expandAll' : 'collapseAll', enabled: editTopology });
+  }, { name: isCollapsed ? 'expandAll' : 'collapseAll', enabled: topologyCommand });
   const lock = bindStudioCommand('lock', () => setLocked((current) => !current), {
-    name: locked ? 'unlock' : 'lock', enabled: editTopology,
+    name: locked ? 'unlock' : 'lock', enabled: topologyCommand,
   });
   const leave = currentPath.length ? bindStudioCommand('leave', () => go(currentPath.slice(0, -1))) : undefined;
   const attachmentsForSelection = ownerAddress && !attachment ? attachmentCommands(ownerAddress) : [];
@@ -892,7 +898,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     if (targetElement.kind === 'component') return [
       bindStudioCommand('flip', () => {
         void apply(studioName('flip'), { op: 'flip_component', address }, false);
-      }, { enabled: editTopology }),
+      }, { enabled: topologyCommand, instance: addressKey(address) }),
       ...(interior?.components?.[targetElement.id]?.kind === 'composite' ? [enterComposite(targetElement.id)] : []),
     ];
     if (targetElement.kind !== 'wire') return [];
@@ -911,36 +917,36 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           x: (source.position.x + target.position.x) / 2 + 90,
           y: (source.position.y + target.position.y) / 2 + 32,
         }], studioName('addWaypoint'));
-      }, { enabled: editTopology }),
+      }, { enabled: topologyCommand, instance: addressKey(address) }),
       bindStudioCommand('removeWaypoint', () => {
         route(address, routePoints.slice(0, -1), studioName('removeWaypoint'));
-      }, { enabled: editTopology && routePoints.length > 0 }),
+      }, { enabled: topologyCommand && routePoints.length > 0, instance: addressKey(address) }),
     ];
   }
   const commands = [
-    bindStudioCommand('addComponent', () => openSearch(), { enabled: editTopology && definitions.length > 0 }),
+    bindStudioCommand('addComponent', () => openSearch(), { enabled: topologyCommand && definitions.length > 0 }),
     ...(port?.direction === 'output' ? [bindStudioCommand('connectPorts', () => keyboardConnect(port),
-      { enabled: editTopology && !locked })] : []),
+      { enabled: topologyCommand && !locked })] : []),
     bindStudioCommand('modelSelectAll', () => setSelection(
       objects.map(([id]) => at(graph, { kind: 'component', id })),
     ), { enabled: !!objects.length }),
     bindStudioCommand('modelRemove', () => {
       if (selection?.element.kind === 'attachment') removeAttachment(selection);
       else void apply(studioName('modelRemove'), { op: 'delete', selection: [...selectedHere] });
-    }, { enabled: selectedHere.length > 0 && (editTopology || canEvaluate && !!attachment) }),
-    bindStudioCommand('modelRename', () => { if (selection) setRename(addressKey(selection)); }, { enabled: editTopology && !!component }),
+    }, { enabled: selectedHere.length > 0 && (topologyCommand || canEvaluate && !!attachment) }),
+    bindStudioCommand('modelRename', () => { if (selection) setRename(addressKey(selection)); }, { enabled: topologyCommand && !!component }),
     bindStudioCommand('modelDuplicate', () => void apply(studioName('modelDuplicate'), { op: 'duplicate', selection: [...selectedHere] }),
-      { enabled: editTopology && componentsOnly }),
+      { enabled: topologyCommand && componentsOnly }),
     bindStudioCommand('modelGroup', () => void apply(studioName('modelGroup'), { op: 'group', selection: [...selectedHere], name: studioName('modelGroup') }),
-      { enabled: editTopology && componentsOnly && !physical }),
+      { enabled: topologyCommand && componentsOnly && !physical }),
     bindStudioCommand('modelUngroup', () => { if (selection) void apply(studioName('modelUngroup'), { op: 'ungroup', address: selection }); },
-      { enabled: editTopology && component?.kind === 'composite' && !component.interior.physical_domain }),
+      { enabled: topologyCommand && component?.kind === 'composite' && !component.interior.physical_domain }),
     bindStudioCommand('modelCopy', () => void apply(studioName('modelCopy'), { op: 'copy', selection: [...selectedHere] }, false),
-      { enabled: editTopology && componentsOnly }),
+      { enabled: topologyCommand && componentsOnly }),
     bindStudioCommand('modelCut', () => void apply(studioName('modelCut'), { op: 'cut', selection: [...selectedHere] }),
-      { enabled: editTopology && componentsOnly }),
+      { enabled: topologyCommand && componentsOnly }),
     bindStudioCommand('modelPaste', () => { if (clipboard) void apply(studioName('modelPaste'), { op: 'paste', graph, clipboard }); },
-      { enabled: editTopology && !!clipboard }),
+      { enabled: topologyCommand && !!clipboard }),
     ...attachmentsForSelection,
     ...(selection ? topologyCommands(selection) : []),
     ...(leave ? [leave] : []),

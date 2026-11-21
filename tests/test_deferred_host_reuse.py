@@ -13,7 +13,7 @@ from feedbax.contracts.code_validity import AttemptProvenance, CodeTrace, FileSn
 from feedbax.contracts.dataset import DATASET_MEDIA_TYPE
 from feedbax.contracts.effective_success import Product
 from feedbax.contracts.figure_document import FigureDocument, PLOTLY_MEDIA_TYPE
-from feedbax.contracts.operation import DatasetPort, OperationDefinition
+from feedbax.contracts.operation import DatasetOutputPort, OperationDefinition
 from feedbax.contracts.report_document import ReportDocument, ReportFigure
 from feedbax.contracts.request_identity import encode_request
 from feedbax.contracts.request_refs import ContentRef, InputMember, ProductRef
@@ -38,7 +38,7 @@ def test_deferred_reuse_keeps_exact_result_across_reopening(tmp_path, action):
     definition = OperationDefinition(
         key="fixture.series", owner="fixture", owner_version="1", label="Series", description="Test input",
         param_schema=[], parameter_json_schema={},
-        static_parameters=(), inputs={}, outputs={"series": DatasetPort(schema_ids=(schema,))},
+        static_parameters=(), inputs={}, outputs={"series": DatasetOutputPort(schema_ids=(schema,))},
     ).model_dump(mode="json")
     series = store_request(blobs, encode_request(AnalysisRequestSpec(analysis_type="fixture.series", params={}), {}))
     figures = FigureDocument.model_validate({

@@ -26,7 +26,8 @@ from feedbax.contracts.request_specs import (
 )
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.dataset import Dataset
-from feedbax.dataset_sweep import join_rollout_conditions
+from feedbax.contracts.member_stack import labelled_members
+from feedbax.dataset_sweep import dataset_entries, stack_dataset_members
 from feedbax.host.completion import read_completion_bindings
 from feedbax.host.io import append
 from feedbax.host.model_checkpoint_input import bind_managed_inputs
@@ -73,11 +74,15 @@ def _decoded_dataset(root: Path, digest: str, size: int, descriptor_sha256: str)
 
 def _dataset_inputs(
     store: ImmutableArtifactBlobProvider,
+    request: DecodedRequest,
     bindings: Bindings,
     stack: ExitStack,
 ) -> dict[str, Dataset]:
+    """Each role's dataset: its labelled members, and the labelled entries of those that are stacks, stacked by their
+    labels; or its one unlabelled member."""
     datasets = {}
     for role, members in bindings.items():
+        labelled = {member.key: member for member in labelled_members(request.inputs[role])}
         inputs = []
         for member in members:
             ref = dataset_member(member)
@@ -89,8 +94,13 @@ def _dataset_inputs(
                 if ref.content.size <= _MAX_CACHED_DATASET_BYTES
                 else stack.enter_context(open_stored_dataset(store, ref))
             )
-            inputs.append((member.key, dataset))
-        datasets[role] = inputs[0][1] if len(inputs) == 1 else join_rollout_conditions(inputs)
+            inputs.append((labelled[member.key], dataset))
+        if len(inputs) == 1 and not inputs[0][0].coordinates:
+            ((_, datasets[role]),) = inputs
+        else:
+            datasets[role] = stack_dataset_members(
+                [entry for member, dataset in inputs for entry in dataset_entries(member, dataset)]
+            )
     return datasets
 
 
@@ -128,7 +138,7 @@ def _compute(
         }
         with ExitStack() as stack:
             dataset = run_operation(
-                operation, parameters, bindings, _dataset_inputs(store, dataset_bindings, stack),
+                operation, parameters, bindings, _dataset_inputs(store, request, dataset_bindings, stack),
                 registry=registry, artifacts=store,
             )
             with store._exclusive_lock():
@@ -140,7 +150,9 @@ def _compute(
         )
     if isinstance(spec, RenderRequestSpec):
         with ExitStack() as stack:
-            figure = render_figure(spec.document, _dataset_inputs(store, bindings, stack))
+            figure = render_figure(
+                spec.document, _dataset_inputs(store, request, bindings, stack), names=spec.names,
+            )
             document = figure.to_json()
             assert document is not None
             raw = document.encode()

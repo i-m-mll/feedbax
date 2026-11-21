@@ -203,6 +203,7 @@ def validate_figure_bindings(
         path = f"layers.{index}"
         schema = schemas[layer.role]
         coords = schema.coords if isinstance(schema, DatasetDescriptor) else schema.coordinates
+        sizes = schema.dimensions if isinstance(schema, DatasetDescriptor) else {}
         fields = schema.variables | coords
         for channel, encoding in layer_encodings(layer):
             variable = encoding if isinstance(encoding, str) else encoding.variable
@@ -215,23 +216,35 @@ def validate_figure_bindings(
                 _validate_coordinates(
                     encoding.select,
                     coords,
+                    sizes,
                     f"{path}.encode.{channel}.select",
                     f"channel {channel!r} of {layer.name!r}",
                 )
         _validate_coordinates(
-            layer.select, coords, path + ".select", f"selection of {layer.name!r}"
+            layer.select, coords, sizes, path + ".select", f"selection of {layer.name!r}"
         )
-        _validate_coordinates(layer.group, coords, path + ".group", f"group of {layer.name!r}")
+        _validate_coordinates(layer.group, coords, sizes, path + ".group", f"group of {layer.name!r}")
+
+
+def coordinate_dimension(field: FieldDescriptor, sizes: Mapping[str, int]) -> str | None:
+    """The one dimension a coordinate labels: its only dimension, or its only one longer than one."""
+    if len(field.dims) == 1:
+        return field.dims[0]
+    longer = [dim for dim in field.dims if sizes.get(dim, 2) != 1]
+    if len(longer) == 1:
+        return longer[0]
+    return field.dims[-1] if field.dims and not longer else None
 
 
 def _validate_coordinates(
     names: Mapping[str, Selection] | tuple[str, ...],
     coords: Mapping[str, FieldDescriptor],
+    sizes: Mapping[str, int],
     path: str,
     context: str,
 ) -> None:
     for name in names:
-        if name not in coords or len(coords[name].dims) != 1:
+        if name not in coords or coordinate_dimension(coords[name], sizes) is None:
             raise FigureBindingError(
                 path, f"Figure {context} requires a one-dimensional coordinate {name!r}."
             )

@@ -27,6 +27,7 @@ import { Table, TableCell, TableHeaderCell, TableRowHeader } from "@/components/
 import { StudioRunTable, type RunSelectionProps } from "./StudioRunTable";
 import { focusRing } from "@/components/ui/styles";
 import { CommandContextMenu, type RunMenu, type StepMenu } from "./CommandContextMenu";
+import type { AxisMenu } from "./PipelineRunMarks";
 
 interface StudioRunsProps extends RunSelectionProps {
   plan: PlanView;
@@ -35,6 +36,7 @@ interface StudioRunsProps extends RunSelectionProps {
   pending?: boolean;
   pivotActive?: boolean;
   runMenu?: RunMenu;
+  axisMenu?: AxisMenu;
 }
 
 /** The steps the chosen runs were made from and are used by, one row each; pressed, a row selects its step. */
@@ -202,10 +204,12 @@ export interface RunMention {
  * them, then under a hairline the rows of what attaches to the step (exceptions, inputs) and the steps the runs relate to.
  */
 export function StudioStepInspector({
-  plan, step, state, detail, fields, attachments, revealed, upstreamDetail, onReveal, onChooseStep, stepMenu,
+  plan, step, state, detail, fields, attachments, revealed, upstreamDetail, onReveal, onChooseStep, stepMenu, stepKey,
 }: Pick<RunSelectionProps, "step" | "state"> & {
   plan: PlanView;
   stepMenu?: StepMenu;
+  /** The step's key under its name. */
+  stepKey?: ReactNode;
   /** What a single chosen run's result adds to its reasons. */
   detail?: ReactNode;
   fields?: ReactNode;
@@ -264,6 +268,7 @@ export function StudioStepInspector({
         </li>)}
       </ul> : null}
     </div>
+    {stepKey}
     {validity.size > 0 && <ul aria-label={studioName("reason")} className="divide-y divide-shell-divider border-y border-shell-divider">
       {[...validity].map(([key, { state, rows: { title, changes } }]) => <li key={key} className="py-1 text-xs">
         <div className="flex min-h-row items-center gap-1.5">
@@ -307,9 +312,11 @@ function namedByStep(place: StudioPlace | null) {
 const lowRunCommands = new Set<StudioCommandId>(["openRun", "pivot"]);
 
 /** The Runs header: Run and Stop are pinned, the Machine picker is normal, Open Run and Pivot are low. */
-export function StudioRunControls({ commands = [], machine, pivotCommand, pivotActive, reason }: {
+export function StudioRunControls({ commands = [], machine, combination, pivotCommand, pivotActive, reason }: {
   commands?: readonly StudioCommand[];
   machine?: BarControl;
+  /** The Cross or Zip of the step's axes. */
+  combination?: BarControl;
   pivotCommand?: StudioCommand;
   pivotActive?: boolean;
   reason?: string;
@@ -317,7 +324,10 @@ export function StudioRunControls({ commands = [], machine, pivotCommand, pivotA
   const run = commands.find(({ id }) => id === "run");
   const stop = commands.find(({ id }) => id === "stop");
   const rest = [...commands.filter((command) => command !== run && command !== stop), ...pivotCommand ? [pivotCommand] : []];
-  const leading: BarEntry<StudioCommand>[] = machine ? [{ control: machine, priority: "normal" }] : [];
+  const leading: BarEntry<StudioCommand>[] = [
+    ...machine ? [{ control: machine, priority: "normal" as const }] : [],
+    ...combination ? [{ control: combination, priority: "normal" as const }] : [],
+  ];
   const entries: BarEntry<StudioCommand>[] = [
     ...rest.map((command) => ({ command: withGlyph(command), priority: lowRunCommands.has(command.id) ? "low" as const : "normal" as const })),
   ];
@@ -334,14 +344,14 @@ export function StudioRunControls({ commands = [], machine, pivotCommand, pivotA
     })} />;
 }
 
-function RunsContent({ plan, step, state, onSelectionChange, pivotActive, runMenu }: StudioRunsProps) {
+function RunsContent({ plan, step, state, onSelectionChange, pivotActive, runMenu, axisMenu }: StudioRunsProps) {
   const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
   const related = useMemo(() => lineage.related(state.focus), [lineage, state.focus]);
   const selection = { step, state, onSelectionChange };
   return <ScrollFade axis="both" className="h-full min-h-0">
     {pivotActive
       ? <StudioRunPivot {...selection} rows={step.runs} related={related} runMenu={runMenu} />
-      : <StudioRunTable {...selection} rows={step.runs} related={related} runMenu={runMenu} fillSlot />}
+      : <StudioRunTable {...selection} rows={step.runs} related={related} runMenu={runMenu} axisMenu={axisMenu} fillSlot />}
   </ScrollFade>;
 }
 

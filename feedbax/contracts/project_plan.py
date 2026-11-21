@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections import OrderedDict
-from collections.abc import Callable, Iterable, Mapping, MutableMapping
+from collections import Counter, OrderedDict
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from functools import cache, cached_property
@@ -19,6 +19,7 @@ from feedbax.contracts import request_identity
 from feedbax.contracts._request_codec import same_typed_value
 from feedbax.contracts.analysis_document import AnalyzeDatasetInput, AnalyzeInput, AnalyzeModelInput, AnalyzeTaskInput
 from feedbax.contracts.base import sha256_bytes
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.expression_values import Problem, ValueBase
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, FigureDocument, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
@@ -51,6 +52,7 @@ from feedbax.contracts.project_inputs import (
     OmittedReference,
     ObjectiveDocumentReference,
     ProjectName,
+    Reference,
     RunReference,
     SelectedRow,
     StepReference,
@@ -74,6 +76,9 @@ from feedbax.contracts.project_resolution import (
     reference_write_target,
     _select,
 )
+from feedbax.contracts.result_address import (
+    AddressProblem, ElementHolders, analyze_cards, payload_elements, shared_element_keys,
+)
 from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters, authored_rollout_settings, resolve_trial_ids
 from feedbax.contracts.project_sweep import (
     CHECKPOINT_RULE_TARGET,
@@ -81,17 +86,23 @@ from feedbax.contracts.project_sweep import (
     DEFAULT_SWEEP_ROW,
     ExpandedRow,
     InputAxis,
+    NamedAxis,
+    SetAxis,
     Sweep,
     SweepCoordinate,
+    SweepExpansionCode,
     SweepExpansionError,
     SweepInputMember,
+    axis_values,
     checkpoint_rule_write,
+    coordinate_text,
     expand_sweep,
     model_field_target,
     sweep_patch,
 )
 from feedbax.contracts.project_sources import ValueSource, changed_sources, patch_source, place_source, pointer, source_shape
 from feedbax.contracts.report_document import ReportDocument
+from feedbax.contracts.set_document import model_slot, resolve_set_axes
 from feedbax.contracts.request_identity import EncodedRequest, RequestDocumentMemo
 from feedbax.contracts.request_refs import (
     BarrierMember,
@@ -102,6 +113,7 @@ from feedbax.contracts.request_refs import (
     BestRank,
     InputMember,
     LastMember,
+    MemberLabel,
     ProductRef,
     ProductSelector,
     RequestId,
@@ -123,6 +135,7 @@ if TYPE_CHECKING:
     from feedbax.tasks.registry import PythonTaskRegistry
     from feedbax.training.methods import TrainingMethodRegistry
     from feedbax.component_registry import ComponentRegistry
+    from feedbax.compiler.model_document import LoweredModelDocument
     from feedbax.expression_registry import FunctionRegistry
     from feedbax.plot.templates import FigureTemplateRegistry
 
@@ -145,8 +158,11 @@ class RunKey:
 
 @dataclass(frozen=True)
 class ElementKey:
+    """One request of an Analyze element: the element itself, or one combination of the labels it maps over."""
+
     run: RunKey
     name: str
+    member: str | None = None
 
     def payload_path(self, kind: RequestKind) -> str:
         family = "operations" if kind == "analyze" else "views"
@@ -182,13 +198,60 @@ class PlannedSubset:
         return tuple(rank for group in self.rank_groups for rank in group.ranks)
 
 
+STEP_LABELS = ("source", "model", "element")
+"""The member labels whose values are named things of the project; a request identifies them by content.
+
+``source`` is the step whose states the data came from, ``model`` the Train step, and ``element`` the operation
+output a listed member came from."""
+
+RESERVED_LABELS = frozenset({*STEP_LABELS, "variant", "member"})
+
+
+@dataclass(frozen=True)
+class LabelName:
+    """What a step-valued label value names: a step, an operation, a stored Train run by its request, or the Model
+    document of a model that was never trained."""
+
+    key: str
+    label: str | None = None
+    kind: Literal["step", "run", "document", "element"] = "step"
+    card: str | None = None
+    """The Analyze card holding an element, which tells apart elements of one key in two cards."""
+
+    @property
+    def printed(self) -> str:
+        return self.label or self.key
+
+
+type LabelNames = Mapping[str, Mapping[str, LabelName]]
+"""Each step-valued label's value IDs in one request, and what each names."""
+
+
+def label_value_names(labels: Mapping[str, MemberLabel], names: LabelNames) -> dict[str, str]:
+    """Each label's value by name: the key of the step or element a step-valued value names, else its value id."""
+    return {
+        label: named.key if (named := names.get(label, {}).get(value.value_id)) is not None else value.value_id
+        for label, value in labels.items()
+    }
+
+
 @dataclass(frozen=True)
 class PlannedInput:
     producer: RunKey | None
     member: InputMember
     producer_element: str | None = None
+    producer_member: str | None = None
+    """The mapped request of ``producer_element`` this member reads, when the element maps over labels."""
     candidates: tuple[RunKey, ...] = ()
     terminal: TerminalTrainSubject | None = None
+    coordinates: Mapping[str, SweepCoordinate] = field(default_factory=dict)
+    """What the producer row is about, carried by an input axis and paired by a zip."""
+    selection: StepReference | None = field(default=None, compare=False)
+    """The authored selection that chose this member."""
+    named: Mapping[str, LabelName] = field(default_factory=dict)
+    """What the member's step-valued labels name. The request identifies each by content (`_identified`)."""
+    best_path: str = field(default="inputs.subject.where.best", compare=False)
+    """Where a ranked member's Best is authored: its role's, or its list item's."""
 
     @property
     def sources(self) -> tuple[RunKey, ...]:
@@ -196,7 +259,10 @@ class PlannedInput:
 
     @property
     def element(self) -> ElementKey | None:
-        return ElementKey(self.producer, self.producer_element) if self.producer and self.producer_element else None
+        return (
+            ElementKey(self.producer, self.producer_element, self.producer_member)
+            if self.producer and self.producer_element else None
+        )
 
 
 def plan_document_input(
@@ -232,6 +298,11 @@ class PlannedRow:
     kind: StepKind
     label: str | None
     coordinates: Mapping[str, SweepCoordinate]
+    axis_keys: Mapping[str, str] = field(default_factory=dict, kw_only=True)
+    """Each axis of the row's sweep and its value id there, or for an input axis the member key, which an address's
+    selector matches."""
+    input_axes: Mapping[str, SweepCoordinate] = field(default_factory=dict, kw_only=True)
+    """Each input axis's member on this row; ``axes`` terms select it by its key."""
     document_ids: Mapping[str, str] = field(default_factory=dict, kw_only=True)
     document_uses: frozenset[str] = field(default=frozenset(), kw_only=True)
     # Documents an Evaluate row reads through its subject run rather than naming them.
@@ -263,6 +334,27 @@ class PlannedElement:
     request_id: RequestId
     inputs: Mapping[str, tuple[PlannedInput, ...]]
     outputs: Mapping[str, DatasetPort | PlotlyFigurePort]
+    names: LabelNames = field(default_factory=dict)
+    """What the step-valued label values of this request and of the operations it reads name."""
+    mapped: Mapping[str, MemberLabel] = field(default_factory=dict)
+    """The labels this request is one combination of, when its element maps over them; a reader's member carries
+    them."""
+    entries: tuple[SweepInputMember, ...] = ()
+    """The labelled entries its dataset outputs carry from the stacked inputs it takes whole."""
+    label: str | None = None
+    """The operation's or figure's display label, which ``element`` prints for an output another card lists."""
+
+    @property
+    def stack_key(self) -> str:
+        """The key of a reader's member that reads this request: its mapped labels by value id, so that only an edit
+        of what the request reads changes it."""
+        return ",".join(f"{label}={value.value_id}" for label, value in self.mapped.items()) or "default"
+
+    @property
+    def member_labels(self) -> dict[str, str]:
+        """Each label this request is one combination of, and the name of its value: a step or element key, or a
+        sweep value id."""
+        return label_value_names(self.mapped, self.names)
 
     @property
     def datasets(self) -> Mapping[str, DatasetPort]:
@@ -285,10 +377,15 @@ def planned_input_groups(
 
 @dataclass(frozen=True)
 class PlannedAnalyzeRun(PlannedRow):
-    elements: Mapping[str, PlannedElement]
+    elements: Mapping[ElementKey, PlannedElement]
+    """Each request of each element, one per element unless the element maps over labels."""
     requires: tuple[str, ...]
     inputs: Mapping[str, tuple[PlannedInput, ...]]
     figures: Mapping[str, FigureDocument]
+
+    def requests(self, name: str) -> tuple[PlannedElement, ...]:
+        """The requests of the element ``name``, in plan order."""
+        return tuple(element for key, element in self.elements.items() if key.name == name)
 
 
 @dataclass(frozen=True)
@@ -311,6 +408,7 @@ class PlannedStep:
     authored_inputs: Mapping[str, InputBinding | None]
     inputs: Mapping[str, InputBinding] | None = None
     sweep: Sweep | None = field(default=None, compare=False)
+    label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -335,6 +433,7 @@ class _TrainEvaluationSource:
 class SourceSweep:
     inputs: dict[str, tuple[SweepInputMember, ...]] = field(default_factory=dict)
     integer_sites: dict[str, bool] = field(default_factory=dict)
+    sets: dict[str, NamedAxis] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -373,7 +472,7 @@ class PlanSourceIndex:
             sweep = self.snapshot.sweeps.get((variant, step), SourceSweep())
             rows = expand_sweep(
                 template.sweep, inputs=sweep.inputs, integer_site=sweep.integer_sites.__getitem__,
-                checkpoint_subject=project.steps[step].kind == "evaluate",
+                checkpoint_subject=project.steps[step].kind == "evaluate", sets=sweep.sets,
             )
             return template, {row.id: row for row in rows}
         return template
@@ -465,12 +564,19 @@ class ProjectPlan:
             return source.task
         return None
 
+    def row(self, key: RunKey) -> PlannedRow | None:
+        return self._rows_by_key.get(key)
+
+    @cached_property
+    def _rows_by_key(self) -> Mapping[RunKey, PlannedRow]:
+        return MappingProxyType({row.key: row for row in self.rows})
+
     @property
     def elements(self) -> Mapping[ElementKey, PlannedElement]:
         return MappingProxyType({
-            element.key: element
+            key: element
             for row in self.rows if isinstance(row, PlannedAnalyzeRun)
-            for element in row.elements.values()
+            for key, element in row.elements.items()
         })
 
     @property
@@ -505,17 +611,79 @@ class _Role:
     required: bool
     producer_kind: StepKind
     product_role: str
+    gathers: bool = False
+    """Whether the role takes a list of selections."""
+    operation_outputs: bool = False
+    """Whether a selection may instead name an Analyze operation's dataset product, read from the card that holds it."""
 
 
 _ROLES = {
     "train": _Role("checkpoint", False, "train", "checkpoint"),
-    "evaluate": _Role("subject", True, "train", "checkpoint"),
+    "evaluate": _Role("subject", True, "train", "checkpoint", gathers=True),
 }
 _ANALYZE_INPUTS = TypeAdapter(dict[ProjectName, AnalyzeInput])
 DOCUMENTS: TypeAdapter[dict[str, Document]] = TypeAdapter(dict[str, Document])
 
 type _CompiledRun = PlannedRun | PlannedAnalyzeRun
 type _Members = tuple[tuple[PlannedInput, _CompiledRun | None], ...]
+
+
+def _identified(
+    members: _Members, *, labelled: bool,
+) -> tuple[_Members, dict[tuple[str, LabelName], str]]:
+    """Give each step-valued label value an ID that digests the references of the members sharing it.
+
+    The ID names no step, so Change Key and Rename leave every request alone, while members from one step still
+    share one value. Two values whose members are the same requests, such as a step and its duplicate, are told
+    apart by their order. A ``labelled`` role's members carry the IDs as labels, ahead of their other labels.
+    """
+    sharing: dict[tuple[str, LabelName], set[str]] = {}
+    for binding, _ in members:
+        reference = canonical_json_v2_bytes(binding.member.reference.model_dump(mode="json")).decode()
+        for label, name in binding.named.items():
+            sharing.setdefault((label, name), set()).add(reference)
+    ids: dict[tuple[str, LabelName], str] = {}
+    taken: Counter[tuple[str, str]] = Counter()
+    for (label, name), references in sharing.items():
+        digest = "members-" + sha256_bytes(canonical_json_v2_bytes(sorted(references)))
+        taken[label, digest] += 1
+        ids[label, name] = digest if taken[label, digest] == 1 else f"{digest}-{taken[label, digest]}"
+    if not labelled:
+        return members, ids
+    return tuple(
+        (replace(binding, member=binding.member.model_copy(update={"labels": {
+            **{label: MemberLabel(value_id=ids[label, name]) for label, name in binding.named.items()},
+            **binding.member.labels,
+        }})), run) if binding.named else (binding, run)
+        for binding, run in members
+    ), ids
+
+
+def _member_label(binding: PlannedInput, group: Mapping[str, SweepCoordinate]) -> str:
+    """What a member no row produces reads as.
+
+    A grouped rank, or a rank of a list item, reads as its step, its group's values and its rank
+    (``train, lr=0.1, rank 1``); any other member as its key.
+    """
+    rank = binding.member.reference
+    if isinstance(rank, BestRank) and (rank.group or binding.member.key != rank.key) and "source" in binding.named:
+        values = (f"{axis}={coordinate_text(group[axis])}" for axis in sorted(rank.group))
+        return ", ".join((binding.named["source"].printed, *values, f"rank {rank.rank}"))
+    return binding.member.key
+
+
+def _labelled(role: _Role, members: _Members) -> bool:
+    """Whether a role's members carry their labels: an Evaluate's always, and operation outputs when several
+    elements are listed.
+
+    One operation output read alone is the dataset the same wire reads inside one card, so a Split that cuts the
+    wire changes no request.
+    """
+    if role.producer_kind != "evaluate":
+        return False
+    if any(binding.producer_element is None for binding, _ in members):
+        return True
+    return len({(binding.producer, binding.producer_element) for binding, _ in members}) > 1
 
 
 def _checkpoint(rule: CheckpointRule | None, *, horizon: int | None = None) -> ProductSelector | None:
@@ -637,6 +805,16 @@ class _ModelSource:
     stamp: str
     evaluation_problem: ProjectDiagnostic | None = None
     evaluation_graph: GraphSpec | None = None
+    trained: _TrainedSource | None = None
+
+
+@dataclass(frozen=True)
+class _TrainedSource:
+    """What a Train run's checkpoint holds, as its plan knows it."""
+
+    graph: GraphSpec
+    method: str
+    replicates: int
 
 
 EVALUATION_MODEL = "payload.trial_documents.model"
@@ -739,6 +917,23 @@ def _train_model_definition(definition: SelectedRunDefinition, model: _ModelSour
             if not definition.document_ids.get("payload." + ".".join(prefix)):
                 sources[pointer(("payload", *prefix, *field))] = source
     return replace(definition, payload=payload, sources=MappingProxyType(sources))
+
+
+def _refused_difference(
+    model: _EvaluationModel, trained: ModelDocument, components: ComponentRegistry, functions,
+) -> ModelAddress | None:
+    """Address the first of an Evaluate Model document's differences that the trained model refuses on its own."""
+    from feedbax.compiler.model_attachment import lower_evaluate_attachments
+
+    for pointer, difference in model.differences.items():
+        try:
+            evaluated = ModelDocument.model_validate(
+                apply_differences(trained.model_dump(mode="json"), {pointer: difference}),
+            )
+            lower_evaluate_attachments(trained, evaluated, None, components, (), functions=functions)
+        except ValueError:
+            return ModelAddress.at_stored_path(json_pointer_parts(pointer))
+    return None
 
 
 def _model_difference_problem(
@@ -851,6 +1046,8 @@ class _TrainPreparation:
     checkpoint_problem: RunProblem | None
     evaluation: GraphSpec | ProjectDiagnostic
     condition_ids: tuple[str, ...]
+    graph: GraphSpec
+    lowered: LoweredModelDocument
 
 
 @dataclass(frozen=True)
@@ -900,6 +1097,29 @@ def _trial_problem(
     )
 
 
+def _checkpoint_fit_problem(
+    source: _TrainedSource, preparation: _TrainPreparation, spec: DocumentTrainingRequestSpec,
+    components: ComponentRegistry,
+) -> RunProblem | None:
+    from feedbax.compiler.checkpoint_fit import checkpoint_misfit
+
+    if source.replicates != spec.training_config.replicates:
+        return RunProblem("/training_config/replicates", f"The checkpoint has {source.replicates} replicates.")
+    continuation = spec.continuation
+    if continuation is not None and continuation.state == "preserve" and source.method != spec.method:
+        return RunProblem("/method", f"Carrying state needs the checkpoint's method, {source.method!r}.")
+    if (misfit := checkpoint_misfit(source.graph, preparation.graph, components)) is None:
+        return None
+    if not misfit.path:
+        return RunProblem("/trial_documents/model", misfit.reason)
+    graph_path = (
+        "graph", *(token for name in misfit.path[:-1] for token in ("subgraphs", name)), "nodes", misfit.path[-1],
+    )
+    address = preparation.lowered.source_address(pointer(graph_path))
+    path = ("trial_documents", "model", *address.stored_path()) if address is not None else graph_path
+    return RunProblem(pointer(path), misfit.reason, address)
+
+
 class _PayloadProblems(Exception):
     """Problems at dotted payload paths found while lowering a row."""
 
@@ -924,13 +1144,16 @@ def _encode_row(
     training_methods: TrainingMethodRegistry | None = None,
     previous: _LoweredRow | None = None,
     document_pointers: Mapping[str, str] = MappingProxyType({}),
+    checkpoint_source: _TrainedSource | None = None,
+    components: ComponentRegistry | None = None,
 ) -> _LoweredRow:
     checkpoint_problem = None
     condition_ids = None
     if prepared_train is not None:
         payload = payload | {"trial_documents": prepared_train.documents}
-        checkpoint_problem = prepared_train.preparation.checkpoint_problem
-        condition_ids = prepared_train.preparation.condition_ids
+        preparation = prepared_train.preparation
+        checkpoint_problem = preparation.checkpoint_problem
+        condition_ids = preparation.condition_ids
         model_source = prepared_train.model
     elif kind == "train":
         from feedbax.tasks.registry import application_python_tasks, resolve_python_task_instance
@@ -1035,6 +1258,14 @@ def _encode_row(
         if remember_train is not None:
             assert isinstance(spec, DocumentTrainingRequestSpec) and model_source is not None
             remember_train(_PreparedTrainRow(spec.trial_documents, preparation, model_source))
+        if isinstance(spec, DocumentTrainingRequestSpec):
+            assert model_source is not None
+            model_source = replace(model_source, trained=_TrainedSource(
+                preparation.graph, spec.method, spec.training_config.replicates,
+            ))
+            if checkpoint_problem is None and checkpoint_source is not None:
+                assert components is not None
+                checkpoint_problem = _checkpoint_fit_problem(checkpoint_source, preparation, spec, components)
         evaluation_source = None
         problem = (
             RunProblem("/trial_documents/model/interior/components", "Model has no components.")
@@ -1186,6 +1417,7 @@ class _Compiler:
         self.model_sources: dict[RunKey, _ModelSource] = {}
         self.terminal_sources: dict[RequestId, TerminalTrainSource] = {}
         self.checkpoint_horizons: dict[RequestId, int | None] = {}
+        self.element_holders: dict[str, ElementHolders] = {}
 
     def expand_variants(self, known_sites: Mapping[str, bool] | None = None) -> None:
         def integer_site(path: str) -> bool:
@@ -1374,6 +1606,7 @@ class _Compiler:
         for variant, project in self.variants.items():
             for name in sorted(project.steps):
                 self.step(variant, name, ())
+        self.diagnostics.extend(self.shared_key_diagnostics())
         return ProjectPlan(
             self.variant_order,
             MappingProxyType(self.steps),
@@ -1390,6 +1623,40 @@ class _Compiler:
             MappingProxyType(self.exception_matches),
             MappingProxyType(dict(self.variants)),
         )
+
+    def holders(self, variant: str) -> ElementHolders:
+        if variant not in self.element_holders:
+            project = self.variants[variant]
+
+            def elements_of(card: str) -> frozenset[str]:
+                composition = self.compose(variant, card, False)
+                if isinstance(composition, ProjectDiagnostic):
+                    return frozenset()
+                try:
+                    return payload_elements(composition.bind(project).authored_payload())
+                except ValueError:
+                    return frozenset()
+
+            self.element_holders[variant] = ElementHolders(analyze_cards(project), elements_of)
+        return self.element_holders[variant]
+
+    def shared_key_diagnostics(self) -> list[ProjectDiagnostic]:
+        """A diagnostic on each Analysis document holding a key an unrelated document holds, once for every variant
+        that shares it."""
+        found = {variant: shared_element_keys(project) for variant, project in self.variants.items()}
+        everywhere = set.intersection(*(set(keys) for keys in found.values())) if found else set()
+        problems = []
+        for variant, keys in found.items():
+            for key in keys:
+                if key in everywhere and variant != self.variant_order[0]:
+                    continue
+                problems.append(ProjectDiagnostic(
+                    ResolutionCode.INVALID_DOCUMENT, f"payload.{key.family}.{key.element}",
+                    f"{key.element!r} is also held by {key.holder}, which is unrelated to this document.",
+                    document=key.document, element=key.element,
+                    variant=None if key in everywhere else variant,
+                ))
+        return problems
 
     def step(
         self, variant: str, name: str, active: tuple[tuple[str, str], ...]
@@ -1454,19 +1721,18 @@ class _Compiler:
         checkpoint_axis = kind == "evaluate" and composition.sweep is not None and any(
             isinstance(axis, CheckpointRuleAxis) for axis in composition.sweep.axes.values()
         )
+        def member(role: str, item: PlannedInput, producer: _CompiledRun | None) -> SweepInputMember:
+            horizon = self.checkpoint_horizon(producer.request_id) \
+                if checkpoint_axis and role == "subject" and isinstance(producer, PlannedRun) else None
+            if producer is not None and item.producer is not None:
+                return SweepInputMember(item.member.key, item.coordinates, producer.label, horizon)
+            group = {
+                axis: producer.coordinates[axis] for axis in item.member.reference.group
+            } if producer is not None and isinstance(item.member.reference, BestRank) else {}
+            return SweepInputMember(item.member.key, group, _member_label(item, group), horizon)
+
         fanout = {
-            role: tuple(
-                SweepInputMember(
-                    item.member.key,
-                    producer.coordinates if producer is not None and item.producer is not None else {
-                        axis: producer.coordinates[axis] for axis in item.member.reference.group
-                    } if producer is not None and isinstance(item.member.reference, BestRank) else {},
-                    producer.label if producer is not None and item.producer is not None else item.member.key,
-                    self.checkpoint_horizon(producer.request_id)
-                    if checkpoint_axis and role == "subject" and isinstance(producer, PlannedRun) else None,
-                )
-                for item, producer in bindings
-            )
+            role: tuple(member(role, item, producer) for item, producer in bindings)
             for role, bindings in members.items()
         }
         subjects = tuple(
@@ -1539,12 +1805,29 @@ class _Compiler:
                 return answer
 
             try:
+                sets = {}
+                if composition.sweep is not None and any(
+                    isinstance(axis, SetAxis) for axis in composition.sweep.axes.values()
+                ):
+                    resolved = resolved_definition()
+                    if isinstance(resolved, ProjectDiagnostic):
+                        return resolved, {}
+                    sets = resolve_set_axes(
+                        composition.sweep, read_document or self.variants[variant].documents.get,
+                        model_slot(resolved.payload, resolved.document_ids, resolved.document_pointers),
+                    )
+                for axis_name, axis in (composition.sweep.axes if composition.sweep is not None else {}).items():
+                    if axis_name in RESERVED_LABELS and not isinstance(axis, InputAxis):
+                        raise SweepExpansionError(
+                            SweepExpansionCode.COORDINATE_CONFLICT, f"sweep.axes.{axis_name}",
+                            f"{axis_name!r} is the name of a member label",
+                        )
                 exception_matches: dict[str, tuple[str, ...]] = {}
                 rows = expand_sweep(
                     composition.sweep, inputs=fanout,
                     integer_site=capture_site if self.source_sweeps is not None else integer_site,
                     checkpoint_subject=kind == "evaluate",
-                    exception_matches=exception_matches,
+                    exception_matches=exception_matches, sets=sets,
                 )
                 if self.source_sweeps is not None:
                     axes = composition.sweep.axes if composition.sweep is not None else {}
@@ -1557,8 +1840,8 @@ class _Compiler:
                             for member in members
                         )
                         for role, members in fanout.items() if role in roles
-                    }, sites)
-                    if source.inputs or source.integer_sites:
+                    }, sites, sets)
+                    if source.inputs or source.integer_sites or source.sets:
                         self.source_sweeps[variant, name] = source
                 return rows, exception_matches
             except SweepExpansionError as error:
@@ -1630,10 +1913,10 @@ class _Compiler:
             if isinstance(resolved, ProjectDiagnostic) or resolved.sources is None:
                 return None
             sources = {f"/payload{path}": source for path, source in resolved.sources.items()}
+            for at, subset in self.input_subsets(key, composition, inputs):
+                if subset.source is not None:
+                    sources[pointer((*at, "where"))] = subset.source.origin
             for role, bindings in inputs.items():
-                subset = self.subsets.get((key.variant, key.step, role))
-                if subset is not None and subset.source is not None:
-                    sources[pointer(("inputs", role, "where"))] = subset.source.origin
                 if len(bindings) == 1 and (source := _upstream_source(bindings[0])) is not None:
                     sources[pointer(("inputs", role))] = source
             return SelectedRunDefinition(
@@ -1659,15 +1942,27 @@ class _Compiler:
                 )),
                 tuple(sorted(inputs.items())),
                 tuple(
-                    subset.source.origin
-                    for role in inputs
-                    if (subset := self.subsets.get((key.variant, key.step, role))) is not None
-                    and subset.source is not None
+                    subset.source.origin for _, subset in self.input_subsets(key, composition, inputs)
+                    if subset.source is not None
                 ),
             ),
             self.authored_inputs[key.variant],
             project,
         )
+
+    def input_subsets(
+        self, key: RunKey, composition: StepComposition, inputs: Mapping[str, object],
+    ) -> Iterator[tuple[tuple[str, ...], PlannedSubset]]:
+        """The subset of each selection of the roles in ``inputs``, by the selection's authored path."""
+        for role in inputs:
+            binding = composition.inputs.get(role)
+            items = (
+                ((("inputs", role, str(index)), f"{role}.{index}") for index in range(len(binding)))
+                if isinstance(binding, list) else ((("inputs", role), role),)
+            )
+            for at, input_id in items:
+                if (subset := self.subsets.get((key.variant, key.step, input_id))) is not None:
+                    yield at, subset
 
     def lower_row(
         self,
@@ -1710,6 +2005,9 @@ class _Compiler:
             (model_source.stamp,) if model_source is not None else ()
         )
         source_problem = model_source.evaluation_problem if model_source is not None else None
+        checkpoint = inputs.get("checkpoint") if kind == "train" else None
+        trained = self.model_sources.get(checkpoint.producer) if checkpoint is not None and checkpoint.producer else None
+        checkpoint_source = trained.trained if trained is not None else None
 
         def lower(reader=None, previous=None):
             if definition is None:
@@ -1795,6 +2093,7 @@ class _Compiler:
                 self.python_tasks, model_source=authored_model, document_pointers=document_pointers,
                 prepared_train=prepared_train, remember_train=remember_train,
                 training_methods=self.training_methods, previous=previous,
+                checkpoint_source=checkpoint_source, components=self.components or _builtin_model_registry(),
             )
             return replace(
                 lowered,
@@ -1846,7 +2145,9 @@ class _Compiler:
                     ResolutionCode.INVALID_PAYLOAD, pointer(("inputs", "subject", *problem.path)), problem.reason,
                     model_address=address,
                 )
-            result = _TrainPreparation(checkpoint_problem, evaluation, paired.execution.task.condition_ids)
+            result = _TrainPreparation(
+                checkpoint_problem, evaluation, paired.execution.task.condition_ids, graph, paired.lowered,
+            )
         self.trial_preparations[identity] = result
         return result
 
@@ -2102,7 +2403,7 @@ class _Compiler:
     ) -> Payload | ProjectDiagnostic:
         def problem(detail: str) -> ProjectDiagnostic:
             return ProjectDiagnostic(
-                ResolutionCode.BAD_REFERENCE, "inputs.subject.where.best", detail, key.step,
+                ResolutionCode.BAD_REFERENCE, subject.best_path, detail, key.step,
                 row=key.row, variant=key.variant,
             )
 
@@ -2239,9 +2540,14 @@ class _Compiler:
                     )
                 except ValueError as error:
                     return _model_difference_problem(key, model.document, None, str(error), path=EVALUATION_MODEL)
-            before, lowered, derived = lower_evaluate_attachments(
-                model_source.model, evaluated, None, components, differences, functions=self.functions,
-            )
+            try:
+                before, lowered, derived = lower_evaluate_attachments(
+                    model_source.model, evaluated, None, components, differences, functions=self.functions,
+                )
+            except ValueError as error:
+                if model is not None and not isinstance(error, ModelCompilationProblem):
+                    address = _refused_difference(model, model_source.model, components, self.functions)
+                raise
             raw_params = payload["params"]
             params = authored_rollout_settings(raw_params)
             if not derived:
@@ -2280,7 +2586,7 @@ class _Compiler:
         project = self.variants[variant]
         authored = project.steps[name]
         kind = authored.kind
-        step = PlannedStep(kind, authored.group, MappingProxyType(deepcopy(authored.inputs)))
+        step = PlannedStep(kind, authored.group, MappingProxyType(deepcopy(authored.inputs)), label=authored.label)
         self.steps[variant, name] = step
         wanted = self.wanted_sources.get((variant, name), set())
         role = _ROLES.get(kind)
@@ -2327,13 +2633,12 @@ class _Compiler:
                 for extra in extra_roles
             )
             return ()
-        selected = ((), {}, None) if initial else self.select_input(variant, name, template, role, active)
+        selected = ((), {}, {}) if initial else self.select_input(variant, name, template, role, active)
         if isinstance(selected, ProjectDiagnostic):
             self.diagnostics.append(replace(selected, variant=variant))
             return ()
-        members, omissions, subset = selected
-        if subset is not None:
-            self.subsets[variant, name, role.name] = subset
+        members, omissions, subsets = selected
+        self.record_subsets(variant, name, subsets)
         by_key = {item.member.key: item for item, _ in members}
         subject = template.inputs.get("subject") if kind == "evaluate" else None
         has_checkpoint_axis = kind == "evaluate" and sweep is not None and any(
@@ -2363,13 +2668,16 @@ class _Compiler:
                     producer_key = RunKey(variant, paired_step, inherited_id)
                     if chosen is None and (
                         producer_key in self.excluded_checkpoint_rows
-                        or (subset is not None and isinstance(self.rows.get(producer_key), PlannedRun))
+                        or (subsets and isinstance(self.rows.get(producer_key), PlannedRun))
                     ):
                         # Carry an intentional subset exclusion through inherited checkpoint pairs.
                         self.excluded_checkpoint_rows.add(run_key)
                         continue
             coordinates = MappingProxyType(deepcopy(dict(row.coordinates)))
-            self.rows[run_key] = PlannedRow(run_key, kind, row.label, coordinates)
+            self.rows[run_key] = PlannedRow(
+                run_key, kind, row.label, coordinates, axis_keys=MappingProxyType(dict(row.axis_value_ids)),
+                input_axes=MappingProxyType(dict(row.input_axes)),
+            )
             if initial:
                 if has_checkpoint_axis:
                     self.diagnostics.append(ProjectDiagnostic(
@@ -2419,7 +2727,8 @@ class _Compiler:
                 reference = chosen.member.reference
                 try:
                     write = row.patches.get(CHECKPOINT_RULE_TARGET)
-                    selected_subject = checkpoint_rule_write(subject, write) if write is not None else subject
+                    chosen_subject = chosen.selection if chosen.selection is not None else subject
+                    selected_subject = checkpoint_rule_write(chosen_subject, write) if write is not None else chosen_subject
                     rule = (
                         selected_subject.checkpoint if isinstance(selected_subject, StepReference)
                         else "last" if isinstance(selected_subject, RunReference) else None
@@ -2533,6 +2842,8 @@ class _Compiler:
         run = PlannedRun(
             key, row.kind, row.label, row.coordinates, encoded.id,
             MappingProxyType(dict(inputs)), MappingProxyType(dict(omissions)), requires,
+            axis_keys=row.axis_keys,
+            input_axes=row.input_axes,
             admission_problem=lowered.admission_problem,
             document_ids=lowered.document_ids,
             document_uses=lowered.document_uses,
@@ -2552,10 +2863,9 @@ class _Compiler:
             if isinstance(result, ProjectDiagnostic):
                 self.diagnostics.append(replace(result, variant=variant))
                 return ()
-            members, _, subset = result
+            members, _, subsets = result
             selected[role.name] = members
-            if subset is not None:
-                self.subsets[variant, name, role.name] = subset
+            self.record_subsets(variant, name, subsets)
         rows = self.expand_rows(variant, name, template, selected)
         if isinstance(rows, ProjectDiagnostic):
             self.diagnostics.append(rows)
@@ -2569,7 +2879,10 @@ class _Compiler:
         for row in rows:
             key = RunKey(variant, name, row.id)
             coordinates = MappingProxyType(deepcopy(dict(row.coordinates)))
-            self.rows[key] = PlannedRow(key, "report", row.label, coordinates)
+            self.rows[key] = PlannedRow(
+                key, "report", row.label, coordinates, axis_keys=MappingProxyType(dict(row.axis_value_ids)),
+                input_axes=MappingProxyType(dict(row.input_axes)),
+            )
             inputs = {}
             for role, candidates in by_role.items():
                 if (member := row.input_keys.get(role)) is not None:
@@ -2639,19 +2952,18 @@ class _Compiler:
                     return ()
                 role = _Role(name_of_role, True, "train", "checkpoint")
             else:
-                role = _Role(name_of_role, True, "evaluate", "states")
+                role = _Role(name_of_role, True, "evaluate", "states", gathers=True, operation_outputs=True)
             resolved = self.select_input(variant, name, template, role, active)
             if isinstance(resolved, ProjectDiagnostic):
                 self.diagnostics.append(replace(resolved, variant=variant))
                 return ()
-            members, _, subset = resolved
+            members, _, subsets = resolved
             if isinstance(declaration, AnalyzeModelInput) and reference.checkpoint is None:
                 members = tuple((replace(binding, member=binding.member.model_copy(update={
                     "reference": binding.member.reference.model_copy(update={"select": LastMember()}),
                 })), run) for binding, run in members)
             selected[name_of_role] = members
-            if subset is not None:
-                self.subsets[variant, name, name_of_role] = subset
+            self.record_subsets(variant, name, subsets)
         rows = self.expand_rows(variant, name, template, selected)
         if isinstance(rows, ProjectDiagnostic):
             self.diagnostics.append(rows)
@@ -2660,7 +2972,10 @@ class _Compiler:
         for row in rows:
             key = RunKey(variant, name, row.id)
             coordinates = MappingProxyType(deepcopy(dict(row.coordinates)))
-            self.rows[key] = PlannedRow(key, "analyze", row.label, coordinates)
+            self.rows[key] = PlannedRow(
+                key, "analyze", row.label, coordinates, axis_keys=MappingProxyType(dict(row.axis_value_ids)),
+                input_axes=MappingProxyType(dict(row.input_axes)),
+            )
             inputs = {}
             for role, members in selected.items():
                 chosen = row.input_keys.get(role)
@@ -2720,6 +3035,11 @@ class _Compiler:
             tuple(replace(problem, row=key.row, variant=key.variant) for problem in resolved.document_problems),
             inputs,
             evaluations,
+            {
+                producer: self.rows[producer.run].elements[producer]
+                for sources in inputs.values() for source in sources
+                if (producer := source.element) is not None
+            },
             self.operations,
             figure_templates=self.figure_templates,
         )
@@ -2731,6 +3051,8 @@ class _Compiler:
         run = PlannedAnalyzeRun(
             key, original.kind, original.label, original.coordinates,
             MappingProxyType(elements), template.requires, MappingProxyType(dict(inputs)), MappingProxyType(figures),
+            axis_keys=original.axis_keys,
+            input_axes=original.input_axes,
             document_ids=MappingProxyType(dict(resolved.document_ids)),
             document_uses=resolved.document_uses,
         )
@@ -2739,9 +3061,9 @@ class _Compiler:
 
     def rank_input(
         self, name: str, template: StepComposition, role: _Role, members: _Members,
-        subset: PlannedSubset, reference: StepReference,
+        subset: PlannedSubset, reference: StepReference, at: str,
     ) -> tuple[_Members, dict[str, str], PlannedSubset] | ProjectDiagnostic:
-        path = f"inputs.{role.name}.where"
+        path = f"{at}.where"
         terms = subset.terms
         if terms.when is not None:
             return ProjectDiagnostic(
@@ -2757,15 +3079,17 @@ class _Compiler:
         ):
             reason = "Best requires the selected Train's last checkpoint."
         else:
-            return self.rank_groups(name, template, role, members, subset)
+            return self.rank_groups(name, template, role, members, subset, reference, f"{path}.best")
         return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, f"{path}.best", reason, name)
 
     def rank_groups(
         self, name: str, template: StepComposition, role: _Role, members: _Members, subset: PlannedSubset,
+        reference: StepReference, path: str,
     ) -> tuple[_Members, dict[str, str], PlannedSubset] | ProjectDiagnostic:
         best = subset.terms.best
         assert best is not None
-        path = f"inputs.{role.name}.where.best"
+        source = LabelName(reference.step, self.variants[members[0][1].key.variant].steps[reference.step].label) \
+            if members else None
 
         def refusal(detail: str, field: str = path) -> ProjectDiagnostic:
             return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, field, detail, name)
@@ -2830,21 +3154,25 @@ class _Compiler:
                 ranks.append(rank.key)
                 ranked.append((PlannedInput(
                     None, InputMember(key=rank.key, reference=rank), candidates=tuple(keys),
+                    named=MappingProxyType({"source": source}) if source is not None else MappingProxyType({}),
+                    best_path=path,
                 ), grouped[0][1]))
             planned_groups.append(PlannedRankGroup(MappingProxyType(coordinates), tuple(ranks)))
         return tuple(ranked), {}, replace(subset, rank_groups=tuple(planned_groups))
 
     def subset_origin(
-        self, variant: str, step: str, role: str, document: str | None, term: Literal["best", "rows"],
+        self, variant: str, step: str, at: str, document: str | None, term: Literal["best", "rows"],
     ) -> ValueSource:
+        """Where the subset terms of the selection at ``at`` (``inputs.<role>`` or ``inputs.<role>.<i>``) are authored."""
         if document is not None:
             authored = ("documents", document, "payload", term)
             source = ValueSource("document", document, pointer((term,)))
         else:
             steps = self.variants[variant].steps
+            _, role, *item = at.split(".")
             while role not in steps[step].inputs and isinstance(base := steps[step].base, StepBase):
                 step = base.step
-            path = ("inputs", role, "where", term)
+            path = ("inputs", role, *item, "where", term)
             authored = ("steps", step, *path)
             source = ValueSource("step", step, pointer(path), step=step)
         for target in reversed(self.variant_rows[variant].patches):
@@ -2862,6 +3190,51 @@ class _Compiler:
             return None
         return self.terminal_sources.setdefault(terminal.request_id, terminal)
 
+    def subject_model(self, run: _CompiledRun) -> tuple[RunKey | None, LabelName] | None:
+        """What an Evaluate row's ``model`` names: its subject's Train step or stored run, or its untrained Model."""
+        if not isinstance(run, PlannedRun) or run.kind != "evaluate":
+            return None
+        subject = run.inputs.get("subject")
+        if subject is not None and subject.producer is not None:
+            producer = subject.producer
+            return producer, LabelName(producer.step, self.variants[producer.variant].steps[producer.step].label)
+        if subject is not None and "source" in subject.named:
+            return None, subject.named["source"]
+        if subject is not None and isinstance(trained := subject.member.reference, ProductRef):
+            return None, LabelName(trained.request_id, kind="run")
+        if (document := run.document_ids.get(EVALUATION_MODEL)) is not None:
+            return None, LabelName(document, kind="document")
+        return None
+
+    def member_coordinates(self, run: _CompiledRun) -> dict[str, SweepCoordinate]:
+        """What a gathered row is about: its coordinates, and for an Evaluate row the ``model`` it evaluates."""
+        coordinates = dict(run.coordinates)
+        if (model := self.subject_model(run)) is None:
+            return coordinates
+        producer, name = model
+        trained = self.rows[producer].coordinates if producer is not None else {}
+        for label, coordinate in {"model": SweepCoordinate(name.key, name.label), **trained}.items():
+            prior = coordinates.setdefault(label, coordinate)
+            if prior.value_id != coordinate.value_id:
+                raise ValueError(
+                    f"{run.key.step}/{run.key.row} and its subject {name.key!r} "
+                    f"give label {label!r} different values"
+                )
+        return coordinates
+
+    def member_labels(
+        self, run: _CompiledRun, coordinates: Mapping[str, SweepCoordinate], *, gathers_variants: bool,
+    ) -> tuple[dict[str, MemberLabel], dict[str, LabelName]]:
+        """The labels a stacked dataset carries: the content labels, and the step-valued ones by what they name."""
+        named = {"source": LabelName(run.key.step, self.variants[run.key.variant].steps[run.key.step].label)}
+        if (model := self.subject_model(run)) is not None:
+            named["model"] = model[1]
+        labels = {"variant": MemberLabel(value_id=run.key.variant)} if gathers_variants else {}
+        for label, coordinate in coordinates.items():
+            if label not in named:
+                labels[label] = MemberLabel(value_id=coordinate.value_id, value=coordinate.value)
+        return labels, named
+
     def select_input(
         self,
         variant: str,
@@ -2869,12 +3242,104 @@ class _Compiler:
         template: StepComposition,
         role: _Role,
         active: tuple[tuple[str, str], ...],
+    ) -> tuple[_Members, dict[str, str], dict[str, PlannedSubset]] | ProjectDiagnostic:
+        """The role's members and omissions, and the subset of each selection by its input ID."""
+        reference = template.inputs.get(role.name)
+        if isinstance(reference, list):
+            return self.select_list(variant, name, template, role, active, reference)
+        selected = self.select_reference(variant, name, template, role, active, reference, f"inputs.{role.name}")
+        if isinstance(selected, ProjectDiagnostic):
+            return selected
+        members, omissions, subset = selected
+        subsets = {role.name: subset} if subset is not None else {}
+        return _identified(members, labelled=_labelled(role, members))[0], omissions, subsets
+
+    def record_subsets(self, variant: str, step: str, subsets: Mapping[str, PlannedSubset]) -> None:
+        for input_id, subset in subsets.items():
+            self.subsets[variant, step, input_id] = subset
+
+    def select_list(
+        self,
+        variant: str,
+        name: str,
+        template: StepComposition,
+        role: _Role,
+        active: tuple[tuple[str, str], ...],
+        references: list[StepReference],
+    ) -> tuple[_Members, dict[str, str], dict[str, PlannedSubset]] | ProjectDiagnostic:
+        """Gather the members of several selections.
+
+        Each selection is named by its source: its step's key, or the key of the operation output it reads. A second
+        source of one name, or a second measured selection of one step, takes the next suffix (``train-2``). A ranked
+        member is qualified by its selection's name (``train/rank-1``), and a key two selections share is qualified the
+        same way, so no edit of one selection renames another's members.
+        """
+        path = f"inputs.{role.name}"
+        if not role.gathers:
+            return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, "this input takes one selection", name)
+        if not references:
+            return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, "list at least one selection", name)
+        selections = []
+        subsets = {}
+        owners: dict[str, list[object]] = {}
+        qualifiers = {}
+        for index, reference in enumerate(references):
+            item = f"{path}.{index}"
+            selected = self.select_reference(variant, name, template, role, active, reference, item)
+            if isinstance(selected, ProjectDiagnostic):
+                return selected
+            members, _, subset = selected
+            source = reference.element or reference.step
+            card = next((binding.producer.step for binding, _ in members if binding.producer is not None), reference.step)
+            owner = index if subset is not None and subset.ranks else card
+            named = owners.setdefault(source, [])
+            if owner not in named:
+                named.append(owner)
+            position = named.index(owner)
+            qualifier = source if position == 0 else f"{source}-{position + 1}"
+            qualifiers.update({id(binding): qualifier for binding, _ in members})
+            if subset is not None and subset.ranks:
+                keys = {key: f"{qualifier}/{key}" for key in subset.ranks}
+                members = tuple(
+                    (replace(binding, member=binding.member.model_copy(update={"key": keys[binding.member.key]})), run)
+                    for binding, run in members
+                )
+                qualifiers.update({id(binding): qualifier for binding, _ in members})
+                subset = replace(subset, rank_groups=tuple(
+                    replace(group, ranks=tuple(keys[key] for key in group.ranks)) for group in subset.rank_groups
+                ))
+            selections.extend(members)
+            if subset is not None:
+                subsets[item.removeprefix("inputs.")] = subset
+        counts = Counter(binding.member.key for binding, _ in selections)
+        qualified = []
+        for binding, run in selections:
+            key = binding.member.key
+            if counts[key] > 1 and not isinstance(binding.member.reference, BestRank):
+                key = f"{qualifiers[id(binding)]}/{key}"
+            qualified.append((replace(binding, member=binding.member.model_copy(update={"key": key})), run))
+        gathered, _ = _identified(tuple(qualified), labelled=_labelled(role, tuple(qualified)))
+        keys = [binding.member.key for binding, _ in gathered]
+        if len(set(keys)) != len(keys):
+            repeated = sorted(key for key, count in Counter(keys).items() if count > 1)
+            return ProjectDiagnostic(
+                ResolutionCode.BAD_REFERENCE, path, f"selections repeat the members {repeated!r}", name,
+            )
+        return tuple(gathered), {}, subsets
+
+    def select_reference(
+        self,
+        variant: str,
+        name: str,
+        template: StepComposition,
+        role: _Role,
+        active: tuple[tuple[str, str], ...],
+        reference: Reference | None,
+        path: str,
     ) -> (
         tuple[_Members, dict[str, str], PlannedSubset | None]
         | ProjectDiagnostic
     ):
-        reference = template.inputs.get(role.name)
-        path = f"inputs.{role.name}"
         if reference is None or isinstance(reference, OmittedReference):
             if role.required:
                 return ProjectDiagnostic(
@@ -2908,6 +3373,8 @@ class _Compiler:
                 "a same-project step or row reference is required",
                 name,
             )
+        if role.operation_outputs and reference.element is not None and reference.product is not None:
+            role = replace(role, producer_kind="analyze", product_role=reference.product)
         element_input = role.producer_kind == "analyze"
         if element_input:
             if reference.element is None or reference.product != role.product_role:
@@ -2920,6 +3387,11 @@ class _Compiler:
                 ResolutionCode.BAD_REFERENCE, path,
                 "this input selects a step row without an element or product", name,
             )
+        if element_input:
+            card = self.holders(variant).card_of(reference.step, reference.element)
+            if isinstance(card, AddressProblem):
+                return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, f"{path}.element", card.detail, name)
+            reference = reference.model_copy(update={"step": card})
         if reference.checkpoint is not None and role.product_role != "checkpoint":
             return ProjectDiagnostic(
                 ResolutionCode.BAD_REFERENCE, f"{path}.checkpoint",
@@ -3028,9 +3500,7 @@ class _Compiler:
                 runs,
                 address=lambda run: (run.key.variant, run.key.row),
                 member_key=member_key,
-                coordinates=lambda run: {
-                    axis: coordinate.value_id for axis, coordinate in run.coordinates.items()
-                },
+                coordinates=lambda run: axis_values(run.coordinates, run.input_axes),
             )
         except SubsetSelectionError as error:
             return ProjectDiagnostic(
@@ -3061,42 +3531,61 @@ class _Compiler:
                 return ProjectDiagnostic(
                     ResolutionCode.BAD_REFERENCE, f"{path}.checkpoint", str(error), name,
                 )
+            requests: tuple[tuple[RequestId, PlannedElement | None], ...]
             if isinstance(run, PlannedAnalyzeRun):
                 assert reference.element is not None
-                element = run.elements.get(reference.element)
-                if element is None or not isinstance(element.outputs.get(role.product_role), PlotlyFigurePort):
+                elements = run.requests(reference.element)
+                port = DatasetPort if role.operation_outputs else PlotlyFigurePort
+                if not elements or not all(isinstance(element.outputs.get(role.product_role), port) for element in elements):
                     address = f"{run.key.variant}/{run.key.step}/{run.key.row}/{reference.element}"
                     return ProjectDiagnostic(
                         ResolutionCode.BAD_REFERENCE, f"{path}.element",
                         f"{address} has no planned {role.product_role!r} product", name,
                     )
-                request = element.request_id
+                requests = tuple((element.request_id, element) for element in elements)
             else:
-                request = run.request_id
-            members.append((
-                PlannedInput(
-                    run.key,
-                    InputMember(
-                        key=key,
-                        reference=ProductRef(
-                            request_id=request,
-                            role=role.product_role,
-                            select=selector,
+                requests = ((run.request_id, None),)
+            try:
+                coordinates = self.member_coordinates(run)
+                labels, named = self.member_labels(run, coordinates, gathers_variants=reference.variants is not None)
+                if role.operation_outputs and element_input:
+                    del named["source"]
+                    named["element"] = LabelName(reference.element, elements[0].label, kind="element", card=run.key.step)
+                elif role.producer_kind != "evaluate":
+                    labels = {}
+            except ValueError as error:
+                return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, str(error), name)
+            for request, element in requests:
+                mapped = element.stack_key if element is not None and element.key.member is not None else None
+                members.append((
+                    PlannedInput(
+                        run.key,
+                        InputMember(
+                            key=key if mapped is None else mapped if len(keyed_runs) == 1 else f"{key}/{mapped}",
+                            reference=ProductRef(
+                                request_id=request,
+                                role=role.product_role,
+                                select=selector,
+                            ),
+                            labels=labels | (dict(element.mapped) if element is not None else {}),
                         ),
+                        producer_element=reference.element,
+                        producer_member=mapped,
+                        coordinates=MappingProxyType(coordinates),
+                        selection=reference,
+                        named=MappingProxyType(named),
                     ),
-                    producer_element=reference.element,
-                ),
-                run,
-            ))
+                    run,
+                ))
         source = None
         if terms is not None and role.name in {"subject", "states"}:
             if terms.best is not None and role.name == "subject":
                 source = SubsetSource(
-                    self.subset_origin(variant, name, role.name, subset_document, "best"), reference.step,
+                    self.subset_origin(variant, name, path, subset_document, "best"), reference.step,
                 )
             elif reference.row is None and terms.rows is not None:
                 source = SubsetSource(
-                    self.subset_origin(variant, name, role.name, subset_document, "rows"), reference.step,
+                    self.subset_origin(variant, name, path, subset_document, "rows"), reference.step,
                     tuple(SelectedRow(key=key, variant=run.key.variant, row=run.key.row) for key, run in keyed_runs),
                 )
         subset = (
@@ -3109,7 +3598,7 @@ class _Compiler:
             else None
         )
         if terms is not None and (terms.best is not None or terms.when is not None):
-            return self.rank_input(name, template, role, tuple(members), subset, reference)
+            return self.rank_input(name, template, role, tuple(members), subset, reference, path)
         return tuple(members), {}, subset
 
 

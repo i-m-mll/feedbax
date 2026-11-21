@@ -13,9 +13,7 @@ from feedbax.contracts.model_document import (
     MODEL_DOCUMENT_SCHEMA_ID, CompositeComponent, DelayAttachment, InterventionAttachment, LeafComponent, ModelDocument,
 )
 from feedbax.contracts.model_edit import (
-    EvaluateAttachmentReadRequest, EvaluateAttachmentRequest, EvaluateAttachmentRows, EvaluateAttachmentStep,
-    EvaluateAttachmentVariant,
-    ModelEditCommand, SetField,
+    EvaluateModelRequest, ListedRuns, StepRuns, ModelEditCommand, SetField,
 )
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project import BasedDocument, InlineBase, SetProjectValue, base_chain
@@ -33,12 +31,12 @@ from feedbax.expression_text import print_field
 from feedbax.studio.authoring_sweeps import SweepTarget, FieldSweeps
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
 from feedbax.studio.selection import merged_files
-from feedbax.web.services.evaluate_attachment import (
-    EvaluateAttachmentRefused, evaluate_reading, prepare_evaluate_attachment,
-)
+from feedbax.web.services.evaluate_sources import read_evaluate_model
 from feedbax.web.services.model_projection import selected_model
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
-from feedbax.web.services.trial_scope import reached_steps, scoped_file, selection_scope, variant_file
+from feedbax.web.services.trial_scope import (
+    reached_steps, scoped_file, selected_value, selection_scope, variant_file,
+)
 
 
 @dataclass(frozen=True)
@@ -204,7 +202,7 @@ def _kept_writes(
     if len(fields) > 1:
         return Problem(code=ProblemCode.STRUCTURE, reason="This sweep value sets more than one Model field.")
     rest = [write for write in writes if not write.path.startswith("{")]
-    files = scoped_file(project, step_id, EvaluateAttachmentStep(kind="step"), rest).files if rest else []
+    files = scoped_file(project, step_id, StepRuns(kind="step"), rest).files if rest else []
     return files, next((SetField(op="set_field", address=address, value=write.value) for address, write in fields), None)
 
 
@@ -224,6 +222,23 @@ def _reset_text(
     return print_field(field.numeric.literal(field.numeric.value), field.numeric.site)
 
 
+def _held_values(
+    plan, keys: tuple[RunKey, ...], document: str, owner: ModelAddress, components: ComponentRegistry,
+) -> dict[str, list[int | float]]:
+    """The distinct values each field of ``owner`` holds in the Model the runs ``keys`` read as ``document``."""
+    held: dict[str, list[int | float]] = {}
+    for key in keys:
+        definition = plan.selected_definitions.get(key)
+        payload = selected_model(definition, document) if definition is not None else None
+        if payload is None:
+            continue
+        for field in _fields(ModelDocument.model_validate(payload), owner, components):
+            values = held.setdefault(field.address.to_text(), [])
+            if field.numeric.value not in values:
+                values.append(field.numeric.value)
+    return held
+
+
 def model_fields(
     folders: ProjectFolderService, project_id: str, body: ModelFieldRequest,
     components: ComponentRegistry, functions: FunctionRegistry,
@@ -240,19 +255,21 @@ def model_fields(
     shown = project.documents.get(body.document)
     changes, restored = (shown.differences, shown.base.document) if isinstance(shown, BasedDocument) else ({}, None)
     definitions = ()
+    runs = None
+    held: dict[str, list[int | float]] = {}
     evaluate = None
     variant = None
     if body.evaluate_scope is not None and body.run is not None:
-        evaluate = EvaluateAttachmentReadRequest(revision=body.revision, run=body.run, scope=body.evaluate_scope)
+        evaluate = EvaluateModelRequest(revision=body.revision, run=body.run, scope=body.evaluate_scope)
         key = RunKey(body.run.variant, body.run.step, body.run.row)
         plan = folders.read_plan(project_id, revision=body.revision, source_runs=(key,)).plan
-        reading = evaluate_reading(
+        reading = read_evaluate_model(
             folders, project_id, evaluate, components, selected=plan, model_document=body.document,
         )
         effective_model = reading.state.resolved_model
         changes, restored = reading.differences, reading.shared
         candidate = project.steps[key.step]
-        if (isinstance(evaluate.scope, EvaluateAttachmentStep) and plan.variants[:1] == (key.variant,)
+        if (isinstance(evaluate.scope, StepRuns) and plan.variants[:1] == (key.variant,)
                 and isinstance(candidate.base, InlineBase) and not candidate.deltas):
             selected = next(row for row in plan.rows if row.key == key)
             step = candidate
@@ -269,6 +286,12 @@ def model_fields(
             if plan.steps[(key.variant, key.step)].kind == "train":
                 if project.sweep is None:
                     step = project.steps[key.step]
+                    picked = scoped or tuple(
+                        row.key for row in plan.rows if (row.key.variant, row.key.step) == (key.variant, key.step)
+                    )
+                    plan = folders.read_plan(project_id, revision=body.revision, source_runs=(key, *picked)).plan
+                    runs = tuple(row.coordinates for row in plan.rows if row.key in picked)
+                    held = _held_values(plan, picked, body.document, body.owner, components)
                 elif key.variant != plan.variants[0] and project.sweep.rows.get(key.variant) is not None:
                     variant = key.variant
     if evaluate is not None and effective_model is None:
@@ -286,7 +309,10 @@ def model_fields(
         axis = None
         if step is not None:
             target = SweepTarget(numeric.value, _addressed, field_key)
-            axis = FieldSweeps(step, target, numeric.label, numeric.key[-1:], integer=numeric.site.expected.base == ValueBase.INTEGER)
+            axis = FieldSweeps(
+                step, target, numeric.label, numeric.key[-1:], integer=numeric.site.expected.base == ValueBase.INTEGER,
+                runs=runs,
+            )
             if evaluate is not None:
                 # The addressed sweep can set fields inherited from registry defaults.
                 numeric = replace(numeric, stored=True)
@@ -296,6 +322,7 @@ def model_fields(
                                 if (source := definition.sources.get(f"/payload/trial_documents/model{relative}")) is not None)
         fields.append(project_numeric_field(
             ModelFieldView, numeric, axis, functions, selected, resolved.numeric.value if resolved else None,
+            held=held.get(field_key, ()),
             period=(effective_model or model).step_seconds, scoped=bool(body.rows or body.axes),
             address=field.address,
             sources=[StudioPlanReviewSource.model_validate(source, from_attributes=True) for source in sources],
@@ -320,7 +347,7 @@ def model_fields(
     if (body.rows or body.axes) and evaluate is None:
         key = RunKey(body.run.variant, body.run.step, body.run.row)
         scope = selection_scope(project, plan, key, tuple(body.rows), body.axes)
-        if isinstance(scope, EvaluateAttachmentRows) and axis is not None and any(
+        if isinstance(scope, ListedRuns) and axis is not None and any(
             source.kind == "sweep_value"
             for field_view in fields if field_view.address == body.address
             for source in field_view.sources
@@ -348,7 +375,7 @@ def model_fields(
             files=merged_files([*files, step_file(result)]), removed_values=prepared.removed,
             command=ModelEditCommand(operation=field_value) if field_value is not None else None,
         )
-    if scope is not None:
+    if scope is not None and selected_value(project, body.run.step, scope) is None:
         if axis is None or axis.target.patch_path is None:
             return ModelFieldResponse(problems=[Problem(
                 code=ProblemCode.STRUCTURE, reason="This field has no writable sweep destination.",
@@ -366,15 +393,8 @@ def model_fields(
         else:
             value = result.model_dump(mode="json")
     difference = SetField(op="set_field", address=field.address, value=value)
-    if evaluate is not None and isinstance(evaluate.scope, EvaluateAttachmentStep | EvaluateAttachmentVariant):
-        return ModelFieldResponse(command=ModelEditCommand(operation=difference))
     if evaluate is not None:
-        request = EvaluateAttachmentRequest(**evaluate.model_dump(), difference=difference)
-        try:
-            edit = prepare_evaluate_attachment(folders, project_id, request, components)
-        except EvaluateAttachmentRefused as error:
-            return ModelFieldResponse(problems=[Problem(code=ProblemCode.STRUCTURE, reason=error.problem.detail)])
-        return ModelFieldResponse(files=[edit.file])
+        return ModelFieldResponse(command=ModelEditCommand(operation=difference))
     if variant is not None:
         if body.rows or plan is None or not plan.document_users(variant, owner_name) <= reached_steps(
             project, set(body.chosen_steps) or {body.run.step},

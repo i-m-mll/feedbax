@@ -260,7 +260,7 @@ def test_saved_grouped_best_binds_and_freezes_each_group(host, tmp_path, monkeyp
     assert len(set(snapshots)) == 2
 
     attempts = [ids[run.key] for run in reversed(tuple(ranks.values()))]
-    body = StudioSubsetToRowsRequest(revision=saved.revision, variant="default", step="baseline", attempts=attempts)
+    body = StudioSubsetToRowsRequest(revision=saved.revision, variant="default", step="baseline", input="subject", attempts=attempts)
     with pytest.raises(ProjectFolderInvalid, match="every Best rank"):
         service.subset_to_rows(project, body.model_copy(update={"attempts": attempts[1:]}))
     recipe = service.subset_to_rows(project, body)

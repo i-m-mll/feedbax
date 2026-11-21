@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { studioAccessibleName, studioName, type StudioNameId } from '@/components/activity/studioVocabulary';
 import type { AppearanceCommandId } from '@/appearance/appearance';
+import { bindGesture, invokeGesture } from './heldGestures';
 import { projectWindowViews, type ProjectWindowView } from './projectWindowState';
 
 interface Shortcut {
@@ -43,6 +44,7 @@ const shortcuts = {
   modelSelectAll: primary('A'),
   modelRemove: { key: 'Backspace' },
   renameStep: { key: 'F2' },
+  renameElement: { key: 'F2' },
   modelRename: { key: 'F2' },
   modelDuplicate: primary('D'),
   modelGroup: primary('G'),
@@ -69,7 +71,7 @@ const glyphs: Partial<Record<StudioCommandId, LucideIcon>> = {
 };
 
 export type StudioCommandId = keyof typeof shortcuts | ProjectWindowView | AppearanceCommandId |
-  'check' | 'accept' | 'newStep' | 'newSweep' | 'duplicateStep' | 'openRun' | 'resume' | 'forceStop' | 'activity' | 'problems' | 'retry' |
+  'check' | 'accept' | 'newStep' | 'newSweep' | 'duplicateStep' | 'duplicateRun' | 'split' | 'merge' | 'saveSet' | 'inlineSet' | 'changeKey' | 'openRun' | 'resume' | 'forceStop' | 'activity' | 'problems' | 'retry' |
   'pivot' | 'dismiss' | 'connectPorts' | 'exposeOutput' |
   'flip' | 'enter' | 'collapseAll' | 'lock' | 'addDelay' | 'addIntervention' | 'addProbe' | 'addWaypoint' | 'removeWaypoint' |
   'addText' | 'addFigure' | 'moveEarlier' | 'moveLater' | 'remove' |
@@ -79,8 +81,19 @@ const selectionCommands = new Set<StudioCommandId>([
   'run', 'stop', 'forceStop', 'resume', 'openRun', 'check', 'accept', 'newStep', 'newSweep', 'pivot',
   'addComponent', 'connectPorts', 'exposeOutput', 'addText', 'addFigure', 'moveEarlier', 'moveLater', 'remove',
   'flip', 'enter', 'leave', 'collapseAll', 'lock', 'addDelay', 'addIntervention', 'addProbe', 'addWaypoint', 'removeWaypoint',
-  'renameStep', 'duplicateStep', 'modelSelectAll', 'modelRemove', 'modelRename', 'modelDuplicate', 'modelGroup', 'modelUngroup',
+  'renameStep', 'renameElement', 'changeKey', 'duplicateStep', 'duplicateRun', 'split', 'merge', 'modelSelectAll', 'modelRemove', 'modelRename', 'modelDuplicate', 'modelGroup', 'modelUngroup',
   'modelCopy', 'modelCut', 'modelPaste',
+]);
+
+/**
+ * Commands that change only how the window shows the workspace, such as which view, region or Model graph it shows.
+ * They read nothing the workspace is settling, so one runs at once while the workspace is unsettled, unless a gesture
+ * made before it is still held.
+ */
+const viewCommands = new Set<StudioCommandId>([
+  ...projectWindowViews, 'commandPalette', 'settings', 'showMap', 'showBoth', 'showDetails', 'showSteps', 'showDrawer',
+  'showInspector', 'splitDetails', 'switchSlot', 'back', 'forward', 'nextRegion', 'previousRegion', 'activity', 'problems',
+  'fitView', 'zoomIn', 'zoomOut', 'enter', 'leave',
 ]);
 
 export interface StudioCommand {
@@ -91,26 +104,52 @@ export interface StudioCommand {
   /** The accessible name, with the command's subject. */
   readonly label: string;
   readonly glyph?: LucideIcon;
+  /** Whether the command applies to what is selected; the workspace being unsettled disables nothing. */
   readonly enabled: boolean;
   readonly selectionScoped: boolean;
   readonly shortcut?: Shortcut;
+  /** Runs the command, or holds it until the workspace settles and runs it then if it still applies. */
   invoke(): void;
 }
 
-export function bindStudioCommand<Id extends StudioCommandId>(
-  id: Id,
-  perform: () => void,
-  { enabled = true, name = id, subject, keyboard = true, glyph = glyphs[id] }:
-    { enabled?: boolean; name?: StudioNameId; subject?: string; keyboard?: boolean; glyph?: LucideIcon } = {},
+interface BindingOptions {
+  enabled?: boolean;
+  name?: StudioNameId;
+  subject?: string;
+  keyboard?: boolean;
+  glyph?: LucideIcon;
+  /** Tells apart bindings of one command and name with one subject, such as Close Slot of each slot. */
+  instance?: string;
+}
+
+function studioCommand<Id extends StudioCommandId>(
+  id: Id, perform: () => void, options: BindingOptions, bound: boolean,
 ): StudioCommand & { readonly id: Id } {
+  const { enabled = true, name = id, subject, keyboard = true, glyph = glyphs[id], instance = '' } = options;
   const viewPosition = projectWindowViews.indexOf(id as ProjectWindowView) + 1;
   const shortcut = (shortcuts as Partial<Record<StudioCommandId, Shortcut>>)[id] ??
     (viewPosition > 0 && viewPosition <= 9 ? primary(String(viewPosition)) : undefined);
-  return {
+  const label = studioAccessibleName(name, subject);
+  const command: StudioCommand & { readonly id: Id } = {
     id, name, enabled, selectionScoped: selectionCommands.has(id), shortcut: keyboard ? shortcut : undefined,
-    title: studioName(name), label: studioAccessibleName(name, subject), glyph,
-    invoke: () => { if (enabled) perform(); },
+    title: studioName(name), label, glyph,
+    invoke: () => invokeGesture(command),
   };
+  const key = bound ? JSON.stringify([id, name, label, instance]) : '';
+  bindGesture(command, key, { enabled, perform }, viewCommands.has(id));
+  return command;
+}
+
+/** A command of the current state; a gesture held under it runs the latest binding of the same command. */
+export function bindStudioCommand<Id extends StudioCommandId>(
+  id: Id, perform: () => void, options: BindingOptions = {},
+): StudioCommand & { readonly id: Id } {
+  return studioCommand(id, perform, options, true);
+}
+
+/** A command shown where nothing binds it; it never applies, and a held gesture never resolves to it. */
+export function unboundStudioCommand<Id extends StudioCommandId>(id: Id): StudioCommand & { readonly id: Id } {
+  return studioCommand(id, () => {}, { enabled: false }, false);
 }
 
 export function shortcutLabel(shortcut: Shortcut) {
@@ -169,7 +208,7 @@ export function studioCommandContext(target: EventTarget | null, paletteOpen: bo
 
 /** Commands that act on a canvas's selection; a focused text field keeps their keys. */
 const canvasCommands = new Set<StudioCommandId>([
-  'renameStep', 'addComponent', 'leave', 'modelSelectAll', 'modelRemove', 'modelRename', 'modelDuplicate', 'modelGroup',
+  'renameStep', 'renameElement', 'addComponent', 'leave', 'modelSelectAll', 'modelRemove', 'modelRename', 'modelDuplicate', 'modelGroup',
   'modelUngroup', 'modelCopy', 'modelCut', 'modelPaste',
 ]);
 

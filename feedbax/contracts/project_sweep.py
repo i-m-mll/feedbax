@@ -21,11 +21,12 @@ from feedbax.contracts.expression_values import DrawValue
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_address import FieldElement, ModelAddress
 from feedbax.contracts.model_attachment import SetField
-from feedbax.contracts.request_refs import UpdateCadence, UpdateRule
+from feedbax.contracts.request_refs import Name, UpdateCadence, UpdateRule, axis_values_id
 from feedbax.contracts.project_inputs import (
     CheckpointRule,
     NonemptyText,
     ProjectName,
+    RowKey,
     StepReference,
     SubsetSelectionError,
     SweepExceptionTerms,
@@ -169,14 +170,29 @@ class SweepException(PatchSet):
 
 
 class AxisCondition(StrictModel):
-    """The rows an axis applies to: those whose value on each named axis of the same sweep is one of those listed."""
+    """The rows an axis applies to, by the terms an exception's ``where`` takes: those whose value on each named axis,
+    or on a coordinate an input axis carries, is one of those listed, and that are among ``rows`` when it is given.
 
-    axes: dict[ProjectName, Annotated[list[ProjectName], Field(min_length=1)]] = Field(min_length=1)
+    ``rows`` names the rows the step has without this axis; an axis conditioned on rows divides its rows after every
+    conditioned axis authored before it.
+    """
+
+    axes: dict[ProjectName, Annotated[list[Name], Field(min_length=1)]] = Field(default_factory=dict)
+    rows: Annotated[list[RowKey], Field(min_length=1)] | None = Field(default=None, exclude_if=lambda rows: rows is None)
+
+    @model_validator(mode="after")
+    def _has_terms(self) -> AxisCondition:
+        if not self.axes and self.rows is None:
+            raise ValueError("a condition names axis values or rows")
+        return self
 
 
 class NamedAxis(StrictModel):
     values: dict[ProjectName, AxisValue | None]
     where: AxisCondition | None = None
+    optional: bool = Field(default=False, exclude_if=lambda optional: not optional)
+    """A row an optional axis applies to is kept as it is, with no value on the axis, and one row per value is added
+    beside it."""
 
 
 class InputAxis(StrictModel):
@@ -227,7 +243,15 @@ class CheckpointRuleAxis(StrictModel):
     _author: str | None = PrivateAttr(default=None)
 
 
-type Axis = NamedAxis | InputAxis | ListedAxis | RangeAxis | SampledAxis | CheckpointRuleAxis
+class SetAxis(StrictModel):
+    """One value per entry of the named Set document, applied to the Model document the step reads."""
+
+    set: ProjectName
+    where: AxisCondition | None = None
+    optional: bool = Field(default=False, exclude_if=lambda optional: not optional)
+
+
+type Axis = NamedAxis | InputAxis | ListedAxis | RangeAxis | SampledAxis | CheckpointRuleAxis | SetAxis
 
 
 class ManualCombination(StrictModel):
@@ -341,8 +365,11 @@ def inherit_sweep(
                     values.pop(key, None)
                 else:
                     values[key] = _merge_value(values.get(key), value, author)
-            where = axis.where if "where" in axis.model_fields_set or not isinstance(prior, NamedAxis) else prior.where
-            axes[name] = NamedAxis(values=values, where=where)
+            kept = {
+                field: getattr(axis if field in axis.model_fields_set or not isinstance(prior, NamedAxis) else prior, field)
+                for field in ("where", "optional")
+            }
+            axes[name] = NamedAxis(values=values, **kept)
         elif isinstance(axis, (GeneratedAxis, CheckpointRuleAxis)) and author is not None:
             generated = axis.model_copy()
             generated._author = author
@@ -422,6 +449,7 @@ class SweepExpansionCode(StrEnum):
     INVALID_CONDITION = "invalid_condition"
     ROW_BUDGET = "row_budget"
     AXIS_BUDGET = "axis_budget"
+    INVALID_SET = "invalid_set"
 
 
 class SweepExpansionError(ValueError):
@@ -453,7 +481,13 @@ class SweepInputMember:
 
 
 type SweepInputs = Mapping[str, Sequence[SweepInputMember] | None]
-type PatchOrigin = tuple[Literal["sweep_value"], str, str] | tuple[Literal["exception", "row"], str]
+type SweepSets = Mapping[str, NamedAxis]
+"""Each set axis's entries as the inline axis they convert to, by axis name."""
+type PatchOrigin = (
+    tuple[Literal["sweep_value"], str, str]
+    | tuple[Literal["set_entry"], str, str, str]
+    | tuple[Literal["exception", "row"], str]
+)
 
 
 @dataclass(frozen=True)
@@ -466,6 +500,9 @@ class ExpandedRow:
     patch_origins: Mapping[str, PatchOrigin] = field(default_factory=dict)
     patch_authors: Mapping[str, str] = field(default_factory=dict)
     axis_value_ids: Mapping[str, str] = field(default_factory=dict)
+    input_axes: Mapping[str, SweepCoordinate] = field(default_factory=dict)
+    """Each input axis's value on this row, its member, which ``coordinates`` holds only as the member's own
+    coordinates."""
 
     def inherited_id(self, axes: tuple[str, ...]) -> str | None:
         """Project generated choices onto the inherited axes, or keep an authored row ID.
@@ -476,7 +513,7 @@ class ExpandedRow:
         if not self.axis_value_ids:
             return self.id
         values = {name: self.axis_value_ids[name] for name in axes if name in self.axis_value_ids}
-        return _generated_row_id(values) if values else None
+        return axis_values_id(values) if values else None
 
 
 DEFAULT_SWEEP_ROW = "default"
@@ -490,6 +527,7 @@ class _AxisChoice:
     patches: Mapping[str, PatchValue] = field(default_factory=dict)
     member: SweepInputMember | None = None
     patch_authors: Mapping[str, str] = field(default_factory=dict)
+    origin: PatchOrigin | None = None
 
 
 @dataclass(frozen=True)
@@ -498,7 +536,8 @@ class _SweepPlan:
     rows: Mapping[str, Row]
     sizes: Mapping[str, int]
     exceptions: Mapping[str, SweepException]
-    dimensions: tuple[tuple[tuple[str, ...], int], ...] = ()
+    sets: SweepSets = field(default_factory=dict)
+    dimensions: tuple[_Dimension, ...] = ()
     manual: tuple[Mapping[str, str], ...] | None = None
     conditional: tuple[str, ...] = ()
     """The axes with a condition, each after the axes it is conditioned on. The combination is of the others."""
@@ -508,7 +547,7 @@ class _SweepPlan:
         """The rows the combination generates, before the conditional axes divide some of them."""
         if self.manual is not None:
             return len(self.manual)
-        return math.prod(size for _, size in self.dimensions) if self.axes else 0
+        return math.prod(len(steps) for _, steps in self.dimensions) if self.axes else 0
 
     @property
     def row_count(self) -> int:
@@ -533,11 +572,11 @@ class _SweepPlan:
                     resolved[name] = lookup[name][key]
                 yield resolved
             return
-        for indices in product(*(range(size) for _, size in self.dimensions)):
+        for steps in product(*(steps for _, steps in self.dimensions)):
             yield {
                 name: choices[name][index]
-                for (names, _), index in zip(self.dimensions, indices, strict=True)
-                for name in names
+                for (names, _), indices in zip(self.dimensions, steps, strict=True)
+                for name, index in zip(names, indices, strict=True)
             }
 
 
@@ -545,8 +584,15 @@ def _patches(value: PatchSet) -> dict[str, PatchValue]:
     return {path: patch for path, patch in value.patches.items() if patch is not None}
 
 
-def _axis_size(name: str, axis: Axis, inputs: SweepInputs) -> int:
+def _axis_size(name: str, axis: Axis, inputs: SweepInputs, sets: SweepSets) -> int:
     match axis:
+        case SetAxis(set=document):
+            if name not in sets:
+                raise SweepExpansionError(
+                    SweepExpansionCode.INVALID_SET, f"sweep.axes.{name}.set",
+                    f"set {document!r} applies to the Model document of a Train or Evaluate step",
+                )
+            return _axis_size(name, sets[name], inputs, sets)
         case InputAxis(input=role):
             members = inputs.get(role)
             if members is None:
@@ -576,9 +622,50 @@ def _axis_size(name: str, axis: Axis, inputs: SweepInputs) -> int:
             )
 
 
+type _Dimension = tuple[tuple[str, ...], tuple[tuple[int, ...], ...]]
+"""Axes that vary together, and the value index of each axis at each step."""
+
+
+def _label_pairs(path: str, names: Sequence[str], members: Sequence[Sequence[SweepInputMember]]) -> tuple[tuple[int, ...], ...]:
+    """Pair the members of zipped inputs whose shared varying labels are equal, one to one."""
+    every = [member for group in members for member in group]
+    shared = [
+        label for label in every[0].coordinates if all(label in member.coordinates for member in every)
+        and not all(len({member.coordinates[label].value_id for member in group}) <= 1 for group in members)
+    ]
+    if not shared and any(len(group) > 1 for group in members):
+        raise SweepExpansionError(
+            SweepExpansionCode.INVALID_COMBINATION, path, f"zipped inputs {list(names)} share no varying label",
+        )
+    indices = []
+    for name, group in zip(names, members, strict=True):
+        keys: dict[tuple[str, ...], int] = {}
+        for index, member in enumerate(group):
+            key = tuple(member.coordinates[label].value_id for label in shared)
+            if keys.setdefault(key, index) != index:
+                raise SweepExpansionError(
+                    SweepExpansionCode.INVALID_COMBINATION, path,
+                    f"input axis {name!r} has several members labelled {dict(zip(shared, key, strict=True))}",
+                )
+        indices.append(keys)
+    if any(keys.keys() != indices[0].keys() for keys in indices[1:]):
+        raise SweepExpansionError(
+            SweepExpansionCode.INVALID_COMBINATION, path,
+            f"zipped inputs {list(names)} do not pair one to one by {shared}",
+        )
+    return tuple(tuple(keys[key] for keys in indices) for key in indices[0])
+
+
 def _zip_dimension(
-    path: str, names: Sequence[str], sizes: Mapping[str, int]
-) -> tuple[tuple[str, ...], int]:
+    path: str, names: Sequence[str], sizes: Mapping[str, int], axes: Mapping[str, Axis], inputs: SweepInputs,
+) -> _Dimension:
+    roles = [axes[name].input for name in names if isinstance(axes[name], InputAxis)]
+    if roles:
+        if len(roles) != len(names):
+            raise SweepExpansionError(
+                SweepExpansionCode.INVALID_COMBINATION, path, "zip pairs input axes by label, with input axes only",
+            )
+        return tuple(names), _label_pairs(path, names, [inputs[role] or () for role in roles])
     lengths = {name: sizes[name] for name in names}
     if len(set(lengths.values())) != 1:
         raise SweepExpansionError(
@@ -586,18 +673,23 @@ def _zip_dimension(
             path,
             f"zip requires equal axis lengths, got {lengths}",
         )
-    return tuple(names), next(iter(lengths.values()))
+    return tuple(names), tuple((index,) * len(names) for index in range(next(iter(lengths.values()))))
+
+
+def _cross_dimension(name: str, size: int) -> _Dimension:
+    return (name,), tuple((index,) for index in range(size))
 
 
 def _dimensions(
-    sizes: Mapping[str, int], combination: Literal["cross", "zip"] | GroupCombination
-) -> tuple[tuple[tuple[str, ...], int], ...]:
+    sizes: Mapping[str, int], combination: Literal["cross", "zip"] | GroupCombination,
+    axes: Mapping[str, Axis], inputs: SweepInputs,
+) -> tuple[_Dimension, ...]:
     if not sizes and isinstance(combination, str):
         return ()
     if combination == "cross":
-        return tuple(((name,), size) for name, size in sizes.items())
+        return tuple(_cross_dimension(name, size) for name, size in sizes.items())
     if combination == "zip":
-        return (_zip_dimension("sweep.combination", tuple(sizes), sizes),)
+        return (_zip_dimension("sweep.combination", tuple(sizes), sizes, axes, inputs),)
 
     dimensions = []
     used: set[str] = set()
@@ -616,9 +708,9 @@ def _dimensions(
                 )
             used.add(name)
         if group.mode == "zip":
-            dimensions.append(_zip_dimension(path, group.axes, sizes))
+            dimensions.append(_zip_dimension(path, group.axes, sizes, axes, inputs))
         else:
-            dimensions.extend(((name,), sizes[name]) for name in group.axes)
+            dimensions.extend(_cross_dimension(name, sizes[name]) for name in group.axes)
     if missing := sizes.keys() - used:
         raise SweepExpansionError(
             SweepExpansionCode.INVALID_COMBINATION,
@@ -642,14 +734,31 @@ def _resolved_sweep(sweep: Sweep | None) -> Sweep:
 
 
 def _condition(axis: Axis) -> AxisCondition | None:
-    return axis.where if isinstance(axis, NamedAxis | GeneratedAxis) else None
+    return axis.where if isinstance(axis, NamedAxis | GeneratedAxis | SetAxis) else None
+
+
+def _optional(axis: Axis) -> bool:
+    return isinstance(axis, NamedAxis | SetAxis) and axis.optional
+
+
+def _divides(axis: Axis) -> bool:
+    """Whether the axis adds rows to the combination of the others, rather than being one of its factors."""
+    return _condition(axis) is not None or _optional(axis)
 
 
 def _conditional_order(axes: Mapping[str, Axis]) -> tuple[str, ...]:
-    """The conditioned axes, each after the conditioned axes it depends on; a condition names other axes only."""
+    """The conditioned and optional axes, each after those it depends on; a condition names other axes only.
+
+    An optional axis without a condition applies to every row, so it follows every such axis authored before it.
+    """
     graph: dict[str, set[str]] = {}
+    earlier: list[str] = []
     for name, axis in axes.items():
+        if not _divides(axis):
+            continue
         if (where := _condition(axis)) is None:
+            graph[name] = set(earlier)
+            earlier.append(name)
             continue
         for other in where.axes:
             if other == name:
@@ -657,12 +766,10 @@ def _conditional_order(axes: Mapping[str, Axis]) -> tuple[str, ...]:
                     SweepExpansionCode.INVALID_CONDITION, f"sweep.axes.{name}.where.axes.{other}",
                     f"axis {name!r} is conditioned on itself",
                 )
-            if other not in axes:
-                raise SweepExpansionError(
-                    SweepExpansionCode.INVALID_CONDITION, f"sweep.axes.{name}.where.axes.{other}",
-                    f"unknown axis {other!r}",
-                )
-        graph[name] = {other for other in where.axes if _condition(axes[other]) is not None}
+        graph[name] = {other for other in where.axes if other in axes and _divides(axes[other])}
+        if where.rows is not None:
+            graph[name] |= set(earlier)
+        earlier.append(name)
     try:
         return tuple(TopologicalSorter(graph).static_order())
     except CycleError as error:
@@ -674,7 +781,7 @@ def _conditional_order(axes: Mapping[str, Axis]) -> tuple[str, ...]:
         ) from error
 
 
-def _plan(sweep: Sweep | None, inputs: SweepInputs) -> _SweepPlan:
+def _plan(sweep: Sweep | None, inputs: SweepInputs, sets: SweepSets | None = None) -> _SweepPlan:
     resolved = _resolved_sweep(sweep)
     axes = {name: axis for name, axis in resolved.axes.items() if axis is not None}
     rows = {name: row for name, row in resolved.rows.items() if row is not None}
@@ -682,7 +789,7 @@ def _plan(sweep: Sweep | None, inputs: SweepInputs) -> _SweepPlan:
     empty_manual = isinstance(combination, ManualCombination) and not combination.manual
     conditional = _conditional_order(axes)
     every = {
-        name: 0 if empty_manual and isinstance(axis, InputAxis) else _axis_size(name, axis, inputs)
+        name: 0 if empty_manual and isinstance(axis, InputAxis) else _axis_size(name, axis, inputs, sets or {})
         for name, axis in axes.items()
     }
     sizes = {name: size for name, size in every.items() if name not in conditional}
@@ -700,7 +807,8 @@ def _plan(sweep: Sweep | None, inputs: SweepInputs) -> _SweepPlan:
 
     if not isinstance(combination, ManualCombination):
         return _SweepPlan(
-            axes, rows, every, exceptions, dimensions=_dimensions(sizes, combination), conditional=conditional,
+            axes, rows, every, exceptions, sets or {}, dimensions=_dimensions(sizes, combination, axes, inputs),
+            conditional=conditional,
         )
     if not sizes:
         raise SweepExpansionError(
@@ -715,7 +823,9 @@ def _plan(sweep: Sweep | None, inputs: SweepInputs) -> _SweepPlan:
                 f"sweep.combination.manual.{index}",
                 f"expected axes {list(sizes)}, got {list(coordinate)}",
             )
-    return _SweepPlan(axes, rows, every, exceptions, manual=tuple(combination.manual), conditional=conditional)
+    return _SweepPlan(
+        axes, rows, every, exceptions, sets or {}, manual=tuple(combination.manual), conditional=conditional,
+    )
 
 
 def count_sweep(
@@ -725,10 +835,11 @@ def count_sweep(
     max_rows: int = DEFAULT_SWEEP_LIMIT,
     max_axis_values: int = DEFAULT_SWEEP_LIMIT,
     integer_site: IntegerSite | None = None,
+    sets: SweepSets | None = None,
 ) -> int:
     """Count final rows, using bounded expansion when exceptions select rows."""
     known_inputs = inputs or {}
-    plan = _plan(sweep, known_inputs)
+    plan = _plan(sweep, known_inputs, sets)
     if plan.exceptions or plan.conditional:
         return len(_expand_plan(plan, known_inputs, max_rows, max_axis_values, integer_site))
     return plan.row_count
@@ -831,11 +942,17 @@ def _integer_member(value: JsonValue) -> int:
 
 def _choices(
     name: str, axis: Axis, inputs: SweepInputs, integer_site: IntegerSite | None = None,
+    sets: SweepSets | None = None,
 ) -> tuple[_AxisChoice, ...]:
     path = f"sweep.axes.{name}"
     target = None
     try:
         match axis:
+            case SetAxis(set=document):
+                choices = tuple(
+                    replace(choice, origin=("set_entry", name, choice.key, document))
+                    for choice in _choices(name, (sets or {})[name], inputs)
+                )
             case NamedAxis(values=values):
                 choices = tuple(
                     _AxisChoice(
@@ -895,7 +1012,11 @@ def _choices(
     return choices
 
 
-_PLAIN_VALUE_ID = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_-]*")
+def axis_values(
+    coordinates: Mapping[str, SweepCoordinate], input_axes: Mapping[str, SweepCoordinate],
+) -> dict[str, str]:
+    """The value ID of each axis a row is selected by: its coordinates, and its input axes' member keys."""
+    return {axis: coordinate.value_id for axis, coordinate in (*coordinates.items(), *input_axes.items())}
 
 
 def coordinate_text(coordinate: SweepCoordinate) -> str:
@@ -910,25 +1031,16 @@ def coordinate_text(coordinate: SweepCoordinate) -> str:
     return coordinate.value_id
 
 
-def _row_key(key: str) -> str:
-    if _PLAIN_VALUE_ID.fullmatch(key):
-        return key
-    return "=" + sha256_bytes(canonical_json_v2_bytes(key))
-
-
-def _generated_row_id(values: Mapping[str, str]) -> str:
-    return "--".join(f"{name}={_row_key(values[name])}" for name in sorted(values))
-
-
 def _expanded(axes: Mapping[str, Axis], selection: Mapping[str, _AxisChoice]) -> ExpandedRow:
     """The row of one value per axis in ``selection``; an axis it has no value on is absent from its ID and label."""
     axis_value_ids = {name: choice.key for name, choice in selection.items()}
-    row_id = _generated_row_id(axis_value_ids)
+    row_id = axis_values_id(axis_value_ids) if axis_value_ids else DEFAULT_SWEEP_ROW
     coordinates: dict[str, SweepCoordinate] = {}
     patches: dict[str, PatchValue] = {}
     origins: dict[str, PatchOrigin] = {}
     authors: dict[str, str] = {}
     bindings: dict[str, str] = {}
+    input_axes: dict[str, SweepCoordinate] = {}
     labels = []
     for name, axis in axes.items():
         if (choice := selection.get(name)) is None:
@@ -938,6 +1050,7 @@ def _expanded(axes: Mapping[str, Axis], selection: Mapping[str, _AxisChoice]) ->
         if isinstance(axis, InputAxis):
             assert member is not None
             bindings[axis.input] = member.key
+            input_axes[name] = choice.coordinate
             carried = member.coordinates
         else:
             carried = {name: choice.coordinate}
@@ -964,11 +1077,12 @@ def _expanded(axes: Mapping[str, Axis], selection: Mapping[str, _AxisChoice]) ->
                         f"sweep.axes.{name}",
                         f"row {row_id!r} patches {path!r}, overlapping {prior_path!r} from axis {prior_axis!r}",
                     )
-            origins[path] = ("sweep_value", name, choice.key)
+            origins[path] = choice.origin or ("sweep_value", name, choice.key)
             patches[path] = patch
         authors.update(choice.patch_authors)
     return ExpandedRow(
-        row_id, ", ".join(labels), coordinates, patches, bindings, origins, authors, axis_value_ids
+        row_id, ", ".join(labels) or None, coordinates, patches, bindings, origins, authors, axis_value_ids,
+        input_axes,
     )
 
 
@@ -989,9 +1103,7 @@ def _select_exception_rows(
             exception.where,
             rows,
             key=lambda row: row.id,
-            coordinates=lambda row: {
-                axis: value.value_id for axis, value in row.coordinates.items()
-            },
+            coordinates=lambda row: axis_values(row.coordinates, row.input_axes),
         )
     except SubsetSelectionError as error:
         term = f".{error.path}" if error.path else ""
@@ -1024,7 +1136,7 @@ def _apply_exceptions(
             authors = dict(row.patch_authors)
             for target in writes:
                 for prior, origin in row.patch_origins.items():
-                    if origin[0] == "sweep_value" and _paths_overlap(prior, target):
+                    if origin[0] in ("sweep_value", "set_entry") and _paths_overlap(prior, target):
                         raise SweepExpansionError(
                             SweepExpansionCode.PATCH_CONFLICT,
                             f"{path}.patches.{target}",
@@ -1070,7 +1182,7 @@ def _planned_choices(
 ) -> dict[str, tuple[_AxisChoice, ...]]:
     for name, size in plan.sizes.items():
         _check_axis_budget(name, size, max_axis_values)
-    return {name: _choices(name, axis, inputs, integer_site) for name, axis in plan.axes.items()}
+    return {name: _choices(name, axis, inputs, integer_site, plan.sets) for name, axis in plan.axes.items()}
 
 
 def _explicit_rows(rows: Mapping[str, Row]) -> Iterator[ExpandedRow]:
@@ -1086,8 +1198,9 @@ def _condition_picks(name: str, where: AxisCondition, rows: Sequence[ExpandedRow
     try:
         picked = {
             id(row) for row in select_sweep_exception_rows(
-                SweepExceptionTerms(axes=where.axes), rows, key=lambda row: row.id,
-                coordinates=lambda row: {axis: value.value_id for axis, value in row.coordinates.items()},
+                SweepExceptionTerms(axes=where.axes, rows=where.rows) if where.rows is not None
+                else SweepExceptionTerms(axes=where.axes), rows, key=lambda row: row.id,
+                coordinates=lambda row: axis_values(row.coordinates, row.input_axes),
             )
         }
     except SubsetSelectionError as error:
@@ -1101,16 +1214,20 @@ def _condition_picks(name: str, where: AxisCondition, rows: Sequence[ExpandedRow
 def _conditioned(
     plan: _SweepPlan, choices: Mapping[str, Sequence[_AxisChoice]], max_rows: int,
 ) -> list[tuple[dict[str, _AxisChoice], ExpandedRow]]:
-    """The combination's rows, each row a conditional axis picks divided into one row per value of the axis."""
+    """The combination's rows, each row a conditional axis picks divided into one row per value of the axis.
+
+    A row an optional axis picks is kept, and one row per value of the axis is added after it.
+    """
     pairs = [(selection, _expanded(plan.axes, selection)) for selection in plan.selections(choices)]
     for name in plan.conditional:
-        where = _condition(plan.axes[name])
-        assert where is not None
-        picks = _condition_picks(name, where, [row for _, row in pairs])
+        axis = plan.axes[name]
+        where = _condition(axis)
+        picks = (True,) * len(pairs) if where is None else _condition_picks(name, where, [row for _, row in pairs])
         divided = []
         for (selection, row), picked in zip(pairs, picks, strict=True):
-            if not picked:
+            if not picked or _optional(axis):
                 divided.append((selection, row))
+            if not picked:
                 continue
             for choice in choices[name]:
                 chosen = selection | {name: choice}
@@ -1163,8 +1280,9 @@ def expand_sweep(
     integer_site: IntegerSite | None = None,
     checkpoint_subject: bool = False,
     exception_matches: dict[str, tuple[str, ...]] | None = None,
+    sets: SweepSets | None = None,
 ) -> tuple[ExpandedRow, ...]:
-    """Expand the declared sweep using recorded draws and known input members.
+    """Expand the declared sweep using recorded draws, known input members and resolved sets.
 
     None has an unknown input member count. An empty sequence is a known count
     of zero. Expansion never draws new samples or mutates an authored rule.
@@ -1181,14 +1299,17 @@ def expand_sweep(
             (name, axis), = checkpoints
             return _expand_checkpoint_axis(
                 resolved, name, axis, known_inputs, max_rows, max_axis_values, integer_site, exception_matches,
+                sets,
             )
-    return _expand_plan(_plan(sweep, known_inputs), known_inputs, max_rows, max_axis_values, integer_site, exception_matches)
+    return _expand_plan(
+        _plan(sweep, known_inputs, sets), known_inputs, max_rows, max_axis_values, integer_site, exception_matches,
+    )
 
 
 def _expand_checkpoint_axis(
     sweep: Sweep, name: str, axis: CheckpointRuleAxis, inputs: SweepInputs,
     max_rows: int, max_axis_values: int, integer_site: IntegerSite | None,
-    exception_matches: dict[str, tuple[str, ...]] | None,
+    exception_matches: dict[str, tuple[str, ...]] | None, sets: SweepSets | None,
 ) -> tuple[ExpandedRow, ...]:
     from feedbax.checkpoint_coordinates import finite_coordinates
 
@@ -1200,7 +1321,7 @@ def _expand_checkpoint_axis(
     base = sweep.model_copy(update={
         "axes": {key: value for key, value in sweep.axes.items() if key != name}, "exceptions": {},
     })
-    rows = _expand_plan(_plan(base, inputs), inputs, max_rows, max_axis_values, integer_site)
+    rows = _expand_plan(_plan(base, inputs, sets), inputs, max_rows, max_axis_values, integer_site)
     subjects = {member.key: member for member in inputs.get("subject") or ()}
     only_subject = next(iter(subjects.values())) if len(subjects) == 1 else None
     choices = {}
@@ -1249,7 +1370,7 @@ def _expand_checkpoint_axis(
             if axis._author is not None:
                 authors[axis.path] = axis._author
             result.append(replace(
-                row, id=_generated_row_id(keys), axis_value_ids=keys,
+                row, id=axis_values_id(keys), axis_value_ids=keys,
                 label=", ".join(part for part in (row.label, f"{name}={key}") if part),
                 coordinates={**row.coordinates, name: SweepCoordinate(key, key, update)},
                 patches={**row.patches, axis.path: SetValue(value=[{"at": update}])},
@@ -1285,7 +1406,7 @@ def axis_to_list(
     integer_site: IntegerSite | None = None,
 ) -> NamedAxis:
     """Materialize an authored rule as an editable, identity-preserving value map."""
-    _check_axis_budget("values", _axis_size("values", axis, {}), max_axis_values)
+    _check_axis_budget("values", _axis_size("values", axis, {}, {}), max_axis_values)
     values = {}
     for choice in _choices("values", axis, {}, integer_site):
         value = AxisValue(

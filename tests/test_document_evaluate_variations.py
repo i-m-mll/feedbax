@@ -15,7 +15,7 @@ from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.expression_values import LiteralValue, NameValue, ValueBase, ValueType
 from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.model_address import ModelAddress
-from feedbax.contracts.model_edit import EvaluateAttachmentRequest
+from feedbax.contracts.model_edit import ModelEditRequest
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.objective_document import ObjectiveTerm
 from feedbax.contracts.project import Project
@@ -23,7 +23,6 @@ from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.rollout import ResolvedRolloutBinding, RolloutParameters
 from feedbax.contracts.semantic_values import semantic_key
-from feedbax.contracts.studio_project import StudioProjectPatchBatch
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.contracts.task_document import Cell, Signal
 from feedbax.jobs import JobService
@@ -32,11 +31,6 @@ from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.studio.canonical_evaluate import CannotRun
 from feedbax.training.method_checkpoint import read_method_checkpoint
 from feedbax.training.evaluation_variant import resolve_evaluation_variant, validate_evaluation_source
-from feedbax.web.services.evaluate_attachment import (
-    EvaluateAttachmentRefused,
-    prepare_evaluate_attachment,
-    read_evaluate_attachments,
-)
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import read_settled_project_plan
 from tests.test_canonical_evaluate_admission import _save_project
@@ -79,24 +73,17 @@ def test_saved_addressed_condition_restores_document_train_model(host, tmp_path,
     assert previous[baseline] == previous[condition]
 
     owner = _attachment_owner("read")
-    selection = {
-        "run": {"step": "condition", "row": "default", "variant": "default"},
-        "scope": {"kind": "rows", "rows": ["default"]},
-    }
-    invalid = EvaluateAttachmentRequest.model_validate(
-        selection
-        | {
-            "revision": original.revision,
-            "difference": _add_attachment(owner, "invalid", "missing"),
-        }
-    )
-    with pytest.raises(
-        EvaluateAttachmentRefused, match="anchor 'missing' no longer exists"
-    ) as refused:
-        prepare_evaluate_attachment(folders, project, invalid, registry.components)
-    assert refused.value.problem.address == invalid.difference.address
 
-    differences = (
+    def edit(difference):
+        snapshot = folders.read(project)
+        return folders.edit_model(project, ModelEditRequest.model_validate({
+            "revision": snapshot.revision, "presentation_revision": snapshot.presentation_revision,
+            "document": "reach-model", "step": "condition", "rows": ["default"],
+            "command": {"operation": {"op": "set_attachment", "difference": difference}},
+        }), registry.components).result
+
+    assert edit(_add_attachment(owner, "invalid", "missing")).status == "refused"
+    for difference in (
         _add_attachment(owner, "add", "retain", 0.4),
         {
             "op": "change",
@@ -104,26 +91,10 @@ def test_saved_addressed_condition_restores_document_train_model(host, tmp_path,
             "attachment": _scale_attachment("retain", 0.6),
         },
         {"op": "remove", "address": _attachment_address(owner, "remove")},
-    )
-    plan = original
-    for difference in differences:
-        request = EvaluateAttachmentRequest.model_validate(
-            selection
-            | {
-                "revision": plan.revision,
-                "difference": difference,
-            }
-        )
-        edit = prepare_evaluate_attachment(folders, project, request, registry.components)
-        assert edit.changed == request.difference.address
-        folders.patch(project, StudioProjectPatchBatch(revision=plan.revision, files=[edit.file]))
-        plan = folders.read_plan(project, revision=None)
-
-    saved = read_evaluate_attachments(
-        folders, project, request.model_copy(update={"revision": plan.revision})
-    )
-    assert saved.records == saved.effective
-    assert [item.op for item in saved.records] == ["add", "change", "remove"]
+    ):
+        applied = edit(difference)
+        assert applied.status == "applied", applied
+    plan = folders.read_plan(project, revision=None)
     assert folders.read(project).project.documents == Project.model_validate(raw).documents
     current = {run.key: run.request_id for run in plan.plan.runs}
     assert current.keys() == previous.keys()
@@ -417,6 +388,25 @@ def test_saved_evaluate_refuses_undeclared_subject_owner(host, tmp_path, authore
     assert [(run.key, run.request_id) for run in restored.runs] == [
         (run.key, run.request_id) for run in initial.runs
     ]
+
+
+def test_a_model_document_that_changes_the_trained_clock_is_refused_at_its_field(tmp_path, authored):  # noqa: F811
+    raw = document_project(authored, evaluation=True)
+    step = raw["documents"]["reach-model"]["payload"]["step_seconds"] * 3
+    raw["documents"]["slow-model"] = {
+        "schema": raw["documents"]["reach-model"]["schema"], "base": {"document": "reach-model"},
+        "differences": {"/step_seconds": {"value": step}},
+    }
+    raw["steps"]["baseline"]["base"]["inline"]["trial_documents"] = {"model": {"document": "slow-model"}}
+    folders = ProjectFolderService(tmp_path / "projects")
+    _save_project(folders, "slow-clock", Project.model_validate(raw))
+    (problem,) = folders.read_plan("slow-clock", revision=None).plan.diagnostics
+    assert problem.step == "baseline"
+    assert problem.detail == "This Model field changes the trained graph interface or clock"
+    assert problem.path == "/step_seconds"
+    assert problem.model_address == ModelAddress.model_validate({
+        "composites": [], "element": {"kind": "field", "parent": {"kind": "graph"}, "path": ["step_seconds"]},
+    })
 
 
 def _curl_addition():

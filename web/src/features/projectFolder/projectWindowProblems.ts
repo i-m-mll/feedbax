@@ -1,6 +1,8 @@
 import type { StudioPlace } from '@/components/activity/studioVocabulary';
 import type { JsonValue, StudioProjectFilePatch, StudioProjectWindowMapProblem } from '@/generated/studioContracts';
-import { authoredMember, authoredPointerParts, removeAuthoredMember, type AuthoredProject } from './authoredEdits';
+import {
+  authoredMember, authoredPointer, authoredPointerParts, removeAuthoredMember, type AuthoredProject,
+} from './authoredEdits';
 
 const authoredGraphVariation = 'authored_graph_variation';
 
@@ -78,7 +80,8 @@ export function placeView(place: StudioPlace | null): RevealView {
 export function placeField(place: StudioPlace | null): { target?: string } | null {
   switch (place?.part) {
     case 'training': return place.setting ? { target: `/training_config/${place.setting}` } : {};
-    case 'method': return { target: '/method' };
+    // The inspector names each top-level setting's row; a nested setting is revealed at the row that holds it.
+    case 'method': return { target: place.setting ? authoredPointer(['settings', place.setting.split('.')[0]]) : '/method' };
     case 'step': return place.field ? { target: `/${place.field}` } : null;
     default: return null;
   }

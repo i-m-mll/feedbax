@@ -9,6 +9,7 @@ import {
   studioFormat,
   studioFormatParts,
   studioName,
+  studioRunReason,
   studioRunStatus,
   type StudioResultState,
 } from '@/components/activity/studioVocabulary';
@@ -31,12 +32,23 @@ import {
   type MarkCell,
   type RunMark,
 } from './pipelineMapLayout';
-import { CommandContextMenu, type RunMenu } from './CommandContextMenu';
+import { CommandContextMenu, CommandMenuItems, type RunMenu } from './CommandContextMenu';
+import type { DocumentPickerModel } from '@/features/projectWindow/DocumentPicker';
+import { useCommandSource } from '@/features/projectWindow/heldGestures';
+import type { StudioCommand } from '@/features/projectWindow/studioCommands';
 import { Button } from '@/components/ui/Button';
 import { Menu, MenuContent, MenuItem, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuTrigger } from '@/components/ui/Menu';
 import { ScrollFade } from '@/components/ui/ScrollFade';
 
 export type ApplyMapSelection = (change: (state: PipelineSelectionState) => PipelineSelectionState) => void;
+
+/** What a step's authored axis offers: the set it reads, as a document picker, and the commands that take the axis. */
+export type AxisMenu = (stepId: string, axis: string) => {
+  readonly picker?: DocumentPickerModel;
+  readonly commands: readonly StudioCommand[];
+  /** Why the axis's last command was refused. */
+  readonly refusal?: string;
+};
 
 type Place = 'rows' | 'columns' | 'folded';
 const placeFormat = { rows: 'mapRowsAxis', columns: 'mapColumnsAxis', folded: 'mapFoldedSweep' } as const;
@@ -52,7 +64,9 @@ function MapAxisLabel({
   placeAt,
   dragging,
   exchange,
+  axisMenu,
 }: {
+  axisMenu?: AxisMenu;
   sweep: PlanSweepView;
   place: Place;
   step: PlanStepView;
@@ -72,6 +86,9 @@ function MapAxisLabel({
     ? selection.terms.find(({ sweepId }) => sweepId === sweep.id)?.valueIds : []);
   // A key's modifiers do not reach the click a menu item synthesizes from it.
   const extendByKey = useRef(false);
+  const authored = axisMenu?.(step.id, sweep.id);
+  useCommandSource(axisMenu && (() => axisMenu(step.id, sweep.id)));
+  const picker = authored?.picker;
   function drop(event: DragEvent) {
     const from = dragging.current;
     if (!from || !exchange) return;
@@ -90,7 +107,9 @@ function MapAxisLabel({
           className={clsx('studio-map-axis !shrink aria-expanded:bg-shell-selected', folded && '![flex-shrink:1000000]')}
           data-place={place}
           aria-label={studioAccessibleName('sweep', `${sweep.label} ${count}`)}
-          {...appTip(studioAccessibleName('sweep', `${sweep.label} ${count}`))}
+          aria-description={authored?.refusal}
+          {...appTip(authored?.refusal ? studioRunReason({ reason: authored.refusal })
+            : studioAccessibleName('sweep', `${sweep.label} ${count}`))}
           draggable={Boolean(exchange)}
           onDragStart={(event) => {
             dragging.current = sweep.id;
@@ -106,6 +125,7 @@ function MapAxisLabel({
             <span className="truncate">{sweep.label}</span>
             <span>{parts.slice(nameAt + 1)}</span>
           </span>
+          {authored?.refusal && <StatusMark status="cannot_run" label={studioRunStatus('cannot_run')} />}
         </Button>
       } />
       <MenuContent aria-label={studioAccessibleName('sweep', sweep.label)}>
@@ -123,6 +143,21 @@ function MapAxisLabel({
             </MenuItem>
           ))}
         </ScrollFade>
+        {picker && <>
+          <MenuSeparator />
+          <MenuRadioGroup value={picker.document}
+            onValueChange={(next: string) => { if (next !== picker.document) picker.choose?.(next); }}>
+            {picker.documents.map(({ key, name, depth }) => <MenuRadioItem key={key} value={key} disabled={!picker.choose}>
+              <span style={depth ? { paddingInlineStart: `${depth}rem` } : undefined}>{name}</span>
+            </MenuRadioItem>)}
+          </MenuRadioGroup>
+          <MenuItem disabled={!picker.duplicate} onClick={() => { void picker.duplicate?.(); }}>{studioName('duplicate')}</MenuItem>
+          {picker.detach && <MenuItem onClick={picker.detach}>{studioName('detach')}</MenuItem>}
+        </>}
+        {!!authored?.commands.length && <>
+          <MenuSeparator />
+          <CommandMenuItems commands={() => authored.commands} />
+        </>}
         {placeAt && <>
           <MenuSeparator />
           <MenuRadioGroup value={folded ? '' : place}
@@ -192,7 +227,13 @@ function MarkButton({
     : null;
   const name = [label, status, share].filter(Boolean).join(' · ');
   const shaped = size.id === 'full' && statuses.length === 1;
-  return <CommandContextMenu commands={runMenu && ((anchor) => runMenu(runs, anchor))} trigger={
+  const chooseFirst = () => {
+    if (selectedCount === runs.length) return;
+    if (mark.kind === 'run') applySelection((state) => selectRun(state, { stepId, runId: mark.run.id }));
+    else if (mark.terms) applySelection(() => selectSweepGroup(stepId, mark.terms!));
+    else applySelection(() => ({ selection: { kind: 'rows', stepId, runIds: runs.map(({ id }) => id) }, focus: null }));
+  };
+  return <CommandContextMenu onOpen={chooseFirst} commands={runMenu && ((anchor) => runMenu(runs, anchor))} trigger={
     <Button
       variant="bare"
       size="content"
@@ -274,8 +315,10 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
   downstream,
   applySelection,
   runMenu,
+  axisMenu,
   arrange,
 }: {
+  axisMenu?: AxisMenu;
   step: PlanStepView;
   sweeps: readonly PlanSweepView[];
   selection: PipelineSelection | null;
@@ -331,7 +374,7 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
     : undefined;
   const label = (sweep: PlanSweepView, place: Place) => (
     <MapAxisLabel key={sweep.id} sweep={sweep} place={place} step={step} selection={selection}
-      applySelection={applySelection} dragging={dragging} exchange={exchange}
+      applySelection={applySelection} dragging={dragging} exchange={exchange} axisMenu={axisMenu}
       placeAt={exchange && rows && columns ? (target) => exchange(sweep.id, (target === 'rows' ? rows : columns).id) : undefined} />
   );
   return (

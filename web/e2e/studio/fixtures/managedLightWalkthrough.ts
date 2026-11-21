@@ -74,7 +74,8 @@ export async function verifyWalkthroughVariant(context: Walkthrough, plantId: st
     const current = [
       ...value.rows.filter(({ key }) => key.variant === name).map(({ result }) => result),
       ...window.evaluations!.filter(({ key }) => key.variant === name).map(({ result }) => result),
-      ...window.analysis_elements!.filter(({ key }) => key.variant === name).map(({ result }) => result),
+      ...window.analysis_elements!.filter(({ key }) => key.variant === name)
+        .flatMap(({ requests }) => requests.map(({ result }) => result)),
       ...window.rows.filter(({ key }) => key.variant === name && key.step === 'report').map(({ light }) => light?.result),
     ];
     return {

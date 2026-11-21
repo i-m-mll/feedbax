@@ -97,7 +97,8 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
             window = expect(client.get(f"{path}/train-runs", params={
                 "revision": rev, "window_map": True,
             })).json()["window_map"]
-            elements = {element["name"]: element for element in window["analysis_elements"]}
+            elements = {element["name"]: request for element in window["analysis_elements"]
+                        for request in element["requests"]}
             (report,) = (row for row in window["rows"] if row["key"]["step"] == "report")
             return elements, report
 
@@ -273,7 +274,9 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
             return jobs if len(jobs) == 7 and all(job["outcome"] is not None for job in jobs) else None
 
         jobs = wait_until(terminal)
-        assert all(job["state"] == "succeeded" for job in jobs), jobs
+        assert all(job["state"] == "succeeded" for job in jobs), [
+            job["outcome"] for job in jobs if job["state"] != "succeeded"
+        ]
 
     by_request = {job["request"]: job for job in jobs}
     store = ImmutableArtifactBlobProvider(projects / project / "results")
@@ -307,29 +310,27 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
             source_attrs.append(data.descriptor.attrs)
     assert len(set(conditions)) == 2
     np.testing.assert_array_equal(*times)
-    provenance = {
-        key: {name: attrs[name] for name in (
-            "effective_graph_sha256", "effective_task_sha256", "variation_sha256",
-        ) if name in attrs}
-        for key, attrs in zip(order, source_attrs, strict=True)
+    varied = {
+        name: [attrs.get(name) for attrs in source_attrs]
+        for name in ("effective_graph_sha256", "effective_task_sha256", "variation_sha256")
+        if len({attrs.get(name) for attrs in source_attrs}) > 1
     }
-    with open_stored_dataset(store, dataset_member(aligned.products["velocity"][0])) as data:
-        assert data.data("condition").tolist() == conditions
-        assert data.data("member").tolist() == list(order)
-        assert data.data("trial").tolist() == _TRIALS
-        np.testing.assert_array_equal(data.data("state_time"), times[0])
-        assert data.descriptor.attrs["condition_provenance"] == provenance
+    assert varied
     summary = plan.elements[ElementKey(analyze, "summarize")]
     summary_ref, summarized = proof(summary.request_id)
     assert summarized.inputs["velocity"][0].selection.receipt == align_ref
+    for product, element in ((aligned, "velocity"), (summarized, "summary")):
+        with open_stored_dataset(store, dataset_member(product.products[element][0])) as data:
+            assert data.data("mass").tolist() == data.data("member").tolist() == list(order)
+            assert summary.names["source"][data.data("source").item()].key == "conditions"
+            assert data.data("condition").tolist() == [[condition] for condition in conditions]
+            np.testing.assert_array_equal(data.data("state_time"), times[0])
+            assert {name: data.data(name).tolist() for name in varied} == varied
     with open_stored_dataset(store, dataset_member(summarized.products["summary"][0])) as data:
-        assert data.data("member").tolist() == list(order)
-        assert data.data("condition").tolist() == conditions
-        assert data.descriptor.attrs["condition_provenance"] == provenance
         mean = np.asarray(data.data("mean")).copy()
         assert np.all(data.data("count") == len(_TRIALS))
-    assert mean.shape == (1, 2, len(times[0]))
-    assert not np.allclose(mean[0, 0], mean[0, 1])
+    assert mean.shape == (2, 1, 1, len(times[0]))
+    assert not np.allclose(mean[0], mean[1])
 
     def array(values):
         if isinstance(values, dict):
@@ -343,7 +344,7 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
         assert [edge["from_key"] for edge in window["edges"] if edge["to_key"] == address("analyze")] == [
             address("conditions", rows[key]) for key in order
         ]
-        (profile,) = (element for element in window["analysis_elements"] if element["name"] == "profile")
+        (profile,) = (element["requests"][0] for element in window["analysis_elements"] if element["name"] == "profile")
         figure_ref, rendered_figure = proof(profile["request_id"])
         assert rendered_figure.inputs["summary"][0].selection.receipt == summary_ref
         figure = reopened.get(profile["result"]["products"]["figure"])
@@ -352,7 +353,7 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
         assert [trace["name"] for trace in traces] == conditions
         for index, trace in enumerate(traces):
             np.testing.assert_allclose(array(trace["x"]), times[0])
-            np.testing.assert_allclose(array(trace["y"]), mean[0, index])
+            np.testing.assert_allclose(array(trace["y"]), mean[index, 0, 0])
         (report,) = (row for row in window["rows"] if row["key"]["step"] == "report")
         _, published_report = proof(request_ids[RunKey("default", "report", "default")])
         assert published_report.inputs["velocity_summary"][0].selection.receipt == figure_ref

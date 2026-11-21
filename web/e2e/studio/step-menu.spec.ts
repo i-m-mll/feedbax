@@ -7,9 +7,9 @@ test.use({ viewport: { width: 1440, height: 900 } });
 
 const menu = (page: Page) => page.getByRole('menu');
 
-/** The step menu lists Rename Step and Duplicate Step, with Rename's key at the right. */
+/** The step menu lists Rename Step, Change Key and Duplicate Step, with Rename's key at the right. */
 async function expectStepMenu(page: Page) {
-  await expect(menu(page).getByRole('menuitem')).toHaveText(['Rename StepF2', 'Duplicate Step']);
+  await expect(menu(page).getByRole('menuitem')).toHaveText(['Rename StepF2', 'Change Key', 'Duplicate Step']);
 }
 
 test('a step\'s context menu opens on its card, its drawer row and its name in Runs, and acts on that step', async ({ page, request, studio }) => {
@@ -50,8 +50,9 @@ test('a step\'s context menu opens on its card, its drawer row and its name in R
   await renames(cardRename, mapStep(page, 'train'));
 
   await card.locator('[data-result-run]').first().click({ button: 'right' });
-  await expect(menu(page).getByRole('menuitem')).toHaveText(['Check', 'Accept']);
+  await expect(menu(page).getByRole('menuitem')).toHaveText(['Check', 'Accept', 'Duplicate Run']);
   await page.keyboard.press('Escape');
+  await expect(menu(page)).toHaveCount(0);
 
   await page.locator('[data-map-canvas]').click({ button: 'right', position: { x: 8, y: 8 } });
   await expect(menu(page).locator('[data-step-insert]').first()).toBeVisible();

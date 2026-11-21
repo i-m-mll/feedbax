@@ -76,7 +76,8 @@ def producer_member_key(variant: str, row: str, *, gathers_variants: bool) -> st
 
 
 class SelectionTerms(StrictModel):
-    axes: dict[ProjectName, list[ProjectName]] = Field(default_factory=dict)
+    axes: dict[ProjectName, list[Name]] = Field(default_factory=dict)
+    """Each axis's value IDs: a value's name, or an input axis's member key (``train/rank-1``)."""
     best: Best | None = None
     when: When | None = None
 
@@ -264,4 +265,4 @@ class OmittedReference(StrictModel):
 
 
 type Reference = StepReference | RunReference | StoreSubset | NamedSubset | OmittedReference | DocumentInputReference
-type InputBinding = Reference | list[Reference] | dict[ProjectName, Reference]
+type InputBinding = Reference | list[StepReference]

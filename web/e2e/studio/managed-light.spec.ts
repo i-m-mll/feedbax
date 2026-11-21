@@ -223,7 +223,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   await edit(() => number(page, boundsScale, '1.5'));
   const beforeRefusal = await edit(() => number(page, inspector.getByRole('textbox', { name: 'Ddof', exact: true }), '0'));
   const refusal = page.waitForResponse((response) => new URL(response.url()).pathname === reviewPath &&
-    Boolean(response.request().postDataJSON()?.wire));
+    response.request().postDataJSON()?.change?.kind === 'wire');
   await tabTo(page, roleField('Velocity'));
   await page.keyboard.press('ArrowDown');
   // The popup's search field takes focus after it opens; keys typed before then are lost.
@@ -259,7 +259,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   const original = await plan(wired.revision);
   const requests = (projection: typeof original) => Object.fromEntries(
     projection.analysis_elements!.filter(({ key }) => key.variant === scope && key.step === 'analyze')
-      .map(({ name, request_id }) => [name, request_id]),
+      .map(({ name, requests: [{ request_id }] }) => [name, request_id]),
   );
   expect(Object.keys(requests(original)).sort()).toEqual(['aligned_velocity', 'summarize_velocity', 'velocity_summary']);
   expect(original.problems.filter(({ step }) => step === 'analyze')).toEqual([]);
@@ -294,10 +294,14 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
 
   function light(projection: StudioProjectWindowMap) {
     const elements = projection.analysis_elements!.filter(({ key }) => key.variant === scope);
+    const element = (name: string) => {
+      const found = elements.find((item) => item.name === name)!;
+      return { ...found, ...found.requests[0] };
+    };
     return {
-      aligned: elements.find(({ name }) => name === 'aligned_velocity')!,
-      summary: elements.find(({ name }) => name === 'summarize_velocity')!,
-      figure: elements.find(({ name }) => name === 'velocity_summary')!,
+      aligned: element('aligned_velocity'),
+      summary: element('summarize_velocity'),
+      figure: element('velocity_summary'),
       report: projection.rows.find(({ key }) => key.variant === scope && key.step === 'report')!,
     };
   }

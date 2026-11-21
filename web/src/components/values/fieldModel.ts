@@ -64,6 +64,8 @@ export interface FieldMembers {
  */
 export interface FieldModel {
   readonly id: string;
+  /** The value's path in the schema of the form that draws it, when a form built it from a schema. */
+  readonly path?: readonly string[];
   readonly label: string;
   readonly type: FieldType;
   readonly unit?: string;

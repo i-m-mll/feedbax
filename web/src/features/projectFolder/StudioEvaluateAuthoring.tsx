@@ -11,7 +11,8 @@ import { ReferenceField, type ReferenceChoice } from '@/components/values/Refere
 import type { PlanStepView } from '@/features/pipeline/planView';
 import type { ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import {
-  BestSchema, type Best, type ProjectValueEdit, type SelectedRow, type Step, type SubsetTerms,
+  BestSchema, type Best, type InputBinding, type ProjectValueEdit, type SelectedRow, type Step, type StepReference,
+  type SubsetTerms,
 } from '@/generated/studioContracts';
 import type { AuthoredProject } from './authoredEdits';
 import {
@@ -23,12 +24,14 @@ import {
 } from './referenceChoices';
 import { documentsOfRole } from './useProjectDocuments';
 import { savedRunId } from './projectWindowPlan';
+import { InputSelections } from './InputSelections';
+import { bindingEdit, changedSelections, stepSelections, subjectAxisEdits } from './selectionEdits';
 import { ScrollFade } from '@/components/ui/ScrollFade';
 
 type Choice = { id: string; label: string };
 
-/** The Evaluate fields an edit can be refused on. */
-export type EvaluateField = 'subject' | 'checkpoints' | 'subset' | 'trialSet';
+/** The Evaluate fields an edit can be refused on; a subset is named by its selection's index. */
+export type EvaluateField = 'subject' | 'checkpoints' | `subset.${number}` | 'trialSet';
 
 export function CheckpointRuleEditor({ initial, disabled, readOnly, refusal, onSave, onToSweep }: {
   initial: EditableCheckpointRule;
@@ -119,7 +122,7 @@ function BestEditor({ rule, sweeps, disabled, onChange }: {
   </div>;
 }
 
-function TrialSetEditor({ initial, domain, disabled, refusal, onSave }: {
+export function TrialSetEditor({ initial, domain, disabled, refusal, onSave }: {
   initial: TrialSet; domain: TrialDomain; disabled: boolean; refusal?: string; onSave(rule: TrialSet): void;
 }) {
   const [rule, setRule] = useDraft(initial);
@@ -163,20 +166,19 @@ function TrialSetEditor({ initial, domain, disabled, refusal, onSave }: {
   </fieldset>;
 }
 
-export function StudioEvaluateAuthoring({
-  authored, source, sourceRows, domain, disabled, editSubject, refusals, onEdit, onToRows,
-}: {
-  authored: { terms: SubsetTerms; trialSet: TrialSet; hasWhere: boolean };
+/** A Train selection's restriction: its rows, its sweep values, and Best, written at `where`. */
+export function SubjectSubset({ terms, where, hasWhere, source, sourceRows, disabled, refusal, onEdit, onToRows }: {
+  terms: SubsetTerms;
+  /** The pointer of the selection's `where`. */
+  where: string;
+  hasWhere: boolean;
   source: PlanStepView;
   sourceRows: readonly SelectedRow[];
-  domain: TrialDomain | undefined;
   disabled: boolean;
-  editSubject: boolean;
-  refusals: { subset?: string; trialSet?: string };
-  onEdit(field: 'subset' | 'trialSet', name: string, edit: ProjectValueEdit): void;
+  refusal?: string;
+  onEdit(name: string, edit: ProjectValueEdit): void;
   onToRows?(): void;
 }) {
-  const { terms, trialSet } = authored;
   const [draft, setDraft] = useDraft(terms);
   const changed = JSON.stringify(draft) !== JSON.stringify(terms);
   const best = draft.best ? BestSchema.safeParse({ ...draft.best, by: draft.best.by.trim() }) : undefined;
@@ -202,38 +204,34 @@ export function StudioEvaluateAuthoring({
     setDraft({ ...draft, rows });
   }
   const sweeps = editRows ? source.sweeps.filter(({ id }) => terms.axes?.[id] !== undefined) : source.sweeps;
-  return <div className="grid gap-3">
-    {editSubject && <fieldset className="grid gap-1" disabled={disabled}>
-      <legend className="font-semibold">{studioName('subjectSubset')}</legend>
-      {editRows && rows.length > 0 && <Checkboxes options={rows} selected={selectedRows} disabled={disabled} onToggle={toggleRow} />}
-      {sweeps.map(({ id, label, values }) => {
-        const selected = draft.axes?.[id] ?? values.map((value) => value.id);
-        return <fieldset key={id}>
-          <legend>{label}</legend>
-          <Checkboxes options={values} selected={selected} disabled={disabled}
-            onToggle={(valueId, checked) => setDraft({
-              ...draft, axes: { ...draft.axes, [id]: toggle(selected, valueId, checked) },
-            })} />
-        </fieldset>;
-      })}
-      <Checkbox label={studioName('best')} checked={draft.best != null} disabled={disabled} onCheckedChange={(checked) => {
-        const { best: _best, ...staticTerms } = draft;
-        setDraft(checked ? { ...staticTerms, best: { by: '', k: 1, order: 'min' } } : staticTerms);
-      }} />
-      {draft.best && <BestEditor rule={draft.best} sweeps={source.sweeps} disabled={disabled}
-        onChange={(rule) => setDraft({ ...draft, best: rule })} />}
-      <Button className="justify-self-start" disabled={disabled || !canApplySubject || !uniqueRows}
-        onClick={() => onEdit('subset', studioName('applySubset'), {
-          op: authored.hasWhere ? 'replace' : 'add', path: '/inputs/subject/where',
-          value: { ...draft, ...(best?.success && { best: best.data }) },
-        })}>{studioName('applySubset')}</Button>
-      {onToRows && <Button className="justify-self-start" disabled={disabled || changed} onClick={onToRows}>{studioName('toRows')}</Button>}
-      {changed && !hasMembers && <p role="status">{studioReason('emptySelection', studioName('runs'))}</p>}
-      {refusals.subset && <p role="alert">{refusals.subset}</p>}
-    </fieldset>}
-    {domain && <TrialSetEditor initial={trialSet} domain={domain} disabled={disabled} refusal={refusals.trialSet}
-      onSave={(rule) => onEdit('trialSet', studioName('applyTrials'), { op: 'replace', path: '/base/inline/params/trial_set', value: rule })} />}
-  </div>;
+  return <fieldset className="grid gap-1" disabled={disabled}>
+    <legend className="font-semibold">{studioName('subjectSubset')}</legend>
+    {editRows && rows.length > 0 && <Checkboxes options={rows} selected={selectedRows} disabled={disabled} onToggle={toggleRow} />}
+    {sweeps.map(({ id, label, values }) => {
+      const selected = draft.axes?.[id] ?? values.map((value) => value.id);
+      return <fieldset key={id}>
+        <legend>{label}</legend>
+        <Checkboxes options={values} selected={selected} disabled={disabled}
+          onToggle={(valueId, checked) => setDraft({
+            ...draft, axes: { ...draft.axes, [id]: toggle(selected, valueId, checked) },
+          })} />
+      </fieldset>;
+    })}
+    <Checkbox label={studioName('best')} checked={draft.best != null} disabled={disabled} onCheckedChange={(checked) => {
+      const { best: _best, ...staticTerms } = draft;
+      setDraft(checked ? { ...staticTerms, best: { by: '', k: 1, order: 'min' } } : staticTerms);
+    }} />
+    {draft.best && <BestEditor rule={draft.best} sweeps={source.sweeps} disabled={disabled}
+      onChange={(rule) => setDraft({ ...draft, best: rule })} />}
+    <Button className="justify-self-start" disabled={disabled || !canApplySubject || !uniqueRows}
+      onClick={() => onEdit(studioName('applySubset'), {
+        op: hasWhere ? 'replace' : 'add', path: where,
+        value: { ...draft, ...(best?.success && { best: best.data }) },
+      })}>{studioName('applySubset')}</Button>
+    {onToRows && <Button className="justify-self-start" disabled={disabled || changed} onClick={onToRows}>{studioName('toRows')}</Button>}
+    {changed && !hasMembers && <p role="status">{studioReason('emptySelection', studioName('runs'))}</p>}
+    {refusal && <p role="alert">{refusal}</p>}
+  </fieldset>;
 }
 
 /**
@@ -241,13 +239,13 @@ export function StudioEvaluateAuthoring({
  * initial Model document or a Train step's checkpoint; a checkpoint subject reads its Task and Objective from its
  * Train step.
  */
-export function EvaluateSubjectFields({ step, project, trains, picking, subset, refusal, onEdit }: {
+export function EvaluateSubjectFields({ step, project, trains, picking, selection, refusal, onEdit }: {
   step: Step;
   project: AuthoredProject;
   trains: readonly PlanStepView[];
   picking: ElementSelectionStore;
-  /** The subject's subset, under its field. */
-  subset?: ReactNode;
+  /** A Train selection's restriction, and why the plan refuses it. */
+  selection?: (index: number, reference: StepReference) => { detail?: ReactNode; problem?: string };
   /** Why the last edit of the subject was refused. */
   refusal?: string;
   onEdit?: (name: string, edits: ProjectValueEdit[], documents: readonly string[]) => void;
@@ -268,9 +266,46 @@ export function EvaluateSubjectFields({ step, project, trains, picking, subset, 
     };
   };
   const name = studioName('subject');
-  const value: ReferenceChoice | null = subject?.kind === 'document' ? documentChoice('model', subject.document)
-    : subject ? trains.find(({ id }) => id === subject.step) ? stepChoice(trains.find(({ id }) => id === subject.step)!)
-      : { id: stepChoiceId(subject.step), label: subject.step } : null;
+  const trainChoice = (id: string): ReferenceChoice => {
+    const train = trains.find((train) => train.id === id);
+    return train ? stepChoice(train) : { id: stepChoiceId(id), label: id };
+  };
+  const trainOf = (choice: ReferenceChoice) => trains.find(({ id }) => stepChoiceId(id) === choice.id);
+  const toDocument = (choice: ReferenceChoice, current: string | undefined) => {
+    if (choice.id !== documentChoiceId(choice.label)) return;
+    choose(name, subject?.kind === 'document' ? { ...subject, document: choice.label }
+      : { kind: 'document', document: choice.label, ...fromTrain(current) });
+  };
+  const subjectId = `${labels}-subject`;
+  if (subject?.kind === 'steps') {
+    const { selections } = subject;
+    const change = (next: InputBinding) => {
+      const reads = stepSelections(next)?.map(({ step }) => step) ?? [];
+      const fans = (stepSelections(next)?.length ?? 0) > 1;
+      onEdit?.(name, [bindingEdit(step.inputs, 'subject', next), ...fans ? subjectAxisEdits(step) : []], [...new Set(reads)]);
+    };
+    return <InputSelections label={name} labelId={subjectId} picking={picking} refusal={refusal}
+      groups={[stepGroup(trains)]}
+      rows={selections.map((reference, index) => ({
+        value: trainChoice(reference.step),
+        ...selections.length === 1 && { groups: [documentGroup(project, 'model'), stepGroup(trains)] },
+        ...selection?.(index, reference),
+      }))}
+      onChange={onEdit && ((gesture) => {
+        if (gesture.kind === 'remove') return change(changedSelections(selections, gesture));
+        const train = trainOf(gesture.choice);
+        if (gesture.kind === 'add') {
+          if (train) change(changedSelections(selections, {
+            kind: 'add', reference: { step: train.id, checkpoint: selections[0].checkpoint ?? 'last' },
+          }));
+        } else if (!train) toDocument(gesture.choice, selections[0].step);
+        else if (selections.length === 1) choose(name, { kind: 'step', step: train.id });
+        else if (train.id !== selections[gesture.index].step) {
+          change(changedSelections(selections, { kind: 'replace', index: gesture.index, reference: { step: train.id } }));
+        }
+      })} />;
+  }
+  const value: ReferenceChoice | null = subject?.kind === 'document' ? documentChoice('model', subject.document) : null;
   const role = (kind: 'task' | 'objective') => subject?.kind === 'document' && <FieldRow label={studioName(kind)}
     labelId={`${labels}-${kind}`}>
     <ReferenceField label={studioName(kind)} aria-labelledby={`${labels}-${kind}`}
@@ -279,17 +314,13 @@ export function EvaluateSubjectFields({ step, project, trains, picking, subset, 
       onChoose={onEdit && ((choice) => choose(studioName(kind), { ...subject, [kind]: choice.label }))} />
   </FieldRow>;
   return <>
-    <FieldRow label={name} labelId={`${labels}-subject`}
-      below={(refusal || subset) && <>{refusal && <p role="alert">{refusal}</p>}{subset}</>}>
-      <ReferenceField label={name} aria-labelledby={`${labels}-subject`} picking={picking} value={value}
+    <FieldRow label={name} labelId={subjectId} below={refusal && <p role="alert">{refusal}</p>}>
+      <ReferenceField label={name} aria-labelledby={subjectId} picking={picking} value={value}
         groups={[documentGroup(project, 'model'), stepGroup(trains)]}
         onChoose={onEdit && ((choice) => {
-          const train = trains.find(({ id }) => stepChoiceId(id) === choice.id);
+          const train = trainOf(choice);
           if (train) choose(name, { kind: 'step', step: train.id });
-          else if (choice.id === documentChoiceId(choice.label)) {
-            choose(name, subject?.kind === 'document' ? { ...subject, document: choice.label }
-              : { kind: 'document', document: choice.label, ...fromTrain(subject?.step) });
-          }
+          else toDocument(choice, undefined);
         })} />
     </FieldRow>
     {role('task')}
