@@ -5,6 +5,7 @@ from hashlib import sha256
 import re
 
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
 
 from feedbax.builtins.reaching import REACHING_TASK
@@ -364,6 +365,9 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
         assert reopened.get(f"{report_url.removesuffix('report.html')}{asset}").content == figure.content
 
 
+@pytest.mark.round(
+    "A real Train step and two saved Evaluate runs are authored as one Analyze input that names the step without a row."
+)
 def test_a_states_input_without_a_row_reads_every_saved_run_of_its_step(host, tmp_path, monkeypatch):
     """A hand-written `states: {step: conditions}` is authored over both saved mass rows, not refused as empty."""
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
