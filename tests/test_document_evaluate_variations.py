@@ -390,6 +390,25 @@ def test_saved_evaluate_refuses_undeclared_subject_owner(host, tmp_path, authore
     ]
 
 
+def test_a_model_document_that_changes_the_trained_clock_is_refused_at_its_field(tmp_path, authored):  # noqa: F811
+    raw = document_project(authored, evaluation=True)
+    step = raw["documents"]["reach-model"]["payload"]["step_seconds"] * 3
+    raw["documents"]["slow-model"] = {
+        "schema": raw["documents"]["reach-model"]["schema"], "base": {"document": "reach-model"},
+        "differences": {"/step_seconds": {"value": step}},
+    }
+    raw["steps"]["baseline"]["base"]["inline"]["trial_documents"] = {"model": {"document": "slow-model"}}
+    folders = ProjectFolderService(tmp_path / "projects")
+    _save_project(folders, "slow-clock", Project.model_validate(raw))
+    (problem,) = folders.read_plan("slow-clock", revision=None).plan.diagnostics
+    assert problem.step == "baseline"
+    assert problem.detail == "This Model field changes the trained graph interface or clock"
+    assert problem.path == "/step_seconds"
+    assert problem.model_address == ModelAddress.model_validate({
+        "composites": [], "element": {"kind": "field", "parent": {"kind": "graph"}, "path": ["step_seconds"]},
+    })
+
+
 def _curl_addition():
     return [
         {
