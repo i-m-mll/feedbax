@@ -1,5 +1,5 @@
 import { studioFormat, studioName, studioOpeningStage, studioOpeningStep } from '@/components/activity/studioVocabulary';
-import { runResultState, type PlanResultView, type PlanRunView, type PlanStepView, type PlanView } from '@/features/pipeline/planView';
+import { runResultState, shownName, type PlanResultView, type PlanRunView, type PlanStepView, type PlanView } from '@/features/pipeline/planView';
 import type {
   Project, SelectedRow, StudioSavedLightResult, StudioBestRankGroup, StudioBoundBestSubject, StudioProjectWindowMapCoordinate, StudioProjectWindowMapSubset, StudioSavedTrainRuns,
   SubsetTerms,
@@ -212,7 +212,7 @@ export function projectWindowPlan(
     }
     const runs = runsByStep.get(id) ?? [];
     return {
-      id, label: id, kind, group,
+      id, label: shownName(id, project.steps?.[id]), kind, group,
       documentIds: projected?.document_ids,
       documentUses: projected?.document_uses,
       inputs,

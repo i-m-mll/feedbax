@@ -70,7 +70,9 @@ export interface PlanInputView {
 }
 
 export interface PlanStepView {
+  /** The step's key. */
   readonly id: string;
+  /** The step's shown name, `shownName` of its key. */
   readonly label: string;
   readonly kind: "train" | "evaluate" | "analyze" | "report";
   readonly group?: string | null;
@@ -89,6 +91,11 @@ export interface PlanStepView {
 export interface PlanView {
   readonly steps: readonly PlanStepView[];
   readonly edges: readonly PlanRunEdge[];
+}
+
+/** What Studio calls a step, operation or figure: its label, or its key when it has none. */
+export function shownName(key: string, labelled?: { readonly label?: string | null } | null) {
+  return labelled?.label ?? key;
 }
 
 const settled = new Set<StudioRunStatusId>(["succeeded", "stale"]);

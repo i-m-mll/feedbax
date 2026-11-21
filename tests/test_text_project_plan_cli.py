@@ -271,7 +271,7 @@ def test_cli_review_matches_studio_authoring_and_detects_report_drift(
         line for line in capsys.readouterr().out.splitlines() if line.split()[1] != "unchanged"
     ]
     (change,) = changes
-    assert change.startswith("default/report/default changed(payload.blocks.0.markdown) report:")
+    assert change.startswith("report changed(payload.blocks.0.markdown) report:")
     assert "before=document:velocity-report/blocks/0/markdown" in change
     assert _files(root) == files
     assert not (root / "results").exists()
@@ -291,19 +291,19 @@ def test_saved_plan_keeps_figure_edges_and_reports_removed_requests(tmp_path, ca
     assert main(["plan", str(root), "--check", str(baseline)]) == 1
     lines = capsys.readouterr().out.splitlines()
     assert any(
-        "default/analyze/default/profile changed(payload.views.profile.figure.theme)" in line
+        "analyze/profile changed(payload.views.profile.figure.theme)" in line
         for line in lines
     )
     assert any(
-        line.startswith("default/report/default changed(inputs.velocity_summary)")
-        and line.endswith("upstream=default/analyze/default/profile")
+        line.startswith("report changed(inputs.velocity_summary)")
+        and line.endswith("upstream=analyze/profile")
         for line in lines
     )
 
     (root / "steps/report.json").unlink()
     del files["steps/report.json"]
     assert main([*plan, "--check", str(baseline)]) == 1
-    assert "default/report/default removed report:" in capsys.readouterr().out
+    assert "report removed report:" in capsys.readouterr().out
     assert baseline.read_bytes() == initial
     assert _files(root) == files
     assert not (root / "results").exists()
@@ -367,7 +367,7 @@ def test_cli_and_managed_plan_share_a_project_relative_figure_pin(tmp_path, caps
 
     _edit(root, files, "velocity-figure", pin)
     assert main(["plan", str(root / "steps"), "--check", str(baseline)]) == 0
-    assert "default/analyze/default/profile unchanged render:" in capsys.readouterr().out
+    assert "analyze/profile unchanged render:" in capsys.readouterr().out
     assert main(["plan", str(root), "--out", str(shared)]) == 2
     assert "review file overlaps an authored project file" in capsys.readouterr().err
     assert shared.read_bytes() == raw
@@ -380,7 +380,7 @@ def test_cli_and_managed_plan_share_a_project_relative_figure_pin(tmp_path, caps
     shared.write_bytes(b"{")
     assert main(["plan", str(root), "--check", str(baseline)]) == 2
     captured = capsys.readouterr()
-    assert "default/analyze/default/align unchanged analyze:" in captured.out
+    assert "analyze/align unchanged analyze:" in captured.out
     assert "documents/velocity-figure.json:payload.sha256" in captured.err
     assert f"[bad_external_content]: expected {digest}, got {sha256_bytes(b'{')}" in captured.err
     refused = folders.read_plan("reaching", revision=settled.revision)

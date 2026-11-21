@@ -13,6 +13,8 @@ import {
   StudioPipelineMap, StudioPipelineMapDrawer, type MapStepRename, type PipelineMapStepSource,
 } from '@/components/pipeline/StudioPipelineMap';
 import { isMemberName } from './projectMemberName';
+import { KeyField } from '@/components/ui/KeyField';
+import { stepElementName } from './analysisElements';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { useStepInsertMenu, type StepInsertion } from '@/components/pipeline/StepInsertMenu';
 import { InspectorRow, StudioRunControls, StudioRuns, StudioStepInspector, type RunMention } from '@/components/pipeline/StudioRuns';
@@ -217,6 +219,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const [rename, setRename] = useState<{ name: string; revision: string }>();
   const [busy, setBusy] = useState(false);
   const [renamingStep, setRenamingStep] = useState<MapStepRename['editing']>(null);
+  /** The step whose key the inspector is editing. */
+  const [keyingStep, setKeyingStep] = useState<string>();
   const [stepFocus, setStepFocus] = useState<MapStepRename['focus']>(null);
   const [panel, setPanel] = useState<WindowPanel | null>(null);
   useEffect(() => {
@@ -1163,7 +1167,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     }} />,
   } : undefined;
 
-  const stepNames = Object.keys(saved.project.steps ?? {});
   const mapSurface = windowState.mode === 'details' ? 'line' : 'card';
   const renameStep: MapStepRename | undefined = documentEditable ? {
     editing: renamingStep,
@@ -1172,18 +1175,27 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       setRenamingStep(next);
     },
     commit: (from, name) => {
-      if (!isMemberName(name) || stepNames.includes(name)) return false;
+      const label = name === from ? null : name;
+      if (label === (saved.project.steps?.[from]?.label ?? null)) return true;
       const surface = renamingStep?.surface ?? mapSurface;
       void perform(async () => {
         await editor.memberCommand(studioAccessibleName('renameStep', from),
-          { kind: 'change_key', family: 'steps', member: from, key: name }, editor.getSnapshot().saved);
-        selection.renameStep(from, name);
-        setStepFocus({ stepId: name, surface });
-      }, (reason) => ({ kind: 'step', step: from, reason }));
+          { kind: 'rename', family: 'steps', member: from, label }, editor.getSnapshot().saved);
+        setStepFocus({ stepId: from, surface });
+      }, refuseStep(from));
       return true;
     },
     focus: stepFocus,
     focused: () => setStepFocus(null),
+  } : undefined;
+  const changeStepKey = documentEditable ? (from: string, key: string) => {
+    if (!isMemberName(key)) return false;
+    void perform(async () => {
+      await editor.memberCommand(studioAccessibleName('changeKey', from),
+        { kind: 'change_key', family: 'steps', member: from, key }, editor.getSnapshot().saved);
+      selection.renameStep(from, key);
+    }, (reason) => ({ kind: 'key', step: from, reason }));
+    return true;
   } : undefined;
   const duplicateStep = documentEditable ? (from: string) => {
     void perform(async () => {
@@ -1201,6 +1213,11 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   /** The commands on a step: its context menu, and the palette's for the selected step. */
   const stepCommands: StepMenu = (target, startRename = () => setRenamingStep({ stepId: target.id, surface: mapSurface })) => [
     bindStudioCommand('renameStep', startRename, { subject: target.label, enabled: !!renameStep && !busy }),
+    bindStudioCommand('changeKey', () => {
+      selection.select(selectStep(state, target.id));
+      if (windowState.mode === 'map') setWindowState((current) => showProjectWindowView(current, 'runs', focusSlot));
+      setKeyingStep(target.id);
+    }, { subject: target.label, enabled: !!changeStepKey && !busy }),
     bindStudioCommand('duplicateStep', () => duplicateStep?.(target.id), { subject: target.label, enabled: !!duplicateStep && !busy }),
   ];
   const mapProps = {
@@ -1338,7 +1355,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             {reportChoices.figures.map((figure) => <Button variant="ghost" align="start"
               key={JSON.stringify([figure.key, figure.name])}
               onClick={() => chooseReportFigure(reportChoices.revision, figure)}>
-              {figure.name}{figure.key.row !== 'default' && ' · ' + figure.key.row}
+              {stepElementName(saved.project, saved.composed, figure.key.step, figure.name)}{figure.key.row !== 'default' && ' · ' + figure.key.row}
             </Button>)}
           </Dialog>}
           {insertMenu.menu}
@@ -1454,6 +1471,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                   onChange: (value) => setMachines((current) => ({ ...current, [step.id]: value })) })}
                 pivotCommand={pivot} pivotActive={pivotActive} reason={run && studioRunReason(run)} />,
               inspector: <StudioStepInspector plan={plan} step={step} state={state} onReveal={revealRunMention} stepMenu={stepCommands}
+                stepKey={<KeyField value={step.id} name={step.label} editing={keyingStep === step.id}
+                  onEditingChange={(editing) => setKeyingStep(editing ? step.id : undefined)}
+                  onCommit={(key) => changeStepKey?.(step.id, key)}
+                  refusal={refusal?.kind === 'key' && refusal.step === step.id ? refusal.reason : undefined} />}
                 onChooseStep={(stepId) => selection.select(selectStep(state, stepId))}
                 revealed={fieldReveal && { place: fieldReveal.place, detail: fieldReveal.reason, problem: fieldReveal.problem }}
                 upstreamDetail={checkpointLineage()}

@@ -202,10 +202,12 @@ export interface RunMention {
  * them, then under a hairline the rows of what attaches to the step (exceptions, inputs) and the steps the runs relate to.
  */
 export function StudioStepInspector({
-  plan, step, state, detail, fields, attachments, revealed, upstreamDetail, onReveal, onChooseStep, stepMenu,
+  plan, step, state, detail, fields, attachments, revealed, upstreamDetail, onReveal, onChooseStep, stepMenu, stepKey,
 }: Pick<RunSelectionProps, "step" | "state"> & {
   plan: PlanView;
   stepMenu?: StepMenu;
+  /** The step's key under its name. */
+  stepKey?: ReactNode;
   /** What a single chosen run's result adds to its reasons. */
   detail?: ReactNode;
   fields?: ReactNode;
@@ -264,6 +266,7 @@ export function StudioStepInspector({
         </li>)}
       </ul> : null}
     </div>
+    {stepKey}
     {validity.size > 0 && <ul aria-label={studioName("reason")} className="divide-y divide-shell-divider border-y border-shell-divider">
       {[...validity].map(([key, { state, rows: { title, changes } }]) => <li key={key} className="py-1 text-xs">
         <div className="flex min-h-row items-center gap-1.5">

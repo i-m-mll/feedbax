@@ -150,7 +150,7 @@ def _cli_request_id(root: Path) -> str:
     )
     assert cli.returncode == 0, cli.stderr
     address, request_id = cli.stdout.split()
-    assert address == "default/train/default"
+    assert address == "train"
     return request_id
 
 

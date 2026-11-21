@@ -41,6 +41,7 @@ from feedbax.contracts.project_plan_io import (
     select_plan_requests,
 )
 from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic
+from feedbax.contracts.project_sweep import DEFAULT_SWEEP_ROW
 from feedbax.contracts.result_address import AddressProblem, ResultAddress, ResultTarget, project_holders
 from feedbax.persistence.project_subject import terminal_train_reader
 
@@ -78,9 +79,13 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
 
 
 def _address(key: RunKey | ElementKey) -> str:
+    """The result's address as the commands take it: `card[/element][@row]`, then the variant when not the default."""
     run = run_key(key)
-    address = f"{run.variant}/{run.step}/{run.row}"
-    return f"{address}/{key.name}" if isinstance(key, ElementKey) else address
+    address = str(ResultTarget(
+        run.step, key.name if isinstance(key, ElementKey) else None,
+        None if run.row == DEFAULT_SWEEP_ROW else run.row,
+    ))
+    return address if run.variant == DEFAULT_SWEEP_ROW else f"{address} --variant {run.variant}"
 
 
 type _Targets = Mapping[str, tuple[ResultTarget, ...]] | None
