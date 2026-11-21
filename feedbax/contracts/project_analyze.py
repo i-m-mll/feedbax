@@ -28,6 +28,8 @@ from feedbax.contracts.figure_document import (
     is_figure_document_pin,
     validate_figure_bindings,
 )
+from feedbax.contracts.dataset import FieldDescriptor
+from feedbax.contracts.member_stack import labelled_members, stack_layout
 from feedbax.contracts.operation import DatasetPort, require_dataset_fields, require_dataset_port
 from feedbax.contracts.project import Document, Payload, json_pointer_parts
 from feedbax.contracts.project_plan import ElementKey, PlannedElement, PlannedInput, RunKey
@@ -76,6 +78,8 @@ class _Lowerer:
         self.declarations: Mapping[str, AnalyzeInput] = {}
         self.figure_templates = figure_templates
         self.elements: dict[str, PlannedElement] = {}
+        self.labels: dict[str, dict[str, FieldDescriptor]] = {}
+        """The label coordinates each operation's dataset outputs carry from its stacked inputs."""
         self.figures: dict[str, FigureDocument] = {}
         self.encoded: list[EncodedRequest] = []
         self.problems: list[ProjectDiagnostic] = []
@@ -121,6 +125,7 @@ class _Lowerer:
         source: DatasetSource,
         path: str,
     ) -> tuple[tuple[PlannedInput, ...], DatasetPort]:
+        """The bindings of a dataset input and its port, with the coordinates its stacked labels add."""
         if isinstance(source, StepInput):
             inputs = self._step_input(source, "dataset", path)
             schemas = set()
@@ -143,7 +148,14 @@ class _Lowerer:
             # authenticated when the actual saved dataset is read.
             if len(schemas) != 1:
                 raise _ElementIssue(path, "Selected Evaluate states must use the same dataset schema.")
-            return inputs, DatasetPort(schema_ids=tuple(schemas))
+            members = tuple(binding.member for binding in inputs)
+            try:
+                labels = stack_layout(labelled_members(members)).fields() if any(
+                    member.labels for member in members
+                ) else {}
+            except ValueError as error:
+                raise _ElementIssue(path, str(error)) from error
+            return inputs, DatasetPort(schema_ids=tuple(schemas), coordinates=labels)
         producer = self.elements.get(source.element)
         if producer is None:
             raise _ElementIssue(path, f"Unknown or unplannable operation {source.element!r}.")
@@ -160,7 +172,9 @@ class _Lowerer:
             ),
             producer_element=source.element,
         )
-        return (binding,), output
+        return (binding,), output.model_copy(update={"coordinates": {
+            **self.labels.get(source.element, {}), **output.coordinates,
+        }})
 
     def _step_input(
         self, source: DatasetSource, kind: str, path: str,
@@ -234,6 +248,7 @@ class _Lowerer:
             definition = registered.value.definition
             self._check_roles(element.inputs, set(definition.inputs))
             inputs = {}
+            labels: dict[str, FieldDescriptor] = {}
             for role, expected in definition.inputs.items():
                 source = element.inputs[role]
                 wire_path = f"inputs.{role}"
@@ -241,6 +256,7 @@ class _Lowerer:
                     inputs[role] = self._step_input(source, expected.kind, wire_path)
                     continue
                 inputs[role], actual = self._input(source, wire_path)
+                labels |= self.labels.get(source.element, {}) if isinstance(source, OperationDataset) else actual.coordinates
                 try:
                     require_dataset_port(
                         actual, expected, fields=isinstance(source, OperationDataset)
@@ -252,6 +268,7 @@ class _Lowerer:
                             )
                 except ValueError as error:
                     raise _ElementIssue(wire_path, str(error)) from error
+            self.labels[name] = labels
             self._record(
                 name,
                 AnalysisRequestSpec(

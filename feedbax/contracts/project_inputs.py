@@ -264,4 +264,4 @@ class OmittedReference(StrictModel):
 
 
 type Reference = StepReference | RunReference | StoreSubset | NamedSubset | OmittedReference | DocumentInputReference
-type InputBinding = Reference | list[Reference] | dict[ProjectName, Reference]
+type InputBinding = Reference | list[StepReference]
