@@ -51,7 +51,7 @@ test('freezes one measured selection of a listed Evaluate subject and leaves the
 
   // Each measured selection has its own To Rows; the named subset has none.
   const selections = inspector.getByRole('list', { name: 'Subject', exact: true }).locator(':scope > li');
-  await expect(selections).toHaveCount(4);
+  await expect(selections).toHaveCount(3);
   const toRows = (index: number) => selections.nth(index).getByRole('button', { name: 'To Rows', exact: true });
   await expect(toRows(0)).toBeEnabled();
   await expect(toRows(1)).toBeEnabled();

@@ -4,6 +4,7 @@ import type { FieldKind } from '@/generated/studioContracts';
 import {
   sectionOpen, withSectionOpen, type ProjectWindowSection, type ProjectWindowState,
 } from './projectWindowState';
+import { commandsRun } from './heldGestures';
 
 /** Which of a window's drawer sections are open, kept in the window's state. */
 export interface DrawerSections {
@@ -70,7 +71,10 @@ function unfold(element: Element, root: Element) {
   }
 }
 
-/** Puts the keyboard on the requested field of `root` as soon as `root` shows a field. */
+/**
+ * Puts the keyboard on the requested field of `root` as soon as `root` shows a field, unless a command has run since
+ * the request: the keyboard then belongs to what that command opened.
+ */
 export function useFieldFocus(root: RefObject<HTMLElement>, request: FieldFocusRequest | undefined, onFocused: () => void) {
   const focused = useRef(onFocused);
   focused.current = onFocused;
@@ -78,7 +82,12 @@ export function useFieldFocus(root: RefObject<HTMLElement>, request: FieldFocusR
   useLayoutEffect(() => {
     const element = root.current;
     if (!request || !element) return;
+    const requested = commandsRun();
     const attempt = () => {
+      if (commandsRun() !== requested) {
+        focused.current();
+        return true;
+      }
       // The named field, or without a name the step's own first field, once it can take the keyboard;
       // the first field of any kind when the fields shown do not include it.
       const scope = target === undefined ? '[data-field]' : `[data-field="${CSS.escape(target)}"]`;

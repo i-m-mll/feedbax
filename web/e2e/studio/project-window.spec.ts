@@ -559,7 +559,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   await expect(problemButton).toBeFocused();
 
   const broken = page.getByRole('article', { name: 'Train broken' });
-  const scoped = broken.getByRole('button', { name: "Can't run 1", exact: true });
+  const scoped = broken.getByRole('button', { name: "1 Can't run", exact: true });
   await scoped.press('Enter');
   await expect(list.getByRole('listitem')).toHaveCount(brokenProblems.length);
   await anchored();

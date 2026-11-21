@@ -76,7 +76,7 @@ export function setAuthoring({ editor, project, applies, perform, state, select 
         if (edit?.selected) select(selectSweepValue(state(), step.id, edit.selected.axis, edit.selected.value));
       }, (reason) => ({ kind: 'runs', reasons: Object.fromEntries(runs.map(({ id }) => [id, reason])) }));
     }, {
-      subject: step.label, instance: JSON.stringify(chosen?.map(({ id }) => id) ?? null),
+      subject: step.label, instance: JSON.stringify([step.id, chosen?.map(({ id }) => id) ?? null]),
       enabled: applies && runs.length > 0 && (step.kind === 'train' || step.kind === 'evaluate'),
     });
   }
@@ -88,7 +88,7 @@ export function setAuthoring({ editor, project, applies, perform, state, select 
     const command = (id: 'saveSet' | 'inlineSet', kind: 'save_set' | 'inline_set') => bindStudioCommand(id, () => {
       void perform(async () => { await store(studioAccessibleName(id, axis), { kind, step, axis }); },
         (reason) => ({ kind: 'axis', step, axis, reason }));
-    }, { subject: axis, instance: step, enabled: applies });
+    }, { subject: axis, instance: JSON.stringify([step, axis]), enabled: applies });
     return 'set' in read ? [command('inlineSet', 'inline_set')] : 'values' in read ? [command('saveSet', 'save_set')] : [];
   }
 
