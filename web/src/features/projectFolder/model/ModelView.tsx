@@ -53,9 +53,9 @@ type Props = {
   editor: ProjectEditController;
   elements: ElementSelectionStore;
   active: boolean;
-  editable: boolean;
-  /** Whether the topology commands apply, apart from the workspace settling. */
+  /** Whether the Model's topology can be edited; an edit made while the workspace saves or loads runs when it settles. */
   topologyApplies: boolean;
+  /** Whether the Model's fields can be edited; an edit made while the workspace saves runs when it settles. */
   fieldEditable: boolean;
   fieldChosenSteps?: ReadonlySet<string>;
   /** Whether the plan read is of the shown revision, so that `fieldChosenSteps` names the steps it chooses. */
@@ -175,7 +175,7 @@ function LeafChoices({ definitions, query, choose, disabled }: {
   </section>)}</>;
 }
 
-export function useStoredModelView({ model, saved, editor, elements: state, active, editable, topologyApplies, fieldEditable, fieldChosenSteps, planCurrent, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, evaluate, problem, problems, projectionRun, path, setPath, sections, openProblems, exceptions }: Props) {
+export function useStoredModelView({ model, saved, editor, elements: state, active, topologyApplies, fieldEditable, fieldChosenSteps, planCurrent, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, evaluate, problem, problems, projectionRun, path, setPath, sections, openProblems, exceptions }: Props) {
   const selected = useModelSelection(state, model?.id);
   const pick = useStore(state, (current) => current.pick);
   const reveal = useStore(state, (current) => current.reveal);
@@ -238,8 +238,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const interior = owner?.interior;
   const physical = interior?.physical_domain ?? null;
   /** An Evaluate edits the topology of one selected value's Model; the edit is stored on the value. */
-  const editTopology = editable && (!evaluate || evaluate.scope.kind === 'axis_value');
-  const topologyCommand = topologyApplies && (!evaluate || evaluate.scope.kind === 'axis_value');
+  const editTopology = topologyApplies && (!evaluate || evaluate.scope.kind === 'axis_value');
   const selectedRuns = evaluate?.scope.kind === 'axis_value' ? evaluateEditRuns(evaluate.scope, evaluate.run, fieldRows)
     : !evaluate && fieldRows?.length && fieldAxes ? { rows: [...fieldRows], axes: fieldAxes } : undefined;
   const selectedHere = selected.filter((item) => inGraph(item, graph));
@@ -249,8 +248,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     ? selectedHere.every((item) => item.element.kind === 'component') ? selectedHere : []
     : selection?.element.kind === 'attachment' || selection?.element.kind === 'component' ? [selection]
     : !selection ? [graph] : [];
-  const canEvaluate = Boolean(fieldEditable && readBody && attachments.data?.editable &&
-    attachments.data.revision === saved.revision);
+  const canEvaluate = Boolean(fieldEditable && readBody && attachments.data?.editable);
   const canEditField = evaluate ? canEvaluate : fieldEditable;
   const fieldRun = evaluate?.run ?? projectionRun;
   const fieldBodies = model && shownModel && !libraryItem ? fieldOwners.map((owner) => ({
@@ -270,7 +268,6 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         && JSON.stringify(previousBody.rows) === JSON.stringify(fieldBody.rows) ? previous : undefined;
     },
   })) });
-  const fieldsPlaceholder = fieldQueries.some((query) => query.isPlaceholderData);
   const fieldsError = fieldQueries.find((query) => query.error)?.error ?? null;
   const fieldsData = fieldQueries.every((query) => query.data) ? fieldQueries.map((query) => query.data!) : undefined;
   /**
@@ -278,7 +275,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
    * edit carries the steps that plan lights.
    */
   async function editField(fieldBody: FieldBody, address: ModelAddress, edit: NonNullable<ModelFieldRequest['edit']>) {
-    if (!canEditField || fieldsPlaceholder) return studioReason('unavailable', studioName('field'));
+    if (!canEditField) return studioReason('unavailable', studioName('field'));
     return run(async () => {
       const { chosenSteps } = await plan.next(({ revision }) => revision === editor.getSnapshot().saved.revision);
       const current = editor.getSnapshot().saved;
@@ -325,12 +322,12 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       exceptions,
       changed: field.changed ? {
         text: changedText,
-        reset: canEditField && !fieldsPlaceholder ? () => editField(fieldBody, field.address, { kind: 'reset' }) : undefined,
+        reset: canEditField ? () => editField(fieldBody, field.address, { kind: 'reset' }) : undefined,
       } : undefined,
       source: attachments.data?.field_sources?.[addressKey(field.address)] ??
         attachments.data?.field_sources?.[addressKey(fieldBody.owner)] ??
         attachments.data?.source ?? undefined,
-      commit: canEditField && !fieldsPlaceholder ? (edit) => editField(fieldBody, field.address, edit) : undefined,
+      commit: canEditField ? (edit) => editField(fieldBody, field.address, edit) : undefined,
       rowSelection: !!fieldRows?.length,
       multipleRows: !evaluate && (fieldRows?.length ?? 0) > 1,
       selectedMembers: field.sweep ? selectedSweepValues?.get(field.sweep.id) : undefined,
@@ -452,7 +449,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   }
 
   async function applyEvaluate(name: string, difference: Difference, onField = false): Promise<string | undefined> {
-    if (!model || !readBody || !attachments.data || attachments.data.revision !== saved.revision) {
+    if (!model || !readBody || !attachments.data) {
       return studioReason('unavailable', name);
     }
     return run(async () => {
@@ -697,8 +694,13 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const placements = nodes.filter((node) => !node.data.locked)
       .map((node) => ({ address: node.data.address, position: node.position }));
     if (!placements.length) return;
-    setHeld(new Map(placements.map(({ address, position }) => [addressKey(address), position])));
-    void apply(studioName('moveCard'), { op: 'move_cards', placements }, false).finally(() => setHeld(undefined));
+    const moved = placements.map(({ address, position }) => [addressKey(address), position] as const);
+    setHeld((prior) => new Map([...prior ?? [], ...moved]));
+    void apply(studioName('moveCard'), { op: 'move_cards', placements }, false).finally(() => setHeld((prior) => {
+      const rest = new Map(prior);
+      for (const [key, position] of moved) if (rest.get(key) === position) rest.delete(key);
+      return rest.size ? rest : undefined;
+    }));
   }
 
   function makeCard(id: string, index: number, definition?: typeof objects[number][1]): ModelCard {
@@ -887,9 +889,9 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const isCollapsed = !!collapsed?.[graphId];
   const collapse = bindStudioCommand('collapseAll', () => {
     void apply(studioName(isCollapsed ? 'expandAll' : 'collapseAll'), { op: 'collapse_graph', graph, collapsed: !isCollapsed }, false);
-  }, { name: isCollapsed ? 'expandAll' : 'collapseAll', enabled: topologyCommand });
+  }, { name: isCollapsed ? 'expandAll' : 'collapseAll', enabled: editTopology });
   const lock = bindStudioCommand('lock', () => setLocked((current) => !current), {
-    name: locked ? 'unlock' : 'lock', enabled: topologyCommand,
+    name: locked ? 'unlock' : 'lock', enabled: editTopology,
   });
   const leave = currentPath.length ? bindStudioCommand('leave', () => go(currentPath.slice(0, -1))) : undefined;
   const attachmentsForSelection = ownerAddress && !attachment ? attachmentCommands(ownerAddress) : [];
@@ -898,7 +900,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     if (targetElement.kind === 'component') return [
       bindStudioCommand('flip', () => {
         void apply(studioName('flip'), { op: 'flip_component', address }, false);
-      }, { enabled: topologyCommand, instance: addressKey(address) }),
+      }, { enabled: editTopology, instance: addressKey(address) }),
       ...(interior?.components?.[targetElement.id]?.kind === 'composite' ? [enterComposite(targetElement.id)] : []),
     ];
     if (targetElement.kind !== 'wire') return [];
@@ -917,36 +919,36 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           x: (source.position.x + target.position.x) / 2 + 90,
           y: (source.position.y + target.position.y) / 2 + 32,
         }], studioName('addWaypoint'));
-      }, { enabled: topologyCommand, instance: addressKey(address) }),
+      }, { enabled: editTopology, instance: addressKey(address) }),
       bindStudioCommand('removeWaypoint', () => {
         route(address, routePoints.slice(0, -1), studioName('removeWaypoint'));
-      }, { enabled: topologyCommand && routePoints.length > 0, instance: addressKey(address) }),
+      }, { enabled: editTopology && routePoints.length > 0, instance: addressKey(address) }),
     ];
   }
   const commands = [
-    bindStudioCommand('addComponent', () => openSearch(), { enabled: topologyCommand && definitions.length > 0 }),
+    bindStudioCommand('addComponent', () => openSearch(), { enabled: editTopology && definitions.length > 0 }),
     ...(port?.direction === 'output' ? [bindStudioCommand('connectPorts', () => keyboardConnect(port),
-      { enabled: topologyCommand && !locked })] : []),
+      { enabled: editTopology && !locked })] : []),
     bindStudioCommand('modelSelectAll', () => setSelection(
       objects.map(([id]) => at(graph, { kind: 'component', id })),
     ), { enabled: !!objects.length }),
     bindStudioCommand('modelRemove', () => {
       if (selection?.element.kind === 'attachment') removeAttachment(selection);
       else void apply(studioName('modelRemove'), { op: 'delete', selection: [...selectedHere] });
-    }, { enabled: selectedHere.length > 0 && (topologyCommand || canEvaluate && !!attachment) }),
-    bindStudioCommand('modelRename', () => { if (selection) setRename(addressKey(selection)); }, { enabled: topologyCommand && !!component }),
+    }, { enabled: selectedHere.length > 0 && (editTopology || canEvaluate && !!attachment) }),
+    bindStudioCommand('modelRename', () => { if (selection) setRename(addressKey(selection)); }, { enabled: editTopology && !!component }),
     bindStudioCommand('modelDuplicate', () => void apply(studioName('modelDuplicate'), { op: 'duplicate', selection: [...selectedHere] }),
-      { enabled: topologyCommand && componentsOnly }),
+      { enabled: editTopology && componentsOnly }),
     bindStudioCommand('modelGroup', () => void apply(studioName('modelGroup'), { op: 'group', selection: [...selectedHere], name: studioName('modelGroup') }),
-      { enabled: topologyCommand && componentsOnly && !physical }),
+      { enabled: editTopology && componentsOnly && !physical }),
     bindStudioCommand('modelUngroup', () => { if (selection) void apply(studioName('modelUngroup'), { op: 'ungroup', address: selection }); },
-      { enabled: topologyCommand && component?.kind === 'composite' && !component.interior.physical_domain }),
+      { enabled: editTopology && component?.kind === 'composite' && !component.interior.physical_domain }),
     bindStudioCommand('modelCopy', () => void apply(studioName('modelCopy'), { op: 'copy', selection: [...selectedHere] }, false),
-      { enabled: topologyCommand && componentsOnly }),
+      { enabled: editTopology && componentsOnly }),
     bindStudioCommand('modelCut', () => void apply(studioName('modelCut'), { op: 'cut', selection: [...selectedHere] }),
-      { enabled: topologyCommand && componentsOnly }),
+      { enabled: editTopology && componentsOnly }),
     bindStudioCommand('modelPaste', () => { if (clipboard) void apply(studioName('modelPaste'), { op: 'paste', graph, clipboard }); },
-      { enabled: topologyCommand && !!clipboard }),
+      { enabled: editTopology && !!clipboard }),
     ...attachmentsForSelection,
     ...(selection ? topologyCommands(selection) : []),
     ...(leave ? [leave] : []),

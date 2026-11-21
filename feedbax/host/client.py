@@ -182,6 +182,8 @@ class HostClient:
                     time.sleep(0.02)
 
     def _host_lock_held(self) -> bool:
+        if not self.root.is_dir():
+            return False
         with (self.root / "host.lock").open("a") as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
@@ -421,27 +423,32 @@ class HostClient:
         return self._call_existing("retire_runtime", runtime=runtime, release=release, mode=mode)
 
     def shutdown(self, mode: ShutdownMode = "interrupt", *, timeout: float = HANG_SECONDS) -> JsonObject:
-        """End the Host at this root, with its jobs and workers, and wait until its process has exited.
+        """End the Host at this root, with its jobs and workers, and wait until no Host holds the root.
 
         Live jobs end by `mode`: `interrupt` records them as interrupted by the service, `force` and `checkpoint`
         as stopped, `checkpoint` once each has saved a checkpoint. With `defer` and a live job nothing ends and
-        the result is `deferred`. Otherwise it is `exited`, or `absent` when no Host was running. This client
-        starts no Host after it has ended one. A Host that does not answer, or whose process outlives `timeout` seconds,
-        raises `HostError`.
+        the result is `deferred`. Otherwise it is `exited`, or `absent` when no Host answered. A Host that was
+        already exiting, on a signal or because its owner exited, closes the request unanswered and ends no job;
+        the result is then `exited` with no jobs. This client starts no Host after it has ended one. A Host that
+        does not answer, or that outlives `timeout` seconds, raises `HostError`.
         """
         deadline = time.monotonic() + timeout
-        result = self._call_existing("shutdown", timeout=timeout, mode=mode)
+        try:
+            result = self._call_existing("shutdown", timeout=timeout, mode=mode)
+        except HostError as error:
+            # An exiting Host removes its address, then releases its lock; a listener that is not one does neither.
+            if error.code != "disconnected" or (self.address.exists() and not self._host_lock_held()):
+                raise
+            result = {"status": "exited", "jobs": []}
         if result["status"] == "deferred":
             return result
         self.prohibit_start()
-        if result["status"] == "absent":
-            return result
-        pid = cast(int, result["pid"])
-        while _running(pid):
+        pid = cast(int | None, result.get("pid"))
+        while (pid is not None and _running(pid)) or self._host_lock_held():
             if time.monotonic() >= deadline:
-                raise HostError("shutdown_timeout", f"Host {pid} did not exit within {timeout} s.")
+                raise HostError("shutdown_timeout", f"The Host at {self.root} did not exit within {timeout} s.")
             time.sleep(0.02)
-        return {"status": "exited", "jobs": result["jobs"]}
+        return result if result["status"] == "absent" else {"status": "exited", "jobs": result["jobs"]}
 
     def _call_existing(self, op: str, *, timeout: float = HANG_SECONDS, **request: Json) -> JsonObject:
         try:

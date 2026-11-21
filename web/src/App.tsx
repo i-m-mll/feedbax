@@ -6,7 +6,7 @@ import { StudioJobsProvider } from '@/hooks/useStudioJobs';
 import { StudioActivityPane } from '@/components/activity/StudioActivity';
 import { studioName } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
-import { PendingProjectWindow } from '@/features/projectWindow/ProjectWindow';
+import { PendingProjectWindow, ProjectWindowPalette } from '@/features/projectWindow/ProjectWindow';
 
 const StudioProjectWorkspace = lazy(() => import('@/features/projectFolder/SavedTrainWorkspace'));
 
@@ -51,5 +51,5 @@ export default function App({ projectId, activity }: { projectId: string | null;
       </main>
     </StudioJobsProvider>
   );
-  return <ProjectEntry requestedId={projectId} />;
+  return <ProjectWindowPalette><ProjectEntry requestedId={projectId} /></ProjectWindowPalette>;
 }
