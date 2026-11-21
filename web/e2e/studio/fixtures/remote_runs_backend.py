@@ -114,6 +114,6 @@ def __getattr__(name: str):
 if __name__ == "__main__":
     from scripts.studio_dev import main
 
-    if "FEEDBAX_STUDIO_TEST_OWNER_PID" not in os.environ:
+    if "FEEDBAX_OWNER_PID" not in os.environ:
         raise SystemExit("The machine fixture requires an owning test runner.")
     raise SystemExit(main(backend_app="web.e2e.studio.fixtures.remote_runs_backend:app"))
