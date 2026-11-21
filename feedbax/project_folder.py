@@ -1334,9 +1334,10 @@ class ProjectFolder:
 
     def apply_model_command(
         self, project_id: str, body: ModelEditRequest, components: ComponentRegistry, store: ModelStore,
+        source: dict[str, JsonValue] | None = None,
     ) -> AppliedModelEdit | ModelEditProblem:
-        """Apply a named Model operation to the shown document's composed content and commit what ``store`` makes of
-        it with the layout, in one write.
+        """Apply a named Model operation to the shown document's composed content, or to ``source``, the selected runs'
+        copy of it, and commit what ``store`` makes of it with the layout, in one write.
 
         A document the edit creates gets the layout of its base, the edited layout when its base is the shown one.
         """
@@ -1348,6 +1349,8 @@ class ProjectFolder:
         snapshot = self.read(project_id, revision=body.revision)
         check_revision("presentation", body.presentation_revision, snapshot.presentation_revision)
         payload, layout = model_edit_source(snapshot, body.document)
+        if source is not None:
+            payload = source
         state = ModelEditState.model_validate({
             "document": payload, **layout,
         })
