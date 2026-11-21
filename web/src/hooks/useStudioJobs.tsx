@@ -80,8 +80,7 @@ export function StudioJobsProvider({ children, projectId }: PropsWithChildren<{ 
         const run = [
           projectId === null && job.project_id,
           studioStep(job.kind).name,
-          job.stage_id,
-          job.label !== job.stage_id && job.label,
+          job.label,
           job.scenario_id !== 'default' && job.scenario_id,
         ].filter(Boolean).join(' · ');
         return [{ id: ++announcementId.current,

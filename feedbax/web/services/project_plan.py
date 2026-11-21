@@ -164,12 +164,14 @@ class ProjectPlanRead:
                     element_problems[problem.element].append(problem)
             if isinstance(row, PlannedAnalyzeRun):
                 states = []
-                for name in dict.fromkeys((*row.elements, *element_problems)):
-                    key = ElementKey(row.key, name)
+                keys = (*row.elements, *(
+                    ElementKey(row.key, name) for name in element_problems if not row.requests(name)
+                ))
+                for key in keys:
                     observed = self.light.get(key)
                     states.append(
                         PlanStatusRow(key, label, observed.status, observed.reason) if observed is not None
-                        else _planned_status(key, label, element_problems[name])
+                        else _planned_status(key, label, element_problems[key.name])
                     )
                 yield _analysis_status(row.key, label, problems[row.key], states)
                 yield from states
@@ -397,7 +399,7 @@ class ProjectPlanRead:
             analysis_elements=[
                 StudioProjectWindowMapElement(
                     key=StudioSavedTrainKey.model_validate(element.key.run, from_attributes=True),
-                    name=element.key.name, kind=element.kind, request_id=element.request_id,
+                    name=element.key.name, member=element.key.member, kind=element.kind, request_id=element.request_id,
                     status=statuses[element.key].status, reason=statuses[element.key].reason,
                     **({"result": light.result, "previous": light.previous, "changed": light.changed}
                        if (light := self.light.get(element.key)) is not None else {}),
@@ -424,6 +426,7 @@ class ProjectPlanRead:
 class PlanRequestAddressFields(TypedDict):
     key: StudioSavedTrainKey
     element: NotRequired[str]
+    member: NotRequired[str]
 
 
 def plan_request_address(key: RunKey | ElementKey) -> PlanRequestAddressFields:
@@ -432,6 +435,8 @@ def plan_request_address(key: RunKey | ElementKey) -> PlanRequestAddressFields:
     }
     if isinstance(key, ElementKey):
         address["element"] = key.name
+        if key.member is not None:
+            address["member"] = key.member
     return address
 
 

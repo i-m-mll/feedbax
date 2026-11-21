@@ -3,7 +3,7 @@ import { useState, type ReactNode } from 'react';
 import { appTip } from '@window-shell/browser/tooltip';
 import { StudioRegionBoundary } from '@/components/activity/StudioRegion';
 import { studioName } from '@/components/activity/studioVocabulary';
-import { DocumentPicker, type DocumentPickerModel } from './DocumentPicker';
+import { DocumentPicker, type DocumentEditing, type DocumentPickerModel } from './DocumentPicker';
 import type { ProjectWindowView } from './projectWindowState';
 
 /** A slot's header: the view's glyph in split view, the picker of the document it shows, the path or controls inside it. */
@@ -16,7 +16,7 @@ export function SlotHeader({ view, icon: Icon, picker, children, trailing }: {
   trailing: ReactNode;
 }) {
   const name = studioName(view);
-  const [editing, setEditing] = useState<string>();
+  const [editing, setEditing] = useState<DocumentEditing>();
   return <header className="studio-window-slot__header">
     {Icon
       ? <h2 className="studio-window-slot__name" {...appTip(studioName(view))}>

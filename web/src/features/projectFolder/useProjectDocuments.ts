@@ -4,6 +4,7 @@ import { apiErrorMessage, landsOnGesture } from '@/api/request';
 import {
   studioAccessibleName, studioName, studioSweptParameterMissing, type StudioNameId,
 } from '@/components/activity/studioVocabulary';
+import { shownName } from '@/features/pipeline/planView';
 import type { DocumentPickerModel } from '@/features/projectWindow/DocumentPicker';
 import type {
   Document, StudioProjectFilePatch, StudioSavedTrainKey, StudioTrialAuthoringRequest,
@@ -97,9 +98,9 @@ export function documentTree(project: { documents?: Readonly<Record<string, Docu
     const document = all[name];
     return 'base' in document && names.includes(document.base.document) ? document.base.document : undefined;
   };
-  const tree: { name: string; depth: number }[] = [];
+  const tree: { key: string; name: string; depth: number }[] = [];
   const visit = (name: string, depth: number) => {
-    tree.push({ name, depth });
+    tree.push({ key: name, name: shownName(name, all[name]), depth });
     for (const child of names) if (baseOf(child) === name) visit(child, depth + 1);
   };
   for (const name of names) if (baseOf(name) === undefined) visit(name, 0);
@@ -156,7 +157,7 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
     const kind = studioName(role);
     const repoint = editable && !!stepId && selectable.has(role);
     return {
-      label: labels[role], document, documents, count,
+      label: labels[role], document, name: shownName(document, saved.project.documents?.[document]), documents, count,
       refusal: refused?.step === stepId && refused?.role === role ? refused.reason : undefined,
       choose: repoint ? (next) => { void attempt(role, () => point(studioAccessibleName('select', kind), role, next)); } : undefined,
       create: repoint ? () => attempt(role, async () => {
@@ -172,9 +173,13 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
           (result) => use(role, result.member, result.snapshot.revision));
         return result.member;
       }) : undefined,
-      rename: editable ? (name) => {
+      rename: editable ? (label) => {
         void attempt(role, () => editor.memberCommand(studioAccessibleName('rename', kind),
-          { kind: 'change_key', family: 'documents', member: document, key: name }, editor.getSnapshot().saved));
+          { kind: 'rename', family: 'documents', member: document, label }, editor.getSnapshot().saved));
+      } : undefined,
+      changeKey: editable ? (key) => {
+        void attempt(role, () => editor.memberCommand(studioAccessibleName('changeKey', kind),
+          { kind: 'change_key', family: 'documents', member: document, key }, editor.getSnapshot().saved));
       } : undefined,
       detach: editable && based && !detachRefused.includes(document) ? () => {
         void attempt(role, () => editor.memberCommand(studioAccessibleName('detach', kind),

@@ -414,11 +414,13 @@ export interface StudioSavedTrainRuns {
 export interface StudioPlanRequestAddress {
   key: StudioSavedTrainKey;
   element?: string | null;
+  member?: string | null;
 }
 
 export interface StudioPlanReviewEntry {
   key: StudioSavedTrainKey;
   element?: string | null;
+  member?: string | null;
   request_id: string;
   state: "unchanged" | "changed" | "added" | "removed";
   path?: string | null;
@@ -2602,6 +2604,7 @@ export type Base = InlineBase | DocumentReference | StepBase | RunBase | Externa
 
 export type BasedDocument = {
   "schema": string;
+  "label"?: string | null;
   "base": DocumentBase;
   "differences"?: Differences;
 };
@@ -2708,6 +2711,7 @@ export type DatasetInputPort = {
   "selected_variables"?: Record<string, FieldDescriptor>;
   "coordinates"?: Record<string, FieldDescriptor>;
   "kind"?: "dataset";
+  "takes"?: Takes;
 };
 
 export type DatasetPort = {
@@ -3273,7 +3277,7 @@ export type RemoveValue = {
 };
 
 export type RenameMember = {
-  "family": "steps" | "elements";
+  "family": KeyedFamily;
   "member": string;
   "document"?: string | null;
   "kind": "rename";
@@ -3308,6 +3312,7 @@ export type ReportText = {
 
 export type RootDocument = {
   "schema": string;
+  "label"?: string | null;
   "payload": JsonValue;
 };
 
@@ -3794,6 +3799,7 @@ export type StudioObjectivePlace = {
 export type StudioPlanRequest = {
   "key": StudioSavedTrainKey;
   "element"?: string | null;
+  "member"?: string | null;
   "request_id": string;
 };
 
@@ -3891,6 +3897,7 @@ export type StudioProjectWindowMapElement = {
   "changed"?: StudioDefinitionChange | null;
   "key": StudioSavedTrainKey;
   "name": string;
+  "member"?: string | null;
   "kind": "analyze" | "render";
   "request_id": string;
   "status": JobStatus;
@@ -4284,6 +4291,8 @@ export type SweepSample = {
 
 export type SweepTarget = string;
 
+export type Takes = "all" | "one" | WholeDimensions;
+
 export type TaskDocument = {
   "id": string;
   "variables": Array<Variable>;
@@ -4389,6 +4398,10 @@ export type When = {
   "metric": string;
   "op": "lt" | "le" | "eq" | "ne" | "ge" | "gt";
   "value": number;
+};
+
+export type WholeDimensions = {
+  "parameter": string;
 };
 
 export const acausalReportDefaults = {
@@ -5138,6 +5151,7 @@ export const StudioPlanRequestAddressSchema: z.ZodType<StudioPlanRequestAddress>
     .object({
       "key": StudioSavedTrainKeySchema,
       "element": z.string().nullable().optional(),
+      "member": z.string().nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioPlanRequestAddress>;
@@ -5147,6 +5161,7 @@ export const StudioPlanReviewEntrySchema: z.ZodType<StudioPlanReviewEntry> = z.l
     .object({
       "key": StudioSavedTrainKeySchema,
       "element": z.string().nullable().optional(),
+      "member": z.string().nullable().optional(),
       "request_id": z.string(),
       "state": z.union([z.literal("unchanged"), z.literal("changed"), z.literal("added"), z.literal("removed")]),
       "path": z.string().nullable().optional(),
@@ -8984,6 +8999,7 @@ export const BaseSchema: z.ZodType<Base> = z.lazy(() =>
 export const BasedDocumentSchema: z.ZodType<BasedDocument> = z.lazy(() =>
   z.object({
     "schema": z.string().min(1),
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "base": DocumentBaseSchema,
     "differences": DifferencesSchema.optional(),
   }).strict()
@@ -9132,6 +9148,7 @@ export const DatasetInputPortSchema: z.ZodType<DatasetInputPort> = z.lazy(() =>
     "selected_variables": z.record(z.string(), FieldDescriptorSchema).optional(),
     "coordinates": z.record(z.string(), FieldDescriptorSchema).optional(),
     "kind": z.literal("dataset").optional(),
+    "takes": TakesSchema.optional(),
   }).strict()
 ) as unknown as z.ZodType<DatasetInputPort>;
 
@@ -9903,7 +9920,7 @@ export const RemoveValueSchema: z.ZodType<RemoveValue> = z.lazy(() =>
 
 export const RenameMemberSchema: z.ZodType<RenameMember> = z.lazy(() =>
   z.object({
-    "family": z.union([z.literal("steps"), z.literal("elements")]),
+    "family": KeyedFamilySchema,
     "member": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "document": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
     "kind": z.literal("rename"),
@@ -9950,6 +9967,7 @@ export const ReportTextSchema: z.ZodType<ReportText> = z.lazy(() =>
 export const RootDocumentSchema: z.ZodType<RootDocument> = z.lazy(() =>
   z.object({
     "schema": z.string().min(1),
+    "label": z.union([z.string().min(1), z.null()]).optional(),
     "payload": jsonValueSchema,
   }).strict()
 ) as unknown as z.ZodType<RootDocument>;
@@ -10596,6 +10614,7 @@ export const StudioPlanRequestSchema: z.ZodType<StudioPlanRequest> = z.lazy(() =
   z.object({
     "key": StudioSavedTrainKeySchema,
     "element": z.union([z.string(), z.null()]).optional(),
+    "member": z.union([z.string(), z.null()]).optional(),
     "request_id": z.string(),
   }).strict()
 ) as unknown as z.ZodType<StudioPlanRequest>;
@@ -10721,6 +10740,7 @@ export const StudioProjectWindowMapElementSchema: z.ZodType<StudioProjectWindowM
     "changed": z.union([StudioDefinitionChangeSchema, z.null()]).optional(),
     "key": StudioSavedTrainKeySchema,
     "name": z.string(),
+    "member": z.union([z.string(), z.null()]).optional(),
     "kind": z.union([z.literal("analyze"), z.literal("render")]),
     "request_id": z.string(),
     "status": JobStatusSchema,
@@ -11219,6 +11239,10 @@ export const SweepTargetSchema: z.ZodType<SweepTarget> = z.lazy(() =>
   z.string().regex(new RegExp("^(?:(?:(?:steps|documents)\\.[A-Za-z0-9_][A-Za-z0-9_-]*\\.)?\\{[\\s\\S]+\\}|[^.]+(?:\\.[^.]+)*)$"))
 ) as unknown as z.ZodType<SweepTarget>;
 
+export const TakesSchema: z.ZodType<Takes> = z.lazy(() =>
+  z.union([z.union([z.literal("all"), z.literal("one")]), WholeDimensionsSchema])
+) as unknown as z.ZodType<Takes>;
+
 export const TaskDocumentSchema: z.ZodType<TaskDocument> = z.lazy(() =>
   z.object({
     "id": z.string(),
@@ -11365,6 +11389,12 @@ export const WhenSchema: z.ZodType<When> = z.lazy(() =>
     "value": z.number().finite(),
   }).strict()
 ) as unknown as z.ZodType<When>;
+
+export const WholeDimensionsSchema: z.ZodType<WholeDimensions> = z.lazy(() =>
+  z.object({
+    "parameter": z.string().min(1),
+  }).strict()
+) as unknown as z.ZodType<WholeDimensions>;
 
 export const contractSchemas = {
   KeepOpen: KeepOpenSchema,

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
+from dataclasses import dataclass, replace
 from graphlib import CycleError, TopologicalSorter
 from types import MappingProxyType
 from typing import TYPE_CHECKING
@@ -31,7 +32,9 @@ from feedbax.contracts.figure_document import (
 )
 from feedbax.contracts.dataset import FieldDescriptor
 from feedbax.contracts.member_stack import labelled_members, stack_layout
-from feedbax.contracts.operation import DatasetPort, require_dataset_fields, require_dataset_port
+from feedbax.contracts.operation import (
+    DatasetInputPort, DatasetPort, WholeDimensions, require_dataset_fields, require_dataset_port,
+)
 from feedbax.contracts.project import Document, Payload, json_pointer_parts
 from feedbax.contracts.project_plan import (
     ElementKey,
@@ -43,7 +46,8 @@ from feedbax.contracts.project_plan import (
 )
 from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode, compose_document
 from feedbax.contracts.request_identity import EncodedRequest, encode_request
-from feedbax.contracts.request_refs import InputMember, ProductRef
+from feedbax.contracts.project_sweep import SweepInputMember
+from feedbax.contracts.request_refs import InputMember, MemberLabel, ProductRef
 from feedbax.contracts.request_specs import (
     AnalysisRequestSpec,
     EvaluationRequestSpec,
@@ -93,6 +97,45 @@ class _ElementIssue(ValueError):
         self.path = path
 
 
+type _Entries = tuple[SweepInputMember, ...]
+
+
+def _fields(entries: _Entries, path: str) -> dict[str, FieldDescriptor]:
+    try:
+        return stack_layout(entries).fields() if entries else {}
+    except ValueError as error:
+        raise _ElementIssue(path, str(error)) from error
+
+
+def _function_of(label: str, whole: set[str], bindings: tuple[PlannedInput, ...]) -> bool:
+    """Whether a label's value is fixed by the values of ``whole``, so that it is a coordinate along them."""
+    seen: dict[tuple[str | None, ...], str | None] = {}
+    for binding in bindings:
+        labels = binding.member.labels
+        key = tuple(labels[name].value_id if name in labels else None for name in sorted(whole))
+        value = labels[label].value_id if label in labels else None
+        if seen.setdefault(key, value) != value:
+            return False
+    return True
+
+
+@dataclass(frozen=True)
+class _Group:
+    """The members of a role one mapped request reads, and the labels it is one combination of."""
+
+    labels: Mapping[str, MemberLabel | None]
+    bindings: tuple[PlannedInput, ...]
+
+
+def _value_id(label: MemberLabel | None) -> str | None:
+    return label.value_id if label is not None else None
+
+
+def _stripped(binding: PlannedInput, mapped: Collection[str]) -> PlannedInput:
+    labels = {name: label for name, label in binding.member.labels.items() if name not in mapped}
+    return replace(binding, member=binding.member.model_copy(update={"labels": labels}))
+
+
 class _Lowerer:
     def __init__(
         self,
@@ -116,10 +159,14 @@ class _Lowerer:
         self.operations = operations
         self.declarations: Mapping[str, AnalyzeInput] = {}
         self.figure_templates = figure_templates
-        self.elements: dict[str, PlannedElement] = {}
+        self.elements: dict[str, list[PlannedElement]] = {}
         self.figures: dict[str, FigureDocument] = {}
         self.encoded: list[EncodedRequest] = []
         self.problems: list[ProjectDiagnostic] = []
+
+    @property
+    def planned(self) -> dict[ElementKey, PlannedElement]:
+        return {element.key: element for requests in self.elements.values() for element in requests}
 
     def problem(
         self,
@@ -158,31 +205,38 @@ class _Lowerer:
         )
 
     def _producer(self, binding: PlannedInput) -> PlannedElement | None:
-        """The operation a binding reads, in this card or in the card across an Analyze-to-Analyze edge."""
+        """The operation request a binding reads, in this card or in the card across an Analyze-to-Analyze edge."""
         key = binding.element
         if key is None:
             return None
-        return self.elements.get(key.name) if key.run == self.key else self.upstream.get(key)
+        if key.run != self.key:
+            return self.upstream.get(key)
+        return next((element for element in self.elements.get(key.name, ()) if element.key == key), None)
 
     def _input(
         self,
         source: DatasetSource,
         path: str,
-    ) -> tuple[tuple[PlannedInput, ...], DatasetPort, dict[str, FieldDescriptor]]:
-        """The bindings of a dataset input, its port, and the label coordinates the port carries from stacked inputs."""
+    ) -> tuple[tuple[PlannedInput, ...], DatasetPort, _Entries]:
+        """The bindings of a dataset input, its port, and the labelled entries the stacked dataset holds."""
         if isinstance(source, OperationDataset):
-            producer = self.elements.get(source.element)
-            if producer is None:
+            requests = self.elements.get(source.element)
+            if not requests:
                 raise _ElementIssue(path, f"Unknown or unplannable operation {source.element!r}.")
-            binding = PlannedInput(
-                self.key,
-                InputMember(
-                    key="default",
-                    reference=ProductRef(request_id=producer.request_id, role=source.product),
-                ),
-                producer_element=source.element,
+            bindings = tuple(
+                PlannedInput(
+                    self.key,
+                    InputMember(
+                        key=producer.key.member or "default",
+                        reference=ProductRef(request_id=producer.request_id, role=source.product),
+                        labels=dict(producer.mapped),
+                    ),
+                    producer_element=source.element,
+                    producer_member=producer.key.member,
+                )
+                for producer in requests
             )
-            return self._operation_outputs((binding,), path)
+            return self._operation_outputs(bindings, path)
         inputs = self._step_input(source, "dataset", path)
         if any(binding.producer_element is not None for binding in inputs):
             return self._operation_outputs(inputs, path)
@@ -206,22 +260,43 @@ class _Lowerer:
         # authenticated when the actual saved dataset is read.
         if len(schemas) != 1:
             raise _ElementIssue(path, "Selected Evaluate states must use the same dataset schema.")
-        labels = self._stacked(inputs, path)
-        return inputs, DatasetPort(schema_ids=tuple(schemas), coordinates=labels), labels
+        entries = self._entries(inputs, path)
+        return inputs, DatasetPort(schema_ids=tuple(schemas), coordinates=_fields(entries, path)), entries
 
-    @staticmethod
-    def _stacked(inputs: tuple[PlannedInput, ...], path: str) -> dict[str, FieldDescriptor]:
-        members = tuple(binding.member for binding in inputs)
-        try:
-            return stack_layout(labelled_members(members)).fields() if any(member.labels for member in members) else {}
-        except ValueError as error:
-            raise _ElementIssue(path, str(error)) from error
+    def _entries(self, inputs: tuple[PlannedInput, ...], path: str) -> _Entries:
+        """The labelled entries of a stack of bindings, as ``stack_dataset_members`` lays them out at run time.
+
+        A binding that reads an operation output holding labelled entries of its own contributes each of them, with
+        its inner labels and its own, keyed by the inner key qualified by the binding's key. One output read alone
+        with no labels is the dataset the operation made.
+        """
+        if len(inputs) == 1 and not inputs[0].member.labels:
+            producer = self._producer(inputs[0])
+            return producer.entries if producer is not None else ()
+        entries = []
+        for binding, outer in zip(inputs, labelled_members(tuple(binding.member for binding in inputs)), strict=True):
+            producer = self._producer(binding)
+            if producer is None or not producer.entries:
+                entries.append(outer)
+                continue
+            for inner in producer.entries:
+                if "element" in inner.coordinates:
+                    raise _ElementIssue(
+                        path, f"Member {outer.key!r} already holds the outputs of several operations; "
+                        "a list stacks one level of operation outputs.",
+                    )
+                if shared := sorted(outer.coordinates.keys() & inner.coordinates.keys()):
+                    raise _ElementIssue(path, f"Member {outer.key!r} already carries the labels {shared!r}.")
+                entries.append(SweepInputMember(
+                    f"{outer.key}/{inner.key}", {**outer.coordinates, **inner.coordinates},
+                ))
+        return tuple(entries) if any(entry.coordinates for entry in entries) else ()
 
     def _operation_outputs(
         self, inputs: tuple[PlannedInput, ...], path: str,
-    ) -> tuple[tuple[PlannedInput, ...], DatasetPort, dict[str, FieldDescriptor]]:
+    ) -> tuple[tuple[PlannedInput, ...], DatasetPort, _Entries]:
         """Operation outputs read by a wire or by a role: one output is the dataset the operation made, and several
-        are stacked by their labels, which requires them to have one port."""
+        are stacked flat by their labels, which requires them to have one port."""
         ports = []
         for binding in inputs:
             producer = self._producer(binding)
@@ -233,14 +308,12 @@ class _Lowerer:
                 raise _ElementIssue(
                     path, f"Operation {binding.producer_element!r} has no dataset product {reference.role!r}."
                 )
-            ports.append((output, producer.labels))
+            ports.append(output)
         if any(port != ports[0] for port in ports[1:]):
             raise _ElementIssue(path, "Stacked operation outputs must have one dataset port.")
-        output, carried = ports[0]
-        if len(inputs) > 1 and carried:
-            raise _ElementIssue(path, "Operation outputs that carry labels of their own inputs do not stack.")
-        labels = {**carried, **self._stacked(inputs, path)}
-        return inputs, output.model_copy(update={"coordinates": {**labels, **output.coordinates}}), labels
+        entries = self._entries(inputs, path)
+        labels = _fields(entries, path)
+        return inputs, ports[0].model_copy(update={"coordinates": {**labels, **ports[0].coordinates}}), entries
 
     def _step_input(
         self, source: DatasetSource, kind: str, path: str,
@@ -274,6 +347,13 @@ class _Lowerer:
             role = min(missing)
             raise _ElementIssue(f"inputs.{role}", f"Required input {role!r} is missing.")
 
+    def _names(self, inputs: Mapping[str, tuple[PlannedInput, ...]]) -> dict[str, dict[str, LabelName]]:
+        return _merged(*(
+            producer.names
+            for bindings in inputs.values() for binding in bindings
+            if (producer := self._producer(binding)) is not None
+        ), _names(inputs))
+
     def _record(
         self,
         name: str,
@@ -281,13 +361,12 @@ class _Lowerer:
         inputs: Mapping[str, tuple[PlannedInput, ...]],
         outputs: Mapping[str, DatasetPort | PlotlyFigurePort],
         label: str | None,
-        labels: Mapping[str, FieldDescriptor] = MappingProxyType({}),
+        names: Mapping[str, Mapping[str, LabelName]],
+        *,
+        member: str | None = None,
+        mapped: Mapping[str, MemberLabel] = MappingProxyType({}),
+        entries: _Entries = (),
     ) -> None:
-        names = _merged(*(
-            producer.names
-            for bindings in inputs.values() for binding in bindings
-            if (producer := self._producer(binding)) is not None
-        ), _names(inputs))
         if isinstance(spec, RenderRequestSpec):
             printed = _printed_labels(spec.document)
             spec = spec.model_copy(update={"names": {
@@ -298,17 +377,87 @@ class _Lowerer:
             spec, {role: tuple(binding.member for binding in bindings) for role, bindings in inputs.items()}
         )
         kind = "analyze" if isinstance(spec, AnalysisRequestSpec) else "render"
-        self.elements[name] = PlannedElement(
-            ElementKey(self.key, name),
+        self.elements.setdefault(name, []).append(PlannedElement(
+            ElementKey(self.key, name, member),
             kind,
             encoded.id,
             MappingProxyType(dict(inputs)),
             MappingProxyType(dict(outputs)),
-            MappingProxyType({name: MappingProxyType(values) for name, values in names.items()}),
-            MappingProxyType(dict(labels)),
+            MappingProxyType({name: MappingProxyType(dict(values)) for name, values in names.items()}),
+            MappingProxyType(dict(mapped)),
+            entries,
             label,
-        )
+        ))
         self.encoded.append(encoded)
+
+    def _groups(
+        self, role: str, takes: str | WholeDimensions, bindings: tuple[PlannedInput, ...], params, path: str,
+    ) -> tuple[_Group, ...] | None:
+        """The members of a role each mapped request reads, or None when the port takes the whole stack."""
+        if takes == "all":
+            return None
+        expands = [
+            binding.member.key for binding in bindings
+            if (producer := self._producer(binding)) is not None and len(producer.entries) > 1
+        ]
+        names = tuple(dict.fromkeys(label for binding in bindings for label in binding.member.labels))
+        if not names:
+            return None
+        if takes == "one":
+            if expands:
+                raise _ElementIssue(
+                    path, f"Input {role!r} takes one member, but {expands[0]!r} holds several; "
+                    "map the operation that made it.",
+                )
+            return tuple(_Group({label: binding.member.labels.get(label) for label in names}, (binding,))
+                         for binding in bindings)
+        assert isinstance(takes, WholeDimensions)
+        listed = getattr(params, takes.parameter)
+        if not isinstance(listed, (list, tuple)) or not all(isinstance(item, str) for item in listed):
+            raise _ElementIssue(f"params.{takes.parameter}", "Dimensions are a list of label names.")
+        inner = {label for binding in bindings if (producer := self._producer(binding)) is not None
+                 for entry in producer.entries for label in entry.coordinates}
+        if unknown := sorted(set(listed) - set(names) - inner):
+            raise _ElementIssue(
+                f"params.{takes.parameter}", f"Input {role!r} has no label dimensions {unknown!r}.",
+            )
+        whole = set(listed)
+        whole |= {label for label in names if label not in whole and _function_of(label, whole, bindings)} if whole else set()
+        if mapped_inner := sorted(inner - whole):
+            raise _ElementIssue(
+                path, f"Input {role!r} holds {mapped_inner!r} inside one operation output; "
+                "map the operation that made it.",
+            )
+        mapped = tuple(label for label in names if label not in whole)
+        if not mapped:
+            return None
+        groups: dict[tuple[str | None, ...], list[PlannedInput]] = {}
+        for binding in bindings:
+            labels = binding.member.labels
+            groups.setdefault(tuple(labels[label].value_id if label in labels else None for label in mapped), []).append(binding)
+        return tuple(
+            _Group({label: grouped[0].member.labels.get(label) for label in mapped}, tuple(grouped))
+            for grouped in groups.values()
+        )
+
+    @staticmethod
+    def _paired(groups: Mapping[str, tuple[_Group, ...]], path: str) -> list[dict[str, _Group]]:
+        """Combinations of one group per mapped role that agree on the labels they share."""
+        combinations: list[dict[str, _Group]] = [{}]
+        for role, role_groups in groups.items():
+            paired = []
+            for combination in combinations:
+                for group in role_groups:
+                    if all(
+                        _value_id(other.labels[label]) == _value_id(group.labels[label])
+                        for other in combination.values() for label in other.labels.keys() & group.labels.keys()
+                    ):
+                        paired.append(combination | {role: group})
+            combinations = paired
+        used = {(role, id(group)) for combination in combinations for role, group in combination.items()}
+        if any((role, id(group)) not in used for role, role_groups in groups.items() for group in role_groups):
+            raise _ElementIssue(path, "Mapped inputs do not pair one to one by their shared labels.")
+        return combinations
 
     def operation(self, name: str, element: OperationElement) -> None:
         path = f"payload.operations.{name}"
@@ -330,15 +479,14 @@ class _Lowerer:
             definition = registered.value.definition
             self._check_roles(element.inputs, set(definition.inputs))
             inputs = {}
-            labels: dict[str, FieldDescriptor] = {}
+            entries: dict[str, _Entries] = {}
             for role, expected in definition.inputs.items():
                 source = element.inputs[role]
                 wire_path = f"inputs.{role}"
                 if not isinstance(expected, DatasetPort):
                     inputs[role] = self._step_input(source, expected.kind, wire_path)
                     continue
-                inputs[role], actual, carried = self._input(source, wire_path)
-                labels |= carried
+                inputs[role], actual, entries[role] = self._input(source, wire_path)
                 outputs = any(binding.producer_element is not None for binding in inputs[role])
                 try:
                     require_dataset_port(actual, expected, fields=outputs)
@@ -349,17 +497,45 @@ class _Lowerer:
                             )
                 except ValueError as error:
                     raise _ElementIssue(wire_path, str(error)) from error
-            self._record(
-                name,
-                AnalysisRequestSpec(
-                    analysis_type=registered.key,
-                    params=params.model_dump(mode="json"),
-                ),
-                inputs,
-                definition.outputs,
-                element.label,
-                labels,
-            )
+            ports = {role: port for role, port in definition.inputs.items() if isinstance(port, DatasetInputPort)}
+            groups = {
+                role: grouped for role, port in ports.items()
+                if (grouped := self._groups(role, port.takes, inputs[role], params, f"inputs.{role}")) is not None
+            }
+            names = self._names(inputs)
+            spec = AnalysisRequestSpec(analysis_type=registered.key, params=params.model_dump(mode="json"))
+            if not groups:
+                self._record(
+                    name, spec, inputs, definition.outputs, element.label, names,
+                    entries=next((found for found in entries.values() if found), ()),
+                )
+                return
+            requests = []
+            for combination in self._paired(groups, "inputs"):
+                mapped = {
+                    label: value for group in combination.values() for label, value in group.labels.items()
+                    if value is not None
+                }
+                labels = {label for group in combination.values() for label in group.labels}
+                request = {
+                    role: tuple(_stripped(binding, labels) for binding in combination[role].bindings)
+                    if role in combination else bindings
+                    for role, bindings in inputs.items()
+                }
+                member = (
+                    "+".join(group.bindings[0].member.key for group in combination.values())
+                    if all(ports[role].takes == "one" for role in combination)
+                    else ",".join(f"{label}={value.value_id}" for label, value in mapped.items())
+                )
+                inner = next((found for role in entries if (found := self._entries(request[role], f"inputs.{role}"))), ())
+                requests.append((member, mapped, request, inner))
+            if len({member for member, *_ in requests}) != len(requests):
+                raise _ElementIssue("inputs", "Mapped requests repeat one combination of labels.")
+            for member, mapped, request, inner in requests:
+                self._record(
+                    name, spec, request, definition.outputs, element.label, names,
+                    member=member, mapped=mapped, entries=inner,
+                )
         except _ElementIssue as error:
             self.problem(
                 f"{path}.{error.path}", str(error), name, code=ResolutionCode.BAD_REFERENCE
@@ -429,6 +605,7 @@ class _Lowerer:
                 inputs,
                 {PLOTLY_FIGURE_ROLE: PlotlyFigurePort()},
                 element.label,
+                self._names(inputs),
             )
         except FigureBindingError as error:
             self.problem(f"{figure_path}.{error.path}", str(error), name)
@@ -450,7 +627,7 @@ def lower_analyze(
     *,
     figure_templates: FigureTemplateRegistry | None = None,
 ) -> tuple[
-    dict[str, PlannedElement], list[EncodedRequest], list[ProjectDiagnostic], dict[str, FigureDocument]
+    dict[ElementKey, PlannedElement], list[EncodedRequest], list[ProjectDiagnostic], dict[str, FigureDocument]
 ]:
     lower = _Lowerer(
         key, document_ids, document_pointers, documents, step_inputs, evaluations, upstream, operations,
@@ -469,7 +646,7 @@ def lower_analyze(
                 else None
             )
             lower.problem(".".join(map(str, ("payload", *location))), item["msg"], element)
-        return lower.elements, lower.encoded, lower.problems, lower.figures
+        return lower.planned, lower.encoded, lower.problems, lower.figures
 
     lower.declarations = document.inputs
     graph = TopologicalSorter()
@@ -513,4 +690,4 @@ def lower_analyze(
     for name, element in sorted(document.views.items()):
         if name not in refused:
             lower.view(name, element)
-    return lower.elements, lower.encoded, lower.problems, lower.figures
+    return lower.planned, lower.encoded, lower.problems, lower.figures

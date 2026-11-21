@@ -102,7 +102,7 @@ def _replay(client, before, after):
     })
 
 
-def test_rename_preserves_document_bytes_and_requests_through_undo(studio):
+def test_change_key_preserves_document_bytes_and_requests_through_undo(studio):
     client, folders = studio
     raw = _snapshot(client)["project"]
     # A document whose content mentions another document's name is not a reference to it.
@@ -142,7 +142,7 @@ def test_rename_preserves_document_bytes_and_requests_through_undo(studio):
     assert response.json()["presentation"] == before["presentation"]
 
 
-def test_rename_refuses_a_name_already_in_use(studio):
+def test_change_key_refuses_a_name_already_in_use(studio):
     client, folders = studio
     snapshot = _snapshot(client)
     _command(client, snapshot, {"kind": "change_key", "family": "documents", "member": "reach-model", "key": "task"}, 409)
@@ -414,7 +414,7 @@ def test_duplicate_of_a_based_document_is_a_root_with_its_content(based):
     assert edited["train"] != requests["train"] and edited["train-b"] == requests["train-b"]
 
 
-def test_rename_of_a_base_rewrites_the_documents_based_on_it(based):
+def test_change_key_of_a_base_rewrites_the_documents_based_on_it(based):
     client, folders = based
     before = _snapshot(client)
     requests = _requests(folders, before["revision"])
@@ -427,6 +427,30 @@ def test_rename_of_a_base_rewrites_the_documents_based_on_it(based):
     raw["documents"]["orphan"] = {"schema": raw["documents"]["arm"]["schema"], "base": {"document": "gone"}}
     _save_project(folders, PROJECT, Project.model_validate(raw))
     _command(client, _snapshot(client), {"kind": "change_key", "family": "documents", "member": "arm", "key": "gone"}, 422)
+
+
+def test_a_document_label_changes_no_key_reference_or_request(based):
+    client, folders = based
+    before = _snapshot(client)
+    requests = _requests(folders, before["revision"])
+    files = _files(folders)
+    labelled = _command(client, before, {"kind": "rename", "family": "documents", "member": "reach-model", "label": "Arm"})
+    after = labelled["snapshot"]
+    assert labelled["member"] == "reach-model"
+    assert after["project"]["documents"]["reach-model"]["label"] == "Arm"
+    assert after["project"]["documents"]["model-2"]["base"] == {"document": "reach-model"}
+    assert "label" not in after["project"]["documents"]["model-2"]
+    assert _requests(folders, after["revision"]) == requests
+    assert {name for name, data in _files(folders).items() if files.get(name) != data} == {"documents/reach-model.json"}
+
+    variant = _command(client, after, {"kind": "rename", "family": "documents", "member": "model-2", "label": "Heavy"})
+    detached = _command(client, variant["snapshot"], {"kind": "detach", "member": "model-2"})["snapshot"]
+    assert detached["project"]["documents"]["model-2"]["label"] == "Heavy"
+    keyed = _command(client, detached, {"kind": "change_key", "family": "documents", "member": "reach-model", "key": "arm"})
+    assert keyed["snapshot"]["project"]["documents"]["arm"]["label"] == "Arm"
+    cleared = _command(client, keyed["snapshot"], {"kind": "rename", "family": "documents", "member": "arm", "label": None})
+    assert "label" not in cleared["snapshot"]["project"]["documents"]["arm"]
+    assert _requests(folders, cleared["snapshot"]["revision"]) == requests
 
 
 def test_detach_is_refused_where_an_evaluation_would_lose_its_relation_to_its_subject(based):

@@ -346,16 +346,17 @@ def change_member_key(
 
 
 def label_member(
-    project: dict[str, JsonValue], family: Literal["steps", "elements"], member: str, label: str | None,
+    project: dict[str, JsonValue], family: Literal["documents", "steps", "elements"], member: str, label: str | None,
     *, document: str | None = None,
 ) -> dict[str, JsonValue]:
-    """Return the project with the step's, or ``document``'s operation's or figure's, display label set or cleared.
+    """Return the project with the document's, step's, or ``document``'s operation's or figure's, label set or cleared.
 
-    A based document holds the label as a difference from its base, and holds none when the base has the same label.
+    A based document holds an element's label as a difference from its base, and holds none when the base has the
+    same label. A document's own label is not composed from its base.
     """
-    if family == "steps":
-        step = {key: value for key, value in project["steps"][member].items() if key != "label"}
-        return {**project, "steps": {**project["steps"], member: step | ({"label": label} if label else {})}}
+    if family in ("documents", "steps"):
+        entry = {key: value for key, value in project[family][member].items() if key != "label"}
+        return {**project, family: {**project[family], member: entry | ({"label": label} if label else {})}}
     assert document is not None
     typed = Project.model_validate(project)
     composed = compose_document(typed.documents.get, document)
