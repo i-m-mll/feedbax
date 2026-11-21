@@ -125,6 +125,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     stoppable = json.loads(json.dumps(baseline_step))
     stoppable["base"]["inline"]["params"]["seed"] += 1
     definition["steps"]["stoppable"] = stoppable
+    definition["steps"]["copy"] = json.loads(json.dumps(baseline_step))
     _save_project(folders, project, Project.model_validate(definition))
     plan = folders.read_plan(project, revision=None)
     assert [(item.step, item.path) for item in plan.plan.diagnostics] == [
@@ -139,7 +140,8 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     }
     assert conditions.keys() == {"nominal", "heavy"}
     keys = (baseline, conditions["heavy"])
-    assert by_key[baseline].request_id == by_key[conditions["nominal"]].request_id
+    copy = RunKey("default", "copy", "default")
+    assert by_key[baseline].request_id == by_key[conditions["nominal"]].request_id == by_key[copy].request_id
     assert by_key[baseline].request_id != by_key[conditions["heavy"]].request_id
     assert all(by_key[key].request_id.startswith("evaluate:") for key in keys)
 
@@ -164,18 +166,21 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     admit(host, "gate", gate)
     wait_until(lambda: job_row(host, gate.id, "running"))
     (source,) = launch(jobs, (train,), "saved-train").items
-    submitted = launch(jobs, keys, "evaluate")
-    assert [item.disposition for item in submitted.items] == ["admitted"] * len(keys)
-    assert launch(jobs, keys, "evaluate") == submitted
-    (attached,) = launch(jobs, (baseline,), "evaluate-live").items
-    assert attached.disposition == "attached" and attached.job_id == submitted.items[0].job_id
+    together = launch(jobs, (*keys, copy), "evaluate")
+    assert launch(jobs, (*keys, copy), "evaluate") == together
+    *submitted_items, copied = together.items
+    assert [item.disposition for item in submitted_items] == ["admitted"] * len(keys)
+    assert copied.disposition == "attached" and copied.job_id == submitted_items[0].job_id
+    for name, row in (("evaluate-live", baseline), ("evaluate-live-copy", copy)):
+        (attached,) = launch(jobs, (row,), name).items
+        assert attached.disposition == "attached" and attached.job_id == submitted_items[0].job_id
     with monkeypatch.context() as environment:
         environment.setenv("XLA_FLAGS", "--xla_cpu_multi_thread_eigen=false")
         different_execution = JobService(host, registry)
         (conflict,) = launch(different_execution, (baseline,), "evaluate-live-conflict").items
         assert conflict.disposition == "rejected"
         assert "different execution binding" in conflict.reason
-    for item in submitted.items:
+    for item in submitted_items:
         (row,) = host.jobs(job_id=item.job_id, include_launch=True)
         assert row["state"] == "queued" and not row["edges"][0]["satisfied"]
         assert row["launch"]["warm_entrypoint"] == f"{evaluate_worker.__name__}:main"
@@ -228,7 +233,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     root = plan.store_path
     store = ImmutableArtifactBlobProvider(root)
     outcomes = {}
-    for key, item in zip(keys, submitted.items, strict=True):
+    for key, item in zip(keys, submitted_items, strict=True):
         row = wait_until(lambda: (
             job_row(host, item.job_id, "succeeded") or job_row(host, item.job_id, "failed")
         ))
@@ -240,7 +245,8 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
         outcomes[key] = jobs.read_evaluation_result(project=plan.project_id, store=root, job_id=item.job_id)
 
     joined = ProjectPlanService(folders, jobs).read(project, revision=plan.revision)
-    for key, item in zip(keys, submitted.items, strict=True):
+    outcomes[copy] = outcomes[baseline]
+    for key, item in zip((*keys, copy), together.items, strict=True):
         (attempt,) = joined.attempts_by_run[key]
         assert attempt.job_id == item.job_id and attempt.successful_receipt == outcomes[key].receipt
         assert attempt.checkpoint_source.job_id == source.job_id
@@ -381,7 +387,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
         assert "source_graph_sha256" not in dataset.descriptor.attrs
         np.testing.assert_array_equal(dataset.data(position)[0, 0], base_pos)
 
-    (raw_attempt,) = host.jobs(job_id=submitted.items[0].job_id, include_launch=True)
+    (raw_attempt,) = host.jobs(job_id=submitted_items[0].job_id, include_launch=True)
     view = SuccessView(store)
     raw_success = view.read_attempt(raw_attempt["id"])
     observation_success = view.read_attempt(observation_attempt.job_id)
@@ -409,7 +415,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     assert SuccessView(store).attempt_ref(attempt) is None
 
     restart(host)
-    assert launch(jobs, keys, "evaluate") == submitted
+    assert launch(jobs, (*keys, copy), "evaluate") == together
     original = outcomes[baseline]
     artifact = original._manifest().artifacts[0]
     ref = DatasetProductRef(
@@ -444,7 +450,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
         assert store.store_object(raw) == ref.object_ref
 
     (rerun,) = launch(jobs, (baseline,), "evaluate-rerun").items
-    assert rerun.disposition == "admitted" and rerun.job_id != submitted.items[0].job_id
+    assert rerun.disposition == "admitted" and rerun.job_id != submitted_items[0].job_id
     with original.open_states() as dataset:
         np.testing.assert_array_equal(dataset.select(position, labels={"trial": trial_ids[0]})[0, 0], base_pos[0])
     manifest_ref, raw = store.resolve_manifest("EvaluationRunManifest", outcomes[baseline].receipt.manifest_id)
@@ -453,7 +459,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
         with writable_store_object(manifest_path):
             manifest_path.write_bytes(raw + b"\n")
         with pytest.raises(JobConflict, match="cannot be authenticated|Cannot authenticate"):
-            jobs.read_evaluation_result(project=plan.project_id, store=root, job_id=submitted.items[0].job_id)
+            jobs.read_evaluation_result(project=plan.project_id, store=root, job_id=submitted_items[0].job_id)
     finally:
         with writable_store_object(manifest_path):
             manifest_path.write_bytes(raw)

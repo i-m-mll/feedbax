@@ -147,7 +147,9 @@ def _compute(
         )
     if isinstance(spec, RenderRequestSpec):
         with ExitStack() as stack:
-            figure = render_figure(spec.document, _dataset_inputs(store, request, bindings, stack))
+            figure = render_figure(
+                spec.document, _dataset_inputs(store, request, bindings, stack), names=spec.names,
+            )
             document = figure.to_json()
             assert document is not None
             raw = document.encode()

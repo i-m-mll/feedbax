@@ -324,7 +324,7 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
     for product, element in ((aligned, "velocity"), (summarized, "summary")):
         with open_stored_dataset(store, dataset_member(product.products[element][0])) as data:
             assert data.data("mass").tolist() == data.data("member").tolist() == list(order)
-            assert data.data("source").item() == "conditions"
+            assert summary.names["source"][data.data("source").item()].key == "conditions"
             assert data.data("condition").tolist() == [[condition] for condition in conditions]
             np.testing.assert_array_equal(data.data("state_time"), times[0])
             assert {name: data.data(name).tolist() for name in varied} == varied

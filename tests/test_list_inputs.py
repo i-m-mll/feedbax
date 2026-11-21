@@ -12,6 +12,7 @@ from feedbax.light_jobs import dataset_member
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset
 from feedbax.persistence.effective_success import SuccessView
+from feedbax.project_members import change_key
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.host import wait_until
 from tests.test_canonical_evaluate_admission import _save_project
@@ -87,7 +88,15 @@ def test_one_analyze_stacks_two_evaluates_of_two_train_steps_by_label(host, tmp_
     receipt = SuccessView(store).read_success(ContentObjectRef.model_validate(job["outcome"]["store_success"])).receipt
     with open_stored_dataset(store, dataset_member(receipt.products["velocity"][0])) as data:
         stacked = data.descriptor.variables["parallel_velocity"].dims
-        labels = list(zip(*(data.data(name).tolist() for name in ("source", "model", "mass")), strict=True))
+        names = align.names
+        labels = list(zip(
+            *(
+                [names[name][value].key for value in data.data(name).tolist()] if name in names
+                else data.data(name).tolist()
+                for name in ("source", "model", "mass")
+            ),
+            strict=True,
+        ))
         rates = data.data("rate").tolist()
         assert data.descriptor.coords["trial"].dims == ("trial",)
     assert stacked == ("member", "checkpoint", "condition", "trial", "state_time")
@@ -126,3 +135,69 @@ def test_zip_pairs_two_inputs_by_label_and_refuses_a_partial_pairing():
     (problem,) = compile_project(Project.model_validate(definition), operations=_operations()).diagnostics
     assert (problem.step, problem.path) == ("analyze", "sweep.combination")
     assert "one to one" in problem.detail
+
+
+def _request_ids(definition):
+    plan = compile_project(Project.model_validate(definition), operations=_operations())
+    assert not plan.diagnostics, plan.diagnostics
+    return plan, {element.key.name: element.request_id for element in plan.elements.values()}
+
+
+def _figures_by(definition):
+    """Three figures of the summary, splitting by source and model, by model, and by neither."""
+    documents = definition["documents"]
+    views = documents["velocity-analysis"]["payload"]["views"]
+    for name, group in (("models", ["model", "mass"]), ("masses", ["mass"])):
+        figure = deepcopy(documents["velocity-figure"])
+        figure["payload"]["layers"][0] |= {"group": group, "style": {"label": " ".join(f"{{{g}}}" for g in group)}}
+        documents[f"{name}-figure"] = figure
+        views[name] = deepcopy(views["profile"]) | {"figure": {"document": f"{name}-figure"}}
+    return definition
+
+
+def test_change_key_and_rename_recompute_no_operation_and_redraw_the_figures_that_print_the_name():
+    base = _figures_by(_two_model_definition({"nominal": ("light", 0.5), "heavy": ("heavier", 3)}))
+    plan, before = _request_ids(base)
+    operations = {name for name, request in before.items() if request.startswith("analyze:")}
+    assert operations == {"align", "summarize"}
+    for step, printing in (("train", {"profile", "models"}), ("conditions", {"profile"})):
+        renamed = deepcopy(base)
+        renamed["steps"][step]["label"] = "Renamed"
+        rekeyed, _ = change_key(deepcopy(base), {}, "steps", step, f"{step}_x")
+        for edited, printed in ((renamed, "Renamed"), (rekeyed, f"{step}_x")):
+            plan, after = _request_ids(edited)
+            assert {name for name in before if before[name] != after[name]} == printing
+            label = "model" if step == "train" else "source"
+            (profile,) = (element for element in plan.elements.values() if element.key.name == "profile")
+            spec = decode_request(plan.requests[profile.request_id], plan.documents.__getitem__).spec
+            assert printed in spec.names[label].values()
+
+
+def test_a_key_two_selections_share_is_qualified_by_content():
+    base = _two_model_definition()
+    _, before = _request_ids(base)
+    rekeyed, _ = change_key(deepcopy(base), {}, "steps", "conditions", "conditions_x")
+    _, after = _request_ids(rekeyed)
+    assert {name: after[name] for name in ("align", "summarize")} == {name: before[name] for name in ("align", "summarize")}
+
+
+def test_a_duplicate_step_read_in_place_of_the_original_plans_the_same_operations():
+    base = _two_model_definition({"nominal": ("light", 0.5), "heavy": ("heavier", 3)})
+    _, before = _request_ids(base)
+    duplicated = deepcopy(base)
+    duplicated["steps"]["conditions_copy"] = deepcopy(duplicated["steps"]["conditions"]) | {"label": "Copy"}
+    duplicated["steps"]["analyze"]["inputs"]["states"][0] = {"step": "conditions_copy"}
+    _, after = _request_ids(duplicated)
+    assert {name: after[name] for name in ("align", "summarize")} == {name: before[name] for name in ("align", "summarize")}
+
+
+def test_two_roles_over_the_same_members_agree_on_label_ids():
+    definition = _two_model_definition({"nominal": ("light", 0.5), "heavy": ("heavier", 3)})
+    definition["documents"]["velocity-analysis"]["payload"]["inputs"]["again"] = {"kind": "dataset"}
+    analyze = definition["steps"]["analyze"]["inputs"]
+    analyze["again"] = deepcopy(analyze["states"])
+    plan = compile_project(Project.model_validate(definition), operations=_operations())
+    (run,) = (run for run in plan.rows if isinstance(run, PlannedAnalyzeRun))
+    states, again = ([binding.member.labels for binding in run.inputs[role]] for role in ("states", "again"))
+    assert states == again
+    assert len({labels["source"].value_id for labels in states}) == 2

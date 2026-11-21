@@ -3,7 +3,6 @@ import {
   parseContract,
   type ContractTypeMap,
   type EvaluateAttachmentReadRequest,
-  type EvaluateAttachmentRequest,
   type ModelConnectionReviewRequest,
   type ModelEditRequest,
   type ModelFieldRequest,
@@ -110,8 +109,8 @@ export async function writeProjectPresentation(id: string, body: StudioPresentat
   return readFolder('StudioProjectSnapshot', id, path, { method: 'PUT', body: mutationBody('StudioPresentationWrite', body, path), signal });
 }
 
-type ModelRequest = 'ModelEditRequest' | 'ModelUndoRequest' | 'ModelConnectionReviewRequest' | 'ModelProjectionRequest' | 'ModelFieldRequest' | 'EvaluateAttachmentReadRequest' | 'EvaluateAttachmentRequest';
-type ModelResponse = 'ModelEditResponse' | 'ModelConnectionReview' | 'ModelProjection' | 'ModelFieldResponse' | 'EvaluateAttachmentState' | 'EvaluateAttachmentEdit';
+type ModelRequest = 'ModelEditRequest' | 'ModelUndoRequest' | 'ModelConnectionReviewRequest' | 'ModelProjectionRequest' | 'ModelFieldRequest' | 'EvaluateAttachmentReadRequest';
+type ModelResponse = 'ModelEditResponse' | 'ModelConnectionReview' | 'ModelProjection' | 'ModelFieldResponse' | 'EvaluateAttachmentState';
 
 async function modelRequest<K extends ModelRequest, R extends ModelResponse>(
   id: string, action: string, request: K, response: R, body: ContractTypeMap[K], signal?: AbortSignal,
@@ -152,6 +151,3 @@ export function readEvaluateAttachments(id: string, body: EvaluateAttachmentRead
   return modelRequest(id, 'evaluate-attachments', 'EvaluateAttachmentReadRequest', 'EvaluateAttachmentState', body, signal);
 }
 
-export function editEvaluateAttachment(id: string, body: EvaluateAttachmentRequest, signal?: AbortSignal) {
-  return modelRequest(id, 'evaluate-attachment', 'EvaluateAttachmentRequest', 'EvaluateAttachmentEdit', body, signal);
-}

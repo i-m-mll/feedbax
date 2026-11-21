@@ -37,6 +37,8 @@ type Positions = dict[str, tuple[int, ...]]
 class _Source:
     dataset: Dataset
     descriptor: DatasetDescriptor
+    names: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
+    """The printed name of each value ID of a coordinate whose values name things of the project."""
     values: dict[str, np.ndarray] = field(default_factory=dict)
 
     def read(self, name: str) -> np.ndarray:
@@ -52,6 +54,10 @@ class _Source:
         ):
             raise ValueError(f"Coordinate {name!r} requires scalar labels.")
         return dimension, labels
+
+    def printed(self, name: str, value: Label) -> Label:
+        names = self.names.get(name)
+        return names.get(value, value) if names is not None and isinstance(value, str) else value
 
 
 def _selected(
@@ -69,7 +75,7 @@ def _selected(
             matched = tuple(
                 index
                 for index in candidates
-                if labels[index] == selection
+                if source.printed(name, labels[index]) == selection
                 and isinstance(labels[index], bool) == isinstance(selection, bool)
             )
         if not matched:
@@ -97,7 +103,7 @@ def _groups(
         for labels_by_name, group in _groups(
             source, tuple(rest), positions | {dimension: tuple(indices)}
         ):
-            yield {name: value} | labels_by_name, group
+            yield {name: source.printed(name, value)} | labels_by_name, group
 
 
 @dataclass(frozen=True)
@@ -198,10 +204,12 @@ def render(
     figure: FigureDocument,
     datasets: Mapping[str, Dataset],
     theme: str | go.layout.Template | Mapping[str, Any] | None = None,
+    *,
+    names: Mapping[str, Mapping[str, str]] | None = None,
 ) -> go.Figure:
-    """Render only the authored bindings and prepared values."""
+    """Render only the authored bindings and prepared values, printing ``names`` for the value IDs they cover."""
     sources = {
-        name: _Source(dataset, dataset.descriptor)
+        name: _Source(dataset, dataset.descriptor, names or {})
         for name, dataset in datasets.items()
         if name in figure.data
     }

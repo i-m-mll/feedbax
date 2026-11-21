@@ -26,6 +26,7 @@ from feedbax.contracts.project_inputs import (
     CheckpointRule,
     NonemptyText,
     ProjectName,
+    RowKey,
     StepReference,
     SubsetSelectionError,
     SweepExceptionTerms,
@@ -169,14 +170,29 @@ class SweepException(PatchSet):
 
 
 class AxisCondition(StrictModel):
-    """The rows an axis applies to: those whose value on each named axis of the same sweep is one of those listed."""
+    """The rows an axis applies to, by the terms an exception's ``where`` takes: those whose value on each named axis,
+    or on a coordinate an input axis carries, is one of those listed, and that are among ``rows`` when it is given.
 
-    axes: dict[ProjectName, Annotated[list[ProjectName], Field(min_length=1)]] = Field(min_length=1)
+    ``rows`` names the rows the step has without this axis; an axis conditioned on rows divides its rows after every
+    conditioned axis authored before it.
+    """
+
+    axes: dict[ProjectName, Annotated[list[ProjectName], Field(min_length=1)]] = Field(default_factory=dict)
+    rows: Annotated[list[RowKey], Field(min_length=1)] | None = Field(default=None, exclude_if=lambda rows: rows is None)
+
+    @model_validator(mode="after")
+    def _has_terms(self) -> AxisCondition:
+        if not self.axes and self.rows is None:
+            raise ValueError("a condition names axis values or rows")
+        return self
 
 
 class NamedAxis(StrictModel):
     values: dict[ProjectName, AxisValue | None]
     where: AxisCondition | None = None
+    optional: bool = Field(default=False, exclude_if=lambda optional: not optional)
+    """A row an optional axis applies to is kept as it is, with no value on the axis, and one row per value is added
+    beside it."""
 
 
 class InputAxis(StrictModel):
@@ -232,6 +248,7 @@ class SetAxis(StrictModel):
 
     set: ProjectName
     where: AxisCondition | None = None
+    optional: bool = Field(default=False, exclude_if=lambda optional: not optional)
 
 
 type Axis = NamedAxis | InputAxis | ListedAxis | RangeAxis | SampledAxis | CheckpointRuleAxis | SetAxis
@@ -348,8 +365,11 @@ def inherit_sweep(
                     values.pop(key, None)
                 else:
                     values[key] = _merge_value(values.get(key), value, author)
-            where = axis.where if "where" in axis.model_fields_set or not isinstance(prior, NamedAxis) else prior.where
-            axes[name] = NamedAxis(values=values, where=where)
+            kept = {
+                field: getattr(axis if field in axis.model_fields_set or not isinstance(prior, NamedAxis) else prior, field)
+                for field in ("where", "optional")
+            }
+            axes[name] = NamedAxis(values=values, **kept)
         elif isinstance(axis, (GeneratedAxis, CheckpointRuleAxis)) and author is not None:
             generated = axis.model_copy()
             generated._author = author
@@ -714,11 +734,28 @@ def _condition(axis: Axis) -> AxisCondition | None:
     return axis.where if isinstance(axis, NamedAxis | GeneratedAxis | SetAxis) else None
 
 
+def _optional(axis: Axis) -> bool:
+    return isinstance(axis, NamedAxis | SetAxis) and axis.optional
+
+
+def _divides(axis: Axis) -> bool:
+    """Whether the axis adds rows to the combination of the others, rather than being one of its factors."""
+    return _condition(axis) is not None or _optional(axis)
+
+
 def _conditional_order(axes: Mapping[str, Axis]) -> tuple[str, ...]:
-    """The conditioned axes, each after the conditioned axes it depends on; a condition names other axes only."""
+    """The conditioned and optional axes, each after those it depends on; a condition names other axes only.
+
+    An optional axis without a condition applies to every row, so it follows every such axis authored before it.
+    """
     graph: dict[str, set[str]] = {}
+    earlier: list[str] = []
     for name, axis in axes.items():
+        if not _divides(axis):
+            continue
         if (where := _condition(axis)) is None:
+            graph[name] = set(earlier)
+            earlier.append(name)
             continue
         for other in where.axes:
             if other == name:
@@ -726,12 +763,10 @@ def _conditional_order(axes: Mapping[str, Axis]) -> tuple[str, ...]:
                     SweepExpansionCode.INVALID_CONDITION, f"sweep.axes.{name}.where.axes.{other}",
                     f"axis {name!r} is conditioned on itself",
                 )
-            if other not in axes:
-                raise SweepExpansionError(
-                    SweepExpansionCode.INVALID_CONDITION, f"sweep.axes.{name}.where.axes.{other}",
-                    f"unknown axis {other!r}",
-                )
-        graph[name] = {other for other in where.axes if _condition(axes[other]) is not None}
+        graph[name] = {other for other in where.axes if other in axes and _divides(axes[other])}
+        if where.rows is not None:
+            graph[name] |= set(earlier)
+        earlier.append(name)
     try:
         return tuple(TopologicalSorter(graph).static_order())
     except CycleError as error:
@@ -1002,7 +1037,7 @@ def _generated_row_id(values: Mapping[str, str]) -> str:
 def _expanded(axes: Mapping[str, Axis], selection: Mapping[str, _AxisChoice]) -> ExpandedRow:
     """The row of one value per axis in ``selection``; an axis it has no value on is absent from its ID and label."""
     axis_value_ids = {name: choice.key for name, choice in selection.items()}
-    row_id = _generated_row_id(axis_value_ids)
+    row_id = _generated_row_id(axis_value_ids) if axis_value_ids else DEFAULT_SWEEP_ROW
     coordinates: dict[str, SweepCoordinate] = {}
     patches: dict[str, PatchValue] = {}
     origins: dict[str, PatchOrigin] = {}
@@ -1047,7 +1082,7 @@ def _expanded(axes: Mapping[str, Axis], selection: Mapping[str, _AxisChoice]) ->
             patches[path] = patch
         authors.update(choice.patch_authors)
     return ExpandedRow(
-        row_id, ", ".join(labels), coordinates, patches, bindings, origins, authors, axis_value_ids
+        row_id, ", ".join(labels) or None, coordinates, patches, bindings, origins, authors, axis_value_ids
     )
 
 
@@ -1165,7 +1200,8 @@ def _condition_picks(name: str, where: AxisCondition, rows: Sequence[ExpandedRow
     try:
         picked = {
             id(row) for row in select_sweep_exception_rows(
-                SweepExceptionTerms(axes=where.axes), rows, key=lambda row: row.id,
+                SweepExceptionTerms(axes=where.axes, rows=where.rows) if where.rows is not None
+                else SweepExceptionTerms(axes=where.axes), rows, key=lambda row: row.id,
                 coordinates=lambda row: {axis: value.value_id for axis, value in row.coordinates.items()},
             )
         }
@@ -1180,16 +1216,20 @@ def _condition_picks(name: str, where: AxisCondition, rows: Sequence[ExpandedRow
 def _conditioned(
     plan: _SweepPlan, choices: Mapping[str, Sequence[_AxisChoice]], max_rows: int,
 ) -> list[tuple[dict[str, _AxisChoice], ExpandedRow]]:
-    """The combination's rows, each row a conditional axis picks divided into one row per value of the axis."""
+    """The combination's rows, each row a conditional axis picks divided into one row per value of the axis.
+
+    A row an optional axis picks is kept, and one row per value of the axis is added after it.
+    """
     pairs = [(selection, _expanded(plan.axes, selection)) for selection in plan.selections(choices)]
     for name in plan.conditional:
-        where = _condition(plan.axes[name])
-        assert where is not None
-        picks = _condition_picks(name, where, [row for _, row in pairs])
+        axis = plan.axes[name]
+        where = _condition(axis)
+        picks = (True,) * len(pairs) if where is None else _condition_picks(name, where, [row for _, row in pairs])
         divided = []
         for (selection, row), picked in zip(pairs, picks, strict=True):
-            if not picked:
+            if not picked or _optional(axis):
                 divided.append((selection, row))
+            if not picked:
                 continue
             for choice in choices[name]:
                 chosen = selection | {name: choice}

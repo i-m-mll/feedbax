@@ -266,9 +266,7 @@ from feedbax.contracts.model_edit import (
     DeleteElements,
     DuplicateComponents,
     EvaluateAttachmentAxis,
-    EvaluateAttachmentEdit,
     EvaluateAttachmentReadRequest,
-    EvaluateAttachmentRequest,
     EvaluateAttachmentRows,
     EvaluateAttachmentState,
     StudioEvaluateValueSource,
@@ -399,6 +397,7 @@ from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.studio_trials import StudioTrialAuthoring, StudioTrialAuthoringRequest
 from feedbax.contracts.studio_checkpoint_rule import StudioCheckpointRuleEdit, StudioCheckpointRuleRequest
 from feedbax.contracts.studio_subset import StudioSubsetToRowsEdit, StudioSubsetToRowsRequest
+from feedbax.contracts.studio_sets import StudioSetEdit, StudioSetEditRequest, StudioSetsOffered, StudioSetsOfferedRequest
 from feedbax.contracts.studio_removed_runs import StudioRemovedRuns, StudioRemovedRunsRequest
 from scripts.studio_json_schema import emit_authored_contracts
 
@@ -475,6 +474,10 @@ AUTHORED_CONTRACT_MODELS = (
     StudioCheckpointRuleRequest,
     StudioSubsetToRowsEdit,
     StudioSubsetToRowsRequest,
+    StudioSetEditRequest,
+    StudioSetEdit,
+    StudioSetsOfferedRequest,
+    StudioSetsOffered,
     StudioRemovedRuns,
     StudioRemovedRunsRequest,
     FieldTextResult,
@@ -564,9 +567,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     CutComponents,
     DuplicateComponents,
     EvaluateAttachmentAxis,
-    EvaluateAttachmentEdit,
     EvaluateAttachmentReadRequest,
-    EvaluateAttachmentRequest,
     EvaluateAttachmentRows,
     EvaluateAttachmentState,
     StudioEvaluateValueSource,
@@ -867,10 +868,8 @@ CONTRACT_MODEL_NAMES = [
     "ModelFieldResponse",
     "TrainFieldRequest",
     "TrainFieldResponse",
-    "EvaluateAttachmentRequest",
     "EvaluateAttachmentReadRequest",
     "EvaluateAttachmentState",
-    "EvaluateAttachmentEdit",
     "ModelUndoRequest",
     *(model.__name__ for model in AUTHORED_CONTRACT_MODELS),
     "ProjectValueEdit",

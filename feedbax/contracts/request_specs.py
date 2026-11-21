@@ -98,6 +98,8 @@ class AnalysisRequestSpec(RequestSpec):
 
 class RenderRequestSpec(RequestSpec):
     document: FigureDocument
+    names: dict[Name, dict[Name, str]] = Field(default_factory=dict)
+    """The printed name of each value ID of the step-valued labels the figure splits or selects by."""
 
 
 class ReportRequestSpec(RequestSpec):
