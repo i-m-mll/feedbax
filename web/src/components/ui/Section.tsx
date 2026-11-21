@@ -31,7 +31,7 @@ export interface SectionProps {
 
 const header: Record<SectionLevel, string> = {
   drawer: 'border-b border-shell-divider bg-shell-header text-sm font-medium text-shell-foreground',
-  group: 'text-sm text-shell-chrome-muted',
+  group: 'text-sm text-shell-category',
   field: 'text-xs text-shell-muted',
 };
 
