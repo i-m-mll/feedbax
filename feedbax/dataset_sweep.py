@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import cast
 
 import numpy as np
 from pydantic import JsonValue
@@ -207,3 +208,76 @@ def stack_dataset_members(
         tensor_shapes={name: descriptor.shape(name) for name in descriptor.tensor_names},
         load_tensor=load,
     )
+
+
+def _is_label(name: str, field: FieldDescriptor, axes: tuple[str, ...]) -> bool:
+    return "." not in name and set(field.dims) <= set(axes) and field.inline_values is not None and all(
+        value is None or isinstance(value, str) for value in field.inline_values
+    )
+
+
+def dataset_entries(
+    member: SweepInputMember, dataset: Dataset,
+) -> list[tuple[SweepInputMember, Dataset]]:
+    """The labelled entries of a stacked dataset, each keyed by its inner key qualified by ``member`` and carrying
+    its inner labels and ``member``'s; a dataset that is no stack is the one entry ``member``."""
+    descriptor = dataset.descriptor
+    if MEMBER not in descriptor.coords:
+        return [(member, dataset)]
+    axes = descriptor.coords[MEMBER].dims
+    labels = {MEMBER} | {
+        name for name, field in descriptor.coords.items() if _is_label(name, field, axes)
+    }
+    labels |= {f"{label}.{part}" for label in labels for part in ("label", "value")} & descriptor.coords.keys()
+    fields = {**descriptor.variables, **descriptor.coords}
+
+    def leading(name: str) -> tuple[str, ...]:
+        stacked = tuple(dim for dim in fields[name].dims if dim in axes)
+        if fields[name].dims[: len(stacked)] != stacked:
+            raise ValueError(f"Field {name!r} does not lead with its stacking dimensions")
+        return stacked
+
+    entries = []
+    for position in np.ndindex(*(descriptor.dimensions[axis] for axis in axes)):
+        at = dict(zip(axes, position, strict=True))
+
+        def prefix(name: str) -> tuple[int, ...]:
+            return tuple(at[dim] for dim in leading(name))
+
+        def value(name: str) -> JsonValue:
+            return np.asarray(dataset.data(name, prefix(name))).tolist()
+
+        inner = {
+            name: SweepCoordinate(
+                str(value(name)),
+                cast(str | None, value(f"{name}.label")) if f"{name}.label" in labels else None,
+                value(f"{name}.value") if f"{name}.value" in labels else None,
+            )
+            for name in labels if name != MEMBER and "." not in name and value(name) is not None
+        }
+        if shared := sorted(inner.keys() & member.coordinates.keys()):
+            raise ValueError(f"Member {member.key!r} already carries the labels {shared!r}")
+        kept = {}
+        for name, field in fields.items():
+            if name in labels:
+                continue
+            inline = field.inline_values
+            if inline is not None and leading(name):
+                inline = tuple(np.asarray(dataset.data(name, prefix(name))).ravel().tolist())
+            kept[name] = field.model_copy(update={"dims": field.dims[len(leading(name)):], "inline_values": inline})
+        view = DatasetDescriptor(
+            dimensions={dim: size for dim, size in descriptor.dimensions.items() if dim not in axes},
+            variables={name: kept[name] for name in descriptor.variables},
+            coords={name: kept[name] for name in descriptor.coords if name in kept},
+            schema_id=descriptor.schema_id,
+            attrs=descriptor.attrs,
+        )
+
+        def load(name: str, index: tuple[int | slice, ...], prefix=prefix) -> np.ndarray:
+            return np.asarray(dataset.data(name, (*prefix(name), *index)))
+
+        entries.append((
+            SweepInputMember(f"{member.key}/{value(MEMBER)}", {**member.coordinates, **inner}),
+            Dataset.bind(view, tensor_shapes={name: view.shape(name) for name in view.tensor_names}, load_tensor=load),
+        ))
+    return entries

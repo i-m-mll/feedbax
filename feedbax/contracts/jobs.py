@@ -360,6 +360,8 @@ class StudioProjectWindowMapProblem(StrictModel):
 class StudioPlanRequestAddress(StrictModel):
     key: StudioSavedTrainKey
     element: str | None = None
+    member: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    """The mapped request of ``element``, when the element maps over labels."""
 
 
 class StudioPlanRequest(StudioPlanRequestAddress):
@@ -395,6 +397,8 @@ class StudioProjectWindowMapFigure(StrictModel):
 class StudioProjectWindowMapElement(StudioSavedLightHistory):
     key: StudioSavedTrainKey
     name: str
+    member: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    """The mapped request of the element ``name``, when the element maps over labels."""
     kind: Literal["analyze", "render"]
     request_id: str
     status: JobStatus

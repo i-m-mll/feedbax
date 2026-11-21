@@ -19,8 +19,21 @@ class DatasetPort(StrictModel):
     coordinates: dict[str, FieldDescriptor] = Field(default_factory=dict)
 
 
+class WholeDimensions(StrictModel):
+    """The operation parameter whose value lists the label dimensions the port takes whole."""
+
+    parameter: str = Field(min_length=1)
+
+
+type Takes = Literal["all", "one"] | WholeDimensions
+"""What a dataset port takes of each label dimension of what is bound: the whole stack (``all``), one member
+(``one``), or the dimensions a parameter lists. The operation is one request per combination of the labels it takes
+one element of."""
+
+
 class DatasetInputPort(DatasetPort):
     kind: Literal["dataset"] = "dataset"
+    takes: Takes = "all"
 
 
 class ModelPort(StrictModel):

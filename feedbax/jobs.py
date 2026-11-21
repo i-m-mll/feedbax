@@ -1962,7 +1962,9 @@ class JobService(PlanJobReader):
 def plan_attempt_key(key: RunKey | ElementKey) -> str:
     run = key.run if isinstance(key, ElementKey) else key
     address = plan_run_key(run.variant, run.step, run.row)
-    return f"{address}/elements/{key.name}" if isinstance(key, ElementKey) else address
+    if not isinstance(key, ElementKey):
+        return address
+    return f"{address}/elements/{key.name}" + (f"/members/{key.member}" if key.member is not None else "")
 
 
 def _saved_plan_command(

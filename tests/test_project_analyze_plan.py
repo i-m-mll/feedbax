@@ -123,12 +123,12 @@ def test_text_and_studio_compile_the_same_saved_evaluate_element_plan(tmp_path):
     assert all(plan.requests[key] == raw for key, raw in baseline.requests.items())
     assert all(plan.documents[key] == raw for key, raw in baseline.documents.items())
     (row,) = (item for item in plan.rows if isinstance(item, PlannedAnalyzeRun))
-    assert row.key == _KEY and tuple(row.elements) == ("align", "summarize", "profile")
+    assert row.key == _KEY and tuple(key.name for key in row.elements) == ("align", "summarize", "profile")
     assert row.document_ids == {
         "payload": "velocity-analysis",
         "payload.views.profile.figure": "velocity-figure",
     }
-    align, summary, figure = (_decode(plan, name) for name in row.elements)
+    align, summary, figure = (_decode(plan, key.name) for key in row.elements)
     assert [item.kind for item in (align, summary, figure)] == ["analyze", "analyze", "render"]
     evaluate = next(run for run in plan.runs if run.kind == "evaluate")
     assert align.inputs["states"][0].reference == ProductRef(
@@ -140,7 +140,7 @@ def test_text_and_studio_compile_the_same_saved_evaluate_element_plan(tmp_path):
     assert figure.inputs["summary"][0].reference == ProductRef(
         request_id=summary.id, role="summary"
     )
-    assert row.elements["profile"].inputs["summary"][0].element == ElementKey(_KEY, "summarize")
+    assert row.elements[ElementKey(_KEY, "profile")].inputs["summary"][0].element == ElementKey(_KEY, "summarize")
     assert figure.spec.document == FigureDocument.model_validate(project.documents["velocity-figure"].payload)
     source = plan.sources[_KEY]["/payload/operations/summarize/params/bounds_scale"]
     assert (source.kind, source.name, source.path) == (
@@ -190,7 +190,7 @@ def test_managed_wire_review_uses_plan_ports_without_writing_a_draft():
     draft_plan = compile_project(project, operations=registry)
     draft_row = next(row for row in draft_plan.rows if isinstance(row, PlannedAnalyzeRun))
     assert draft_row.figures["profile"].data == ("summary",)
-    assert "profile" not in draft_row.elements
+    assert not draft_row.requests("profile")
     reviewed = review("profile", "summary", {"element": "summarize", "product": "summary"})
     wired = preview_authored_files(project, reviewed).documents["velocity-analysis"].payload
     assert wired["views"]["profile"]["inputs"] == {"summary": {"element": "summarize", "product": "summary"}}

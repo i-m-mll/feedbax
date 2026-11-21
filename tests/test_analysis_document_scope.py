@@ -86,13 +86,13 @@ def test_a_narrowed_parameter_edit_makes_a_based_document_for_the_lit_step():
     )
     assert not stored.created
     plan = _compile(grown, operations)
-    assert "extra" in _analyze(plan, _ONE).elements and "extra" in _analyze(plan, _TWO).elements
+    assert _analyze(plan, _ONE).requests("extra") and _analyze(plan, _TWO).requests("extra")
     assert changed_from_base(grown, created.id) == _CHANGED
 
     reset, stored = _store(grown, _ONE, created.id, StudioAnalyzeReset(kind="reset", paths=[_BOUNDS]), {"analyze"}, operations)
     assert not stored.created and changed_from_base(reset, created.id) == []
-    assert _analyze(_compile(reset, operations), _ONE).elements["summarize"].request_id == (
-        _analyze(plan, _TWO).elements["summarize"].request_id
+    assert _analyze(_compile(reset, operations), _ONE).requests("summarize")[0].request_id == (
+        _analyze(plan, _TWO).requests("summarize")[0].request_id
     )
 
 
@@ -106,8 +106,8 @@ def test_removing_an_operation_unbinds_its_readers_and_a_foreign_step_is_refused
     payload = removed.documents[created.id]
     assert payload.differences  # stored as the difference from its base
     plan = _compile(removed, operations)
-    assert set(_analyze(plan, _ONE).elements) == {"align"}
-    assert set(_analyze(plan, _TWO).elements) == {"align", "summarize", "profile"}
+    assert {key.name for key in _analyze(plan, _ONE).elements} == {"align"}
+    assert {key.name for key in _analyze(plan, _TWO).elements} == {"align", "summarize", "profile"}
     with pytest.raises(ValueError, match="chosen steps"):
         _store(project, _ONE, "velocity-analysis", _edit(_BOUNDS, 3.0), {"analyze", "report"}, operations)
 
