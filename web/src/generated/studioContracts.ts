@@ -6116,7 +6116,7 @@ export const ModelEditRequestSchema: z.ZodType<ModelEditRequest> = z.lazy(() =>
       "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
       "variant": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
       "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).optional(),
-      "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")))).optional(),
+      "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1))).optional(),
       "files": z.array(StudioProjectFilePatchSchema).optional(),
     })
     .strict()
@@ -6265,7 +6265,7 @@ export const ModelFieldRequestSchema: z.ZodType<ModelFieldRequest> = z.lazy(() =
     .object({
       "run": StudioSavedTrainKeySchema.nullable().optional(),
       "rows": z.array(z.string()).optional(),
-      "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1)).optional(),
+      "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1)).min(1)).optional(),
       "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
       "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
@@ -6438,7 +6438,7 @@ export const TrainFieldRequestSchema: z.ZodType<TrainFieldRequest> = z.lazy(() =
     .object({
       "run": StudioSavedTrainKeySchema.nullable().optional(),
       "rows": z.array(z.string()).optional(),
-      "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1)).optional(),
+      "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1)).min(1)).optional(),
       "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
       "field": z.string().nullable().optional(),
@@ -8939,7 +8939,7 @@ export const AxisSchema: z.ZodType<Axis> = z.lazy(() =>
 
 export const AxisConditionSchema: z.ZodType<AxisCondition> = z.lazy(() =>
   z.object({
-    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1)).optional(),
+    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1)).min(1)).optional(),
     "rows": z.union([z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).min(1), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<AxisCondition>;
@@ -9285,7 +9285,7 @@ export const DuplicateRunSchema: z.ZodType<DuplicateRun> = z.lazy(() =>
   z.object({
     "run": z.union([StudioSavedTrainKeySchema, z.null()]).optional(),
     "rows": z.array(z.string()).optional(),
-    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1)).optional(),
+    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1)).min(1)).optional(),
     "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
     "kind": z.literal("duplicate_run"),
   }).strict()
@@ -10229,7 +10229,7 @@ export const StepReferenceSchema: z.ZodType<StepReference> = z.lazy(() =>
 
 export const StoreSubsetSchema: z.ZodType<StoreSubset> = z.lazy(() =>
   z.object({
-    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")))).optional(),
+    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1))).optional(),
     "best": z.union([BestSchema, z.null()]).optional(),
     "when": z.union([WhenSchema, z.null()]).optional(),
     "rows": z.array(SelectedRowSchema).optional(),
@@ -11039,7 +11039,7 @@ export const StudioTrainAuthoringRequestSchema: z.ZodType<StudioTrainAuthoringRe
   z.object({
     "run": z.union([StudioSavedTrainKeySchema, z.null()]).optional(),
     "rows": z.array(z.string()).optional(),
-    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).min(1)).optional(),
+    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1)).min(1)).optional(),
     "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
     "revision": Sha256Schema,
     "change": z.union([StudioAuthoringChangeSchema, z.null()]).optional(),
@@ -11208,7 +11208,7 @@ export const StudioTrialStepScopeSchema: z.ZodType<StudioTrialStepScope> = z.laz
 
 export const SubsetTermsSchema: z.ZodType<SubsetTerms> = z.lazy(() =>
   z.object({
-    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")))).optional(),
+    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1))).optional(),
     "best": z.union([BestSchema, z.null()]).optional(),
     "when": z.union([WhenSchema, z.null()]).optional(),
     "rows": z.array(SelectedRowSchema).optional(),
@@ -11235,7 +11235,7 @@ export const SweepExceptionSchema: z.ZodType<SweepException> = z.lazy(() =>
 
 export const SweepExceptionTermsSchema: z.ZodType<SweepExceptionTerms> = z.lazy(() =>
   z.object({
-    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")))).optional(),
+    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1))).optional(),
     "best": z.union([BestSchema, z.null()]).optional(),
     "when": z.union([WhenSchema, z.null()]).optional(),
     "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).optional(),

@@ -1,6 +1,7 @@
 """A list input's selections are whole references: Best per item, To Rows per item, and named subsets."""
 
 from copy import deepcopy
+import re
 
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import compile_project
@@ -148,3 +149,37 @@ def test_to_rows_freezes_one_selection_and_leaves_the_others_measured(host, tmp_
         else:
             assert binding.member == before[row].member
     assert sum(isinstance(binding.member.reference, BestRank) for binding in after.values()) == 2
+
+
+def test_grouped_ranks_of_listed_steps_are_named_and_selected_by_key():
+    """The best run per learning rate of two Train steps: keys and labels are names, and an exception picks one."""
+    raw = authored_best()
+    steps = raw["steps"]
+    steps["train"]["base"]["inline"]["seed"] = 0
+    steps["train"]["sweep"]["axes"]["seed"] = {"values": {
+        name: {"value": seed, "patches": {"seed": {"value": seed}}} for name, seed in (("one", 1), ("two", 2))
+    }}
+    del steps["train"]["sweep"]["axes"]["rate"]["values"]["c"]
+    steps["train_b"] = deepcopy(steps["train"])
+    best = {"best": {"by": "train_loss", "k": 1, "order": "min", "per": ["rate"]}}
+    steps["baseline"]["inputs"]["subject"] = [
+        {"step": "train", "checkpoint": "last", "where": deepcopy(best)},
+        {"step": "train_b", "checkpoint": "last", "where": deepcopy(best)},
+    ]
+    plan = compile_project(Project.model_validate(raw))
+    assert not plan.diagnostics, plan.diagnostics
+    runs = {run.inputs["subject"].member.key: run for run in plan.runs if run.kind == "evaluate"}
+    assert sorted(runs) == [
+        "train/rate=a/rank-1", "train/rate=b/rank-1", "train_b/rate=a/rank-1", "train_b/rate=b/rank-1",
+    ]
+    assert runs["train_b/rate=b/rank-1"].label == "subject=train_b, rate=0.002, rank 1"
+    assert not any(re.search("[0-9a-f]{64}", run.label) for run in runs.values())
+
+    steps["baseline"]["sweep"]["exceptions"] = {"dropped": {
+        "where": {"axes": {"subject": ["train_b/rate=a/rank-1"]}}, "exclude": True,
+    }}
+    excepted = compile_project(Project.model_validate(raw))
+    assert not excepted.diagnostics, excepted.diagnostics
+    assert {run.inputs["subject"].member.key for run in excepted.runs if run.kind == "evaluate"} == (
+        set(runs) - {"train_b/rate=a/rank-1"}
+    )

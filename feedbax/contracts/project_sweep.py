@@ -21,7 +21,7 @@ from feedbax.contracts.expression_values import DrawValue
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_address import FieldElement, ModelAddress
 from feedbax.contracts.model_attachment import SetField
-from feedbax.contracts.request_refs import UpdateCadence, UpdateRule
+from feedbax.contracts.request_refs import Name, UpdateCadence, UpdateRule, axis_values_id
 from feedbax.contracts.project_inputs import (
     CheckpointRule,
     NonemptyText,
@@ -177,7 +177,7 @@ class AxisCondition(StrictModel):
     conditioned axis authored before it.
     """
 
-    axes: dict[ProjectName, Annotated[list[ProjectName], Field(min_length=1)]] = Field(default_factory=dict)
+    axes: dict[ProjectName, Annotated[list[Name], Field(min_length=1)]] = Field(default_factory=dict)
     rows: Annotated[list[RowKey], Field(min_length=1)] | None = Field(default=None, exclude_if=lambda rows: rows is None)
 
     @model_validator(mode="after")
@@ -500,6 +500,9 @@ class ExpandedRow:
     patch_origins: Mapping[str, PatchOrigin] = field(default_factory=dict)
     patch_authors: Mapping[str, str] = field(default_factory=dict)
     axis_value_ids: Mapping[str, str] = field(default_factory=dict)
+    input_axes: Mapping[str, SweepCoordinate] = field(default_factory=dict)
+    """Each input axis's value on this row, its member, which ``coordinates`` holds only as the member's own
+    coordinates."""
 
     def inherited_id(self, axes: tuple[str, ...]) -> str | None:
         """Project generated choices onto the inherited axes, or keep an authored row ID.
@@ -510,7 +513,7 @@ class ExpandedRow:
         if not self.axis_value_ids:
             return self.id
         values = {name: self.axis_value_ids[name] for name in axes if name in self.axis_value_ids}
-        return _generated_row_id(values) if values else None
+        return axis_values_id(values) if values else None
 
 
 DEFAULT_SWEEP_ROW = "default"
@@ -1009,7 +1012,11 @@ def _choices(
     return choices
 
 
-_PLAIN_VALUE_ID = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_-]*")
+def axis_values(
+    coordinates: Mapping[str, SweepCoordinate], input_axes: Mapping[str, SweepCoordinate],
+) -> dict[str, str]:
+    """The value ID of each axis a row is selected by: its coordinates, and its input axes' member keys."""
+    return {axis: coordinate.value_id for axis, coordinate in (*coordinates.items(), *input_axes.items())}
 
 
 def coordinate_text(coordinate: SweepCoordinate) -> str:
@@ -1024,25 +1031,16 @@ def coordinate_text(coordinate: SweepCoordinate) -> str:
     return coordinate.value_id
 
 
-def _row_key(key: str) -> str:
-    if _PLAIN_VALUE_ID.fullmatch(key):
-        return key
-    return "=" + sha256_bytes(canonical_json_v2_bytes(key))
-
-
-def _generated_row_id(values: Mapping[str, str]) -> str:
-    return "--".join(f"{name}={_row_key(values[name])}" for name in sorted(values))
-
-
 def _expanded(axes: Mapping[str, Axis], selection: Mapping[str, _AxisChoice]) -> ExpandedRow:
     """The row of one value per axis in ``selection``; an axis it has no value on is absent from its ID and label."""
     axis_value_ids = {name: choice.key for name, choice in selection.items()}
-    row_id = _generated_row_id(axis_value_ids) if axis_value_ids else DEFAULT_SWEEP_ROW
+    row_id = axis_values_id(axis_value_ids) if axis_value_ids else DEFAULT_SWEEP_ROW
     coordinates: dict[str, SweepCoordinate] = {}
     patches: dict[str, PatchValue] = {}
     origins: dict[str, PatchOrigin] = {}
     authors: dict[str, str] = {}
     bindings: dict[str, str] = {}
+    input_axes: dict[str, SweepCoordinate] = {}
     labels = []
     for name, axis in axes.items():
         if (choice := selection.get(name)) is None:
@@ -1052,6 +1050,7 @@ def _expanded(axes: Mapping[str, Axis], selection: Mapping[str, _AxisChoice]) ->
         if isinstance(axis, InputAxis):
             assert member is not None
             bindings[axis.input] = member.key
+            input_axes[name] = choice.coordinate
             carried = member.coordinates
         else:
             carried = {name: choice.coordinate}
@@ -1082,7 +1081,8 @@ def _expanded(axes: Mapping[str, Axis], selection: Mapping[str, _AxisChoice]) ->
             patches[path] = patch
         authors.update(choice.patch_authors)
     return ExpandedRow(
-        row_id, ", ".join(labels) or None, coordinates, patches, bindings, origins, authors, axis_value_ids
+        row_id, ", ".join(labels) or None, coordinates, patches, bindings, origins, authors, axis_value_ids,
+        input_axes,
     )
 
 
@@ -1103,9 +1103,7 @@ def _select_exception_rows(
             exception.where,
             rows,
             key=lambda row: row.id,
-            coordinates=lambda row: {
-                axis: value.value_id for axis, value in row.coordinates.items()
-            },
+            coordinates=lambda row: axis_values(row.coordinates, row.input_axes),
         )
     except SubsetSelectionError as error:
         term = f".{error.path}" if error.path else ""
@@ -1202,7 +1200,7 @@ def _condition_picks(name: str, where: AxisCondition, rows: Sequence[ExpandedRow
             id(row) for row in select_sweep_exception_rows(
                 SweepExceptionTerms(axes=where.axes, rows=where.rows) if where.rows is not None
                 else SweepExceptionTerms(axes=where.axes), rows, key=lambda row: row.id,
-                coordinates=lambda row: {axis: value.value_id for axis, value in row.coordinates.items()},
+                coordinates=lambda row: axis_values(row.coordinates, row.input_axes),
             )
         }
     except SubsetSelectionError as error:
@@ -1372,7 +1370,7 @@ def _expand_checkpoint_axis(
             if axis._author is not None:
                 authors[axis.path] = axis._author
             result.append(replace(
-                row, id=_generated_row_id(keys), axis_value_ids=keys,
+                row, id=axis_values_id(keys), axis_value_ids=keys,
                 label=", ".join(part for part in (row.label, f"{name}={key}") if part),
                 coordinates={**row.coordinates, name: SweepCoordinate(key, key, update)},
                 patches={**row.patches, axis.path: SetValue(value=[{"at": update}])},

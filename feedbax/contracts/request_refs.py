@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from hashlib import sha256
 from math import isfinite
+import re
 from typing import Annotated, ClassVar, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, StringConstraints, field_validator, model_validator
@@ -20,6 +21,20 @@ RequestId = Annotated[
 ]
 Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 Name = Annotated[str, StringConstraints(min_length=1)]
+
+_PLAIN_VALUE_ID = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_-]*")
+
+
+def axis_values_id(values: Mapping[str, str]) -> str:
+    """Axis value IDs as a row ID writes them: ``axis=value`` in axis order, joined by ``--``.
+
+    A value ID that is not plain, such as a member key with ``/``, is written as its digest, so the ID stays a file
+    stem and bounded in length however deep the pipeline.
+    """
+    return "--".join(
+        f"{axis}={value if _PLAIN_VALUE_ID.fullmatch(value) else '=' + sha256(canonical_json_v2_bytes(value)).hexdigest()}"
+        for axis, value in sorted(values.items())
+    )
 
 
 class ReferenceValue(BaseModel):
@@ -201,10 +216,9 @@ class BestRank(ReferenceValue):
 
     @property
     def key(self) -> str:
+        """``rank-k``, under its group's axis values when grouped (``seed=one/rank-1``)."""
         rank = f"rank-{self.rank}"
-        if self.group:
-            rank = f"{rank}-{sha256(canonical_json_v2_bytes(self.group)).hexdigest()}"
-        return rank
+        return f"{axis_values_id(self.group)}/{rank}" if self.group else rank
 
     def winner(self, scores: Sequence[float]) -> int:
         if len(scores) != len(self.candidates) or any(not isfinite(score) for score in scores):

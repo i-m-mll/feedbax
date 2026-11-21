@@ -381,7 +381,7 @@ class ProjectPlanRead:
                         axis: StudioProjectWindowMapCoordinate.model_validate(
                             coordinate, from_attributes=True
                         )
-                        for axis, coordinate in row.coordinates.items()
+                        for axis, coordinate in (*row.coordinates.items(), *row.input_axes.items())
                     },
                 )
                 for row in plan.rows if includes(row.key.variant)
@@ -918,7 +918,7 @@ def _evaluation_row(
         status=status, reason=reason,
         can_run=problem is None, trials=trials, result=result, checkpoint_series=series, checkpoint_rule=rule,
         checkpoint_attempt=displayed_attempt.checkpoint_attempt if series is not None and displayed_attempt else None,
-        subject_rank_key=reference.key if isinstance(reference, BestRank) and reference.group else None,
+        subject_rank_key=planned.member.key if isinstance(reference, BestRank) and reference.group else None,
         bound_subject=_planned_bound(attempts[-1].bound_subject, planned) if attempts else None,
     ), problem
 

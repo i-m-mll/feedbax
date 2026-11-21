@@ -29,7 +29,7 @@ from feedbax.contracts.project_resolution import (
 )
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_sweep import (
-    AxisCondition, NamedAxis, SetAxis, SetValue, RemoveValue, _compose_writes,
+    AxisCondition, NamedAxis, SetAxis, SetValue, RemoveValue, _compose_writes, axis_values,
 )
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.studio_project import AuthoredFileAddress, CreateNamedDocument, StudioProjectFilePatch
@@ -76,7 +76,7 @@ def selection_scope(project, plan, key, rows=(), axes=None) -> RunScope:
         raise ProjectFolderInvalid("The selected rows no longer belong to this step.")
     covered = {
         row_id for row_id, row in available.items()
-        if all(axis in row.coordinates and row.coordinates[axis].value_id in values for axis, values in axes.items())
+        if all(axis_values(row.coordinates, row.input_axes).get(axis) in values for axis, values in axes.items())
     }
     if not axes or set(rows) != covered:
         return ListedRuns(kind="rows", rows=tuple(rows))

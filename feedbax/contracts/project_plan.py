@@ -93,7 +93,9 @@ from feedbax.contracts.project_sweep import (
     SweepExpansionCode,
     SweepExpansionError,
     SweepInputMember,
+    axis_values,
     checkpoint_rule_write,
+    coordinate_text,
     expand_sweep,
     model_field_target,
     sweep_patch,
@@ -299,6 +301,8 @@ class PlannedRow:
     axis_keys: Mapping[str, str] = field(default_factory=dict, kw_only=True)
     """Each axis of the row's sweep and its value id there, or for an input axis the member key, which an address's
     selector matches."""
+    input_axes: Mapping[str, SweepCoordinate] = field(default_factory=dict, kw_only=True)
+    """Each input axis's member on this row; ``axes`` terms select it by its key."""
     document_ids: Mapping[str, str] = field(default_factory=dict, kw_only=True)
     document_uses: frozenset[str] = field(default=frozenset(), kw_only=True)
     # Documents an Evaluate row reads through its subject run rather than naming them.
@@ -655,11 +659,16 @@ def _identified(
     ), ids
 
 
-def _member_label(binding: PlannedInput) -> str:
-    """What a member no row produces reads as: a rank of a list item, its step and its rank; else its key."""
+def _member_label(binding: PlannedInput, group: Mapping[str, SweepCoordinate]) -> str:
+    """What a member no row produces reads as.
+
+    A grouped rank, or a rank of a list item, reads as its step, its group's values and its rank
+    (``train, lr=0.1, rank 1``); any other member as its key.
+    """
     rank = binding.member.reference
-    if isinstance(rank, BestRank) and binding.member.key != rank.key and "source" in binding.named:
-        return ", ".join((binding.named["source"].printed, f"rank {rank.rank}"))
+    if isinstance(rank, BestRank) and (rank.group or binding.member.key != rank.key) and "source" in binding.named:
+        values = (f"{axis}={coordinate_text(group[axis])}" for axis in sorted(rank.group))
+        return ", ".join((binding.named["source"].printed, *values, f"rank {rank.rank}"))
     return binding.member.key
 
 
@@ -1712,19 +1721,18 @@ class _Compiler:
         checkpoint_axis = kind == "evaluate" and composition.sweep is not None and any(
             isinstance(axis, CheckpointRuleAxis) for axis in composition.sweep.axes.values()
         )
+        def member(role: str, item: PlannedInput, producer: _CompiledRun | None) -> SweepInputMember:
+            horizon = self.checkpoint_horizon(producer.request_id) \
+                if checkpoint_axis and role == "subject" and isinstance(producer, PlannedRun) else None
+            if producer is not None and item.producer is not None:
+                return SweepInputMember(item.member.key, item.coordinates, producer.label, horizon)
+            group = {
+                axis: producer.coordinates[axis] for axis in item.member.reference.group
+            } if producer is not None and isinstance(item.member.reference, BestRank) else {}
+            return SweepInputMember(item.member.key, group, _member_label(item, group), horizon)
+
         fanout = {
-            role: tuple(
-                SweepInputMember(
-                    item.member.key,
-                    item.coordinates if producer is not None and item.producer is not None else {
-                        axis: producer.coordinates[axis] for axis in item.member.reference.group
-                    } if producer is not None and isinstance(item.member.reference, BestRank) else {},
-                    producer.label if producer is not None and item.producer is not None else _member_label(item),
-                    self.checkpoint_horizon(producer.request_id)
-                    if checkpoint_axis and role == "subject" and isinstance(producer, PlannedRun) else None,
-                )
-                for item, producer in bindings
-            )
+            role: tuple(member(role, item, producer) for item, producer in bindings)
             for role, bindings in members.items()
         }
         subjects = tuple(
@@ -2668,6 +2676,7 @@ class _Compiler:
             coordinates = MappingProxyType(deepcopy(dict(row.coordinates)))
             self.rows[run_key] = PlannedRow(
                 run_key, kind, row.label, coordinates, axis_keys=MappingProxyType(dict(row.axis_value_ids)),
+                input_axes=MappingProxyType(dict(row.input_axes)),
             )
             if initial:
                 if has_checkpoint_axis:
@@ -2834,6 +2843,7 @@ class _Compiler:
             key, row.kind, row.label, row.coordinates, encoded.id,
             MappingProxyType(dict(inputs)), MappingProxyType(dict(omissions)), requires,
             axis_keys=row.axis_keys,
+            input_axes=row.input_axes,
             admission_problem=lowered.admission_problem,
             document_ids=lowered.document_ids,
             document_uses=lowered.document_uses,
@@ -2871,6 +2881,7 @@ class _Compiler:
             coordinates = MappingProxyType(deepcopy(dict(row.coordinates)))
             self.rows[key] = PlannedRow(
                 key, "report", row.label, coordinates, axis_keys=MappingProxyType(dict(row.axis_value_ids)),
+                input_axes=MappingProxyType(dict(row.input_axes)),
             )
             inputs = {}
             for role, candidates in by_role.items():
@@ -2963,6 +2974,7 @@ class _Compiler:
             coordinates = MappingProxyType(deepcopy(dict(row.coordinates)))
             self.rows[key] = PlannedRow(
                 key, "analyze", row.label, coordinates, axis_keys=MappingProxyType(dict(row.axis_value_ids)),
+                input_axes=MappingProxyType(dict(row.input_axes)),
             )
             inputs = {}
             for role, members in selected.items():
@@ -3040,6 +3052,7 @@ class _Compiler:
             key, original.kind, original.label, original.coordinates,
             MappingProxyType(elements), template.requires, MappingProxyType(dict(inputs)), MappingProxyType(figures),
             axis_keys=original.axis_keys,
+            input_axes=original.input_axes,
             document_ids=MappingProxyType(dict(resolved.document_ids)),
             document_uses=resolved.document_uses,
         )
@@ -3487,9 +3500,7 @@ class _Compiler:
                 runs,
                 address=lambda run: (run.key.variant, run.key.row),
                 member_key=member_key,
-                coordinates=lambda run: {
-                    axis: coordinate.value_id for axis, coordinate in run.coordinates.items()
-                },
+                coordinates=lambda run: axis_values(run.coordinates, run.input_axes),
             )
         except SubsetSelectionError as error:
             return ProjectDiagnostic(
