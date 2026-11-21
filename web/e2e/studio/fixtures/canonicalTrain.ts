@@ -107,8 +107,8 @@ export async function authorLearningRateSweep(rate: Locator) {
   await activate(page, rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true }));
   await activateMenuItem(page, page.getByRole('menuitem', { name: 'Sweep', exact: true }));
   const text = rate.getByRole('textbox', { name: 'Learning Rate Value', exact: true });
-  await expect(text).toHaveValue('0.001,');
-  await expect(text).toBeEditable();
+  await expect(text).toBeFocused();
+  await expect(text).toHaveValue('0.001');
   await number(page, text, '0.001, 0.002, 0.003');
   for (const value of ['0.001', '0.002', '0.003']) await expect(rate.getByText(value, { exact: true })).toBeVisible();
 }

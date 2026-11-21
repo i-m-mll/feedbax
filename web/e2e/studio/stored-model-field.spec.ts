@@ -70,7 +70,7 @@ test('edits and reopens a stored Model field sweep through project history', asy
   await valueMenu.click();
   await expect(page.getByRole('menuitem')).toHaveText(['Value', 'Sweep', 'Formula']);
   await page.getByRole('menuitem', { name: 'Sweep', exact: true }).click();
-  await expect(hidden).toHaveValue('64,');
+  await expect(hidden).toBeFocused();
   await enter(hidden, '64, 96, 128');
   await expect(inspector.getByText('128', { exact: true })).toBeVisible();
   const saved = async () => (await (await request.get(projectPath + '/open')).json() as StudioProjectDocument).snapshot;

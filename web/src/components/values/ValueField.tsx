@@ -278,11 +278,12 @@ function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearRea
   useEffect(() => {
     if (intent && intent.target === model.anchor) enter(intent.kind);
   }, [intent?.key]);
+  /** A kind chosen in the kind menu that the field takes when the menu gives the keyboard back to it. */
+  const chosen = useRef<FieldKind>();
   /** Sweep is made by the text the field commits; another kind by its own edit. */
   function choose(kind: FieldKind) {
-    if (kind !== 'sweep') { chooseKind(kind); return; }
-    input.current?.focus();
-    enter(kind);
+    if (kind === 'sweep') chosen.current = kind;
+    else chooseKind(kind);
   }
   const text = draft ?? model.text ?? '';
   const offered = draft !== undefined && !dismissed && caret !== undefined
@@ -352,6 +353,10 @@ function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearRea
       aria-activedescendant={open ? `${listId}-${highlight}` : undefined}
       onValueChange={(value) => { setDraft(value); setDismissed(false); setHighlight(0); clearReason(); }}
       onSelect={(event) => setCaret(event.currentTarget.selectionStart ?? undefined)}
+      onFocus={() => {
+        if (chosen.current) enter(chosen.current);
+        chosen.current = undefined;
+      }}
       onBlur={() => {
         setDismissed(true);
         if (draft === undefined) setPending(undefined);
