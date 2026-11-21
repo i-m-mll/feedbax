@@ -1,8 +1,6 @@
 """Map an operation over the label dimensions its ports take one element of, and stack listed outputs flat."""
 
 from copy import deepcopy
-import os
-from pathlib import Path
 
 import numpy as np
 
@@ -16,7 +14,6 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.plugins.application import new_application_registry_bundle
-from feedbax.plugins.composition import load_application
 from feedbax.plugins.declarations import DistributionSource, callable_declaration
 from feedbax.project_members import merge_cards, split_card
 from feedbax.web.services.project_folder import ProjectFolderService
@@ -202,25 +199,10 @@ def test_listing_outputs_that_already_stack_listed_outputs_is_refused():
     assert problems and all("one level" in problem.detail for problem in problems), problems
 
 
-def _install_probe(tmp_path, monkeypatch):
-    """Install the probe operations as a plugin, so that the Host's workers resolve them too."""
-    package = tmp_path / "plugins" / "map_probe"
-    package.mkdir(parents=True)
-    (package / "__init__.py").write_text(Path(map_probe.__file__).read_text())
-    metadata = tmp_path / "plugins" / "map_probe-1.0.dist-info"
-    metadata.mkdir()
-    (metadata / "METADATA").write_text("Name: map-probe\nVersion: 1.0\n")
-    (metadata / "entry_points.txt").write_text("[feedbax.plugins]\nmap_probe = map_probe\n")
-    monkeypatch.syspath_prepend(str(tmp_path / "plugins"))
-    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(filter(None, (str(tmp_path / "plugins"), os.environ.get("PYTHONPATH")))))
-    return load_application().bundle.operations
-
-
-def test_mapped_and_listed_outputs_stack_by_their_labels_when_run(request, tmp_path, monkeypatch):
-    operations = _install_probe(tmp_path, monkeypatch)
+def test_mapped_and_listed_outputs_stack_by_their_labels_when_run(request, probe_operations, tmp_path, monkeypatch):
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     monkeypatch.setenv("JAX_ENABLE_X64", "0")
-    host = request.getfixturevalue("host")
+    host = request.getfixturevalue("private_host")
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
     host.policy(compute=2, light=2)
     definition = _two_cards()
@@ -235,7 +217,7 @@ def test_mapped_and_listed_outputs_stack_by_their_labels_when_run(request, tmp_p
         }}}
     del definition["steps"]["report"]
     projects = tmp_path / "projects"
-    folders = ProjectFolderService(projects, operations=operations)
+    folders = ProjectFolderService(projects, operations=probe_operations)
     _save_project(folders, "mapped", Project.model_validate(definition))
     review = folders.read_plan("mapped", revision=None)
     plan = review.plan

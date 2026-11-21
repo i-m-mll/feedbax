@@ -16,7 +16,7 @@ import feedbax
 from feedbax.orchestration import revision as _revision
 
 
-pytest_plugins = ["scripts.pytest_jax_cache", "tests.support.host"]
+pytest_plugins = ["scripts.pytest_jax_cache", "tests.support.host", "tests.support.probe_plugin"]
 
 
 @pytest.hookimpl(optionalhook=True)

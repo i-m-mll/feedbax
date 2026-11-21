@@ -3,6 +3,8 @@
 from copy import deepcopy
 from itertools import product
 
+from fastapi.testclient import TestClient
+
 from feedbax.cli import main
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.project import Project
@@ -13,6 +15,7 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.project_members import change_key
+from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.host import wait_until
 from tests.test_canonical_evaluate_admission import _save_project
@@ -108,6 +111,14 @@ def test_one_analyze_stacks_two_evaluates_of_two_train_steps_by_label(host, tmp_
     assert [rate is None for rate in rates] == [model == "train" for _, model, _ in labels]
     (profile,) = (job for job in jobs if job["request"] == plan.elements[ElementKey(analyze.key, "profile")].request_id)
     assert profile["state"] == "succeeded"
+
+    with TestClient(create_app(projects_dir=projects)) as client:
+        response = client.post("/api/projects/models/authoring/analyze", json={
+            "revision": review.revision,
+            "key": {"variant": analyze.key.variant, "step": analyze.key.step, "row": analyze.key.row},
+        })
+    assert response.status_code == 200, response.text
+    assert "/v1/model/state/plant/effector~1velocity" in response.json()["states"]["variables"]
 
 
 def test_zip_pairs_two_inputs_by_label_and_refuses_a_partial_pairing():

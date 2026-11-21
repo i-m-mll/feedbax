@@ -204,24 +204,26 @@ def _common_fields(
 
 
 def _states_port(
-    service: ProjectPlanService, project_id: str, revision: str, key: RunKey, reference: StepReference,
+    service: ProjectPlanService, project_id: str, revision: str, key: RunKey,
 ) -> tuple[DatasetPort, ProjectPlanRead]:
+    """The dataset port common to the saved states of every Evaluate run the ``states`` input of ``key`` stacks."""
     view = service.read(project_id, revision=revision)
     plan = view.settled.plan
     if plan.variants[:1] != (key.variant,):
         raise ValueError(f"The Analyze step is shared by all variants and is edited in {plan.variants[0]!r}, not {key.variant!r}")
-    subset = plan.subsets.get((key.variant, key.step, "states"))
-    if subset is None or not subset.members or any(
-        (member.variant, member.step) != (key.variant, reference.step) for member in subset.members
-    ):
-        raise ValueError(f"The Analyze input of variant {key.variant!r} holds no saved Evaluate runs of {reference.step!r}")
+    row = next((row for row in plan.rows if row.key == key and isinstance(row, PlannedAnalyzeRun)), None)
+    if row is None:
+        raise ValueError(f"Run {key.row!r} no longer belongs to step {key.step!r}.")
+    members = [binding.producer for binding in row.inputs.get("states", ())]
+    if not members or any(member is None or member.variant != key.variant for member in members):
+        raise ValueError(f"The Analyze input of variant {key.variant!r} holds no saved Evaluate runs of this variant")
     states = None
-    for member in subset.members:
+    for member in dict.fromkeys(members):
         row = view.evaluations.get(member)
         if row is None or row.result is None:
             raise ValueError("A selected Evaluate run has no saved states.")
         result = service.jobs.read_evaluation_result(
-            project=project_id, store=view.settled.store_path, job_id=row.result.job_id,
+            project=view.settled.project_id, store=view.settled.store_path, job_id=row.result.job_id,
         )
         if result.receipt != row.result.receipt:
             raise ValueError("A selected Evaluate receipt changed.")
@@ -264,14 +266,15 @@ def analyze_authoring(
     document = project.documents.get(step.base.document)
     if document is None or document.schema_id != "feedbax.analysis_document.v1":
         raise ProjectFolderInvalid("The selected step has no saved analysis document.")
-    reference = step.inputs.get("states")
-    if not isinstance(reference, StepReference) or reference.variants:
-        raise ProjectFolderInvalid(f"The states input of Analyze step {key.step!r} is not one Evaluate step of this variant")
+    bound = step.inputs.get("states")
+    references = bound if isinstance(bound, list) else [bound]
+    if not references or not all(
+        isinstance(reference, StepReference) and not reference.variants for reference in references
+    ):
+        raise ProjectFolderInvalid(f"The states input of Analyze step {key.step!r} reads no Evaluate step of this variant")
     try:
-        states, view = _states_port(service, project_id, body.revision, key, reference)
+        states, view = _states_port(service, project_id, body.revision, key)
         plan = view.settled.plan
-        if not any(row.key == key for row in plan.rows):
-            raise ValueError(f"Run {key.row!r} no longer belongs to step {key.step!r}.")
         registry = service.jobs.registries.operations
         definitions = list(registry.definitions())
         dimensions = sorted({
