@@ -10,7 +10,7 @@ from feedbax.desktop.release import AppPaths
 from feedbax.host import HostClient, HostError
 from feedbax.host.io import OWNER_ENV
 from tests.support.hang import HANG_SECONDS
-from tests.support.host import wait_until
+from tests.support.host import HELD_UNTIL_STOPPED, wait_until
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -27,7 +27,7 @@ def test_a_test_launcher_and_its_host_exit_with_the_test_runner(tmp_path):
     build = tmp_path / "dist"
     build.mkdir()
     (build / "index.html").write_text("<!doctype html>")
-    runner = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+    runner = subprocess.Popen([sys.executable, "-c", HELD_UNTIL_STOPPED])
     with (tmp_path / "launcher.log").open("wb") as log:
         launcher = subprocess.Popen(
             [sys.executable, "-B", "-m", "scripts.studio_dev", "--home", str(home),

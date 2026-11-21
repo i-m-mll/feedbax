@@ -1172,7 +1172,7 @@ def test_shutdown_of_a_host_already_exiting_waits_for_it_to_exit(tmp_path):
 def test_a_host_exits_with_its_owner_and_ends_its_workers(tmp_path, private_hosts, monkeypatch):
     from feedbax.host.io import OWNER_ENV
 
-    owner = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+    owner = subprocess.Popen([sys.executable, "-c", HELD_UNTIL_STOPPED])
     try:
         monkeypatch.setenv(OWNER_ENV, str(owner.pid))
         _, processes = _started_with_a_live_job(HostClient(private_hosts / "host"), tmp_path)
