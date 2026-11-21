@@ -51,14 +51,15 @@ function rewritePages(rewrite: (html: string) => Promise<string>): Connect.NextH
     delete request.headers['if-modified-since'];
     // Preview's compression runs between this rewrite and the file, so pages are sent uncompressed.
     delete request.headers['accept-encoding'];
-    const { write, end } = response;
+    const { writeHead, write, end } = response;
     const chunks: Buffer[] = [];
     let buffering: boolean | undefined;
     const isPage = () => (buffering ??= response.statusCode === 200 && String(response.getHeader('content-type')).startsWith('text/html'));
+    // Node's own write and end send the head through this method, so a page's head waits for its rewritten body and any other head goes out at once.
     response.writeHead = ((status: number, headers?: OutgoingHttpHeaders) => {
       response.statusCode = status;
       for (const [name, value] of Object.entries(headers ?? {})) if (value !== undefined) response.setHeader(name, value);
-      return response;
+      return isPage() ? response : writeHead.call(response, status);
     }) as ServerResponse['writeHead'];
     response.write = ((...args: [Buffer | string, ...unknown[]]) => {
       if (!isPage()) return write.apply(response, args as never);
@@ -73,6 +74,7 @@ function rewritePages(rewrite: (html: string) => Promise<string>): Connect.NextH
         response.removeHeader('last-modified');
         response.setHeader('content-length', Buffer.byteLength(html));
         response.setHeader('cache-control', 'no-cache');
+        writeHead.call(response, response.statusCode);
         end.call(response, html, 'utf8');
       }, next);
       return response;
