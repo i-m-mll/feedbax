@@ -21,6 +21,7 @@ from feedbax.contracts.figure_document import (
     LineLayer,
     Selection,
     VariableBinding,
+    coordinate_dimension,
     layer_encodings,
     validate_figure_bindings,
 )
@@ -47,8 +48,10 @@ class _Source:
         return self.values[name]
 
     def coordinate(self, name: str) -> tuple[str, list[Label]]:
-        (dimension,) = self.descriptor.coords[name].dims
-        labels = self.read(name).tolist()
+        dimension = coordinate_dimension(self.descriptor.coords[name], self.descriptor.dimensions)
+        if dimension is None:
+            raise ValueError(f"Coordinate {name!r} labels more than one dimension.")
+        labels = self.read(name).reshape(-1).tolist()
         if any(
             value is not None and not isinstance(value, (str, int, float, bool)) for value in labels
         ):

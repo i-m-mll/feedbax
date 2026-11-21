@@ -89,21 +89,26 @@ export function useManagedAnalyze({
   const [naming, setNaming] = useState<{ scope: string; element: string; field: 'label' | 'key' }>();
   const inFlight = useRef(false);
   const cursor = useRef<{ scope: string; point: PresentationPosition }>();
-  const shape = step?.kind === 'analyze' ? JSON.stringify([
-    step.base, step.sweep, step.deltas, step.inputs?.states,
-    document && baseChain(saved.project.documents, document).map((name) => saved.project.documents?.[name]),
-  ]) : undefined;
+  /** What the operation catalog depends on. The document's own contents shape only its Changed marks, so an edit
+   * refetches the review but keeps editing enabled while it does. */
+  const catalogShape = step?.kind === 'analyze' ? JSON.stringify([step.base, step.sweep, step.deltas, step.inputs?.states])
+    : undefined;
+  const contents = document && JSON.stringify(baseChain(saved.project.documents, document)
+    .map((name) => saved.project.documents?.[name]));
   const authoring = useQuery({
-    queryKey: ['studio-analyze', saved.project_id, id, shape],
-    queryFn: ({ signal }) => readStudioAnalyze(saved.project_id, { revision: saved.revision, key: key! }, signal),
+    queryKey: ['studio-analyze', saved.project_id, id, catalogShape, contents],
+    queryFn: async ({ signal }) => ({
+      shape: catalogShape,
+      review: await readStudioAnalyze(saved.project_id, { revision: saved.revision, key: key! }, signal),
+    }),
     enabled: !!document && !!key && key.variant === projection?.window_map?.variants[0],
     placeholderData: keepPreviousData,
     staleTime: 30_000,
   });
-  const catalog = authoring.data;
+  const catalog = authoring.data?.review;
   const canBind = !!step && wholeStep && !pending && !outside && !busy;
   const canEdit = canBind && !!analysis && !!document && !!catalog && catalog.document === document &&
-    !authoring.isPlaceholderData;
+    authoring.data?.shape === catalogShape;
   const [inspected, setInspected] = useState<{ scope: string; id: string }>();
   const opened = dialog?.scope === scope ? dialog : undefined;
   const operations = analysis?.operations ?? {};

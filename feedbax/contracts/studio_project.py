@@ -194,10 +194,31 @@ class DetachMember(StrictModel):
     member: ProjectName
 
 
+class SplitCard(StrictModel):
+    """Move some of an Analyze card's operations and figures to a new card reading a new Analysis document.
+
+    A wire the cut crosses becomes a card-to-card edge, and no request changes.
+    """
+
+    kind: Literal["split"]
+    member: ProjectName
+    elements: Annotated[list[ProjectName], Field(min_length=1)]
+
+
+class MergeCards(StrictModel):
+    """Join Analyze cards into ``member``, the inverse of Split; card-to-card edges between them become wires."""
+
+    kind: Literal["merge"]
+    member: ProjectName
+    others: Annotated[list[ProjectName], Field(min_length=1)]
+
+
 class StudioMemberCommand(StrictModel):
     revision: Sha256
     presentation_revision: Sha256
-    command: Annotated[RenameMember | ChangeKey | DuplicateMember | DetachMember, Field(discriminator="kind")]
+    command: Annotated[
+        RenameMember | ChangeKey | DuplicateMember | DetachMember | SplitCard | MergeCards, Field(discriminator="kind"),
+    ]
 
 
 class StudioMemberCommandResult(StrictModel):
