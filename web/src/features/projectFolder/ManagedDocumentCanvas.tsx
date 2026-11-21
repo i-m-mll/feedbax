@@ -1,32 +1,46 @@
 import dagre from '@dagrejs/dagre';
 import { Handle, Position, ReactFlowProvider, useReactFlow, type Edge, type Node, type NodeProps } from '@xyflow/react';
-import { memo, useMemo, type ReactNode, type Ref } from 'react';
+import { memo, useMemo, useRef, type ReactNode, type Ref } from 'react';
 import { studioAccessibleName } from '@/components/activity/studioVocabulary';
 import { StudioCanvas, type CanvasViewport } from '@/components/canvas/StudioCanvas';
+import { CommandContextMenu } from '@/components/pipeline/CommandContextMenu';
 import { Card, CardHead } from '@/components/ui/Card';
+import { InlineEdit } from '@/components/ui/InlineEdit';
 import { StatusMark } from '@/components/ui/StatusMark';
+import type { StudioCommand } from '@/features/projectWindow/studioCommands';
 import type { PresentationPosition } from '@/generated/studioContracts';
 
 export type CanvasNode = {
   id: string;
   selectionId: string;
+  /** The shown name. */
   name: string;
   glyph: ReactNode;
   problem?: string;
+  /** The element's context menu. */
+  menu?: () => readonly StudioCommand[];
+  /** The name is being edited in place: `commit` takes the new text, `end` leaves the edit. */
+  naming?: { commit(name: string): void; end(): void };
 };
 
 type ElementData = CanvasNode & { selected: boolean };
 
 const ElementCard = memo(function ElementCard({ data }: NodeProps<Node<ElementData>>) {
-  return <Card selected={data.selected} className="text-sm" style={{ width: cardWidth(data.name) }}>
+  const head = useRef<HTMLElement>(null);
+  const card = <Card selected={data.selected} className="text-sm" style={{ width: cardWidth(data.name) }}>
     <Handle type="target" position={Position.Left} isConnectable={false} className="!opacity-0" />
-    <CardHead className="flex min-w-0 items-center gap-1.5 px-2 py-1.5">
+    <CardHead ref={head} className="flex min-w-0 items-center gap-1.5 px-2 py-1.5">
       <span aria-hidden="true" className="studio-card__glyph text-shell-muted [&>svg]:size-3.5">{data.glyph}</span>
-      <span className="min-w-0 flex-1 whitespace-nowrap font-medium">{data.name}</span>
+      {data.naming ? <InlineEdit value={data.name} editing className="nodrag min-w-0 flex-1 font-medium"
+        aria-label={studioAccessibleName('rename', data.name)}
+        onEditingChange={(editing) => { if (!editing) data.naming?.end(); }}
+        onCommit={(name) => { data.naming?.commit(name); }} />
+        : <span className="min-w-0 flex-1 whitespace-nowrap font-medium">{data.name}</span>}
       {data.problem && <StatusMark status="cannot_run" label={data.problem} />}
     </CardHead>
     <Handle type="source" position={Position.Right} isConnectable={false} className="!opacity-0" />
   </Card>;
+  return data.menu ? <CommandContextMenu commands={data.menu} trigger={card} focusAfter={() => head.current?.querySelector('input') ?? null} /> : card;
 });
 
 const nodeTypes = { element: ElementCard };
@@ -68,7 +82,7 @@ function Canvas({ items, connections, positions, selectedId, onSelect, openAt, r
     const nodes = items.map((item): Node<ElementData> => {
       const { x, y } = layout.node(item.id);
       return {
-        id: item.id, type: 'element', ariaLabel: studioAccessibleName('select', item.id),
+        id: item.id, type: 'element', ariaLabel: studioAccessibleName('select', item.name),
         data: { ...item, selected: false },
         position: positions?.[item.id] ?? { x: x - cardWidth(item.name) / 2, y: y - cardHeight / 2 },
       };

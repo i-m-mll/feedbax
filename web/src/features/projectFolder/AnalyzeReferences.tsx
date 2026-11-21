@@ -77,8 +77,8 @@ export function AnalyzeElementInputs({ document, element, roles, inputs, declara
   roles: readonly { name: string; kind: RoleKind }[];
   inputs: Readonly<Record<string, Source>>;
   declarations: Readonly<Record<string, Declaration>>;
-  /** Each other operation's dataset products. */
-  outputs: readonly { element: string; products: readonly string[] }[];
+  /** Each other operation's shown name and dataset products. */
+  outputs: readonly { element: string; name: string; products: readonly string[] }[];
   picking: ElementSelectionStore;
   /** Why a role's last wiring was refused. */
   refusal?: (role: string) => string | undefined;
@@ -90,8 +90,8 @@ export function AnalyzeElementInputs({ document, element, roles, inputs, declara
     const documentInputs = Object.entries(declarations).filter(([, declaration]) => declaration.kind === kind)
       .map(([input]): ReferenceChoice => ({ id: sourceId({ input }), label: input, pick: named(input) }));
     const products = kind !== 'dataset' ? [] : outputs.filter((output) => output.element !== element)
-      .flatMap(({ element: source, products }) => products.map((product, index): ReferenceChoice => ({
-        id: sourceId({ element: source, product }), label: source + '.' + product, ...(index === 0 && { pick: named(source) }),
+      .flatMap(({ element: source, name: shown, products }) => products.map((product, index): ReferenceChoice => ({
+        id: sourceId({ element: source, product }), label: shown + '.' + product, ...(index === 0 && { pick: named(source) }),
       })));
     const choices = new Map([...documentInputs, ...products].map((choice) => [choice.id, choice]));
     const wired = inputs[name];
@@ -109,7 +109,7 @@ export function AnalyzeElementInputs({ document, element, roles, inputs, declara
           { label: studioName('operations'), choices: products },
         ]}
         value={wired ? choices.get(sourceId(wired)) ?? { id: sourceId(wired), label: 'input' in wired ? wired.input
-          : wired.element + '.' + wired.product } : null}
+          : (outputs.find((output) => output.element === wired.element)?.name ?? wired.element) + '.' + wired.product } : null}
         onChoose={onWire && ((choice) => {
           const source = sources.get(choice.id);
           if (source) onWire(name, source);

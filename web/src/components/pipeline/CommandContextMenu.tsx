@@ -1,4 +1,4 @@
-import { useRef, type KeyboardEvent, type ReactElement } from 'react';
+import { useRef, type KeyboardEvent, type ReactElement, type SyntheticEvent } from 'react';
 import { studioName } from '@/components/activity/studioVocabulary';
 import {
   ContextMenu, ContextMenuContent, ContextMenuTrigger, MenuItem, openContextMenu, opensContextMenu,
@@ -31,18 +31,31 @@ export function contextMenuKey(event: KeyboardEvent) {
   return true;
 }
 
+const stop = (event: SyntheticEvent) => event.stopPropagation();
+
 /** The context menu of a thing: the commands that take it, opened by a right-click or the context menu keys. */
-export function CommandContextMenu({ commands, trigger }: {
+export function CommandContextMenu({ commands, trigger, focusAfter }: {
   commands?: (anchor: Element | undefined) => readonly StudioCommand[];
   trigger: ReactElement;
+  /** Where the chosen command wants the keyboard once the menu has closed; the open menu keeps it from going sooner. */
+  focusAfter?: () => HTMLElement | null;
 }) {
   const anchor = useRef<Element>();
   if (!commands) return trigger;
   return (
-    <ContextMenu>
+    <ContextMenu onOpenChangeComplete={(open) => {
+      const target = open ? null : focusAfter?.();
+      // The closed menu keeps the page inert until it unmounts, which follows this callback.
+      if (target) requestAnimationFrame(() => target.focus());
+    }}>
       <ContextMenuTrigger render={trigger} onKeyDown={contextMenuKey}
         onContextMenu={(event) => { anchor.current = event.currentTarget; }} />
-      <ContextMenuContent><CommandMenuItems commands={() => commands(anchor.current)} /></ContextMenuContent>
+      <ContextMenuContent>
+        {/* React carries a portal's events to the trigger's ancestors; a canvas node would take the item's click. */}
+        <div className="contents" onClick={stop} onPointerDown={stop} onMouseDown={stop} onDoubleClick={stop}>
+          <CommandMenuItems commands={() => commands(anchor.current)} />
+        </div>
+      </ContextMenuContent>
     </ContextMenu>
   );
 }
