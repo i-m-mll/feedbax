@@ -16,7 +16,7 @@ function submitted(page: Page, path: string) {
 
 test('the slot header switches, creates, duplicates, renames and re-keys a step\'s documents in place, and Activity keeps a run\'s label', { tag: '@round' }, async ({ page, request }) => {
   test.setTimeout(60_000);
-  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('history-files'));
+  const { snapshot, projectPath, configuration } = await seedManagedProject(request, await fixture('history-files'));
   const runsPath = `${projectPath}/train-runs`;
   const table = page.getByRole('table', { name: 'Runs' });
   const primary = page.locator('[data-slot="primary"]').getByRole('tabpanel');
@@ -84,7 +84,8 @@ test('the slot header switches, creates, duplicates, renames and re-keys a step\
   await expect(picker('Model')).toHaveText('point-mass');
   await renameStep('train', 'Reach');
   await page.getByRole('button', { name: 'Activity', exact: true }).click();
-  const activity = page.getByRole('region', { name: 'Activity', exact: true });
+  const activity = page.getByRole('region', { name: 'Activity', exact: true })
+    .getByRole('region', { name: configuration.project, exact: true });
   await expect(activity.getByRole('button', { name: 'Train train', exact: true })).toBeVisible();
   await expect(activity.getByRole('button', { name: 'Train Sibling', exact: true })).toBeVisible();
   await expect(activity.getByRole('button', { name: 'Train Reach', exact: true })).toHaveCount(0);

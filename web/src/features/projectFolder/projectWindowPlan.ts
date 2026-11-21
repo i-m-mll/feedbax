@@ -107,13 +107,19 @@ function paired(a: string, b: string, runs: readonly PlanRunView[]) {
 /**
  * The step's axes as the map draws them: input axes that vary together over its runs, as those of zipped list
  * inputs do, are one axis, whose values are labelled by each. It is named by the axis the step authors, when one does;
- * two authored axes stay apart.
+ * two authored axes stay apart, and so do an authored input axis and an axis its own input carries, whose values
+ * already label the input's.
  */
-function pairedAxesJoined(sweeps: readonly PlanSweepView[], runs: readonly PlanRunView[], authored: ReadonlySet<string>) {
+function pairedAxesJoined(
+  sweeps: readonly PlanSweepView[], runs: readonly PlanRunView[], authored: ReadonlySet<string>,
+  carried: ReadonlyMap<string, ReadonlySet<string>>,
+) {
+  const apart = (a: string, b: string) => (authored.has(a) && authored.has(b)) ||
+    !!carried.get(a)?.has(b) || !!carried.get(b)?.has(a);
   const groups: PlanSweepView[][] = [];
   for (const sweep of sweeps) {
     const group = groups.find((group) => paired(group[0].id, sweep.id, runs) &&
-      !(authored.has(sweep.id) && group.some(({ id }) => authored.has(id))));
+      !group.some(({ id }) => apart(id, sweep.id)));
     if (!group) groups.push([sweep]);
     else if (authored.has(sweep.id)) group.unshift(sweep);
     else group.push(sweep);
@@ -134,6 +140,31 @@ function pairedAxesJoined(sweeps: readonly PlanSweepView[], runs: readonly PlanR
       ...run, values: Object.fromEntries(Object.entries(run.values).filter(([axis]) => !absorbed.includes(axis))),
     })),
   };
+}
+
+/** Each input axis the step authors, with the axes the runs of its input carry from their steps and upstream. */
+function carriedAxes(project: Project, stepId: string): Map<string, Set<string>> {
+  const steps = project.steps ?? {};
+  function upstream(step: string, seen: Set<string>): string[] {
+    if (seen.has(step)) return [];
+    seen.add(step);
+    const read = steps[step];
+    const sources = Object.values(read?.inputs ?? {}).flatMap((binding) => Array.isArray(binding) ? binding : [binding]);
+    return [
+      ...Object.keys(read?.sweep?.axes ?? {}),
+      ...sources.flatMap((source) => source && typeof source === 'object' && 'step' in source
+        ? upstream(source.step, seen) : []),
+    ];
+  }
+  const carried = new Map<string, Set<string>>();
+  for (const [axis, read] of Object.entries(steps[stepId]?.sweep?.axes ?? {})) {
+    if (!read || typeof read !== 'object' || !('input' in read)) continue;
+    const binding = steps[stepId]?.inputs?.[read.input];
+    const sources = Array.isArray(binding) ? binding : binding ? [binding] : [];
+    carried.set(axis, new Set(sources.flatMap((source) => source && typeof source === 'object' && 'step' in source
+      ? upstream(source.step, new Set([stepId])) : [])));
+  }
+  return carried;
 }
 
 export function projectWindowPlan(
@@ -321,7 +352,7 @@ export function projectWindowPlan(
         const rank = evaluations.get(run.id)?.subject_rank_key;
         const label = rank && groupedLabels.get(rank);
         return label ? { ...run, label } : run;
-      }) : runs, new Set(Object.keys(project.steps?.[id]?.sweep?.axes ?? {}))),
+      }) : runs, new Set(Object.keys(project.steps?.[id]?.sweep?.axes ?? {})), carriedAxes(project, id)),
       statusCounts: resultCounts(projected?.status_counts ?? {}, runs),
     };
   });

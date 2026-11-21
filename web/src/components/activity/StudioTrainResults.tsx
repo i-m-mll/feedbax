@@ -174,7 +174,8 @@ function TrainLoss({ project, revision, evaluations, mapRows, rows, row, selecti
     } : result;
     if (receipt && result.receipt && result.receipt.manifest_sha256 !== receipt.manifest_sha256) return [];
     const planRow = mapRows.find((candidate) => sameRow(candidate.key, key));
-    const label = planRow && Object.keys(planRow.coordinates).length ? `${key.step} · ${planRow.label}` : key.step;
+    const several = mapRows.filter((candidate) => candidate.key.variant === key.variant && candidate.key.step === key.step).length > 1;
+    const label = planRow && several ? `${key.step} · ${planRow.label}` : key.step;
     return heldOutTracks(label, current, stage).map((track) => ({
       ...track, id: JSON.stringify([key, track.id]),
     }));
