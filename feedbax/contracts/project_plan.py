@@ -32,6 +32,7 @@ from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.model_input import DocumentInput, InitialModelSource, authored_document_input, encode_document_input
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.model_values import model_owner_problem
+from feedbax.contracts.dataset import FieldDescriptor
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.studio_place import path_parts, variation_targets
 from feedbax.contracts.project import (
@@ -201,12 +202,12 @@ RESERVED_LABELS = frozenset({*STEP_LABELS, "variant", "member"})
 
 @dataclass(frozen=True)
 class LabelName:
-    """What a step-valued label value names: a step, a stored Train run by its request, or the Model document of
-    a model that was never trained."""
+    """What a step-valued label value names: a step, an operation, a stored Train run by its request, or the Model
+    document of a model that was never trained."""
 
     key: str
     label: str | None = None
-    kind: Literal["step", "run", "document"] = "step"
+    kind: Literal["step", "run", "document", "element"] = "step"
 
     @property
     def printed(self) -> str:
@@ -306,6 +307,10 @@ class PlannedElement:
     outputs: Mapping[str, DatasetPort | PlotlyFigurePort]
     names: LabelNames = field(default_factory=dict)
     """What the step-valued label values of this request and of the operations it reads name."""
+    labels: Mapping[str, FieldDescriptor] = field(default_factory=dict)
+    """The label coordinates its dataset outputs carry from the stacked inputs it reads."""
+    label: str | None = None
+    """The operation's or figure's display label, which ``source`` prints for an output another card reads."""
 
     @property
     def datasets(self) -> Mapping[str, DatasetPort]:
@@ -551,6 +556,8 @@ class _Role:
     product_role: str
     gathers: bool = False
     """Whether the role takes a list of selections."""
+    operation_outputs: bool = False
+    """Whether a selection may instead name an Analyze operation's dataset product, read from the card that holds it."""
 
 
 _ROLES = {
@@ -593,6 +600,17 @@ def _identified(
         }})), run) if binding.named else (binding, run)
         for binding, run in members
     ), ids
+
+
+def _labelled(role: _Role, members: _Members) -> bool:
+    """Whether a role's members carry their labels: an Evaluate's always, and operation outputs when they are several.
+
+    One operation output read alone is the dataset the same wire reads inside one card, so a Split that cuts the
+    wire changes no request.
+    """
+    if role.producer_kind != "evaluate":
+        return False
+    return len(members) > 1 or any(binding.producer_element is None for binding, _ in members)
 
 
 def _checkpoint(rule: CheckpointRule | None, *, horizon: int | None = None) -> ProductSelector | None:
@@ -2822,7 +2840,7 @@ class _Compiler:
                     return ()
                 role = _Role(name_of_role, True, "train", "checkpoint")
             else:
-                role = _Role(name_of_role, True, "evaluate", "states", gathers=True)
+                role = _Role(name_of_role, True, "evaluate", "states", gathers=True, operation_outputs=True)
             resolved = self.select_input(variant, name, template, role, active)
             if isinstance(resolved, ProjectDiagnostic):
                 self.diagnostics.append(replace(resolved, variant=variant))
@@ -2903,6 +2921,11 @@ class _Compiler:
             tuple(replace(problem, row=key.row, variant=key.variant) for problem in resolved.document_problems),
             inputs,
             evaluations,
+            {
+                producer: self.rows[producer.run].elements[producer.name]
+                for sources in inputs.values() for source in sources
+                if (producer := source.element) is not None
+            },
             self.operations,
             figure_templates=self.figure_templates,
         )
@@ -3106,7 +3129,7 @@ class _Compiler:
         if isinstance(selected, ProjectDiagnostic):
             return selected
         members, omissions, subset = selected
-        return _identified(members, labelled=role.producer_kind == "evaluate")[0], omissions, subset
+        return _identified(members, labelled=_labelled(role, members))[0], omissions, subset
 
     def select_list(
         self,
@@ -3134,7 +3157,7 @@ class _Compiler:
                     ResolutionCode.BAD_REFERENCE, f"{item}.where.best", "Best ranks a single selection", name,
                 )
             selections.extend(selected[0])
-        identified, ids = _identified(tuple(selections), labelled=role.producer_kind == "evaluate")
+        identified, ids = _identified(tuple(selections), labelled=_labelled(role, tuple(selections)))
         counts = Counter(binding.member.key for binding, _ in identified)
         gathered = []
         for binding, run in identified:
@@ -3197,6 +3220,8 @@ class _Compiler:
                 "a same-project step or row reference is required",
                 name,
             )
+        if role.operation_outputs and reference.element is not None and reference.product is not None:
+            role = replace(role, producer_kind="analyze", product_role=reference.product)
         element_input = role.producer_kind == "analyze"
         if element_input:
             if reference.element is None or reference.product != role.product_role:
@@ -3358,7 +3383,8 @@ class _Compiler:
             if isinstance(run, PlannedAnalyzeRun):
                 assert reference.element is not None
                 element = run.elements.get(reference.element)
-                if element is None or not isinstance(element.outputs.get(role.product_role), PlotlyFigurePort):
+                port = DatasetPort if role.operation_outputs else PlotlyFigurePort
+                if element is None or not isinstance(element.outputs.get(role.product_role), port):
                     address = f"{run.key.variant}/{run.key.step}/{run.key.row}/{reference.element}"
                     return ProjectDiagnostic(
                         ResolutionCode.BAD_REFERENCE, f"{path}.element",
@@ -3370,7 +3396,9 @@ class _Compiler:
             try:
                 coordinates = self.member_coordinates(run)
                 labels, named = self.member_labels(run, coordinates, gathers_variants=reference.variants is not None)
-                if role.producer_kind != "evaluate":
+                if role.operation_outputs and element_input:
+                    named["source"] = LabelName(reference.element, element.label, kind="element")
+                elif role.producer_kind != "evaluate":
                     labels = {}
             except ValueError as error:
                 return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, str(error), name)

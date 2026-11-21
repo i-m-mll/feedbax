@@ -418,6 +418,7 @@ class ProjectPlanRead:
                 for name, figure in row.figures.items()
             ],
             detach_refused=sorted(self.settled.detach_refused),
+            regroup_refused=sorted(self.settled.regroup_refused),
         )
 
 class PlanRequestAddressFields(TypedDict):

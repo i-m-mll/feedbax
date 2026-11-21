@@ -64,8 +64,8 @@ from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, mod
 from feedbax.contracts.result_address import ANALYSIS_SCHEMA, payload_elements
 from feedbax.persistence.project_subject import terminal_train_reader
 from feedbax.project_members import (
-    change_member_key, detach_refusals, duplicate_step, fresh_element_keys, generated_name, label_member,
-    references_member,
+    change_member_key, detach_refusals, duplicate_step, fresh_element_keys, generated_name, label_member, merge_cards,
+    references_member, regroup_refused, split_card,
 )
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.studio.selection import StoredEdit
@@ -341,6 +341,7 @@ class SettledProjectPlan:
     readers: BaseReaders
     project_root: Path
     detach_refused: frozenset[str]
+    regroup_refused: frozenset[str]
 
     @classmethod
     def from_text(
@@ -351,7 +352,7 @@ class SettledProjectPlan:
         return cls(
             location.project_id, text.revision, project_semantic_root(text.project),
             text.configuration, text.store_path if store is None else store, plan, readers, text.root,
-            detach_refusals(plan, text.project.documents),
+            detach_refusals(plan, text.project.documents), regroup_refused(text.project),
         )
 
 
@@ -443,7 +444,7 @@ def compile_saved_project(
         )
         settled = SettledProjectPlan(
             project_id, text.revision, semantic_root, text.configuration, store, plan, readers, text.root,
-            detach_refusals(plan, text.project.documents),
+            detach_refusals(plan, text.project.documents), regroup_refused(text.project),
         )
         if reusable:
             memo.saved = _SavedCompilation(stamp, settled, observations)
@@ -1198,9 +1199,11 @@ class ProjectFolder:
             return self._snapshot(folder.location, text)
 
     def member_command(self, project_id: str, body: StudioMemberCommand) -> StudioMemberCommandResult:
-        """Label a step, operation or figure, change a member's key, or duplicate or detach a member, in one write.
+        """Label a step, operation or figure, change a member's key, duplicate or detach a member, or split or merge
+        Analyze cards, in one write.
 
-        A key change rewrites the member's references and presentation; a label changes no reference.
+        A key change, a split and a merge rewrite the references and presentation they move; a label changes no
+        reference. A key change, a split or a merge that would leave a reference unplannable is refused.
         """
         command = body.command
         with self._locked_folder(project_id) as folder:
@@ -1226,7 +1229,11 @@ class ProjectFolder:
                     for key in payload_elements(composed(name)["payload"])
                 }
 
-            if command.kind in ("rename", "change_key") and command.family == "elements":
+            if command.kind in ("split", "merge"):
+                for card in (member, *(command.others if command.kind == "merge" else ())):
+                    if card not in text.project.steps:
+                        raise ProjectFolderNotFound(f"steps/{card}.json")
+            elif command.kind in ("rename", "change_key") and command.family == "elements":
                 document = command.document
                 assert document is not None
                 if document not in text.project.documents:
@@ -1239,7 +1246,20 @@ class ProjectFolder:
             elif member not in text.project.steps:
                 raise ProjectFolderNotFound(f"steps/{member}.json")
 
-            if command.kind == "detach":
+            if command.kind == "split":
+                name = _free_member_name(source, "steps", member)
+                document = _free_member_name(source, "documents", source["steps"][member]["base"].get("document", member))
+                try:
+                    project, shown = split_card(source, shown, member, set(command.elements), document, name)
+                except ValueError as error:
+                    raise ProjectFolderInvalid(str(error)) from error
+            elif command.kind == "merge":
+                name = member
+                try:
+                    project, shown = merge_cards(source, shown, member, command.others)
+                except ValueError as error:
+                    raise ProjectFolderInvalid(str(error)) from error
+            elif command.kind == "detach":
                 name = member
                 if not isinstance(text.project.documents[member], BasedDocument):
                     raise ProjectFolderInvalid(f"{member} has no base.")
@@ -1284,7 +1304,7 @@ class ProjectFolder:
                 presentation = PresentationDocument.model_validate(shown)
             except ValueError as error:
                 raise ProjectFolderInvalid(str(error)) from error
-            if command.kind == "change_key":
+            if command.kind in ("change_key", "split", "merge"):
                 plan = compile_project(
                     validated, readers=self._base_readers(folder.location, text), operations=self.operations,
                     components=self.components, functions=self.functions, python_tasks=self.python_tasks,
@@ -1295,7 +1315,9 @@ class ProjectFolder:
                 )
                 if introduced:
                     raise ProjectFolderInvalid(
-                        f"Changing the key of {member} leaves a reference this change does not rewrite.",
+                        f"Changing the key of {member} leaves a reference this change does not rewrite."
+                        if command.kind == "change_key" else
+                        f"This {command.kind} leaves {member}'s operations or figures unplannable.",
                     )
             original = dump_text_project(text.project, text.configuration)
             encoded = dump_text_project(validated, text.configuration)

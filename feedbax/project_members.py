@@ -425,3 +425,275 @@ def detach_refusals(plan: ProjectPlan, documents: Mapping[str, Document]) -> fro
             if any(nearest_shared_base(detached, *pair) is None for pair in related):
                 refused.add(name)
     return frozenset(refused)
+
+
+def regroup_refusal(project: dict[str, JsonValue], step: str) -> str | None:
+    """Why Split and Merge cannot change the Analyze card ``step``, or None when they can.
+
+    They move element keys between documents, so each document involved is read by its one card, has no base and
+    has nothing based on it; a moved key would otherwise have two holders. A swept card's rows are not one input
+    selection, so a sweep, a delta or a requirement on the card, or a variant changing it, refuses them too.
+    """
+    steps = project.get("steps", {})
+    card = steps.get(step)
+    if card is None or card["kind"] != "analyze":
+        return "Not an Analyze card."
+    base = card["base"]
+    document = base.get("document") if base.keys() == {"document"} else None
+    entry = project.get("documents", {}).get(document) if document is not None else None
+    if entry is None or entry.get("schema") != ANALYSIS_SCHEMA:
+        return "Its Analysis is not a document of its own."
+    if "base" in entry or any(other.get("base") == {"document": document} for other in project["documents"].values()):
+        return "Its Analysis document is based."
+    if [name for name in steps if _reads(steps, name, frozenset({document}))] != [step]:
+        return "Its Analysis document is shared."
+    if card.get("sweep") or card.get("deltas") or card.get("requires"):
+        return "It has a sweep."
+    targets: set[str] = set()
+
+    def collect(path: str) -> str:
+        targets.add(path)
+        return path
+
+    _mapped_sweep(project.get("sweep"), lambda item: _renamed_patch_targets(item, collect), collect)
+    if any(target.startswith((f"steps.{step}.", f"documents.{document}.")) for target in targets):
+        return "A variant changes it."
+    return None
+
+
+def regroup_refused(project: Project) -> frozenset[str]:
+    """The Analyze cards whose Split and Merge are disabled (`regroup_refusal`)."""
+    dumped = project.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    return frozenset(
+        name for name, step in project.steps.items()
+        if step.kind == "analyze" and regroup_refusal(dumped, name) is not None
+    )
+
+
+def _references_retargeted(project: dict[str, JsonValue], elements: set[str], cards: set[str], card: str) -> dict:
+    """Rewrite each step's input reference to one of ``elements`` resolving to one of ``cards`` to qualify it by ``card``."""
+    holders = project_holders(Project.model_validate(project))
+
+    def rewrite(value: _Json) -> _Json:
+        if isinstance(value, dict):
+            if value.get("element") in elements and "product" in value and "step" in value:
+                if holders.card_of(value["step"], value["element"]) in cards:
+                    return {**value, "step": card}
+                return value
+            return {key: rewrite(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [rewrite(item) for item in value]
+        return value
+
+    return {
+        name: {**step, "inputs": rewrite(step["inputs"])} if "inputs" in step else step
+        for name, step in project["steps"].items()
+    }
+
+
+def _wired(element: dict[str, _Json], wire: Callable[[str, _Json], _Json]) -> dict[str, _Json]:
+    return {**element, "inputs": {role: wire(role, source) for role, source in element.get("inputs", {}).items()}}
+
+
+def _moved_presentation(entry: dict[str, _Json], moved: set[str]) -> tuple[dict[str, _Json], dict[str, _Json]]:
+    """Partition a document's presentation into what stays and what moves with the elements ``moved``."""
+    stays, moves = dict(entry), {}
+    for section in ("positions", "flipped", "collapsed"):
+        if section in entry:
+            stays[section] = {key: item for key, item in entry[section].items() if key not in moved}
+            moves[section] = {key: item for key, item in entry[section].items() if key in moved}
+    if "waypoints" in entry:
+        def target(key: str) -> str | None:
+            try:
+                return json.loads(key)[0]
+            except (ValueError, TypeError, IndexError):
+                return None
+
+        stays["waypoints"] = {key: item for key, item in entry["waypoints"].items() if target(key) not in moved}
+        moves["waypoints"] = {key: item for key, item in entry["waypoints"].items() if target(key) in moved}
+    if "camera" in entry:
+        moves["camera"] = entry["camera"]
+    return stays, moves
+
+
+def split_card(
+    project: dict[str, JsonValue], presentation: dict[str, JsonValue], step: str, elements: set[str],
+    document: str, card: str,
+) -> tuple[dict[str, JsonValue], dict[str, JsonValue]]:
+    """Return the project and presentation with ``elements`` of Analyze card ``step`` moved to ``document``, read by
+    the new card ``card``.
+
+    A wire the cut crosses becomes a role of the reading side bound to the operation's output in the other card, so
+    every operation and figure plans the request it planned before. The new card takes the bindings of the roles its
+    elements read; a role no element of the old card reads any longer leaves it. References to a moved element are
+    qualified by the new card.
+    """
+    if (refusal := regroup_refusal(project, step)) is not None:
+        raise ValueError(refusal)
+    source = project["steps"][step]["base"]["document"]
+    payload = project["documents"][source]["payload"]
+    held = payload_elements(payload)
+    if not elements or not elements < held:
+        raise ValueError("Choose some, not all, of the card's operations and figures.")
+    declarations = payload.get("inputs", {})
+    bindings = project["steps"][step].get("inputs", {})
+
+    def side(names: set[str], other: str) -> tuple[dict[str, _Json], dict[str, _Json], dict[str, _Json]]:
+        """One side's elements, declarations and bindings; a wire from the other side becomes a role."""
+        roles: dict[str, _Json] = {}
+        bound: dict[str, _Json] = {}
+        cut: dict[tuple[str, str], str] = {}
+        read = {
+            source["input"] for family in ELEMENT_FAMILIES for name, element in payload.get(family, {}).items()
+            if name in names for source in element.get("inputs", {}).values() if "input" in source
+        }
+        for role in sorted(read):
+            if role not in declarations:
+                raise ValueError(f"The card's document does not declare its input {role}.")
+            roles[role] = deepcopy(declarations[role])
+            if role in bindings:
+                bound[role] = deepcopy(bindings[role])
+
+        def wire(_: str, source: _Json) -> _Json:
+            if "element" not in source or source["element"] in names:
+                return source
+            edge = source["element"], source["product"]
+            if edge not in cut:
+                role = generated_name(source["product"], lambda name: name in roles or name in declarations)
+                cut[edge] = role
+                roles[role] = {"kind": "dataset", "cardinality": "one"}
+                bound[role] = {"step": other, "element": edge[0], "product": edge[1]}
+            return {"input": cut[edge]}
+
+        sections = {
+            family: {
+                name: _wired(element, wire)
+                for name, element in payload.get(family, {}).items() if name in names
+            }
+            for family in ELEMENT_FAMILIES
+        }
+        return {family: members for family, members in sections.items() if members}, roles, bound
+
+    moved, moved_roles, moved_bound = side(elements, step)
+    kept, kept_roles, kept_bound = side(held - elements, card)
+    # A role no element reads stays where it is.
+    unread = {
+        role: declaration for role, declaration in declarations.items()
+        if role not in kept_roles and role not in moved_roles
+    }
+    kept_roles = {**unread, **kept_roles}
+    kept_bound = {**{role: bindings[role] for role in unread if role in bindings}, **kept_bound}
+    old = {**payload, **kept, "inputs": kept_roles}
+    for family in ELEMENT_FAMILIES:
+        if family not in kept:
+            old.pop(family, None)
+    new = {**{key: payload[key] for key in ("schema_version",) if key in payload}, "inputs": moved_roles, **moved}
+    documents = {
+        **project["documents"],
+        source: {**project["documents"][source], "payload": old},
+        document: {"schema": ANALYSIS_SCHEMA, "payload": new},
+    }
+    original = project["steps"][step]
+    steps = _references_retargeted(project, elements, {step}, card)
+    steps[step] = {**steps[step], "inputs": kept_bound}
+    steps[card] = {
+        "kind": "analyze", "base": {"document": document}, "inputs": moved_bound,
+        **({"group": original["group"]} if "group" in original else {}),
+    }
+    split = {**project, "documents": documents, "steps": steps}
+    shown = dict(presentation)
+    if source in shown.get("documents", {}):
+        stays, moves = _moved_presentation(shown["documents"][source], elements)
+        shown["documents"] = {**shown["documents"], source: stays, document: moves}
+    return split, shown
+
+
+def merge_cards(
+    project: dict[str, JsonValue], presentation: dict[str, JsonValue], card: str, others: list[str],
+) -> tuple[dict[str, JsonValue], dict[str, JsonValue]]:
+    """Return the project and presentation with Analyze cards ``others`` joined into ``card``, the inverse of Split.
+
+    Their operations and figures move into ``card``'s document; a role bound to an operation's output in one of the
+    joined cards becomes the wire it stood for, and roles bound to the same source with the same declaration become
+    one. The other cards and their documents are removed, and references to a moved element are qualified by ``card``.
+    """
+    cards = [card, *others]
+    if len(set(cards)) != len(cards) or not others:
+        raise ValueError("Choose two or more distinct Analyze cards.")
+    for name in cards:
+        if (refusal := regroup_refusal(project, name)) is not None:
+            raise ValueError(f"{name}: {refusal}")
+    holders = project_holders(Project.model_validate(project))
+    joined = set(cards)
+    target = project["steps"][card]["base"]["document"]
+    payload = deepcopy(project["documents"][target]["payload"])
+    roles: dict[str, _Json] = {}
+    bound: dict[str, _Json] = {}
+    sections: dict[str, dict[str, _Json]] = {family: {} for family in ELEMENT_FAMILIES}
+    moved: set[str] = set()
+    shown = dict(presentation)
+    documents = dict(project["documents"])
+    merged_presentation: dict[str, _Json] = dict(shown.get("documents", {}).get(target, {}))
+    for name in cards:
+        document = project["steps"][name]["base"]["document"]
+        own = project["documents"][document]["payload"]
+        declarations = own.get("inputs", {})
+        bindings = project["steps"][name].get("inputs", {})
+        renamed: dict[str, _Json] = {}
+        for role, declaration in declarations.items():
+            binding = bindings.get(role)
+            if isinstance(binding, dict) and "element" in binding and (
+                holders.card_of(binding.get("step"), binding["element"]) in joined
+            ):
+                if binding.keys() != {"step", "element", "product"}:
+                    raise ValueError(f"{name}'s input {role} selects from a joined card; only a whole output joins.")
+                renamed[role] = {"element": binding["element"], "product": binding["product"]}
+                continue
+            if isinstance(binding, list) and any(
+                isinstance(item, dict) and "element" in item
+                and holders.card_of(item.get("step"), item["element"]) in joined
+                for item in binding
+            ):
+                raise ValueError(f"{name}'s input {role} lists a joined card's output.")
+            same = next((
+                existing for existing, prior in roles.items()
+                if prior == declaration and bound.get(existing) == binding
+            ), None)
+            if same is None:
+                same = generated_name(role, lambda taken: taken in roles)
+                roles[same] = deepcopy(declaration)
+                if binding is not None or role in bindings:
+                    bound[same] = deepcopy(binding)
+            renamed[role] = {"input": same}
+
+        def wire(_: str, source: _Json) -> _Json:
+            return renamed[source["input"]] if "input" in source else source
+
+        for family in ELEMENT_FAMILIES:
+            for element, value in own.get(family, {}).items():
+                sections[family][element] = _wired(value, wire)
+                if name != card:
+                    moved.add(element)
+        if name != card:
+            del documents[document]
+            entry = shown.get("documents", {}).get(document, {})
+            for section in ("positions", "flipped", "collapsed", "waypoints"):
+                if section in entry:
+                    merged_presentation[section] = {**merged_presentation.get(section, {}), **entry[section]}
+    payload = {**payload, "inputs": roles, **{family: members for family, members in sections.items() if members}}
+    documents[target] = {**documents[target], "payload": payload}
+    retargeted = _references_retargeted(project, moved, joined, card)
+    steps = {name: step for name, step in retargeted.items() if name not in others}
+    steps[card] = {**steps[card], "inputs": bound}
+    merged = {**project, "documents": documents, "steps": steps}
+    for name in others:
+        if references_member(merged, "steps", name):
+            raise ValueError(f"A reference still names {name}.")
+    if "documents" in shown:
+        removed = {project["steps"][name]["base"]["document"] for name in others}
+        shown["documents"] = {
+            name: entry for name, entry in shown["documents"].items() if name not in removed
+        } | ({target: merged_presentation} if merged_presentation else {})
+    if "steps" in shown:
+        shown["steps"] = {name: entry for name, entry in shown["steps"].items() if name not in others}
+    return merged, shown

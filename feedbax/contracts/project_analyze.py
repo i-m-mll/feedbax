@@ -102,6 +102,7 @@ class _Lowerer:
         documents: Mapping[str, Document],
         step_inputs: Mapping[str, tuple[PlannedInput, ...]],
         evaluations: Mapping[str, RequestSpec],
+        upstream: Mapping[ElementKey, PlannedElement],
         operations: OperationRegistry,
         figure_templates: FigureTemplateRegistry | None,
     ):
@@ -111,12 +112,11 @@ class _Lowerer:
         self.documents = documents
         self.step_inputs = step_inputs
         self.evaluations = evaluations
+        self.upstream = upstream
         self.operations = operations
         self.declarations: Mapping[str, AnalyzeInput] = {}
         self.figure_templates = figure_templates
         self.elements: dict[str, PlannedElement] = {}
-        self.labels: dict[str, dict[str, FieldDescriptor]] = {}
-        """The label coordinates each operation's dataset outputs carry from its stacked inputs."""
         self.figures: dict[str, FigureDocument] = {}
         self.encoded: list[EncodedRequest] = []
         self.problems: list[ProjectDiagnostic] = []
@@ -157,61 +157,90 @@ class _Lowerer:
             )
         )
 
+    def _producer(self, binding: PlannedInput) -> PlannedElement | None:
+        """The operation a binding reads, in this card or in the card across an Analyze-to-Analyze edge."""
+        key = binding.element
+        if key is None:
+            return None
+        return self.elements.get(key.name) if key.run == self.key else self.upstream.get(key)
+
     def _input(
         self,
         source: DatasetSource,
         path: str,
-    ) -> tuple[tuple[PlannedInput, ...], DatasetPort]:
-        """The bindings of a dataset input and its port, with the coordinates its stacked labels add."""
-        if isinstance(source, StepInput):
-            inputs = self._step_input(source, "dataset", path)
-            schemas = set()
-            for binding in inputs:
-                reference = binding.member.reference
-                assert isinstance(reference, ProductRef)
-                evaluation = self.evaluations[reference.request_id]
-                if (
-                    not isinstance(evaluation, EvaluationRequestSpec)
-                    or evaluation.evaluation_type != ROLLOUT_TYPE
-                ):
-                    raise _ElementIssue(
-                        path, f"States member {binding.member.key!r} requires a saved rollout Evaluate request."
-                    )
-                try:
-                    schemas.add(RolloutParameters.model_validate(evaluation.params).states_schema)
-                except ValidationError as error:
-                    raise _ElementIssue(path, f"Invalid saved Evaluate parameters: {error}") from error
-            # The schema is fixed by retention. Concrete model-owned variables are
-            # authenticated when the actual saved dataset is read.
-            if len(schemas) != 1:
-                raise _ElementIssue(path, "Selected Evaluate states must use the same dataset schema.")
-            members = tuple(binding.member for binding in inputs)
-            try:
-                labels = stack_layout(labelled_members(members)).fields() if any(
-                    member.labels for member in members
-                ) else {}
-            except ValueError as error:
-                raise _ElementIssue(path, str(error)) from error
-            return inputs, DatasetPort(schema_ids=tuple(schemas), coordinates=labels)
-        producer = self.elements.get(source.element)
-        if producer is None:
-            raise _ElementIssue(path, f"Unknown or unplannable operation {source.element!r}.")
-        output = producer.datasets.get(source.product)
-        if output is None:
-            raise _ElementIssue(
-                path, f"Operation {source.element!r} has no dataset product {source.product!r}."
+    ) -> tuple[tuple[PlannedInput, ...], DatasetPort, dict[str, FieldDescriptor]]:
+        """The bindings of a dataset input, its port, and the label coordinates the port carries from stacked inputs."""
+        if isinstance(source, OperationDataset):
+            producer = self.elements.get(source.element)
+            if producer is None:
+                raise _ElementIssue(path, f"Unknown or unplannable operation {source.element!r}.")
+            binding = PlannedInput(
+                self.key,
+                InputMember(
+                    key="default",
+                    reference=ProductRef(request_id=producer.request_id, role=source.product),
+                ),
+                producer_element=source.element,
             )
-        binding = PlannedInput(
-            self.key,
-            InputMember(
-                key="default",
-                reference=ProductRef(request_id=producer.request_id, role=source.product),
-            ),
-            producer_element=source.element,
-        )
-        return (binding,), output.model_copy(update={"coordinates": {
-            **self.labels.get(source.element, {}), **output.coordinates,
-        }})
+            return self._operation_outputs((binding,), path)
+        inputs = self._step_input(source, "dataset", path)
+        if any(binding.producer_element is not None for binding in inputs):
+            return self._operation_outputs(inputs, path)
+        schemas = set()
+        for binding in inputs:
+            reference = binding.member.reference
+            assert isinstance(reference, ProductRef)
+            evaluation = self.evaluations[reference.request_id]
+            if (
+                not isinstance(evaluation, EvaluationRequestSpec)
+                or evaluation.evaluation_type != ROLLOUT_TYPE
+            ):
+                raise _ElementIssue(
+                    path, f"States member {binding.member.key!r} requires a saved rollout Evaluate request."
+                )
+            try:
+                schemas.add(RolloutParameters.model_validate(evaluation.params).states_schema)
+            except ValidationError as error:
+                raise _ElementIssue(path, f"Invalid saved Evaluate parameters: {error}") from error
+        # The schema is fixed by retention. Concrete model-owned variables are
+        # authenticated when the actual saved dataset is read.
+        if len(schemas) != 1:
+            raise _ElementIssue(path, "Selected Evaluate states must use the same dataset schema.")
+        labels = self._stacked(inputs, path)
+        return inputs, DatasetPort(schema_ids=tuple(schemas), coordinates=labels), labels
+
+    @staticmethod
+    def _stacked(inputs: tuple[PlannedInput, ...], path: str) -> dict[str, FieldDescriptor]:
+        members = tuple(binding.member for binding in inputs)
+        try:
+            return stack_layout(labelled_members(members)).fields() if any(member.labels for member in members) else {}
+        except ValueError as error:
+            raise _ElementIssue(path, str(error)) from error
+
+    def _operation_outputs(
+        self, inputs: tuple[PlannedInput, ...], path: str,
+    ) -> tuple[tuple[PlannedInput, ...], DatasetPort, dict[str, FieldDescriptor]]:
+        """Operation outputs read by a wire or by a role: one output is the dataset the operation made, and several
+        are stacked by their labels, which requires them to have one port."""
+        ports = []
+        for binding in inputs:
+            producer = self._producer(binding)
+            reference = binding.member.reference
+            if producer is None or not isinstance(reference, ProductRef):
+                raise _ElementIssue(path, f"Unknown or unplannable operation {binding.producer_element!r}.")
+            output = producer.datasets.get(reference.role)
+            if output is None:
+                raise _ElementIssue(
+                    path, f"Operation {binding.producer_element!r} has no dataset product {reference.role!r}."
+                )
+            ports.append((output, producer.labels))
+        if any(port != ports[0] for port in ports[1:]):
+            raise _ElementIssue(path, "Stacked operation outputs must have one dataset port.")
+        output, carried = ports[0]
+        if len(inputs) > 1 and carried:
+            raise _ElementIssue(path, "Operation outputs that carry labels of their own inputs do not stack.")
+        labels = {**carried, **self._stacked(inputs, path)}
+        return inputs, output.model_copy(update={"coordinates": {**labels, **output.coordinates}}), labels
 
     def _step_input(
         self, source: DatasetSource, kind: str, path: str,
@@ -233,7 +262,7 @@ class _Lowerer:
         self._check_roles(sources, roles)
         inputs, schemas = {}, {}
         for role in sorted(roles):
-            inputs[role], schemas[role] = self._input(sources[role], f"inputs.{role}")
+            inputs[role], schemas[role], _ = self._input(sources[role], f"inputs.{role}")
         return inputs, schemas
 
     @staticmethod
@@ -251,11 +280,13 @@ class _Lowerer:
         spec: AnalysisRequestSpec | RenderRequestSpec,
         inputs: Mapping[str, tuple[PlannedInput, ...]],
         outputs: Mapping[str, DatasetPort | PlotlyFigurePort],
+        label: str | None,
+        labels: Mapping[str, FieldDescriptor] = MappingProxyType({}),
     ) -> None:
         names = _merged(*(
-            self.elements[binding.producer_element].names
+            producer.names
             for bindings in inputs.values() for binding in bindings
-            if binding.producer == self.key and binding.producer_element in self.elements
+            if (producer := self._producer(binding)) is not None
         ), _names(inputs))
         if isinstance(spec, RenderRequestSpec):
             printed = _printed_labels(spec.document)
@@ -273,7 +304,9 @@ class _Lowerer:
             encoded.id,
             MappingProxyType(dict(inputs)),
             MappingProxyType(dict(outputs)),
-            MappingProxyType({label: MappingProxyType(values) for label, values in names.items()}),
+            MappingProxyType({name: MappingProxyType(values) for name, values in names.items()}),
+            MappingProxyType(dict(labels)),
+            label,
         )
         self.encoded.append(encoded)
 
@@ -304,20 +337,18 @@ class _Lowerer:
                 if not isinstance(expected, DatasetPort):
                     inputs[role] = self._step_input(source, expected.kind, wire_path)
                     continue
-                inputs[role], actual = self._input(source, wire_path)
-                labels |= self.labels.get(source.element, {}) if isinstance(source, OperationDataset) else actual.coordinates
+                inputs[role], actual, carried = self._input(source, wire_path)
+                labels |= carried
+                outputs = any(binding.producer_element is not None for binding in inputs[role])
                 try:
-                    require_dataset_port(
-                        actual, expected, fields=isinstance(source, OperationDataset)
-                    )
-                    if isinstance(source, OperationDataset):
+                    require_dataset_port(actual, expected, fields=outputs)
+                    if outputs:
                         for parameter, requirement in expected.selected_variables.items():
                             require_dataset_fields(
                                 actual.variables, {getattr(params, parameter): requirement}
                             )
                 except ValueError as error:
                     raise _ElementIssue(wire_path, str(error)) from error
-            self.labels[name] = labels
             self._record(
                 name,
                 AnalysisRequestSpec(
@@ -326,6 +357,8 @@ class _Lowerer:
                 ),
                 inputs,
                 definition.outputs,
+                element.label,
+                labels,
             )
         except _ElementIssue as error:
             self.problem(
@@ -395,6 +428,7 @@ class _Lowerer:
                 RenderRequestSpec(document=figure),
                 inputs,
                 {PLOTLY_FIGURE_ROLE: PlotlyFigurePort()},
+                element.label,
             )
         except FigureBindingError as error:
             self.problem(f"{figure_path}.{error.path}", str(error), name)
@@ -411,6 +445,7 @@ def lower_analyze(
     document_problems: tuple[ProjectDiagnostic, ...],
     step_inputs: Mapping[str, tuple[PlannedInput, ...]],
     evaluations: Mapping[str, RequestSpec],
+    upstream: Mapping[ElementKey, PlannedElement],
     operations: OperationRegistry,
     *,
     figure_templates: FigureTemplateRegistry | None = None,
@@ -418,7 +453,8 @@ def lower_analyze(
     dict[str, PlannedElement], list[EncodedRequest], list[ProjectDiagnostic], dict[str, FigureDocument]
 ]:
     lower = _Lowerer(
-        key, document_ids, document_pointers, documents, step_inputs, evaluations, operations, figure_templates,
+        key, document_ids, document_pointers, documents, step_inputs, evaluations, upstream, operations,
+        figure_templates,
     )
     lower.problems.extend(document_problems)
     try:
