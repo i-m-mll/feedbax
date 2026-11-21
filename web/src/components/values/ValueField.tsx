@@ -59,24 +59,29 @@ const kindGlyphs: Record<FieldKind, ReactNode> = {
 };
 
 /**
- * Sends edits to the model's source. An edit made while the source is briefly unavailable (a save in flight, a
- * projection being replaced) waits for it rather than being dropped.
+ * Sends edits to the model's source, one at a time in the order they are made. An edit made while the source is briefly
+ * unavailable (a projection being replaced) or while the field's last edit saves waits for it rather than being
+ * dropped, and the field stays editable meanwhile.
  */
 function useSubmit(model: FieldModel) {
-  const [busy, setBusy] = useState(false);
   const [reason, setReason] = useState<string>();
+  const tail = useRef<Promise<unknown>>(Promise.resolve());
   const waiting = useRef<{ edit: FieldEdit; resolve(done: boolean): void }>();
+  const latest = useRef(model);
+  latest.current = model;
   async function send(commit: NonNullable<FieldModel['commit']>, edit: FieldEdit) {
-    setBusy(true);
     const failure = await commit(edit);
-    setBusy(false);
     setReason(failure);
     return !failure;
   }
   function submit(edit: FieldEdit) {
-    if (busy) return Promise.resolve(false);
-    if (!model.commit) return new Promise<boolean>((resolve) => { waiting.current = { edit, resolve }; });
-    return send(model.commit, edit);
+    const result = tail.current.then(() => {
+      const { commit } = latest.current;
+      if (commit) return send(commit, edit);
+      return new Promise<boolean>((resolve) => { waiting.current = { edit, resolve }; });
+    });
+    tail.current = result.catch(() => undefined);
+    return result;
   }
   useEffect(() => {
     const next = waiting.current;
@@ -84,7 +89,7 @@ function useSubmit(model: FieldModel) {
     waiting.current = undefined;
     void send(model.commit, next.edit).then(next.resolve);
   });
-  return { busy, reason, setReason, submit };
+  return { reason, setReason, submit };
 }
 
 /**
@@ -103,8 +108,8 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
   const labelId = useId();
   const reasonId = useId();
   const originId = useId();
-  const { busy, reason, setReason, submit } = useSubmit(model);
-  const readOnly = !model.commit || busy;
+  const { reason, setReason, submit } = useSubmit(model);
+  const readOnly = !model.commit;
   const describedBy = [model.origin && originId, (reason ?? model.reason) && reasonId].filter(Boolean).join(' ') || undefined;
   const below = <>
     {model.origin && <Origin id={originId} text={model.origin} reveal={model.revealOrigin}
@@ -214,8 +219,8 @@ function ClassValue({ model, parameter, labelId, picker, pickReason }: {
   const id = useId();
   const reasonId = useId();
   const originId = useId();
-  const { busy, reason, setReason, submit } = useSubmit(parameter);
-  const readOnly = !parameter.commit || busy;
+  const { reason, setReason, submit } = useSubmit(parameter);
+  const readOnly = !parameter.commit;
   const shown = reason ?? pickReason ?? parameter.reason ?? model.reason;
   const origin = parameter.origin ?? model.origin;
   const describedBy = [origin && originId, shown && reasonId].filter(Boolean).join(' ') || undefined;
@@ -265,12 +270,20 @@ function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearRea
   const intent = useContext(FieldIntent);
   /** A kind a command put the field in that no edit has made yet: it is made by the text the field commits. */
   const [pending, setPending] = useState<FieldKind>();
-  useEffect(() => {
-    if (!intent || intent.target !== model.anchor) return;
-    setPending(intent.kind);
+  function enter(kind: FieldKind) {
+    setPending(kind);
     const end = input.current?.value.length ?? 0;
     input.current?.setSelectionRange(end, end);
+  }
+  useEffect(() => {
+    if (intent && intent.target === model.anchor) enter(intent.kind);
   }, [intent?.key]);
+  /** Sweep is made by the text the field commits; another kind by its own edit. */
+  function choose(kind: FieldKind) {
+    if (kind !== 'sweep') { chooseKind(kind); return; }
+    input.current?.focus();
+    enter(kind);
+  }
   const text = draft ?? model.text ?? '';
   const offered = draft !== undefined && !dismissed && caret !== undefined
     ? completions(model, text.slice(0, caret)) : { token: '', items: [] };
@@ -315,16 +328,17 @@ function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearRea
     }
     if (event.key === 'Enter' && draft !== undefined) {
       event.preventDefault();
-      void submit({ kind: 'text', text: draft }).then((done) => {
+      const committed = draft;
+      void submit({ kind: 'text', text: committed }).then((done) => {
         if (!done) return;
-        setDraft(undefined);
+        setDraft((current) => current === committed ? undefined : current);
         setPending(undefined);
       });
     }
   }
 
   const markMenu = mark ? <KindMark model={model} kind={pending ?? model.kind} readOnly={readOnly} open={menu}
-    onOpenChange={setMenu} finalFocus={input} onChoose={chooseKind} /> : undefined;
+    onOpenChange={setMenu} finalFocus={input} onChoose={choose} /> : undefined;
   const differs = model.differs !== undefined ? <output {...appTip(studioName('selectedValue'))} aria-description={model.differs}
     aria-label={studioFieldLabel('selectedValue', label)}>◆</output> : undefined;
   return <>

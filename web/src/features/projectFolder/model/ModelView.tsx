@@ -41,7 +41,7 @@ import {
 import { choosePick, clearSelection, selectElement, useModelSelection, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import { Drawer, DrawerSection, focusInspectorField, type DrawerSections } from '@/features/projectWindow/DrawerForms';
 import { LibraryList, type LibraryItem } from '@/features/projectWindow/LibraryList';
-import { awaitedValue, commandQueue } from './commandQueue';
+import { awaitedValue, commandQueue } from '../commandQueue';
 import { modelOutline } from './modelOutline';
 import { sweepValueRuns, type ConfirmRunRemoval } from '../runRemoval';
 

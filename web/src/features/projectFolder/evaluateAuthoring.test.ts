@@ -2,7 +2,7 @@ import { expect, it } from 'vitest';
 import type { Step } from '@/generated/studioContracts';
 import { applyAuthoredEdits, type ProjectEditContent } from './authoredEdits';
 import {
-  checkpointDraft, checkpointDraftRule, editableCheckpointRule, evaluateSubject, evaluateSubjectEdits,
+  checkpointDraft, checkpointDraftRule, conditionLabels, editableCheckpointRule, evaluateSubject, evaluateSubjectEdits,
   type EvaluateSubject,
 } from './evaluateAuthoring';
 
@@ -54,4 +54,13 @@ it('moves an Evaluate subject between a checkpoint and an initial Model and back
   expect(initial.sweep).toBeUndefined();
   expect(evaluateSubject(initial)).toEqual({ kind: 'document', document: 'arm', task: 'reach', objective: 'loss' });
   expect(apply(initial, { kind: 'step', step: 'train' })).toEqual(evaluate);
+});
+
+// Catches a condition shown as its raw JSON id, or named by a variable every condition shares.
+it('names each condition by the variables that vary across its cohort', () => {
+  const a = '{"goal":[1,0],"origin":[0,0]}';
+  const b = '{"goal":[0,1],"origin":[0,0]}';
+  expect([...conditionLabels([a, b]).values()]).toEqual(['goal=[1,0]', 'goal=[0,1]']);
+  expect(conditionLabels(['{"goal":[1,0]}']).get('{"goal":[1,0]}')).toBe('goal=[1,0]');
+  expect(conditionLabels(['left']).get('left')).toBe('left');
 });

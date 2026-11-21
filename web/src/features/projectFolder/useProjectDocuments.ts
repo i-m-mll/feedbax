@@ -132,11 +132,11 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
     return result.files;
   }
 
-  /** A refusal lands on the role's picker; any other failure goes to `onError`. */
+  /** Runs after the edits before it have saved. A refusal lands on the role's picker; any other failure goes to `onError`. */
   async function attempt<T>(role: DocumentRole, work: () => Promise<T>) {
     refuse(role);
     try {
-      return await work();
+      return await editor.command(work);
     } catch (error) {
       if (landsOnGesture(error)) refuse(role, apiErrorMessage(error));
       else onError(apiErrorMessage(error));

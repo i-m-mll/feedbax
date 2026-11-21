@@ -17,7 +17,7 @@ import {
 } from '@/generated/studioContracts';
 import type { AuthoredProject } from './authoredEdits';
 import {
-  checkpointDraft, checkpointDraftRule, emptyCheckpointDraft, evaluateSubject, evaluateSubjectEdits, validTrialSet,
+  checkpointDraft, checkpointDraftRule, conditionLabels, emptyCheckpointDraft, evaluateSubject, evaluateSubjectEdits, validTrialSet,
   type CheckpointDraft, type CheckpointDraftField, type CheckpointKind, type EditableCheckpointRule, type EvaluateSubject,
   type TrialDomain, type TrialSet,
 } from './evaluateAuthoring';
@@ -209,7 +209,7 @@ export function TrialsEditor({ initial, domain, disabled, refusal, onSave }: {
       {!sampling && refusal && <p role="alert">{refusal}</p>}
     </>}>
     {rule.kind === 'conditions' && domain.kind === 'fixed' && <fieldset disabled={disabled}>
-      <Checkboxes options={domain.conditions.map((id) => ({ id, label: id }))} selected={rule.ids} disabled={disabled}
+      <Checkboxes options={[...conditionLabels(domain.conditions)].map(([id, label]) => ({ id, label }))} selected={rule.ids} disabled={disabled}
         onToggle={(id, checked) => commit({ kind: 'conditions', ids: toggle(rule.ids, id, checked) })} />
     </fieldset>}
     {sampling && <FieldRow label={studioName('count')} htmlFor={count} below={refusal && <p role="alert">{refusal}</p>}>

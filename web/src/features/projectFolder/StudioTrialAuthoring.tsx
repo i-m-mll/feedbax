@@ -5,7 +5,7 @@ import { useId, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { catalogEntries, readStudioTrialAuthoring, useAuthoringCatalog } from '@/api/studioAuthoring';
 import { apiErrorMessage } from '@/api/request';
-import { studioAccessibleName, studioDefinitionStatus, studioEvaluateValueSource, studioName, studioReason, studioRunReason } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioDefinitionStatus, studioEvaluateValueSource, studioName, studioRunReason } from '@/components/activity/studioVocabulary';
 import { IconButton } from '@/components/ui/Button';
 import { Inspector } from '@/components/ui/Inspector';
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '@/components/ui/Menu';
@@ -55,8 +55,6 @@ export function useTrialAuthoring(
   editor: ProjectEditController, project: string, revision: string, run: StudioSavedTrainKey | undefined,
   enabled: boolean, editable: boolean, scope: TrialChangeScope, confirmRemoval: ConfirmRunRemoval,
 ) {
-  const writing = useRef(false);
-  const [busy, setBusy] = useState(false);
   const query = useQuery({
     queryKey: ['trial-authoring', project, revision, run],
     queryFn: ({ signal }) => readStudioTrialAuthoring(project, { revision, run: run! }, signal),
@@ -64,35 +62,28 @@ export function useTrialAuthoring(
     placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === project &&
       JSON.stringify(previousQuery.queryKey[3]) === JSON.stringify(run) ? previous : undefined,
   });
-  const commit: Commit | undefined = editable && !busy && run && query.data && !query.isPlaceholderData ? async (name, change, removes) => {
-    if (writing.current) return studioReason('saving', studioName('project'));
-    writing.current = true;
-    setBusy(true);
-    try {
-      const result = await readStudioTrialAuthoring(project, { revision, run, change, scope: scope(change) }, editor.signal);
-      if (result.files.length) {
-        if (removes && !await confirmRemoval(filesRemoval(project, revision, result.files, editor.signal))) return;
-        const documents = [result.model, result.task_document, result.objective_document];
-        const stored = editor.storeEdit(name, result, {
-          reviewedRevision: revision,
-          dependencies: [
-            { kind: 'step', id: run.step },
-            ...documents.flatMap((id) => id ? [{ kind: 'document' as const, id }] : []),
-          ],
-        });
-        await editor.flush();
-        const settled = await stored;
-        if (settled.status === 'refused') return apiErrorMessage(settled.error);
-      } else if (result.problems.length) {
-        return result.problems[0].reason;
-      }
-    } catch (error) {
-      return apiErrorMessage(error);
-    } finally {
-      writing.current = false;
-      setBusy(false);
+  const commit: Commit | undefined = editable && run && query.data ? (name, change, removes) => editor.command(async (saved) => {
+    const result = await readStudioTrialAuthoring(saved.project_id, {
+      revision: saved.revision, run, change, scope: scope(change),
+    }, editor.signal);
+    if (result.files.length) {
+      if (removes && !await confirmRemoval(filesRemoval(saved.project_id, saved.revision, result.files, editor.signal))) return;
+      const documents = [result.model, result.task_document, result.objective_document];
+      const stored = editor.storeEdit(name, result, {
+        reviewedRevision: saved.revision,
+        dependencies: [
+          { kind: 'step', id: run.step },
+          ...documents.flatMap((id) => id ? [{ kind: 'document' as const, id }] : []),
+        ],
+      });
+      await editor.flush();
+      const settled = await stored;
+      if (settled.status === 'refused') return apiErrorMessage(settled.error);
+    } else if (result.problems.length) {
+      return result.problems[0].reason;
     }
-  } : undefined;
+    return undefined;
+  }).catch(apiErrorMessage) : undefined;
   return { view: query.data, error: query.error, retry: () => { void query.refetch(); }, commit };
 }
 
