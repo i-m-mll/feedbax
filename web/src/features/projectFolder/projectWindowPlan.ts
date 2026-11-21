@@ -1,5 +1,7 @@
 import { studioFormat, studioName, studioOpeningStage, studioOpeningStep } from '@/components/activity/studioVocabulary';
-import { runResultState, shownName, type PlanResultView, type PlanRunView, type PlanStepView, type PlanView } from '@/features/pipeline/planView';
+import {
+  runResultState, shownName, type PlanResultView, type PlanRunView, type PlanStepView, type PlanSweepView, type PlanView,
+} from '@/features/pipeline/planView';
 import type {
   Project, SelectedRow, StudioSavedLightResult, StudioBestRankGroup, StudioBoundBestSubject, StudioProjectWindowMapCoordinate, StudioProjectWindowMapSubset, StudioSavedTrainRuns,
   SubsetTerms,
@@ -86,6 +88,52 @@ function optionalAxes(project: Project, step: string) {
 /** The row an optional axis keeps beside the row with `value` on it: its id without that value. */
 function keptRow(row: string, axis: string, value: string) {
   return row.split('--').filter((part) => part !== `${axis}=${value}`).join('--') || 'default';
+}
+
+/** Whether every run has a value of both axes, and each axis's value determines the other's. */
+function paired(a: string, b: string, runs: readonly PlanRunView[]) {
+  const forward = new Map<string, string>();
+  const backward = new Map<string, string>();
+  for (const { values } of runs) {
+    const [x, y] = [values[a], values[b]];
+    if (x === undefined || y === undefined || x === unvalued || y === unvalued) return false;
+    if ((forward.get(x) ?? y) !== y || (backward.get(y) ?? x) !== x) return false;
+    forward.set(x, y);
+    backward.set(y, x);
+  }
+  return forward.size > 1;
+}
+
+/**
+ * The step's axes as the map draws them: input axes that vary together over its runs, as those of zipped list
+ * inputs do, are one axis, whose values are labelled by each. It is named by the axis the step authors, when one does;
+ * two authored axes stay apart.
+ */
+function pairedAxesJoined(sweeps: readonly PlanSweepView[], runs: readonly PlanRunView[], authored: ReadonlySet<string>) {
+  const groups: PlanSweepView[][] = [];
+  for (const sweep of sweeps) {
+    const group = groups.find((group) => paired(group[0].id, sweep.id, runs) &&
+      !(authored.has(sweep.id) && group.some(({ id }) => authored.has(id))));
+    if (!group) groups.push([sweep]);
+    else if (authored.has(sweep.id)) group.unshift(sweep);
+    else group.push(sweep);
+  }
+  const absorbed = groups.flatMap((group) => group.slice(1).map(({ id }) => id));
+  if (!absorbed.length) return { sweeps, runs };
+  return {
+    sweeps: groups.map(([first, ...rest]): PlanSweepView => !rest.length ? first : {
+      id: first.id,
+      label: [first, ...rest].map(({ label }) => label).join(' · '),
+      values: first.values.map((value) => {
+        const run = runs.find(({ values }) => values[first.id] === value.id);
+        return { id: value.id, label: [value.label, ...rest.map((sweep) =>
+          sweep.values.find(({ id }) => id === run?.values[sweep.id])?.label ?? '')].join(' · ') };
+      }),
+    }),
+    runs: runs.map((run) => ({
+      ...run, values: Object.fromEntries(Object.entries(run.values).filter(([axis]) => !absorbed.includes(axis))),
+    })),
+  };
 }
 
 export function projectWindowPlan(
@@ -266,16 +314,15 @@ export function projectWindowPlan(
       documentIds: projected?.document_ids,
       documentUses: projected?.document_uses,
       inputs,
-      sweeps: [...(sweepsByStep.get(id) ?? [])].map(([axis, values]) => {
+      ...pairedAxesJoined([...(sweepsByStep.get(id) ?? [])].map(([axis, values]) => {
         const read = project.steps?.[id]?.sweep?.axes?.[axis];
         return { id: axis, label: read && 'set' in read ? read.set : axis, values: [...values].map(([id, label]) => ({ id, label })) };
-      }),
-      statusCounts: resultCounts(projected?.status_counts ?? {}, runs),
-      runs: groupedLabels.size ? runs.map((run) => {
+      }), groupedLabels.size ? runs.map((run) => {
         const rank = evaluations.get(run.id)?.subject_rank_key;
         const label = rank && groupedLabels.get(rank);
         return label ? { ...run, label } : run;
-      }) : runs,
+      }) : runs, new Set(Object.keys(project.steps?.[id]?.sweep?.axes ?? {}))),
+      statusCounts: resultCounts(projected?.status_counts ?? {}, runs),
     };
   });
   return {
