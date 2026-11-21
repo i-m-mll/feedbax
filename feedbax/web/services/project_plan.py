@@ -441,12 +441,7 @@ def _step_references(
         yield role, binding
     elif isinstance(binding, list):
         for index, reference in enumerate(binding):
-            if isinstance(reference, StepReference):
-                yield f"{role}.{index}", reference
-    elif isinstance(binding, dict):
-        for key, reference in binding.items():
-            if isinstance(reference, StepReference):
-                yield f"{role}.{key}", reference
+            yield f"{role}.{index}", reference
 
 
 def _planned_status(

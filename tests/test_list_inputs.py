@@ -1,0 +1,128 @@
+"""Gather list inputs from several steps and stack their runs by label."""
+
+from copy import deepcopy
+from itertools import product
+
+from feedbax.cli import main
+from feedbax.contracts.artifact_custody import ContentObjectRef
+from feedbax.contracts.project import Project
+from feedbax.contracts.project_plan import ElementKey, PlannedAnalyzeRun, compile_project
+from feedbax.contracts.request_identity import decode_request
+from feedbax.light_jobs import dataset_member
+from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.dataset import open_stored_dataset
+from feedbax.persistence.effective_success import SuccessView
+from feedbax.web.services.project_folder import ProjectFolderService
+from tests.support.host import wait_until
+from tests.test_canonical_evaluate_admission import _save_project
+from tests.test_project_analyze_plan import _operations
+from tests.test_saved_light_run import _saved_light_definition
+
+
+def _two_model_definition(masses=None):
+    """Two Evaluate steps over a mass axis, each taking the Train step and one chosen row of a second.
+
+    ``masses`` renames and revalues the second Evaluate's masses, so that no two Evaluate rows are one request.
+    """
+    definition = _saved_light_definition(paired=True)
+    steps = definition["steps"]
+    del steps["baseline"]
+    steps["train_b"] = deepcopy(steps["train"]) | {"sweep": {"axes": {"rate": {
+        "path": "settings.optimizer.learning_rate.value", "values": [0.001, 0.003],
+    }}}}
+    upstream = compile_project(Project.model_validate(definition | {"steps": {
+        name: steps[name] for name in ("train", "train_b")
+    }}))
+    chosen = [run.key.row for run in upstream.runs if run.key.step == "train_b"][1]
+    conditions = steps["conditions"]
+    conditions["inputs"]["subject"] = [
+        {"step": "train", "checkpoint": "last"},
+        {"step": "train_b", "checkpoint": "last", "where": {"rows": [
+            {"key": chosen, "variant": "default", "row": chosen},
+        ]}},
+    ]
+    conditions["sweep"]["axes"] = {"model": {"input": "subject"}, **conditions["sweep"]["axes"]}
+    steps["conditions_b"] = deepcopy(conditions)
+    values = steps["conditions_b"]["sweep"]["axes"]["mass"]["values"]
+    for old, (new, mass) in (masses or {}).items():
+        value = values.pop(old)
+        value["value"] = mass
+        for patch in value["patches"].values():
+            patch["value"] = mass
+        values[new] = value
+    steps["analyze"]["inputs"]["states"] = [{"step": "conditions"}, {"step": "conditions_b"}]
+    bounds = definition["documents"]["velocity-figure"]["payload"]["layers"][0]
+    bounds["group"] = ["source", "model", "mass"]
+    bounds["style"] = {"label": "{source} {model} {mass}"}
+    return definition
+
+
+def test_one_analyze_stacks_two_evaluates_of_two_train_steps_by_label(host, tmp_path, monkeypatch):
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
+    monkeypatch.setenv("JAX_ENABLE_X64", "0")
+    host.policy(compute=2, light=1)
+    projects = tmp_path / "projects"
+    folders = ProjectFolderService(projects, operations=_operations())
+    definition = _two_model_definition({"nominal": ("light", 0.5), "heavy": ("heavier", 3)})
+    _save_project(folders, "models", Project.model_validate(definition))
+    review = folders.read_plan("models", revision=None)
+    plan = review.plan
+    assert not plan.diagnostics
+    assert sum(run.key.step in {"conditions", "conditions_b"} for run in plan.runs) == 8
+
+    assert main(["run", str(projects / "models")]) == 0
+    jobs = wait_until(lambda: (
+        jobs if (jobs := host.jobs(project=review.project_id)) and all(job["outcome"] for job in jobs) else None
+    ))
+    assert all(job["state"] == "succeeded" for job in jobs), [
+        job["outcome"] for job in jobs if job["state"] != "succeeded"
+    ]
+    (analyze,) = (run for run in plan.rows if isinstance(run, PlannedAnalyzeRun))
+    align = plan.elements[ElementKey(analyze.key, "align")]
+    decoded = decode_request(plan.requests[align.request_id], plan.documents.__getitem__)
+    assert len(decoded.inputs["states"]) == 8
+    (job,) = (job for job in jobs if job["request"] == align.request_id)
+    store = ImmutableArtifactBlobProvider(projects / "models" / "results")
+    receipt = SuccessView(store).read_success(ContentObjectRef.model_validate(job["outcome"]["store_success"])).receipt
+    with open_stored_dataset(store, dataset_member(receipt.products["velocity"][0])) as data:
+        stacked = data.descriptor.variables["parallel_velocity"].dims
+        labels = list(zip(*(data.data(name).tolist() for name in ("source", "model", "mass")), strict=True))
+        rates = data.data("rate").tolist()
+        assert data.descriptor.coords["trial"].dims == ("trial",)
+    assert stacked == ("member", "checkpoint", "condition", "trial", "state_time")
+    assert sorted(labels) == sorted(
+        (source, model, mass)
+        for source, masses in (("conditions", ("nominal", "heavy")), ("conditions_b", ("light", "heavier")))
+        for model, mass in product(("train", "train_b"), masses)
+    )
+    assert [rate is None for rate in rates] == [model == "train" for _, model, _ in labels]
+    (profile,) = (job for job in jobs if job["request"] == plan.elements[ElementKey(analyze.key, "profile")].request_id)
+    assert profile["state"] == "succeeded"
+
+
+def test_zip_pairs_two_inputs_by_label_and_refuses_a_partial_pairing():
+    definition = _two_model_definition()
+    analysis = definition["documents"]["velocity-analysis"]["payload"]
+    analysis["inputs"] = {"left": {"kind": "dataset"}, "right": {"kind": "dataset"}}
+    analysis["operations"]["align"]["inputs"]["states"] = {"input": "left"}
+    del analysis["views"]
+    plan = compile_project(Project.model_validate(definition))
+    rows = [run.key.row for run in plan.runs if run.key.step == "conditions_b"]
+    reordered = [{"key": row, "variant": "default", "row": row} for row in reversed(rows)]
+    analyze = definition["steps"]["analyze"]
+    analyze["inputs"] = {"left": {"step": "conditions"}, "right": {"step": "conditions_b", "where": {"rows": reordered}}}
+    analyze["sweep"] = {"axes": {"a": {"input": "left"}, "b": {"input": "right"}}, "combination": "zip"}
+    del definition["steps"]["report"]
+    plan = compile_project(Project.model_validate(definition), operations=_operations())
+    assert not plan.diagnostics
+    pairs = [run for run in plan.rows if isinstance(run, PlannedAnalyzeRun)]
+    assert len(pairs) == 4
+    for run in pairs:
+        (left,), (right,) = run.inputs["left"], run.inputs["right"]
+        assert left.producer.row == right.producer.row
+
+    analyze["inputs"]["right"]["where"]["rows"] = reordered[:3]
+    (problem,) = compile_project(Project.model_validate(definition), operations=_operations()).diagnostics
+    assert (problem.step, problem.path) == ("analyze", "sweep.combination")
+    assert "one to one" in problem.detail

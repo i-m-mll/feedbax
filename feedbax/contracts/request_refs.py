@@ -213,9 +213,17 @@ class BestRank(ReferenceValue):
         return sorted(range(len(scores)), key=scores.__getitem__, reverse=self.order == "max")[self.rank - 1]
 
 
+class MemberLabel(ReferenceValue):
+    """One label of a gathered member: a value ID and the value it stands for."""
+
+    value_id: Name
+    value: JsonValue = Field(default=None, exclude_if=lambda value: value is None)
+
+
 class InputMember(ReferenceValue):
     key: Name
     reference: ProductRef | ContentRef | BestRank
+    labels: dict[Name, MemberLabel] = Field(default_factory=dict, exclude_if=lambda labels: not labels)
 
     @model_validator(mode="after")
     def _rank_key(self):

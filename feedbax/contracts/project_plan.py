@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from collections.abc import Callable, Iterable, Mapping, MutableMapping
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
@@ -51,6 +51,7 @@ from feedbax.contracts.project_inputs import (
     OmittedReference,
     ObjectiveDocumentReference,
     ProjectName,
+    Reference,
     RunReference,
     SelectedRow,
     StepReference,
@@ -108,6 +109,7 @@ from feedbax.contracts.request_refs import (
     BestRank,
     InputMember,
     LastMember,
+    MemberLabel,
     ProductRef,
     ProductSelector,
     RequestId,
@@ -196,6 +198,10 @@ class PlannedInput:
     producer_element: str | None = None
     candidates: tuple[RunKey, ...] = ()
     terminal: TerminalTrainSubject | None = None
+    coordinates: Mapping[str, SweepCoordinate] = field(default_factory=dict)
+    """What the producer row is about, carried by an input axis and paired by a zip."""
+    selection: StepReference | None = field(default=None, compare=False)
+    """The authored selection that chose this member."""
 
     @property
     def sources(self) -> tuple[RunKey, ...]:
@@ -513,11 +519,13 @@ class _Role:
     required: bool
     producer_kind: StepKind
     product_role: str
+    gathers: bool = False
+    """Whether the role takes a list of selections."""
 
 
 _ROLES = {
     "train": _Role("checkpoint", False, "train", "checkpoint"),
-    "evaluate": _Role("subject", True, "train", "checkpoint"),
+    "evaluate": _Role("subject", True, "train", "checkpoint", gathers=True),
 }
 _ANALYZE_INPUTS = TypeAdapter(dict[ProjectName, AnalyzeInput])
 DOCUMENTS: TypeAdapter[dict[str, Document]] = TypeAdapter(dict[str, Document])
@@ -1548,7 +1556,7 @@ class _Compiler:
             role: tuple(
                 SweepInputMember(
                     item.member.key,
-                    producer.coordinates if producer is not None and item.producer is not None else {
+                    item.coordinates if producer is not None and item.producer is not None else {
                         axis: producer.coordinates[axis] for axis in item.member.reference.group
                     } if producer is not None and isinstance(item.member.reference, BestRank) else {},
                     producer.label if producer is not None and item.producer is not None else item.member.key,
@@ -2526,7 +2534,8 @@ class _Compiler:
                 reference = chosen.member.reference
                 try:
                     write = row.patches.get(CHECKPOINT_RULE_TARGET)
-                    selected_subject = checkpoint_rule_write(subject, write) if write is not None else subject
+                    chosen_subject = chosen.selection if chosen.selection is not None else subject
+                    selected_subject = checkpoint_rule_write(chosen_subject, write) if write is not None else chosen_subject
                     rule = (
                         selected_subject.checkpoint if isinstance(selected_subject, StepReference)
                         else "last" if isinstance(selected_subject, RunReference) else None
@@ -2746,7 +2755,7 @@ class _Compiler:
                     return ()
                 role = _Role(name_of_role, True, "train", "checkpoint")
             else:
-                role = _Role(name_of_role, True, "evaluate", "states")
+                role = _Role(name_of_role, True, "evaluate", "states", gathers=True)
             resolved = self.select_input(variant, name, template, role, active)
             if isinstance(resolved, ProjectDiagnostic):
                 self.diagnostics.append(replace(resolved, variant=variant))
@@ -2969,6 +2978,41 @@ class _Compiler:
             return None
         return self.terminal_sources.setdefault(terminal.request_id, terminal)
 
+    def step_coordinate(self, key: RunKey) -> SweepCoordinate:
+        return SweepCoordinate(key.step, self.variants[key.variant].steps[key.step].label)
+
+    def member_coordinates(self, run: _CompiledRun) -> dict[str, SweepCoordinate]:
+        """What a gathered row is about: its coordinates, and for an Evaluate row the ``model`` it evaluates."""
+        coordinates = dict(run.coordinates)
+        subject = run.inputs.get("subject") if isinstance(run, PlannedRun) and run.kind == "evaluate" else None
+        if subject is None or subject.producer is None:
+            return coordinates
+        trained = self.rows[subject.producer]
+        for label, coordinate in {"model": self.step_coordinate(subject.producer), **trained.coordinates}.items():
+            prior = coordinates.setdefault(label, coordinate)
+            if prior.value_id != coordinate.value_id:
+                raise ValueError(
+                    f"{run.key.step}/{run.key.row} and its subject {subject.producer.step!r} "
+                    f"give label {label!r} different values"
+                )
+        return coordinates
+
+    def member_labels(
+        self, run: _CompiledRun, coordinates: Mapping[str, SweepCoordinate], *, gathers_variants: bool,
+    ) -> dict[str, MemberLabel]:
+        """The labels a stacked dataset carries: where the member came from, then what it is about."""
+        labels = {"source": self.step_coordinate(run.key)}
+        if gathers_variants:
+            labels["variant"] = SweepCoordinate(run.key.variant)
+        for label, coordinate in coordinates.items():
+            if label in labels:
+                raise ValueError(f"Axis {label!r} of {run.key.step!r} uses the name of a member label")
+            labels[label] = coordinate
+        return {
+            label: MemberLabel(value_id=coordinate.value_id, value=coordinate.value)
+            for label, coordinate in labels.items()
+        }
+
     def select_input(
         self,
         variant: str,
@@ -2981,7 +3025,65 @@ class _Compiler:
         | ProjectDiagnostic
     ):
         reference = template.inputs.get(role.name)
+        if isinstance(reference, list):
+            return self.select_list(variant, name, template, role, active, reference)
+        return self.select_reference(variant, name, template, role, active, reference, f"inputs.{role.name}")
+
+    def select_list(
+        self,
+        variant: str,
+        name: str,
+        template: StepComposition,
+        role: _Role,
+        active: tuple[tuple[str, str], ...],
+        references: list[StepReference],
+    ) -> tuple[_Members, dict[str, str], None] | ProjectDiagnostic:
+        """Gather the members of several selections; a key given by two of them is qualified by its step."""
         path = f"inputs.{role.name}"
+        if not role.gathers:
+            return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, "this input takes one selection", name)
+        if not references:
+            return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, "list at least one selection", name)
+        selections = []
+        for index, reference in enumerate(references):
+            item = f"{path}.{index}"
+            selected = self.select_reference(variant, name, template, role, active, reference, item)
+            if isinstance(selected, ProjectDiagnostic):
+                return selected
+            if any(isinstance(binding.member.reference, BestRank) for binding, _ in selected[0]):
+                return ProjectDiagnostic(
+                    ResolutionCode.BAD_REFERENCE, f"{item}.where.best", "Best ranks a single selection", name,
+                )
+            selections.append((reference.step, selected[0]))
+        counts = Counter(binding.member.key for _, members in selections for binding, _ in members)
+        gathered = []
+        for step, members in selections:
+            for binding, run in members:
+                key = binding.member.key
+                if counts[key] > 1:
+                    binding = replace(binding, member=binding.member.model_copy(update={"key": f"{step}/{key}"}))
+                gathered.append((binding, run))
+        keys = [binding.member.key for binding, _ in gathered]
+        if len(set(keys)) != len(keys):
+            repeated = sorted(key for key, count in Counter(keys).items() if count > 1)
+            return ProjectDiagnostic(
+                ResolutionCode.BAD_REFERENCE, path, f"selections repeat the members {repeated!r}", name,
+            )
+        return tuple(gathered), {}, None
+
+    def select_reference(
+        self,
+        variant: str,
+        name: str,
+        template: StepComposition,
+        role: _Role,
+        active: tuple[tuple[str, str], ...],
+        reference: Reference | None,
+        path: str,
+    ) -> (
+        tuple[_Members, dict[str, str], PlannedSubset | None]
+        | ProjectDiagnostic
+    ):
         if reference is None or isinstance(reference, OmittedReference):
             if role.required:
                 return ProjectDiagnostic(
@@ -3185,6 +3287,13 @@ class _Compiler:
                 request = element.request_id
             else:
                 request = run.request_id
+            try:
+                coordinates = self.member_coordinates(run)
+                labels = self.member_labels(
+                    run, coordinates, gathers_variants=reference.variants is not None,
+                ) if role.producer_kind == "evaluate" else {}
+            except ValueError as error:
+                return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, str(error), name)
             members.append((
                 PlannedInput(
                     run.key,
@@ -3195,8 +3304,11 @@ class _Compiler:
                             role=role.product_role,
                             select=selector,
                         ),
+                        labels=labels,
                     ),
                     producer_element=reference.element,
+                    coordinates=MappingProxyType(coordinates),
+                    selection=reference,
                 ),
                 run,
             ))
