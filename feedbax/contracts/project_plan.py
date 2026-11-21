@@ -846,6 +846,23 @@ def _train_model_definition(definition: SelectedRunDefinition, model: _ModelSour
     return replace(definition, payload=payload, sources=MappingProxyType(sources))
 
 
+def _refused_difference(
+    model: _EvaluationModel, trained: ModelDocument, components: ComponentRegistry, functions,
+) -> ModelAddress | None:
+    """Address the first of an Evaluate Model document's differences that the trained model refuses on its own."""
+    from feedbax.compiler.model_attachment import lower_evaluate_attachments
+
+    for pointer, difference in model.differences.items():
+        try:
+            evaluated = ModelDocument.model_validate(
+                apply_differences(trained.model_dump(mode="json"), {pointer: difference}),
+            )
+            lower_evaluate_attachments(trained, evaluated, None, components, (), functions=functions)
+        except ValueError:
+            return ModelAddress.at_stored_path(json_pointer_parts(pointer))
+    return None
+
+
 def _model_difference_problem(
     key: RunKey, document: str | None, address: ModelAddress | None, detail: str, *, path: str | None = None,
 ) -> ProjectDiagnostic:
@@ -2439,9 +2456,14 @@ class _Compiler:
                     )
                 except ValueError as error:
                     return _model_difference_problem(key, model.document, None, str(error), path=EVALUATION_MODEL)
-            before, lowered, derived = lower_evaluate_attachments(
-                model_source.model, evaluated, None, components, differences, functions=self.functions,
-            )
+            try:
+                before, lowered, derived = lower_evaluate_attachments(
+                    model_source.model, evaluated, None, components, differences, functions=self.functions,
+                )
+            except ValueError as error:
+                if model is not None and not isinstance(error, ModelCompilationProblem):
+                    address = _refused_difference(model, model_source.model, components, self.functions)
+                raise
             raw_params = payload["params"]
             params = authored_rollout_settings(raw_params)
             if not derived:

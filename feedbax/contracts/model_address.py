@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Annotated, Literal
 
 from pydantic import ConfigDict, Field, StrictStr, StringConstraints
@@ -133,6 +134,29 @@ class ModelAddress(StrictModel):
             return ()
 
         return (*scope, *element_path(self.element))
+
+    @classmethod
+    def at_stored_path(cls, path: Sequence[str]) -> ModelAddress:
+        """Address the member at ``path`` in the stored tree: the inverse of ``stored_path`` for a member that is
+        not an attachment."""
+        parts = tuple(path)
+        composites: list[str] = []
+        while len(parts) > 5 and parts[:2] == ("interior", "components") and parts[3:5] == ("interior", "components"):
+            composites.append(parts[2])
+            parts = parts[3:]
+        element: ModelElement = GraphElement(kind="graph")
+        if len(parts) >= 3 and parts[0] == "interior":
+            member = {
+                "components": lambda id: ComponentElement(kind="component", id=id),
+                "wires": lambda id: WireElement(kind="wire", id=id),
+                "connections": lambda id: PhysicalConnectionElement(kind="physical_connection", id=id),
+            }.get(parts[1])
+            if member is not None:
+                element, parts = member(parts[2]), parts[3:]
+        return cls(
+            composites=tuple(composites),
+            element=FieldElement(kind="field", parent=element, path=parts) if parts else element,
+        )
 
     def label(self) -> str:
         """Name the addressed member as a dotted path inside its document, for reasons."""
