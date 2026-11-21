@@ -91,12 +91,22 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   await item('Aligned velocity').click();
   if (!await inspector.isVisible()) await page.getByRole('button', { name: 'Show Inspector', exact: true }).click();
   await expect(inspector.getByText('Aligned velocity', { exact: true })).toBeVisible();
+  // The catalog reread each edit starts is held until both adds are saved: an edit does not wait for it.
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  const reviews = (url: URL) => url.pathname === reviewPath;
+  await page.route(reviews, async (route) => {
+    if (!route.request().postDataJSON()?.change) await held;
+    await route.fallback();
+  });
   await edit(() => page.keyboard.press('Enter'));
   await expect(search).toHaveValue('velocity');
   await expect(item('Aligned velocity')).toBeFocused();
   await page.keyboard.press('ArrowDown');
   await expect(item('Trial summary')).toBeFocused();
   await edit(() => page.keyboard.press('Enter'));
+  release();
+  await page.unroute(reviews);
   await expect(item('Trial summary')).toBeFocused();
   await analysis.getByRole('group', { name: 'Select aligned_velocity', exact: true }).click();
   for (const [field, label] of [
