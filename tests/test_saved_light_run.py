@@ -362,3 +362,40 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
         assert rendered.status_code == 200, rendered.text
         asset = re.search(r"figures/[0-9a-f]{64}\.json", rendered.text).group()
         assert reopened.get(f"{report_url.removesuffix('report.html')}{asset}").content == figure.content
+
+
+def test_a_states_input_without_a_row_reads_every_saved_run_of_its_step(host, tmp_path, monkeypatch):
+    """A hand-written `states: {step: conditions}` is authored over both saved mass rows, not refused as empty."""
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
+    monkeypatch.setenv("JAX_ENABLE_X64", "0")
+    host.policy(compute=1, light=1)
+    projects = tmp_path / "projects"
+    definition = _saved_light_definition(paired=True)
+    definition["steps"]["analyze"]["inputs"]["states"] = {"step": "conditions"}
+    del definition["steps"]["baseline"]
+    folders = ProjectFolderService(projects, operations=_operations())
+    _save_project(folders, "rowless", Project.model_validate(definition))
+    review = folders.read_plan("rowless", revision=None)
+    evaluations = [run.key for run in review.plan.runs if run.key.step == "conditions"]
+    assert len(evaluations) == 2
+
+    with TestClient(create_app(projects_dir=projects)) as client:
+        response = client.post("/api/projects/rowless/train-runs", json={
+            "revision": review.revision, "token": token("rowless"),
+            "run_keys": [
+                {"variant": key.variant, "step": key.step, "row": key.row}
+                for key in (RunKey("default", "train", "default"), *evaluations)
+            ],
+        })
+        assert response.status_code == 202, response.text
+        jobs = wait_until(lambda: (
+            jobs if len(jobs := host.jobs(project=review.project_id)) == 3 and all(job["outcome"] for job in jobs)
+            else None
+        ))
+        assert all(job["state"] == "succeeded" for job in jobs), [job["outcome"] for job in jobs]
+        response = client.post("/api/projects/rowless/authoring/analyze", json={
+            "revision": review.revision, "key": {"variant": "default", "step": "analyze", "row": "default"},
+        })
+    assert response.status_code == 200, response.text
+    assert "/v1/model/state/plant/effector~1velocity" in response.json()["states"]["variables"]
