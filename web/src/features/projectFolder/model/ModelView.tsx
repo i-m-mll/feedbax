@@ -3,7 +3,7 @@ import { MarkerType, type OnConnectStart } from '@xyflow/react';
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
 import { useStore } from 'zustand';
 import { fetchComponents } from '@/api/components';
-import { projectModelFields, readEvaluateAttachments, readModelProjection, reviewModelConnections } from '@/api/projectFolders';
+import { projectModelFields, readEvaluateModel, readModelProjection, reviewModelConnections } from '@/api/projectFolders';
 import { ApiRequestError, apiErrorMessage, isRefusal } from '@/api/request';
 import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
 import { studioAccessibleName, studioEvaluateValueSource, studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
@@ -26,7 +26,7 @@ import type { FieldModel } from '@/components/values/fieldModel';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { bindStudioCommand, commandAttributes } from '@/features/projectWindow/studioCommands';
 import type {
-  AddModelAttachment, ChangeModelAttachment, ComponentDefinition, EvaluateAttachmentReadRequest, JsonValue,
+  AddModelAttachment, ChangeModelAttachment, ComponentDefinition, EvaluateModelRequest, JsonValue,
   RemoveModelAttachment, SetField,
   ModelAddress, ModelClipboard, ModelConnectionReview, ModelDocument, ModelEditCommand, ModelFieldRequest, ModelPosition, StudioProjectSnapshot, StudioSavedTrainKey,
 } from '@/generated/studioContracts';
@@ -62,7 +62,7 @@ type Props = {
   fieldAxes?: Record<string, string[]>;
   selectedSweepValues?: ReadonlyMap<string, ReadonlySet<string>>;
   confirmRunRemoval: ConfirmRunRemoval;
-  evaluate?: Omit<EvaluateAttachmentReadRequest, 'revision'>;
+  evaluate?: Omit<EvaluateModelRequest, 'revision'>;
   problem?: { address: ModelAddress; reason: string };
   problems?: readonly { address: ModelAddress; reason: string }[];
   projectionRun?: StudioSavedTrainKey;
@@ -210,8 +210,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     ...(projection.data?.objective_ports ?? []).map((address) => [addressKey(address), 'objective'] as const),
   ]), [projection.data]);
   const attachments = useQuery({
-    queryKey: ['model-evaluate-attachments', saved.project_id, readBody],
-    queryFn: ({ signal }) => readEvaluateAttachments(saved.project_id, readBody!, signal),
+    queryKey: ['model-evaluate-model', saved.project_id, readBody],
+    queryFn: ({ signal }) => readEvaluateModel(saved.project_id, readBody!, signal),
     enabled: active && !!model && !!readBody,
     placeholderData: (previous, query) => sameSubject(query?.queryKey[2], readBody) ? previous : undefined,
   });

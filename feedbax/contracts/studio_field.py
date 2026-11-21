@@ -8,7 +8,7 @@ from feedbax.contracts.base import StrictModel
 from feedbax.contracts.expression_values import Problem
 from feedbax.contracts.jobs import StudioPlanReviewSource
 from feedbax.contracts.model_address import ModelAddress
-from feedbax.contracts.model_edit import EvaluateAttachmentScope, ModelEditCommand
+from feedbax.contracts.model_edit import SelectedRuns, ModelEditCommand
 from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_sweep import RangeValues, SampleValues
@@ -45,7 +45,7 @@ class ModelFieldRequest(StudioRunSelection):
     revision: Sha256
     document: ProjectName
     owner: ModelAddress
-    evaluate_scope: EvaluateAttachmentScope | None = None
+    evaluate_scope: SelectedRuns | None = None
     address: ModelAddress | None = None
     edit: Annotated[
         FieldTextEdit | FieldKindEdit | FieldNameEdit | FieldResetEdit, Field(discriminator="kind"),

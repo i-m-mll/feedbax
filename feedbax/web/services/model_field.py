@@ -13,7 +13,7 @@ from feedbax.contracts.model_document import (
     MODEL_DOCUMENT_SCHEMA_ID, CompositeComponent, DelayAttachment, InterventionAttachment, LeafComponent, ModelDocument,
 )
 from feedbax.contracts.model_edit import (
-    EvaluateAttachmentReadRequest, EvaluateAttachmentRows, EvaluateAttachmentStep, ModelEditCommand, SetField,
+    EvaluateModelRequest, ListedRuns, StepRuns, ModelEditCommand, SetField,
 )
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project import BasedDocument, InlineBase, SetProjectValue, base_chain
@@ -200,7 +200,7 @@ def _kept_writes(
     if len(fields) > 1:
         return Problem(code=ProblemCode.STRUCTURE, reason="This sweep value sets more than one Model field.")
     rest = [write for write in writes if not write.path.startswith("{")]
-    files = scoped_file(project, step_id, EvaluateAttachmentStep(kind="step"), rest).files if rest else []
+    files = scoped_file(project, step_id, StepRuns(kind="step"), rest).files if rest else []
     return files, next((SetField(op="set_field", address=address, value=write.value) for address, write in fields), None)
 
 
@@ -258,7 +258,7 @@ def model_fields(
     evaluate = None
     variant = None
     if body.evaluate_scope is not None and body.run is not None:
-        evaluate = EvaluateAttachmentReadRequest(revision=body.revision, run=body.run, scope=body.evaluate_scope)
+        evaluate = EvaluateModelRequest(revision=body.revision, run=body.run, scope=body.evaluate_scope)
         key = RunKey(body.run.variant, body.run.step, body.run.row)
         plan = folders.read_plan(project_id, revision=body.revision, source_runs=(key,)).plan
         reading = read_evaluate_model(
@@ -267,7 +267,7 @@ def model_fields(
         effective_model = reading.state.resolved_model
         changes, restored = reading.differences, reading.shared
         candidate = project.steps[key.step]
-        if (isinstance(evaluate.scope, EvaluateAttachmentStep) and plan.variants[:1] == (key.variant,)
+        if (isinstance(evaluate.scope, StepRuns) and plan.variants[:1] == (key.variant,)
                 and isinstance(candidate.base, InlineBase) and not candidate.deltas):
             selected = next(row for row in plan.rows if row.key == key)
             step = candidate
@@ -345,7 +345,7 @@ def model_fields(
     if (body.rows or body.axes) and evaluate is None:
         key = RunKey(body.run.variant, body.run.step, body.run.row)
         scope = selection_scope(project, plan, key, tuple(body.rows), body.axes)
-        if isinstance(scope, EvaluateAttachmentRows) and axis is not None and any(
+        if isinstance(scope, ListedRuns) and axis is not None and any(
             source.kind == "sweep_value"
             for field_view in fields if field_view.address == body.address
             for source in field_view.sources

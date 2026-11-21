@@ -16,11 +16,11 @@ from feedbax.contracts.studio_sets import (
     ApplySet, DuplicateRun, InlineSet, RemoveAxisValue, SaveSet, StudioAxisValue, StudioSetEdit, StudioSetEditRequest,
     StudioSetsOffered, StudioSetsOfferedRequest,
 )
-from feedbax.contracts.model_edit import EvaluateAttachmentRows
+from feedbax.contracts.model_edit import ListedRuns
 from feedbax.project_members import generated_name
 from feedbax.web.services.project_folder import ProjectFolderInvalid
 from feedbax.web.services.trial_scope import (
-    StoredEdit, SweepValuesScope, _composed, content_edits, file_value, selected_value, selection_scope,
+    StoredEdit, SweepValuesRuns, _composed, content_edits, file_value, selected_value, selection_scope,
     set_document_write, set_readers,
 )
 
@@ -188,7 +188,7 @@ def _duplicate_run(folders, project_id, revision, project: Project, command: Dup
     name = generated_name("run", axes.__contains__)
     value = generated_name(name, name.__eq__)
     axis: dict[str, Any] = {"values": {value: {}}, "optional": True}
-    if isinstance(scope, SweepValuesScope):
+    if isinstance(scope, SweepValuesRuns):
         axis["where"] = {"axes": {other: sorted(set(ids)) for other, ids in sorted(scope.axes.items())}}
         picked = {
             row.key.row for row in rows if all(
@@ -196,7 +196,7 @@ def _duplicate_run(folders, project_id, revision, project: Project, command: Dup
                 for other, ids in scope.axes.items()
             )
         }
-    elif isinstance(scope, EvaluateAttachmentRows):
+    elif isinstance(scope, ListedRuns):
         axis["where"] = {"rows": sorted(set(scope.rows))}
         picked = set(scope.rows)
     elif scope is not None:

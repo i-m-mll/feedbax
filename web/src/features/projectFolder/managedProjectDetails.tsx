@@ -20,7 +20,7 @@ import type { ResolvedScene } from '@/features/scenario/projections';
 import { primaryWorkspaceReplayTrack, workspaceReplayFrameIndex, workspaceReplaySampleAt } from '@/features/scenario/workspaceReplay';
 import {
   DocumentReferenceSchema, ModelDocumentSchema,
-  type EvaluateAttachmentReadRequest, type GraphInterior, type ModelDocument, type StudioSavedEvaluationRow,
+  type EvaluateModelRequest, type GraphInterior, type ModelDocument, type StudioSavedEvaluationRow,
   type StudioSavedTrainKey, type WorkspaceReplayTrial, type StudioProjectWindowMapProblem, type ModelAddress,
 } from '@/generated/studioContracts';
 import { modelDocumentId, directTrainStep } from './authoredEdits';
@@ -79,7 +79,7 @@ interface DetailInputs {
   readonly elements: ElementSelectionStore;
   readonly modelPath?: { document: string; path: string[] };
   readonly setModelPath: (document: string, path: string[]) => void;
-  readonly evaluateScope?: EvaluateAttachmentReadRequest['scope'];
+  readonly evaluateScope?: EvaluateModelRequest['scope'];
   readonly modelSource?: string;
   readonly modelProblems?: readonly StudioProjectWindowMapProblem[];
   readonly drawerSections: DrawerSections;

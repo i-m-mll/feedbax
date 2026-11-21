@@ -11,7 +11,7 @@ from feedbax.contracts.expression_values import Level, Problem, ProblemCode, Sco
 from feedbax.tasks.registry import resolve_python_task_instance
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_address import ModelAddress
-from feedbax.contracts.model_edit import EvaluateAttachmentRows, EvaluateAttachmentVariant
+from feedbax.contracts.model_edit import ListedRuns, VariantRuns
 from feedbax.contracts.project import (
     SetProjectValue, apply_document_edits, based_on, json_pointer_parts,
 )
@@ -493,7 +493,7 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
         settled = folders.read_plan(project_id, revision=body.revision, source_runs=selected)
     evaluate_field = (step.kind == "evaluate" and isinstance(change, StudioTrialDocumentEdit) and change.kind == "task")
     whole = isinstance(scope, StudioTrialStepScope)
-    stored_scope = EvaluateAttachmentVariant(kind="variant", variant=variant) if whole and variant else scope
+    stored_scope = VariantRuns(kind="variant", variant=variant) if whole and variant else scope
     view = variant_view(plan, project, variant if whole else None)
     if step.kind == "evaluate":
         if isinstance(change, StudioTrialSelectDocument):
@@ -585,14 +585,14 @@ def _evaluate_field_files(project, plan, key, scope, selected, bundle, change, d
         recipes[row] = _task_field_writes(plan.selected_definitions[row], task.task_source, projection.task_origins, change)
     if all(writes == recipes[key] for writes in recipes.values()):
         return scoped_file(project, key.step, scope, recipes[key])
-    if not isinstance(scope, EvaluateAttachmentRows):
+    if not isinstance(scope, ListedRuns):
         raise ProjectFolderInvalid("Selected runs have different authored sources for this Task field.")
     # Explicit rows can carry independent recipes in a single saved sweep edit.
     # A step or named axis must remain one rule over its future rows.
     current = project
     for row, writes in recipes.items():
         current = preview_authored_files(
-            current, scoped_file(current, row.step, EvaluateAttachmentRows(kind="rows", rows=(row.row,)), writes).files,
+            current, scoped_file(current, row.step, ListedRuns(kind="rows", rows=(row.row,)), writes).files,
         )
     raw = project.steps[key.step].model_dump(mode="json", by_alias=True, exclude_unset=True)
     sweep = current.steps[key.step].sweep.model_dump(mode="json", by_alias=True, exclude_unset=True)

@@ -6,7 +6,7 @@ from pydantic import Field
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.jobs import StudioSavedTrainKey
-from feedbax.contracts.model_edit import EvaluateAttachmentAxis, EvaluateAttachmentRows
+from feedbax.contracts.model_edit import AxisValueRuns, ListedRuns
 from feedbax.contracts.project_inputs import BatchCheckpoint
 from feedbax.contracts.request_refs import Sha256, UpdateRule
 from feedbax.contracts.studio_project import StudioProjectFilePatch
@@ -15,7 +15,7 @@ from feedbax.contracts.studio_project import StudioProjectFilePatch
 class StudioCheckpointRuleSet(StrictModel):
     kind: Literal["set"]
     rule: Literal["last"] | BatchCheckpoint | UpdateRule
-    scope: Annotated[EvaluateAttachmentAxis | EvaluateAttachmentRows, Field(discriminator="kind")]
+    scope: Annotated[AxisValueRuns | ListedRuns, Field(discriminator="kind")]
 
 
 class StudioCheckpointRuleToSweep(StrictModel):

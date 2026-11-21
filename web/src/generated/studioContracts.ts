@@ -795,24 +795,24 @@ export interface DuplicateComponents {
   op: "duplicate";
 }
 
-export interface EvaluateAttachmentAxis {
+export interface AxisValueRuns {
   kind: "axis_value";
   axis: string;
   value: string;
 }
 
-export interface EvaluateAttachmentReadRequest {
+export interface EvaluateModelRequest {
   revision: string;
   run: StudioSavedTrainKey;
-  scope: EvaluateAttachmentStep | EvaluateAttachmentAxis | EvaluateAttachmentRows | EvaluateAttachmentVariant;
+  scope: StepRuns | AxisValueRuns | ListedRuns | VariantRuns;
 }
 
-export interface EvaluateAttachmentRows {
+export interface ListedRuns {
   kind: "rows";
   rows: string[];
 }
 
-export interface EvaluateAttachmentState {
+export interface EvaluateModelState {
   revision: string;
   editable: boolean;
   effective: Array<AddModelAttachment | ChangeModelAttachment | RemoveModelAttachment>;
@@ -827,11 +827,11 @@ export interface StudioEvaluateValueSource {
   step: string;
 }
 
-export interface EvaluateAttachmentStep {
+export interface StepRuns {
   kind: "step";
 }
 
-export interface EvaluateAttachmentVariant {
+export interface VariantRuns {
   kind: "variant";
   variant: string;
 }
@@ -1028,7 +1028,7 @@ export interface ModelFieldRequest {
   revision: string;
   document: string;
   owner: ModelAddress;
-  evaluate_scope?: EvaluateAttachmentStep | EvaluateAttachmentAxis | EvaluateAttachmentRows | EvaluateAttachmentVariant | null;
+  evaluate_scope?: StepRuns | AxisValueRuns | ListedRuns | VariantRuns | null;
   address?: ModelAddress | null;
   edit?: FieldTextEdit | FieldKindEdit | FieldNameEdit | FieldResetEdit | null;
 }
@@ -3676,7 +3676,7 @@ export type StudioCheckpointRuleRequest = {
 export type StudioCheckpointRuleSet = {
   "kind": "set";
   "rule": "last" | BatchCheckpoint | UpdateRule;
-  "scope": EvaluateAttachmentAxis | EvaluateAttachmentRows;
+  "scope": AxisValueRuns | ListedRuns;
 };
 
 export type StudioCheckpointRuleToSweep = {
@@ -4169,7 +4169,7 @@ export type StudioTrialAuthoringRequest = {
   "revision": Sha256;
   "run": StudioSavedTrainKey;
   "change"?: StudioTrialDocumentEdit | StudioTrialDocumentReset | StudioTrialBindingEdit | StudioTrialSelectDocument | StudioTrialExpressionEdit | null;
-  "scope"?: StudioTrialStepScope | EvaluateAttachmentAxis | EvaluateAttachmentRows | null;
+  "scope"?: StudioTrialStepScope | AxisValueRuns | ListedRuns | null;
 };
 
 export type StudioTrialBindingEdit = {
@@ -5818,7 +5818,7 @@ export const DuplicateComponentsSchema: z.ZodType<DuplicateComponents> = z.lazy(
     .strict()
 ) as unknown as z.ZodType<DuplicateComponents>;
 
-export const EvaluateAttachmentAxisSchema: z.ZodType<EvaluateAttachmentAxis> = z.lazy(() =>
+export const AxisValueRunsSchema: z.ZodType<AxisValueRuns> = z.lazy(() =>
   z
     .object({
       "kind": z.literal("axis_value"),
@@ -5826,28 +5826,28 @@ export const EvaluateAttachmentAxisSchema: z.ZodType<EvaluateAttachmentAxis> = z
       "value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     })
     .strict()
-) as unknown as z.ZodType<EvaluateAttachmentAxis>;
+) as unknown as z.ZodType<AxisValueRuns>;
 
-export const EvaluateAttachmentReadRequestSchema: z.ZodType<EvaluateAttachmentReadRequest> = z.lazy(() =>
+export const EvaluateModelRequestSchema: z.ZodType<EvaluateModelRequest> = z.lazy(() =>
   z
     .object({
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
       "run": StudioSavedTrainKeySchema,
-      "scope": z.union([EvaluateAttachmentStepSchema, EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema, EvaluateAttachmentVariantSchema]),
+      "scope": z.union([StepRunsSchema, AxisValueRunsSchema, ListedRunsSchema, VariantRunsSchema]),
     })
     .strict()
-) as unknown as z.ZodType<EvaluateAttachmentReadRequest>;
+) as unknown as z.ZodType<EvaluateModelRequest>;
 
-export const EvaluateAttachmentRowsSchema: z.ZodType<EvaluateAttachmentRows> = z.lazy(() =>
+export const ListedRunsSchema: z.ZodType<ListedRuns> = z.lazy(() =>
   z
     .object({
       "kind": z.literal("rows"),
       "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).min(1),
     })
     .strict()
-) as unknown as z.ZodType<EvaluateAttachmentRows>;
+) as unknown as z.ZodType<ListedRuns>;
 
-export const EvaluateAttachmentStateSchema: z.ZodType<EvaluateAttachmentState> = z.lazy(() =>
+export const EvaluateModelStateSchema: z.ZodType<EvaluateModelState> = z.lazy(() =>
   z
     .object({
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
@@ -5859,7 +5859,7 @@ export const EvaluateAttachmentStateSchema: z.ZodType<EvaluateAttachmentState> =
       "changed_from": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
     })
     .strict()
-) as unknown as z.ZodType<EvaluateAttachmentState>;
+) as unknown as z.ZodType<EvaluateModelState>;
 
 export const StudioEvaluateValueSourceSchema: z.ZodType<StudioEvaluateValueSource> = z.lazy(() =>
   z
@@ -5870,22 +5870,22 @@ export const StudioEvaluateValueSourceSchema: z.ZodType<StudioEvaluateValueSourc
     .strict()
 ) as unknown as z.ZodType<StudioEvaluateValueSource>;
 
-export const EvaluateAttachmentStepSchema: z.ZodType<EvaluateAttachmentStep> = z.lazy(() =>
+export const StepRunsSchema: z.ZodType<StepRuns> = z.lazy(() =>
   z
     .object({
       "kind": z.literal("step"),
     })
     .strict()
-) as unknown as z.ZodType<EvaluateAttachmentStep>;
+) as unknown as z.ZodType<StepRuns>;
 
-export const EvaluateAttachmentVariantSchema: z.ZodType<EvaluateAttachmentVariant> = z.lazy(() =>
+export const VariantRunsSchema: z.ZodType<VariantRuns> = z.lazy(() =>
   z
     .object({
       "kind": z.literal("variant"),
       "variant": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     })
     .strict()
-) as unknown as z.ZodType<EvaluateAttachmentVariant>;
+) as unknown as z.ZodType<VariantRuns>;
 
 export const AddModelAttachmentSchema: z.ZodType<AddModelAttachment> = z.lazy(() =>
   z
@@ -6240,7 +6240,7 @@ export const ModelFieldRequestSchema: z.ZodType<ModelFieldRequest> = z.lazy(() =
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
       "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
       "owner": ModelAddressSchema,
-      "evaluate_scope": z.union([EvaluateAttachmentStepSchema, EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema, EvaluateAttachmentVariantSchema]).nullable().optional(),
+      "evaluate_scope": z.union([StepRunsSchema, AxisValueRunsSchema, ListedRunsSchema, VariantRunsSchema]).nullable().optional(),
       "address": ModelAddressSchema.nullable().optional(),
       "edit": z.union([FieldTextEditSchema, FieldKindEditSchema, FieldNameEditSchema, FieldResetEditSchema]).nullable().optional(),
     })
@@ -10439,7 +10439,7 @@ export const StudioCheckpointRuleSetSchema: z.ZodType<StudioCheckpointRuleSet> =
   z.object({
     "kind": z.literal("set"),
     "rule": z.union([z.literal("last"), BatchCheckpointSchema, UpdateRuleSchema]),
-    "scope": z.union([EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema]),
+    "scope": z.union([AxisValueRunsSchema, ListedRunsSchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioCheckpointRuleSet>;
 
@@ -11066,7 +11066,7 @@ export const StudioTrialAuthoringRequestSchema: z.ZodType<StudioTrialAuthoringRe
     "revision": Sha256Schema,
     "run": StudioSavedTrainKeySchema,
     "change": z.union([z.union([StudioTrialDocumentEditSchema, StudioTrialDocumentResetSchema, StudioTrialBindingEditSchema, StudioTrialSelectDocumentSchema, StudioTrialExpressionEditSchema]), z.null()]).optional(),
-    "scope": z.union([z.union([StudioTrialStepScopeSchema, EvaluateAttachmentAxisSchema, EvaluateAttachmentRowsSchema]), z.null()]).optional(),
+    "scope": z.union([z.union([StudioTrialStepScopeSchema, AxisValueRunsSchema, ListedRunsSchema]), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialAuthoringRequest>;
 
@@ -11438,8 +11438,8 @@ export const contractSchemas = {
   ModelFieldResponse: ModelFieldResponseSchema,
   TrainFieldRequest: TrainFieldRequestSchema,
   TrainFieldResponse: TrainFieldResponseSchema,
-  EvaluateAttachmentReadRequest: EvaluateAttachmentReadRequestSchema,
-  EvaluateAttachmentState: EvaluateAttachmentStateSchema,
+  EvaluateModelRequest: EvaluateModelRequestSchema,
+  EvaluateModelState: EvaluateModelStateSchema,
   ModelUndoRequest: ModelUndoRequestSchema,
   ReceiptValidity: ReceiptValiditySchema,
   ValidityAction: ValidityActionSchema,
@@ -11599,8 +11599,8 @@ export interface ContractTypeMap {
   ModelFieldResponse: ModelFieldResponse;
   TrainFieldRequest: TrainFieldRequest;
   TrainFieldResponse: TrainFieldResponse;
-  EvaluateAttachmentReadRequest: EvaluateAttachmentReadRequest;
-  EvaluateAttachmentState: EvaluateAttachmentState;
+  EvaluateModelRequest: EvaluateModelRequest;
+  EvaluateModelState: EvaluateModelState;
   ModelUndoRequest: ModelUndoRequest;
   ReceiptValidity: ReceiptValidity;
   ValidityAction: ValidityAction;
