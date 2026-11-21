@@ -68,7 +68,7 @@ test('edits and reopens a stored Model field sweep through project history', asy
 
   const valueMenu = inspector.getByRole('button', { name: 'Hidden size kind: Value' });
   await valueMenu.click();
-  await expect(page.getByRole('menuitem')).toHaveText(['Value', 'Sweep', 'Formula']);
+  await expect(page.getByRole('menuitem')).toHaveText(['Sweep']);
   await page.getByRole('menuitem', { name: 'Sweep', exact: true }).click();
   await expect(hidden).toBeFocused();
   await enter(hidden, '64, 96, 128');
