@@ -25,6 +25,7 @@ from feedbax.contracts.project import InlineBase, Project, StepBase
 from feedbax.builtins.training import StandardTrainingSettings, supervised_gradient
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
 from feedbax.contracts.project_plan import RunKey, compile_project
+from feedbax.contracts.studio_place import definition_place, path_parts
 from feedbax.contracts.project_resolution import ResolutionCode
 from feedbax.contracts.studio_authoring import StudioAuthoringChange, StudioSweptParameterMissing
 from feedbax.host import HostError
@@ -440,6 +441,29 @@ def test_a_method_change_keeps_the_settings_both_methods_declare_and_refuses_one
     assert choose(swept, "probe.adversarial") == StudioSweptParameterMissing(
         class_label="probe.adversarial", parameter_label="Learning Rate",
     )
+
+
+def test_each_required_setting_of_a_method_saves_alone_and_the_plan_names_the_ones_still_missing():
+    registry = _three_methods()
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+
+    def edit(field, value):
+        """The settings the plan names as problems after ``field`` is set to ``value``."""
+        project = Project.model_validate(raw)
+        writes = _train_fields(project, registry, StudioAuthoringChange(field=field, value=value))[2]
+        raw["steps"]["train"]["base"]["inline"] = _written(project, writes)
+        return {
+            definition_place(path_parts(problem.path), lambda _slot: None).setting
+            for problem in compile_project(Project.model_validate(raw), training_methods=registry).diagnostics
+            if problem.step == "train"
+        }
+
+    assert edit("/method", "probe.adversarial") == {"learning_rate", "limit"}
+    assert edit("/settings/limit", 0.5) == {"learning_rate"}
+    with pytest.raises(ValueError, match="learning_rate: Input should be greater than 0"):
+        edit("/settings/learning_rate", -1.0)
+    assert edit("/settings/learning_rate", 0.01) == set()
+    assert raw["steps"]["train"]["base"]["inline"]["settings"] == {"limit": 0.5, "learning_rate": 0.01}
 
 
 def test_choosing_another_optimizer_keeps_the_learning_rate():

@@ -933,13 +933,29 @@ def _settings_edit(definition: _TrainFields, change: StudioAuthoringChange) -> _
             return []
         edit = [definition.set(path, change.value)]
     if isinstance(edit, list):
-        try:
-            edited = apply_override_patches({"settings": settings}, edit)["settings"]
-            method.settings_model.model_validate(edited)
-        except ValidationError as error:
-            location = ".".join(str(part) for part in error.errors()[0]["loc"]) or path[-1]
-            raise ValueError(f"{location}: {error.errors()[0]['msg']}") from error
+        before = {_error_key(error) for error in _setting_errors(method.settings_model, settings)}
+        edited = apply_override_patches({"settings": settings}, edit)["settings"]
+        refused = next((
+            error for error in _setting_errors(method.settings_model, edited)
+            if error["type"] != "missing" and _error_key(error) not in before
+        ), None)
+        if refused is not None:
+            location = ".".join(str(part) for part in refused["loc"]) or path[-1]
+            raise ValueError(f"{location}: {refused['msg']}")
     return edit
+
+
+def _error_key(error) -> tuple:
+    return tuple(error["loc"]), error["type"], error["msg"]
+
+
+def _setting_errors(model: type[BaseModel], settings: JsonValue) -> list:
+    """The validation errors of ``settings``; a required field without a value is the plan's to report."""
+    try:
+        model.model_validate(settings)
+    except ValidationError as error:
+        return error.errors()
+    return []
 
 
 def project_training_numeric_fields(

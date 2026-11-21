@@ -37,6 +37,8 @@ class StudioTrainingPlace(StrictModel):
 class StudioMethodPlace(StrictModel):
     part: Literal["method"]
     document: str | None
+    setting: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    """The dotted path below ``settings`` of the setting named, when one is."""
 
 
 class StudioAnalysisPlace(StrictModel):
@@ -123,7 +125,9 @@ def definition_place(
                 part="training", document=document("payload.training_config"), setting=rest[0] if rest else None,
             )
         case "method" | "settings":
-            return StudioMethodPlace(part="method", document=document(f"payload.{field}"))
+            return StudioMethodPlace(
+                part="method", document=document(f"payload.{field}"), setting=".".join(rest) or None,
+            )
         case "params" if rest[:1] == ("variation",):
             target = path_parts(variation(rest[1])) if len(rest) > 1 else ()
             if target[:1] == ("task",):

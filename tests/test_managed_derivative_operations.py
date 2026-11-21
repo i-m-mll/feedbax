@@ -474,3 +474,28 @@ def test_saved_derivative_operations_use_exact_model_task_and_rollout(host, tmp_
     file_change = read_settled_project_plan(review, jobs).light[assemble_key].result.validity
     assert file_change.state == "stale"
     assert {(reason.kind, reason.path.path) for reason in file_change.reasons} == {("file", data_file.name)}
+
+
+def test_the_library_of_an_analyze_step_without_states_lists_the_operations(host, tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from feedbax.web.app import create_app
+
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    plugin_packages()
+    _install_external_package(tmp_path / "installed", monkeypatch)
+    registry = asyncio.run(compose_application()).bundle
+    projects = tmp_path / "projects"
+    folders = ProjectFolderService(
+        projects, components=registry.components, operations=registry.operations,
+        functions=registry.expression_functions, python_tasks=registry.python_tasks,
+    )
+    _save_project(folders, "derivatives", _project())
+    revision = folders.read_plan("derivatives", revision=None).revision
+    with TestClient(create_app(projects_dir=projects)) as client:
+        response = client.post("/api/projects/derivatives/authoring/analyze", json={
+            "revision": revision, "key": {"variant": "default", "step": "fixed", "row": "default"},
+        })
+    assert response.status_code == 200, response.text
+    authoring = response.json()
+    assert authoring["states"] is None
+    assert f"{witness.PACKAGE}.fixed_points" in {operation["key"] for operation in authoring["operations"]}

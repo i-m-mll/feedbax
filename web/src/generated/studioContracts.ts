@@ -3517,7 +3517,7 @@ export type StudioAnalyzeAuthoring = {
   "revision": Sha256;
   "document": string;
   "operations": Array<OperationDefinition>;
-  "states": DatasetPort;
+  "states": DatasetPort | null;
   "variables": Record<string, Record<string, Array<string>>>;
   "figure": FigureDocument;
   "changed"?: Array<Pointer>;
@@ -3791,6 +3791,7 @@ export type StudioMemberCommandResult = {
 export type StudioMethodPlace = {
   "part": "method";
   "document": string | null;
+  "setting"?: string | null;
 };
 
 export type StudioModelPlace = {
@@ -10256,7 +10257,7 @@ export const StudioAnalyzeAuthoringSchema: z.ZodType<StudioAnalyzeAuthoring> = z
     "revision": Sha256Schema,
     "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "operations": z.array(OperationDefinitionSchema),
-    "states": DatasetPortSchema,
+    "states": z.union([DatasetPortSchema, z.null()]),
     "variables": z.record(z.string(), z.record(z.string(), z.array(z.string()))),
     "figure": FigureDocumentSchema,
     "changed": z.array(PointerSchema).optional(),
@@ -10616,6 +10617,7 @@ export const StudioMethodPlaceSchema: z.ZodType<StudioMethodPlace> = z.lazy(() =
   z.object({
     "part": z.literal("method"),
     "document": z.union([z.string(), z.null()]),
+    "setting": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioMethodPlace>;
 
