@@ -299,15 +299,30 @@
   position: relative;
   z-index: 3;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: var(--shell-rail-width) auto minmax(0, 1fr) auto;
   align-items: center;
   min-height: 36px;
   padding-block: var(--space-1);
   font-size: var(--text-sm);
 }
 
+.studio-window-bottom__corner {
+  display: flex;
+  justify-content: center;
+}
+
 .studio-window-bottom__left {
-  padding-inline-start: calc(var(--shell-rail-width) + var(--space-1));
+  padding-inline-start: var(--space-1);
+}
+
+.studio-window-settings {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  overflow: auto;
+  padding: var(--space-4);
+  border-radius: inherit;
+  background: var(--surface-main);
 }
 
 .studio-window-bottom__clock,

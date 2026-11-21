@@ -21,9 +21,9 @@ from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.host import jax_cache, live_evaluate
 from feedbax.host.checkpoint_selection import requested_checkpoint_selection
 from feedbax.host.completion import CompletionFileError
-from feedbax.host.io import JAX_CACHE_ENV, TOKEN_ENV, encode, private_directory, socket_path, write_json
+from feedbax.host.io import JAX_CACHE_ENV, OWNER_ENV, TOKEN_ENV, encode, private_directory, socket_path, write_json
 from feedbax.host.launcher import command
-from feedbax.host.platform import FileChanges, local_filesystem
+from feedbax.host.platform import FileChanges, ProcessExit, local_filesystem
 from feedbax.host.process import verify
 from feedbax.host.protocol import (
     HANG_SECONDS, LIGHT_ENTRYPOINT, LIVE_STATES, MAX_RPC_BYTES, VERSION, HostError, JsonObject,
@@ -117,6 +117,10 @@ class Host:
         self.retiring_groups: dict[str | None, dict[int, str]] = {}
         self.exiting = False
         self.shutdown_acknowledged = False
+        owner = os.environ.get(OWNER_ENV)
+        self.owner = None if owner is None else int(owner)
+        self.owner_exit: ProcessExit | None = None
+        self.owner_exited = False
         self.force_started: dict[str, float] = {}
         self.identity_errors: set[str] = set()
         self.publication_errors: dict[str, str] = {}
@@ -348,13 +352,36 @@ class Host:
             self.retiring.discard(runtime)
         return {"status": "exiting" if whole_host else "released", "jobs": []}
 
-    def _root_removed(self) -> bool:
-        """Whether the directory this Host serves is gone from its path, so no client can reach this Host."""
+    def _abandonment(self) -> str | None:
+        """Why no client will use this Host or its jobs again, if none will.
+
+        Its root is gone from its path, so no client can reach it, or the process that owns it has exited.
+        """
         try:
             info = os.stat(self.root)
         except FileNotFoundError:
-            return True
-        return (info.st_dev, info.st_ino) != self.root_identity
+            return f"Host root {self.root} was removed"
+        if (info.st_dev, info.st_ino) != self.root_identity:
+            return f"Host root {self.root} was removed"
+        if self.owner_exited:
+            return f"Host owner {self.owner} exited"
+        return None
+
+    def _watch_owner(self) -> None:
+        if self.owner is None:
+            return
+        try:
+            self.owner_exit = ProcessExit(self.owner)
+        except ProcessLookupError:
+            self.owner_exited = True
+            return
+        self.loop.add_reader(self.owner_exit.fileno(), self._owner_ended)
+
+    def _owner_ended(self) -> None:
+        assert self.owner_exit is not None
+        self.loop.remove_reader(self.owner_exit.fileno())
+        self.owner_exited = True
+        self.wake.set()
 
     def _end_all_workers(self) -> None:
         groups = {worker.process.pid: worker.token for worker in self.workers.values()}
@@ -809,8 +836,8 @@ class Host:
         recovering = True
         while not self.shutdown_acknowledged:
             self.wake.clear()
-            if self._root_removed():
-                print(f"Host root {self.root} was removed; exiting.", file=sys.stderr, flush=True)
+            if (abandonment := self._abandonment()) is not None:
+                print(f"{abandonment}; exiting.", file=sys.stderr, flush=True)
                 return
             try:
                 self._tick(recovering=recovering)
@@ -1049,6 +1076,7 @@ class Host:
     async def run(self) -> None:
         threading.Thread(target=jax_cache.evict, args=(self.cache,), name="jax-cache-evict", daemon=True).start()
         self.address.unlink(missing_ok=True)
+        self._watch_owner()
         server = await asyncio.start_unix_server(self._accept, str(self.address), limit=MAX_RPC_BYTES)
         try:
             async with server:
@@ -1071,8 +1099,11 @@ class Host:
                     # An idle or still-importing pool worker holds no job; it would otherwise
                     # outlive this Host until its import finished.
                     self._signal_group(worker.process.pid, worker.token, escalate=True)
-            if self._root_removed():
-                # Nothing can recover a job whose root is gone.
+            if self.owner_exit is not None:
+                self.loop.remove_reader(self.owner_exit.fileno())
+                self.owner_exit.close()
+            if self._abandonment() is not None:
+                # Nothing will recover the jobs of an abandoned Host.
                 self._end_all_workers()
             self._power_assertion(False)
             self.address.unlink(missing_ok=True)

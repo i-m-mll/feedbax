@@ -1141,6 +1141,47 @@ def test_shutdown_raises_for_a_host_that_does_not_answer(tmp_path):
     assert unanswered.value.code == "disconnected"
 
 
+def test_shutdown_of_a_host_already_exiting_waits_for_it_to_exit(tmp_path):
+    """A Host ended by a signal while a shutdown request is in flight, as when a test ends its own Host."""
+    import fcntl
+    import socket
+    import threading
+
+    root = tmp_path / "root"
+    root.mkdir(mode=0o700)
+    client = HostClient(root)
+    released = threading.Event()
+    with (root / "host.lock").open("a") as lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        listener.bind(str(client.address))
+        try:
+            listener.listen()
+            with ThreadPoolExecutor(1) as pool:
+                ending = pool.submit(lambda: (client.shutdown(), released.is_set()))
+                connection, _ = listener.accept()
+                with connection, connection.makefile("rb") as request:
+                    assert json.loads(request.readline())["op"] == "shutdown"
+                client.address.unlink()
+                released.set()
+                fcntl.flock(lock, fcntl.LOCK_UN)
+                assert ending.result(timeout=HANG_SECONDS) == ({"status": "exited", "jobs": []}, True)
+        finally:
+            client.address.unlink(missing_ok=True)
+
+
+def test_a_host_exits_with_its_owner_and_ends_its_workers(tmp_path, private_hosts, monkeypatch):
+    from feedbax.host.io import OWNER_ENV
+
+    owner = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
+    try:
+        monkeypatch.setenv(OWNER_ENV, str(owner.pid))
+        _, processes = _started_with_a_live_job(HostClient(private_hosts / "host"), tmp_path)
+    finally:
+        owner.kill()
+        owner.wait()
+    assert wait_until(lambda: not any(psutil.pid_exists(pid) for pid in processes))
+
+
 @pytest.mark.parametrize("removal", ["rename", "delete"])
 def test_a_host_whose_root_is_removed_exits_with_its_workers(tmp_path, private_hosts, removal):
     client = HostClient(private_hosts / "host")
