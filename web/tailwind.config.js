@@ -14,7 +14,9 @@ export default {
       },
       colors: {
         shell: {
-          chrome: 'var(--surface-header)',
+          chrome: 'var(--surface-chrome)',
+          header: 'var(--surface-header)',
+          sidebar: 'var(--surface-sidebar)',
           surface: 'var(--surface-main)',
           subtle: 'var(--surface-toolbar)',
           divider: 'var(--app-divider)',
@@ -22,6 +24,7 @@ export default {
           field: 'var(--neutral-alpha-10)',
           foreground: 'var(--text-primary)',
           muted: 'var(--text-muted)',
+          'chrome-muted': 'var(--text-chrome-muted)',
           hover: 'var(--surface-hover)',
           'row-hover': 'var(--row-hover-fill)',
           'row-selected': 'var(--row-selected-fill)',

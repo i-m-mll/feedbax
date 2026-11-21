@@ -212,6 +212,11 @@
   outline: none;
 }
 
+/* With an earlier drawer section open, a folded last section rests on its region's bottom edge, which is its border. */
+[data-section='drawer'][data-open] ~ [data-section='drawer']:last-child:not([data-open]) > [data-section-header] {
+  border-bottom-width: 0;
+}
+
 [data-region-pending] {
   opacity: var(--studio-region-pending-opacity);
 }

@@ -660,7 +660,7 @@ function MapDrawer({ steps, newStep, framed = false, pending = false, selection,
       ? { selection: { kind: 'steps', stepIds: ids }, focus: null } : { selection: null, focus: null });
   };
   return (
-    <nav aria-label={studioName('steps')} {...region} className={`flex min-h-0 flex-col ${framed ? 'h-full' : 'w-52 shrink-0 border-r border-shell-divider bg-shell-chrome'}`}>
+    <nav aria-label={studioName('steps')} {...region} className={`flex min-h-0 flex-col ${framed ? 'h-full' : 'w-52 shrink-0 border-r border-shell-divider bg-shell-sidebar'}`}>
       {newStep && (
         <div className="shrink-0 px-1 pt-1">
           <ListRow role="button" tabIndex={0} glyph={<Plus aria-hidden="true" />} name={studioName('newStep')}
@@ -845,7 +845,7 @@ export function StudioPipelineMap({
       ref={root}
       aria-label={studioName('pipelineMap')}
       {...region}
-      className="relative flex h-full min-h-0 min-w-0 overflow-hidden bg-shell-subtle"
+      className="relative flex h-full min-h-0 min-w-0 overflow-hidden bg-shell-surface"
       onKeyDown={(event) => {
         if (event.key === 'Escape' && state.focus) {
           event.stopPropagation();
