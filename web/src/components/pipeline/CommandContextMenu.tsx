@@ -4,13 +4,19 @@ import {
   ContextMenu, ContextMenuContent, ContextMenuTrigger, MenuItem, openContextMenu, opensContextMenu,
 } from '@/components/ui/Menu';
 import type { PlanRunView, PlanStepView } from '@/features/pipeline/planView';
+import { useCommandSource } from '@/features/projectWindow/heldGestures';
 import { shortcutLabel, type StudioCommand } from '@/features/projectWindow/studioCommands';
 
 /** The commands on a set of runs, with the element they were invoked from. */
 export type RunMenu = (runs: readonly PlanRunView[], anchor: Element | undefined) => readonly StudioCommand[];
 
-/** The commands on a step; `rename` starts the edit of its name where the menu was opened. */
-export type StepMenu = (step: PlanStepView, rename?: () => void) => readonly StudioCommand[];
+/** A step's commands; `rename` starts renaming it on the surface the menu opened on. */
+export type StepMenu = (step: PlanStepView, rename?: StepRename) => readonly StudioCommand[];
+export interface StepRename {
+  readonly start: () => void;
+  /** The surface renaming starts on, which tells apart the Rename Step of each surface. */
+  readonly surface: string;
+}
 
 /** A menu's items, read when the menu draws them. */
 export function CommandMenuItems({ commands }: { commands: () => readonly StudioCommand[] }) {
@@ -43,6 +49,7 @@ export function CommandContextMenu({ commands, trigger, focusAfter, onOpen }: {
   focusAfter?: () => HTMLElement | null;
 }) {
   const anchor = useRef<Element>();
+  useCommandSource(commands && (() => commands(anchor.current)));
   if (!commands) return trigger;
   return (
     <ContextMenu onOpenChange={(open) => { if (open) onOpen?.(); }} onOpenChangeComplete={(open) => {

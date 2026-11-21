@@ -1,4 +1,5 @@
 import { bindStudioCommand, commandAttributes, jobAllowsCommand } from '@/features/projectWindow/studioCommands';
+import { holdWhile } from '@/features/projectWindow/heldGestures';
 import { useId, useState, type PropsWithChildren } from 'react';
 import { closeStudioMachine } from '@/api/jobs';
 import type { StudioActivityJob, StudioRemoteSession } from '@/generated/studioContracts';
@@ -56,7 +57,8 @@ function ActivityRun({
   const coordinates = Object.entries(job.coordinates);
   const actor = job.actor;
 
-  const execute = async (command: () => Promise<void>) => {
+  /** Runs a row's request; a command made on the row meanwhile is held until it is done. */
+  const execute = (command: () => Promise<void>) => holdWhile(async () => {
     setPending(true);
     setFailure(null);
     try {
@@ -66,7 +68,7 @@ function ActivityRun({
     } finally {
       setPending(false);
     }
-  };
+  });
 
   const acknowledge = async () => {
     if (!live && !job.seen) await actions.seen(job.job_id);
@@ -136,16 +138,16 @@ function ActivityRun({
       {failure && <p role="alert" className="text-xs text-shell-status-failure">{failure}</p>}
       <div className="flex flex-wrap gap-2">
         {jobAllowsCommand(job, 'stop') && (
-          <ActivityCommand name="stop" pending={pending} onClick={() => void stop('checkpoint')} />
+          <ActivityCommand name="stop" job={job.job_id} onClick={() => void stop('checkpoint')} />
         )}
         {jobAllowsCommand(job, 'forceStop') && (
-          <ActivityCommand name="forceStop" pending={pending} onClick={() => void stop('force')} />
+          <ActivityCommand name="forceStop" job={job.job_id} onClick={() => void stop('force')} />
         )}
         {jobAllowsCommand(job, 'resume') && (
-          <ActivityCommand name="resume" pending={pending} onClick={() => void resume()} />
+          <ActivityCommand name="resume" job={job.job_id} onClick={() => void resume()} />
         )}
         {!live && !job.seen && (
-          <ActivityCommand name="dismiss" pending={pending} onClick={() => void execute(acknowledge)} />
+          <ActivityCommand name="dismiss" job={job.job_id} onClick={() => void execute(acknowledge)} />
         )}
       </div>
     </li>
@@ -208,14 +210,15 @@ function ActivityMachine({ machine }: { machine: StudioRemoteSession }) {
 
 function ActivityCommand({
   name,
-  pending,
+  job,
   onClick,
 }: {
   name: 'stop' | 'forceStop' | 'resume' | 'dismiss';
-  pending: boolean;
+  /** The job the command acts on, which tells apart the commands of each row. */
+  job: string;
   onClick: () => void;
 }) {
-  const command = bindStudioCommand(name, onClick, { enabled: !pending, keyboard: false });
+  const command = bindStudioCommand(name, onClick, { keyboard: false, instance: job });
   return (
     <Button {...commandAttributes(command)} disabled={!command.enabled} onClick={command.invoke}>
       {studioName(name)}

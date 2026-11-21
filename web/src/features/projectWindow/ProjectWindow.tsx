@@ -32,6 +32,7 @@ import { SlotHeader } from './SlotHeader';
 import { StudioCommandPalette } from './StudioCommandPalette';
 import { StudioConnectionStatus } from './StudioConnectionStatus';
 import { StudioSettings } from './StudioSettings';
+import { useWindowCommands } from './heldGestures';
 import { bindStudioCommand, commandAttributes, commandInContext, keyHandled, matchesShortcut, studioCommandContext, type StudioCommand } from './studioCommands';
 import { nativeOwnsShortcut, useStudioNativeMenu } from './studioNativeMenu';
 import { useStudioTitleBar } from './studioTitleBar';
@@ -290,7 +291,7 @@ export function ProjectWindow({
   const splitCommand = bindStudioCommand('splitDetails', splitDetails,
     { name: split ? 'closeSlot' : 'splitDetails', enabled: !!availableViews.length });
   const closeCommand = (slot: ProjectWindowSlot) => bindStudioCommand('splitDetails', () => closeSlot(slot),
-    { name: 'closeSlot', keyboard: false });
+    { name: 'closeSlot', keyboard: false, instance: slot });
   const switchCommand = bindStudioCommand('switchSlot', switchSlot, { enabled: split });
   const tabCommands = projectWindowViews.map((view) => bindStudioCommand(view, () => activateView(view),
     { enabled: availableViews.includes(view) }));
@@ -315,7 +316,9 @@ export function ProjectWindow({
   ];
   const shortcutCommands = useRef({ palette, paletteCommands, paletteScope });
   shortcutCommands.current = { palette, paletteCommands, paletteScope };
-  useStudioNativeMenu([palette, ...paletteCommands], paletteScope !== null);
+  const windowCommands = [palette, ...paletteCommands];
+  useWindowCommands(windowCommands);
+  useStudioNativeMenu(windowCommands, paletteScope !== null);
   const bar = useRef<HTMLElement>(null);
   useStudioTitleBar(bar, projectName);
   useEffect(() => {

@@ -92,6 +92,9 @@ function Canvas({ items, connections, positions, selectedIds, onSelect, openAt, 
       const { x, y } = layout.node(item.id);
       return {
         id: item.id, type: 'element', ariaLabel: studioAccessibleName('select', item.name),
+        // React Flow hides a node it has no size for, and forgets the measured size when the node changes; a hidden
+        // card would drop the focus of a name being edited in it.
+        initialWidth: cardWidth(item.name), initialHeight: cardHeight,
         data: { ...item, selected: false },
         position: positions?.[item.id] ?? { x: x - cardWidth(item.name) / 2, y: y - cardHeight / 2 },
       };

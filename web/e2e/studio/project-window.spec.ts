@@ -2,7 +2,7 @@ import { expect, test } from './fixtures/studio';
 import { type Locator } from '@playwright/test';
 import { mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import type { StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { captureStudioWindow, enter, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { scanStudio } from './fixtures/studioAccessibility';
 import { tabTo } from './fixtures/studioKeyboard';
@@ -103,20 +103,24 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', { ta
   const runsPanel = page.getByRole('tabpanel', { name: 'Runs', exact: true });
   await runsPanel.focus();
   await tabTo(page, runButton);
-  let submissions = 0;
-  page.on('request', (request) => {
-    if (request.method() === 'POST' && new URL(request.url()).pathname === projectPath + '/train-runs') submissions += 1;
+  const submissions: Promise<StudioJobSubmission>[] = [];
+  page.on('response', (response) => {
+    if (response.request().method() === 'POST' && new URL(response.url()).pathname === projectPath + '/train-runs') {
+      submissions.push(response.json());
+    }
   });
   const run = page.waitForRequest((request) => request.method() === 'POST'
     && new URL(request.url()).pathname === `${projectPath}/train-runs`);
   await page.keyboard.press('Enter');
   await expect(runButton).toBeFocused();
-  await expect(runButton).toBeDisabled();
+  // A second Run pressed while the first is submitted waits for it, then attaches to the job the first submitted.
   await page.keyboard.press('Enter');
   expect((await (await run).response())!.status()).toBe(202);
   await expect(table.getByText('Done', { exact: true })).toBeVisible({ timeout: 15_000 });
   await expect(runButton).toBeFocused();
-  expect(submissions).toBe(1);
+  // However often Run is pressed, the run has one job.
+  const jobsSubmitted = (await Promise.all(submissions)).flatMap(({ items }) => items.map(({ job_id }) => job_id));
+  expect(new Set(jobsSubmitted).size).toBe(1);
   await expect(activityRow.getByText('Done', { exact: true })).toBeVisible();
   await expect(status.getByText('Train · train: Done', { exact: true })).toHaveCount(1);
   const messages = await status.locator(':scope > div').allTextContents();

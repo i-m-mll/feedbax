@@ -88,10 +88,11 @@ export function useResultValidity({ projectId, revision, refresh, onError }: {
     const results = runs.flatMap((run) => run.results);
     const checkable = results.filter((result) => resultCheckable(result) && !checks.has(result.requestId));
     const acceptable = results.filter((result) => resultCodeDifferences(result).length > 0);
+    const instance = JSON.stringify(runs.map(({ id }) => id));
     return [
-      bindStudioCommand('check', () => { void check(checkable); }, { enabled: checkable.length > 0 }),
+      bindStudioCommand('check', () => { void check(checkable); }, { enabled: checkable.length > 0, instance }),
       bindStudioCommand('accept', () => setAccepting({ anchor: anchor ?? resultAnchor(runs), results: acceptable }),
-        { enabled: acceptable.length > 0 }),
+        { enabled: acceptable.length > 0, instance }),
     ];
   }
 

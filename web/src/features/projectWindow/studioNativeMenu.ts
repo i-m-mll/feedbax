@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef } from 'react';
 import { projectWindowViews } from './projectWindowState';
 import {
-  bindStudioCommand, commandInContext, studioCommandContext, type StudioCommand, type StudioCommandId,
+  commandInContext, studioCommandContext, type StudioCommand, type StudioCommandId, unboundStudioCommand,
 } from './studioCommands';
 
 const groups = {
@@ -50,7 +50,7 @@ export function studioMenuPresentation(commands: readonly StudioCommand[], conte
       title,
       items: ids.filter((id) => !documentClipboard.has(id) || bindings.has(id)).map((id) => {
         const command = bindings.get(id) ??
-          bindStudioCommand(id, () => {}, { enabled: false });
+          unboundStudioCommand(id);
         return {
           id: command.id,
           label: command.label,

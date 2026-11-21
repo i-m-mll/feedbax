@@ -29,7 +29,8 @@ import {
   studioStep,
   type StudioResultState,
 } from '@/components/activity/studioVocabulary';
-import { bindStudioCommand, commandAttributes, type StudioCommand } from '@/features/projectWindow/studioCommands';
+import { useCommandSource } from '@/features/projectWindow/heldGestures';
+import { commandAttributes, unboundStudioCommand, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import type { ReferencePick } from '@/features/projectWindow/elementSelection';
 import { StudioCanvas, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { Button, IconButton } from '@/components/ui/Button';
@@ -382,7 +383,7 @@ const StepCard = memo(function StepCard({
           className="studio-map-handle nopan absolute -right-1.5 top-1/2 z-10 size-3 -translate-y-1/2 cursor-crosshair rounded-full border border-shell-muted bg-shell-chrome" />}
         {renamingStep(rename, step.id, 'card') ? (
           <div className="studio-map-card__head flex w-full px-3 py-2"><StepName step={step} rename={rename} /></div>
-        ) : <CommandContextMenu commands={stepMenu && (() => stepMenu(step, () => rename?.setEditing({ stepId: step.id, surface: 'card' })))}
+        ) : <CommandContextMenu commands={stepMenu && (() => stepMenu(step, { start: () => rename?.setEditing({ stepId: step.id, surface: 'card' }), surface: 'card' }))}
           trigger={<Button
           variant="bare"
           size="content"
@@ -621,9 +622,12 @@ function MapDrawer({ steps, newStep, framed = false, pending = false, selection,
 }) {
   const region = useRegionPending(pending);
   const tree = useRef<TreeHandle>(null);
-  const menu = stepMenu && ((node: TreeNode) => {
+  const commands = stepMenu && ((step: PlanStepView) =>
+    stepMenu(step, { start: () => tree.current?.rename(step.id), surface: 'drawer' }));
+  useCommandSource(commands && (() => steps.forEach(commands)));
+  const menu = commands && ((node: TreeNode) => {
     const step = steps.find(({ id }) => id === node.id);
-    return step && <CommandMenuItems commands={() => stepMenu(step, () => tree.current?.rename(step.id))} />;
+    return step && <CommandMenuItems commands={() => commands(step)} />;
   });
   const rows = (entries: readonly PlanStepView[]): TreeNode[] => entries.map((step) => {
     const { Icon } = studioStep(step.kind);
@@ -687,7 +691,7 @@ export function StudioPipelineMapDrawer({ plan, state, onSelectionChange, newSte
   return <MapDrawer steps={plan.steps} selection={state.selection} related={state.focus ? lineage.related(state.focus) : null}
     focusedStepId={state.focus?.stepId} documentScope={documentScope} applySelection={applySelection}
     chooseStep={chooseMapStep(applySelection, onChooseStep)} rename={rename} enterStep={onEnterStep} stepMenu={stepMenu}
-    newStep={newStepCommand?.() ?? bindStudioCommand('newStep', () => {}, { enabled: false })} framed pending={pending} />;
+    newStep={newStepCommand?.() ?? unboundStudioCommand('newStep')} framed pending={pending} />;
 }
 
 function MapLine({
@@ -729,7 +733,7 @@ function MapLine({
             <span key={step.id} className="studio-card studio-map-line-step px-2 py-1 text-sm" style={cardTint(studioStep(step.kind).tint)}><StepName step={step} rename={rename} /></span>
           ) : (
             <CommandContextMenu key={step.id}
-              commands={stepMenu && (() => stepMenu(step, () => rename?.setEditing({ stepId: step.id, surface: 'line' })))}
+              commands={stepMenu && (() => stepMenu(step, { start: () => rename?.setEditing({ stepId: step.id, surface: 'line' }), surface: 'line' }))}
               trigger={<Button
               variant="bare"
               size="content"
