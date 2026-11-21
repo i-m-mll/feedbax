@@ -13,7 +13,9 @@ import type { PlanRunView, PlanStepView, PlanView } from '@/features/pipeline/pl
 import { emptyPipelineSelection, type PipelineSelectionState } from '@/features/pipeline/selection';
 import { bindStudioCommand } from '@/features/projectWindow/studioCommands';
 import { StudioPipelineMap, StudioPipelineMapDrawer, type StudioPipelineMapProps } from './StudioPipelineMap';
-import { fullMapFits, mapMarkSize, type PipelineCardPresentation } from './pipelineMapLayout';
+import {
+  fullMapFits, layoutPipelineMap, mapCardWidth, mapMarkSize, placePipelineMap, type PipelineCardPresentation,
+} from './pipelineMapLayout';
 
 beforeEach(() => {
   vi.stubGlobal('ResizeObserver', class {
@@ -270,9 +272,34 @@ it('draws the input subset and follows only linked runs into the drawer and dire
 it('uses the region at natural scale to decide when full cards fit', () => {
   const columns = Array.from({ length: 3 }, (_, depth) =>
     Array.from({ length: 12 }, (_, row) => ({ ...train, id: `${depth}-${row}` })));
-  expect(fullMapFits(columns, 1440, 900, new Map())).toBe(false);
-  expect(fullMapFits(columns.map((column) => column.slice(0, 2)), 1440, 900, new Map())).toBe(true);
-  expect(fullMapFits(columns.map((column) => column.slice(0, 2)), 580, 900, new Map())).toBe(false);
+  const placed = (rows: number) => placePipelineMap(
+    { columns: columns.map((column) => column.slice(0, rows)), upstream: new Map() },
+    () => ({ width: mapCardWidth, height: 96 }),
+  );
+  expect(fullMapFits(placed(12), 1440, 900)).toBe(false);
+  expect(fullMapFits(placed(2), 1440, 900)).toBe(true);
+  expect(fullMapFits(placed(2), 580, 900)).toBe(false);
+});
+
+it('moves the cards downstream of a changed subject together, and none upstream of it', () => {
+  const step = (id: string, kind: PlanStepView['kind'], source?: string): PlanStepView => ({
+    id, label: id, kind, sweeps: [], runs: [], statusCounts: {},
+    inputs: source ? [{ id: 'subject', label: 'subject', sourceStepId: source }] : [],
+  });
+  const heights: Record<string, number> = { train: 200, 'train-2': 120, evaluate: 80, report: 60 };
+  const place = (subject: string) => {
+    const plan = { edges: [], steps: [step('evaluate', 'evaluate', subject), step('report', 'report', 'evaluate'),
+      step('train-2', 'train'), step('train', 'train')] };
+    return placePipelineMap(layoutPipelineMap(plan), ({ id }) => ({ width: mapCardWidth, height: heights[id] })).cards;
+  };
+  const before = place('train-2');
+  const after = place('train');
+  expect(after.get('train')).toEqual(before.get('train'));
+  expect(after.get('train-2')).toEqual(before.get('train-2'));
+  const offset = after.get('evaluate')!.y - before.get('evaluate')!.y;
+  expect(offset).not.toBe(0);
+  expect(after.get('report')!.y - before.get('report')!.y).toBe(offset);
+  expect(after.get('evaluate')!.y).toBe(after.get('train')!.y);
 });
 
 it('ends the drawer of an empty project with its add row', () => {
@@ -290,7 +317,7 @@ it('marks a drawer row with its worst state, and choosing the mark selects those
   const onSelectionChange = vi.fn();
   render(<StudioPipelineMapDrawer plan={{ steps: [step], edges: [] }} state={emptyPipelineSelection} onSelectionChange={onSelectionChange} />);
   const drawer = within(screen.getByRole('navigation', { name: studioName('steps') }));
-  fireEvent.click(drawer.getByRole('button', { name: `${studioRunStatus('failed')} 2` }));
+  fireEvent.click(drawer.getByRole('button', { name: `2 ${studioRunStatus('failed')}` }));
   expect(onSelectionChange).toHaveBeenCalledTimes(1);
   expect(onSelectionChange).toHaveBeenCalledWith({
     selection: { kind: 'rows', stepId: train.id, runIds: [runs[0].id, runs[1].id] }, focus: null,
