@@ -22,6 +22,8 @@ export interface PlanSweepView {
   readonly id: string;
   readonly label: string;
   readonly values: readonly PlanSweepValueView[];
+  /** The axis ranges over what an input reads, as an Evaluate step's `subject` does, rather than over values authored on the step. */
+  readonly input?: boolean;
 }
 
 /** A retained result of a run whose validity the backend reports. */
