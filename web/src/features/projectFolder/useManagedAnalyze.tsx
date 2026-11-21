@@ -134,6 +134,28 @@ export function useManagedAnalyze({
   const outputs = Object.entries(operations).map(([name, value]) => ({
     element: name, name: shownName(name, value), products: Object.keys(definitions.get(value.operation)?.outputs ?? {}),
   }));
+  /** The Analysis document a card reads, when it reads one of its own. */
+  function cardAnalysis(card: string) {
+    const read = draft.steps?.[card];
+    const source = read?.kind === 'analyze' && 'document' in read.base && !read.base.pointer ? read.base.document : undefined;
+    const parsed = source ? AnalysisDocumentSchema.safeParse(documentPayload(draft.documents, saved.composed, source)) : undefined;
+    return parsed?.success ? parsed.data : undefined;
+  }
+  /** The other Analyze cards' operation outputs, which a dataset role can be bound to. */
+  const cardOutputs = steps.filter((other) => other.kind === 'analyze' && other.id !== key?.step).flatMap((card) =>
+    Object.entries(cardAnalysis(card.id)?.operations ?? {}).flatMap(([element, value]) =>
+      Object.keys(definitions.get(value.operation)?.outputs ?? {}).map((product) => ({
+        step: card.id, element, product, name: `${card.label}/${shownName(element, value)}.${product}`,
+      }))));
+  /** A role bound to another card's operation output is shown by the card and the output. */
+  function boundName(role: string) {
+    const bound = step?.inputs?.[role];
+    if (!bound || Array.isArray(bound) || typeof bound !== 'object' || !('element' in bound) || !('step' in bound)) return role;
+    const { step: card, element: source, product } = bound as { step: string; element?: string | null; product?: string | null };
+    if (!source || !product) return role;
+    const shownCard = steps.find(({ id }) => id === card)?.label ?? card;
+    return `${shownCard}/${shownName(source, cardAnalysis(card)?.operations?.[source])}.${product}`;
+  }
   const selectedInput = selected ? declarations[selected] : undefined;
   const armed = usePick(selection);
   const canvasPick = useMemo(() => armed && document ? {
@@ -268,6 +290,20 @@ export function useManagedAnalyze({
     }, canName, { key: name });
     return true;
   }
+  const refused = !!key && !!projection?.window_map?.regroup_refused?.includes(key.step);
+  const elementKeys = [...Object.keys(operations), ...Object.keys(figures)];
+  const chosenElements = element.selectedIds.filter((name) => elementKeys.includes(name));
+  /** Split: the chosen operations and figures move to a new card beside this one, with the edge between them. */
+  function splitCommand(elements: readonly string[]) {
+    return bindStudioCommand('split', () => {
+      if (!key) return;
+      void perform(async () => {
+        await editor.memberCommand(studioAccessibleName('split', key.step),
+          { kind: 'split', member: key.step, elements: [...elements] }, editor.getSnapshot().saved);
+        if (liveScope.current === scope) selectElement(null);
+      }, canName);
+    }, { subject: key && shownName(key.step, draft.steps?.[key.step]), enabled: canName && !!key && !refused && elements.length > 0 && elements.length < elementKeys.length });
+  }
   /** The commands on an operation or figure: its context menu, and the palette's for the selected one. */
   const elementCommands = (name: string) => [
     bindStudioCommand('renameElement', () => setNaming({ scope, element: name, field: 'label' }),
@@ -276,10 +312,11 @@ export function useManagedAnalyze({
       selectElement(name);
       setNaming({ scope, element: name, field: 'key' });
     }, { subject: shown(name), enabled: canName }),
+    splitCommand(chosenElements.includes(name) ? chosenElements : [name]),
   ];
   const problemOf = (name: string) => diagnostics.find((item) => placeElement(item.place) === name)?.detail;
   const items: CanvasNode[] = [
-    ...Object.keys(declarations).map((name) => ({ id: name, selectionId: name, name, glyph: <Database /> })),
+    ...Object.keys(declarations).map((name) => ({ id: name, selectionId: name, name: boundName(name), glyph: <Database /> })),
     ...[...Object.keys(operations).map((name) => [name, <Sigma />] as const),
       ...Object.keys(figures).map((name) => [name, <ChartLine />] as const)].map(([name, glyph]): CanvasNode => ({
       id: name, selectionId: name, name: shown(name), glyph, problem: problemOf(name), status: planned.get(name)?.status,
@@ -304,7 +341,8 @@ export function useManagedAnalyze({
   const landed = refusal?.scope === scope ? refusal : undefined;
   const roleRefusal = (element: string, role: string) =>
     landed && Array.isArray(landed.at) && landed.at[0] === element && landed.at[1] === role ? landed.reason : undefined;
-  const selectedCommands = selected && (operation || figure) ? elementCommands(selected) : [];
+  const selectedCommands = selected && (operation || figure) ? elementCommands(selected)
+    : chosenElements.length ? [splitCommand(chosenElements)] : [];
   const selectedProblems = diagnostics.filter((item) => selected && placeElement(item.place) === selected);
   const selectedElement = selected ? planned.get(selected) : undefined;
   const mapped = selectedElement && selectedElement.requests.length > 1;
@@ -329,7 +367,7 @@ export function useManagedAnalyze({
       refusal={landed && typeof landed.at === 'object' && 'key' in landed.at && landed.at.key === selected ? landed.reason : undefined} />}
     {selected && selectedInput && <AnalyzeRoleBinding role={selected} kind={selectedInput.kind} binding={step?.inputs?.[selected]}
       project={saved.project} steps={steps} picking={selection} refusal={roleRefusal(selected, selected)}
-      inputs={steps.find(({ id }) => id === key?.step)?.inputs}
+      inputs={steps.find(({ id }) => id === key?.step)?.inputs} outputs={cardOutputs}
       problem={(index) => key && selectionProblem(projection?.window_map?.problems ?? [], key.step, key.variant, selected, index)}
       onBind={canBind ? (binding) => bind(selected, binding) : undefined} />}
     {selected && document && (operation ?? figure) && <AnalyzeElementInputs document={document} element={selected} roles={roles}
@@ -376,9 +414,9 @@ export function useManagedAnalyze({
     })),
     { id: figureItem, name: humanizeLabel(figureItem), group: studioName('figures'), glyph: <ChartLine /> },
   ] : [], [catalog]);
-  function selectElement(id: string | null) {
+  function selectElement(id: string | null, extend = false) {
     setInspected(undefined);
-    element.onSelect(id);
+    element.onSelect(id, extend);
   }
   const shownItem = inspected?.scope === scope ? library.find((item) => item.id === inspected.id) : undefined;
   function place(id: string, point?: PresentationPosition) {
@@ -410,7 +448,7 @@ export function useManagedAnalyze({
     selectedFigure: figure ? selected : undefined,
     analysis: {
       body: <CanvasStrip viewport={viewport}><div className="min-h-0 flex-1">
-        <ManagedDocumentCanvas key={scope} selectedId={element.selectedId} onSelect={selectElement} items={items} connections={connections} viewportRef={canvas}
+        <ManagedDocumentCanvas key={scope} selectedIds={element.selectedIds} onSelect={selectElement} items={items} connections={connections} viewportRef={canvas}
           positions={positions} pick={canvasPick}
           openAt={canEdit ? (point) => open('add', point) : undefined} placing={!!opened?.point}
           drop={canEdit ? { type: operationDragType, place } : undefined}

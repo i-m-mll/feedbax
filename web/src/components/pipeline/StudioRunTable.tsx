@@ -2,7 +2,8 @@ import { appTip } from "@window-shell/browser/tooltip";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { StudioCollectionProgress, StudioRunProgress, StudioRunStatus } from "@/components/activity/StudioRunStatus";
-import { studioName, studioRunReason } from "@/components/activity/studioVocabulary";
+import { studioName, studioRunReason, studioRunStatus } from "@/components/activity/studioVocabulary";
+import { StatusMark } from "@/components/ui/StatusMark";
 import type { PlanRunView, PlanStepView, PlanSweepView } from "@/features/pipeline/planView";
 import {
   selectionButton,
@@ -64,6 +65,10 @@ function AxisHead({ step, sweep, axisMenu }: { step: string; sweep: PlanSweepVie
   const authored = axisMenu?.(step, sweep.id);
   const head = <TableHeaderCell scope="col">
     {authored?.picker ? <DocumentPicker model={authored.picker} editing={editing} setEditing={setEditing} /> : sweep.label}
+    {authored?.refusal && <span className="inline-flex" aria-description={authored.refusal}
+      {...appTip(studioRunReason({ reason: authored.refusal }))}>
+      <StatusMark status="cannot_run" label={studioRunStatus('cannot_run')} />
+    </span>}
   </TableHeaderCell>;
   return authored?.commands.length ? <CommandContextMenu commands={() => authored.commands} trigger={head} /> : head;
 }

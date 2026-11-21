@@ -9,6 +9,7 @@ export type Refusal =
   | { kind: 'runs'; reasons: Readonly<Record<string, string>> }
   | { kind: 'step'; step: string; reason: string }
   | { kind: 'key'; step: string; reason: string }
+  | { kind: 'axis'; step: string; axis: string; reason: string }
   | { kind: 'exception'; step: string; exception: string; reason: string }
   | { kind: 'quote'; reason: string }
   | { kind: 'projectName'; reason: string }

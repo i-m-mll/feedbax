@@ -295,6 +295,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   });
   const axisMenu: AxisMenu = (stepId, axis) => ({
     picker: sets.axisPicker(stepId, axis), commands: sets.axisCommands(stepId, axis),
+    refusal: refusal?.kind === 'axis' && refusal.step === stepId && refusal.axis === axis ? refusal.reason : undefined,
   });
   const step = plan.steps.find(({ id }) => id === selection.stepId);
   const state = data ? settledWindowSelection(plan, selection.pipeline) : selection.pipeline;
@@ -1253,6 +1254,28 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       commandScope.selectCreatedStep(member);
     }, refuseStep(from));
   } : undefined;
+  /**
+   * Merge on a selection of two or more Analyze cards, offered on each of them: the others join the most upstream
+   * card, the inverse of Split.
+   */
+  function mergeCommand(target: PlanStepView) {
+    const chosen = state.selection?.kind === 'steps' ? state.selection.stepIds : [];
+    const cards = plan.steps.filter(({ id }) => chosen.includes(id));
+    const [member, ...others] = cards.map(({ id }) => id);
+    const refused = new Set(data?.window_map?.regroup_refused);
+    return target.kind !== 'analyze' || !chosen.includes(target.id) || cards.length < 2 ? [] : [
+      bindStudioCommand('merge', () => {
+        void perform(async () => {
+          await editor.memberCommand(studioAccessibleName('merge', cards[0].label),
+            { kind: 'merge', member, others }, editor.getSnapshot().saved);
+          selection.select(selectStep(latestState.current, member));
+        }, refuseStep(member));
+      }, {
+        subject: cards.map(({ label }) => label).join(', '),
+        enabled: documentEditable && !busy && cards.every(({ kind, id }) => kind === 'analyze' && !refused.has(id)),
+      }),
+    ];
+  }
   /** Going into a step puts the keyboard in the slot that shows its views; a window showing only the map opens Runs. */
   const enterStep = (stepId: string) => {
     selection.select(selectStep(state, stepId));
@@ -1268,6 +1291,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       setKeyingStep(target.id);
     }, { subject: target.label, enabled: !!changeStepKey && !busy }),
     bindStudioCommand('duplicateStep', () => duplicateStep?.(target.id), { subject: target.label, enabled: !!duplicateStep && !busy }),
+    ...mergeCommand(target),
   ];
   /** A wire dragged on the map from `source` to `target` adds a selection of `source` to an input of `target`. */
   function connectSteps(source: string, target: string) {

@@ -301,7 +301,7 @@ export function EvaluateSubjectFields({ step, project, trains, picking, selectio
         } else if (!train) toDocument(gesture.choice, selections[0].step);
         else if (selections.length === 1) choose(name, { kind: 'step', step: train.id });
         else if (train.id !== selections[gesture.index].step) {
-          change(changedSelections(selections, { kind: 'replace', index: gesture.index, step: train.id }));
+          change(changedSelections(selections, { kind: 'replace', index: gesture.index, reference: { step: train.id } }));
         }
       })} />;
   }

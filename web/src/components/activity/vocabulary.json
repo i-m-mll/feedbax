@@ -145,6 +145,8 @@
     "key": "Key",
     "duplicateStep": "Duplicate Step",
     "duplicateRun": "Duplicate Run",
+    "split": "Split",
+    "merge": "Merge",
     "saveSet": "Save Set",
     "inlineSet": "Inline Set",
     "combination": "Combination",
