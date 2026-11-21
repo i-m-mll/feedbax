@@ -145,7 +145,7 @@ class DeferredAdmissions:
         launch = json.loads(row["launch"])
         selection = requested_checkpoint_selection(row["request"], launch)
         if row["request"].startswith("evaluate:") and selection is not None and selection.allows_gaps:
-            (anchor,) = self.store._completion_parents(row["id"])
+            (anchor,) = self.store._parents(row["id"], {}, completion=True)
             source = self.store.get(anchor)
             assert source is not None
             data = json.loads(row["data"])
