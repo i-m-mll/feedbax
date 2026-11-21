@@ -308,36 +308,36 @@ class ModelUndoRequest(StrictModel):
     token: ModelUndoToken
 
 
-class EvaluateAttachmentStep(StrictModel):
+class StepRuns(StrictModel):
     kind: Literal["step"]
 
 
-class EvaluateAttachmentAxis(StrictModel):
+class AxisValueRuns(StrictModel):
     kind: Literal["axis_value"]
     axis: ProjectName
     value: ProjectName
 
 
-class EvaluateAttachmentRows(StrictModel):
+class ListedRuns(StrictModel):
     kind: Literal["rows"]
     rows: Annotated[tuple[RowKey, ...], Field(min_length=1)]
 
 
-class EvaluateAttachmentVariant(StrictModel):
+class VariantRuns(StrictModel):
     kind: Literal["variant"]
     variant: ProjectName
 
 
-EvaluateAttachmentScope = Annotated[
-    EvaluateAttachmentStep | EvaluateAttachmentAxis | EvaluateAttachmentRows | EvaluateAttachmentVariant,
+SelectedRuns = Annotated[
+    StepRuns | AxisValueRuns | ListedRuns | VariantRuns,
     Field(discriminator="kind"),
 ]
 
 
-class EvaluateAttachmentReadRequest(StrictModel):
+class EvaluateModelRequest(StrictModel):
     revision: Sha256
     run: StudioSavedTrainKey
-    scope: EvaluateAttachmentScope
+    scope: SelectedRuns
 
 
 class StudioEvaluateValueSource(StrictModel):
@@ -345,7 +345,7 @@ class StudioEvaluateValueSource(StrictModel):
     step: ProjectName
 
 
-class EvaluateAttachmentState(StrictModel):
+class EvaluateModelState(StrictModel):
     revision: Sha256
     editable: bool
     effective: tuple[ModelAttachmentDifference, ...]

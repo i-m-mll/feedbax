@@ -6,6 +6,8 @@ import {
   type StudioAuthoringCatalog,
   type StudioCheckpointRuleRequest,
   type StudioRemovedRunsRequest,
+  type StudioSetEditRequest,
+  type StudioSetsOfferedRequest,
   type StudioSubsetToRowsRequest,
   type StudioTrialAuthoring,
   type StudioTrialAuthoringRequest,
@@ -57,6 +59,34 @@ export async function prepareSubsetToRows(projectId: string, body: StudioSubsetT
     return edit;
   } catch (error) {
     throw asApiRequestError(error, path, 'The subset edit did not match its contract');
+  }
+}
+
+/** The files that store a set edit (Duplicate Run, Save Set, Inline Set, a set applied, a value removed). */
+export async function prepareSetEdit(projectId: string, body: StudioSetEditRequest, signal: AbortSignal) {
+  const path = `/api/projects/${encodeURIComponent(projectId)}/authoring/sets`;
+  try {
+    const response = await requestJson(path, {
+      method: 'POST', body: JSON.stringify(parseContract('StudioSetEditRequest', body)), cache: 'no-store', signal,
+    });
+    const edit = parseContract('StudioSetEdit', response);
+    if (edit.revision !== body.revision) throw new Error('The set edit revision changed');
+    return edit;
+  } catch (error) {
+    throw asApiRequestError(error, path, 'The set edit did not match its contract');
+  }
+}
+
+/** The Set documents whose every entry applies to the step's Model. */
+export async function readSetsOffered(projectId: string, body: StudioSetsOfferedRequest, signal: AbortSignal) {
+  const path = `/api/projects/${encodeURIComponent(projectId)}/authoring/sets-offered`;
+  try {
+    const response = await requestJson(path, {
+      method: 'POST', body: JSON.stringify(parseContract('StudioSetsOfferedRequest', body)), cache: 'no-store', signal,
+    });
+    return parseContract('StudioSetsOffered', response).sets;
+  } catch (error) {
+    throw asApiRequestError(error, path, 'The offered sets did not match their contract');
   }
 }
 

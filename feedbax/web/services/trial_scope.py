@@ -12,7 +12,7 @@ from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.matrix_core import apply_override_patches
 from feedbax.contracts.model_edit import (
-    EvaluateAttachmentAxis, EvaluateAttachmentRows, EvaluateAttachmentStep, EvaluateAttachmentVariant,
+    AxisValueRuns, ListedRuns, StepRuns, VariantRuns,
 )
 from feedbax.contracts.project import (
     BasedDocument, Differences, Document, DocumentBase, DocumentEdit, DocumentReference, InlineBase, Payload, Project,
@@ -44,14 +44,14 @@ _SWEEP_WRITE = TypeAdapter(SetValue | RemoveValue)
 
 
 @dataclass(frozen=True)
-class SweepValuesScope:
+class SweepValuesRuns:
     """Runs selected as values of the step's sweeps, other than one named value of one sweep."""
 
     axes: dict[str, tuple[str, ...]]
 
 
 type RunScope = (
-    EvaluateAttachmentStep | EvaluateAttachmentAxis | SweepValuesScope | EvaluateAttachmentRows | EvaluateAttachmentVariant
+    StepRuns | AxisValueRuns | SweepValuesRuns | ListedRuns | VariantRuns
 )
 
 
@@ -67,8 +67,8 @@ def selection_scope(project, plan, key, rows=(), axes=None) -> RunScope:
         if axes:
             raise ProjectFolderInvalid("Sweep values were given without their runs.")
         if key.variant != plan.variants[0]:
-            return EvaluateAttachmentVariant(kind="variant", variant=key.variant)
-        return EvaluateAttachmentStep(kind="step")
+            return VariantRuns(kind="variant", variant=key.variant)
+        return StepRuns(kind="step")
     if key.variant != plan.variants[0]:
         raise ProjectFolderInvalid("A selection of runs is stored in the primary variant only.")
     available = {row.key.row: row for row in plan.rows if (row.key.variant, row.key.step) == (key.variant, key.step)}
@@ -79,14 +79,14 @@ def selection_scope(project, plan, key, rows=(), axes=None) -> RunScope:
         if all(axis in row.coordinates and row.coordinates[axis].value_id in values for axis, values in axes.items())
     }
     if not axes or set(rows) != covered:
-        return EvaluateAttachmentRows(kind="rows", rows=tuple(rows))
+        return ListedRuns(kind="rows", rows=tuple(rows))
     if len(axes) == 1:
         (axis, values), = axes.items()
         sweep = project.steps[key.step].sweep
         named = sweep.axes.get(axis) if sweep else None
         if len(values) == 1 and isinstance(named, NamedAxis) and named.values.get(values[0]) is not None:
-            return EvaluateAttachmentAxis(kind="axis_value", axis=axis, value=values[0])
-    return SweepValuesScope({axis: tuple(values) for axis, values in axes.items()})
+            return AxisValueRuns(kind="axis_value", axis=axis, value=values[0])
+    return SweepValuesRuns({axis: tuple(values) for axis, values in axes.items()})
 
 
 def file_value(address, raw, parts, value):
@@ -101,14 +101,14 @@ def file_value(address, raw, parts, value):
 
 def selected_runs(plan, key, scope, *, chosen_steps=()):
     rows = [row for row in plan.rows if row.key.step == key.step]
-    if isinstance(scope, EvaluateAttachmentVariant):
+    if isinstance(scope, VariantRuns):
         selected = {row.key for row in rows if row.key.variant == scope.variant}
-    elif isinstance(scope, EvaluateAttachmentAxis):
+    elif isinstance(scope, AxisValueRuns):
         selected = {
             row.key for row in rows
             if (coordinate := row.coordinates.get(scope.axis)) is not None and coordinate.value_id == scope.value
         }
-    elif isinstance(scope, EvaluateAttachmentRows):
+    elif isinstance(scope, ListedRuns):
         selected = {row.key for row in rows if row.key.row in scope.rows}
         if {item.row for item in selected} != set(scope.rows):
             raise ProjectFolderInvalid("The selection contains an unknown run row.")
@@ -789,11 +789,11 @@ def scoped_file(
     by ``users``. For a sweep value or exception it is applied to the selected runs' copy of the document.
     """
     authored = project.steps[step_id]
-    if isinstance(scope, EvaluateAttachmentAxis | SweepValuesScope | EvaluateAttachmentRows):
+    if isinstance(scope, AxisValueRuns | SweepValuesRuns | ListedRuns):
         raw = authored.model_dump(mode="json", by_alias=True, exclude_unset=True)
         address = AuthoredFileAddress(kind="step", id=step_id)
         return StoredEdit([_selection_file(address, raw, authored, scope, writes)], reached=frozenset({step_id}))
-    variant = scope.variant if isinstance(scope, EvaluateAttachmentVariant) else None
+    variant = scope.variant if isinstance(scope, VariantRuns) else None
     if variant is not None and view is None:
         raise ValueError("An edit in a variant reads the variant's project.")
     store = _Store(project, variant, view or project)
@@ -830,12 +830,12 @@ def scoped_file(
 
 
 def _selection_file(address, raw, authored, scope, writes) -> StudioProjectFilePatch:
-    if isinstance(scope, EvaluateAttachmentAxis):
+    if isinstance(scope, AxisValueRuns):
         axis = authored.sweep.axes.get(scope.axis) if authored.sweep else None
         if not isinstance(axis, NamedAxis) or axis.values.get(scope.value) is None:
             raise ProjectFolderInvalid("The group needs a named sweep value authored on this step.")
         return sweep_value_file(address, raw, scope.axis, scope.value, writes)
-    if isinstance(scope, SweepValuesScope):
+    if isinstance(scope, SweepValuesRuns):
         return values_exception_file(address, raw, scope.axes, writes)
     return row_exception_file(address, raw, scope.rows, writes)
 
@@ -886,7 +886,7 @@ def train_selection(
     chosen = {step_id, *chosen_steps}
 
     def checked(scope, selected, writes):
-        variant = isinstance(scope, EvaluateAttachmentVariant)
+        variant = isinstance(scope, VariantRuns)
 
         def users(document: str) -> frozenset[str]:
             plan = folders.read_plan(project_id, revision=revision).plan
@@ -909,7 +909,7 @@ def train_selection(
     if run is None:
         if rows or axes:
             raise ProjectFolderInvalid("Rows were given without the run they belong to.")
-        return TrainSelection((), None, None, False, partial(checked, EvaluateAttachmentStep(kind="step"), frozenset()))
+        return TrainSelection((), None, None, False, partial(checked, StepRuns(kind="step"), frozenset()))
     key = RunKey(run.variant, run.step, run.row)
     if key.step != step_id:
         raise ProjectFolderInvalid(f"Run {key.row!r} belongs to step {key.step!r}, not {step_id!r}.")
@@ -923,16 +923,16 @@ def train_selection(
         plan = folders.read_plan(project_id, revision=revision, source_runs=tuple(dict.fromkeys((key, *shown)))).plan
     definitions = plan.selected_definitions
     payloads = tuple(definitions[item].payload for item in shown if item in definitions)
-    scoped = not isinstance(scope, EvaluateAttachmentStep)
+    scoped = not isinstance(scope, StepRuns)
     named = definitions.get(key)
     values = (
-        AxisCondition(axes={scope.axis: [scope.value]}) if isinstance(scope, EvaluateAttachmentAxis)
+        AxisCondition(axes={scope.axis: [scope.value]}) if isinstance(scope, AxisValueRuns)
         else AxisCondition(axes={axis: sorted(set(ids)) for axis, ids in sorted(scope.axes.items())})
-        if isinstance(scope, SweepValuesScope) else None
+        if isinstance(scope, SweepValuesRuns) else None
     )
     return TrainSelection(
         payloads, next((row for row in plan.rows if row.key == key), None),
-        named.payload if isinstance(scope, SweepValuesScope | EvaluateAttachmentAxis | EvaluateAttachmentRows)
+        named.payload if isinstance(scope, SweepValuesRuns | AxisValueRuns | ListedRuns)
         and named is not None else None, scoped,
         partial(checked, scope, _scoped_runs(project, plan, key, scope, chosen)), values,
         tuple(row.coordinates for row in plan.rows if row.key in shown and row.key.step == step_id),
@@ -944,16 +944,16 @@ def _scoped_runs(project, plan, key: RunKey, scope: RunScope, chosen: Collection
 
     For the whole step, in a variant or not, the write says which steps it reaches, and none are named here.
     """
-    if isinstance(scope, EvaluateAttachmentStep | EvaluateAttachmentVariant):
+    if isinstance(scope, StepRuns | VariantRuns):
         return frozenset()
     variants = set(plan.variants)
     reached = reached_steps(project, chosen)
     picked = {
         row.key for row in plan.rows if row.key.variant in variants and row.key.step == key.step and (
-            row.key.row in scope.rows if isinstance(scope, EvaluateAttachmentRows)
+            row.key.row in scope.rows if isinstance(scope, ListedRuns)
             else all(
                 (coordinate := row.coordinates.get(axis)) is not None and coordinate.value_id in values
-                for axis, values in ({scope.axis: (scope.value,)} if isinstance(scope, EvaluateAttachmentAxis)
+                for axis, values in ({scope.axis: (scope.value,)} if isinstance(scope, AxisValueRuns)
                                      else scope.axes).items()
             )
         )
@@ -974,9 +974,9 @@ class SelectedValue:
 def selected_value(project: Project, step: str, scope: RunScope) -> SelectedValue | None:
     """The value of a named axis whose runs are the runs ``scope`` selects, when they are exactly one."""
     sweep = project.steps[step].sweep
-    if isinstance(scope, EvaluateAttachmentAxis):
+    if isinstance(scope, AxisValueRuns):
         return SelectedValue(scope.axis, scope.value, None)
-    if isinstance(scope, SweepValuesScope) and len(scope.axes) == 1 and sweep is not None:
+    if isinstance(scope, SweepValuesRuns) and len(scope.axes) == 1 and sweep is not None:
         (axis, values), = scope.axes.items()
         named = sweep.axes.get(axis)
         if len(values) == 1 and isinstance(named, SetAxis):

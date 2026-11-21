@@ -1,5 +1,5 @@
 import { appTip } from "@window-shell/browser/tooltip";
-import { useCallback, useEffect, useMemo, useRef, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { StudioCollectionProgress, StudioRunProgress, StudioRunStatus } from "@/components/activity/StudioRunStatus";
 import { studioName, studioRunReason } from "@/components/activity/studioVocabulary";
@@ -15,6 +15,8 @@ import { Button } from "@/components/ui/Button";
 import { ScrollFade } from "@/components/ui/ScrollFade";
 import { Table, TableCell, TableHeaderCell, TableRow, TableRowHeader } from "@/components/ui/Table";
 import { CommandContextMenu, type RunMenu } from "./CommandContextMenu";
+import type { AxisMenu } from "./PipelineRunMarks";
+import { DocumentPicker, type DocumentEditing } from "@/features/projectWindow/DocumentPicker";
 
 const gutter = "w-px pl-1 pr-2 text-right";
 
@@ -53,9 +55,20 @@ interface TableProps extends RunSelectionProps {
   related: RunSetsByStep;
   fillSlot?: boolean;
   runMenu?: RunMenu;
+  axisMenu?: AxisMenu;
 }
 
-export function StudioRunTable({ step, state, onSelectionChange, rows, related, fillSlot, runMenu }: TableProps) {
+/** A sweep's column head: the axis, the set it reads, and the axis's context menu. */
+function AxisHead({ step, sweep, axisMenu }: { step: string; sweep: PlanSweepView; axisMenu?: AxisMenu }) {
+  const [editing, setEditing] = useState<DocumentEditing>();
+  const authored = axisMenu?.(step, sweep.id);
+  const head = <TableHeaderCell scope="col">
+    {authored?.picker ? <DocumentPicker model={authored.picker} editing={editing} setEditing={setEditing} /> : sweep.label}
+  </TableHeaderCell>;
+  return authored?.commands.length ? <CommandContextMenu commands={() => authored.commands} trigger={head} /> : head;
+}
+
+export function StudioRunTable({ step, state, onSelectionChange, rows, related, fillSlot, runMenu, axisMenu }: TableProps) {
   const scroll = useRef<HTMLDivElement>(null);
   const mountedRows = useRef(new Map<string, HTMLTableRowElement>());
   const pendingKeyboardFocus = useRef<{ id: string; column: number } | null>(null);
@@ -129,7 +142,7 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
             <TableHeaderCell aria-hidden="true" className={gutter} />
             {named && <TableHeaderCell scope="col">{studioName("run")}</TableHeaderCell>}
             {showVariant && <TableHeaderCell scope="col">{studioName("variant")}</TableHeaderCell>}
-            {sweeps.map((sweep) => <TableHeaderCell key={sweep.id} scope="col">{sweep.label}</TableHeaderCell>)}
+            {sweeps.map((sweep) => <AxisHead key={sweep.id} step={step.id} sweep={sweep} axisMenu={axisMenu} />)}
             <TableHeaderCell scope="col">{studioName("status")}</TableHeaderCell>
             <TableHeaderCell scope="col">{studioName(measure)}</TableHeaderCell>
           </tr>
@@ -142,7 +155,8 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
             const reason = run.results.some(({ validity }) => validity.reasons?.length) ? undefined : run.reason;
             const selectRow = selectionButton((extend) => onSelectionChange(selectRun(state, { stepId: step.id, runId: run.id }, extend)));
             return (
-              <CommandContextMenu key={run.id} commands={runMenu && ((anchor) => runMenu([run], anchor))} trigger={<TableRow
+              <CommandContextMenu key={run.id} onOpen={() => { if (!lit) onSelectionChange(selectRun(state, { stepId: step.id, runId: run.id })); }}
+                commands={runMenu && ((anchor) => runMenu([run], anchor))} trigger={<TableRow
                 data-result-run={run.id}
                 ref={(node) => {
                   virtual.measureElement(node);

@@ -8,8 +8,8 @@ from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES, AttachmentDifference
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.model_edit import (
-    EvaluateAttachmentAxis, EvaluateAttachmentReadRequest, EvaluateAttachmentRows, EvaluateAttachmentState,
-    EvaluateAttachmentVariant, StudioEvaluateValueSource,
+    AxisValueRuns, EvaluateModelRequest, ListedRuns, EvaluateModelState,
+    VariantRuns, StudioEvaluateValueSource,
 )
 from feedbax.contracts.project import DifferenceNotApplied, Differences, Project, apply_differences, diff, nearest_shared_base
 from feedbax.contracts.project_plan import EVALUATION_MODEL, ProjectPlan, RunKey, SelectedRunDefinition
@@ -34,7 +34,7 @@ def evaluate_value_source(source: ValueSource, *, evaluate_step: str | None = No
 
 @dataclass(frozen=True)
 class EvaluateReading:
-    state: EvaluateAttachmentState
+    state: EvaluateModelState
     differences: Differences
     """What the read Model document changes on the trained model: its differences from ``shared``."""
     shared: str | None
@@ -42,7 +42,7 @@ class EvaluateReading:
 
 
 def read_evaluate_model(
-    folders, project_id, body: EvaluateAttachmentReadRequest, components=None, *, selected: ProjectPlan | None = None,
+    folders, project_id, body: EvaluateModelRequest, components=None, *, selected: ProjectPlan | None = None,
     model_document: str | None = None,
 ) -> EvaluateReading:
     """The Model the selected Evaluate run evaluates: the trained model with the run's Model differences applied."""
@@ -91,7 +91,7 @@ def read_evaluate_model(
                         )
                         if origin is not None:
                             field_sources[record.address.to_text()] = evaluate_value_source(origin, evaluate_step=key.step)
-    return EvaluateReading(EvaluateAttachmentState(
+    return EvaluateReading(EvaluateModelState(
         revision=body.revision,
         editable=editable,
         effective=tuple(record for record in differences if isinstance(record, AttachmentDifference)),
@@ -119,21 +119,21 @@ def _document_changes(
     return (shared if changes or read != subject else None), changes
 
 
-def _editable(plan: ProjectPlan, key: RunKey, body: EvaluateAttachmentReadRequest) -> bool:
+def _editable(plan: ProjectPlan, key: RunKey, body: EvaluateModelRequest) -> bool:
     scope = body.scope
     rows = {row.key: row for row in plan.rows if row.key.step == key.step}
     editable = True
-    if isinstance(scope, EvaluateAttachmentAxis):
+    if isinstance(scope, AxisValueRuns):
         selected = {
             item for item, row in rows.items()
             if (coordinate := row.coordinates.get(scope.axis)) is not None and coordinate.value_id == scope.value
         }
-    elif isinstance(scope, EvaluateAttachmentRows):
+    elif isinstance(scope, ListedRuns):
         editable = all(item.variant == key.variant for item in rows)
         selected = {item for item in rows if item.variant == key.variant and item.row in scope.rows}
         if {item.row for item in selected} != set(scope.rows):
             raise ProjectFolderInvalid("The selection contains an unknown Evaluate row.")
-    elif isinstance(scope, EvaluateAttachmentVariant):
+    elif isinstance(scope, VariantRuns):
         selected = {item for item in rows if item.variant == scope.variant}
     else:
         selected = set(rows)

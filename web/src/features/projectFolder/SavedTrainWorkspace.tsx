@@ -63,7 +63,7 @@ import { trainingDocumentId } from './trainingDocument';
 import { checkpointLabel, createEvaluation, editableCheckpointRule, exactCheckpoint, managedTrialDomain, ordinaryEvaluation, type EditableCheckpointRule, type StoppedEvaluationSubject } from './evaluateAuthoring';
 import { bindProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
-import { bestRankGroups, projectWindowPlan, planVariants, savedRunId, stepSourceRows } from './projectWindowPlan';
+import { bestRankGroups, projectWindowPlan, planVariants, savedRunId, stepSourceRows, unvalued } from './projectWindowPlan';
 import { placeField, placeMember, placeView, removeGraphVariation, type Reveal } from './projectWindowProblems';
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
 import { planWithRefusal, problemKey, type GestureFailures, type Refusal } from './refusals';
@@ -83,6 +83,8 @@ import { documentFamily, useProjectDocuments, type DocumentRole } from './usePro
 import { useManagedAnalyze } from './useManagedAnalyze';
 import { useManagedReport } from './useManagedReport';
 import { ScrollFade } from '@/components/ui/ScrollFade';
+import type { AxisMenu } from '@/components/pipeline/PipelineRunMarks';
+import { OfferedSets, setAuthoring } from './setAuthoring';
 
 type EditorSession = ReturnType<typeof bindProjectEditor>;
 
@@ -282,14 +284,31 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       results.map(({ jobId }) => [jobId, state] as const))));
     return (job) => states.get(job.job_id);
   }, [plan]);
-  const runMenu: RunMenu = (runs, anchor) => validity.commands(runs, anchor);
+  const runMenu: RunMenu = (runs, anchor) => {
+    const owner = runs[0] && plan.steps.find(({ id }) => id === (JSON.parse(runs[0].id) as string[])[1]);
+    return [...validity.commands(runs, anchor), ...owner ? [sets.duplicateRun(owner, runs)] : []];
+  };
   const runRemoval = useRunRemovalDialog(data);
+  const sets = setAuthoring({
+    editor, project: saved.project, enabled: !!data && !pending && !outside && connected && primaryVariant && !busy,
+    perform, state: () => latestState.current, select: (next) => selection.select(next),
+  });
+  const axisMenu: AxisMenu = (stepId, axis) => ({
+    picker: sets.axisPicker(stepId, axis), commands: sets.axisCommands(stepId, axis),
+  });
   const step = plan.steps.find(({ id }) => id === selection.stepId);
   const state = data ? settledWindowSelection(plan, selection.pipeline) : selection.pipeline;
   const latestState = useRef(state);
   latestState.current = state;
   const singleStep = state.selection?.kind === 'steps' && state.selection.stepIds.length === 1 && state.selection.stepIds[0] === step?.id;
   const wholeStep = singleStep && primaryVariant;
+  /** The selected values as an edit names them; the runs an optional axis keeps are named by row. */
+  const valueTerms = state.selection?.kind === 'values' && !state.selection.terms.some(({ valueIds }) => valueIds.includes(unvalued))
+    ? state.selection.terms : undefined;
+  /** The one value of a named axis or set entry selected on the step, which a Model edit is stored on. */
+  const selectedValue = primaryVariant && valueTerms?.length === 1 && valueTerms[0].valueIds.length === 1 &&
+    state.selection?.kind === 'values' && state.selection.stepId === step?.id
+    ? { axis: valueTerms[0].sweepId, value: valueTerms[0].valueIds[0] } : undefined;
   const canAuthorSweep = (id: string) => primaryVariant && directTrainStep(saved.project, id, true) !== null;
   const authored = step && saved.project.steps?.[step.id];
   const subjectCheckpoint = authored?.kind === 'evaluate' ? exactCheckpoint(authored) : undefined;
@@ -348,8 +367,22 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     return { document, key, users, lit: new Set([...users].filter((id) =>
       id === step.id || (reader(id) ? toggled.includes(id) : !toggled.includes(id)))) };
   }
+  /**
+   * With one entry of a set selected, the steps that read the set or one based on it: an edit of the entry is made for
+   * the lit ones, and a set based on it holds the edit when one is taken out.
+   */
+  function setScope(): NamedDocumentScope | undefined {
+    const read = selectedValue && step && authored?.sweep?.axes?.[selectedValue.axis];
+    if (!read || !('set' in read) || !step || !data) return undefined;
+    const family = documentFamily(saved.project, read.set);
+    const users = new Set(Object.entries(saved.project.steps ?? {}).flatMap(([id, item]) =>
+      Object.values(item.sweep?.axes ?? {}).some((other) => other && 'set' in other && family.has(other.set)) ? [id] : []));
+    const key = JSON.stringify([step.id, read.set, variant]);
+    const toggled = excludedUsers[key] ?? [];
+    return { document: read.set, key, users, lit: new Set([...users].filter((id) => id === step.id || !toggled.includes(id))) };
+  }
   const documentScopes = {
-    graph: documentScope('graph'), task: documentScope('task'),
+    graph: setScope() ?? documentScope('graph'), task: documentScope('task'),
     objective: documentScope('objective'), training: documentScope('training'), analysis: documentScope('analysis'),
   };
   const activeDocumentScope = windowState.mode === 'map' ? undefined
@@ -502,8 +535,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     (problem.step === step?.id || step?.kind === 'evaluate' && placeMember(problem.place)?.document === modelSource) &&
     (problem.variant === null || problem.variant === variant) &&
     (!problem.row || !namedRun || problem.step !== step?.id || problem.row === namedRun.row));
-  const axis = trialSelection && state.selection?.kind === 'values' && state.selection.terms.length === 1
-    ? state.selection.terms[0] : undefined;
+  const axis = trialSelection && valueTerms?.length === 1 ? valueTerms[0] : undefined;
   const trialScope = trialSelection && (state.selection?.kind === 'steps'
     ? singleStep ? (primaryVariant ? { kind: 'step' } as const : { kind: 'variant', variant: namedRun.variant } as const) : undefined
     : axis?.valueIds.length === 1 ? { kind: 'axis_value', axis: axis.sweepId, value: axis.valueIds[0] } as const
@@ -570,7 +602,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const detailInputs = {
     editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection,
     variantId: variant, evaluation: selectedEvaluation, evaluationReplay,
-    namedRun, documentScopes, planCurrent: !!data, elements, evaluateScope: evaluateScope || undefined, modelSource, modelProblems, selectedSweepValues, confirmRunRemoval: runRemoval.confirm,
+    namedRun, documentScopes, planCurrent: !!data, elements, valueEditing: !!selectedValue, evaluateScope: evaluateScope || undefined, modelSource, modelProblems, selectedSweepValues, confirmRunRemoval: runRemoval.confirm,
     drawerSections,
     openModelProblems: (element: ModelAddress, opener: HTMLElement) => {
       const owner = modelProblems?.find((problem) => {
@@ -582,9 +614,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     runProblems: namedRun && step?.runs.find(({ id }) => id === savedRunId(namedRun))?.problems,
     revealProblem,
     fieldRows: state.selection && state.selection.kind !== 'steps' ? selectedDefinitionRows.map(({ key }) => key.row) : undefined,
-    fieldAxes: state.selection?.kind === 'values' ? Object.fromEntries(
-      state.selection.terms.map(({ sweepId, valueIds }) => [sweepId, [...valueIds]]),
-    ) : undefined,
+    fieldAxes: valueTerms && Object.fromEntries(valueTerms.map(({ sweepId, valueIds }) => [sweepId, [...valueIds]])),
     exceptions: exceptionMention,
   };
   function setModelPath(slot: ProjectWindowSlot, document: string, path: string[]) {
@@ -1172,13 +1202,18 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const sweepMenu = sweepStep ? {
     stepId: sweepStep,
     close: () => setSweepStep(undefined),
-    items: <SweepFieldItems editor={editor} stepId={sweepStep} onSwept={() => {
-      const current = latestState.current;
-      if (current.selection?.kind !== 'values' || current.selection.stepId !== sweepStep) {
-        selection.select(selectStep(current, sweepStep));
-      }
-      setSweepStep(undefined);
-    }} />,
+    items: <>
+      <SweepFieldItems editor={editor} stepId={sweepStep} onSwept={() => {
+        const current = latestState.current;
+        if (current.selection?.kind !== 'values' || current.selection.stepId !== sweepStep) {
+          selection.select(selectStep(current, sweepStep));
+        }
+        setSweepStep(undefined);
+      }} />
+      <OfferedSets editor={editor} step={sweepStep} choose={(set) => sets.applySet(sweepStep, set, () => {
+        selection.select(selectStep(latestState.current, sweepStep));
+      })} />
+    </>,
   } : undefined;
 
   const mapSurface = windowState.mode === 'details' ? 'line' : 'card';
@@ -1259,7 +1294,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       selection.select(value);
     },
     onProblems: (step: string, opener: HTMLButtonElement) => setPanel({ kind: 'problems', scope: { step, variant }, opener }),
-    newStepCommand, newSweepCommand, onChooseStep: chooseMapStep, runMenu,
+    newStepCommand, newSweepCommand, onChooseStep: chooseMapStep, runMenu, axisMenu,
     documentScope: activeDocumentScope && activeDocumentScope.users.size > 1 ? activeDocumentScope : undefined,
     reached: activeDocumentScope ? undefined
       : reachedSteps && new Set([...reachedSteps].filter((id) => id !== step?.id)),
@@ -1311,6 +1346,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     ...(focusedDetail?.commands ?? []),
     // After the focused view's commands, so its own F2 (a Model component's rename) comes first.
     ...(step ? stepCommands(step) : []),
+    step && selectedRuns(step, state.selection).length > 0 && sets.duplicateRun(step),
     ...analyze.commands,
     ...report.commands,
     step && newSweepCommand(step.id),
@@ -1500,7 +1536,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                 machine={studioRunMachineControl({ catalog: machineCatalog.data, value: requestedMachine,
                   disabled: busy || machineCatalog.isPending || !connected,
                   onChange: (value) => setMachines((current) => ({ ...current, [step.id]: value })) })}
-                pivotCommand={pivot} pivotActive={pivotActive} reason={run && studioRunReason(run)} />,
+                pivotCommand={pivot} pivotActive={pivotActive} reason={run && studioRunReason(run)}
+                combination={sets.combination(step.id)} />,
               inspector: <StudioStepInspector plan={plan} step={step} state={state} onReveal={revealRunMention} stepMenu={stepCommands}
                 stepKey={<KeyField value={step.id} name={step.label} editing={keyingStep === step.id}
                   onEditingChange={(editing) => setKeyingStep(editing ? step.id : undefined)}
@@ -1572,7 +1609,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               body: withProblem(<StudioRuns plan={shownPlan} {...runSelection}
                 region={planUnavailable ?? (step.kind === 'train' || step.runs.length > 0
                   ? { kind: 'result', missing: [] } : { kind: 'empty' })}
-                pending={planPending} pivotActive={Boolean(pivot) && pivotActive} runMenu={runMenu} />),
+                pending={planPending} pivotActive={Boolean(pivot) && pivotActive} runMenu={runMenu} axisMenu={axisMenu} />),
             };
           }
           const resultsFailure = planError('results');

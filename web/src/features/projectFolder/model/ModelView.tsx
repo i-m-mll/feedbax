@@ -3,7 +3,7 @@ import { MarkerType, type OnConnectStart } from '@xyflow/react';
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
 import { useStore } from 'zustand';
 import { fetchComponents } from '@/api/components';
-import { projectModelFields, readEvaluateAttachments, readModelProjection, reviewModelConnections } from '@/api/projectFolders';
+import { projectModelFields, readEvaluateModel, readModelProjection, reviewModelConnections } from '@/api/projectFolders';
 import { ApiRequestError, apiErrorMessage, isRefusal } from '@/api/request';
 import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
 import { studioAccessibleName, studioEvaluateValueSource, studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
@@ -26,7 +26,7 @@ import type { FieldModel } from '@/components/values/fieldModel';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { bindStudioCommand, commandAttributes } from '@/features/projectWindow/studioCommands';
 import type {
-  AddModelAttachment, ChangeModelAttachment, ComponentDefinition, EvaluateAttachmentReadRequest, JsonValue,
+  AddModelAttachment, ChangeModelAttachment, ComponentDefinition, EvaluateModelRequest, JsonValue,
   RemoveModelAttachment, SetField,
   ModelAddress, ModelClipboard, ModelConnectionReview, ModelDocument, ModelEditCommand, ModelFieldRequest, ModelPosition, StudioProjectSnapshot, StudioSavedTrainKey,
 } from '@/generated/studioContracts';
@@ -62,7 +62,7 @@ type Props = {
   fieldAxes?: Record<string, string[]>;
   selectedSweepValues?: ReadonlyMap<string, ReadonlySet<string>>;
   confirmRunRemoval: ConfirmRunRemoval;
-  evaluate?: Omit<EvaluateAttachmentReadRequest, 'revision'>;
+  evaluate?: Omit<EvaluateModelRequest, 'revision'>;
   problem?: { address: ModelAddress; reason: string };
   problems?: readonly { address: ModelAddress; reason: string }[];
   projectionRun?: StudioSavedTrainKey;
@@ -95,12 +95,12 @@ function sameSubject(previous: unknown, next: object | false | undefined) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-/** The runs an Evaluate Model edit is for, as a model edit names them. */
-function evaluateEditRuns(scope: EvaluateAttachmentReadRequest['scope'], run: StudioSavedTrainKey) {
+/** The runs an Evaluate Model edit is for, as a model edit names them; `rows` are the runs of a selected value. */
+function evaluateEditRuns(scope: EvaluateModelRequest['scope'], run: StudioSavedTrainKey, rows?: readonly string[]) {
   return {
     ...(scope.kind === 'variant' ? { variant: scope.variant } : {}),
     ...(scope.kind === 'rows' ? { rows: [...scope.rows] } : {}),
-    ...(scope.kind === 'axis_value' ? { rows: [run.row], axes: { [scope.axis]: [scope.value] } } : {}),
+    ...(scope.kind === 'axis_value' ? { rows: rows?.length ? [...rows] : [run.row], axes: { [scope.axis]: [scope.value] } } : {}),
   };
 }
 
@@ -219,8 +219,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     ...(projection.data?.objective_ports ?? []).map((address) => [addressKey(address), 'objective'] as const),
   ]), [projection.data]);
   const attachments = useQuery({
-    queryKey: ['model-evaluate-attachments', saved.project_id, readBody],
-    queryFn: ({ signal }) => readEvaluateAttachments(saved.project_id, readBody!, signal),
+    queryKey: ['model-evaluate-model', saved.project_id, readBody],
+    queryFn: ({ signal }) => readEvaluateModel(saved.project_id, readBody!, signal),
     enabled: active && !!model && !!readBody,
     placeholderData: (previous, query) => sameSubject(query?.queryKey[2], readBody) ? previous : undefined,
   });
@@ -235,7 +235,10 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const owner = resolved?.owner;
   const interior = owner?.interior;
   const physical = interior?.physical_domain ?? null;
-  const editTopology = editable && !evaluate;
+  /** An Evaluate edits the topology of one selected value's Model; the edit is stored on the value. */
+  const editTopology = editable && (!evaluate || evaluate.scope.kind === 'axis_value');
+  const selectedRuns = evaluate?.scope.kind === 'axis_value' ? evaluateEditRuns(evaluate.scope, evaluate.run, fieldRows)
+    : !evaluate && fieldRows?.length && fieldAxes ? { rows: [...fieldRows], axes: fieldAxes } : undefined;
   const selectedHere = selected.filter((item) => inGraph(item, graph));
   const selectedIds = new Set(selectedHere.map(addressKey));
   const selection = selectedHere[0];
@@ -285,7 +288,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           if (result.files?.length && !await confirmRunRemoval(sweepValueRuns(result.removed_values))) return undefined;
           const applied = await editor.editModel('Set Value', fieldBody.document, result.command, current, fieldBody.run && {
             step: fieldBody.run.step, chosen_steps: [...chosenSteps], files: result.files ?? [],
-            ...(fieldBody.evaluate_scope ? evaluateEditRuns(fieldBody.evaluate_scope, fieldBody.run) : {}),
+            ...(fieldBody.evaluate_scope ? evaluateEditRuns(fieldBody.evaluate_scope, fieldBody.run, fieldRows)
+              : fieldBody.rows?.length && fieldBody.axes ? { rows: fieldBody.rows, axes: fieldBody.axes } : {}),
           });
           follow(applied);
           return applied.status === 'refused' ? applied.problem.detail : undefined;
@@ -415,8 +419,9 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   async function attempt(name: string, operation: Operation, choose = true): Promise<{ address?: ModelAddress; reason: string } | null> {
     if (!model || !editTopology) return { reason: studioReason('unavailable', name) };
     return run(async () => {
-        const scope = projectionRun && { step: projectionRun.step, chosen_steps: [...(await plan.next(({ revision }) =>
-          revision === editor.getSnapshot().saved.revision)).chosenSteps] };
+        const subject = evaluate?.run ?? projectionRun;
+        const scope = subject && { step: subject.step, chosen_steps: [...(await plan.next(({ revision }) =>
+          revision === editor.getSnapshot().saved.revision)).chosenSteps], ...selectedRuns };
         const reviewed = editor.getSnapshot().saved;
         setIssue(undefined);
         try {
@@ -457,7 +462,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           const applied = await editor.editModel(name, model.id, {
             operation: difference.op === 'set_field' ? difference : { op: 'set_attachment', difference },
           }, editor.getSnapshot().saved, {
-            step: readBody.run.step, chosen_steps: [...chosenSteps], ...evaluateEditRuns(scope, readBody.run),
+            step: readBody.run.step, chosen_steps: [...chosenSteps], ...evaluateEditRuns(scope, readBody.run, fieldRows),
           });
           if (applied.status === 'refused') throw new Error(applied.problem.detail);
           shown = follow(applied) ?? shown;

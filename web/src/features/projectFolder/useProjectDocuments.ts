@@ -92,8 +92,13 @@ export function documentFamily(project: { documents?: Readonly<Record<string, Do
 
 /** The documents of `role`, each followed by the documents based on it, with its depth below its root. */
 export function documentTree(project: { documents?: Readonly<Record<string, Document>> | null }, role: DocumentRole) {
+  return documentTreeOf(project, schemas[role]);
+}
+
+/** The documents of the `schemas`, each followed by the documents based on it, with its depth below its root. */
+export function documentTreeOf(project: { documents?: Readonly<Record<string, Document>> | null }, schemas: readonly string[]) {
   const all = project.documents ?? {};
-  const names = documentsOfRole(project, role);
+  const names = Object.keys(all).filter((id) => schemas.includes(all[id].schema)).sort();
   const baseOf = (name: string) => {
     const document = all[name];
     return 'base' in document && names.includes(document.base.document) ? document.base.document : undefined;

@@ -7,7 +7,7 @@ from collections.abc import Callable
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from feedbax.contracts.model_edit import (
-    EvaluateAttachmentReadRequest, EvaluateAttachmentState,
+    EvaluateModelRequest, EvaluateModelState,
     ModelConnectionReview, ModelConnectionReviewRequest,
     ModelProjection, ModelProjectionRequest,
     ModelEditRequest, ModelEditResponse, ModelUndoRequest,
@@ -350,10 +350,10 @@ def undo_model(
     )
 
 
-@router.post("/{project_id}/model/evaluate-attachments", response_model_exclude_unset=True)
-def evaluate_attachments(
-    project_id: ProjectName, body: EvaluateAttachmentReadRequest, request: Request, response: Response,
-) -> EvaluateAttachmentState:
+@router.post("/{project_id}/model/evaluate-model", response_model_exclude_unset=True)
+def read_evaluate_model(
+    project_id: ProjectName, body: EvaluateModelRequest, request: Request, response: Response,
+) -> EvaluateModelState:
     from feedbax.web.services.evaluate_sources import read_evaluate_model
 
     try:
