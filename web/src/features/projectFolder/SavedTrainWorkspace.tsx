@@ -854,11 +854,11 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   }
   const graphRepair = revealed?.problem && removeGraphVariation(saved.project, revealed.problem);
   function removeRefusedVariation() {
-    if (!graphRepair || !revealed?.problem || !ready || snapshot.saving || busy) return;
+    if (!graphRepair || !revealed?.problem || !applies) return;
     const { step: stepId, variant: variantId } = revealed.problem;
-    void perform(async () => {
+    void perform(async (current) => {
       if (!await runRemoval.confirm((row) => row.key.step === stepId && (!variantId || row.key.variant === variantId))) return;
-      editor.editFiles(studioName('removeVariation'), [graphRepair], { reviewedRevision: saved.revision });
+      editor.editFiles(studioName('removeVariation'), [graphRepair], { reviewedRevision: current.revision });
       await editor.flush();
     }, (reason) => ({ kind: 'problem', problem: problemKey(revealed.problem!), reason }));
   }
@@ -1481,13 +1481,13 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             }}>
               <label className="grid gap-1">
                 {studioName('name')}
-                <TextField data-dialog-autofocus value={rename.name} disabled={busy} required
+                <TextField data-dialog-autofocus value={rename.name} required
                   onValueChange={(name) => setRename({ ...rename, name })} />
               </label>
               {rename.revision !== saved.revision || outside
                 ? <div role="alert">{studioReason('nameChangedDuringEdit', studioName('project'))}</div>
                 : refusal?.kind === 'projectName' && <div role="alert">{refusal.reason}</div>}
-              <Button type="submit" className="justify-self-end" disabled={busy || !!outside || rename.revision !== saved.revision}>
+              <Button type="submit" className="justify-self-end" disabled={!!outside || rename.revision !== saved.revision}>
                 {studioName('rename')}
               </Button>
             </form>
@@ -1538,7 +1538,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
           const details = slot === 'primary' ? primary : secondary;
           const withProblem = (body: ReactNode) => revealed?.view === view && slot === focusSlot && !fieldReveal
             ? <ProblemDestination reveal={revealed} action={graphRepair && <Button
-              disabled={!ready || snapshot.saving || busy} onClick={removeRefusedVariation}>
+              disabled={!applies} onClick={removeRefusedVariation}>
               {studioName('removeVariation')}
             </Button>}>{body}</ProblemDestination> : body;
           if (view === 'analysis' || view === 'figures') {

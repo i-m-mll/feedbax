@@ -1,5 +1,6 @@
 import type { ExceptionMentions } from '@/components/values/adapters/fieldView';
 import { documentPayload } from './documentPayload';
+import { conditionLabels } from './evaluateAuthoring';
 import { useQuery } from '@tanstack/react-query';
 import { useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { fetchSavedEvaluationReplay } from '@/api/jobs';
@@ -175,7 +176,7 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
   const [speed, setSpeed] = useState(1);
   const time = clock?.scope === timeScope ? clock.time : 0;
   const trials = jobId && trial && evaluation ? {
-    choices: evaluation.trials.map((id) => ({ id, label: id })),
+    choices: [...conditionLabels(evaluation.trials)].map(([id, label]) => ({ id, label })),
     selectedId: trial,
     onSelect: (value: string) => {
       setTrial({ jobId, trial: value });
