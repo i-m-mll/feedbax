@@ -126,8 +126,8 @@ export function setIn(value: JsonValue | undefined, path: readonly string[], nex
 export function fromJsonSchema(key: string, property: JsonValue, value: JsonValue | undefined, context: SchemaContext,
   path: readonly string[] = [key]): FieldModel {
   const projection = context.projected?.(path);
-  if (projection) return projection;
-  const field = declaredField(key, property, value, context, path);
+  if (projection) return { ...projection, path };
+  const field = { ...declaredField(key, property, value, context, path), path };
   return context.mixed?.(path) && field.type.kind !== 'group' ? { ...field, value: null, text: null } : field;
 }
 

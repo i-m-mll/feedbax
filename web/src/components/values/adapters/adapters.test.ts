@@ -47,7 +47,7 @@ test('a settings schema walks references, optional values, free parameters and a
   const [optimizer, clip, schedule] = root.parts!;
   expect(optimizer.label).toBe('Optimizer');
   const [params] = optimizer.parts!;
-  expect(params.parts![0]).toBe(projected);
+  expect(params.parts![0]).toEqual({ ...projected, path: ['optimizer', 'params', 'learning_rate'] });
   expect(params.parts![1].type.kind).toBe('string');
   expect(clip.type.kind).toBe('number');
   expect(clip.text).toBe('1');

@@ -40,10 +40,10 @@ def _port(
     source: DatasetSource,
     analysis: AnalysisDocument,
     registry: OperationRegistry,
-    states: DatasetPort,
+    states: DatasetPort | None,
 ) -> DatasetPort:
     if isinstance(source, StepInput):
-        if source.input != "states":
+        if source.input != "states" or states is None:
             raise ValueError(f"Unknown Analyze input {source.input!r}.")
         return states
     try:
@@ -76,7 +76,9 @@ def _removal(analysis: AnalysisDocument, element: str) -> list[DocumentEdit]:
     return edits
 
 
-def _wire_edit(analysis: AnalysisDocument, wire: StudioAnalyzeWire, registry: OperationRegistry, states: DatasetPort):
+def _wire_edit(
+    analysis: AnalysisDocument, wire: StudioAnalyzeWire, registry: OperationRegistry, states: DatasetPort | None,
+):
     family = "operations" if wire.element in analysis.operations else "views"
     source = _port(wire.source, analysis, registry, states)
     if family == "operations":
@@ -97,7 +99,7 @@ def _wire_edit(analysis: AnalysisDocument, wire: StudioAnalyzeWire, registry: Op
 
 def _review_wire(
     proposal: Project, key: RunKey, analysis: AnalysisDocument, family: str, wire: StudioAnalyzeWire,
-    registry: OperationRegistry, states: DatasetPort, readers: BaseReaders, figure_templates,
+    registry: OperationRegistry, states: DatasetPort | None, readers: BaseReaders, figure_templates,
 ) -> None:
     """Refuse a wire the plan of ``proposal`` cannot resolve on ``key``'s run."""
     plan = compile_project(
@@ -133,7 +135,7 @@ def analyze_edit(
     change: StudioAnalyzeChange,
     chosen: frozenset[str],
     registry: OperationRegistry,
-    states: DatasetPort,
+    states: DatasetPort | None,
     *,
     readers: BaseReaders = BaseReaders(),
     figure_templates: FigureTemplateRegistry | None = None,
@@ -170,7 +172,7 @@ def analyze_edit(
 
 
 def _variable_choices(
-    definition: OperationDefinition, states: DatasetPort, dimensions: list[str],
+    definition: OperationDefinition, states: DatasetPort | None, dimensions: list[str],
 ) -> dict[str, list[str]]:
     """Each parameter's choices: the matching variables of a dataset selector, and the bound label dimensions of a
     parameter that lists the dimensions a port takes whole."""
@@ -178,7 +180,7 @@ def _variable_choices(
     for port in definition.inputs.values():
         if isinstance(port, DatasetInputPort) and isinstance(port.takes, WholeDimensions):
             choices[port.takes.parameter] = dimensions
-        if not isinstance(port, DatasetPort) or states.schema_ids[0] not in port.schema_ids:
+        if states is None or not isinstance(port, DatasetPort) or states.schema_ids[0] not in port.schema_ids:
             continue
         for parameter, required in port.selected_variables.items():
             matching = []
@@ -204,9 +206,10 @@ def _common_fields(
 
 
 def _states_port(
-    service: ProjectPlanService, project_id: str, revision: str, key: RunKey,
-) -> tuple[DatasetPort, ProjectPlanRead]:
-    """The dataset port common to the saved states of every Evaluate run the ``states`` input of ``key`` stacks."""
+    service: ProjectPlanService, project_id: str, revision: str, key: RunKey, bound: bool,
+) -> tuple[DatasetPort | None, ProjectPlanRead]:
+    """The dataset port common to the saved states of every Evaluate run the ``states`` input of ``key`` stacks, or
+    none when the step has no ``states`` input."""
     view = service.read(project_id, revision=revision)
     plan = view.settled.plan
     if plan.variants[:1] != (key.variant,):
@@ -214,6 +217,8 @@ def _states_port(
     row = next((row for row in plan.rows if row.key == key and isinstance(row, PlannedAnalyzeRun)), None)
     if row is None:
         raise ValueError(f"Run {key.row!r} no longer belongs to step {key.step!r}.")
+    if not bound:
+        return None, view
     members = [binding.producer for binding in row.inputs.get("states", ())]
     if not members or any(member is None or member.variant != key.variant for member in members):
         raise ValueError(f"The Analyze input of variant {key.variant!r} holds no saved Evaluate runs of this variant")
@@ -267,13 +272,13 @@ def analyze_authoring(
     if document is None or document.schema_id != "feedbax.analysis_document.v1":
         raise ProjectFolderInvalid("The selected step has no saved analysis document.")
     bound = step.inputs.get("states")
-    references = bound if isinstance(bound, list) else [bound]
-    if not references or not all(
+    references = bound if isinstance(bound, list) else [] if bound is None else [bound]
+    if bound is not None and not references or not all(
         isinstance(reference, StepReference) and not reference.variants for reference in references
     ):
         raise ProjectFolderInvalid(f"The states input of Analyze step {key.step!r} reads no Evaluate step of this variant")
     try:
-        states, view = _states_port(service, project_id, body.revision, key)
+        states, view = _states_port(service, project_id, body.revision, key, bound is not None)
         plan = view.settled.plan
         registry = service.jobs.registries.operations
         definitions = list(registry.definitions())
