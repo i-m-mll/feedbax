@@ -76,17 +76,31 @@ def _same_field(left: FieldDescriptor, right: FieldDescriptor) -> bool:
     ) and (left.inline_values is None) == (right.inline_values is None)
 
 
-def _shared_coordinate(name: str, datasets: Sequence[Dataset]) -> bool:
-    """Whether a dataset coordinate is equal in every member, so that it is not stacked."""
-    base = datasets[0].descriptor.coords[name]
-    if base.inline_values is not None:
-        return all(dataset.descriptor.coords[name] == base for dataset in datasets[1:])
-    first = np.asarray(datasets[0].data(name))
-    for dataset in datasets[1:]:
-        actual = np.asarray(dataset.data(name))
-        if actual.dtype != first.dtype or not np.array_equal(actual, first):
-            return False
-    return True
+def _spanning(values: np.ndarray, axes: tuple[str, ...]) -> tuple[np.ndarray, tuple[str, ...]]:
+    """Values stacked on ``axes``, keeping only the stacking axes along which they vary."""
+    kept = []
+    for axis, name in reversed(tuple(enumerate(axes))):
+        first = np.take(values, [0], axis=axis)
+        if np.all(values == first):
+            values = np.take(values, 0, axis=axis)
+        else:
+            kept.append(name)
+    return values, tuple(reversed(kept))
+
+
+def _member_coordinate(
+    name: str, datasets: Sequence[Dataset], shape: tuple[int, ...], axes: tuple[str, ...],
+) -> Variable | None:
+    """A dataset coordinate stacked on the stacking axes it varies along, or None when every member shares it."""
+    fields = [dataset.descriptor.coords[name] for dataset in datasets]
+    base = fields[0]
+    if any(not _same_field(base, other) for other in fields[1:]):
+        raise ValueError(f"Dataset members disagree on field {name!r}")
+    arrays = [np.asarray(dataset.data(name)) for dataset in datasets]
+    if all(array.dtype == arrays[0].dtype and np.array_equal(array, arrays[0]) for array in arrays[1:]):
+        return None
+    values, kept = _spanning(np.stack(arrays).reshape((*shape, *arrays[0].shape)), axes)
+    return Variable(values, (*kept, *base.dims), units=base.units, quantity=base.quantity, frame=base.frame)
 
 
 def _stacked(fields: Sequence[FieldDescriptor], axes: tuple[str, ...], name: str) -> FieldDescriptor:
@@ -114,7 +128,8 @@ def stack_dataset_members(
     Labels that vary over the members are the leading dimensions: one per label when
     the members are their complete product in order, else one ``member`` dimension.
     Labels equal in every member are scalar coordinates. Dataset coordinates equal in
-    every member are kept once; the others, and the attributes that differ, are stacked.
+    every member are kept once; the others, and the attributes that differ, are stacked
+    on only the stacking dimensions along which they vary.
     """
     if not inputs:
         raise ValueError("A dataset stack needs at least one member")
@@ -140,14 +155,17 @@ def stack_dataset_members(
         if all(canonical_json_v2_bytes(value) == canonical_json_v2_bytes(values[0]) for value in values[1:]):
             attrs[name] = values[0]
         else:
-            added[name] = Variable(_host_values(values, shape), axes)
+            added[name] = Variable(*_spanning(_host_values(values, shape), axes))
     collisions = (set(dimensions) | added.keys()) & (
         base.dimensions.keys() | base.variables.keys() | base.coords.keys()
     )
     if collisions:
         raise ValueError(f"Member labels collide with dataset names: {sorted(collisions)}")
+    for name in base.coords:
+        if (stacked := _member_coordinate(name, datasets, shape, axes)) is not None:
+            added[name] = stacked
     label_data = Dataset.from_arrays({}, coords=added)
-    shared = {name for name in base.coords if _shared_coordinate(name, datasets)}
+    shared = base.coords.keys() - added.keys()
 
     descriptor = DatasetDescriptor(
         dimensions={**dimensions, **base.dimensions},
@@ -157,11 +175,7 @@ def stack_dataset_members(
         },
         coords={
             **label_data.descriptor.coords,
-            **{
-                name: base.coords[name] if name in shared
-                else _stacked([item.coords[name] for item in descriptors], axes, name)
-                for name in base.coords
-            },
+            **{name: base.coords[name] for name in base.coords if name in shared},
         },
         schema_id=base.schema_id,
         attrs=attrs,
