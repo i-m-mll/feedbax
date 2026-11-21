@@ -25,6 +25,7 @@ import { useFollowingQuery } from '@/hooks/useFollowingQuery';
 import { StudioMachineApproval, studioRunMachineControl } from '@/components/pipeline/StudioRunMachine';
 import { SweepExceptions } from '@/components/pipeline/SweepExceptions';
 import { useDrawerSections, useFieldFocus, type FieldFocusRequest } from '@/features/projectWindow/DrawerForms';
+import { FieldIntent } from '@/components/values/fieldIntent';
 import { X } from 'lucide-react';
 import { Button, IconButton } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
@@ -1225,12 +1226,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     stepId: sweepStep,
     close: () => setSweepStep(undefined),
     items: <>
-      <SweepFieldItems editor={editor} stepId={sweepStep} onSwept={() => {
+      <SweepFieldItems editor={editor} stepId={sweepStep} onChoose={(anchor) => {
         const current = latestState.current;
         if (current.selection?.kind !== 'values' || current.selection.stepId !== sweepStep) {
           selection.select(selectStep(current, sweepStep));
         }
         setSweepStep(undefined);
+        setWindowState((window) => showProjectWindowView({ ...window, inspectorOpen: true }, 'runs', focusSlot));
+        setFieldFocus({ key: crypto.randomUUID(), step: sweepStep, target: anchor, kind: 'sweep' });
       }} />
       <OfferedSets editor={editor} step={sweepStep} choose={(set) => sets.applySet(sweepStep, set, () => {
         selection.select(selectStep(latestState.current, sweepStep));
@@ -1692,7 +1695,11 @@ function FocusedFields({ request, onFocused, children }: {
 }) {
   const root = useRef<HTMLDivElement>(null);
   useFieldFocus(root, request, onFocused);
-  return <div ref={root} className="grid content-start gap-3">{children}</div>;
+  const { key, target, kind } = request ?? {};
+  const intent = useMemo(() => key && target && kind ? { key, target, kind } : undefined, [key, target, kind]);
+  return <FieldIntent.Provider value={intent}>
+    <div ref={root} className="grid content-start gap-3">{children}</div>
+  </FieldIntent.Provider>;
 }
 
 function ProblemDestination({ reveal, action, children }: { reveal: Reveal; action?: ReactNode; children: ReactNode }) {
