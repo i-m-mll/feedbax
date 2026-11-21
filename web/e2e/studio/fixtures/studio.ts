@@ -99,7 +99,7 @@ export async function launchStudio(backend: StudioBackend, frontend: StudioFront
       '--home', home, '--backend-port', String(backendPort), ...args,
     ], {
       cwd: repo,
-      env: { ...process.env, FEEDBAX_STUDIO_TEST_OWNER_PID: String(process.pid), FEEDBAX_STUDIO_TEST_HOME: home },
+      env: { ...process.env, FEEDBAX_OWNER_PID: String(process.pid), FEEDBAX_STUDIO_TEST_HOME: home },
       stdio: ['ignore', logFd, logFd],
     });
     launchers.push(child);

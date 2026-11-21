@@ -15,6 +15,8 @@ TOKEN_ENV = "FEEDBAX_PROCESS_IDENTITY"
 JAX_CACHE_ENV = "FEEDBAX_HOST_JAX_CACHE_DIR"
 JAX_CACHE_MAX_SIZE = 1024**3
 EVIDENCE_FILE = "execution-evidence.json"
+# The process whose exit ends a Host, and a Studio launcher, started with it in the environment: a test run.
+OWNER_ENV = "FEEDBAX_OWNER_PID"
 
 
 def encode(value: JsonObject) -> bytes:
