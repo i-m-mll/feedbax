@@ -10,6 +10,7 @@ import {
 import { trainSourceSubset } from './createCheckpointTrain';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import { savedRunId } from './projectWindowPlan';
+import { stepSelections, subjectAxisEdits } from './selectionEdits';
 import { generatedName, holds } from './generatedName';
 
 const rollout = 'feedbax.rollout';
@@ -121,16 +122,28 @@ function addressedModelAxis(axis: Axis) {
   return paths.length > 0 && paths.every((path) => path.startsWith('{'));
 }
 
-export function ordinaryEvaluation(step: Step): { subject: StepReference; terms: SubsetTerms; trialSet: TrialSet } | undefined {
+/** A selection of an Evaluate subject that Studio edits: its reference, its restriction, and where that is written. */
+export interface EvaluationSubject {
+  readonly reference: StepReference;
+  readonly terms: SubsetTerms;
+  /** The pointer of the selection's `where`. */
+  readonly where: string;
+}
+
+export function ordinaryEvaluation(step: Step): { subjects: EvaluationSubject[]; trialSet: TrialSet } | undefined {
   if (step.kind !== 'evaluate' || !('inline' in step.base) || step.deltas?.length) return undefined;
-  const parsed = StepReferenceSchema.safeParse(step.inputs?.subject);
-  if (!parsed.success) return undefined;
-  const subject = parsed.data;
+  const selections = stepSelections(step.inputs?.subject);
+  if (!selections?.length) return undefined;
   const axes = Object.values(step.sweep?.axes ?? {}).filter((axis) => axis != null);
-  if ((editableCheckpointRule(subject.checkpoint) === undefined && !axes.some((axis) => 'checkpoint_rule' in axis)) ||
-      subject.row != null || subject.variants != null) return undefined;
-  const terms = subject.where ?? {};
-  if ('subset' in terms || terms.when) return undefined;
+  const listed = Array.isArray(step.inputs?.subject);
+  const subjects: EvaluationSubject[] = [];
+  for (const [index, reference] of selections.entries()) {
+    if ((editableCheckpointRule(reference.checkpoint) === undefined && !axes.some((axis) => 'checkpoint_rule' in axis)) ||
+        reference.row != null || reference.variants != null) return undefined;
+    const terms = reference.where ?? {};
+    if ('subset' in terms || terms.when) return undefined;
+    subjects.push({ reference, terms, where: listed ? `/inputs/subject/${index}/where` : '/inputs/subject/where' });
+  }
   const sweep = step.sweep;
   const axis = sweep?.axes?.subject;
   if (!axis || !('input' in axis) || axis.input !== 'subject' ||
@@ -147,7 +160,7 @@ export function ordinaryEvaluation(step: Step): { subject: StepReference; terms:
     trialSet = { kind: rule.kind, ids: rule.ids };
   } else if (rule.kind === 'sample' && typeof rule.count === 'number') trialSet = { kind: rule.kind, count: rule.count };
   else return undefined;
-  return { subject, terms, trialSet };
+  return { subjects, trialSet };
 }
 
 export async function createEvaluation(
@@ -182,12 +195,17 @@ export async function createEvaluation(
   return id;
 }
 
-/** What an Evaluate step's subject reads: an initial Model document, or a Train step's checkpoint. */
+/** What an Evaluate step's subject reads: an initial Model document, or checkpoints of Train steps. */
+export type AuthoredSubject =
+  | { kind: 'document'; document: string; task?: string; objective?: string }
+  | { kind: 'steps'; selections: StepReference[] };
+
+/** The subject an edit points an Evaluate step at: an initial Model document, or one Train step's checkpoint. */
 export type EvaluateSubject =
   | { kind: 'document'; document: string; task?: string; objective?: string }
   | { kind: 'step'; step: string };
 
-export function evaluateSubject(step: Step): EvaluateSubject | undefined {
+export function evaluateSubject(step: Step): AuthoredSubject | undefined {
   const inputs = step.inputs ?? {};
   const subject = inputs.subject;
   const source = (binding: unknown, kind: string) => {
@@ -198,8 +216,8 @@ export function evaluateSubject(step: Step): EvaluateSubject | undefined {
   if (document !== undefined) {
     return { kind: 'document', document, task: source(inputs.task, 'task'), objective: source(inputs.objective, 'objective') };
   }
-  const reference = StepReferenceSchema.safeParse(subject);
-  return reference.success ? { kind: 'step', step: reference.data.step } : undefined;
+  const selections = stepSelections(subject);
+  return selections ? { kind: 'steps', selections } : undefined;
 }
 
 const documentReference = (kind: 'initial_model' | 'task' | 'objective', document: string) =>
@@ -216,20 +234,16 @@ export function evaluateSubjectEdits(step: Step, next: EvaluateSubject): Project
   const set = (path: string, present: boolean, value: JsonValue): ProjectValueEdit =>
     ({ op: present ? 'replace' : 'add', path, value });
   if (next.kind === 'step') {
-    if (current?.kind === 'step') {
-      if (current.step === next.step) return [];
-      const checkpoint = StepReferenceSchema.parse(inputs.subject).checkpoint ?? 'last';
-      return [set('/inputs/subject', true, { step: next.step, checkpoint })];
+    if (current?.kind === 'steps') {
+      const [first] = current.selections;
+      if (current.selections.length === 1 && first.step === next.step) return [];
+      return [set('/inputs/subject', true, { step: next.step, checkpoint: first?.checkpoint ?? 'last' })];
     }
-    const axes = step.sweep?.axes;
     return [
       set('/inputs/subject', 'subject' in inputs, { step: next.step, checkpoint: 'last' }),
       ...Object.keys(inputs).filter((role) => role === 'task' || role === 'objective').reverse()
         .map((role) => ({ op: 'remove', path: `/inputs/${role}` }) as const),
-      step.sweep
-        ? axes ? set('/sweep/axes/subject', 'subject' in axes, { input: 'subject' })
-          : set('/sweep/axes', false, { subject: { input: 'subject' } })
-        : set('/sweep', false, { axes: { subject: { input: 'subject' } } }),
+      ...subjectAxisEdits(step),
     ];
   }
   const edits: ProjectValueEdit[] = [];
