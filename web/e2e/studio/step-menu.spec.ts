@@ -52,6 +52,9 @@ test('a step\'s context menu opens on its card, its drawer row and its name in R
   await card.locator('[data-result-run]').first().click({ button: 'right' });
   await expect(menu(page).getByRole('menuitem')).toHaveText(['Check', 'Accept', 'Duplicate Run']);
   await page.keyboard.press('Escape');
+  await expect(menu(page)).toHaveCount(0);
+  // New Step does nothing while the plan is pending or the workspace is busy, so the canvas menu waits for it.
+  await expect(card.getByRole('button', { name: 'New Step train', exact: true })).toBeEnabled();
 
   await page.locator('[data-map-canvas]').click({ button: 'right', position: { x: 8, y: 8 } });
   await expect(menu(page).locator('[data-step-insert]').first()).toBeVisible();
