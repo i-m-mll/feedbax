@@ -1,6 +1,6 @@
 import { Combobox } from '@base-ui/react/combobox';
 import clsx from 'clsx';
-import { Check, ChevronDown, Crosshair } from 'lucide-react';
+import { Check, ChevronDown, Crosshair, Plus } from 'lucide-react';
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { studioAccessibleName } from '@/components/activity/studioVocabulary';
 import { IconButton } from '@/components/ui/Button';
@@ -34,6 +34,8 @@ export interface ReferenceFieldProps {
   picking?: ElementSelectionStore;
   /** The visible label that names the field's trigger, popup and filter. */
   'aria-labelledby': string;
+  /** The field adds a selection to a list: it holds no value, and its trigger is the list's `+`. */
+  adds?: boolean;
   className?: string;
 }
 
@@ -42,7 +44,7 @@ export interface ReferenceFieldProps {
  * the field accepts, grouped, filtered by typing. Its crosshair arms picking: a click on an accepted card or
  * element fills it, and Escape disarms it.
  */
-export function ReferenceField({ label, groups, value, onChoose, picking, className, ...aria }: ReferenceFieldProps) {
+export function ReferenceField({ label, groups, value, onChoose, picking, adds, className, ...aria }: ReferenceFieldProps) {
   const shown = useMemo(() => groups.filter(({ choices }) => choices.length), [groups]);
   const pickable = useMemo(() => new Map(groups.flatMap(({ choices }) =>
     choices.flatMap((choice) => choice.pick ? [[pickKey(choice.pick), choice] as const] : []))), [groups]);
@@ -59,13 +61,14 @@ export function ReferenceField({ label, groups, value, onChoose, picking, classN
       disabled={disabled}
       autoHighlight
     >
-      <Combobox.Trigger {...aria}
+      <Combobox.Trigger {...(adds ? { 'aria-label': studioAccessibleName('add', label) } : aria)}
         className={clsx(fieldFrame, 'h-control min-w-0 flex-1 cursor-default select-none items-center gap-1 pr-control-inline',
           !value?.glyph && 'pl-control-inline',
           'hover:[&:not([data-disabled])]:bg-shell-hover data-[popup-open]:bg-shell-hover', focusRing, glyph, disabledLook)}>
         {value?.glyph && <span aria-hidden="true" className={leadingSlot}>{value.glyph}</span>}
-        <span className="min-w-0 flex-1 truncate text-left">{value?.label ?? '—'}</span>
-        <ChevronDown aria-hidden="true" className="text-shell-muted" />
+        {adds ? <Plus aria-hidden="true" className="text-shell-muted" />
+          : <span className="min-w-0 flex-1 truncate text-left">{value?.label ?? '—'}</span>}
+        {!adds && <ChevronDown aria-hidden="true" className="text-shell-muted" />}
       </Combobox.Trigger>
       <Combobox.Portal container={usePopupLayer()}>
         <Combobox.Positioner className="z-50 outline-none" sideOffset={4} align="start">
@@ -94,7 +97,7 @@ export function ReferenceField({ label, groups, value, onChoose, picking, classN
         </Combobox.Positioner>
       </Combobox.Portal>
     </Combobox.Root>
-    {picking && pickable.size > 0 && <IconButton label={studioAccessibleName('pick', label)} icon={<Crosshair />}
+    {picking && pickable.size > 0 && <IconButton label={studioAccessibleName('pick', adds ? studioAccessibleName('add', label) : label)} icon={<Crosshair />}
       pressed={armed.on} disabled={disabled} onClick={armed.toggle} />}
   </div>;
 }

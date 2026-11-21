@@ -162,9 +162,11 @@ def test_same_condition_models_stack_on_labels_and_share_equal_coordinates():
     assert data.data("mass.value").tolist() == [2.0, 1.0]
     assert data.data("source").item() == "conditions"
     assert data.descriptor.coords["trial"].dims == ("trial",)
-    assert data.descriptor.coords["condition"].dims == ("model", "mass", "condition")
+    assert data.descriptor.coords["condition"].dims == ("mass", "condition")
+    assert data.data("condition").tolist() == [["heavy"], ["nominal"]]
     assert data.descriptor.attrs == {"state_lifetime": "trial"}
-    assert data.data("source_graph_sha256").tolist() == [["fast", "fast"], ["slow", "slow"]]
+    assert data.descriptor.coords["source_graph_sha256"].dims == ("model",)
+    assert data.data("source_graph_sha256").tolist() == ["fast", "slow"]
     np.testing.assert_array_equal(data.data("v", (1, 0, 0, 0, 1)), [23, 24, 25])
     assert reads == [("slow", "heavy")]
 

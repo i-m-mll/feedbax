@@ -33,6 +33,7 @@ import { shownName, type PlanStepView } from '@/features/pipeline/planView';
 import { heldElementKeys } from './analysisElements';
 import { isMemberName } from './projectMemberName';
 import { AnalyzeElementInputs, AnalyzeRoleBinding } from './AnalyzeReferences';
+import { selectionProblem } from './selectionEdits';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import type { ChangeMark } from '@/components/values/fieldModel';
 import { savedRunId } from './projectWindowPlan';
@@ -318,6 +319,8 @@ export function useManagedAnalyze({
       refusal={landed && typeof landed.at === 'object' && 'key' in landed.at && landed.at.key === selected ? landed.reason : undefined} />}
     {selected && selectedInput && <AnalyzeRoleBinding role={selected} kind={selectedInput.kind} binding={step?.inputs?.[selected]}
       project={saved.project} steps={steps} picking={selection} refusal={roleRefusal(selected, selected)}
+      inputs={steps.find(({ id }) => id === key?.step)?.inputs}
+      problem={(index) => key && selectionProblem(projection?.window_map?.problems ?? [], key.step, key.variant, selected, index)}
       onBind={canBind ? (binding) => bind(selected, binding) : undefined} />}
     {selected && document && (operation ?? figure) && <AnalyzeElementInputs document={document} element={selected} roles={roles}
       inputs={(operation ?? figure)!.inputs} declarations={declarations} outputs={outputs} picking={selection}
