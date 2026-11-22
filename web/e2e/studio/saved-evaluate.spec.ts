@@ -5,6 +5,7 @@ import type {
   StudioSavedTrainRuns, WorkspaceReplayTrial,
 } from '../../src/generated/studioContracts';
 import { savedRunId } from '../../src/features/projectFolder/projectWindowPlan';
+import { conditionLabels } from '../../src/features/projectFolder/evaluateAuthoring';
 import { authorEvaluateConditions } from './fixtures/authorEvaluateConditions';
 import { captureStudioWindow, chooseSweepValue, drawnRunLabel, enter, mapStep, runName, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
@@ -96,7 +97,7 @@ test('authors Evaluate conditions from one authenticated Train checkpoint', { ta
   expect(saved.project.sweep).toEqual(initial.project.sweep);
 
   await tab(page, 'Runs').click();
-  await expect(page.getByRole('combobox', { name: 'Trial Set', exact: true })).toBeVisible();
+  await expect(page.getByRole('combobox', { name: 'Trials', exact: true })).toBeVisible();
   const items = await submit(page, runsPath);
   expect(items.map(({ disposition, run_key }) => ({ disposition, run_key }))).toEqual(
     rows.map(({ key }) => ({ disposition: 'admitted', run_key: savedRunId(key) })),
@@ -161,7 +162,7 @@ async function showTrial(page: Page, path: string, row: StudioSavedEvaluationRow
   await reveal(page, 'Drawer');
   const trials = drawer.getByRole('combobox', { name: 'Trials' });
   const response = posted(page, path, trialId);
-  await pick(trials, trialId);
+  await pick(trials, conditionLabels(row.trials).get(trialId)!);
   const reply = await response;
   expect(reply.ok(), await reply.text()).toBe(true);
   expect(reply.request().postDataJSON()).toMatchObject({
@@ -554,18 +555,25 @@ test('authors checkpoint rules and replays covered updates from Results', { tag:
   const created = await creating;
   expect(created.status(), await created.text()).toBe(201);
   const { snapshot: initial } = await created.json() as StudioProjectDocument;
-  const field = page.getByRole('textbox', { name: 'Checkpoints', exact: true });
-  await expect(field).toHaveValue('last');
-  async function saveRule(value: string) {
-    await field.fill(value);
+  const checkpoint = page.getByRole('region', { name: 'Checkpoint', exact: true });
+  const kind = checkpoint.getByRole('combobox', { name: 'Checkpoint', exact: true });
+  const every = checkpoint.getByRole('textbox', { name: 'Every', exact: true });
+  const updates = checkpoint.getByRole('textbox', { name: 'Updates', exact: true });
+  await expect(kind).toHaveText('Last');
+  async function saved(action: () => Promise<unknown>) {
     const saving = page.waitForResponse((response) =>
       response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
-    await page.getByRole('button', { name: 'Apply Checkpoints' }).click();
+    await action();
     const response = await saving;
     expect(response.ok(), await response.text()).toBe(true);
     return await response.json() as StudioProjectSnapshot;
   }
-  const cadence = await saveRule('every 2');
+  await pick(kind, 'Every');
+  await expect(every).toBeFocused();
+  const cadence = await saved(async () => {
+    await every.fill('2');
+    await every.press('Enter');
+  });
   expect(cadence.project.steps!.evaluate.inputs?.subject).toMatchObject({ step: 'train', checkpoint: { every: 2 } });
   const cadencePlan = await plan(cadence.revision);
   const [planned] = cadencePlan.window_map!.evaluations!;
@@ -573,10 +581,17 @@ test('authors checkpoint rules and replays covered updates from Results', { tag:
   await page.reload();
   await chooseStep(page, 'evaluate');
   await expect(page.getByRole('complementary', { name: 'Inspector', exact: true })).toBeVisible();
-  await expect(field).toHaveValue('every 2');
-  await field.fill('2, 2');
-  await expect(page.getByRole('button', { name: 'Apply Checkpoints' })).toBeDisabled();
-  const explicit = await saveRule('4, 3, 2');
+  await expect(kind).toHaveText('Every');
+  await expect(every).toHaveValue('2');
+  await pick(kind, 'List');
+  await updates.fill('2, 2');
+  await updates.press('Enter');
+  await expect(updates).toHaveAttribute('aria-invalid', 'true');
+  await expect(checkpoint.getByRole('alert')).toBeVisible();
+  const explicit = await saved(async () => {
+    await updates.fill('4, 3, 2');
+    await updates.press('Enter');
+  });
   expect(explicit.project.steps!.evaluate.inputs?.subject).toMatchObject({
     step: 'train', checkpoint: [{ at: 4 }, { at: 3 }, { at: 2 }],
   });
@@ -675,7 +690,7 @@ test('authors checkpoint rules and replays covered updates from Results', { tag:
   await page.reload();
   await chooseStep(page, 'evaluate');
   await reveal(page, 'Inspector');
-  await expect(field).toHaveValue('4, 3, 2');
+  await expect(updates).toHaveValue('4, 3, 2');
 });
 
 test('edits the checkpoint rule in the selected authored variant', async ({ page, request, studio }, info) => {
@@ -695,12 +710,15 @@ test('edits the checkpoint rule in the selected authored variant', async ({ page
   await pick(page.getByRole('combobox', { name: 'Variant', exact: true }), 'comparison');
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   await reveal(page, 'Inspector');
-  const field = inspector.getByRole('textbox', { name: 'Checkpoints', exact: true });
-  await expect(field).toHaveValue('last');
+  const kind = inspector.getByRole('combobox', { name: 'Checkpoint', exact: true });
+  await expect(kind).toHaveText('Last');
+  await pick(kind, 'Every');
+  await inspector.getByRole('textbox', { name: 'From', exact: true }).fill('3');
   const saving = page.waitForResponse((response) =>
     response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
-  await field.fill('every 2 from 3');
-  await inspector.getByRole('button', { name: 'Apply Checkpoints' }).click();
+  const every = inspector.getByRole('textbox', { name: 'Every', exact: true });
+  await every.fill('2');
+  await every.press('Enter');
   const response = await saving;
   expect(response.ok(), await response.text()).toBe(true);
   const after = await response.json() as StudioProjectSnapshot;
@@ -713,9 +731,10 @@ test('edits the checkpoint rule in the selected authored variant', async ({ page
   expect(base.request_id).toBe(before.window_map!.evaluations!.find(({ key }) => key.variant === 'base')!.request_id);
   expect(comparison.checkpoint_series?.requested).toEqual([4]);
   expect(revised.rows.map(({ request_id }) => request_id)).toEqual(before.rows.map(({ request_id }) => request_id));
-  await expect(field).toHaveValue('every 2 from 3');
+  await expect(kind).toHaveText('Every');
+  await expect(inspector.getByRole('textbox', { name: 'From', exact: true })).toHaveValue('3');
   await pick(page.getByRole('combobox', { name: 'Variant', exact: true }), 'base');
-  await expect(field).toHaveValue('last');
+  await expect(kind).toHaveText('Last');
 });
 
 test('edits a checkpoint axis value and one sibling row through saved Plan', async ({ page, request }) => {
@@ -737,7 +756,9 @@ test('edits a checkpoint axis value and one sibling row through saved Plan', asy
   await chooseStep(page, 'evaluate');
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   await reveal(page, 'Inspector');
-  const field = inspector.getByRole('textbox', { name: 'Checkpoints', exact: true });
+  const kind = inspector.getByRole('combobox', { name: 'Checkpoint', exact: true });
+  const every = inspector.getByRole('textbox', { name: 'Every', exact: true });
+  const updates = inspector.getByRole('textbox', { name: 'Updates', exact: true });
   async function save(action: () => Promise<unknown>) {
     const saving = page.waitForResponse((response) =>
       response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
@@ -747,25 +768,31 @@ test('edits a checkpoint axis value and one sibling row through saved Plan', asy
     return await response.json() as StudioProjectSnapshot;
   }
   await chooseSweepValue(page.getByRole('article', { name: 'Evaluate evaluate', exact: true }), 'replicate', 'left');
-  await expect(field).toHaveValue('every 2');
-  await field.fill('3');
-  const axis = await save(() => inspector.getByRole('button', { name: 'Apply Checkpoints' }).click());
+  await expect(every).toHaveValue('2');
+  await pick(kind, 'List');
+  const axis = await save(async () => {
+    await updates.fill('3');
+    await updates.press('Enter');
+  });
   const axisPlan = await plan(axis.revision);
   expect(axisPlan.left.checkpoint_series?.requested).toEqual([3]);
   expect(axisPlan.right.request_id).toBe(before.right.request_id);
   expect(axisPlan.train).toBe(before.train);
-  await expect(field).toHaveValue('3');
+  await expect(updates).toHaveValue('3');
   await plans(page).getByRole('button', { name: /replicate=right/ }).click();
-  await expect(field).toHaveValue('every 2');
-  await field.fill('1, 4');
-  const row = await save(() => inspector.getByRole('button', { name: 'Apply Checkpoints' }).click());
+  await expect(every).toHaveValue('2');
+  await pick(kind, 'List');
+  const row = await save(async () => {
+    await updates.fill('1, 4');
+    await updates.press('Enter');
+  });
   const rowPlan = await plan(row.revision);
   expect(rowPlan.right.checkpoint_series?.requested).toEqual([1, 4]);
   expect(rowPlan.left.request_id).toBe(axisPlan.left.request_id);
   expect(rowPlan.train).toBe(before.train);
   const undone = await save(() => page.keyboard.press('Meta+Z'));
   expect((await plan(undone.revision)).right.request_id).toBe(before.right.request_id);
-  await expect(field).toHaveValue('every 2');
+  await expect(every).toHaveValue('2');
 });
 
 test('authors and replays Evaluate from the selected stopped Train checkpoint', { tag: '@round' }, async ({ page, request }, info) => {
@@ -787,7 +814,7 @@ test('authors and replays Evaluate from the selected stopped Train checkpoint', 
   await plans(page).getByRole('button').first().click();
   await page.getByRole('button', { name: 'Open Run', exact: true }).click();
   const results = page.getByRole('tabpanel', { name: 'Results', exact: true });
-  await expect(results.getByRole('img', { name: 'Loss', exact: true }).locator('line title').first())
+  await expect(results.getByRole('img', { name: 'Metric train_loss', exact: true }).locator('line title').first())
     .toBeAttached({ timeout: 18_000 });
   const stop = posted(page, '/api/jobs/stop');
   await page.keyboard.press('Meta+Period');
@@ -937,6 +964,7 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
   }
   const finiteResult = finiteRow.result!;
   const trialId = finiteRow.trials[trialIndex];
+  const trialLabel = conditionLabels(finiteRow.trials).get(trialId)!;
   const finiteReplay = { revision, key: finiteRow.key, job_id: finiteResult.job_id, trial: trialId };
   expect((await request.post(replayPath, { data: finiteReplay })).status()).toBe(422);
   for (const { coordinate, samples } of fromCheckpoint.checkpoints) {
@@ -954,7 +982,7 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
   await expect(checkpoints).toHaveText('2');
   const finiteTrials = page.getByRole('combobox', { name: 'Trials', exact: true });
   let selectedReplay = posted(page, replayPath, trialId);
-  await pick(finiteTrials, trialId);
+  await pick(finiteTrials, trialLabel);
   let selected = await selectedReplay;
   expect(selected.ok(), await selected.text()).toBe(true);
   expect(selected.request().postDataJSON()).toMatchObject({ checkpoint: 2 });
@@ -973,7 +1001,7 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
   await expect(cursors).toHaveCount(2);
   const clock = footer(page).getByRole('group', { name: 'Clock', exact: true });
   await expect(clock).toHaveCount(1);
-  await expect(page.getByRole('combobox', { name: 'Trials', exact: true })).toHaveText(trialId);
+  await expect(page.getByRole('combobox', { name: 'Trials', exact: true })).toHaveText(trialLabel);
   // Each slot projects the same trial into its own fitted viewport.
   const frame = (end: boolean) => cursors.evaluateAll((points, end) => points.map((point) => {
     const cursor = point as SVGCircleElement;

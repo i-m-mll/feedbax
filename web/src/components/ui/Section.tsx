@@ -30,8 +30,8 @@ export interface SectionProps {
 }
 
 const header: Record<SectionLevel, string> = {
-  drawer: 'border-b border-shell-divider text-sm font-medium text-shell-muted',
-  group: 'text-xs font-medium text-shell-muted',
+  drawer: 'border-b border-shell-divider bg-shell-header text-sm font-medium text-shell-foreground',
+  group: 'text-sm text-shell-category',
   field: 'text-xs text-shell-muted',
 };
 
@@ -59,7 +59,7 @@ export function Section({
         className,
       )}
     >
-      <div className={clsx('flex h-row shrink-0 items-center gap-0.5', level !== 'field' && 'px-1', header[level], glyph)}>
+      <div data-section-header className={clsx('flex h-row shrink-0 items-center gap-0.5', level !== 'field' && 'px-1', header[level], glyph)}>
         <button
           type="button"
           aria-expanded={open}

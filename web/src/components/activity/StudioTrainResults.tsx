@@ -9,7 +9,7 @@ import type {
 import { useStudioJobActions, useStudioJobHistory } from '@/hooks/useStudioJobs';
 import { heldOutTracks, type ObjectiveStage } from './heldOutObjective';
 import { StudioRegion, StudioRegionBoundary, studioRegionIssue } from './StudioRegion';
-import { LossPlot, studioRunHistory, type LossResultName, type LossSeries, type LossStage } from './StudioTrainingLoss';
+import { MetricPlots, studioRunHistory, type MetricResultName, type MetricSeries, type MetricStage } from './StudioTrainMetrics';
 import { studioName, studioReason } from './studioVocabulary';
 
 type Stage = {
@@ -53,36 +53,37 @@ function sameRow(first: StudioSavedTrainKey, second: StudioSavedTrainKey) {
   return first.variant === second.variant && first.step === second.step && first.row === second.row;
 }
 
-type ProjectLossStage = LossStage & ObjectiveStage & { key: StudioSavedTrainKey };
+type ProjectMetricStage = MetricStage & ObjectiveStage & { key: StudioSavedTrainKey };
 
 /** One Evaluate row's held-out objective to read: its finished result, or the live points of a running attempt. */
 interface ObjectiveRead {
   key: StudioSavedTrainKey;
-  stage: ProjectLossStage;
+  stage: ProjectMetricStage;
   jobId: string;
   receipt: NonNullable<StudioSavedEvaluationRow['result']>['receipt'] | null;
   points: NonNullable<NonNullable<StudioSavedEvaluationRow['checkpoint_attempt']>['points']> | null;
 }
 
-function projectLoss(lineage: Stage[], events: readonly StudioJobEvent[]): ProjectLossStage[] | null {
-  const stages: ProjectLossStage[] = [];
+function projectMetrics(lineage: Stage[], events: readonly StudioJobEvent[]): ProjectMetricStage[] | null {
+  const stages: ProjectMetricStage[] = [];
   let offset = 0;
   for (const stage of lineage) {
     const through = stage.through ?? stage.attempt.progress?.completed_updates ?? 0;
     const exactEvents = events.filter(({ request_id }) => request_id === stage.row.request_id);
-    const { loss, stageStart, attemptStarts, attemptCutoffs } = studioRunHistory(stage.attempt, stage.row.attempts, exactEvents);
+    const { metrics, stageStart, attemptStarts, attemptCutoffs } = studioRunHistory(stage.attempt, stage.row.attempts, exactEvents);
     const source = stage.attempt.checkpoint_source;
     // Stateful workers keep the source update clock across resumed attempts.
     if (source && through > 0 && stageStart !== 0 && stageStart !== source.completed_updates) return null;
     const origin = stageStart ?? 0;
     const completed = Math.max(0, through - origin);
-    const points = loss.filter(({ end }) => end > origin && (stage.through === null || end <= through)).map((point) => ({
-      ...point,
-      end: point.end - origin,
-      interval: point.interval && { ...point.interval, start: point.interval.start - origin },
+    const shown = metrics.map((metric) => ({
+      ...metric,
+      points: metric.points.filter(({ end }) => end > origin && (stage.through === null || end <= through)).map((point) => ({
+        ...point, end: point.end - origin, start: point.start === undefined ? undefined : point.start - origin,
+      })),
     }));
     stages.push({
-      label: stage.row.key.step, offset, completed, points,
+      label: stage.row.key.step, offset, completed, metrics: shown,
       key: stage.row.key, origin, through: stage.through, request: stage.row.request_id,
       starts: attemptStarts, cutoffs: attemptCutoffs,
     });
@@ -91,29 +92,29 @@ function projectLoss(lineage: Stage[], events: readonly StudioJobEvent[]): Proje
   return stages;
 }
 
-export type TrainLossResult = { name: LossResultName; result: StudioSavedTrainResult };
+export type TrainMetricResult = { name: MetricResultName; result: StudioSavedTrainResult };
 
-function resultLoss(
-  { name, result }: TrainLossResult, row: StudioSavedTrainRow, rows: readonly StudioSavedTrainRow[],
+function resultMetrics(
+  { name, result }: TrainMetricResult, row: StudioSavedTrainRow, rows: readonly StudioSavedTrainRow[],
   events: readonly StudioJobEvent[],
-): LossSeries {
+): MetricSeries {
   const exactRow = result.request_id === row.request_id ? row : historicalRequest(row);
   const attempt = exactRow?.attempts.find(({ job_id, successful_receipt }) => job_id === result.job_id &&
     successful_receipt?.manifest_id === result.receipt.manifest_id &&
     successful_receipt.manifest_sha256 === result.receipt.manifest_sha256);
   const lineage = exactRow && attempt && result.progress &&
     checkpointLineage(rows, exactRow, attempt, result.progress.completed_updates);
-  return { result: { name, jobId: result.job_id }, stages: (lineage && projectLoss(lineage, events)) || [] };
+  return { result: { name, jobId: result.job_id }, stages: (lineage && projectMetrics(lineage, events)) || [] };
 }
 
-function TrainLoss({ project, revision, evaluations, mapRows, rows, row, selection }: {
+function TrainMetrics({ project, revision, evaluations, mapRows, rows, row, selection }: {
   project: string;
   revision: string;
   evaluations: readonly StudioSavedEvaluationRow[];
   mapRows: readonly StudioProjectWindowMapRow[];
   rows: readonly StudioSavedTrainRow[];
   row: StudioSavedTrainRow;
-  selection: { kind: 'attempt'; attempt: StudioSavedTrainAttempt } | { kind: 'results'; results: TrainLossResult[] };
+  selection: { kind: 'attempt'; attempt: StudioSavedTrainAttempt } | { kind: 'results'; results: TrainMetricResult[] };
 }) {
   const history = useStudioJobHistory(project);
   const events = history.data ?? emptyEvents;
@@ -122,9 +123,9 @@ function TrainLoss({ project, revision, evaluations, mapRows, rows, row, selecti
   const stages = useMemo(() => {
     if (selection.kind !== 'attempt') return undefined;
     const lineage = checkpointLineage(rows, row, selection.attempt);
-    return lineage && projectLoss(lineage, events);
+    return lineage && projectMetrics(lineage, events);
   }, [rows, row, selection, events]);
-  const series = selection.kind === 'results' ? selection.results.map((result) => resultLoss(result, row, rows, events))
+  const series = selection.kind === 'results' ? selection.results.map((result) => resultMetrics(result, row, rows, events))
     : stages ? [{ stages }] : [];
   const reads = evaluations.flatMap(({ key, checkpoint_series, checkpoint_attempt, result }): ObjectiveRead[] => {
     const stage = checkpoint_series && stages?.find((candidate) => sameRow(candidate.key, checkpoint_series.subject));
@@ -192,7 +193,7 @@ function TrainLoss({ project, revision, evaluations, mapRows, rows, row, selecti
   return (
     <section aria-label={studioName('results')} className="mt-3 rounded border border-shell-divider p-3">
       <StudioRegion state={state} skeleton={<div className="h-28 motion-safe:animate-pulse rounded bg-shell-divider" />} empty={null}>
-        <LossPlot series={series} objectives={tracks} />
+        <MetricPlots series={series} objectives={tracks} />
         {objectiveError && <StudioRegion state={{
           kind: 'failed', issue: studioRegionIssue('objective', objectiveError),
           retry: () => { for (const query of objectives) if (query.isError) void query.refetch(); },
@@ -202,10 +203,10 @@ function TrainLoss({ project, revision, evaluations, mapRows, rows, row, selecti
   );
 }
 
-export function StudioTrainResults(props: Parameters<typeof TrainLoss>[0]) {
+export function StudioTrainResults(props: Parameters<typeof TrainMetrics>[0]) {
   return (
     <StudioRegionBoundary name="results">
-      <TrainLoss {...props} />
+      <TrainMetrics {...props} />
     </StudioRegionBoundary>
   );
 }

@@ -21,6 +21,9 @@ import { DocumentPicker, type DocumentEditing } from "@/features/projectWindow/D
 
 const gutter = "w-px pl-1 pr-2 text-right";
 
+/** The controls inside a run's row; a press anywhere else on the row chooses the run. */
+const rowControls = "button, a, input, select, textarea, [role=button], [role=menuitem], [contenteditable=true]";
+
 const byteSize = new Intl.NumberFormat(undefined, { style: "unit", unit: "byte", unitDisplay: "narrow" });
 
 export interface RunSelectionProps {
@@ -29,9 +32,28 @@ export interface RunSelectionProps {
   onSelectionChange: (state: PipelineSelectionState) => void;
 }
 
-/** The sweeps whose values differ between the shown rows: the fields that tell those runs apart. */
-function differingSweeps(step: PlanStepView, rows: readonly PlanRunView[]) {
-  return step.sweeps.filter((sweep) => new Set(rows.map(({ values }) => values[sweep.id])).size > 1);
+/**
+ * The sweeps drawn as columns: those whose values differ between the shown rows, the fields that tell those runs
+ * apart. An axis over an input's runs is left out when the columns those runs carry spell each of its values.
+ */
+export function runColumns(step: PlanStepView, rows: readonly PlanRunView[]) {
+  return step.sweeps.filter((sweep) => new Set(rows.map(({ values }) => values[sweep.id])).size > 1 &&
+    !spelled(sweep, step.sweeps, rows));
+}
+
+/** Whether every row has a value of each axis `sweep`'s runs carry, and those values determine its value. */
+function spelled(sweep: PlanSweepView, sweeps: readonly PlanSweepView[], rows: readonly PlanRunView[]) {
+  const carried = sweeps.filter(({ id }) => id !== sweep.id && sweep.carried?.has(id));
+  if (!carried.length) return false;
+  const named = new Map<string, string | undefined>();
+  for (const { values } of rows) {
+    const cells = carried.map(({ id }) => values[id] as string | undefined);
+    if (cells.includes(undefined)) return false;
+    const key = JSON.stringify(cells);
+    if ((named.get(key) ?? values[sweep.id]) !== values[sweep.id]) return false;
+    named.set(key, values[sweep.id]);
+  }
+  return true;
 }
 
 /** Whether the shown columns leave two rows with the same cells, so the runs' own names must be drawn. */
@@ -88,7 +110,7 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
     initialRect: { width: 0, height: 360 },
   });
   const showVariant = new Set(rows.map(({ variant }) => variant)).size > 1;
-  const sweeps = useMemo(() => differingSweeps(step, rows), [step, rows]);
+  const sweeps = useMemo(() => runColumns(step, rows), [step, rows]);
   const named = useMemo(() => needsNames(rows, sweeps, showVariant), [rows, sweeps, showVariant]);
   const labels = useValueLabels(sweeps);
   const ordinals = useMemo(() => new Map(step.runs.map(({ id }, index) => [id, index + 1])), [step.runs]);
@@ -181,6 +203,10 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
                 related={relatedIds?.has(run.id)}
                 aria-rowindex={item.index + 2}
                 onKeyDown={(event) => { if (!event.defaultPrevented) navigate(event, item.index); }}
+                onClick={(event) => {
+                  const control = (event.target as Element).closest(rowControls);
+                  if (!event.defaultPrevented && (!control || !event.currentTarget.contains(control))) selectRow.onClick(event);
+                }}
                 className="studio-run-row"
               >
                 <TableRowHeader className={gutter}>
@@ -207,7 +233,8 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
                   <StudioRunStatus status={run.state} {...appTip(studioRunReason({ ...run, reason }))} />
                 </TableCell>
                 <TableCell tabIndex={-1} className={cellFocus}>
-                  {run.status === "running" && run.progress && <StudioRunProgress progress={run.progress} etaSeconds={run.etaSeconds} />}
+                  {(run.status === "running" || run.status === "stopped") && run.progress &&
+                    <StudioRunProgress progress={run.progress} etaSeconds={run.status === "running" ? run.etaSeconds : undefined} />}
                   {run.status === "collecting" && <StudioCollectionProgress progress={run.collectionProgress} />}
                   {run.sizeBytes !== undefined && byteSize.format(run.sizeBytes)}
                 </TableCell>

@@ -21,7 +21,7 @@ import { LibraryList, type LibraryItem } from '@/features/projectWindow/LibraryL
 import { bindStudioCommand } from '@/features/projectWindow/studioCommands';
 import {
   AnalysisDocumentSchema, type AnalysisDocument, type InputBinding, type JsonPrimitive, type JsonValue, type OperationElement,
-  type ParamSchema, type PresentationPosition, type StudioAnalyzeChange,
+  type ParamSchema, type PresentationPosition, type StudioAnalyzeChange, type StudioProjectSnapshot,
   type StudioSavedTrainKey, type StudioSavedTrainRuns,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
@@ -69,7 +69,7 @@ export function useManagedAnalyze({
   reveal?: Reveal;
   savePosition(document: string, node: string, position: PresentationPosition): Promise<unknown>;
 }) {
-  const { saved, draft, pending, outside } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
+  const { saved, draft, outside } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const step = key ? draft.steps?.[key.step] : undefined;
   const base = step?.kind === 'analyze' && step.base;
   const document = base && 'document' in base && !base.pointer ? base.document : undefined;
@@ -83,12 +83,13 @@ export function useManagedAnalyze({
   const element = useNamedSelection(selection, document, reveal, placeElement(reveal?.place));
   const [dialog, setDialog] = useState<{ scope: string; mode: 'add'; point?: PresentationPosition }>();
   const [query, setQuery] = useState('');
-  const [busy, setBusy] = useState(false);
+  /** How many of its edits are waiting or in flight. */
+  const [edits, setEdits] = useState(0);
+  const busy = edits > 0;
   /** The refused gesture's own place, when it has one: the open dialog, a role field as `[element, role]`, or a key. */
   const [refusal, setRefusal] = useState<{ scope: string; at: RefusalPlace; reason: string }>();
   /** The operation or figure whose label (on its canvas card) or key (in the inspector) is being edited. */
   const [naming, setNaming] = useState<{ scope: string; element: string; field: 'label' | 'key' }>();
-  const inFlight = useRef(false);
   const cursor = useRef<{ scope: string; point: PresentationPosition }>();
   /** What the operation catalog depends on. The document's own contents shape only its Changed marks, so an edit
    * refetches the review but keeps editing enabled while it does. */
@@ -112,8 +113,8 @@ export function useManagedAnalyze({
   const catalogReady = !!catalog && catalog.document === document && authoring.data?.shape === catalogShape;
   /** A catalog still being read may yet allow the edit; the workspace waits for it, so a command made then is held. */
   const editApplies = bindApplies && !!analysis && !!document && (authoring.isFetching || catalogReady);
-  const canBind = bindApplies && !pending && !busy;
-  const canEdit = bindApplies && !!analysis && !!document && catalogReady && !pending && !busy;
+  const canBind = bindApplies;
+  const canEdit = bindApplies && !!analysis && !!document && catalogReady;
   const [inspected, setInspected] = useState<{ scope: string; id: string }>();
   /** The request of the selected element shown in the inspector, when the element maps over labels. */
   const [chosenRequest, setChosenRequest] = useState<{ scope: string; element: string; member: string }>();
@@ -181,32 +182,27 @@ export function useManagedAnalyze({
     setDialog({ scope, mode, point });
   }
 
-  async function perform(work: () => Promise<void>, allowed = canEdit, at?: RefusalPlace) {
-    if (!allowed || inFlight.current) return;
-    inFlight.current = true;
-    setBusy(true);
+  /** Runs an edit after the edits before it have saved; the controls stay editable meanwhile. */
+  async function perform(work: (current: StudioProjectSnapshot) => Promise<void>, allowed = canEdit, at?: RefusalPlace) {
+    if (!allowed) return;
+    setEdits((count) => count + 1);
     failures.clear();
     setRefusal(undefined);
-    try { await work(); }
+    try { await editor.command(work); }
     catch (cause) { failures.fail(cause, at && ((reason) => setRefusal({ scope, at, reason }))); }
-    finally {
-      inFlight.current = false;
-      setBusy(false);
-    }
+    finally { setEdits((count) => count - 1); }
   }
 
   /** Store `change` of the shown document for the chosen steps, as the service computes it, as one Undo entry. */
-  async function save(label: string, change: StudioAnalyzeChange) {
-    if (!key || liveScope.current !== scope || editor.getSnapshot().saved.revision !== saved.revision) {
-      throw new ProjectEditConflictError();
-    }
-    const reviewed = await readStudioAnalyze(saved.project_id, {
-      revision: saved.revision, key, change, chosen_steps: [...chosen ?? []],
+  async function save(current: StudioProjectSnapshot, label: string, change: StudioAnalyzeChange) {
+    if (!key || liveScope.current !== scope) throw new ProjectEditConflictError();
+    const reviewed = await readStudioAnalyze(current.project_id, {
+      revision: current.revision, key, change, chosen_steps: [...chosen ?? []],
     });
     if (reviewed.document !== document) throw new ProjectEditConflictError();
     if (!reviewed.files?.length && !reviewed.created?.length) return;
     const stored = editor.storeEdit(label, { files: reviewed.files ?? [], created: reviewed.created ?? [] }, {
-      reviewedRevision: saved.revision,
+      reviewedRevision: current.revision,
     });
     await editor.flush();
     const settled = await stored;
@@ -223,16 +219,16 @@ export function useManagedAnalyze({
     const pointer = authoredPointer(path);
     if (!changedPaths.has(pointer)) return undefined;
     return { text: studioName('changed'), reset: canEdit ? async () => {
-      try { await save(studioName('reset'), { kind: 'reset', paths: [pointer] }); return undefined; }
+      try { await editor.command((current) => save(current, studioName('reset'), { kind: 'reset', paths: [pointer] })); return undefined; }
       catch (cause) { return cause instanceof Error ? cause.message : String(cause); }
     } : undefined };
   }
   function add(kind: 'operations' | 'views', stem: string, value: JsonValue, point?: PresentationPosition) {
-    void perform(async () => {
-      const held = heldElementKeys(draft.documents, saved.composed);
+    void perform(async (current) => {
+      const held = heldElementKeys(editor.getSnapshot().draft.documents, current.composed);
       const name = generatedName(stem, (name) => name === 'states' || name in declarations || held.has(name));
       const label = studioName(kind === 'operations' ? 'addOperation' : 'addFigure');
-      await save(label, set([kind, name], value));
+      await save(current, label, set([kind, name], value));
       setDialog(undefined);
       if (liveScope.current === scope) {
         setInspected(undefined);
@@ -255,28 +251,27 @@ export function useManagedAnalyze({
   }, { name: focusedView === 'figures' ? 'addFigure' : 'addOperation', enabled: editApplies });
   function wire(element: string, role: string, source: Source) {
     if (!key) return;
-    void perform(() => save(humanizeLabel(role), { kind: 'wire', element, role, source }), canEdit, [element, role]);
+    void perform((current) => save(current, humanizeLabel(role), { kind: 'wire', element, role, source }), canEdit, [element, role]);
   }
   function bind(role: string, binding: InputBinding) {
     if (!key) return;
-    void perform(async () => {
-      if (liveScope.current !== scope || editor.getSnapshot().saved.revision !== saved.revision) {
-        throw new ProjectEditConflictError();
-      }
+    void perform(async (current) => {
+      if (liveScope.current !== scope) throw new ProjectEditConflictError();
+      const inputs = current.project.steps?.[key.step]?.inputs;
       editor.editFiles(humanizeLabel(role), [{ address: { kind: 'step', id: key.step }, patches: [{
-        op: step?.inputs && role in step.inputs ? 'replace' : 'add', path: authoredPointer(['inputs', role]), value: binding as JsonValue,
-      }] }], { reviewedRevision: saved.revision });
+        op: inputs && role in inputs ? 'replace' : 'add', path: authoredPointer(['inputs', role]), value: binding as JsonValue,
+      }] }], { reviewedRevision: current.revision });
       await editor.flush();
     }, canBind, [role, role]);
   }
 
   const removeCommand = bindStudioCommand('modelRemove', () => {
-    if (selected) void perform(() => save(studioName('modelRemove'), { kind: 'remove', element: selected }));
+    if (selected) void perform((current) => save(current, studioName('modelRemove'), { kind: 'remove', element: selected }));
   }, { enabled: editApplies && !!(operation || figure) });
 
   const shown = (name: string) => shownName(name, operations[name] ?? figures[name]);
   const nameApplies = bindApplies && !!analysis && !!document;
-  const canName = nameApplies && !pending && !busy;
+  const canName = nameApplies;
   const namingNow = naming?.scope === scope ? naming : undefined;
   function renameElement(name: string, text: string) {
     const label = text === name ? null : text;
@@ -361,7 +356,7 @@ export function useManagedAnalyze({
     if (!operation || !selected) return;
     const [name, ...rest] = path;
     const next = setIn(operation.params?.[name], rest, value);
-    void perform(() => save(humanizeLabel(name), set(['operations', selected, 'params', name], next)));
+    void perform((current) => save(current, humanizeLabel(name), set(['operations', selected, 'params', name], next)));
   }
   const inspector = selected && (operation || figure || selectedInput) && <Inspector name={shown(selected)}
     type={operation ? operation.operation : figure ? studioName('figures') : humanizeLabel(selectedInput!.kind ?? 'dataset')}>
@@ -403,7 +398,7 @@ export function useManagedAnalyze({
         onBlur={({ currentTarget }) => {
           const caption = currentTarget.value;
           if (inlineFigure && caption !== (selectedFigure.caption ?? '')) {
-            void perform(() => save(studioName('caption'), set(['views', selected, 'figure', 'caption'], caption)));
+            void perform((current) => save(current, studioName('caption'), set(['views', selected, 'figure', 'caption'], caption)));
           }
         }}
         onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} />

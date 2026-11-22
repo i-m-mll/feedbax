@@ -1,11 +1,13 @@
-"""Local filesystem check and file notifications for a host."""
+"""Local filesystem check, file notifications and process exits for a host."""
 
 import asyncio
 import ctypes
 import os
 import re
 import select
+import signal
 import sys
+import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -95,3 +97,56 @@ class FileChanges:
         if self.queue is not None:
             self.loop.remove_reader(self.queue.fileno())
             self.queue.close()
+
+
+class ProcessExit:
+    """A descriptor that becomes readable once the process `pid` has exited.
+
+    Raises `ProcessLookupError` when that process has already exited.
+    """
+
+    def __init__(self, pid: int):
+        if sys.platform == "darwin":
+            self._queue = select.kqueue()
+            try:
+                self._queue.control(
+                    [select.kevent(
+                        pid, filter=select.KQ_FILTER_PROC,
+                        flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT, fflags=select.KQ_NOTE_EXIT,
+                    )],
+                    0,
+                )
+            except BaseException:
+                self._queue.close()
+                raise
+            self._fd = self._queue.fileno()
+        else:
+            self._queue = None
+            self._fd = os.pidfd_open(pid)
+
+    def fileno(self) -> int:
+        return self._fd
+
+    def wait(self) -> None:
+        select.select([self._fd], [], [])
+
+    def close(self) -> None:
+        if self._queue is not None:
+            self._queue.close()
+        else:
+            os.close(self._fd)
+
+
+def end_with(pid: int) -> None:
+    """Send this process SIGTERM once the process `pid` has exited, at once when it already has."""
+    try:
+        watch = ProcessExit(pid)
+    except ProcessLookupError:
+        os.kill(os.getpid(), signal.SIGTERM)
+        return
+
+    def wait() -> None:
+        watch.wait()
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    threading.Thread(target=wait, name=f"end-with-{pid}", daemon=True).start()

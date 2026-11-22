@@ -23,7 +23,7 @@ export type SelectionGesture =
 
 /**
  * An input that takes a list of selections: a row per selection, each with its field, its restriction and its
- * remove, and a last row that adds one through the same picker.
+ * remove, and an add in the input's header that adds one through the same picker.
  */
 export function InputSelections({ label, labelId, groups, rows, picking, refusal, below, onChange }: {
   label: string;
@@ -39,6 +39,8 @@ export function InputSelections({ label, labelId, groups, rows, picking, refusal
   onChange?: (gesture: SelectionGesture) => void;
 }) {
   return <FieldRow label={label} labelId={labelId}
+    actions={onChange && <ReferenceField adds label={label} aria-labelledby={labelId} picking={picking} groups={groups}
+      value={null} onChoose={(choice) => onChange({ kind: 'add', choice })} />}
     below={(refusal || below) && <>{refusal && <p role="alert">{refusal}</p>}{below}</>}>
     <ul aria-labelledby={labelId} className="grid min-w-0 gap-1">
       {rows.map((row, index) => <li key={index} className="grid min-w-0 gap-1">
@@ -53,10 +55,6 @@ export function InputSelections({ label, labelId, groups, rows, picking, refusal
         {row.problem && <p role="alert">{row.problem}</p>}
         {row.detail}
       </li>)}
-      {onChange && <li className="flex min-w-0">
-        <ReferenceField adds className="flex-1" label={label} aria-labelledby={labelId} picking={picking} groups={groups}
-          value={null} onChoose={(choice) => onChange({ kind: 'add', choice })} />
-      </li>}
     </ul>
   </FieldRow>;
 }

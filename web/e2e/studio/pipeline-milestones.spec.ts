@@ -7,6 +7,7 @@ import type {
 import { appendManagedFiles, authorLearningRateSweep, chooseSweepValue, enter, fixture, mapStep, openResultsSlot, runName, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { runPythonProcess } from './fixtures/python';
 import { pick } from './fixtures/controls';
+import { conditionLabels } from '../../src/features/projectFolder/evaluateAuthoring';
 import { chooseStepKind, palette } from './fixtures/studioKeyboard';
 
 const primary = (page: Page) => page.locator('[data-studio-focus-region="primary"]');
@@ -77,7 +78,7 @@ test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from A
     const jobId = item.job_id!;
     await runs(page).getByRole('button').first().click();
     await openResultsSlot(page);
-    const plot = page.getByRole('img', { name: 'Loss', exact: true });
+    const plot = page.getByRole('img', { name: 'Metric train_loss', exact: true });
     await expect(plot.locator('line title').filter({ hasText: /samples?/ }).first()).toBeAttached({ timeout: 14_000 });
 
     await page.getByRole('button', { name: 'Activity', exact: true }).click();
@@ -216,7 +217,7 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   await train.getByRole('button', { name: 'New Step train', exact: true }).click();
   await chooseStepKind(page, 'Evaluate');
   expect((await created).status()).toBe(201);
-  const subset = inspector.getByRole('group', { name: 'Subject Subset', exact: true });
+  const subset = inspector.getByRole('region', { name: 'Runs', exact: true });
   const metric = subset.getByRole('textbox', { name: 'Metric', exact: true });
   const count = subset.getByRole('textbox', { name: 'Count', exact: true });
   const best = subset.getByRole('checkbox', { name: 'Best', exact: true });
@@ -421,19 +422,22 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await expect(inputs).toContainText('learning-rate 0.001, 0.002 · 2 of 3');
   const members = inputs.getByRole('list', { name: 'Members', exact: true });
   await expect(members.getByRole('listitem')).toHaveText(sourceRows.slice(0, 2).map(({ label }) => label));
-  const trialSet = inspector.getByRole('group', { name: 'Trial Set', exact: true });
+  const trialSet = inspector.getByRole('region', { name: 'Trials', exact: true });
   await expect(inspector.getByRole('combobox', { name: 'Subject', exact: true })).toBeFocused();
   await pick(trialSet.getByRole('combobox'), 'Selected Conditions');
-  for (const condition of conditionIds) await trialSet.getByRole('checkbox', { name: condition, exact: true }).check();
   const edited = (path: string) => page.waitForResponse((response) => {
     const request = response.request();
     return request.method() === 'PATCH' && new URL(response.url()).pathname === projectPath &&
       JSON.stringify(request.postDataJSON()).includes(path);
   });
-  const trialEdit = edited('/base/inline/params/trial_set');
-  await trialSet.getByRole('button', { name: 'Apply Trials', exact: true }).click();
-  const savedTrials = await trialEdit;
-  expect(savedTrials.ok(), await savedTrials.text()).toBe(true);
+  let savedTrials!: Awaited<ReturnType<typeof edited>>;
+  const conditionLabel = conditionLabels(sourceRows[0].evaluation_conditions!);
+  for (const condition of conditionIds) {
+    const trialEdit = edited('/base/inline/params/trial_set');
+    await trialSet.getByRole('checkbox', { name: conditionLabel.get(condition), exact: true }).check();
+    savedTrials = await trialEdit;
+    expect(savedTrials.ok(), await savedTrials.text()).toBe(true);
+  }
   const step = (await savedTrials.json() as StudioProjectSnapshot).project.steps!.evaluate;
   expect(step.base).toMatchObject({ inline: { params: { trial_set: { kind: 'conditions', ids: conditionIds } } } });
   expect(step.base).not.toHaveProperty('inline.params.trials');
@@ -457,7 +461,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await expect(evaluated.locator('[data-map-focus="downstream"]')).toHaveCount(1);
 
   await select(page, 'evaluate');
-  const subset = inspector.getByRole('group', { name: 'Subject Subset', exact: true });
+  const subset = inspector.getByRole('region', { name: 'Runs', exact: true });
   await subset.getByRole('checkbox', { name: '0.003', exact: true }).check();
   const subsetEdit = edited('/inputs/subject/where');
   await subset.getByRole('button', { name: 'Apply Subset', exact: true }).click();
@@ -515,7 +519,6 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await expect(trialSet.getByRole('combobox')).toHaveText('Selected Conditions');
   await select(page, 'evaluate-2');
   await expect(trialSet.getByRole('combobox')).toHaveText('Every Condition');
-  await expect(trialSet.getByRole('button', { name: 'Apply Trials', exact: true })).toBeDisabled();
   await subset.getByRole('checkbox', { name: sourceRows[1].label, exact: true }).check();
   const widenRows = edited('/inputs/subject/where');
   await subset.getByRole('button', { name: 'Apply Subset', exact: true }).click();

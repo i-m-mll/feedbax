@@ -25,6 +25,7 @@ import {
   addressKey, applyAuthoredEdits, presentationAddress, presentationHistoryEdits, sameAuthoredFile,
   type AuthoredProject, type ProjectEditContent,
 } from './authoredEdits';
+import { commandQueue } from './commandQueue';
 import { modelSchema } from './model/modelGraph';
 import type { ModelChange } from '@/features/projectWindow/elementSelection';
 
@@ -346,6 +347,7 @@ export class ProjectEditController {
   private snapshot: ProjectEditSnapshot;
   private settle: ReturnType<typeof setTimeout> | undefined;
   private serial: Promise<unknown> = Promise.resolve();
+  private readonly commands = commandQueue();
   private observation: StudioProjectRevision | undefined;
   private observationScheduled = false;
 
@@ -500,6 +502,17 @@ export class ProjectEditController {
     return work.finally(() => {
       this.transactionWriting = false;
       this.publish();
+    });
+  }
+
+  /**
+   * Runs a view's edit command after the commands issued before it, once the edits stored before it have saved, with
+   * the project as then saved. A field or form stays editable while a save is in flight; its edit waits here.
+   */
+  command<T>(command: (saved: StudioProjectSnapshot) => Promise<T>): Promise<T> {
+    return this.commands(async () => {
+      if (this.queued.length || this.saving || this.transactionWriting) await this.flush();
+      return command(this.saved);
     });
   }
 

@@ -137,8 +137,17 @@ export function invokeGesture(command: { readonly id: string }) {
   if (target.enabled) run(target);
 }
 
+/** How many commands have run; a later count means a later gesture has acted. */
+let runCount = 0;
+
+/** The number of commands run so far, so work waiting on the page can tell whether a gesture has acted since it began. */
+export function commandsRun() {
+  return runCount;
+}
+
 function run(target: HeldTarget) {
   if (gate.active) gate.settled = false;
+  runCount += 1;
   target.perform();
   gate.rerender?.();
 }

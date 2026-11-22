@@ -18,6 +18,24 @@
   white-space: nowrap;
 }
 
+.field-row-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.field-row-head > .field-row-label {
+  flex: 1;
+}
+
+.field-row-actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.125rem;
+}
+
 .field-row-value,
 .field-row-below {
   min-width: 0;

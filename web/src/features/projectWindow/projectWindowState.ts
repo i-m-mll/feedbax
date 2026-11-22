@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { shellHost } from '@window-shell/browser/titlebar';
+import type { RunAddress } from '@/features/pipeline/planView';
 import { leaveJobStream, rejoinJobStream } from '@/jobs/studioJobStream';
 
 export const projectWindowViews = [
@@ -25,6 +26,8 @@ export interface ProjectWindowState {
   secondaryWidth: number;
   modelPaths?: Partial<Record<ProjectWindowSlot, { document: string; path: string[] }>>;
   sections?: Partial<Record<ProjectWindowSection, boolean>>;
+  /** The run in focus, which the Results show. */
+  focus?: RunAddress;
 }
 
 /** A drawer section, named by its view. */
@@ -120,6 +123,8 @@ function windowArrangement(value: unknown): ProjectWindowState {
   for (const [key, open] of Object.entries(prefs.sections ?? {})) {
     if (typeof open === 'boolean' && isView(key.split('.')[0])) sections[key as ProjectWindowSection] = open;
   }
+  const focus = prefs.focus && typeof prefs.focus.stepId === 'string' && typeof prefs.focus.runId === 'string'
+    ? { stepId: prefs.focus.stepId, runId: prefs.focus.runId } : undefined;
   return {
     mode: prefs.mode === 'map' || prefs.mode === 'details' ? prefs.mode : 'both',
     primaryView: isView(prefs.primaryView) ? prefs.primaryView : defaultProjectWindowState.primaryView,
@@ -135,6 +140,7 @@ function windowArrangement(value: unknown): ProjectWindowState {
     secondaryWidth: preferredSize('secondaryWidth'),
     modelPaths,
     sections,
+    ...(focus && { focus }),
   };
 }
 

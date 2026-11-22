@@ -143,7 +143,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   await activate(page, rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true }));
   await activateMenuItem(page, page.getByRole('menuitem', { name: 'Sweep', exact: true }));
   const rateText = rate.getByRole('textbox', { name: 'Learning Rate Value', exact: true });
-  await expect(rateText).toHaveValue('0.001,');
+  await expect(rateText).toBeFocused();
   await number(page, rateText, '0.001, 0.002, 0.003');
   await expect(rate.getByText('0.003', { exact: true })).toBeVisible();
   const swept = await savedProject();
@@ -178,7 +178,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   const [initial] = await submit([selected.key], swept.revision);
   await expect(runs.getByRole('button', { name: 'Open Run', exact: true })).toBeEnabled();
   await palette(page, 'openRun', 'Open Run');
-  const loss = results.getByRole('img', { name: 'Loss', exact: true });
+  const loss = results.getByRole('img', { name: 'Metric train_loss', exact: true });
   await expect(loss.locator(`line[data-attempt="${initial.job_id}"] title`).first()).toBeAttached({ timeout: 16_000 });
   const stopping = post(page, '/api/jobs/stop');
   await page.keyboard.press('Meta+Period');
@@ -563,7 +563,7 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   const rateText = rate.getByRole('textbox', { name: 'Learning Rate Value', exact: true });
   await activate(page, rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true }));
   await activateMenuItem(page, page.getByRole('menuitem', { name: 'Sweep', exact: true }));
-  await expect(rateText).toHaveValue('0.001,');
+  await expect(rateText).toBeFocused();
   await number(page, rateText, '0.001, 0.002, 0.003');
   await expect(rate.getByText('0.003', { exact: true })).toBeVisible();
   const savedSweep = await request.get(projectPath);
@@ -646,7 +646,7 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   await palette(page, 'openRun', 'Open Run');
   const results = page.getByRole('tabpanel', { name: 'Results', exact: true });
   await expect(results).toBeFocused();
-  await expect(results.getByRole('img', { name: 'Loss' }).locator(`line[data-attempt="${job}"] title`).first()).toBeAttached({ timeout: 16_000 });
+  await expect(results.getByRole('img', { name: 'Metric train_loss', exact: true }).locator(`line[data-attempt="${job}"] title`).first()).toBeAttached({ timeout: 16_000 });
   const stopped = post(page, '/api/jobs/stop');
   await page.keyboard.press('Meta+Period');
   const stop = await stopped;
@@ -654,14 +654,15 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   expect(stop.request().postDataJSON()).toEqual({ job_ids: [job], mode: 'checkpoint' });
   await page.keyboard.press('Meta+1');
   await expect(table.getByText('Stopped', { exact: true })).toBeVisible({ timeout: 12_000 });
+  await expect(table.getByRole('row').filter({ hasText: 'Stopped' }).getByText(/^[\d,]+ \/ [\d,]+$/)).toBeVisible();
   await expect(table.getByText('Not run', { exact: true })).toBeVisible();
   await page.keyboard.press('Meta+7');
   await expect(results).toBeFocused();
-  await expect(results.getByRole('img', { name: 'Loss' })).toBeVisible();
+  await expect(results.getByRole('img', { name: 'Metric train_loss', exact: true })).toBeVisible();
   await page.keyboard.press('Escape');
-  await expect(results.getByRole('img', { name: 'Loss' })).toBeHidden();
+  await expect(results.getByRole('img', { name: 'Metric train_loss', exact: true })).toBeHidden();
   await page.keyboard.press('Meta+BracketLeft');
-  await expect(results.getByRole('img', { name: 'Loss' })).toBeVisible();
+  await expect(results.getByRole('img', { name: 'Metric train_loss', exact: true })).toBeVisible();
 
   const saved = await (await request.get(projectPath)).json() as StudioProjectDocument['snapshot'];
   const observed = await (await request.get(`${runsPath}?revision=${saved.revision}`)).json() as StudioSavedTrainRuns;

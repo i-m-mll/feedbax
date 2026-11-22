@@ -14,7 +14,7 @@ import { useStudioJobActions, useStudioJobHistory, useStudioJobs } from '@/hooks
 import { StudioRegion, StudioRegionBoundary, studioRegionIssue, type StudioRegionState } from './StudioRegion';
 import { StudioCollectionProgress, StudioRunProgress, StudioRunReason, StudioRunStatus } from './StudioRunStatus';
 import { studioName, studioReason } from './studioVocabulary';
-import { LossPlot, studioRunHistory } from './StudioTrainingLoss';
+import { MetricPlots, studioRunHistory } from './StudioTrainMetrics';
 import { PlotTrack, plotHeight, plotWidth, projectSeries } from './studioPlot';
 import { ScrollFade } from '@/components/ui/ScrollFade';
 
@@ -83,7 +83,7 @@ function RunInspector({ job }: { job: StudioActivityJob }) {
   const fields = (
     <>
       <div className="grid gap-3 sm:grid-cols-2">
-        <LossPlot series={[{ stages: [{ label: job.label, offset: 0, completed: 0, points: data.loss }] }]} />
+        <MetricPlots series={[{ stages: [{ label: job.label, offset: 0, completed: 0, metrics: data.metrics }] }]} />
         <RunScene event={data.trajectory} retry={retry} />
       </div>
       <section aria-label={studioName('log')} className="min-w-0 space-y-1">

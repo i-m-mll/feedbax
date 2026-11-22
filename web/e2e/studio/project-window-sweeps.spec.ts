@@ -1,7 +1,9 @@
 import { expect, test } from './fixtures/studio';
 import { type APIRequestContext } from '@playwright/test';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
-import { authorLearningRateSweep, enter, fixture, mapStep, seedManagedProject, sweepLabel } from './fixtures/canonicalTrain';
+import {
+  authorLearningRateSweep, enter, fixture, mapStep, openResultsSlot, seedManagedProject, sweepLabel,
+} from './fixtures/canonicalTrain';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -86,8 +88,9 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
   await page.getByRole('menu', { name: 'Add Sweep' }).getByRole('menuitem', { name: 'Seed', exact: true }).click();
   const seed = page.getByRole('region', { name: 'Seed field', exact: true });
   const seedText = seed.getByRole('textbox', { name: 'Seed', exact: true });
-  await expect(seedText).toHaveValue(/^\d+,$/);
-  await enter(seedText, `${(await seedText.inputValue()).replace(/,$/, '')}, 9`);
+  await expect(seedText).toBeFocused();
+  await expect(seedText).toHaveValue(/^\d+$/);
+  await enter(seedText, `${await seedText.inputValue()}, 9`);
   await expect(table).toHaveAttribute('aria-rowcount', '7');
   await expect(card.getByRole('button', { name: 'Sweep seed 2', exact: true })).toBeVisible();
   // Unarranged, the longer of the first two sweeps runs across, so seed comes first.
@@ -170,6 +173,57 @@ test('the saved Train field, map and Runs share sweep values and row identity', 
   });
 });
 
+// Catches a sweep written before its values are typed, and a nested field the command does not reach.
+test('Add Sweep goes to a nested field and sweeps it only by the text it commits', async ({ page, request }) => {
+  const files = await fixture('ordinary-files', '2');
+  const { snapshot, projectPath } = await seedManagedProject(request, files);
+  const sweep = async () => ((await (await request.get(projectPath)).json()) as StudioProjectSnapshot).project.steps?.train.sweep;
+  await page.goto(`/?project=${snapshot.project_id}`);
+  const card = page.getByRole('article', { name: 'Train train' });
+  const b1 = page.getByRole('region', { name: 'B1 field', exact: true });
+  const text = b1.getByRole('textbox', { name: 'B1', exact: true });
+  const chooseB1 = async () => {
+    await card.getByRole('button', { name: 'Add Sweep train' }).click();
+    await page.getByRole('menu', { name: 'Add Sweep' }).getByRole('menuitem', { name: 'Optimizer', exact: true }).click();
+    await page.getByRole('menu', { name: 'Optimizer' }).getByRole('menuitem', { name: 'B1', exact: true }).click();
+    await expect(text).toBeFocused();
+    await expect(b1.getByRole('button', { name: 'B1 kind: Sweep', exact: true })).toBeVisible();
+  };
+  const before = await sweep();
+  await chooseB1();
+  expect(await sweep()).toEqual(before);
+  await page.keyboard.press('Escape');
+  await expect(b1.getByRole('button', { name: 'B1 kind: Value', exact: true })).toBeVisible();
+  await expect(text).toHaveValue('0.9');
+  expect(await sweep()).toEqual(before);
+
+  await chooseB1();
+  await enter(text, '1e-3, 1e-2');
+  await expect(b1.getByRole('button', { name: /^Select B1 / })).toHaveText(['0.001', '0.01']);
+  await expect.poll(async () => Object.keys((await sweep())?.axes ?? {}).length).toBe(Object.keys(before?.axes ?? {}).length + 1);
+});
+
+// Catches the kind menu's Sweep writing a sweep before any values are typed.
+test("a field's kind menu puts it in Sweep kind and writes nothing until its text is committed", async ({ page, request }) => {
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  const train = async () => ((await (await request.get(projectPath)).json()) as StudioProjectSnapshot).project.steps?.train;
+  await page.goto(`/?project=${snapshot.project_id}`);
+  const b2 = page.getByRole('region', { name: 'B2 field', exact: true });
+  const text = b2.getByRole('textbox', { name: 'B2', exact: true });
+  await expect(text).toBeEditable();
+  const value = await text.inputValue();
+  const before = await train();
+  await b2.getByRole('button', { name: 'B2 kind: Value', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Sweep', exact: true }).click();
+  await expect(text).toBeFocused();
+  await expect(b2.getByRole('button', { name: 'B2 kind: Sweep', exact: true })).toBeVisible();
+  await expect(text).toHaveValue(value);
+  expect(await train()).toEqual(before);
+  await page.keyboard.press('Escape');
+  await expect(b2.getByRole('button', { name: 'B2 kind: Value', exact: true })).toBeVisible();
+  expect(await train()).toEqual(before);
+});
+
 test('an addressed Model numeric field authors a step sweep from the inspector', async ({ page, request }) => {
   const [model, task, objective, train] = await fixture('ordinary-files', '2');
   const { snapshot, projectPath } = await seedManagedProject(request, [model, task, objective, train]);
@@ -217,4 +271,42 @@ test('an authored component range reopens as its exact rule and To List keeps ro
   await expect(field.getByRole('textbox', { name: 'Mass', exact: true })).toHaveValue(/^1\.000123456789, .+, 2\.000987654321$/);
   const { plan: listed } = await readPlan(request, projectPath);
   expect(listed.rows).toEqual(authored.rows);
+});
+
+test('a press on a run\'s row shows that run\'s Results, and a reload keeps it', { tag: '@round' }, async ({ page, request }) => {
+  test.setTimeout(45_000);
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await mapStep(page, 'train').click();
+  const table = page.getByRole('table', { name: 'Runs' });
+  const rate = page.getByRole('region', { name: 'Learning Rate field', exact: true });
+  await authorLearningRateSweep(rate);
+  await enter(rate.getByRole('textbox', { name: 'Learning Rate Value', exact: true }), '0.001, 0.003');
+  await expect(table).toHaveAttribute('aria-rowcount', '3');
+  const admission = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === `${projectPath}/train-runs`);
+  await page.getByRole('button', { name: 'Run', exact: true }).click();
+  const accepted = await admission;
+  expect(accepted.status(), await accepted.text()).toBe(202);
+  const jobs = ((await accepted.json()) as { items: { job_id: string }[] }).items.map(({ job_id }) => job_id);
+  await expect(table.getByText('Done', { exact: true })).toHaveCount(2, { timeout: 25_000 });
+
+  await openResultsSlot(page);
+  const results = page.locator('[data-slot="secondary"]').getByRole('region', { name: 'Results', exact: true }).last();
+  const shown = async () => {
+    const history = results.getByRole('img', { name: 'Metric train_loss', exact: true }).locator('line[data-attempt]');
+    await expect(history.first()).toBeAttached({ timeout: 10_000 });
+    return await history.first().getAttribute('data-attempt');
+  };
+  const status = (index: number) => table.locator('tbody tr[data-index]').nth(index).getByRole('cell').filter({ hasText: 'Done' });
+  await status(0).click();
+  const first = await shown();
+  await status(1).click();
+  await expect.poll(shown).not.toBe(first);
+  const second = await shown();
+  expect(jobs).toEqual(expect.arrayContaining([first, second]));
+
+  await page.reload();
+  await expect(table.locator('tbody tr[data-index]').nth(1).getByRole('button').first()).toHaveAttribute('aria-current', 'true');
+  await expect.poll(shown).toBe(second);
 });

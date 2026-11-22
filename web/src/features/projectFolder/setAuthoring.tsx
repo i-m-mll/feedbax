@@ -23,9 +23,7 @@ type Perform = (work: () => Promise<void>, refuse?: (reason: string) => Refusal 
 export interface SetAuthoringInputs {
   readonly editor: ProjectEditController;
   readonly project: Project;
-  /** Whether set edits can be made now: the plan is current and the default variant is shown. */
-  readonly enabled: boolean;
-  /** Whether its commands apply; a command's gesture made while the workspace is unsettled waits for it. */
+  /** Whether its commands and controls apply; an edit made while the workspace saves waits for it. */
   readonly applies: boolean;
   readonly perform: Perform;
   readonly state: () => PipelineSelectionState;
@@ -43,7 +41,7 @@ function runKey(run: PlanRunView) {
   return { variant, step, row };
 }
 
-export function setAuthoring({ editor, project, enabled, applies, perform, state, select }: SetAuthoringInputs) {
+export function setAuthoring({ editor, project, applies, perform, state, select }: SetAuthoringInputs) {
   const refuseStep = (step: string) => (reason: string): Refusal => ({ kind: 'step', step, reason });
 
   async function store(name: string, command: SetCommand): Promise<StudioSetEdit | undefined> {
@@ -78,7 +76,7 @@ export function setAuthoring({ editor, project, enabled, applies, perform, state
         if (edit?.selected) select(selectSweepValue(state(), step.id, edit.selected.axis, edit.selected.value));
       }, (reason) => ({ kind: 'runs', reasons: Object.fromEntries(runs.map(({ id }) => [id, reason])) }));
     }, {
-      subject: step.label, instance: JSON.stringify(chosen?.map(({ id }) => id) ?? null),
+      subject: step.label, instance: JSON.stringify([step.id, chosen?.map(({ id }) => id) ?? null]),
       enabled: applies && runs.length > 0 && (step.kind === 'train' || step.kind === 'evaluate'),
     });
   }
@@ -90,7 +88,7 @@ export function setAuthoring({ editor, project, enabled, applies, perform, state
     const command = (id: 'saveSet' | 'inlineSet', kind: 'save_set' | 'inline_set') => bindStudioCommand(id, () => {
       void perform(async () => { await store(studioAccessibleName(id, axis), { kind, step, axis }); },
         (reason) => ({ kind: 'axis', step, axis, reason }));
-    }, { subject: axis, instance: step, enabled: applies });
+    }, { subject: axis, instance: JSON.stringify([step, axis]), enabled: applies });
     return 'set' in read ? [command('inlineSet', 'inline_set')] : 'values' in read ? [command('saveSet', 'save_set')] : [];
   }
 
@@ -107,14 +105,14 @@ export function setAuthoring({ editor, project, enabled, applies, perform, state
     return {
       label: 'setDocument', document, name: shownName(document, project.documents?.[document]),
       documents: documentTreeOf(project, [setSchema]),
-      choose: enabled ? (next) => {
+      choose: applies ? (next) => {
         void perform(async () => {
           const stored = await point(next);
           if (stored.status === 'refused') throw stored.error;
           await editor.flush();
         }, refuseStep(step));
       } : undefined,
-      duplicate: enabled ? async () => {
+      duplicate: applies ? async () => {
         let copy: string | undefined;
         await perform(async () => {
           const result = await editor.memberCommand(studioAccessibleName('duplicate', kind),
@@ -127,19 +125,19 @@ export function setAuthoring({ editor, project, enabled, applies, perform, state
         }, refuseStep(step));
         return copy;
       } : undefined,
-      rename: enabled ? (label) => {
+      rename: applies ? (label) => {
         void perform(async () => {
           await editor.memberCommand(studioAccessibleName('rename', kind),
             { kind: 'rename', family: 'documents', member: document, label }, editor.getSnapshot().saved);
         }, refuseStep(step));
       } : undefined,
-      changeKey: enabled ? (key) => {
+      changeKey: applies ? (key) => {
         void perform(async () => {
           await editor.memberCommand(studioAccessibleName('changeKey', kind),
             { kind: 'change_key', family: 'documents', member: document, key }, editor.getSnapshot().saved);
         }, refuseStep(step));
       } : undefined,
-      detach: enabled && 'base' in (project.documents?.[document] ?? {}) ? () => {
+      detach: applies && 'base' in (project.documents?.[document] ?? {}) ? () => {
         void perform(async () => {
           await editor.memberCommand(studioAccessibleName('detach', kind),
             { kind: 'detach', member: document }, editor.getSnapshot().saved);
@@ -175,10 +173,10 @@ export function setAuthoring({ editor, project, enabled, applies, perform, state
     const items = (['cross', 'zip'] as const).map((id) => ({ value: id, label: studioName(id) }));
     return {
       id: 'combination',
-      bar: <Select aria-label={studioName('combination')} value={value} disabled={!enabled} onValueChange={change} items={items} />,
+      bar: <Select aria-label={studioName('combination')} value={value} disabled={!applies} onValueChange={change} items={items} />,
       menu: <MenuGroup>
         <MenuGroupLabel>{studioName('combination')}</MenuGroupLabel>
-        <MenuRadioGroup value={value} onValueChange={(next: string) => change(next)} disabled={!enabled}>
+        <MenuRadioGroup value={value} onValueChange={(next: string) => change(next)} disabled={!applies}>
           {items.map(({ value: id, label }) => <MenuRadioItem key={id} value={id}>{label}</MenuRadioItem>)}
         </MenuRadioGroup>
       </MenuGroup>,
