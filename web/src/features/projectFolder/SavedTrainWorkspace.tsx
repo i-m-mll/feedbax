@@ -90,7 +90,7 @@ import {
   jsonPointerPath, StudioTrainAuthoringForm, SweepFieldItems, useTrainClassFields, useTrainFieldLabels,
 } from './StudioTrainAuthoringForm';
 import {
-  TrialObjectiveAdd, TrialObjectiveInspector, TrialObjectiveOutline, TrialObjectiveTable, TrialTaskForm, TrialTaskInspector, TrialTaskOutline, useTrialAuthoring,
+  ObjectiveSweepItems, TrialObjectiveAdd, TrialObjectiveInspector, TrialObjectiveOutline, TrialObjectiveTable, type TrialRuns, TrialTaskForm, TrialTaskInspector, TrialTaskOutline, useTrialAuthoring,
   type TrialChangeScope,
 } from './StudioTrialAuthoring';
 import { documentFamily, useProjectDocuments, type DocumentRole } from './useProjectDocuments';
@@ -1455,6 +1455,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         setWindowState((window) => showProjectWindowView({ ...window, inspectorOpen: true }, 'runs', focusSlot));
         setFieldFocus({ key: crypto.randomUUID(), step: sweepStep, target: anchor, kind: 'sweep' });
       }} />
+      <ObjectiveSweepItems project={saved.project_id} revision={saved.revision}
+        run={shown?.window_map?.rows.find(({ key }) => key.step === sweepStep && key.variant === variant)?.key}
+        onChoose={(anchor) => {
+          selection.select(selectStep(latestState.current, sweepStep));
+          setSweepStep(undefined);
+          setWindowState((window) => showProjectWindowView(window, 'objective', focusSlot));
+          setFieldFocus({ key: crypto.randomUUID(), step: sweepStep, target: anchor, kind: 'sweep' });
+        }} />
       <OfferedSets editor={editor} step={sweepStep} choose={(set) => sets.applySet(sweepStep, set, () => {
         selection.select(selectStep(latestState.current, sweepStep));
       })} />
@@ -1763,12 +1771,21 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             const document = value.objective_document ?? step?.id ?? '';
             const element = named(document);
             const selected = element && { term: element.id, field: element.field };
+            const runs: TrialRuns = {
+              selected: !wholeTrialStep,
+              values: (sweep) => new Set(step && state.selection && state.selection.kind !== 'steps'
+                ? selectedRuns(step, state.selection).map((row) => row.values[sweep]).filter(Boolean) : []),
+              choose: authoring?.onChooseSweepValue,
+            };
             return {
               picker: pickDocument('objective', value.objective_document ?? undefined, documentScopes.objective),
               header: <TrialObjectiveAdd view={value} commit={commit} select={choose(document)} />,
-              body: withProblem(<TrialObjectiveTable view={value} commit={commit} selected={selected} select={choose(document)} />),
+              body: withProblem(<FocusedFields className="contents" request={fieldFocus?.step === step?.id && fieldFocus?.target?.startsWith('objective:') ? fieldFocus : undefined}
+                onFocused={() => setFieldFocus(undefined)}>
+                <TrialObjectiveTable view={value} commit={commit} selected={selected} select={choose(document)} runs={runs} />
+              </FocusedFields>),
               drawer: <TrialObjectiveOutline sections={drawerSections} view={value} commit={commit} selected={selected?.term} select={choose(document)} />,
-              inspector: <TrialObjectiveInspector view={value} commit={commit} selected={selected} />,
+              inspector: <TrialObjectiveInspector view={value} commit={commit} selected={selected} runs={runs} />,
             };
           }
           if (view === 'training') {
@@ -1879,15 +1896,15 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
 }
 
 /** The step's fields in the inspector, putting the keyboard on the requested one once it shows. */
-function FocusedFields({ request, onFocused, children }: {
-  request: FieldFocusRequest | undefined; onFocused(): void; children: ReactNode;
+function FocusedFields({ request, onFocused, children, className = 'grid content-start gap-3' }: {
+  request: FieldFocusRequest | undefined; onFocused(): void; children: ReactNode; className?: string;
 }) {
   const root = useRef<HTMLDivElement>(null);
   useFieldFocus(root, request, onFocused);
   const { key, target, kind } = request ?? {};
   const intent = useMemo(() => key && target && kind ? { key, target, kind } : undefined, [key, target, kind]);
   return <FieldIntent.Provider value={intent}>
-    <div ref={root} className="grid content-start gap-3">{children}</div>
+    <div ref={root} className={className}>{children}</div>
   </FieldIntent.Provider>;
 }
 

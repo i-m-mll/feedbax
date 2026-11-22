@@ -162,7 +162,7 @@ function useTrainFields(
 }
 
 /** A field a sweep can start from, or a group of them as the Inspector's form groups them. */
-type SweepTarget =
+export type SweepTarget =
   | { readonly kind: 'field'; readonly label: string; readonly anchor: string }
   | { readonly kind: 'group'; readonly label: string; readonly members: readonly SweepTarget[] };
 
@@ -176,7 +176,7 @@ function sweepTargets(model: FieldModel): SweepTarget[] {
   return offered && model.anchor ? [{ kind: 'field', label: model.label, anchor: model.anchor }] : [];
 }
 
-function SweepTargetItem({ target, onChoose }: { target: SweepTarget; onChoose(anchor: string): void }) {
+export function SweepTargetItem({ target, onChoose }: { target: SweepTarget; onChoose(anchor: string): void }) {
   return target.kind === 'field'
     ? <MenuItem onClick={() => onChoose(target.anchor)}>{target.label}</MenuItem>
     : <MenuSubmenu label={target.label}>

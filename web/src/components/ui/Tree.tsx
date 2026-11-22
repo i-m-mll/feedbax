@@ -16,6 +16,8 @@ export interface TreeNode {
   disabled?: boolean;
   /** Drawn in the muted text colour: an element outside what the view is showing. */
   muted?: boolean;
+  /** Struck through: an element drawn only because it was removed. */
+  struck?: boolean;
   /** Read after the row's name by assistive technology: a fact the row draws by its tone, such as a count of related runs. */
   description?: string;
   /** False for a row whose name is not the user's, when the tree renames others. */
@@ -346,7 +348,7 @@ export const Tree = forwardRef<TreeHandle, TreeProps>(function Tree(
             selected={selectedSet.has(node.id)}
             holdsSelection={open === false && holders.has(node.id)}
             disabled={node.disabled}
-            className={node.muted ? 'text-shell-muted' : undefined}
+            className={node.muted || node.struck ? 'text-shell-muted' : undefined}
             aria-description={node.description}
             name={onRename && renamable(node) ? <span data-tree-name>
               <InlineEdit
@@ -359,7 +361,7 @@ export const Tree = forwardRef<TreeHandle, TreeProps>(function Tree(
                 onCommit={(name) => onRename(node.id, name)}
                 aria-label={renameLabel}
               />
-            </span> : node.name}
+            </span> : node.struck ? <s>{node.name}</s> : node.name}
             onClick={(event) => onRowClick(event, node)}
             onDoubleClick={(event) => {
               if (node.disabled) return;
