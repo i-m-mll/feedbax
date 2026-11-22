@@ -17,15 +17,15 @@ import { CommandBar, withGlyph } from '@/components/ui/CommandBar';
 import { ScrollFade } from '@/components/ui/ScrollFade';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { StudioRegion, StudioRegionBoundary } from '@/components/activity/StudioRegion';
-import { studioName } from '@/components/activity/studioVocabulary';
+import { studioName, studioReasonedName } from '@/components/activity/studioVocabulary';
 import { FieldGroups } from '@/components/values/fieldGroups';
 import { useElementSize } from '@/hooks/useElementSize';
 import {
   compactMapHeight, fitProjectWindow, projectRailWidth, type PreferredWindowSize, type ProjectWindowSizePreview,
 } from './projectWindowLayout';
 import {
-  closeProjectWindowSlot, defaultProjectWindowState, projectWindowSlotView, projectWindowViews, sectionOpen,
-  showProjectWindowView, withSectionOpen, type ProjectWindowMode, type ProjectWindowSlot, type ProjectWindowState, type ProjectWindowView,
+  closeProjectWindowSlot, defaultProjectWindowState, noViews, projectWindowSlotView, projectWindowViews, sectionOpen,
+  showProjectWindowView, withSectionOpen, type ProjectWindowMode, type ViewOffer, type ProjectWindowSlot, type ProjectWindowState, type ProjectWindowView,
 } from './projectWindowState';
 import type { DocumentPickerModel } from './DocumentPicker';
 import { SlotHeader } from './SlotHeader';
@@ -54,7 +54,7 @@ export interface ProjectWindowProps {
   onStateChange: Dispatch<SetStateAction<ProjectWindowState>>;
   projectName: string;
   saveStatus?: ReactNode;
-  availableViews: readonly ProjectWindowView[];
+  views: ViewOffer;
   renderView: (view: ProjectWindowView, slot: ProjectWindowSlot) => ProjectWindowViewRegion;
   map: ReactNode;
   mapDrawer: ReactNode;
@@ -96,16 +96,19 @@ const slots = ['primary', 'secondary'] as const;
 const regionOrder = ['top', 'map', 'steps', 'rail', 'drawer', ...slots, 'inspector', 'settings', 'bottom'] as const;
 type WindowRegion = typeof regionOrder[number];
 
-function WindowButton({ command, icon: Icon = command.glyph!, pressed, controls, tab, placement = tab ? 'right' : 'bottom' }: {
+function WindowButton({ command, icon: Icon = command.glyph!, pressed, controls, tab, placement = tab ? 'right' : 'bottom', reason }: {
   command: StudioCommand;
   icon?: LucideIcon;
   pressed?: boolean;
   controls?: string;
   tab?: { id: string; tabbable: boolean };
   placement?: 'bottom' | 'right';
+  /** Why the command does not apply, which its tip gives after its name. */
+  reason?: string;
 }) {
   return (
     <IconButton label={command.label} icon={<Icon aria-hidden="true" />} {...commandAttributes(command, placement)}
+      {...reason !== undefined && { ...appTip(studioReasonedName(command.name, reason), placement), 'aria-description': reason }}
       role={tab ? 'tab' : undefined} id={tab?.id} tabIndex={tab ? (tab.tabbable ? 0 : -1) : undefined}
       aria-selected={tab ? pressed : undefined} pressed={!tab ? pressed : undefined}
       aria-controls={controls} disabled={!command.enabled} onClick={command.invoke} className="studio-window-control" />
@@ -142,7 +145,7 @@ function usePaletteState() {
 }
 
 export function ProjectWindow({
-  state, onStateChange, projectName, saveStatus, availableViews, renderView, map, mapDrawer, compactMap,
+  state, onStateChange, projectName, saveStatus, views, renderView, map, mapDrawer, compactMap,
   onBack, onForward, commands, mapCommands, focusRequest, variant, overlay, clock, failure, problems, activity,
 }: ProjectWindowProps) {
   const id = useId();
@@ -171,6 +174,7 @@ export function ProjectWindow({
   const moveFocus = (region: WindowRegion) => setRequestedFocus({ region });
   useLayoutEffect(() => installTooltips(), []);
 
+  const availableViews = views.available;
   const primaryView = projectWindowSlotView(state, 'primary', availableViews);
   const secondaryView = projectWindowSlotView(state, 'secondary', availableViews);
   const focusedSlot = secondaryView && state.focusedSlot === 'secondary' ? 'secondary' : 'primary';
@@ -286,7 +290,9 @@ export function ProjectWindow({
 
   function splitDetails() {
     if (split) return closeSlot(focusedSlot);
-    onStateChange((previous) => showProjectWindowView(previous, 'scene', 'secondary'));
+    const view = availableViews.includes('scene') ? 'scene'
+      : availableViews.find((candidate) => candidate !== primaryView) ?? availableViews[0];
+    onStateChange((previous) => showProjectWindowView(previous, view, 'secondary'));
     moveFocus('secondary');
   }
 
@@ -508,7 +514,8 @@ export function ProjectWindow({
             {tabCommands.map((command) => {
               const view = command.id;
               if (!command.enabled) {
-                return <WindowButton key={view} command={command} icon={viewGlyphs[view]} tab={{ id: tabId(view), tabbable: false }} />;
+                return <WindowButton key={view} command={command} icon={viewGlyphs[view]} tab={{ id: tabId(view), tabbable: false }}
+                  reason={views.absent[view]} />;
               }
               const selected = !settingsOpen && shownViews[focusedSlot] === view;
               return (
@@ -627,7 +634,7 @@ const loadingRegion = <StudioRegion state={{ kind: 'loading' }} />;
 export function PendingProjectWindow() {
   const [state, setState] = useState<ProjectWindowState>(defaultProjectWindowState);
   return (
-    <ProjectWindow state={state} onStateChange={setState} projectName="" availableViews={[]}
+    <ProjectWindow state={state} onStateChange={setState} projectName="" views={noViews}
       renderView={() => ({ body: loadingRegion })} map={loadingRegion} mapDrawer={loadingRegion}
       compactMap={loadingRegion} commands={[]} />
   );

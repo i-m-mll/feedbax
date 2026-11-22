@@ -2153,6 +2153,8 @@ def _planned_checkpoint_catalogs(plan: ProjectPlan) -> dict[RequestId, set[int]]
         if planned is not None and isinstance(ref := planned.member.reference, ProductRef):
             if isinstance(ref.select, BatchSetMember):
                 catalogs.setdefault(ref.request_id, set()).update(ref.select.batches)
+            elif isinstance(ref.select, BatchMember):
+                catalogs.setdefault(ref.request_id, set()).add(ref.select.batch)
     for element in plan.elements.values():
         for bindings in element.inputs.values():
             for binding in bindings:

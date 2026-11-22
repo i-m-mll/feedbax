@@ -91,6 +91,7 @@ from feedbax.contracts.project_sweep import (
     SetAxis,
     Sweep,
     SweepCoordinate,
+    SweepInputCoordinate,
     SweepExpansionCode,
     SweepExpansionError,
     SweepInputMember,
@@ -325,6 +326,8 @@ class TrainFacts:
 
     task: TaskDocument | PythonTaskSelection | None
     """None when the Task does not resolve."""
+    origin: int | None
+    """The completed-update count the run starts from: 0 when fresh; None when the run controls do not resolve."""
     target_total: int | None
     """The completed-update count at the run's end; None when the run controls do not resolve."""
 
@@ -356,8 +359,9 @@ def _train_facts(payload: Payload, python_tasks: PythonTaskRegistry | None) -> T
         batches = DocumentTrainingConfig.model_validate(payload.get("training_config")).n_batches
         start = _CHECKPOINT_INITIALIZATION.validate_python(payload.get("checkpoint_initialization"))
     except ValidationError:
-        return TrainFacts(task, None)
-    return TrainFacts(task, batches + (start.source_completed_updates if isinstance(start, TrainContinuation) else 0))
+        return TrainFacts(task, None, None)
+    origin = start.source_completed_updates if isinstance(start, TrainContinuation) else 0
+    return TrainFacts(task, origin, origin + batches)
 
 
 @dataclass(frozen=True)
@@ -371,7 +375,7 @@ class PlannedRow:
     axis_keys: Mapping[str, str] = field(default_factory=dict, kw_only=True)
     """Each axis of the row's sweep and its value id there, or for an input axis the member key, which an address's
     selector matches."""
-    input_axes: Mapping[str, SweepCoordinate] = field(default_factory=dict, kw_only=True)
+    input_axes: Mapping[str, SweepInputCoordinate] = field(default_factory=dict, kw_only=True)
     """Each input axis's member on this row; ``axes`` terms select it by its key."""
     document_ids: Mapping[str, str] = field(default_factory=dict, kw_only=True)
     document_uses: frozenset[str] = field(default=frozenset(), kw_only=True)
@@ -770,16 +774,16 @@ def _checkpoint(rule: CheckpointRule | None, *, horizon: int | None = None) -> P
             return BarrierMember(name=name)
 
 
-def _batch_past_end(rule: CheckpointRule | None, total: int) -> int | None:
-    """The first batch an At or List rule selects past a run of ``total`` batches."""
+def _update_outside_run(rule: CheckpointRule | None, origin: int, total: int) -> int | None:
+    """The first update an At or List rule selects outside a run from ``origin`` to ``total`` completed updates."""
     match rule:
         case BatchCheckpoint(at=batch):
-            batches: tuple[int, ...] = (batch,)
+            updates: tuple[int, ...] = (batch,)
         case CheckpointBatches(batches=listed):
-            batches = tuple(listed)
+            updates = tuple(listed)
         case _:
             return None
-    return next((batch for batch in batches if batch > total), None)
+    return next((update for update in updates if not origin < update <= total), None)
 
 
 def _selection_path(authored: object, role: str, selection: StepReference | None) -> str:
@@ -2813,15 +2817,15 @@ class _Compiler:
                     ))
                     continue
                 facts = self.rows[chosen.producer].train if chosen.producer is not None else None
-                if facts is not None and facts.target_total is not None and (
-                    past := _batch_past_end(rule, facts.target_total)
+                if facts is not None and facts.origin is not None and facts.target_total is not None and (
+                    outside := _update_outside_run(rule, facts.origin, facts.target_total)
                 ) is not None:
                     assert chosen.producer is not None
                     self.diagnostics.append(ProjectDiagnostic(
                         ResolutionCode.BAD_REFERENCE,
                         f"{_selection_path(subject, 'subject', chosen.selection)}.checkpoint",
-                        f"Batch {past} is past the end of {chosen.producer.step!r}, "
-                        f"which runs {facts.target_total} batches.",
+                        f"Update {outside} is outside {chosen.producer.step!r}, "
+                        f"which runs updates {facts.origin + 1} to {facts.target_total}.",
                         name, row=row.id, variant=variant,
                     ))
                     continue

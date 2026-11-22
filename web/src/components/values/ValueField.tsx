@@ -21,6 +21,7 @@ import { TextField } from '@/components/ui/TextField';
 import {
   completions, hasMark, kindEdit, kindOffers, type Completion, type FieldEdit, type FieldModel, type FieldOption,
 } from './fieldModel';
+import { clearDraw, DrawParts, startDraw, useDrawDraft, useShownDraw } from './DrawParts';
 import { FieldIntent } from './fieldIntent';
 import { useFieldGroup } from './fieldGroups';
 import './valueField.css';
@@ -152,6 +153,8 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
   })();
 
   const textual = textualKind(type.kind);
+  const shownDraw = useShownDraw(model);
+  const draw = textual ? shownDraw : undefined;
   if (form === 'cell') {
     return <div className="value-field value-field-cell grid min-w-0 gap-0.5 tabular-nums" role="group"
       aria-label={studioFieldLabel('field', label)}>
@@ -161,7 +164,8 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
     </div>;
   }
 
-  const parts = (indented: boolean) => (indented || model.members || model.canList) && <div className="value-field-parts grid gap-1">
+  const parts = (indented: boolean) => (indented || model.members || model.canList || draw) && <div className="value-field-parts grid gap-1">
+    {draw && <DrawParts model={model} draw={draw} />}
     {model.members && <Members model={model} />}
     {indented && model.parts!.map((part) => <ValueField key={part.id} model={part} />)}
     {model.canList && <Button variant="ghost" className="justify-self-start" disabled={readOnly}
@@ -280,11 +284,13 @@ function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearRea
   }, [intent?.key]);
   /** A kind chosen in the kind menu that the field takes when the menu gives the keyboard back to it. */
   const chosen = useRef<FieldKind>();
-  /** Sweep is made by the text the field commits; another kind by its own edit. */
+  /** Sweep is made by the text the field commits, Draw by its parts, another kind by its own edit. */
   function choose(kind: FieldKind) {
     if (kind === 'sweep') chosen.current = kind;
+    else if (kind === 'draw') startDraw(model);
     else chooseKind(kind);
   }
+  const drafted = useDrawDraft(model.id);
   const text = draft ?? model.text ?? '';
   const offered = draft !== undefined && !dismissed && caret !== undefined
     ? completions(model, text.slice(0, caret)) : { token: '', items: [] };
@@ -324,6 +330,7 @@ function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearRea
       if (open) { setDismissed(true); return; }
       setDraft(undefined);
       setPending(undefined);
+      clearDraw(model.id);
       clearReason();
       setMenu(false);
     }
@@ -338,7 +345,7 @@ function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearRea
     }
   }
 
-  const markMenu = mark ? <KindMark model={model} kind={pending ?? model.kind} readOnly={readOnly} open={menu}
+  const markMenu = mark ? <KindMark model={model} kind={pending ?? (drafted ? 'draw' : model.kind)} readOnly={readOnly} open={menu}
     onOpenChange={setMenu} finalFocus={input} onChoose={choose} /> : undefined;
   const differs = model.differs !== undefined ? <output {...appTip(studioName('selectedValue'))} aria-description={model.differs}
     aria-label={studioFieldLabel('selectedValue', label)}>◆</output> : undefined;

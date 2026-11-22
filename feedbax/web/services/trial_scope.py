@@ -726,12 +726,20 @@ def _holds(payload: Any, parts: Sequence[str]) -> bool:
     return True
 
 
-def _in_form_of(before: Payload, after: Payload) -> Payload:
-    """``after``, a normalized Model, spelled as ``before`` wherever the two mean the same Model."""
+def _in_form_of(before: Payload, after: Payload, reference: Payload | None = None) -> Payload:
+    """``after``, a normalized Model, spelled as ``before`` wherever the two mean the same Model.
+
+    A member ``before`` lacks is spelled as the Model ``reference`` spells it, when it means the same there, so that
+    restoring what a document differs from leaves no difference.
+    """
     from feedbax.contracts.model_document import ModelDocument
 
+    def normalized(payload: Payload) -> Payload:
+        return ModelDocument.model_validate(payload).model_dump(mode="json")
+
     result = deepcopy(before)
-    for path, record in diff(ModelDocument.model_validate(before).model_dump(mode="json"), after).items():
+    lacked: list[tuple[str, ...]] = []
+    for path, record in diff(normalized(before), after).items():
         target, source = result, after
         parts = json_pointer_parts(path)
         for index, part in enumerate(parts):
@@ -739,17 +747,35 @@ def _in_form_of(before: Payload, after: Payload) -> Payload:
                 if isinstance(record, RemoveDocumentValue) and index == len(parts) - 1:
                     target.pop(part, None)
                 elif part in source:
+                    if part not in target:
+                        lacked.append(parts[:index + 1])
                     target[part] = deepcopy(source[part])
                 break
             target, source = target[part], source[part]
-    return result
+    if reference is None or not lacked:
+        return result
+    spelled = deepcopy(result)
+    for parts in lacked:
+        if (member := _member(reference, parts)) is not _ABSENT:
+            _member(spelled, parts[:-1])[parts[-1]] = deepcopy(member)
+    return spelled if normalized(spelled) == normalized(result) else result
+
+
+def _member(payload: Any, parts: Sequence[str]) -> Any:
+    for part in parts:
+        if not isinstance(payload, dict) or part not in payload:
+            return _ABSENT
+        payload = payload[part]
+    return payload
 
 
 def model_document_store(folders, project_id: str, project: Project, body, before: Payload, after: Payload) -> StoredEdit:
     """Store a Model edit of ``body.document`` by the document rule, after the request's step files."""
     head = StoredEdit(list(body.files), reached=frozenset(file.address.id for file in body.files))
     project = preview_authored_files(project, body.files)
-    edits = content_edits(before, _in_form_of(before, after))
+    entry = project.documents[body.document]
+    base = _composed(project, entry.base.document) if isinstance(entry, BasedDocument) else None
+    edits = content_edits(before, _in_form_of(before, after, base))
     if body.step is None:
         return head.then(_document_stores(project, body.document, edits, None, lambda name: (), set()).files)
     plan = folders.read_plan(project_id, revision=body.revision).plan
@@ -1021,7 +1047,7 @@ def row_model(folders, project_id: str, project: Project, body) -> RowModel:
         named = selected_value(project, body.step, scope)
         content = _composed(project, body.document)
         if named is not None:
-            content = _value_model(project, body.step, named, body.document)
+            content = value_model(project, body.step, named, body.document)
         return RowModel(content, scope, True)
     raise ProjectFolderInvalid(f"The selected runs do not read {body.document}.")
 
@@ -1051,7 +1077,7 @@ def _value_differences(project: Project, step: str, named: SelectedValue, docume
     }
 
 
-def _value_model(project: Project, step: str, named: SelectedValue, document: str) -> Payload:
+def value_model(project: Project, step: str, named: SelectedValue, document: str) -> Payload:
     try:
         return apply_differences(_composed(project, document), _value_differences(project, step, named, document))
     except DifferenceNotApplied as error:
@@ -1085,7 +1111,7 @@ def scoped_model_store(project: Project, body, row: RowModel, after: Payload) ->
     """
     step = body.step
     document = body.document
-    delta = diff(row.content, _in_form_of(row.content, after))
+    delta = diff(row.content, _in_form_of(row.content, after, _composed(project, document)))
     address = AuthoredFileAddress(kind="step", id=step)
     authored = project.steps[step]
     raw = authored.model_dump(mode="json", by_alias=True, exclude_unset=True)
@@ -1105,7 +1131,7 @@ def scoped_model_store(project: Project, body, row: RowModel, after: Payload) ->
     else:
         base = _composed(project, document)
         try:
-            edited = apply_differences(_value_model(project, step, named, document), delta)
+            edited = apply_differences(value_model(project, step, named, document), delta)
         except DifferenceNotApplied as error:
             raise ProjectFolderInvalid(f"The edit does not apply to the selected value: {error}") from error
         differences = diff(base, edited)

@@ -1,6 +1,6 @@
 import type {
-  FieldKind, FieldKindEdit, FieldNameEdit, FieldTextEdit, FunctionInfo, JsonValue, ScopedValue,
-  StudioAddClassMember, StudioRemoveClassMember, ValueType,
+  FieldKind, FieldKindEdit, FieldNameEdit, FieldTextEdit, FunctionInfo, JsonValue, Level, ScopedValue,
+  StudioAddClassMember, StudioRemoveClassMember, StudioValueStructure, ValueType,
 } from '@/generated/studioContracts';
 
 /**
@@ -93,6 +93,10 @@ export interface FieldModel {
   /** Shows the object the origin names, where it names one. */
   readonly revealOrigin?: () => void;
   readonly reason?: string;
+  /** What the text reads as, where the source sends it: the value's tree, its root's arguments' texts, a draw's density. */
+  readonly structure?: StudioValueStructure;
+  /** How often the site's consumer reads the value again. */
+  readonly finest?: Level;
   readonly names: readonly ScopedValue[];
   readonly functions: readonly FunctionInfo[];
   readonly commit?: FieldCommit;
@@ -112,9 +116,49 @@ export function kindEdit(model: FieldModel, kind: FieldKind): FieldKindEdit | un
   return undefined;
 }
 
-/** The kinds the field's kind menu offers: those an edit converts it to. */
+/** The kinds the field's kind menu offers: those an edit converts it to, and Draw, whose parts make the edit. */
 export function kindOffers(model: FieldModel) {
-  return model.kinds.filter(({ kind }) => kindEdit(model, kind));
+  return model.kinds.filter(({ kind }) => kindEdit(model, kind) || kind === 'draw' && model.kind !== 'draw');
+}
+
+/** A draw as its parts: a family, the text of each argument (undefined while unfilled), and when it is drawn. */
+export interface DrawDraft {
+  readonly family: string;
+  readonly args: readonly (string | undefined)[];
+  readonly per: 'run' | 'trial';
+}
+
+export const drawFamilies = (model: FieldModel) => model.functions.filter(({ display_class }) => display_class === 'draw');
+
+/** A draw may be drawn per trial only where the site reads the value again each trial. */
+export const perIsFree = (model: FieldModel) => (model.finest ?? 0) >= 1;
+
+/** The draw the field's value is, as its parts. */
+export function drawOf(model: FieldModel): DrawDraft | undefined {
+  const value = model.structure?.value;
+  if (value?.kind !== 'draw') return undefined;
+  return { family: value.family, args: model.structure!.arguments ?? [], per: value.per ?? 'trial' };
+}
+
+/** The arguments a family takes: each named parameter, or for a family of any count, at least its least. */
+function slots(family: FunctionInfo) {
+  return family.parameters?.length ? family.parameters.length : Math.max(family.min_args, 1);
+}
+
+/** `draft` as a draw of `family`: a parameter keeps its text where the family has one of the same name. */
+export function withFamily(model: FieldModel, draft: DrawDraft | undefined, family: FunctionInfo): DrawDraft {
+  const previous = draft && drawFamilies(model).find(({ id }) => id === draft.family);
+  const named = new Map((previous?.parameters ?? []).map(({ name }, index) => [name, draft!.args[index]]));
+  const args = family.parameters?.length
+    ? family.parameters.map(({ name }) => named.get(name))
+    : !previous?.parameters?.length && draft ? draft.args : Array.from({ length: slots(family) }, () => undefined);
+  return { family: family.id, args, per: draft?.per ?? (perIsFree(model) ? 'trial' : 'run') };
+}
+
+/** The text a filled draft writes; undefined while a part is empty. */
+export function drawText(draft: DrawDraft) {
+  if (draft.args.some((arg) => !arg?.trim())) return undefined;
+  return `${draft.family}(${[...draft.args.map((arg) => arg!.trim()), ...draft.per === 'run' ? ['per=run'] : []].join(', ')})`;
 }
 
 export function typeText({ base, shape }: ValueType) {

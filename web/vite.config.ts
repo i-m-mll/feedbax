@@ -10,9 +10,15 @@ import type { Plugin } from 'vite';
 import { buildSync } from 'esbuild';
 import { appearanceBootEntry } from './entries';
 import { mandibleInterfaceNotes } from './mandible-notes';
+import { sourceStamps } from './source-stamps';
 
 const isE2E = process.env.VITE_FEEDBAX_E2E === '1';
 const isDesktop = process.env.VITE_FEEDBAX_DESKTOP === '1';
+/**
+ * A build or server for the owner's walkthrough, chosen by its launcher: each element says where it is written, and
+ * pages load Mandible's notes toolbar. Every other build and server, the tests' included, has neither.
+ */
+const isWalkthrough = process.env.FEEDBAX_WALKTHROUGH === '1';
 const apiAddress = `127.0.0.1:${process.env.VITE_FEEDBAX_API_PORT ?? 8000}`;
 
 const plotlyPackage = 'plotly.js-dist-min';
@@ -100,8 +106,8 @@ export default defineConfig({
   },
   plugins: [
     appearanceBoot(),
-    react(),
-    isE2E ? [] : mandibleInterfaceNotes(),
+    react(isWalkthrough ? { babel: { plugins: [sourceStamps] } } : {}),
+    isWalkthrough ? mandibleInterfaceNotes() : [],
     isDesktop ? desktopResources() : VitePWA({
       registerType: 'autoUpdate',
       workbox: {

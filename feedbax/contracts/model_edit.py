@@ -11,11 +11,11 @@ from feedbax.contracts.model_address import ModelAddress, ModelElementId, Signal
 from feedbax.contracts.model_attachment import ModelAttachmentDifference, SetField as SetField
 from feedbax.contracts.model_document import (
     CompositeComponent, LeafComponent, ModelName, ModelPhysicalConnection,
-    ModelDocument, ModelWire, PhysicalPort, SignalInput, SignalOutput, SignalType,
+    ModelDocument, ModelWire, PhysicalPort, SignalInput, SignalOutput, SignalType, WireAttachment,
 )
 from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.project import Sha256
-from feedbax.contracts.project_inputs import ProjectName, RowKey
+from feedbax.contracts.project_inputs import AxisValueId, ProjectName, RowKey
 from feedbax.contracts.request_refs import Name
 from feedbax.contracts.studio_project import StudioProjectSnapshot
 from feedbax.contracts.studio_project import StudioProjectFilePatch
@@ -147,6 +147,14 @@ class BringSignalIn(StrictModel):
     destination: ModelAddress
 
 
+class ResetDifference(StrictModel):
+    """Undo the structural difference at ``address``: remove what was added, restore what was removed with its
+    wiring and place, or restore a connection's ends."""
+
+    op: Literal["reset_difference"]
+    address: ModelAddress
+
+
 class ModelLayout(StrictModel):
     positions: dict[str, ModelPosition] = Field(default_factory=dict)
     flipped: dict[str, bool] = Field(default_factory=dict)
@@ -194,7 +202,7 @@ class ModelEditCommand(StrictModel):
         | DeleteElements | ConnectSignal | ConnectTaskSignal | ConnectPhysical | AddPort | RemovePort
         | RenameElement | MovePort | SetField | SetModelAttachment | MoveWireAttachment | InsertComponentOnWire
         | BringSignalIn | CopyComponents | CutComponents
-        | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite,
+        | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite | ResetDifference,
         Field(discriminator="op"),
     ]
 
@@ -233,9 +241,14 @@ class ModelLibraryConnection(StrictModel):
 
 
 class ModelProjectionRequest(StrictModel):
+    """``rows`` and ``axes`` select runs of ``run``'s step as a Model edit does; when they are one sweep value or set
+    entry, the projection gives that value's differences from the step's Model."""
+
     revision: Sha256
     run: StudioSavedTrainKey
     document: ProjectName
+    rows: list[RowKey] = Field(default_factory=list)
+    axes: dict[ProjectName, list[Name]] = Field(default_factory=dict)
 
 
 class ModelPortProjection(StrictModel):
@@ -249,12 +262,53 @@ class ModelTaskSignal(StrictModel):
     type: SignalType
 
 
+class ModelAddedElement(StrictModel):
+    """A component, wire, physical connection or attachment the shown Model has and the one it differs from lacks.
+    The wiring of an added component is part of it."""
+
+    change: Literal["added"]
+    address: ModelAddress
+
+
+class ModelRemovedElement(StrictModel):
+    """An element the shown Model lacks, as the one it differs from has it.
+
+    A removed component carries the ``wires`` and ``connections`` that reached it there, which are not reported apart;
+    ``position`` is where it was drawn.
+    """
+
+    change: Literal["removed"]
+    address: ModelAddress
+    definition: LeafComponent | CompositeComponent | ModelWire | ModelPhysicalConnection | WireAttachment
+    position: ModelPosition | None = None
+    wires: dict[ModelElementId, ModelWire] = Field(default_factory=dict)
+    connections: dict[ModelElementId, ModelPhysicalConnection] = Field(default_factory=dict)
+
+
+class ModelRewiredElement(StrictModel):
+    """A wire or physical connection both Models have whose ends differ; ``previous`` is the one differed from."""
+
+    change: Literal["rewired"]
+    address: ModelAddress
+    previous: ModelWire | ModelPhysicalConnection
+
+
+ModelStructuralDifference = Annotated[
+    ModelAddedElement | ModelRemovedElement | ModelRewiredElement, Field(discriminator="change"),
+]
+
+
 class ModelProjection(StrictModel):
+    """``base_differences`` are the shown document's structural differences from its base, when it has one;
+    ``value_differences`` are the selected sweep value's or set entry's from the step's Model."""
+
     ports: tuple[ModelPortProjection, ...] = ()
     task_signals: tuple[ModelTaskSignal, ...] = ()
     task_inputs: tuple[ModelAddress, ...] = ()
     objective_ports: tuple[ModelAddress, ...] = ()
     resolved_model: ModelDocument | None = None
+    base_differences: tuple[ModelStructuralDifference, ...] = ()
+    value_differences: tuple[ModelStructuralDifference, ...] = ()
 
 
 class ModelEditState(ModelLayout):
@@ -318,7 +372,7 @@ class StepRuns(StrictModel):
 class AxisValueRuns(StrictModel):
     kind: Literal["axis_value"]
     axis: ProjectName
-    value: ProjectName
+    value: AxisValueId
 
 
 class ListedRuns(StrictModel):

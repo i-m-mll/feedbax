@@ -1372,16 +1372,26 @@ class ProjectFolder:
 
         snapshot = self.read(project_id, revision=body.revision)
         check_revision("presentation", body.presentation_revision, snapshot.presentation_revision)
-        payload, layout = model_edit_source(snapshot, body.document)
+        shown = payload, layout = model_edit_source(snapshot, body.document)
         if source is not None:
             payload = source
         state = ModelEditState.model_validate({
             "document": payload, **layout,
         })
         authority = ModelRegistryPorts(components)
+
+        def reference() -> ModelEditState | None:
+            if source is not None:
+                restored = shown
+            elif isinstance(entry := snapshot.project.documents[body.document], BasedDocument):
+                restored = model_edit_source(snapshot, entry.base.document)
+            else:
+                return None
+            return ModelEditState.model_validate({"document": restored[0], **restored[1]})
+
         result = apply_model_edit(
             state, body.command, ports=authority.port, accepts=authority.accepts,
-            next_input=authority.next_input, functions=self.functions,
+            next_input=authority.next_input, functions=self.functions, reference=reference,
             task_signal=lambda command: selected_task_signal(self, project_id, ModelProjectionRequest(
                 revision=body.revision, run=command.run, document=body.document,
             ), command.signal),

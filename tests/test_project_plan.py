@@ -191,6 +191,7 @@ def test_fanout_selects_rows_and_requires_a_valid_static_subject():
         selected = run.inputs["subject"]
         producer = producers[selected.producer]
         assert run.coordinates["seed"] == producer.coordinates["seed"]
+        assert run.input_axes["subject"].carries == ("seed",)
         assert selected.member.reference == ProductRef(
             request_id=producer.request_id, role="checkpoint", select=LastMember()
         )
