@@ -63,9 +63,12 @@ test('a dragged Model card keeps its place and shape from release until its move
   for (const box of frames) expect(near(box)).toEqual(near(dropped));
 });
 
-type CardFrames = Window & { addFrames?: Record<string, Box | null>[]; stopAddFrames?: () => void };
+type CardFrames = Window & { addFrames?: Record<string, Box | null>[]; droppedAt?: number; stopAddFrames?: () => void };
 
-/** A card dropped from the Library is drawn at its drop point, and no other card moves, resizes or hides on the way. */
+/**
+ * A card dropped from the Library is drawn at its drop point from the frame after the drop, as one element until its add
+ * has saved, and no other card moves, resizes or hides on the way.
+ */
 test('a Model card added from the Library moves and redraws no other card', async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const add = await hold(page, `${projectPath}/model/edit`, (body) =>
@@ -90,6 +93,7 @@ test('a Model card added from the Library moves and redraws no other card', asyn
       frame = requestAnimationFrame(sample);
     };
     sample();
+    window.addEventListener('drop', () => { state.droppedAt = state.addFrames!.length; }, { capture: true, once: true });
     state.stopAddFrames = () => cancelAnimationFrame(frame);
   });
   const pane = model.locator('.react-flow__pane');
@@ -98,25 +102,36 @@ test('a Model card added from the Library moves and redraws no other card', asyn
   await drawer.getByRole('option', { name: 'GRU', exact: true }).dragTo(pane, { targetPosition: drop });
   await add.sent;
   await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 200)));
+  const pending = await page.evaluate((shown) => {
+    const nodes = [...document.querySelectorAll<HTMLElement>('[data-slot="primary"] .react-flow__node')];
+    const node = nodes.find((item) => !shown.includes(item.dataset.id!));
+    if (node) (node as HTMLElement & { droppedCard?: boolean }).droppedCard = true;
+    return node?.dataset.id;
+  }, before);
   const saved = page.waitForResponse((response) => new URL(response.url()).pathname === `${projectPath}/model/edit`);
   add.release();
   const { result } = await (await saved).json();
   expect(result.status).toBe('applied');
   const id = result.changed[0].element.id as string;
-  await expect(model.locator(`.react-flow__node[data-id="${id}"]`)).toHaveClass(/\bdraggable\b/);
+  expect(pending).toBe(id);
+  const added = model.locator(`.react-flow__node[data-id="${id}"]`);
+  await expect(added).toHaveClass(/\bdraggable\b/);
+  expect(await added.evaluate((node) => (node as HTMLElement & { droppedCard?: boolean }).droppedCard)).toBe(true);
   await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 300)));
-  const frames = await page.evaluate(() => {
+  const { frames, droppedAt } = await page.evaluate(() => {
     const state = window as CardFrames;
     state.stopAddFrames!();
-    return state.addFrames!;
+    return { frames: state.addFrames!, droppedAt: state.droppedAt! };
   });
   const near = (box: Box | null) => box && { x: Math.round(box.x), y: Math.round(box.y), width: Math.round(box.width), height: Math.round(box.height) };
-  for (const cards of frames) {
+  const dropped = { x: Math.round(area.x + drop.x), y: Math.round(area.y + drop.y) };
+  expect(droppedAt).toBeDefined();
+  frames.forEach((cards, index) => {
     for (const other of before) expect(near(cards[other]), other).toEqual(near(frames[0][other]));
     const box = cards[id];
-    if (box) expect({ x: Math.round(box.x), y: Math.round(box.y) }).toEqual({ x: Math.round(area.x + drop.x), y: Math.round(area.y + drop.y) });
-  }
-  expect(frames.at(-1)![id]).not.toBeNull();
+    if (index >= droppedAt) expect(box, `frame ${index - droppedAt} after the drop`).toBeTruthy();
+    if (box) expect({ x: Math.round(box.x), y: Math.round(box.y) }).toEqual(dropped);
+  });
 });
 
 /** A card whose data changes while its name is edited stays shown, and the edit keeps the focus. */

@@ -29,6 +29,7 @@ from feedbax.contracts.project_io import (
     read_text_project_snapshot,
 )
 from feedbax.contracts.project_resolution import BaseReaders
+from feedbax.contracts.strict_json import strict_json_loads, strict_model_validate_json
 from feedbax.host.client import HostClient
 from feedbax.host.io import private_directory
 from feedbax.host.protocol import HostError, SessionAccess
@@ -90,7 +91,7 @@ class VenueJobs:
             str(self.host_root), str(self.projects_root), str(self.stores_root),
         ]
         call = _Admission(delegation=request, token=token, access=access, placement=placement)
-        reply = json.loads(self.connection.run(argv, call.model_dump_json().encode()))
+        reply = strict_json_loads(self.connection.run(argv, call.model_dump_json().encode()))
         if "error" in reply:
             error = reply["error"]
             if error["code"] == "invalid_admission":
@@ -201,7 +202,7 @@ def main() -> None:
         parser.add_argument(name, type=Path)
     args = parser.parse_args()
     try:
-        call = _Admission.model_validate_json(sys.stdin.buffer.read())
+        call = strict_model_validate_json(_Admission, sys.stdin.buffer.read())
         result = _serve(args, call)
         reply = {"value": result.model_dump(mode="json")}
     except HostError as error:

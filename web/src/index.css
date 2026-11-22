@@ -42,6 +42,7 @@
   --studio-status-success: #27713f;
   --studio-status-failure: #af2b32;
   --studio-status-ink: var(--surface-main);
+  --studio-change-mark: var(--studio-status-warning);
   --studio-kind-train: #a17d66;
   --studio-kind-evaluate: #a17385;
   --studio-kind-analyze: #85758d;

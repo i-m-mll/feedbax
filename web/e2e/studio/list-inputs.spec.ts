@@ -74,7 +74,8 @@ test('binds lists of selections to an Evaluate subject and an Analyze dataset ro
   await mapStep(page, 'conditions').click();
   const subject = inspector.getByRole('list', { name: 'Subject', exact: true });
   expect(Object.keys(await requests('conditions'))).toHaveLength(2);
-  const listed = await edit(() => pick(inspector.getByRole('combobox', { name: 'Add Subject', exact: true }), 'train_b'));
+  await inspector.getByRole('button', { name: 'Add Subject', exact: true }).click();
+  const listed = await edit(() => pick(subject.getByRole('combobox', { name: 'Subject', exact: true }).last(), 'train_b'));
   expect(listed.steps!.conditions.inputs!.subject).toEqual([
     { step: 'train', checkpoint: 'last' }, { step: 'train_b', checkpoint: 'last' },
   ]);
@@ -105,7 +106,8 @@ test('binds lists of selections to an Evaluate subject and an Analyze dataset ro
   await openView(page, 'analysis');
   await page.getByRole('tabpanel', { name: 'Analysis', exact: true }).getByRole('group', { name: 'Select states', exact: true }).click();
   const states = inspector.getByRole('list', { name: 'States', exact: true });
-  const analyzed = await edit(() => pick(inspector.getByRole('combobox', { name: 'Add States', exact: true }), 'conditions_b'));
+  await inspector.getByRole('button', { name: 'Add States', exact: true }).click();
+  const analyzed = await edit(() => pick(states.getByRole('combobox', { name: 'States', exact: true }).last(), 'conditions_b'));
   expect(analyzed.steps!.analyze.inputs!.states).toEqual([{ step: 'conditions' }, { step: 'conditions_b' }]);
   await expect(states.getByRole('listitem')).toHaveCount(2);
   expect((await plan()).problems.filter(({ step }) => step === 'analyze')).toEqual([]);

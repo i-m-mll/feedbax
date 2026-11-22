@@ -704,6 +704,7 @@ export interface AddComponent {
   graph: ModelAddress;
   component: LeafComponent | CompositeComponent;
   position: ModelPosition;
+  id?: string | null;
   connect_from?: ComponentPortEnd | InputBoundaryEnd | null;
   connect_to_port?: string | null;
 }
@@ -892,6 +893,7 @@ export interface InsertComponentOnWire {
   output_port: string;
   position: ModelPosition;
   flipped?: boolean;
+  id?: string | null;
 }
 
 export interface MoveWireAttachment {
@@ -3037,6 +3039,20 @@ export type InputDifference = {
   "detail"?: string | null;
 };
 
+export type InputProducer = {
+  "kind": StepKind;
+  "product": string;
+  "operation_outputs": boolean;
+};
+
+export type InputRole = {
+  "required": boolean;
+  "gathers": boolean;
+  "producer": InputProducer | null;
+  "documents": Array<"model" | "task">;
+  "checkpoint_sets": boolean;
+};
+
 export type JaxOperation = {
   "backend": "cpu" | "gpu";
   "floating_point_bits": 32 | 64;
@@ -3639,6 +3655,8 @@ export type StudioAuthoringCatalog = {
   "step_payloads": Record<string, Record<string, JsonValue>>;
   "document_families": Record<string, StudioAuthoredDocumentFamily>;
   "registries": Record<string, StudioAuthoringRegistry>;
+  "step_inputs": Record<string, Record<string, InputRole>>;
+  "analyze_inputs": Record<string, InputRole>;
 };
 
 export type StudioAuthoringChange = {
@@ -4280,14 +4298,25 @@ export type StudioTrialExpressionEdit = {
   "kind": "expression";
   "term": string;
   "field": "measure" | "weight";
-  "text": string;
+  "edit": FieldTextEdit | FieldKindEdit | FieldNameEdit;
 };
 
 export type StudioTrialField = {
-  "path": string;
-  "projection": SiteProjection;
-  "text"?: string | null;
+  "label": string;
+  "text": string;
   "structure"?: StudioValueStructure | null;
+  "effective"?: string | null;
+  "mixed"?: boolean;
+  "unit"?: string | null;
+  "conversion"?: string | null;
+  "site": SiteProjection;
+  "sweep"?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
+  "selected_value"?: string | null;
+  "can_sweep"?: boolean;
+  "can_change_axis"?: boolean;
+  "members"?: Array<StudioSweepValue>;
+  "changed"?: boolean;
+  "path": string;
 };
 
 export type StudioTrialInput = {
@@ -5769,6 +5798,7 @@ export const AddComponentSchema: z.ZodType<AddComponent> = z.lazy(() =>
       "graph": ModelAddressSchema,
       "component": z.union([LeafComponentSchema, CompositeComponentSchema]),
       "position": ModelPositionSchema,
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable().optional(),
       "connect_from": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]).nullable().optional(),
       "connect_to_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable().optional(),
     })
@@ -6107,6 +6137,7 @@ export const InsertComponentOnWireSchema: z.ZodType<InsertComponentOnWire> = z.l
       "output_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
       "position": ModelPositionSchema,
       "flipped": z.boolean().optional(),
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<InsertComponentOnWire>;
@@ -9671,6 +9702,24 @@ export const InputDifferenceSchema: z.ZodType<InputDifference> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<InputDifference>;
 
+export const InputProducerSchema: z.ZodType<InputProducer> = z.lazy(() =>
+  z.object({
+    "kind": StepKindSchema,
+    "product": z.string(),
+    "operation_outputs": z.boolean(),
+  }).strict()
+) as unknown as z.ZodType<InputProducer>;
+
+export const InputRoleSchema: z.ZodType<InputRole> = z.lazy(() =>
+  z.object({
+    "required": z.boolean(),
+    "gathers": z.boolean(),
+    "producer": z.union([InputProducerSchema, z.null()]),
+    "documents": z.array(z.union([z.literal("model"), z.literal("task")])),
+    "checkpoint_sets": z.boolean(),
+  }).strict()
+) as unknown as z.ZodType<InputRole>;
+
 export const JaxOperationSchema: z.ZodType<JaxOperation> = z.lazy(() =>
   z.object({
     "backend": z.union([z.literal("cpu"), z.literal("gpu")]),
@@ -10490,6 +10539,8 @@ export const StudioAuthoringCatalogSchema: z.ZodType<StudioAuthoringCatalog> = z
     "step_payloads": z.record(z.string(), z.record(z.string(), jsonValueSchema)),
     "document_families": z.record(z.string(), StudioAuthoredDocumentFamilySchema),
     "registries": z.record(z.string(), StudioAuthoringRegistrySchema),
+    "step_inputs": z.record(z.string(), z.record(z.string(), InputRoleSchema)),
+    "analyze_inputs": z.record(z.string(), InputRoleSchema),
   }).strict()
 ) as unknown as z.ZodType<StudioAuthoringCatalog>;
 
@@ -11311,16 +11362,27 @@ export const StudioTrialExpressionEditSchema: z.ZodType<StudioTrialExpressionEdi
     "kind": z.literal("expression"),
     "term": z.string(),
     "field": z.union([z.literal("measure"), z.literal("weight")]),
-    "text": z.string().max(8192),
+    "edit": z.union([FieldTextEditSchema, FieldKindEditSchema, FieldNameEditSchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialExpressionEdit>;
 
 export const StudioTrialFieldSchema: z.ZodType<StudioTrialField> = z.lazy(() =>
   z.object({
-    "path": z.string(),
-    "projection": SiteProjectionSchema,
-    "text": z.union([z.string(), z.null()]).optional(),
+    "label": z.string(),
+    "text": z.string(),
     "structure": z.union([StudioValueStructureSchema, z.null()]).optional(),
+    "effective": z.union([z.string(), z.null()]).optional(),
+    "mixed": z.boolean().optional(),
+    "unit": z.union([z.string(), z.null()]).optional(),
+    "conversion": z.union([z.string(), z.null()]).optional(),
+    "site": SiteProjectionSchema,
+    "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
+    "selected_value": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+    "can_sweep": z.boolean().optional(),
+    "can_change_axis": z.boolean().optional(),
+    "members": z.array(StudioSweepValueSchema).optional(),
+    "changed": z.boolean().optional(),
+    "path": z.string(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialField>;
 

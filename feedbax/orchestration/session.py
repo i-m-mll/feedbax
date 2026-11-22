@@ -22,6 +22,7 @@ from feedbax.contracts.execution_target import (
     LOCAL_TARGET_ID, CloseWhenIdle as CloseWhenIdle, KeepOpen as KeepOpen, OpeningObservation, OpeningStep,
     SessionLifecycle, SessionTarget, TargetId, TargetRealization,
 )
+from feedbax.contracts.strict_json import strict_model_validate_json
 from feedbax.host.client import HostClient
 from feedbax.host.io import private_directory
 from feedbax.host.protocol import JsonObject, SessionAccess
@@ -269,7 +270,7 @@ class SessionDriver:
         if row is None:
             return None
         state, token = row
-        return _ControllerRecord(session=SessionRecord.model_validate_json(state), token=token)
+        return _ControllerRecord(session=strict_model_validate_json(SessionRecord, state), token=token)
 
     def _require(self, session_id: UUID) -> _ControllerRecord:
         control = self._read(session_id)
@@ -286,7 +287,7 @@ class SessionDriver:
 
     def records(self) -> tuple[SessionRecord, ...]:
         with self.connection() as db:
-            return tuple(SessionRecord.model_validate_json(state) for (state,) in db.execute(
+            return tuple(strict_model_validate_json(SessionRecord, state) for (state,) in db.execute(
                 "SELECT state FROM sessions ORDER BY rowid",
             ))
 

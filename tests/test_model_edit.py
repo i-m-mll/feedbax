@@ -111,6 +111,24 @@ def test_boundary_cards_keep_positions_until_their_graph_goes():
     assert isinstance(missing, ModelEditProblem)
 
 
+def test_added_component_takes_the_id_it_is_given_and_refuses_one_in_use():
+    """Studio draws a dropped card under the id it sends, so the stored component must carry that id."""
+    placed = _execute(_start(), "add_component", graph=_address(("outer",)), component=_leaf(), position={"x": 1, "y": 2}, id="dropped")
+    assert not isinstance(placed, ModelEditProblem), placed
+    assert placed.changed == (ModelAddress.model_validate(_address(("outer",), "component", id="dropped")),)
+    assert "dropped" in placed.state.document.interior.components["outer"].interior.components
+    inserted = _execute(_start(), "insert_component", address=_address(("outer",), "wire", id="in"), component=_leaf(),
+                        input_port="in", output_port="out", position={"x": 1, "y": 2}, id="between")
+    assert not isinstance(inserted, ModelEditProblem), inserted
+    assert inserted.changed[0] == ModelAddress.model_validate(_address(("outer",), "component", id="between"))
+    start = _start()
+    before = _bytes(start)
+    clash = _execute(start, "add_component", graph=_address(("outer",)), component=_leaf(), position={"x": 1, "y": 2}, id="in")
+    assert isinstance(clash, ModelEditProblem)
+    assert clash.address == ModelAddress.model_validate(_address(("outer",), "wire", id="in"))
+    assert _bytes(start) == before
+
+
 def test_ungroup_preserves_attachment_order_and_refuses_shared_delay():
     address = _address(("outer",), "component", id="child")
     accepted = _execute(_start(decorated=True), "ungroup", address=address)

@@ -22,7 +22,7 @@ from feedbax.contracts.project_sweep import (
     sweep_to_rows,
 )
 from feedbax.contracts.request_identity import decode_request, encode_request
-from feedbax.contracts.request_refs import InputMember, LastMember, ProductRef
+from feedbax.contracts.request_refs import BatchMember, InputMember, LastMember, ProductRef
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from tests.support.managed_train_fixture import (
     managed_evaluation_step,
@@ -238,6 +238,22 @@ def _chained_train_data():
         ]}
     ]
     return data
+
+
+def test_train_continuation_from_an_exact_update_reads_that_checkpoint_of_each_parent_run():
+    """A Train step started at update 500 of another must read that update, not the parent's last checkpoint."""
+    data = _chained_train_data()
+    data["steps"]["fit"]["base"]["inline"]["training_config"]["n_batches"] = 600
+    data["steps"]["flat"]["inputs"]["checkpoint"] = {"step": "fit", "checkpoint": {"at": 500}}
+    plan = compile_project(Project.model_validate(data))
+    assert not plan.diagnostics
+    continued = [run for run in plan.runs if run.key.step == "flat"]
+    assert continued
+    for run in continued:
+        request = decode_request(plan.requests[run.request_id], plan.documents.__getitem__)
+        (member,) = request.inputs["checkpoint"]
+        parent = next(item for item in plan.runs if item.key == run.inputs["checkpoint"].producer)
+        assert member.reference == ProductRef(request_id=parent.request_id, role="checkpoint", select=BatchMember(batch=500))
 
 
 def test_chained_train_pairs_named_and_generated_rows_before_and_after_suffix_edit():

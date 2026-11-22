@@ -1,5 +1,5 @@
-"""Where a Train step starts: from its Model with its own definition, or from another Train step's last checkpoint as
-that step's continuation."""
+"""Where a Train step starts: from its Model with its own definition, or from a checkpoint of another Train step's runs
+as that step's continuation. Which runs and which checkpoint are the selection's, and the planner judges them."""
 
 from dataclasses import dataclass
 from typing import Any
@@ -103,7 +103,7 @@ def _started(own: _Definition, payload: dict[str, Any], source: StepReference | 
 def prepare_train_start(
     folders: ProjectFolderService, project_id: str, step_id: str, body: StudioTrainStartRequest,
 ) -> StudioTrainStartEdit:
-    """The edit that starts the Train step from ``body.source``'s last checkpoint, or from its Model.
+    """The edit that starts the Train step from ``body.source``'s checkpoint, or from its Model.
 
     Started from a checkpoint, the step continues that step and stores only what differs from it; started from its
     Model, it holds its whole definition, document references kept. Either way its runs keep their definition.
@@ -116,10 +116,8 @@ def prepare_train_start(
         raise ProjectFolderInvalid("Choose a Train step.")
     if source is not None and (
         (parent := project.steps.get(source.step)) is None or parent.kind != "train" or source.step == step_id
-        or source.checkpoint != "last" or source.row is not None or source.variants is not None
-        or source.element is not None or source.product is not None
     ):
-        raise ProjectFolderInvalid("A Train step starts from another Train step's last checkpoint.")
+        raise ProjectFolderInvalid("A Train step starts from another Train step's checkpoint.")
     own = _definition(project, step_id)
     payload = {key: value for key, value in own.payload.items() if key != _POLICY}
     if source is not None:

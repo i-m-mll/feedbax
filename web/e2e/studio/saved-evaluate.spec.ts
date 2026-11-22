@@ -790,6 +790,8 @@ test('edits a checkpoint axis value and one sibling row through saved Plan', asy
   expect(rowPlan.right.checkpoint_series?.requested).toEqual([1, 4]);
   expect(rowPlan.left.request_id).toBe(axisPlan.left.request_id);
   expect(rowPlan.train).toBe(before.train);
+  // The field keeps the keyboard after its save, and Meta+Z there undoes its text; the project's Undo is the window's.
+  await updates.blur();
   const undone = await save(() => page.keyboard.press('Meta+Z'));
   expect((await plan(undone.revision)).right.request_id).toBe(before.right.request_id);
   await expect(every).toHaveValue('2');

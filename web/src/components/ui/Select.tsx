@@ -23,6 +23,8 @@ export interface SelectProps<Value extends string> {
   placeholder?: string;
   /** A glyph drawn at the start of the trigger and not in the list, such as the picker's kind. */
   leading?: ReactNode;
+  /** A control at the box's trailing end, before the list's glyph: the changed mark. */
+  trailing?: ReactNode;
   disabled?: boolean;
   /** Where the keyboard goes when the list closes; the trigger when it gives none. */
   finalFocus?: () => HTMLElement | null | undefined;
@@ -34,10 +36,10 @@ export interface SelectProps<Value extends string> {
 }
 
 export function Select<Value extends string>(
-  { items, value, onValueChange, placeholder, leading, disabled, finalFocus, id, className, ...aria }: SelectProps<Value>,
+  { items, value, onValueChange, placeholder, leading, trailing, disabled, finalFocus, id, className, ...aria }: SelectProps<Value>,
 ) {
   const selectedMark = items.find((item) => item.value === value)?.mark;
-  return (
+  const select = (
     <BaseSelect.Root
       items={items}
       value={value}
@@ -49,6 +51,7 @@ export function Select<Value extends string>(
         className={clsx(
           'flex h-control min-w-0 select-none items-center gap-1 rounded-control border border-shell-field bg-shell-surface pr-control-inline text-shell-foreground',
           leading ? null : 'pl-control-inline',
+          trailing && 'flex-1',
           'hover:[&:not([data-disabled])]:bg-shell-hover data-[popup-open]:bg-shell-hover',
           focusRing, glyph, disabledLook, className,
         )}
@@ -57,6 +60,7 @@ export function Select<Value extends string>(
         {leading ? <span aria-hidden="true" className={leadingSlot}>{leading}</span> : null}
         <BaseSelect.Value className="min-w-0 flex-1 truncate text-left data-[placeholder]:text-shell-muted" placeholder={placeholder} />
         {selectedMark}
+        {trailing ? <span aria-hidden="true" className="size-[1.5em] shrink-0" /> : null}
         <BaseSelect.Icon className="flex text-shell-muted"><ChevronsUpDown /></BaseSelect.Icon>
       </BaseSelect.Trigger>
       <BaseSelect.Portal container={usePopupLayer()}>
@@ -81,4 +85,10 @@ export function Select<Value extends string>(
       </BaseSelect.Portal>
     </BaseSelect.Root>
   );
+  if (!trailing) return select;
+  // The trigger is a button, so the control is drawn over the place the trigger keeps for it rather than inside it.
+  return <div className={clsx('relative flex min-w-0', className)}>
+    {select}
+    <span className="absolute inset-y-0 right-[calc(var(--control-padding-inline)+1.15em+0.25rem)] flex items-center">{trailing}</span>
+  </div>;
 }
