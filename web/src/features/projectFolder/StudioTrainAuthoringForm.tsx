@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { apiErrorMessage, isRefusal } from '@/api/request';
+import { isRefusal } from '@/api/request';
+import { shownError } from '@/api/shownErrors';
 import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
 import {
   catalogEntries, prepareTrainStart, projectTrainFields, readStudioTrainAuthoring, useAuthoringCatalog,
@@ -161,10 +162,10 @@ function useTrainFields(
         });
         await editor.flush();
         const settled = await stored;
-        if (settled.status === 'refused') return apiErrorMessage(settled.error);
+        if (settled.status === 'refused') return shownError(settled.error);
       }
       return undefined;
-    }).catch(apiErrorMessage);
+    }).catch(shownError);
   }
   return { fields, edit: outside ? undefined : edit };
 }
@@ -251,7 +252,7 @@ function CheckpointStart({ editor, stepId, step, trains, picking, editable }: {
       onChoose={editable ? (choice) => {
         const train = sources.find(({ id }) => stepChoiceId(id) === choice.id);
         setReason(undefined);
-        start(train ? { step: train.id, checkpoint: 'last' } : null).catch((error: unknown) => setReason(apiErrorMessage(error)));
+        start(train ? { step: train.id, checkpoint: 'last' } : null).catch((error: unknown) => setReason(shownError(error)));
       } : undefined} />
   </FieldRow>;
 }
@@ -287,7 +288,7 @@ function useTrainForm(props: Props) {
   const active = useRef<AbortController | null>(null);
   const shown = definition.data;
   const refused = [definition.error, numeric.fields.error].find(isRefusal);
-  const refusal = refused && apiErrorMessage(refused);
+  const refusal = refused && shownError(refused);
   const onRefused = useRef(props.onRefused);
   onRefused.current = props.onRefused;
   useEffect(() => { onRefused.current?.(refusal); }, [refusal]);
@@ -319,9 +320,9 @@ function useTrainForm(props: Props) {
       });
       await editor.flush();
       const settled = await stored;
-      if (settled.status === 'refused') return apiErrorMessage(settled.error);
+      if (settled.status === 'refused') return shownError(settled.error);
       return undefined;
-    }).catch(apiErrorMessage);
+    }).catch(shownError);
   }
 
   const projected = numeric.fields.data?.fields ?? [];
