@@ -5,7 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { fetchSavedEvaluationReplay } from '@/api/jobs';
 import { studioRegionIssue } from '@/components/activity/StudioRegion';
-import { studioName, studioReason } from '@/components/activity/studioVocabulary';
+import { studioName } from '@/components/activity/studioVocabulary';
 import type { MapDocumentScope } from '@/components/pipeline/StudioPipelineMap';
 import { CanvasStrip } from '@/components/canvas/CanvasStrip';
 import { canvasViewportCommands } from '@/components/canvas/StudioCanvas';
@@ -21,12 +21,12 @@ import type { ResolvedScene } from '@/features/scenario/projections';
 import { primaryWorkspaceReplayTrack, workspaceReplayFrameIndex, workspaceReplaySampleAt } from '@/features/scenario/workspaceReplay';
 import {
   DocumentReferenceSchema, ModelDocumentSchema,
-  type EvaluateModelRequest, type GraphInterior, type ModelDocument, type StudioSavedEvaluationRow,
+  type EvaluateModelRequest, type ModelDocument, type StudioSavedEvaluationRow,
   type StudioSavedTrainKey, type WorkspaceReplayTrial, type StudioProjectWindowMapProblem, type ModelAddress,
 } from '@/generated/studioContracts';
 import { modelDocumentId, directTrainStep } from './authoredEdits';
 import { placeMember, type Reveal } from './projectWindowProblems';
-import { ProblemRow } from '@/features/projectWindow/StudioProblems';
+import { planarInteriors } from './viewContent';
 import type { ProjectEditController } from './projectEditController';
 import { useStoredModelView } from './model/ModelView';
 import type { DrawerSections } from '@/features/projectWindow/DrawerForms';
@@ -36,8 +36,8 @@ import { elementKey, isModelAddress, type ElementSelectionStore, type ModelLocat
 import { useStore } from 'zustand';
 import { Select } from '@/components/ui/Select';
 
-type DetailName = 'model' | 'task' | 'scene';
-type StoredModel = { id: string; value: ModelDocument };
+type DetailName = 'model' | 'scene';
+export type StoredModel = { id: string; value: ModelDocument };
 
 /** A document view's steps: `lit` are those an edit is made for. */
 export interface NamedDocumentScope extends MapDocumentScope {
@@ -83,34 +83,15 @@ interface DetailInputs {
   readonly modelPath?: { document: string; path: string[] };
   readonly setModelPath: (document: string, path: string[]) => void;
   readonly evaluateScope?: EvaluateModelRequest['scope'];
-  readonly modelSource?: string;
+  /** The stored Model the step's Model and Scene show, `useStoredModel`. */
+  readonly stored: StoredModel | undefined;
   readonly modelProblems?: readonly StudioProjectWindowMapProblem[];
   readonly drawerSections: DrawerSections;
   readonly openModelProblems?: (element: ModelAddress, opener: HTMLElement) => void;
-  /** The problems that keep the named run from running. */
-  readonly runProblems?: readonly StudioProjectWindowMapProblem[];
-  readonly revealProblem?: (problem: StudioProjectWindowMapProblem) => void;
   readonly exceptions?: ExceptionMentions;
 }
 
 const rootModelPath: string[] = [];
-
-function planarInteriors(graph: GraphInterior, prefix: string[] = []): string[][] {
-  return Object.entries(graph.components ?? {}).flatMap(([id, component]) => {
-    if (component.kind !== 'composite') return [];
-    const path = [...prefix, id];
-    const child = component.interior;
-    if (child.physical_domain === 'planar_multibody') return [path];
-    return child.physical_domain == null ? planarInteriors(child as GraphInterior, path) : [];
-  });
-}
-
-function DetailReason({ reason, name }: {
-  reason: 'definitionUnavailable' | 'planarSceneUnavailable' | 'scenePlaybackUnavailable';
-  name: 'model' | 'task' | 'scene' | 'playback';
-}) {
-  return <p className="p-3 text-sm" role="status">{studioReason(reason, studioName(name))}</p>;
-}
 
 const referencePose: PlanarScenePose = { kind: 'reference' };
 const shownOverlays = new Set<SceneOverlay>();
@@ -246,7 +227,7 @@ function useSceneSelection(elements: ElementSelectionStore, scene: ResolvedScene
 }
 
 function useSceneDetail({
-  editor, activeView, focus, step, evaluation, evaluationReplay, elements, drawerSections, runProblems = [], revealProblem,
+  editor, activeView, step, evaluation, evaluationReplay, elements, drawerSections,
 }: DetailInputs,
   model: StoredModel | undefined, scope: string, projectId: string, revision: string): ManagedProjectDetail {
   const interiors = useMemo(() => model ? planarInteriors(model.value.interior) : [], [model]);
@@ -275,15 +256,13 @@ function useSceneDetail({
     zoomIn: () => onCameraChange(zoomScene(camera, 1.2)),
     zoomOut: () => onCameraChange(zoomScene(camera, 1 / 1.2)),
   }), layers.navigable);
-  const omission = model ? <DetailReason reason="planarSceneUnavailable" name="model" />
-    : <DetailReason reason="definitionUnavailable" name="scene" />;
   return {
     documentId: model?.id,
     path: interiors.length > 1 && path && <Select aria-label={studioName('interior')} value={JSON.stringify(path)}
       items={interiors.map((candidate) => ({ value: JSON.stringify(candidate), label: candidate.join(' / ') }))}
       onValueChange={(value) => chooseInterior({ scope, path: value })} />,
     commands: viewport,
-    body: source || trials ? <CanvasStrip viewport={viewport} tools={<SceneLayers overlays={layers.overlays}
+    body: source || evaluating ? <CanvasStrip viewport={viewport} tools={<SceneLayers overlays={layers.overlays}
       hiddenOverlays={hiddenOverlays} onToggleOverlay={(overlay) => {
         const next = new Set(hiddenOverlays);
         if (next.has(overlay)) next.delete(overlay);
@@ -293,36 +272,35 @@ function useSceneDetail({
       <div className="min-h-0 flex-1">
         <SceneCanvas view={view} time={time} camera={camera} onCameraChange={onCameraChange} hiddenOverlays={hiddenOverlays} fitToSlot {...selection} />
       </div>
-      {!evaluating && focus && scene && <DetailReason reason="scenePlaybackUnavailable" name="playback" />}
-    </CanvasStrip> : evaluating
-      ? runProblems.length ? <ul role="status" className="p-3 text-sm">{runProblems.map((problem, index) => <li key={index}>
-        <ProblemRow problem={problem} onReveal={revealProblem && (() => revealProblem(problem))} />
-      </li>)}</ul>
-        : evaluation?.reason ? <p role="status">{studioReason('observed', evaluation.reason)}</p>
-        : <DetailReason reason="scenePlaybackUnavailable" name="playback" />
-      : omission,
+    </CanvasStrip> : null,
     drawer: (scene || trials) && <SceneDrawer sections={drawerSections} scene={scene ?? emptyReplayScene} trials={trials} checkpoints={checkpoints} {...selection} />,
     inspector: scene && selection.selectedId ? <SceneElementInspector scene={scene} selectedId={selection.selectedId} /> : null,
   };
 }
 
-export function useManagedProjectDetails(input: DetailInputs): Record<DetailName, ManagedProjectDetail> {
-  const { editor, stepId, selection, variantId, focus, activeView } = input;
-  const { saved, draft, outside } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
-  const subjectScope = JSON.stringify([saved.project_id, stepId, variantId]);
-  const scope = JSON.stringify([subjectScope, selection, focus]);
-  const base = stepId ? directTrainStep(draft, stepId) : null;
+/** The stored Model a step shows: its own, the Model its Evaluate subject trains, or the one its Train step names. */
+export function useStoredModel(editor: ProjectEditController, step: PlanStepView | undefined, modelSource: string | undefined) {
+  const { saved, draft } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
+  const base = step ? directTrainStep(draft, step.id) : null;
   const trial = base?.trial_documents;
   const managedModel = trial && typeof trial === 'object' && !Array.isArray(trial) ? trial.model : undefined;
   const direct = DocumentReferenceSchema.safeParse(managedModel);
-  const storedId = modelDocumentId(input.step?.documentIds) ?? input.modelSource ?? (direct.success ? direct.data.document : undefined);
+  const storedId = modelDocumentId(step?.documentIds) ?? modelSource ?? (direct.success ? direct.data.document : undefined);
   const storedDocument = storedId ? saved.project.documents?.[storedId] : undefined;
   const storedPayload = storedId ? documentPayload(saved.project.documents, saved.composed, storedId) : undefined;
-  const stored = useMemo(() => {
+  return useMemo((): StoredModel | undefined => {
     if (!storedId || storedDocument?.schema !== modelSchema) return undefined;
     const result = ModelDocumentSchema.safeParse(storedPayload);
     return result.success ? { id: storedId, value: result.data } : undefined;
   }, [storedId, storedDocument, storedPayload]);
+}
+
+export function useManagedProjectDetails(input: DetailInputs): Record<DetailName, ManagedProjectDetail> {
+  const { editor, stepId, selection, variantId, focus, activeView, stored } = input;
+  const { saved, outside } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
+  const subjectScope = JSON.stringify([saved.project_id, stepId, variantId]);
+  const scope = JSON.stringify([subjectScope, selection, focus]);
+  const storedId = stored?.id;
   const reveal = input.problemReveal;
   const revealedMember = placeMember(reveal?.place);
   const canEdit = selection?.kind === 'steps' && selection.stepIds.length === 1 && selection.stepIds[0] === stepId && !outside;
@@ -362,8 +340,7 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     exceptions: input.exceptions,
   });
   return {
-    model: stored ? storedView : { body: <DetailReason reason="definitionUnavailable" name="model" /> },
-    task: { body: <DetailReason reason="definitionUnavailable" name="task" /> },
+    model: stored ? storedView : { body: null },
     scene: useSceneDetail(input, stored, JSON.stringify([scope, storedId]), saved.project_id, saved.revision),
   };
 }

@@ -202,7 +202,7 @@ function termFields(view: StudioTrialAuthoring, term: ObjectiveTerm, index: numb
   const expression = (field: 'measure' | 'weight'): FieldModel => {
     const label = humanizeLabel(field);
     const projection = view.fields.find((site) => site.path === authoredPointer(['objective', 'terms', term.id, field]));
-    if (!projection) return rawField({ id: term.id + field, label, type: { kind: 'readOnly' }, value: '—' });
+    if (!projection) throw new Error(`The Objective's ${field} of term ${term.id} has no field`);
     const value = term[field];
     const kind = value?.kind === 'name' ? 'link' : value?.kind === 'call' ? 'formula' : value?.kind === 'draw' ? 'draw' : 'value';
     return fromFieldView({

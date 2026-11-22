@@ -16,11 +16,11 @@ vi.mock('@/hooks/useStudioJobs', () => ({
 }));
 vi.mock('@/features/projectFolder/SavedTrainWorkspace', async () => {
   const { ProjectWindow } = await import('@/features/projectWindow/ProjectWindow');
-  const { defaultProjectWindowState } = await import('@/features/projectWindow/projectWindowState');
+  const { defaultProjectWindowState, noViews } = await import('@/features/projectWindow/projectWindowState');
   return {
     default: ({ document }: { document: { configuration: { project: string } } }) => (
       <ProjectWindow state={defaultProjectWindowState} onStateChange={() => {}} projectName={document.configuration.project}
-        availableViews={[]} renderView={() => ({ body: null })} map={null} mapDrawer={null} compactMap={null} commands={[]} />
+        views={noViews} renderView={() => ({ body: null })} map={null} mapDrawer={null} compactMap={null} commands={[]} />
     ),
   };
 });

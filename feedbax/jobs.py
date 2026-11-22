@@ -603,8 +603,17 @@ class JobService(PlanJobReader):
             heavy_selection = {
                 name: key for name, key in selected.items() if key not in light_rows and key not in light
             }
+            row_problems = {
+                RunKey(problem.variant, problem.step, problem.row): problem
+                for problem in reversed(current.plan.diagnostics)
+                if problem.variant is not None and problem.step is not None and problem.row is not None
+                and problem.element is None
+            }
             for name, key in heavy_selection.items():
                 old, run = before.get(key), after.get(key)
+                if (problem := row_problems.get(key)) is not None:
+                    items[name] = _rejected(name, f"cannot_run {problem.path}: {problem.detail}")
+                    continue
                 if old is not None and old.kind == "evaluate":
                     if run is None:
                         items[name] = _rejected(name, "/runs: the reviewed Evaluate row is no longer runnable.")
@@ -740,6 +749,9 @@ class JobService(PlanJobReader):
                         items[name] = _rejected(name, f"The selected request changed at {path}.")
                         continue
                     row = row_index[key.run if isinstance(key, ElementKey) else key]
+                    if (problem := row_problems.get(row.key)) is not None:
+                        items[name] = _rejected(name, f"cannot_run {problem.path}: {problem.detail}")
+                        continue
                     try:
                         item = self._light_item(project, current.plan, store, row, node, items)
                     except (ValueError, KeyError) as error:
@@ -2141,6 +2153,8 @@ def _planned_checkpoint_catalogs(plan: ProjectPlan) -> dict[RequestId, set[int]]
         if planned is not None and isinstance(ref := planned.member.reference, ProductRef):
             if isinstance(ref.select, BatchSetMember):
                 catalogs.setdefault(ref.request_id, set()).update(ref.select.batches)
+            elif isinstance(ref.select, BatchMember):
+                catalogs.setdefault(ref.request_id, set()).add(ref.select.batch)
     for element in plan.elements.values():
         for bindings in element.inputs.values():
             for binding in bindings:

@@ -43,6 +43,8 @@ export interface PlanRunView {
   readonly problems?: readonly StudioProjectWindowMapProblem[];
   /** The definition change that left the run's retained result out of date. */
   readonly change?: StudioDefinitionChange | StudioSavedTrainChange;
+  /** The run of another step this run reads, which cannot run, and so keeps this one from running. */
+  readonly blockedBy?: { readonly stepId: string; readonly label: string };
   /** What the run's attempts report, which names nothing in the definition. */
   readonly reason?: string;
   readonly openingReason?: string;

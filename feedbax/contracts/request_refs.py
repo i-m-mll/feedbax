@@ -195,6 +195,12 @@ class BestCandidate(ReferenceValue):
         return self
 
 
+def best_rank_key(rank: int, group: Mapping[str, str]) -> str:
+    """``rank-k``, under its group's axis values when grouped (``seed=one/rank-1``)."""
+    name = f"rank-{rank}"
+    return f"{axis_values_id(group)}/{name}" if group else name
+
+
 class BestRank(ReferenceValue):
     """Select one rank over ordered candidates when their Train results settle."""
 
@@ -216,9 +222,7 @@ class BestRank(ReferenceValue):
 
     @property
     def key(self) -> str:
-        """``rank-k``, under its group's axis values when grouped (``seed=one/rank-1``)."""
-        rank = f"rank-{self.rank}"
-        return f"{axis_values_id(self.group)}/{rank}" if self.group else rank
+        return best_rank_key(self.rank, self.group)
 
     def winner(self, scores: Sequence[float]) -> int:
         if len(scores) != len(self.candidates) or any(not isfinite(score) for score in scores):
