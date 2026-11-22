@@ -17,6 +17,7 @@ from feedbax.contracts.jobs import JobStatus, StudioJobSubmission
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_plan import RunKey
 from feedbax.contracts.request_refs import RequestId
+from feedbax.contracts.strict_json import strict_model_validate_json
 from feedbax.host.client import HostClient
 from feedbax.host.plan_history import plan_run_key
 from feedbax.host.protocol import Event, EventPage, HostError, JsonObject, JobsSnapshot, StopMode
@@ -155,8 +156,8 @@ class ApprovedSessionRuns:
                     (identity, approval.model_dump_json(), token_urlsafe()),
                 )
             elif (
-                _OpeningApproval.model_validate_json(prior[0]) != approval
-                or Delegation.model_validate_json(prior[1]) != delegated
+                strict_model_validate_json(_OpeningApproval, prior[0]) != approval
+                or strict_model_validate_json(Delegation, prior[1]) != delegated
             ):
                 raise SessionError("This approval belongs to a different saved delegation.")
 
@@ -190,8 +191,8 @@ class ApprovedSessionRuns:
             ).fetchall()
         visible = []
         for request_json, expiry, rate, failure, close_reason, delegation_json, submission_json in staged:
-            request = SessionRequest.model_validate_json(request_json)
-            delegated = Delegation.model_validate_json(delegation_json)
+            request = strict_model_validate_json(SessionRequest, request_json)
+            delegated = strict_model_validate_json(Delegation, delegation_json)
             assert delegated.local_store is not None and delegated.request_ids is not None
             record = records.get(request.id)
             failure = failure or close_reason or (record.opening_failure if record is not None else None)
@@ -207,7 +208,7 @@ class ApprovedSessionRuns:
                 status, reason = JobStatus.STARTING, None if step else "Opening the machine."
             items = {}
             if submission_json is not None:
-                submission = StudioJobSubmission.model_validate_json(submission_json)
+                submission = strict_model_validate_json(StudioJobSubmission, submission_json)
                 items = {item.run_key: item for item in submission.items}
             rows = []
             for key, request_id in zip(delegated.run_keys, delegated.request_ids, strict=True):
@@ -274,13 +275,13 @@ class ApprovedSessionRuns:
                 ).fetchone()
             assert staged is not None
             approval_json, adoption_token, failure, close_reason, delegation_json, submission_json = staged
-            submission = StudioJobSubmission.model_validate_json(submission_json) if submission_json is not None else None
+            submission = strict_model_validate_json(StudioJobSubmission, submission_json) if submission_json is not None else None
             if submission is not None and close_reason is None:
                 return submission
             if failure is not None:
                 raise ApprovedRunClosed(failure)
-            approval = _OpeningApproval.model_validate_json(approval_json)
-            delegated = Delegation.model_validate_json(delegation_json)
+            approval = strict_model_validate_json(_OpeningApproval, approval_json)
+            delegated = strict_model_validate_json(Delegation, delegation_json)
             record = self.driver.find_record(session_id)
             if record is not None:
                 launch = record.launch
@@ -395,14 +396,14 @@ class SessionJobs:
                 previous = db.execute(select, key).fetchone()
         assert previous is not None
         stored, submission = previous
-        pending = Delegation.model_validate_json(stored)
+        pending = strict_model_validate_json(Delegation, stored)
         prior = pending.model_copy(update={"files": None})
         if prior.request_ids is None and self._venue_jobs is None:
             prior = prior.model_copy(update={"request_ids": request.request_ids})
         if prior != request:
             raise SessionError("This submission token belongs to a different saved delegation.")
         if submission is not None:
-            return StudioJobSubmission.model_validate_json(submission)
+            return strict_model_validate_json(StudioJobSubmission, submission)
         return self._record_submission(self._deliver(folders, token, pending))
 
     def _deliver(self, folders: ProjectFolder, token: str, request: Delegation) -> StudioJobSubmission:
@@ -469,7 +470,7 @@ class SessionJobs:
                 (self.session_id,),
             ).fetchall()
         for token, request in submissions:
-            self._record_submission(self._deliver(folders, token, Delegation.model_validate_json(request)))
+            self._record_submission(self._deliver(folders, token, strict_model_validate_json(Delegation, request)))
         for job_id, mode in stops:
             reply = self.host.stop((job_id,), mode)
             with self.driver.connection() as db:

@@ -21,11 +21,14 @@ import re
 from collections.abc import Callable
 from typing import Any, Protocol, TypeVar
 
+from pydantic import TypeAdapter
+
 __all__ = [
     "DuplicateJsonKeyError",
     "StrictJsonError",
     "strict_json_loads",
     "strict_model_validate_json",
+    "strict_validate_json",
 ]
 
 _BARE_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -145,32 +148,48 @@ def strict_json_loads(
     return parsed
 
 
-_ModelT = TypeVar("_ModelT")
+_ValueT = TypeVar("_ValueT")
 
 
-class _JsonModel(Protocol[_ModelT]):
+class _JsonModel(Protocol[_ValueT]):
     @classmethod
-    def model_validate_json(cls, data: str | bytes | bytearray, **kwargs: Any) -> _ModelT: ...
+    def model_validate_json(cls, data: str | bytes | bytearray, **kwargs: Any) -> _ValueT: ...
 
 
-def strict_model_validate_json(
-    model: _JsonModel[_ModelT],
-    data: str | bytes | bytearray,
-    *,
-    ref: str | None = None,
-    **kwargs: Any,
-) -> _ModelT:
-    """Refuse duplicated object members and preserve Pydantic's other semantics.
+def _refuse_duplicates(data: str | bytes | bytearray, ref: str | None) -> None:
+    """Refuse duplicated object members and leave every other outcome to Pydantic.
 
     Pydantic remains the authority for every non-duplicate behavior, including
-    Unicode-surrogate, trailing-input, non-finite-number, and error semantics. A
-    standard-library parse failure therefore delegates to Pydantic so its
-    established result or exception remains unchanged.
+    Unicode-surrogate, trailing-input, non-finite-number, and error semantics, so
+    a standard-library parse failure is not raised here.
     """
     try:
         strict_json_loads(data, ref=ref)
     except DuplicateJsonKeyError:
         raise
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return model.model_validate_json(data, **kwargs)
+        return
+
+
+def strict_model_validate_json(
+    model: _JsonModel[_ValueT],
+    data: str | bytes | bytearray,
+    *,
+    ref: str | None = None,
+    **kwargs: Any,
+) -> _ValueT:
+    """Validate ``data`` as ``model`` after refusing duplicated object members."""
+    _refuse_duplicates(data, ref)
     return model.model_validate_json(data, **kwargs)
+
+
+def strict_validate_json(
+    adapter: TypeAdapter[_ValueT],
+    data: str | bytes | bytearray,
+    *,
+    ref: str | None = None,
+    **kwargs: Any,
+) -> _ValueT:
+    """Validate ``data`` with ``adapter`` after refusing duplicated object members."""
+    _refuse_duplicates(data, ref)
+    return adapter.validate_json(data, **kwargs)

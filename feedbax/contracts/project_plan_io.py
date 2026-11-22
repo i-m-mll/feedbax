@@ -139,7 +139,7 @@ def dump_plan_requests(plan: PlanRequests, variants: tuple[str, ...] | None) -> 
     grouped: dict[tuple[str, RequestKind], dict[RequestId, JsonObject]] = {}
     digests = set()
     for identity in sorted({entry.request_id for entry in scoped.entries.values()}):
-        obj = json.loads(scoped.requests[identity])
+        obj = strict_json_loads(scoped.requests[identity])
         schema, kind = obj.pop("schema"), obj.pop("kind")
         grouped.setdefault((schema, kind), {})[identity] = obj
         descriptor = stored_request_descriptor(schema, kind)
@@ -163,7 +163,7 @@ def dump_plan_requests(plan: PlanRequests, variants: tuple[str, ...] | None) -> 
         variants=variants,
         entries=list(scoped.entries.values()),
         request_groups=groups,
-        documents={digest: json.loads(scoped.documents[digest]) for digest in sorted(digests)},
+        documents={digest: strict_json_loads(scoped.documents[digest]) for digest in sorted(digests)},
         subset_sources=[
             _SubsetSource(variant=variant, step=step, role=role, source=source)
             for (variant, step, role), source in sorted(scoped.subset_sources.items())

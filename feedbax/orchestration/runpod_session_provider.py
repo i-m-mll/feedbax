@@ -22,6 +22,7 @@ from uuid import UUID
 
 from pydantic import Field, SecretStr, TypeAdapter
 
+from feedbax.contracts.strict_json import strict_validate_json
 from feedbax.host.io import private_directory, sync_directory, write_json
 from feedbax.host.protocol import JsonObject
 from feedbax.orchestration.runpod import (
@@ -461,7 +462,7 @@ class RunPodAcquisition:
         self._before_cutoff(launch)
         with self._exclusive(launch.intent) as path:
             try:
-                state = _Journal.validate_json(path.read_bytes())
+                state = strict_validate_json(_Journal, path.read_bytes())
             except FileNotFoundError:
                 if any(item.intent == launch.intent for item in self.inventory()):
                     raise SessionError("RunPod already lists a resource for an unjournaled launch intent.")
@@ -543,7 +544,7 @@ class RunPodAcquisition:
     def check_opening_deadline(self, launch: SessionLaunch) -> None:
         with self._exclusive(launch.intent) as path:
             try:
-                state = _Journal.validate_json(path.read_bytes())
+                state = strict_validate_json(_Journal, path.read_bytes())
             except FileNotFoundError:
                 return
             if state.launch != launch:
@@ -605,7 +606,7 @@ class RunPodAcquisition:
             raise SessionError("RunPod SSH requires an owned venue.")
         pod_id = _identity(resource.id)
         try:
-            state = _Journal.validate_json(path.read_bytes())
+            state = strict_validate_json(_Journal, path.read_bytes())
         except FileNotFoundError:
             raise SessionError("RunPod SSH has no persisted boot key pin for this intent.") from None
         if not isinstance(state, _PodRequested) or state.launch.intent != resource.intent:
@@ -632,7 +633,7 @@ class RunPodAcquisition:
         """Fence completion locally if its remote request was never submitted."""
         with self._exclusive(launch.intent) as path:
             try:
-                state = _Journal.validate_json(path.read_bytes())
+                state = strict_validate_json(_Journal, path.read_bytes())
             except FileNotFoundError:
                 # Every provider mutation is preceded by a journal write.
                 return () if resource is None else None
