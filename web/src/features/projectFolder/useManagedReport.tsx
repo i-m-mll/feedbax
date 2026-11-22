@@ -75,7 +75,7 @@ export function useManagedReport({
   const direct = !step?.sweep && !step?.deltas?.length;
   /** Whether its commands apply; a gesture made while the workspace is unsettled waits for it. */
   const applies = !!report && !!document && wholeStep && direct && !outside && !shared;
-  const editable = applies && projection?.revision === saved.revision && !pending;
+  const editable = applies && !pending;
   const figures = projection?.window_map?.analysis_elements?.filter(isReportFigureSource)
     .filter(({ key }) => key.variant === variant) ?? [];
   const inputs = step?.inputs ?? {};
