@@ -1,7 +1,7 @@
 import { appTip } from '@window-shell/browser/tooltip';
 import clsx from 'clsx';
 import { Plus } from 'lucide-react';
-import { useId, useRef, useState } from 'react';
+import { useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { catalogEntries, readStudioTrialAuthoring, useAuthoringCatalog } from '@/api/studioAuthoring';
 import { apiErrorMessage } from '@/api/request';
@@ -11,13 +11,13 @@ import { Inspector } from '@/components/ui/Inspector';
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '@/components/ui/Menu';
 import { StatusMark } from '@/components/ui/StatusMark';
 import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
-import type { ChangeMark, FieldModel } from '@/components/values/fieldModel';
+import { evaluateChange, type ChangeMark, type ChangeSource, type FieldModel } from '@/components/values/fieldModel';
 import { Drawer, DrawerSection, type DrawerSections } from '@/features/projectWindow/DrawerForms';
 import { Table, TableCell, TableHeaderCell } from '@/components/ui/Table';
 import { CatalogPicker } from '@/components/ui/CatalogPicker';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { SettingsForm } from '@/components/values/SettingsForm';
-import { Origin, ValueField } from '@/components/values/ValueField';
+import { FieldChange, ValueField } from '@/components/values/ValueField';
 import { setIn } from '@/components/values/adapters/jsonSchema';
 import { isRecord, rawField } from '@/components/values/adapters/raw';
 import { fromFieldView } from '@/components/values/adapters/fieldView';
@@ -26,6 +26,7 @@ import type {
   JsonValue, ObjectiveTerm, ProjectValueEdit, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
+import { baseOf } from './documentPayload';
 import type { ProjectEditController } from './projectEditController';
 import { filesRemoval, type ConfirmRunRemoval } from './runRemoval';
 import { ScrollFade } from '@/components/ui/ScrollFade';
@@ -35,6 +36,11 @@ type Change = NonNullable<StudioTrialAuthoringRequest['change']>;
 export type TrialChangeScope = (change: Change) => StudioTrialAuthoringRequest['scope'] | undefined;
 /** Applies a change; `removes` marks one that takes runs out of the project, which the run confirmation guards. */
 type Commit = (name: string, change: Change, removes?: boolean) => Promise<string | undefined>;
+/** A step's Trial authoring, with what the changed values of its Task and Objective documents differ from. */
+export type TrialView = StudioTrialAuthoring & {
+  readonly changedFrom: { readonly task?: ChangeSource; readonly objective?: ChangeSource };
+};
+
 const has = (record: object, key: string) => Object.prototype.hasOwnProperty.call(record, key);
 
 function write(path: string, value: JsonValue, present: boolean): ProjectValueEdit {
@@ -45,10 +51,10 @@ function write(path: string, value: JsonValue, present: boolean): ProjectValueEd
  * The changed mark of the value at `path` in the step's Task or Objective document, when it differs from the
  * document's base; its Reset gives it the base's value.
  */
-function changedAt(view: StudioTrialAuthoring, document: 'task' | 'objective', path: string, text: string,
-  commit?: Commit): ChangeMark | undefined {
-  if (!(document === 'task' ? view.task_changed : view.objective_changed)?.includes(path)) return undefined;
-  return { text, reset: commit && (() => commit(studioName('reset'), { kind: 'reset', document, paths: [path] })) };
+function changedAt(view: TrialView, document: 'task' | 'objective', path: string, commit?: Commit): ChangeMark | undefined {
+  const from = view.changedFrom[document];
+  if (!from || !(document === 'task' ? view.task_changed : view.objective_changed)?.includes(path)) return undefined;
+  return { from, reset: commit && (() => commit(studioName('reset'), { kind: 'reset', document, paths: [path] })) };
 }
 
 export function useTrialAuthoring(
@@ -62,6 +68,18 @@ export function useTrialAuthoring(
     placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === project &&
       JSON.stringify(previousQuery.queryKey[3]) === JSON.stringify(run) ? previous : undefined,
   });
+  const { project: authored } = useSyncExternalStore(editor.subscribe, editor.getSnapshot).saved;
+  const data = query.data;
+  /** An Evaluate step's documents change the values it reads; another step's differ from their documents' bases. */
+  const view: TrialView | undefined = useMemo(() => {
+    if (!data || !run) return undefined;
+    const from = (document: string | null): ChangeSource | undefined => {
+      if (authored.steps?.[run.step]?.kind === 'evaluate') return { kind: 'evaluate', step: run.step };
+      const base = baseOf(authored.documents, document);
+      return base === undefined ? undefined : { kind: 'base', document: base };
+    };
+    return { ...data, changedFrom: { task: from(data.task_document), objective: from(data.objective_document) } };
+  }, [data, authored, run]);
   const commit: Commit | undefined = editable && run && query.data ? (name, change, removes) => editor.command(async (saved) => {
     const result = await readStudioTrialAuthoring(saved.project_id, {
       revision: saved.revision, run, change, scope: scope(change),
@@ -84,16 +102,15 @@ export function useTrialAuthoring(
     }
     return undefined;
   }).catch(apiErrorMessage) : undefined;
-  return { view: query.data, error: query.error, retry: () => { void query.refetch(); }, commit };
+  return { view, error: query.error, retry: () => { void query.refetch(); }, commit };
 }
 
-/** `changed` is the text of the changed mark: Changed, or in an evaluation the step that changes the value. */
-export function TrialTaskForm({ view, commit, changed }: { view: StudioTrialAuthoring; commit?: Commit; changed: string }) {
+export function TrialTaskForm({ view, commit }: { view: TrialView; commit?: Commit }) {
   const [error, setError] = useState<string>();
   const catalog = useAuthoringCatalog();
   const typeLabel = useId();
-  const typeOrigin = useId();
-  const typeChange = changedAt(view, 'task', authoredPointer(['type']), changed, commit);
+  const typeChangeId = useId();
+  const typeChange = changedAt(view, 'task', authoredPointer(['type']), commit);
   const task = 'type' in view.task ? view.task : undefined;
   const params = task?.params ?? {};
   const type = view.task_types.find((item) => item.type === task?.type);
@@ -103,9 +120,10 @@ export function TrialTaskForm({ view, commit, changed }: { view: StudioTrialAuth
   return <div className="grid max-w-2xl gap-4 text-sm">
     {!task && source}
     {task && <section className="grid gap-1" aria-label={studioName('parameters')}>
-      <FieldRow label={studioName('task')} labelId={typeLabel} below={typeChange && <Origin id={typeOrigin} text={typeChange.text}
-        reset={typeChange.reset && (() => { void typeChange.reset!().then(setError); })} />}>
-        <CatalogPicker aria-labelledby={typeLabel} aria-describedby={typeChange ? typeOrigin : undefined} className="w-full"
+      <FieldRow label={studioName('task')} labelId={typeLabel}>
+        <CatalogPicker aria-labelledby={typeLabel} aria-describedby={typeChange ? typeChangeId : undefined} className="w-full"
+          trailing={typeChange && <FieldChange change={typeChange} id={typeChangeId}
+            onReset={() => { void typeChange.reset!().then(setError); }} />}
           disabled={!commit} value={task.type}
           entries={view.task_types.map((item) => ({ key: item.type, label: item.label, package: packages.get(item.type) }))}
           onChoose={async (key) => setError(await edit(studioName('task'), [
@@ -113,11 +131,13 @@ export function TrialTaskForm({ view, commit, changed }: { view: StudioTrialAuth
           ]))} />
       </FieldRow>
       {type && <SettingsForm schema={type.parameter_schema} value={params}
-        origin={([key]) => {
-          const origin = view.task_field_sources?.[key] ?? view.task_source;
-          return origin ? studioEvaluateValueSource(origin) : undefined;
+        origin={(path) => {
+          const origin = view.task_field_sources?.[path[0]] ?? view.task_source;
+          return origin?.kind === 'trained' && !changedAt(view, 'task', authoredPointer(['params', ...path]))
+            ? studioEvaluateValueSource(origin) : undefined;
         }}
-        changed={(path) => changedAt(view, 'task', authoredPointer(['params', ...path]), changed, commit)}
+        changed={(path) => changedAt(view, 'task', authoredPointer(['params', ...path]), commit) ??
+          (path.length === 1 ? evaluateChange(view.task_field_sources?.[path[0]] ?? view.task_source ?? undefined) : undefined)}
         write={commit && (async (path, value) => {
           const [key, ...rest] = path;
           const property = type.parameter_schema.properties;
@@ -158,7 +178,7 @@ export function TrialTaskOutline({ sections, view, selected, select }: {
   </Drawer>;
 }
 
-export function TrialTaskInspector({ view, commit, selected }: { view: StudioTrialAuthoring; commit?: Commit; selected?: string }) {
+export function TrialTaskInspector({ view, commit, selected }: { view: TrialView; commit?: Commit; selected?: string }) {
   if (!selected) return null;
   const [kind, ...rest] = selected.split(':');
   const key = rest.join(':');
@@ -194,9 +214,9 @@ type TermField = 'name' | 'enabled' | 'measure' | 'window' | 'weight' | 'reducti
 const columns = ['name', 'measure', 'window', 'weight', 'enabled'] as const satisfies readonly TermField[];
 const columnNames = { name: 'term', enabled: 'enabled', measure: 'measure', window: 'window', weight: 'weight' } as const;
 
-function termFields(view: StudioTrialAuthoring, term: ObjectiveTerm, index: number, commit?: Commit): Record<TermField, FieldModel> {
+function termFields(view: TrialView, term: ObjectiveTerm, index: number, commit?: Commit): Record<TermField, FieldModel> {
   const path = '/terms/' + index;
-  const changed = (field: keyof ObjectiveTerm) => changedAt(view, 'objective', path + '/' + field, studioName('changed'), commit);
+  const changed = (field: keyof ObjectiveTerm) => changedAt(view, 'objective', path + '/' + field, commit);
   const set = (field: keyof ObjectiveTerm, name: string) => commit && ((value: JsonValue) => commit(
     studioAccessibleName('set', name), { kind: 'objective', edits: [write(path + '/' + field, value, has(term, field))] }));
   const expression = (field: 'measure' | 'weight'): FieldModel => {
@@ -288,7 +308,7 @@ export function TrialObjectiveAdd({ view, commit, select }: {
 }
 
 export function TrialObjectiveTable({ view, commit, selected, select }: {
-  view: StudioTrialAuthoring; commit?: Commit; selected?: TermSelection; select(term: string, field?: string): void;
+  view: TrialView; commit?: Commit; selected?: TermSelection; select(term: string, field?: string): void;
 }) {
   const terms = view.objective?.terms ?? [];
   return <ScrollFade axis="both" className="h-full min-h-0 [--fade-inset-top:var(--row-height)]">
@@ -356,7 +376,7 @@ export function TrialObjectiveOutline({ sections, view, commit, selected, select
 }
 
 export function TrialObjectiveInspector({ view, commit, selected }: {
-  view: StudioTrialAuthoring; commit?: Commit; selected?: TermSelection;
+  view: TrialView; commit?: Commit; selected?: TermSelection;
 }) {
   const index = view.objective?.terms?.findIndex(({ id }) => id === selected?.term) ?? -1;
   const term = view.objective?.terms?.[index];

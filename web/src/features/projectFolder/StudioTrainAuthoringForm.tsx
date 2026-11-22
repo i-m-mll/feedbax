@@ -11,7 +11,7 @@ import { FieldRow } from '@/components/ui/FieldRow';
 import { MenuItem, MenuSubmenu } from '@/components/ui/Menu';
 import { settingsFields } from '@/components/values/SettingsForm';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
-import { Origin, ValueField } from '@/components/values/ValueField';
+import { FieldChange, ValueField } from '@/components/values/ValueField';
 import { pointer } from '@/components/values/adapters/jsonSchema';
 import { fromFieldView, type ProjectedEdit } from '@/components/values/adapters/fieldView';
 import { rawField } from '@/components/values/adapters/raw';
@@ -25,11 +25,12 @@ import type {
   TrainFieldRequest, TrainFieldView,
 } from '@/generated/studioContracts';
 import type { ChangeMark, FieldCommit, FieldKindOffer, FieldModel } from '@/components/values/fieldModel';
+import { baseOf } from './documentPayload';
 import type { ClassProjection } from '@/components/values/adapters/jsonSchema';
 import { modelDocumentId, sameAuthoredFile, type AuthoredProject } from './authoredEdits';
 import { ProjectEditConflictError, type ProjectEditController, type ProjectEditValidation } from './projectEditController';
 import { filesRemoval, sweepValueRuns, useRunRemoval } from './runRemoval';
-import { inTrainingDocument } from './trainingDocument';
+import { inTrainingDocument, trainFieldDocument } from './trainingDocument';
 import { documentChoice, stepChoice, stepChoiceId, stepGroup } from './referenceChoices';
 import { ReferenceField } from '@/components/values/ReferenceField';
 import type { ElementSelectionStore } from '@/features/projectWindow/elementSelection';
@@ -263,9 +264,14 @@ function useTrainForm(props: Props) {
   const { editor, stepId, onChooseSweepValue } = props;
   const selection = props.selection ?? { kind: 'steps', stepIds: [stepId] };
   const { saved, outside } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
+  /** The changed mark of the field at `id`, a pointer in the definition: the base of the document it is read from. */
+  const changeMark = (id: string, reset?: () => Promise<string | undefined>): ChangeMark | undefined => {
+    const base = baseOf(saved.project.documents, trainFieldDocument(saved.project.steps?.[stepId], id));
+    return base === undefined ? undefined : { from: { kind: 'base', document: base }, reset };
+  };
   const { project_id: projectId, revision } = saved;
   const methodLabel = useId();
-  const methodOrigin = useId();
+  const methodChangeId = useId();
   const [methodReason, setMethodReason] = useState<string>();
   const scope = runSelection(props.run, props.fieldRows, props.fieldAxes, props.chosen, props.step);
   const shows = (id: string) => !props.trainingDocument || inTrainingDocument(id);
@@ -324,9 +330,7 @@ function useTrainForm(props: Props) {
   const fieldModel = (field: TrainFieldView): FieldModel => ({ ...fromFieldView(field, {
     id: JSON.stringify([projectId, stepId, props.fieldRows, field.id]),
     commit: numeric.edit && ((edit) => numeric.edit!(field.id, edit)),
-    changed: field.changed ? {
-      text: studioName('changed'), reset: numeric.edit && (() => numeric.edit!(field.id, { kind: 'reset' })),
-    } : undefined,
+    changed: field.changed ? changeMark(field.id, numeric.edit && (() => numeric.edit!(field.id, { kind: 'reset' }))) : undefined,
     rowSelection: !!props.fieldRows?.length,
     selectedMembers: members(field.sweep?.id),
     chooseMember: field.sweep && onChooseSweepValue
@@ -347,9 +351,8 @@ function useTrainForm(props: Props) {
   const isMixed = (at: string) => mixed.some((differs) => at === differs || at.startsWith(differs + '/'));
   const classFields = new Map((shown?.classes ?? []).map((field) => [field.id, field]));
   /** The changed mark of the value at `id`, a pointer in the definition, when a difference of its document sets it. */
-  const changedAt = (id: string): ChangeMark | undefined => shown?.changed?.includes(id) ? {
-    text: studioName('changed'), reset: editable ? () => apply({ reset: id }, studioName('reset')) : undefined,
-  } : undefined;
+  const changedAt = (id: string): ChangeMark | undefined => shown?.changed?.includes(id)
+    ? changeMark(id, editable ? () => apply({ reset: id }, studioName('reset')) : undefined) : undefined;
   const methodChange = changedAt('/method');
   const rowSelection = !!scope.rows?.length;
   /** A class field's kind, members and edits. Its sweep is changed only with the whole step selected. */
@@ -403,7 +406,7 @@ function useTrainForm(props: Props) {
     }) : [],
   ];
   return {
-    shown, refusal, editable, methodField, methods, methodChange, methodReason, setMethodReason, methodLabel, methodOrigin,
+    shown, refusal, editable, methodField, methods, methodChange, methodReason, setMethodReason, methodLabel, methodChangeId,
     isMixed, apply, fields, definition, numeric, catalog,
   };
 }
@@ -411,7 +414,7 @@ function useTrainForm(props: Props) {
 export function StudioTrainAuthoringForm(props: Props) {
   const { editor, stepId } = props;
   const {
-    shown, refusal, editable, methodField, methods, methodChange, methodReason, setMethodReason, methodLabel, methodOrigin,
+    shown, refusal, editable, methodField, methods, methodChange, methodReason, setMethodReason, methodLabel, methodChangeId,
     isMixed, apply, fields, definition, numeric, catalog,
   } = useTrainForm(props);
   if (refusal !== undefined) return null;
@@ -426,12 +429,10 @@ export function StudioTrainAuthoringForm(props: Props) {
         {props.trains && !props.trainingDocument && <CheckpointStart editor={editor} stepId={stepId} step={props.step} trains={props.trains}
           picking={props.picking} editable={editable} />}
         {methodField && <div data-field={methodField.id} className="contents"><FieldRow label={methodField.label} labelId={methodLabel}
-          below={(methodChange || methodReason) && <>
-            {methodChange && <Origin id={methodOrigin} text={methodChange.text}
-              reset={methodChange.reset && (() => { void methodChange.reset!().then(setMethodReason); })} />}
-            {methodReason && <p role="alert">{methodReason}</p>}
-          </>}>
-          <CatalogPicker aria-labelledby={methodLabel} aria-describedby={methodChange ? methodOrigin : undefined} className="w-full" entries={methods}
+          below={methodReason && <p role="alert">{methodReason}</p>}>
+          <CatalogPicker aria-labelledby={methodLabel} aria-describedby={methodChange ? methodChangeId : undefined} className="w-full" entries={methods}
+            trailing={methodChange && <FieldChange change={methodChange} id={methodChangeId}
+              onReset={() => { void methodChange!.reset!().then(setMethodReason); }} />}
             value={typeof methodField.value === 'string' && !isMixed('/method') ? methodField.value : null}
             placeholder={isMixed('/method') ? studioName('mixed') : undefined}
             disabled={!editable || !methodField.control}

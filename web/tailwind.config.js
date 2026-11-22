@@ -40,6 +40,7 @@ export default {
           'status-success': 'var(--studio-status-success)',
           'status-failure': 'var(--studio-status-failure)',
           'status-ink': 'var(--studio-status-ink)',
+          change: 'var(--studio-change-mark)',
           'scene-feature': 'var(--studio-scene-feature)',
           'scene-guide': 'var(--studio-scene-guide)',
         }

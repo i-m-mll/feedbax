@@ -6,7 +6,7 @@ import { apiErrorMessage, isRefusal, isServiceFailure, isUnanswered, landsOnGest
 import { prepareCheckpointRuleEdit, prepareSubsetToRows } from '@/api/studioAuthoring';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import {
-  studioAccessibleName, studioCountOf, studioEvaluateValueSource, studioFormat, studioName, studioPlaceName, studioProblemDetail, studioReason, studioRunReason, studioRunStatus, type StudioPlace,
+  studioAccessibleName, studioCountOf, studioFormat, studioName, studioPlaceName, studioProblemDetail, studioReason, studioRunReason, studioRunStatus, type StudioPlace,
 } from '@/components/activity/studioVocabulary';
 import { HeaderActivity } from '@/components/layout/HeaderActivity';
 import {
@@ -1615,8 +1615,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               return {
                 padded: true,
                 picker: pickDocument('task', value.task_document ?? undefined, documentScopes.task),
-                body: withProblem(<TrialTaskForm view={value} commit={commit} changed={step?.kind === 'evaluate'
-                  ? studioEvaluateValueSource({ kind: 'evaluate', step: step.id }) : studioName('changed')} />),
+                body: withProblem(<TrialTaskForm view={value} commit={commit} />),
                 drawer: <TrialTaskOutline sections={drawerSections} view={value} selected={selected} select={choose(document)} />,
                 inspector: selected && <TrialTaskInspector view={value} commit={commit} selected={selected} />,
               };
