@@ -4,7 +4,7 @@ import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-quer
 import { approveSavedRun, fetchExecutionTargets, fetchSavedTrainRuns, quoteSavedRun, runSavedTrain } from '@/api/jobs';
 import { isRefusal, isServiceFailure, isUnanswered, landsOnGesture } from '@/api/request';
 import { isStudioDefect, shownError } from '@/api/shownErrors';
-import { prepareCheckpointRuleEdit, prepareSubsetToRows } from '@/api/studioAuthoring';
+import { prepareCheckpointRuleEdit, prepareSubsetToRows, prepareTrainStart, useAuthoringCatalog } from '@/api/studioAuthoring';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import {
   studioAccessibleName, studioCountOf, studioFormat, studioName, studioPlaceName, studioProblemDetail, studioReason, studioRunReason, studioRunStatus, type StudioPlace,
@@ -50,7 +50,7 @@ import {
 import {
   ModelAddressSchema, StepReferenceSchema, type PresentationDocument, type PresentationPosition, type ProjectValueEdit,
   type StudioActivityJob, type StudioJobSubmission, type StudioMachineQuote, type StudioProjectDocument, type StudioProjectWindowMapProblem,
-  type StudioSavedTrainKey, type StudioSavedTrainRuns,
+  type StudioSavedTrainKey, type StudioSavedTrainRuns, type StepReference, type SubsetTerms,
   type StudioCheckpointRuleRequest, type JsonValue, type SweepExceptionTerms, type StudioPlanReviewSource, type StudioProjectWindowMapException, type ModelAddress, type PatchValue,
   type StudioClassField, type StudioProjectSnapshot,
 } from '@/generated/studioContracts';
@@ -67,15 +67,22 @@ import { createCheckpointTrain } from './createCheckpointTrain';
 import { analyzeInput, createAnalyze, createReport, isReportFigureSource, type ReportFigureSource } from './createManagedStep';
 import { createTrain } from './createTrain';
 import { trainingDocumentId } from './trainingDocument';
-import { authoredTrialDomain, checkpointLabel, createEvaluation, editableCheckpointRule, exactCheckpoint, managedTrialDomain, ordinaryEvaluation, selectionCheckpoints, type CheckpointRange, type EditableCheckpointRule, type SelectionCheckpoint, type StoppedEvaluationSubject } from './evaluateAuthoring';
+import {
+  authoredTrialDomain, checkpointLabel, createEvaluation, editableCheckpointRule, evaluateSubject, evaluateSubjectEdits, exactCheckpoint,
+  managedTrialDomain, ordinaryEvaluation, selectionCheckpoints, type CheckpointRange, type EditableCheckpointRule, type EvaluateSubject,
+  type SelectionCheckpoint, type StoppedEvaluationSubject,
+} from './evaluateAuthoring';
 import { bindProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
 import { bestRankGroups, projectWindowPlan, planVariants, savedRunId, stepSourceRows, unvalued } from './projectWindowPlan';
 import { placeField, placeMember, placeView, removeGraphVariation, type Reveal } from './projectWindowProblems';
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
 import { planWithRefusal, problemKey, type GestureFailures, type Refusal } from './refusals';
-import { CheckpointEditor, EvaluateSubjectFields, SubjectSubset, TrialsEditor, type EvaluateField } from './StudioEvaluateAuthoring';
-import { connection, stepSelections } from './selectionEdits';
+import { SelectionRuns, SubjectDocuments, TrialsEditor, type StepField } from './StudioEvaluateAuthoring';
+import { bindingEdit, connection, selectionProblem, stepSelections, subjectAxisEdits } from './selectionEdits';
+import { InputEditor, type InputGesture } from './InputEditor';
+import { documentChoice } from './referenceChoices';
+import { documentsOfRole } from './useProjectDocuments';
 import { StudioEvaluationAttemptDetails } from './StudioEvaluationResults';
 import { focusedResult, SavedResults } from './SavedResults';
 import { filesRemoval, RunRemovalContext, useRunRemovalDialog } from './runRemoval';
@@ -222,6 +229,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     if (!isUnanswered(error)) setCommandError(error);
   };
   const [machines, setMachines] = useState<Readonly<Record<string, string>>>({});
+  const stepInputs = useAuthoringCatalog().data?.step_inputs;
   const [machineQuote, setMachineQuote] = useState<StudioMachineQuote>();
   const [rename, setRename] = useState<{ name: string; revision: string }>();
   /** How many of its edits are waiting or in flight. */
@@ -332,10 +340,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const authoring = step && (primaryVariant && directTrainStep(saved.project, step.id, true) !== null ||
     wholeStep && authored?.kind === 'train') &&
     state.selection ? {
-    editor, stepId: step.id, step, selection: state.selection, picking: elements,
+    editor, stepId: step.id, step, selection: state.selection,
     onRefused: (reason: string | undefined) => setReadRefusal((current) => reason ? { kind: 'step', step: step.id, reason }
       : current?.step === step.id ? undefined : current),
-    trains: plan.steps.filter(({ kind }) => kind === 'train'),
     onChooseSweepValue: (sweepId: string, valueId: string, extend: boolean) => {
       selection.select(selectSweepValue(latestState.current, step.id, sweepId, valueId, extend));
     },
@@ -546,20 +553,21 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     !Object.values(evaluated?.sweep?.axes ?? {}).some((axis) => axis && 'checkpoint_rule' in axis)
     ? selectionCheckpoints(subjectReferences) : undefined;
   const stepLabel = (id: string) => plan.steps.find((item) => item.id === id)?.label ?? id;
-  /** The rows of its Train step that selection `index` of the subject reads. */
-  function selectionRows(index: number) {
-    const reference = subjectReferences?.[index];
+  /** The rows of its producer that selection `index` of the step's input `role` reads. */
+  function selectionRows(role: string, index: number) {
+    const binding = authored?.inputs?.[role];
+    const reference = stepSelections(binding)?.[index];
     if (!reference) return [];
-    const members = mapInputs?.find(({ id }) => id === (listedSubject ? `subject.${index}` : 'subject'))?.subset?.members;
+    const members = mapInputs?.find(({ id }) => id === (Array.isArray(binding) ? `${role}.${index}` : role))?.subset?.members;
     const read = members && new Set(members.map(savedRunId));
     return shown?.window_map?.rows.filter(({ key }) =>
       key.step === reference.step && key.variant === variant && (!read || read.has(savedRunId(key)))) ?? [];
   }
   /** The updates every run that `selections` read has, among the runs whose extent the plan knows. */
-  function checkpointRange(selections: readonly number[]): CheckpointRange | undefined {
+  function checkpointRange(role: string, selections: readonly number[]): CheckpointRange | undefined {
     let range: CheckpointRange | undefined;
     for (const index of selections) {
-      for (const { key, origin, target_total } of selectionRows(index)) {
+      for (const { key, origin, target_total } of selectionRows(role, index)) {
         if (origin == null || target_total == null) continue;
         const step = stepLabel(key.step);
         range = {
@@ -758,7 +766,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
 
   const refuseRuns = (runIds: readonly string[]) => (reason: string): Refusal | undefined =>
     runIds.length ? { kind: 'runs', reasons: Object.fromEntries(runIds.map((id) => [id, reason])) } : undefined;
-  const refuseField = (field: EvaluateField) => {
+  const refuseField = (field: StepField) => {
     const stepId = step?.id;
     return (reason: string): Refusal | undefined => stepId ? { kind: 'field', step: stepId, field, reason } : undefined;
   };
@@ -1029,7 +1037,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   }, { enabled: applies && variantApplies });
 
   const evaluateInputs = authored?.kind === 'evaluate' ? authored : undefined;
-  const trainSteps = plan.steps.filter(({ kind }) => kind === 'train');
   /** A selection of the subject, whose detail is drawn on its row of the subject field. */
   const subjectSelection = (id: string) => !!evaluateInputs && (id === 'subject' || id.startsWith('subject.'));
   /** The steps this step reads, each a link, and the inputs no field of the step draws. */
@@ -1053,8 +1060,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   }
 
   /** A selection none of whose runs can run: the Cannot Run mark, and a link to the step it reads. */
-  function blockedSelectionMark(index: number) {
-    const rows = selectionRows(index);
+  function blockedSelectionMark(role: string, index: number) {
+    const rows = selectionRows(role, index);
     if (!rows.length || rows.some(({ status }) => status !== 'cannot_run')) return undefined;
     const source = rows[0].key.step;
     return <span className="inline-flex items-center gap-1.5">
@@ -1066,8 +1073,73 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     </span>;
   }
 
-  const refusedAt = (field: EvaluateField) =>
+  const refusedAt = (field: StepField) =>
     refusal?.kind === 'field' && refusal.step === step?.id && refusal.field === field ? refusal.reason : undefined;
+
+  /** The problem the plan reports on selection `index` of the step's input `role`. */
+  const inputProblem = (role: string, index: number) => step && selectionProblem(shown?.window_map?.problems ?? [], step.id,
+    variant ?? null, role, index, Array.isArray(authored?.inputs?.[role]));
+  /** Selection `index` of input `role` as the Runs control edits it: its terms, unless a named subset holds them. */
+  function selectionRuns(role: string, index: number, reference: StepReference, onApply: (terms: SubsetTerms) => void,
+    onToRows?: () => void) {
+    const source = plan.steps.find(({ id }) => id === reference.step);
+    const where = reference.where ?? {};
+    if (!source || !shown || !variant || 'subset' in where || where.when) return undefined;
+    return <SelectionRuns key={JSON.stringify([step?.id, role, index, source.id])} terms={where} source={source}
+      sourceRows={stepSourceRows(shown, source.id, variant)} disabled={!applies} refusal={refusedAt(`subset.${index}`)}
+      onApply={onApply} onToRows={onToRows} />;
+  }
+  const trainStart = authoring && authored?.kind === 'train' && step && readRefusal?.step !== step.id
+    && modelDocumentId(step.documentIds);
+  const startRole = stepInputs?.train?.checkpoint;
+  const subjectRole = stepInputs?.evaluate?.subject;
+  const startSelections = stepSelections(authored?.inputs?.checkpoint);
+  const startCheckpoints = startSelections && selectionCheckpoints(startSelections);
+  const inputEditor = step && (trainStart && startRole ? <InputEditor label={studioName('start')} role={startRole}
+    binding={authored?.inputs?.checkpoint} self={step.id} steps={plan.steps} project={saved.project} picking={elements}
+    absent={documentChoice('model', trainStart)} refusal={refusedAt('input')}
+    selection={(index, reference) => ({
+      problem: inputProblem('checkpoint', index),
+      mark: blockedSelectionMark('checkpoint', index),
+      runs: wholeStep && selectionRuns('checkpoint', index, reference,
+        (terms) => onCurrentPlan('startTrain')({ ...reference, where: terms }, `subset.${index}`)),
+    })}
+    checkpoint={startCheckpoints && startSelections && {
+      groups: startCheckpoints, disabled: !applies, refusal: refusedAt('checkpoint'),
+      range: (selections) => checkpointRange('checkpoint', selections),
+      onSave: (rule) => onCurrentPlan('startTrain')({ ...startSelections[0], checkpoint: rule }, 'checkpoint'),
+    }}
+    onChange={applies ? onCurrentPlan('changeTrainStart') : undefined} />
+    : evaluateInputs && subjectRole ? <InputEditor label={studioName('subject')} role={subjectRole}
+      binding={evaluateInputs.inputs?.subject} self={step.id} steps={plan.steps} project={saved.project} picking={elements}
+      refusal={refusedAt('input')}
+      selection={(index, reference) => {
+        const inputId = Array.isArray(evaluateInputs.inputs?.subject) ? `subject.${index}` : 'subject';
+        const input = step.inputs.find(({ id }) => id === inputId);
+        const attempts = freezeAttempts(inputId);
+        return {
+          problem: inputProblem('subject', index),
+          mark: blockedSelectionMark('subject', index),
+          runs: <>
+            {input && inputDetail(input)}
+            {evaluationEditor && selectionRuns('subject', index, reference,
+              (terms) => onCurrentPlan('editEvaluation')(`subset.${index}`, studioName('applySubset'), {
+                op: reference.where !== undefined ? 'replace' : 'add', path: evaluationEditor.subjects[index].where, value: terms,
+              }),
+              attempts ? () => onCurrentPlan('freezeEvaluationSubset')(inputId, reference.step, attempts, index) : undefined)}
+          </>,
+        };
+      }}
+      checkpoint={checkpointEditors && {
+        groups: checkpointEditors, disabled: !applies, readOnly: Boolean(stepCheckpointRule && subject?.checkpoint_axis),
+        refusal: refusedAt('checkpoint'), range: (selections) => checkpointRange('subject', selections),
+        onSave: onCurrentPlan('editEvaluationCheckpoint'),
+        onToSweep: canSweepCheckpoint ? () => onCurrentPlan('applyCheckpointSweepEdit')({ kind: 'to_sweep' }) : undefined,
+      }}
+      onChange={applies && wholeStep ? onCurrentPlan('changeEvaluateSubject') : undefined} />
+      : undefined);
+  const evaluatedSubject = evaluateInputs && evaluateSubject(evaluateInputs);
+  const subjectDocuments = evaluatedSubject?.kind === 'document' ? evaluatedSubject : undefined;
 
   function editEvaluateSubject(name: string, patches: ProjectValueEdit[], reads: readonly string[]) {
     if (!step || !applies) return;
@@ -1077,10 +1149,76 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       if (!await runRemoval.confirm(filesRemoval(current.project_id, current.revision, files, editor.signal))) return;
       editor.editFiles(name, files, { reviewedRevision: current.revision, dependencies });
       await editor.flush();
-    }, refuseField('subject'));
+    }, refuseField('input'));
   }
 
-  function editEvaluation(field: Exclude<EvaluateField, 'subject' | 'checkpoint'>, name: string, patch: ProjectValueEdit) {
+  /** The subject `gesture` asks for: Train steps' checkpoints, or an initial Model document with its Task and Objective. */
+  function changeEvaluateSubject(gesture: InputGesture) {
+    if (!evaluateInputs) return;
+    const name = studioName('subject');
+    const current = evaluateSubject(evaluateInputs);
+    if (gesture.kind === 'document') {
+      const next: EvaluateSubject = current?.kind === 'document' ? { ...current, document: gesture.document }
+        : { kind: 'document', document: gesture.document, ...trainDocuments(current?.kind === 'steps' ? current.selections[0]?.step : undefined) };
+      return editEvaluateSubject(name, evaluateSubjectEdits(evaluateInputs, next),
+        [next.document, next.task, next.objective].filter((id): id is string => id !== undefined));
+    }
+    if (gesture.kind !== 'select') return;
+    const selections = stepSelections(gesture.binding) ?? [];
+    if (current?.kind === 'document') {
+      const [first] = selections;
+      return first && editEvaluateSubject(name, evaluateSubjectEdits(evaluateInputs, { kind: 'step', step: first.step }), [first.step]);
+    }
+    editEvaluateSubject(name, [
+      bindingEdit(evaluateInputs.inputs, 'subject', gesture.binding), ...selections.length > 1 ? subjectAxisEdits(evaluateInputs) : [],
+    ], [...new Set(selections.map(({ step }) => step))]);
+  }
+
+  /** The Task and Objective a Train step trains on, which an initial Model subject made from its selection declares. */
+  function trainDocuments(id: string | undefined) {
+    const documents = plan.steps.find((train) => train.id === id)?.documentIds;
+    return {
+      task: documents?.['payload.trial_documents.task'] ?? documents?.['payload.trial_documents.python_task']
+        ?? documentsOfRole(saved.project, 'task')[0],
+      objective: documents?.['payload.trial_documents.objective'],
+    };
+  }
+
+  function chooseSubjectDocument(kind: 'task' | 'objective', document: string) {
+    const current = evaluateInputs && evaluateSubject(evaluateInputs);
+    if (current?.kind !== 'document') return;
+    const next = { ...current, [kind]: document };
+    editEvaluateSubject(studioName(kind), evaluateSubjectEdits(evaluateInputs!, next),
+      [next.document, next.task, next.objective].filter((id): id is string => id !== undefined));
+  }
+
+  /**
+   * Starts the Train step from `source`'s checkpoint as that step's continuation, or from its Model when `source` is
+   * null. The service writes the step so that its runs keep their definition.
+   */
+  function startTrain(source: StepReference | null, field: StepField) {
+    if (!step || !applies) return;
+    const stepId = step.id;
+    void perform(async (current) => {
+      const own = current.project.steps?.[stepId];
+      if (!own) return;
+      const { files } = await prepareTrainStart(current.project_id, stepId, { revision: current.revision, source }, editor.signal);
+      if (!files.length || !await runRemoval.confirm(filesRemoval(current.project_id, current.revision, files, editor.signal))) return;
+      const based = 'step' in own.base ? [own.base.step] : [];
+      editor.editFiles(studioName('start'), files, {
+        reviewedRevision: current.revision,
+        dependencies: [...new Set([...based, ...source ? [source.step] : []])].map((id) => ({ kind: 'step' as const, id })),
+      });
+      await editor.flush();
+    }, refuseField(field));
+  }
+
+  function changeTrainStart(gesture: InputGesture) {
+    if (gesture.kind === 'select') startTrain(stepSelections(gesture.binding)?.[0] ?? null, 'input');
+    else if (gesture.kind === 'absent') startTrain(null, 'input');
+  }
+
+  function editEvaluation(field: Exclude<StepField, 'input' | 'checkpoint'>, name: string, patch: ProjectValueEdit) {
     if (!step || !evaluationEditor || !applies) return;
     const dependencies = [...new Set(evaluationEditor.subjects.map(({ source }) => source.id))]
       .map((id) => ({ kind: 'step' as const, id }));
@@ -1222,10 +1360,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   }
 
   /** The inspector's gestures as last rendered: one made while the plan is read runs on the render of the current plan. */
-  const latestGestures = useRef({ editEvaluateSubject, editEvaluation, editEvaluationCheckpoint, applyCheckpointSweepEdit,
-    freezeEvaluationSubset, removeSweepException, replay });
-  latestGestures.current = { editEvaluateSubject, editEvaluation, editEvaluationCheckpoint, applyCheckpointSweepEdit,
-    freezeEvaluationSubset, removeSweepException, replay };
+  const latestGestures = useRef({ changeEvaluateSubject, chooseSubjectDocument, editEvaluation, editEvaluationCheckpoint,
+    applyCheckpointSweepEdit, freezeEvaluationSubset, removeSweepException, replay, startTrain, changeTrainStart });
+  latestGestures.current = { changeEvaluateSubject, chooseSubjectDocument, editEvaluation, editEvaluationCheckpoint,
+    applyCheckpointSweepEdit, freezeEvaluationSubset, removeSweepException, replay, startTrain, changeTrainStart };
   type InspectorGestures = typeof latestGestures.current;
   /** `name`'s gesture, made now and run once the shown revision's plan is drawn, against that plan. */
   function onCurrentPlan<K extends keyof InspectorGestures>(name: K) {
@@ -1684,43 +1822,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                 detail={selectedEvaluation?.checkpoint_series
                   ? <StudioEvaluationAttemptDetails evaluation={selectedEvaluation}
                     onShowStep={(stepId) => selection.select(selectStep(state, stepId))} /> : undefined}
-                fields={(authoring || evaluateInputs || checkpointEditors || evaluationEditor) &&
+                fields={(authoring || inputEditor || evaluationEditor) &&
                   <FocusedFields request={slot === focusSlot && fieldFocus?.step === step.id ? fieldFocus : undefined}
                     onFocused={() => setFieldFocus(undefined)}>
                     {authoring && <StudioTrainAuthoringForm {...authoring} run={namedRun} runPending={!shown && !plans.error}
                       fieldRows={detailInputs.fieldRows} fieldAxes={detailInputs.fieldAxes} />}
-                    {evaluateInputs && <EvaluateSubjectFields step={evaluateInputs} project={saved.project} trains={trainSteps}
-                      picking={elements} refusal={refusedAt('subject')}
-                      selection={(index, reference) => {
-                        const listed = Array.isArray(evaluateInputs.inputs?.subject);
-                        const inputId = listed ? `subject.${index}` : 'subject';
-                        const input = step.inputs.find(({ id }) => id === inputId);
-                        const subset = evaluationEditor?.subjects[index];
-                        const attempts = freezeAttempts(inputId);
-                        return {
-                          mark: blockedSelectionMark(index),
-                          detail: <>
-                            {input && inputDetail(input)}
-                            {subset?.terms && shown && variant && <SubjectSubset
-                              key={JSON.stringify([step.id, index, subset.source.id])}
-                              terms={subset.terms} where={subset.where} hasWhere={reference.where !== undefined}
-                              source={subset.source} sourceRows={stepSourceRows(shown, subset.source.id, variant)}
-                              disabled={!applies} refusal={refusedAt(`subset.${index}`)}
-                              onEdit={(name, patch) => onCurrentPlan('editEvaluation')(`subset.${index}`, name, patch)}
-                              onToRows={attempts
-                                ? () => onCurrentPlan('freezeEvaluationSubset')(inputId, reference.step, attempts, index) : undefined} />}
-                          </>,
-                        };
-                      }}
-                      onEdit={applies && wholeStep ? onCurrentPlan('editEvaluateSubject') : undefined} />}
-                    {checkpointEditors?.map(({ rule, selections }) =>
-                      <CheckpointEditor key={JSON.stringify(['checkpoint', step.id, variant, checkpointScope, selections])}
-                        initial={rule} range={checkpointRange(selections)}
-                        step={checkpointEditors.length > 1 ? stepLabel(subjectReferences![selections[0]].step) : undefined}
-                        disabled={!applies} readOnly={Boolean(stepCheckpointRule && subject?.checkpoint_axis)}
-                        refusal={refusedAt('checkpoint')}
-                        onSave={(next) => onCurrentPlan('editEvaluationCheckpoint')(next, selections)}
-                        onToSweep={canSweepCheckpoint ? () => onCurrentPlan('applyCheckpointSweepEdit')({ kind: 'to_sweep' }) : undefined} />)}
+                    {inputEditor}
+                    {subjectDocuments && <SubjectDocuments subject={subjectDocuments} project={saved.project}
+                      onChoose={applies && wholeStep ? onCurrentPlan('chooseSubjectDocument') : undefined} />}
                     {evaluationEditor && <TrialsEditor key={step.id} initial={evaluationEditor.authored.trialSet}
                       domain={evaluationEditor.domain} disabled={!applies} refusal={refusedAt('trials')}
                       onSave={(rule) => onCurrentPlan('editEvaluation')('trials', studioName('trials'),

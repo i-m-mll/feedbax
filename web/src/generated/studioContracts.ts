@@ -3039,6 +3039,20 @@ export type InputDifference = {
   "detail"?: string | null;
 };
 
+export type InputProducer = {
+  "kind": StepKind;
+  "product": string;
+  "operation_outputs": boolean;
+};
+
+export type InputRole = {
+  "required": boolean;
+  "gathers": boolean;
+  "producer": InputProducer | null;
+  "documents": Array<"model" | "task">;
+  "checkpoint_sets": boolean;
+};
+
 export type JaxOperation = {
   "backend": "cpu" | "gpu";
   "floating_point_bits": 32 | 64;
@@ -3641,6 +3655,8 @@ export type StudioAuthoringCatalog = {
   "step_payloads": Record<string, Record<string, JsonValue>>;
   "document_families": Record<string, StudioAuthoredDocumentFamily>;
   "registries": Record<string, StudioAuthoringRegistry>;
+  "step_inputs": Record<string, Record<string, InputRole>>;
+  "analyze_inputs": Record<string, InputRole>;
 };
 
 export type StudioAuthoringChange = {
@@ -9675,6 +9691,24 @@ export const InputDifferenceSchema: z.ZodType<InputDifference> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<InputDifference>;
 
+export const InputProducerSchema: z.ZodType<InputProducer> = z.lazy(() =>
+  z.object({
+    "kind": StepKindSchema,
+    "product": z.string(),
+    "operation_outputs": z.boolean(),
+  }).strict()
+) as unknown as z.ZodType<InputProducer>;
+
+export const InputRoleSchema: z.ZodType<InputRole> = z.lazy(() =>
+  z.object({
+    "required": z.boolean(),
+    "gathers": z.boolean(),
+    "producer": z.union([InputProducerSchema, z.null()]),
+    "documents": z.array(z.union([z.literal("model"), z.literal("task")])),
+    "checkpoint_sets": z.boolean(),
+  }).strict()
+) as unknown as z.ZodType<InputRole>;
+
 export const JaxOperationSchema: z.ZodType<JaxOperation> = z.lazy(() =>
   z.object({
     "backend": z.union([z.literal("cpu"), z.literal("gpu")]),
@@ -10494,6 +10528,8 @@ export const StudioAuthoringCatalogSchema: z.ZodType<StudioAuthoringCatalog> = z
     "step_payloads": z.record(z.string(), z.record(z.string(), jsonValueSchema)),
     "document_families": z.record(z.string(), StudioAuthoredDocumentFamilySchema),
     "registries": z.record(z.string(), StudioAuthoringRegistrySchema),
+    "step_inputs": z.record(z.string(), z.record(z.string(), InputRoleSchema)),
+    "analyze_inputs": z.record(z.string(), InputRoleSchema),
   }).strict()
 ) as unknown as z.ZodType<StudioAuthoringCatalog>;
 

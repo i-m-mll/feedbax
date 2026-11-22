@@ -4,7 +4,7 @@ import { ChartLine, Database, Sigma } from 'lucide-react';
 import { useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import { readStudioAnalyze } from '@/api/studioAnalyze';
-import { studioAccessibleName, studioChangeDetail, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioChangeDetail, studioCountOf, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
 import { CanvasStrip } from '@/components/canvas/CanvasStrip';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { Button } from '@/components/ui/Button';
@@ -32,7 +32,9 @@ import {
 import { shownName, type PlanStepView } from '@/features/pipeline/planView';
 import { heldElementKeys } from './analysisElements';
 import { isMemberName } from './projectMemberName';
-import { AnalyzeElementInputs, AnalyzeRoleBinding } from './AnalyzeReferences';
+import { AnalyzeElementInputs } from './AnalyzeReferences';
+import { InputEditor } from './InputEditor';
+import { useAuthoringCatalog } from '@/api/studioAuthoring';
 import { selectionProblem } from './selectionEdits';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import type { ChangeMark } from '@/components/values/fieldModel';
@@ -162,6 +164,8 @@ export function useManagedAnalyze({
     return `${shownCard}/${shownName(source, cardAnalysis(card)?.operations?.[source])}.${product}`;
   }
   const selectedInput = selected ? declarations[selected] : undefined;
+  const inputRoles = useAuthoringCatalog().data?.analyze_inputs;
+  const inputRole = selectedInput && inputRoles?.[selectedInput.kind];
   const armed = usePick(selection);
   const canvasPick = useMemo(() => armed && document ? {
     accepts: (id: string) => armed.accepts({ kind: 'element', address: { document, element: { kind: 'named', id } } }),
@@ -366,11 +370,25 @@ export function useManagedAnalyze({
       onEditingChange={(editing) => setNaming(editing ? { scope, element: selected, field: 'key' } : undefined)}
       onCommit={(key) => changeElementKey(selected, key)}
       refusal={landed && typeof landed.at === 'object' && 'key' in landed.at && landed.at.key === selected ? landed.reason : undefined} />}
-    {selected && selectedInput && <AnalyzeRoleBinding role={selected} kind={selectedInput.kind} binding={step?.inputs?.[selected]}
-      project={saved.project} steps={steps} picking={selection} refusal={roleRefusal(selected, selected)}
-      inputs={steps.find(({ id }) => id === key?.step)?.inputs} outputs={cardOutputs}
-      problem={(index) => key && selectionProblem(projection?.window_map?.problems ?? [], key.step, key.variant, selected, index)}
-      onBind={canBind ? (binding) => bind(selected, binding) : undefined} />}
+    {selected && selectedInput && key && inputRole && <InputEditor label={humanizeLabel(selected)} role={inputRole}
+      binding={step?.inputs?.[selected]} self={key.step} project={saved.project} steps={steps} picking={selection}
+      refusal={roleRefusal(selected, selected)} outputs={cardOutputs}
+      selection={(index) => {
+        const listed = Array.isArray(step?.inputs?.[selected]);
+        const subset = steps.find(({ id }) => id === key.step)?.inputs.find(({ id }) => id === (listed ? `${selected}.${index}` : selected))?.subset;
+        return {
+          problem: selectionProblem(projection?.window_map?.problems ?? [], key.step, key.variant, selected, index, listed),
+          runs: subset && <div className="px-control-inline text-shell-muted">
+            {[...subset.terms, studioCountOf(subset.count, subset.total)].join(' · ')}
+          </div>,
+        };
+      }}
+      onChange={canBind ? (gesture) => {
+        if (gesture.kind === 'select') bind(selected, gesture.binding);
+        else if (gesture.kind === 'document') bind(selected, inputRole.documents[0] === 'task'
+          ? { kind: 'task', source: { document: gesture.document } }
+          : { kind: 'initial_model', source: { document: gesture.document } });
+      } : undefined} />}
     {selected && document && (operation ?? figure) && <AnalyzeElementInputs document={document} element={selected} roles={roles}
       inputs={(operation ?? figure)!.inputs} declarations={declarations} outputs={outputs} picking={selection}
       refusal={(role) => roleRefusal(selected, role)} onWire={canEdit ? (role, source) => wire(selected, role, source) : undefined} />}
