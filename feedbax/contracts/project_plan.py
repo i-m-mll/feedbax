@@ -325,6 +325,8 @@ class TrainFacts:
 
     task: TaskDocument | PythonTaskSelection | None
     """None when the Task does not resolve."""
+    origin: int | None
+    """The completed-update count the run starts from: 0 when fresh; None when the run controls do not resolve."""
     target_total: int | None
     """The completed-update count at the run's end; None when the run controls do not resolve."""
 
@@ -356,8 +358,9 @@ def _train_facts(payload: Payload, python_tasks: PythonTaskRegistry | None) -> T
         batches = DocumentTrainingConfig.model_validate(payload.get("training_config")).n_batches
         start = _CHECKPOINT_INITIALIZATION.validate_python(payload.get("checkpoint_initialization"))
     except ValidationError:
-        return TrainFacts(task, None)
-    return TrainFacts(task, batches + (start.source_completed_updates if isinstance(start, TrainContinuation) else 0))
+        return TrainFacts(task, None, None)
+    origin = start.source_completed_updates if isinstance(start, TrainContinuation) else 0
+    return TrainFacts(task, origin, origin + batches)
 
 
 @dataclass(frozen=True)
