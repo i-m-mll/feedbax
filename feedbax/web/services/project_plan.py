@@ -28,6 +28,7 @@ from feedbax.contracts.jobs import (
     StudioPlanRequest,
     StudioProjectWindowMap,
     StudioProjectWindowMapCoordinate,
+    StudioProjectWindowMapInputAxis,
     StudioProjectWindowMapEdge,
     StudioProjectWindowMapElement,
     StudioProjectWindowMapRequest,
@@ -378,10 +379,14 @@ class ProjectPlanRead:
                     member_key=producer_member_key(row.key.variant, row.key.row, gathers_variants=False)
                     if row.kind in {"train", "evaluate"} else None,
                     coordinates={
-                        axis: StudioProjectWindowMapCoordinate.model_validate(
-                            coordinate, from_attributes=True
+                        axis: StudioProjectWindowMapCoordinate.model_validate(coordinate, from_attributes=True)
+                        for axis, coordinate in row.coordinates.items()
+                    },
+                    input_axes={
+                        axis: StudioProjectWindowMapInputAxis(
+                            value_id=member.value_id, label=member.label, carries=list(member.carries),
                         )
-                        for axis, coordinate in (*row.coordinates.items(), *row.input_axes.items())
+                        for axis, member in row.input_axes.items()
                     },
                 )
                 for row in plan.rows if includes(row.key.variant)

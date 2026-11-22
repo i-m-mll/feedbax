@@ -3931,6 +3931,12 @@ export type StudioProjectWindowMapInput = {
   "checkpoint_axis"?: string | null;
 };
 
+export type StudioProjectWindowMapInputAxis = {
+  "value_id": string;
+  "label": string | null;
+  "carries": Array<string>;
+};
+
 export type StudioProjectWindowMapProblem = {
   "code": string;
   "path": string;
@@ -3959,6 +3965,7 @@ export type StudioProjectWindowMapRow = {
   "key": StudioSavedTrainKey;
   "label": string;
   "coordinates": Record<string, StudioProjectWindowMapCoordinate>;
+  "input_axes"?: Record<string, StudioProjectWindowMapInputAxis>;
   "member_key"?: string | null;
   "status": JobStatus;
   "reason"?: string | null;
@@ -10798,6 +10805,14 @@ export const StudioProjectWindowMapInputSchema: z.ZodType<StudioProjectWindowMap
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapInput>;
 
+export const StudioProjectWindowMapInputAxisSchema: z.ZodType<StudioProjectWindowMapInputAxis> = z.lazy(() =>
+  z.object({
+    "value_id": z.string(),
+    "label": z.union([z.string(), z.null()]),
+    "carries": z.array(z.string()),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMapInputAxis>;
+
 export const StudioProjectWindowMapProblemSchema: z.ZodType<StudioProjectWindowMapProblem> = z.lazy(() =>
   z.object({
     "code": z.string(),
@@ -10831,6 +10846,7 @@ export const StudioProjectWindowMapRowSchema: z.ZodType<StudioProjectWindowMapRo
     "key": StudioSavedTrainKeySchema,
     "label": z.string(),
     "coordinates": z.record(z.string(), StudioProjectWindowMapCoordinateSchema),
+    "input_axes": z.record(z.string(), StudioProjectWindowMapInputAxisSchema).optional(),
     "member_key": z.union([z.string(), z.null()]).optional(),
     "status": JobStatusSchema,
     "reason": z.union([z.string(), z.null()]).optional(),

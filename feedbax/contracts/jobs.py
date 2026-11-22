@@ -253,6 +253,14 @@ class StudioProjectWindowMapCoordinate(StrictModel):
     value: JsonValue
 
 
+class StudioProjectWindowMapInputAxis(StrictModel):
+    """A row's member of one input axis, with the axes of the row's coordinates the member carries."""
+
+    value_id: str
+    label: str | None
+    carries: list[str]
+
+
 class StudioSavedLightResult(StrictModel):
     job_id: str
     request_id: str
@@ -272,6 +280,9 @@ class StudioProjectWindowMapRow(StrictModel):
     key: StudioSavedTrainKey
     label: str
     coordinates: dict[str, StudioProjectWindowMapCoordinate]
+    input_axes: dict[str, StudioProjectWindowMapInputAxis] = Field(
+        default_factory=dict, exclude_if=lambda value: not value,
+    )
     member_key: str | None = Field(default=None, exclude_if=lambda value: value is None)
     status: JobStatus
     reason: str | None = Field(default=None, exclude_if=lambda value: value is None)

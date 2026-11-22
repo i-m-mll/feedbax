@@ -90,85 +90,84 @@ function keptRow(row: string, axis: string, value: string) {
   return row.split('--').filter((part) => part !== `${axis}=${value}`).join('--') || 'default';
 }
 
-/** Whether every run has a value of both axes, and each axis's value determines the other's. */
-function paired(a: string, b: string, runs: readonly PlanRunView[]) {
-  const forward = new Map<string, string>();
-  const backward = new Map<string, string>();
+/**
+ * Whether the runs' values on `known` determine their value on `axis`; a run with no value on `axis` is not counted.
+ * Unless `absent` is a value, a run with no value on one of `known` is told apart by nothing.
+ */
+function determined(axis: string, known: readonly string[], runs: readonly PlanRunView[], absent = false) {
+  const by = new Map<string, string>();
   for (const { values } of runs) {
-    const [x, y] = [values[a], values[b]];
-    if (x === undefined || y === undefined || x === unvalued || y === unvalued) return false;
-    if ((forward.get(x) ?? y) !== y || (backward.get(y) ?? x) !== x) return false;
-    forward.set(x, y);
-    backward.set(y, x);
+    const value = values[axis];
+    if (value === undefined) continue;
+    if (!absent && known.some((id) => values[id] === undefined)) return false;
+    const key = JSON.stringify(known.map((id) => values[id] ?? null));
+    if ((by.get(key) ?? value) !== value) return false;
+    by.set(key, value);
   }
-  return forward.size > 1;
+  return true;
 }
 
+/** An axis of a step's runs: one of their coordinates, the step that made each run's input, or an input's members. */
+export type StepAxis = PlanSweepView & (
+  | { readonly kind: 'coordinate' }
+  | { readonly kind: 'step' }
+  | { readonly kind: 'input'; readonly carries: ReadonlySet<string> }
+);
+
 /**
- * The step's axes as the map draws them: input axes that vary together over its runs, as those of zipped list
- * inputs do, are one axis, whose values are labelled by each. It is named by the axis the step authors, when one does;
- * two authored axes stay apart, and so do an authored input axis and an axis its own input carries, whose values
- * already label the input's.
+ * The step's axes as Studio draws them, so that each dimension is drawn once. Every coordinate is drawn but one an
+ * input carries with a single value, which tells none of its members apart. An input's members are told apart first
+ * by the coordinates they carry, then by the step that made them, and the input's own axis is drawn only when neither
+ * does, as for a Best rank; a member that carries none of a coordinate is not told apart by it. An input axis that
+ * varies one-to-one with an input axis already drawn, as those of zipped list inputs do, labels that axis's values
+ * beside its own.
  */
-function pairedAxesJoined(
-  sweeps: readonly PlanSweepView[], runs: readonly PlanRunView[], authored: ReadonlySet<string>,
-  carried: ReadonlyMap<string, ReadonlySet<string>>,
-) {
-  const apart = (a: string, b: string) => (authored.has(a) && authored.has(b)) ||
-    !!carried.get(a)?.has(b) || !!carried.get(b)?.has(a);
-  const groups: PlanSweepView[][] = [];
-  for (const sweep of sweeps) {
-    const group = groups.find((group) => paired(group[0].id, sweep.id, runs) &&
-      !group.some(({ id }) => apart(id, sweep.id)));
-    if (!group) groups.push([sweep]);
-    else if (authored.has(sweep.id)) group.unshift(sweep);
-    else group.push(sweep);
+export function drawnAxes(axes: readonly StepAxis[], runs: readonly PlanRunView[]): PlanSweepView[] {
+  const carried = new Set(axes.flatMap((axis) => axis.kind === 'input' ? [...axis.carries] : []));
+  const drawn = new Set(axes.flatMap((axis) =>
+    axis.kind === 'coordinate' && !(carried.has(axis.id) && axis.values.length === 1) ? [axis.id] : []));
+  const identifying: string[] = [];
+  const steps = axes.filter((axis) => axis.kind === 'step');
+  const joined = new Map<string, StepAxis[]>();
+  function draw(axis: StepAxis) {
+    drawn.add(axis.id);
+    identifying.push(axis.id);
   }
-  const absorbed = groups.flatMap((group) => group.slice(1).map(({ id }) => id));
-  if (!absorbed.length) return { sweeps, runs };
-  return {
-    sweeps: groups.map(([first, ...rest]): PlanSweepView => !rest.length ? first : {
-      ...first,
-      label: [first, ...rest].map(({ label }) => label).join(' · '),
-      values: first.values.map((value) => {
-        const run = runs.find(({ values }) => values[first.id] === value.id);
-        return { id: value.id, label: [value.label, ...rest.map((sweep) =>
-          sweep.values.find(({ id }) => id === run?.values[sweep.id])?.label ?? '')].join(' · ') };
+  for (const axis of axes) {
+    if (axis.kind !== 'input') continue;
+    const known = [...[...axis.carries].filter((id) => drawn.has(id)), ...identifying];
+    if (determined(axis.id, known, runs)) {
+      const partner = identifying.find((id) => determined(id, [axis.id], runs) && determined(axis.id, [id], runs));
+      if (partner) joined.set(partner, [...joined.get(partner) ?? [], axis]);
+      continue;
+    }
+    for (const step of steps) {
+      if (drawn.has(step.id) || determined(step.id, known, runs)) continue;
+      draw(step);
+      known.push(step.id);
+    }
+    if (!determined(axis.id, known, runs, true)) draw(axis);
+  }
+  for (const step of steps) if (!drawn.has(step.id) && !determined(step.id, [...drawn], runs)) draw(step);
+  return axes.flatMap((axis): PlanSweepView[] => {
+    if (!drawn.has(axis.id)) return [];
+    const view = { id: axis.id, label: axis.label, values: axis.values };
+    const rest = joined.get(axis.id);
+    if (!rest) return [view];
+    return [{
+      ...view,
+      label: [axis, ...rest].map(({ label }) => label).join(' · '),
+      values: axis.values.map((value) => {
+        const run = runs.find(({ values }) => values[axis.id] === value.id);
+        return { id: value.id, label: [value.label, ...rest.map((other) =>
+          other.values.find(({ id }) => id === run?.values[other.id])?.label ?? '')].join(' · ') };
       }),
-    }),
-    runs: runs.map((run) => ({
-      ...run, values: Object.fromEntries(Object.entries(run.values).filter(([axis]) => !absorbed.includes(axis))),
-    })),
-  };
+    }];
+  });
 }
 
 /** The axis naming the Train step that made each run's model, for an Evaluate step whose subject gathers several. */
 const gatheredModelAxis = 'model';
-
-/** Each input axis the step authors, with the axes the runs of its input carry from their steps and upstream. */
-function carriedAxes(project: Project, stepId: string): Map<string, Set<string>> {
-  const steps = project.steps ?? {};
-  function upstream(step: string, seen: Set<string>): string[] {
-    if (seen.has(step)) return [];
-    seen.add(step);
-    const read = steps[step];
-    const sources = Object.values(read?.inputs ?? {}).flatMap((binding) => Array.isArray(binding) ? binding : [binding]);
-    return [
-      ...Object.keys(read?.sweep?.axes ?? {}),
-      ...sources.flatMap((source) => source && typeof source === 'object' && 'step' in source
-        ? upstream(source.step, seen) : []),
-    ];
-  }
-  const carried = new Map<string, Set<string>>();
-  for (const [axis, read] of Object.entries(steps[stepId]?.sweep?.axes ?? {})) {
-    if (!read || typeof read !== 'object' || !('input' in read)) continue;
-    const binding = steps[stepId]?.inputs?.[read.input];
-    const sources = Array.isArray(binding) ? binding : binding ? [binding] : [];
-    carried.set(axis, new Set(sources.flatMap((source) => source && typeof source === 'object' && 'step' in source
-      ? upstream(source.step, new Set([stepId])) : [])));
-  }
-  return carried;
-}
 
 export function projectWindowPlan(
   project: Project, saved: StudioSavedTrainRuns | undefined, variant: string | null, checking = noChecks,
@@ -217,6 +216,10 @@ export function projectWindowPlan(
       ? [[savedRunId(to_key), from_key.step] as const] : []));
   const sweepsByStep = new Map<string, Map<string, Map<string, string>>>();
   const runsByStep = new Map<string, PlanRunView[]>();
+  /** Each input axis of a step, with the coordinates its members carry. */
+  const carriesByStep = new Map<string, Map<string, Set<string>>>();
+  /** The steps given the gathered model axis. */
+  const modelAxisSteps = new Set<string>();
   function addRun(step: string, run: PlanRunView) {
     const runs = runsByStep.get(step);
     if (runs) runs.push(run);
@@ -251,7 +254,7 @@ export function projectWindowPlan(
   for (const row of map?.rows ?? []) {
     if (row.key.variant !== scope) continue;
     for (const axis of optionalAxes(project, row.key.step)) {
-      const coordinate = row.coordinates[axis];
+      const coordinate = row.coordinates[axis] ?? row.input_axes?.[axis];
       if (!coordinate) continue;
       const key = JSON.stringify([row.key.step, axis]);
       kept.set(key, (kept.get(key) ?? new Set()).add(keptRow(row.key.row, axis, coordinate.value_id)));
@@ -268,6 +271,7 @@ export function projectWindowPlan(
       if (!entries) sweeps.set(gatheredModelAxis, entries = new Map());
       entries.set(model, shownName(model, project.steps?.[model]));
       values[gatheredModelAxis] = model;
+      modelAxisSteps.add(row.key.step);
     }
     for (const [sweep, coordinate] of Object.entries(row.coordinates)) {
       let entries = sweeps.get(sweep);
@@ -275,8 +279,17 @@ export function projectWindowPlan(
       entries.set(coordinate.value_id, coordinateText(coordinate));
       values[sweep] = coordinate.value_id;
     }
+    for (const [axis, member] of Object.entries(row.input_axes ?? {})) {
+      let entries = sweeps.get(axis);
+      if (!entries) sweeps.set(axis, entries = new Map());
+      entries.set(member.value_id, member.label ?? member.value_id);
+      values[axis] = member.value_id;
+      let carried = carriesByStep.get(row.key.step);
+      if (!carried) carriesByStep.set(row.key.step, carried = new Map());
+      carried.set(axis, new Set([...carried.get(axis) ?? [], ...member.carries]));
+    }
     for (const axis of optionalAxes(project, row.key.step)) {
-      if (axis in row.coordinates || !kept.get(JSON.stringify([row.key.step, axis]))?.has(row.key.row)) continue;
+      if (axis in row.coordinates || axis in (row.input_axes ?? {}) || !kept.get(JSON.stringify([row.key.step, axis]))?.has(row.key.row)) continue;
       const entries = sweeps.get(axis) ?? new Map<string, string>();
       sweeps.set(axis, new Map([[unvalued, ''], ...entries]));
       values[axis] = unvalued;
@@ -343,24 +356,25 @@ export function projectWindowPlan(
       }
     }
     const runs = runsByStep.get(id) ?? [];
-    const carried = carriedAxes(project, id);
+    const labelled = groupedLabels.size ? runs.map((run) => {
+      const rank = evaluations.get(run.id)?.subject_rank_key;
+      const label = rank && groupedLabels.get(rank);
+      return label ? { ...run, label } : run;
+    }) : runs;
+    const carries = carriesByStep.get(id);
     return {
       id, label: shownName(id, project.steps?.[id]), kind, group,
       documentIds: projected?.document_ids,
       documentUses: projected?.document_uses,
       inputs,
-      ...pairedAxesJoined([...(sweepsByStep.get(id) ?? [])].map(([axis, values]) => {
+      sweeps: drawnAxes([...(sweepsByStep.get(id) ?? [])].map(([axis, values]): StepAxis => {
         const read = project.steps?.[id]?.sweep?.axes?.[axis];
-        return {
-          id: axis, label: read && 'set' in read ? read.set : axis, input: (read ? 'input' in read : axis === gatheredModelAxis) || undefined,
-          values: [...values].map(([id, label]) => ({ id, label })),
-          ...carried.has(axis) && { carried: carried.get(axis) },
-        };
-      }), groupedLabels.size ? runs.map((run) => {
-        const rank = evaluations.get(run.id)?.subject_rank_key;
-        const label = rank && groupedLabels.get(rank);
-        return label ? { ...run, label } : run;
-      }) : runs, new Set(Object.keys(project.steps?.[id]?.sweep?.axes ?? {})), carried),
+        const view = { id: axis, label: read && 'set' in read ? read.set : axis, values: [...values].map(([id, label]) => ({ id, label })) };
+        const carried = carries?.get(axis);
+        return carried ? { ...view, kind: 'input', carries: carried }
+          : axis === gatheredModelAxis && modelAxisSteps.has(id) ? { ...view, kind: 'step' } : { ...view, kind: 'coordinate' };
+      }), labelled),
+      runs: labelled,
       statusCounts: resultCounts(projected?.status_counts ?? {}, runs),
     };
   });

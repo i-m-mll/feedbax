@@ -90,6 +90,7 @@ from feedbax.contracts.project_sweep import (
     SetAxis,
     Sweep,
     SweepCoordinate,
+    SweepInputCoordinate,
     SweepExpansionCode,
     SweepExpansionError,
     SweepInputMember,
@@ -301,7 +302,7 @@ class PlannedRow:
     axis_keys: Mapping[str, str] = field(default_factory=dict, kw_only=True)
     """Each axis of the row's sweep and its value id there, or for an input axis the member key, which an address's
     selector matches."""
-    input_axes: Mapping[str, SweepCoordinate] = field(default_factory=dict, kw_only=True)
+    input_axes: Mapping[str, SweepInputCoordinate] = field(default_factory=dict, kw_only=True)
     """Each input axis's member on this row; ``axes`` terms select it by its key."""
     document_ids: Mapping[str, str] = field(default_factory=dict, kw_only=True)
     document_uses: frozenset[str] = field(default=frozenset(), kw_only=True)
