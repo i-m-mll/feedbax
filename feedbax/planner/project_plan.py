@@ -2491,7 +2491,7 @@ class _Compiler:
             inputs = {role: _plan_document_content(value, self.documents) for role, value in sources.items()}
             narrowed = _encode_row(
                 key, "evaluate", payload, inputs, None, self.work.request_documents,
-                self.prepare_train_trial, resolved.document_ids,
+                self.prepare_train_trial, resolved.document_ids, self.python_tasks,
             )
             return replace(
                 narrowed, document_ids=resolved.document_ids, document_uses=resolved.document_uses,
