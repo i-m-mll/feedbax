@@ -1034,14 +1034,14 @@ def test_stored_model_plan_uses_the_supplied_component_registry():
     (train,) = registered.runs
     assert train.kind == "train"
     (problem,) = registered.diagnostics
-    assert problem.step == "baseline" and "has no declared Evaluate layout" in problem.detail
+    assert (problem.step, problem.code, problem.blocked_by) == ("baseline", "blocked_input", train.key)
     assert train.admission_problem is not None
     assert "has no typed model checkpoint owner" in train.admission_problem.detail
     address = ModelAddress.model_validate({
         "composites": [],
         "element": {"kind": "component", "id": "custom"},
     })
-    assert problem.model_address == train.admission_problem.model_address == address
+    assert train.admission_problem.model_address == address
     assert compile_project(project, memo=memo) == first
 
 
@@ -1559,13 +1559,12 @@ def test_saved_managed_mechanics_refuses_at_model_address(host, tmp_path, domain
         assert train.path == "payload.trial_documents.model.interior.components.arm"
         assert "requires an authored spatial asset" in train.detail
         evaluate = next(problem for problem in response.window_map.problems if problem.step == "baseline")
-        assert evaluate.path == "inputs.subject" and "unplannable rows" in evaluate.detail
+        assert (evaluate.path, evaluate.code) == ("inputs.subject", "blocked_input")
     else:
         assert train.path == "/trial_documents/model/interior/components/arm"
         assert "no typed model checkpoint owner for solver 'euler'" in train.detail
         evaluate = next(problem for problem in response.window_map.problems if problem.step == "baseline")
-        assert evaluate.place.member == train.place.member
-        assert "no qualified Evaluate realization" in evaluate.detail
+        assert (evaluate.code, evaluate.blocked_by.step) == ("blocked_input", "train")
 
     snapshot = view.settled
     train_key = RunKey("default", "train", "default")
