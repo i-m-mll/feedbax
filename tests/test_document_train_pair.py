@@ -25,7 +25,7 @@ from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.jobs import JobStatus
 from feedbax.expression_builtins import register_builtins
-from feedbax.expression_registry import FunctionRegistry
+from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.plugins.declarations import DistributionSource, callable_declaration
 from feedbax.runtime._graph_key_schedule import model_initialization_key
 from feedbax.tasks.document import TaskParameters

@@ -42,7 +42,7 @@ from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, O
 from feedbax.contracts.training import TrialDocuments
 from feedbax.expression_check import references
 from feedbax.expression_site import FieldKind, project_site, read_field
-from feedbax.expression_text import ParsedField, parse, print_field
+from feedbax.contracts.expression_text import ParsedField, parse, print_field
 from feedbax.studio.value_structure import value_structure
 from feedbax.objectives.document import ObjectiveExecutor, ObjectiveUse, compile_objective
 from feedbax.plugins.application import ApplicationRegistryBundle

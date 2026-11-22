@@ -26,8 +26,8 @@ from feedbax.contracts.studio_field import (
     FieldResetEdit, FieldTextEdit, ModelFieldRequest, ModelFieldResponse, ModelFieldView,
 )
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
-from feedbax.expression_registry import FunctionRegistry
-from feedbax.expression_text import print_field
+from feedbax.contracts.expression_registry import FunctionRegistry
+from feedbax.contracts.expression_text import print_field
 from feedbax.studio.authoring_sweeps import SweepTarget, FieldSweeps
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
 from feedbax.studio.selection import merged_files

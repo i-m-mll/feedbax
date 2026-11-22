@@ -28,7 +28,7 @@ from feedbax.contracts.objective_document import (
 )
 from feedbax.expression_check import references
 from feedbax.expression_compile import Compiled, Inputs, compile_expression
-from feedbax.expression_registry import FunctionRegistry
+from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.objectives.base import TermTree
 from feedbax.runtime.epoch_windows import whole_window
 from feedbax.tasks.document import Trial, TrialSource

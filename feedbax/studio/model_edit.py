@@ -933,7 +933,7 @@ class ModelEditDraft:
 @cache
 def _builtin_functions():
     from feedbax.expression_builtins import register_builtins
-    from feedbax.expression_registry import FunctionRegistry
+    from feedbax.contracts.expression_registry import FunctionRegistry
 
     functions = FunctionRegistry()
     register_builtins(functions)

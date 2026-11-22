@@ -58,7 +58,7 @@ from feedbax.contracts.studio_authoring import (
 from feedbax.contracts.studio_project import SetProjectValue
 from feedbax.contracts.studio_field import FieldResetEdit, TrainFieldRequest, TrainFieldResponse, TrainFieldView
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
-from feedbax.expression_registry import FunctionRegistry
+from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.plugins.application import (
     COMPONENTS, EXPRESSION_FUNCTIONS, FIGURE_TEMPLATES, OPERATIONS, PYTHON_TASKS, TRAINING_METHODS,
 )

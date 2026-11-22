@@ -27,7 +27,7 @@ from feedbax.contracts.expression_values import Problem, ProblemCode, Site, Valu
 from feedbax.contracts.model_document import GraphInterior, ModelDocument
 from feedbax.contracts.project import json_pointer_parts
 from feedbax.contracts.task_document import PythonTaskSelection
-from feedbax.expression_registry import FunctionRegistry
+from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.objectives.document import ObjectiveDocument, ObjectiveExecutor, ObjectiveUse, compile_objective
 from feedbax.runtime.graph import GraphTraceRequest
 from feedbax.runtime.trial_execution import TrialExecution

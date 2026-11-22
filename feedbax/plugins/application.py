@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from feedbax.analysis.operations import OperationRegistry
 from feedbax.component_registry import ComponentRegistry
-from feedbax.expression_registry import FunctionRegistry
+from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.plot.templates import FigureTemplateRegistry
 from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.training.methods import TrainingMethodRegistry

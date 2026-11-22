@@ -13,7 +13,7 @@ from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import compile_project
 from feedbax.contracts.request_refs import BestRank
 from feedbax.contracts.run_rule import choose
-from feedbax.expression_text import RuleBest, RuleChoice, RuleCondition, RuleInterval, parse, parse_rule
+from feedbax.contracts.expression_text import RuleBest, RuleChoice, RuleCondition, RuleInterval, parse, parse_rule
 from tests.test_saved_update_series import definition
 
 

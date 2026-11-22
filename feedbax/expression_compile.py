@@ -28,7 +28,7 @@ from feedbax.contracts.expression_values import (
 )
 from feedbax.expression_builtins import CallContext
 from feedbax.expression_check import Checked, check
-from feedbax.expression_registry import Evaluation, FunctionRegistry, StateReset
+from feedbax.contracts.expression_registry import Evaluation, FunctionRegistry, StateReset
 from feedbax.runtime._graph_key_schedule import derive_key
 
 

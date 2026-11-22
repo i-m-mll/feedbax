@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from feedbax.web.app import create_app
 from tests.test_document_task_parity import _model_payload, _pair_model, example
 from feedbax.expression_builtins import register_builtins
-from feedbax.expression_registry import FunctionRegistry
+from feedbax.contracts.expression_registry import FunctionRegistry
 
 
 @pytest.fixture

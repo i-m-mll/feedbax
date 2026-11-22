@@ -12,7 +12,7 @@ import operator
 from typing import Any, Protocol
 
 from feedbax.contracts.expression_values import CallValue, Expression, LiteralValue, NameValue, Problem, TextSpan
-from feedbax.expression_text import RULE_NAME, RuleBest, RuleChoice, RuleCondition, RuleInterval, RuleTerm, parse_rule
+from feedbax.contracts.expression_text import RULE_NAME, RuleBest, RuleChoice, RuleCondition, RuleInterval, RuleTerm, parse_rule
 
 
 class SweepCoordinate(Protocol):

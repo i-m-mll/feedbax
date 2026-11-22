@@ -15,7 +15,7 @@ from pydantic import (
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.request_refs import CheckpointBatches, CheckpointCadence, Name, UpdateRule
 from feedbax.contracts.run_rule import RuleRefusal, SweepCoordinate, choose, parse
-from feedbax.expression_text import RuleBest
+from feedbax.contracts.expression_text import RuleBest
 from feedbax.contracts.selection import ManifestPredicate
 
 # These names serve as file stems and path segments in project-level patches.
