@@ -19,8 +19,8 @@ from feedbax.contracts.manifest import (
     load_manifest,
     normalize_checkpoint_selection_lineage,
     spec_payload,
-    write_manifest,
 )
+from feedbax.persistence.manifest_index import write_manifest
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 
 

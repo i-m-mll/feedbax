@@ -7,11 +7,17 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+from feedbax._atomic import write_bytes_atomic
 from feedbax.contracts.base import (
     ArtifactRef,
     default_manifest_root,
 )
 from feedbax.contracts.manifest import (
+    AnyManifest,
+    EvaluationRunManifest,
+    _manifest_dir,
+    _safe_manifest_filename,
+    normalize_manifest_spec_payloads,
     BaseManifest,
     load_manifest,
 )
@@ -334,3 +340,28 @@ def rebuild_manifest_index(
             seen[manifest.id] = path
             index_manifest(conn, manifest, path=path)
     return conn_path
+
+
+def write_manifest(
+    manifest: AnyManifest,
+    *,
+    root: Path | str | None = None,
+    index: bool = True,
+) -> Path:
+    """Write a manifest to the local manifest layout and optionally index it."""
+    manifest = normalize_manifest_spec_payloads(manifest)
+    root_path = Path(root) if root is not None else default_manifest_root()
+    manifest_dir = _manifest_dir(root_path, manifest.kind)
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    path = manifest_dir / _safe_manifest_filename(manifest.id)
+    serialized = (
+        manifest.model_dump_json(exclude_none=True)
+        if isinstance(manifest, EvaluationRunManifest)
+        else manifest.model_dump_json(indent=2, exclude_none=True)
+    )
+    write_bytes_atomic(path, (serialized + "\n").encode("utf-8"), mode=0o666)
+    if index:
+        from feedbax.persistence.manifest_index import index_manifest_file
+
+        index_manifest_file(path, root=root_path)
+    return path

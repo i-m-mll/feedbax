@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import fcntl
 import hashlib
+import json
 import os
 import re
 import stat
@@ -18,7 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, Iterator, Literal
+from typing import TYPE_CHECKING, Any, Iterator, Literal, Optional
 
 from pydantic import JsonValue
 from pydantic import ValidationError as PydanticValidationError
@@ -62,7 +63,7 @@ from feedbax.contracts.artifact_custody import (
     ContentTreeRef,
     ImmutableArtifactBlobProviderSpec,
 )
-from feedbax.contracts.base import ArtifactRef
+from feedbax.contracts.base import ArtifactRef, default_manifest_root
 from feedbax.contracts.canonical_json import canonical_json_v1_bytes, canonical_json_v2_bytes
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.persistence._store_metadata import sync_directory, write_store_metadata
@@ -1955,3 +1956,128 @@ __all__ = [
     "ImmutableArtifactBlobProvider",
     "open_immutable_artifact_blob_provider",
 ]
+
+
+def _artifact_path(root: Path, digest: str) -> Path:
+    return root / "artifacts" / "sha256" / digest[:2] / digest
+
+
+def store_artifact(
+    source_path: Path | str,
+    *,
+    root: Path | str | None = None,
+    role: str,
+    logical_name: Optional[str] = None,
+    media_type: str = "application/octet-stream",
+    metadata: Optional[dict[str, Any]] = None,
+    include_original_uri: bool = True,
+) -> ArtifactRef:
+    """Copy an artifact into the local content-addressed store and return its ref.
+
+    The published canonical bytes are read back and verified against the source
+    content identity before the reference is returned, so the returned digest and
+    size always describe the bytes actually stored. A source that changes during
+    the copy, or a canonical destination that already holds different bytes,
+    fails closed without overwriting the existing canonical file.
+
+    Set `include_original_uri=False` when the source is a temporary staging
+    file and its location is not artifact provenance.
+    """
+    source = Path(source_path)
+    if not source.exists():
+        raise FileNotFoundError(source)
+    root_path = Path(root) if root is not None else default_manifest_root()
+    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+
+    object_ref = ImmutableArtifactBlobProvider(root_path.absolute())._store_file(source)
+    artifact_metadata = dict(metadata or {})
+    if include_original_uri:
+        artifact_metadata.setdefault("original_uri", str(source))
+    return _stored_artifact_ref(
+        object_ref,
+        root_path=root_path,
+        role=role,
+        logical_name=logical_name or source.name,
+        media_type=media_type,
+        metadata=artifact_metadata,
+    )
+
+
+def store_json_artifact(
+    value: Any,
+    *,
+    root: Path | str | None = None,
+    role: str,
+    logical_name: str,
+    metadata: Optional[dict[str, Any]] = None,
+) -> ArtifactRef:
+    """Write stable JSON into the local content-addressed store.
+
+    The serialized bytes are published through the same verified byte store as
+    :func:`store_bytes_artifact`, so the canonical file is read back and compared
+    against the serialized payload, including when the canonical name already exists.
+    """
+    data = json.dumps(value, indent=2, sort_keys=True).encode() + b"\n"
+    return store_bytes_artifact(
+        data,
+        root=root,
+        role=role,
+        logical_name=logical_name,
+        media_type="application/json",
+        metadata=metadata,
+    )
+
+
+def store_bytes_artifact(
+    data: bytes,
+    *,
+    root: Path | str | None = None,
+    role: str,
+    logical_name: str,
+    media_type: str = "application/octet-stream",
+    metadata: Optional[dict[str, Any]] = None,
+) -> ArtifactRef:
+    """Atomically write opaque bytes into the local content-addressed store.
+
+    The canonical name is published only after the exact temporary bytes are
+    flushed and verified. Platforms without descriptor-relative, no-follow
+    operations fail closed at the common BlobStore boundary.
+    """
+    if not isinstance(data, bytes):
+        raise TypeError("artifact data must be bytes")
+    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+
+    root_path = Path(root) if root is not None else default_manifest_root()
+    object_ref = ImmutableArtifactBlobProvider(Path(root_path).absolute()).store_object(data)
+    return _stored_artifact_ref(
+        object_ref,
+        root_path=root_path,
+        role=role,
+        logical_name=logical_name,
+        media_type=media_type,
+        metadata=metadata,
+    )
+
+
+def _stored_artifact_ref(
+    object_ref: ContentObjectRef,
+    *,
+    root_path: Path,
+    role: str,
+    logical_name: str,
+    media_type: str,
+    metadata: dict[str, Any] | None,
+) -> ArtifactRef:
+    dest = _artifact_path(root_path, object_ref.sha256)
+    artifact_metadata = dict(metadata or {})
+    artifact_metadata.setdefault("relative_path", str(dest.relative_to(root_path)))
+    return ArtifactRef(
+        role=role,
+        logical_name=logical_name,
+        artifact_id=f"artifact://sha256/{object_ref.sha256}",
+        sha256=object_ref.sha256,
+        media_type=media_type,
+        size_bytes=object_ref.size_bytes,
+        uri=str(dest),
+        metadata=artifact_metadata,
+    )

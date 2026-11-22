@@ -16,7 +16,7 @@ import pytest
 
 import feedbax.persistence.artifact_custody as custody_module
 from feedbax.contracts.base import ArtifactRef
-from feedbax.contracts.artifact_store import store_bytes_artifact
+from feedbax.persistence.artifact_custody import store_bytes_artifact
 from feedbax.contracts.artifact_custody import (
     ContentBinding,
     ContentManifestConflictError,

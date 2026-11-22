@@ -18,7 +18,7 @@ from feedbax.checkpoint_coordinates import MAX_CHECKPOINT_COORDINATE
 from feedbax.contracts import request_identity
 from feedbax.contracts._request_codec import same_typed_value
 from feedbax.contracts.analysis_document import AnalyzeDatasetInput, AnalyzeInput, AnalyzeModelInput, AnalyzeTaskInput
-from feedbax.contracts.base import StrictModel, sha256_bytes
+from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.expression_values import Problem, ValueBase
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, FigureDocument, PlotlyFigurePort

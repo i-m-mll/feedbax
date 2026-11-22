@@ -33,8 +33,8 @@ from feedbax.contracts.manifest import (
     SpecPayload,
     load_graph_spec_from_manifest,
     spec_payload,
-    write_manifest,
 )
+from feedbax.persistence.manifest_index import write_manifest
 from feedbax.contracts.migrations import (
     UnsupportedSpecVersion,
     migrate_graph_spec,

@@ -362,9 +362,14 @@ def _run(
     from feedbax.contracts.canonical_json import canonical_json_v2_bytes
     from feedbax.contracts.effective_success import RequestObject
     from feedbax.contracts.manifest import (
-        InheritedTerminalCheckpoint, TrainingRunCertification, TrainingRunManifest,
-        canonical_manifest_path, load_manifest_bytes, training_run_manifest_id, write_manifest,
+        InheritedTerminalCheckpoint,
+        TrainingRunCertification,
+        TrainingRunManifest,
+        canonical_manifest_path,
+        load_manifest_bytes,
+        training_run_manifest_id,
     )
+    from feedbax.persistence.manifest_index import write_manifest
     from feedbax.contracts.method_checkpoint import MethodCheckpointIdentity
     from feedbax.contracts.strict_json import strict_json_loads
     from feedbax.contracts.studio_training import PublishedTrainingCheckpoint

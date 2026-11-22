@@ -11,8 +11,8 @@ from feedbax.contracts.manifest import (
     canonical_manifest_path,
     load_manifest,
     spec_payload,
-    write_manifest,
 )
+from feedbax.persistence.manifest_index import write_manifest
 
 
 @pytest.mark.parametrize(
