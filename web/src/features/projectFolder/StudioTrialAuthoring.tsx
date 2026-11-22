@@ -206,7 +206,7 @@ function termFields(view: StudioTrialAuthoring, term: ObjectiveTerm, index: numb
     const value = term[field];
     const kind = value?.kind === 'name' ? 'link' : value?.kind === 'call' ? 'formula' : value?.kind === 'draw' ? 'draw' : 'value';
     return fromFieldView({
-      label, text: projection.text ?? '',
+      label, text: projection.text ?? '', structure: projection.structure,
       site: { ...projection.projection, kinds: projection.projection.kinds.filter((kind) => kind !== 'sweep') },
     }, {
       id: term.id + field, kind, changed: changed(field),
