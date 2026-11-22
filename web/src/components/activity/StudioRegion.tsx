@@ -1,6 +1,6 @@
 import { Component, useEffect, useState, type ErrorInfo, type ReactNode } from 'react';
 import { ApiRequestError } from '@/api/request';
-import { reportStudioRenderFailure } from '@/api/studioDiagnostics';
+import { isStudioDefect, shownError, shownRenderFailure } from '@/api/shownErrors';
 import { studioName, studioReason, studioRunStatus, type StudioNameId, type StudioRunStatusId } from './studioVocabulary';
 import { Button } from '@/components/ui/Button';
 import { Section } from '@/components/ui/Section';
@@ -8,6 +8,8 @@ import { Section } from '@/components/ui/Section';
 export interface StudioRegionIssue {
   reason: string;
   detail?: string;
+  /** Studio's own defect, which asking again repeats. */
+  defect?: boolean;
 }
 
 export type StudioRegionState =
@@ -26,12 +28,13 @@ export function studioReadState(
 }
 
 export function studioRegionIssue(name: StudioNameId, error: unknown): StudioRegionIssue {
-  const message = error instanceof Error ? error.message : undefined;
+  const shown = shownError(error, studioReason('unavailable', studioName(name)));
+  if (isStudioDefect(error)) return { reason: shown, defect: true };
   return {
-    reason: message && !(error instanceof ApiRequestError && (error.status ?? 0) >= 500)
-      ? studioReason('observed', message)
+    reason: error instanceof Error && !(error instanceof ApiRequestError && (error.status ?? 0) >= 500)
+      ? studioReason('observed', shown)
       : studioReason('unavailable', studioName(name)),
-    detail: message,
+    detail: shown,
   };
 }
 
@@ -112,6 +115,7 @@ function RegionLoading({ children }: { children: ReactNode }) {
 function RegionFailure({ issue, retry, recoveryLabel = 'retry' }: {
   issue: StudioRegionIssue; retry: () => void; recoveryLabel?: 'retry' | 'reload';
 }) {
+  if (issue.defect) return <p role="alert" className="p-3 text-sm text-shell-status-failure">{issue.reason}</p>;
   return (
     <div className="space-y-2 rounded-md border border-shell-divider bg-shell-subtle p-3 text-sm">
       <p role="alert" className="text-shell-status-failure">{issue.reason}</p>
@@ -148,10 +152,7 @@ export class StudioRegionBoundary extends Component<
     if (this.reported) return;
     this.reported = true;
     const { name } = this.props;
-    const error = asRenderError(failure);
-    void reportStudioRenderFailure(name, error, info.componentStack ?? '').catch((reportError: unknown) => {
-      console.error('Studio render failure could not be sent', name, error, reportError);
-    });
+    shownRenderFailure(asRenderError(failure), name, info.componentStack ?? '', renderFailure(name));
   }
 
   render() {
@@ -159,7 +160,7 @@ export class StudioRegionBoundary extends Component<
     return (
       <RegionFailure
         issue={{
-          reason: studioReason('renderFailed', studioName(this.props.name)),
+          reason: renderFailure(this.props.name),
           detail: this.state.error.message,
         }}
         retry={() => {
@@ -171,6 +172,8 @@ export class StudioRegionBoundary extends Component<
     );
   }
 }
+
+const renderFailure = (name: StudioNameId) => studioReason('renderFailed', studioName(name));
 
 function asRenderError(failure: unknown) {
   if (failure instanceof Error) return failure;

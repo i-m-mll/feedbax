@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from feedbax.contracts.component import ComponentDefinition
 from feedbax.contracts.domain import (
@@ -25,11 +25,26 @@ TRAINING_TRAJECTORY_SCHEMA_ID = "feedbax.event.studio.training_trajectory"
 TRAINING_TRAJECTORY_SCHEMA_VERSION = "feedbax.event.studio.training_trajectory.v1"
 
 
-class StudioRenderFailure(StrictModel):
-    region: str = Field(min_length=1, max_length=80)
-    error_type: str = Field(min_length=1, max_length=80)
-    detail: str = Field(max_length=2048)
-    component_stack: str = Field(max_length=4096)
+class StudioErrorReport(StrictModel):
+    """An error Studio showed, logged whole under the ref its element carries."""
+
+    ref: str = Field(pattern=r"^[0-9a-f]{8}$")
+    kind: Literal["network", "http", "request", "response", "render", "error"]
+    """``request``: Studio's check refused what it was about to send, so nothing was sent; ``response``: the service's
+    answer failed its contract; ``render``: a region failed to render."""
+    message: str = Field(max_length=4096)
+    path: str | None = Field(default=None, max_length=2048)
+    method: str | None = Field(default=None, max_length=16)
+    status: int | None = None
+    contract: str | None = Field(default=None, max_length=120)
+    issues: list[str] = Field(default_factory=list, max_length=200)
+    sent: JsonValue = None
+    """The body Studio sent, or would have sent; its ``revision`` is the project revision it was made against."""
+    detail: JsonValue = None
+    """The service's own account of a refusal."""
+    region: str | None = Field(default=None, max_length=80)
+    stack: str = Field(default="", max_length=16384)
+    component_stack: str = Field(default="", max_length=8192)
 
 
 class StudioApiModel(BaseModel):

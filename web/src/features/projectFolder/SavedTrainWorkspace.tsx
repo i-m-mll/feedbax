@@ -2,7 +2,8 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExtern
 import { useStore } from 'zustand';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { approveSavedRun, fetchExecutionTargets, fetchSavedTrainRuns, quoteSavedRun, runSavedTrain } from '@/api/jobs';
-import { apiErrorMessage, isRefusal, isServiceFailure, isUnanswered, landsOnGesture } from '@/api/request';
+import { isRefusal, isServiceFailure, isUnanswered, landsOnGesture } from '@/api/request';
+import { isStudioDefect, shownError } from '@/api/shownErrors';
 import { prepareCheckpointRuleEdit, prepareSubsetToRows } from '@/api/studioAuthoring';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import {
@@ -175,7 +176,7 @@ export default function StudioProjectWorkspace({
       setLoad({ session });
       return session.close;
     } catch (cause) {
-      setLoad({ error: apiErrorMessage(cause) });
+      setLoad({ error: shownError(cause) });
     }
   }, [document, retry]);
 
@@ -223,13 +224,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const selectedElements = useStore(elements, (current) => current.selection);
   const mapViewport = useRef<CanvasViewport>(null);
   const selection = useProjectWindowSelection(Object.keys(saved.project.steps ?? {})[0] ?? null);
-  const [commandError, setCommandError] = useState<string>();
+  /** The failure of the last gesture that has no object of its own to land on. */
+  const [commandError, setCommandError] = useState<unknown>();
   /** The last refused gesture, shown on the object it acted on. */
   const [refusal, setRefusal] = useState<Refusal>();
   /** The refusal of the selected Train step's authoring read, which is drawn on the step while it holds. */
   const [readRefusal, setReadRefusal] = useState<Refusal & { kind: 'step' }>();
   const commandFailed = (error: unknown) => {
-    if (!isUnanswered(error)) setCommandError(apiErrorMessage(error));
+    if (!isUnanswered(error)) setCommandError(error);
   };
   const [machines, setMachines] = useState<Readonly<Record<string, string>>>({});
   const [machineQuote, setMachineQuote] = useState<StudioMachineQuote>();
@@ -758,7 +760,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     setRefusal(undefined);
   }
   function failed(cause: unknown, refuse?: (reason: string) => Refusal | undefined) {
-    const refused = landsOnGesture(cause) && refuse?.(apiErrorMessage(cause));
+    const refused = landsOnGesture(cause) && refuse?.(shownError(cause));
     if (refused) setRefusal(refused);
     else commandFailed(cause);
   }
@@ -769,7 +771,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     return {
       clear: settled,
       fail: (cause, land) => {
-        if (land && landsOnGesture(cause)) land(apiErrorMessage(cause));
+        if (land && landsOnGesture(cause)) land(shownError(cause));
         else failed(cause, refuseStep(stepId));
       },
     };
@@ -955,7 +957,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   }
 
   const projectFailure = snapshot.error ?? stoppedPlan.error;
-  const failure = commandError ?? (projectFailure && !isUnanswered(projectFailure) ? apiErrorMessage(projectFailure) : null);
+  const failureCause = commandError ?? (projectFailure && !isUnanswered(projectFailure) ? projectFailure : undefined);
+  const failure = failureCause === undefined ? null : shownError(failureCause);
   const retryPlan = () => {
     void projection.refetch();
   };
@@ -1493,7 +1496,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       subject: snapshot.redoName === studioName('outsideChange') ? snapshot.redoName : undefined,
     }),
     bindStudioCommand('clearFocus', () => selection.select({ ...state, focus: null }), { enabled: !!state.focus }),
-    activity, problemCommand, failure && retryCommand,
+    activity, problemCommand, failure && !isStudioDefect(failureCause) && retryCommand,
   ].filter((command): command is StudioCommand => !!command);
 
   return (
@@ -1564,7 +1567,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         clock={evaluationReplay.clock}
         failure={failure && <div role="alert" className="flex min-w-0 items-center gap-1">
           <span className="min-w-0 break-words">{failure}</span>
-          <Button {...commandAttributes(retryCommand)} onClick={retryCommand.invoke}>{studioName('retry')}</Button>
+          {!isStudioDefect(failureCause) &&
+            <Button {...commandAttributes(retryCommand)} onClick={retryCommand.invoke}>{studioName('retry')}</Button>}
         </div>}
         problems={<StudioProblems command={problemCommand} count={problemCount} open={!!problemPanel}
           opener={problemPanel?.opener ?? null} onClose={() => setPanel(null)}

@@ -2036,11 +2036,20 @@ export interface DomainRegistryPayload {
   domains: DomainMeta[];
 }
 
-export interface StudioRenderFailure {
-  region: string;
-  error_type: string;
-  detail: string;
-  component_stack: string;
+export interface StudioErrorReport {
+  ref: string;
+  kind: "network" | "http" | "request" | "response" | "render" | "error";
+  message: string;
+  path?: string | null;
+  method?: string | null;
+  status?: number | null;
+  contract?: string | null;
+  issues?: string[];
+  sent?: JsonValue;
+  detail?: JsonValue;
+  region?: string | null;
+  stack?: string;
+  component_stack?: string;
 }
 
 export interface DomainCompileReport {
@@ -5916,7 +5925,7 @@ export const AxisValueRunsSchema: z.ZodType<AxisValueRuns> = z.lazy(() =>
     .object({
       "kind": z.literal("axis_value"),
       "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-      "value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "value": z.string().min(1),
     })
     .strict()
 ) as unknown as z.ZodType<AxisValueRuns>;
@@ -8175,16 +8184,25 @@ export const DomainRegistryPayloadSchema: z.ZodType<DomainRegistryPayload> = z.l
     .strict()
 ) as unknown as z.ZodType<DomainRegistryPayload>;
 
-export const StudioRenderFailureSchema: z.ZodType<StudioRenderFailure> = z.lazy(() =>
+export const StudioErrorReportSchema: z.ZodType<StudioErrorReport> = z.lazy(() =>
   z
     .object({
-      "region": z.string().min(1).max(80),
-      "error_type": z.string().min(1).max(80),
-      "detail": z.string().max(2048),
-      "component_stack": z.string().max(4096),
+      "ref": z.string().regex(new RegExp("^[0-9a-f]{8}$")),
+      "kind": z.union([z.literal("network"), z.literal("http"), z.literal("request"), z.literal("response"), z.literal("render"), z.literal("error")]),
+      "message": z.string().max(4096),
+      "path": z.string().max(2048).nullable().optional(),
+      "method": z.string().max(16).nullable().optional(),
+      "status": z.number().int().safe().nullable().optional(),
+      "contract": z.string().max(120).nullable().optional(),
+      "issues": z.array(z.string()).max(200).optional(),
+      "sent": jsonValueSchema.optional(),
+      "detail": jsonValueSchema.optional(),
+      "region": z.string().max(80).nullable().optional(),
+      "stack": z.string().max(16384).optional(),
+      "component_stack": z.string().max(8192).optional(),
     })
     .strict()
-) as unknown as z.ZodType<StudioRenderFailure>;
+) as unknown as z.ZodType<StudioErrorReport>;
 
 export const DomainCompileReportSchema: z.ZodType<DomainCompileReport> = z.lazy(() =>
   z
@@ -11714,7 +11732,7 @@ export const contractSchemas = {
   DomainCompileReport: DomainCompileReportSchema,
   StudioPlanarSceneRequest: StudioPlanarSceneRequestSchema,
   StudioPlanarSceneResponse: StudioPlanarSceneResponseSchema,
-  StudioRenderFailure: StudioRenderFailureSchema,
+  StudioErrorReport: StudioErrorReportSchema,
   WorkspaceReplayTrial: WorkspaceReplayTrialSchema,
   PenzaiBuilderListResponse: PenzaiBuilderListResponseSchema,
   PenzaiInspectorResponse: PenzaiInspectorResponseSchema,
@@ -11875,7 +11893,7 @@ export interface ContractTypeMap {
   DomainCompileReport: DomainCompileReport;
   StudioPlanarSceneRequest: StudioPlanarSceneRequest;
   StudioPlanarSceneResponse: StudioPlanarSceneResponse;
-  StudioRenderFailure: StudioRenderFailure;
+  StudioErrorReport: StudioErrorReport;
   WorkspaceReplayTrial: WorkspaceReplayTrial;
   PenzaiBuilderListResponse: PenzaiBuilderListResponse;
   PenzaiInspectorResponse: PenzaiInspectorResponse;
@@ -11903,11 +11921,24 @@ function formatPath(path: Array<string | number>): string {
   return path.length === 0 ? '<root>' : path.join('.');
 }
 
-export function formatZodError(name: string, error: z.ZodError): string {
-  return error.issues
-    .slice(0, 5)
-    .map((issue) => `${name}:${formatPath(issue.path)} ${issue.message}`)
-    .join('; ');
+/** Every issue of `error`, and of each alternative of a union none of which matched. */
+function zodIssues(error: z.ZodError): z.ZodIssue[] {
+  return error.issues.flatMap((issue) =>
+    issue.code === 'invalid_union' ? [issue, ...issue.unionErrors.flatMap(zodIssues)] : [issue]);
+}
+
+/** A value that does not satisfy its contract, with every issue the check found. */
+export class ContractViolation extends Error {
+  readonly contract: ContractName;
+  readonly issues: readonly string[];
+
+  constructor(contract: ContractName, error: z.ZodError) {
+    const issues = [...new Set(zodIssues(error).map((issue) => `${formatPath(issue.path)} ${issue.message}`))];
+    super(`${contract}: ${issues.slice(0, 5).join('; ')}`);
+    this.name = 'ContractViolation';
+    this.contract = contract;
+    this.issues = issues;
+  }
 }
 
 export function parseContract<K extends ContractName>(
@@ -11916,7 +11947,7 @@ export function parseContract<K extends ContractName>(
 ): ContractTypeMap[K] {
   const result = contractSchemas[name].safeParse(value);
   if (!result.success) {
-    throw new Error(formatZodError(name, result.error));
+    throw new ContractViolation(name, result.error);
   }
   return result.data as ContractTypeMap[K];
 }

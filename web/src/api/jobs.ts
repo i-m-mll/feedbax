@@ -1,7 +1,8 @@
-import { asApiRequestError, requestJson, requestResponse } from '@/api/request';
+import { asApiRequestError, requestJson, requestResponse, sentBody } from '@/api/request';
 import {
   parseContract,
   type ContractName,
+  type ContractTypeMap,
   type StudioJobEvent,
   type StudioMachineApproval,
   type StudioSavedEvaluationRead,
@@ -12,15 +13,17 @@ import {
   type TargetOption,
 } from '@/generated/studioContracts';
 
-async function readContract<K extends ContractName>(
+async function readContract<K extends ContractName, S extends ContractName>(
   path: string,
   contract: K,
   options?: RequestInit,
+  sent?: { contract: S; body: ContractTypeMap[S] },
 ) {
   try {
-    return parseContract(contract, await requestJson(path, { cache: 'no-store', ...options }));
+    const body = sent && sentBody(sent.contract, sent.body, path);
+    return parseContract(contract, await requestJson(path, { cache: 'no-store', ...options, ...sent && { method: 'POST', body } }));
   } catch (error) {
-    throw asApiRequestError(error, path, 'The service response did not match its contract');
+    throw asApiRequestError(error, path);
   }
 }
 
@@ -35,11 +38,7 @@ export function fetchSavedTrainRuns(project: string, revision: string, signal?: 
 }
 
 export function runSavedTrain(project: string, input: StudioSavedTrainRunRequest) {
-  const body = parseContract('StudioSavedTrainRunRequest', input);
-  return readContract(savedTrainRunsPath(project), 'StudioJobSubmission', {
-    method: 'POST',
-    body: JSON.stringify(body),
-  });
+  return readContract(savedTrainRunsPath(project), 'StudioJobSubmission', undefined, { contract: 'StudioSavedTrainRunRequest', body: input });
 }
 
 export function fetchExecutionTargets(kinds: readonly TargetOption['run_kinds'][number][], signal?: AbortSignal) {
@@ -48,35 +47,20 @@ export function fetchExecutionTargets(kinds: readonly TargetOption['run_kinds'][
 }
 
 export function quoteSavedRun(project: string, input: StudioSavedMachineQuoteRequest) {
-  const body = parseContract('StudioSavedMachineQuoteRequest', input);
-  return readContract(`${savedTrainRunsPath(project)}/quote`, 'StudioMachineQuote', {
-    method: 'POST',
-    body: JSON.stringify(body),
-  });
+  return readContract(`${savedTrainRunsPath(project)}/quote`, 'StudioMachineQuote', undefined, { contract: 'StudioSavedMachineQuoteRequest', body: input });
 }
 
 export function approveSavedRun(project: string, input: StudioMachineApproval) {
-  const body = parseContract('StudioMachineApproval', input);
-  return readContract(`${savedTrainRunsPath(project)}/approve`, 'StudioMachineApprovalReceipt', {
-    method: 'POST',
-    body: JSON.stringify(body),
-  });
+  return readContract(`${savedTrainRunsPath(project)}/approve`, 'StudioMachineApprovalReceipt', undefined, { contract: 'StudioMachineApproval', body: input });
 }
 
 export function fetchSavedEvaluationReplay(project: string, input: StudioSavedEvaluationReplayRequest, signal?: AbortSignal) {
-  const body = parseContract('StudioSavedEvaluationReplayRequest', input);
-  return readContract(`/api/projects/${encodeURIComponent(project)}/evaluate-replay`, 'WorkspaceReplayTrial', {
-    method: 'POST',
-    body: JSON.stringify(body),
-    signal,
-  });
+  return readContract(`/api/projects/${encodeURIComponent(project)}/evaluate-replay`, 'WorkspaceReplayTrial', { signal }, { contract: 'StudioSavedEvaluationReplayRequest', body: input });
 }
 
 export function fetchSavedEvaluationObjective(project: string, input: StudioSavedEvaluationRead, signal?: AbortSignal) {
-  const body = parseContract('StudioSavedEvaluationRead', input);
-  return readContract(`/api/projects/${encodeURIComponent(project)}/evaluate-objective`, 'StudioEvaluationObjectiveSeries', {
-    method: 'POST', body: JSON.stringify(body), signal,
-  });
+  return readContract(`/api/projects/${encodeURIComponent(project)}/evaluate-objective`, 'StudioEvaluationObjectiveSeries', { signal },
+    { contract: 'StudioSavedEvaluationRead', body: input });
 }
 
 export function fetchStudioJobs(signal?: AbortSignal) {
@@ -112,7 +96,7 @@ export async function fetchStudioJobHistory(
     const path = `/api/events/history?${params}`;
     const page = await readContract(path, 'StudioJobEventHistory', { signal });
     if (page.cursor <= after || page.cursor > through) {
-      throw asApiRequestError(null, path, 'The retained event range changed');
+      throw asApiRequestError(null, path);
     }
     events.push(...page.events);
     after = page.cursor;
@@ -122,22 +106,18 @@ export async function fetchStudioJobHistory(
 
 export async function stopStudioJobs(jobIds: string[], mode: 'checkpoint' | 'force') {
   const path = '/api/jobs/stop';
-  const body = parseContract('StudioJobStopRequest', { job_ids: jobIds, mode });
   try {
-    const result = await requestJson(path, { method: 'POST', body: JSON.stringify(body) });
+    const body = sentBody('StudioJobStopRequest', { job_ids: jobIds, mode }, path);
+    const result = await requestJson(path, { method: 'POST', body });
     if (!Array.isArray(result)) throw new Error('Stop results must be a list');
     return result.map((item) => parseContract('StudioJobStopItem', item));
   } catch (error) {
-    throw asApiRequestError(error, path, 'The stop response did not match its contract');
+    throw asApiRequestError(error, path);
   }
 }
 
 export function resumeStudioJob(jobId: string, token: string) {
-  const body = parseContract('StudioJobResumeRequest', { token });
-  return readContract(`/api/jobs/${encodeURIComponent(jobId)}/resume`, 'StudioActivityJob', {
-    method: 'POST',
-    body: JSON.stringify(body),
-  });
+  return readContract(`/api/jobs/${encodeURIComponent(jobId)}/resume`, 'StudioActivityJob', undefined, { contract: 'StudioJobResumeRequest', body: { token } });
 }
 
 export function acknowledgeStudioJob(jobId: string) {
