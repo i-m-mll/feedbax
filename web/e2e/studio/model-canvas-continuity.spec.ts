@@ -63,6 +63,62 @@ test('a dragged Model card keeps its place and shape from release until its move
   for (const box of frames) expect(near(box)).toEqual(near(dropped));
 });
 
+type CardFrames = Window & { addFrames?: Record<string, Box | null>[]; stopAddFrames?: () => void };
+
+/** A card dropped from the Library is drawn at its drop point, and no other card moves, resizes or hides on the way. */
+test('a Model card added from the Library moves and redraws no other card', async ({ page, request }) => {
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  const add = await hold(page, `${projectPath}/model/edit`, (body) =>
+    (body as { command?: { operation?: { op?: string } } }).command?.operation?.op === 'add_component');
+  const model = await openModel(page, snapshot.project_id);
+  await expect(model.locator('.react-flow__node[data-id="cell"]')).toHaveClass(/\bdraggable\b/);
+  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+  await drawer.getByRole('textbox', { name: 'Search Library', exact: true }).fill('GRU');
+  const before = await model.locator('.react-flow__node').evaluateAll((nodes) => nodes.map((node) => (node as HTMLElement).dataset.id!));
+  await page.evaluate(() => {
+    const state = window as CardFrames;
+    state.addFrames = [];
+    let frame = 0;
+    const sample = () => {
+      const cards: Record<string, Box | null> = {};
+      for (const node of document.querySelectorAll<HTMLElement>('[data-slot="primary"] .react-flow__node')) {
+        const card = node.querySelector('.studio-model-card');
+        const { x, y, width, height } = card?.getBoundingClientRect() ?? {};
+        cards[node.dataset.id!] = card && getComputedStyle(node).visibility === 'visible' ? { x: x!, y: y!, width: width!, height: height! } : null;
+      }
+      state.addFrames!.push(cards);
+      frame = requestAnimationFrame(sample);
+    };
+    sample();
+    state.stopAddFrames = () => cancelAnimationFrame(frame);
+  });
+  const pane = model.locator('.react-flow__pane');
+  const area = (await pane.boundingBox())!;
+  const drop = { x: Math.round(area.width / 2), y: Math.round(area.height - 160) };
+  await drawer.getByRole('option', { name: 'GRU', exact: true }).dragTo(pane, { targetPosition: drop });
+  await add.sent;
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 200)));
+  const saved = page.waitForResponse((response) => new URL(response.url()).pathname === `${projectPath}/model/edit`);
+  add.release();
+  const { result } = await (await saved).json();
+  expect(result.status).toBe('applied');
+  const id = result.changed[0].element.id as string;
+  await expect(model.locator(`.react-flow__node[data-id="${id}"]`)).toHaveClass(/\bdraggable\b/);
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 300)));
+  const frames = await page.evaluate(() => {
+    const state = window as CardFrames;
+    state.stopAddFrames!();
+    return state.addFrames!;
+  });
+  const near = (box: Box | null) => box && { x: Math.round(box.x), y: Math.round(box.y), width: Math.round(box.width), height: Math.round(box.height) };
+  for (const cards of frames) {
+    for (const other of before) expect(near(cards[other]), other).toEqual(near(frames[0][other]));
+    const box = cards[id];
+    if (box) expect({ x: Math.round(box.x), y: Math.round(box.y) }).toEqual({ x: Math.round(area.x + drop.x), y: Math.round(area.y + drop.y) });
+  }
+  expect(frames.at(-1)![id]).not.toBeNull();
+});
+
 /** A card whose data changes while its name is edited stays shown, and the edit keeps the focus. */
 test('a Model card renamed while its ports load keeps the name field focused', async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
