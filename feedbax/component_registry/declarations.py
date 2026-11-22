@@ -458,3 +458,29 @@ def _template_ui_state(
         },
         subgraph_states=dict(subgraph_states or {}),
     )
+
+
+@dataclass(frozen=True)
+class SettingsSchema:
+    param_schema: tuple[ParamSchema, ...]
+    parameter_json_schema: dict[str, Any]
+    static_parameters: tuple[str, ...]
+
+
+def settings_schema(model: type[BaseModel]) -> SettingsSchema:
+    field_schema = model.model_json_schema(by_alias=False)
+    fields = field_schema.get("properties", {})
+    schema = (
+        model.model_json_schema()
+        if any(field.validation_alias is not None for field in model.model_fields.values())
+        else field_schema
+    )
+    return SettingsSchema(
+        param_schema=parameter_schema_from_model(model, properties=fields),
+        parameter_json_schema=schema,
+        static_parameters=tuple(
+            name
+            for name in model.model_fields
+            if fields.get(name, {}).get("feedbax", {}).get("static") is True
+        ),
+    )

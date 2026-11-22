@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from feedbax.plugins.composition import load_application
+from feedbax.application.composition import load_application
 from tests.support import map_probe
 
 

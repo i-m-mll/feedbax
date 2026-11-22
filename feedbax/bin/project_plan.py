@@ -25,7 +25,7 @@ from feedbax.contracts.project_io import (
     locate_text_project,
     read_text_project_snapshot,
 )
-from feedbax.contracts.project_plan import (
+from feedbax.planner.project_plan import (
     ElementChange,
     ElementKey,
     PlanRequests,
@@ -34,7 +34,7 @@ from feedbax.contracts.project_plan import (
     compile_project,
     diff_plan_requests,
 )
-from feedbax.contracts.project_plan_io import (
+from feedbax.planner.project_plan_io import (
     dump_plan_requests,
     load_plan_requests,
     run_key,
@@ -223,7 +223,7 @@ def _read_baseline(path: Path) -> tuple[PlanRequests, tuple[str, ...] | None]:
 def _read_plan(
     project_dir: Path, *, capture_sources: bool = False,
 ) -> tuple[ProjectFolderLocation, TextProject, ProjectPlan, set[Path], dict[str, bytes]]:
-    from feedbax.plugins.composition import load_application
+    from feedbax.application.composition import load_application
     from feedbax.project_folder import ProjectFolderInvalid, ProjectFolderLocation, ProjectFolderNotFound
 
     root, declaration = locate_text_project(project_dir)
@@ -377,7 +377,7 @@ def _status_cell(text: str) -> str:
 def run_status(args: argparse.Namespace, output: CommandOutput) -> int:
     from feedbax.host import HostClient, HostError
     from feedbax.jobs import PlanJobReader
-    from feedbax.plugins.composition import load_application
+    from feedbax.application.composition import load_application
     from feedbax.project_folder import ProjectFolderInvalid, SettledProjectPlan
     from feedbax.contracts.jobs import JobStatus
     from feedbax.web.services.project_plan import TrainRowHistory, read_settled_project_plan

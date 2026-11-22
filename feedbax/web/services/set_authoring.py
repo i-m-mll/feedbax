@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 from feedbax.contracts.project import Project, RootDocument
-from feedbax.contracts.project_plan import RunKey
+from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.project_sweep import DEFAULT_SWEEP_ROW, ManualCombination, NamedAxis, SetAxis
 from feedbax.contracts.set_document import (
     SET_DOCUMENT_SCHEMA_ID, axis_from_set, read_set, set_from_axis, sets_offered, step_model,

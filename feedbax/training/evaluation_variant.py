@@ -16,7 +16,7 @@ from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.rollout import VariationEdits, authored_variation
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.model_values import component_model_facts, model_owner_problem
-from feedbax.studio.canonical_evaluate import CannotRun
+from feedbax.contracts.rollout import CannotRun
 
 if TYPE_CHECKING:
     from feedbax.component_registry import ComponentRegistry

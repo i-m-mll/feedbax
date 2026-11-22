@@ -21,7 +21,7 @@ from feedbax.contracts.expression_values import (
     ValueBase,
     ValueRecord,
 )
-from feedbax.expression_check import Checked, check
+from feedbax.contracts.expression_check import Checked, check
 from feedbax.contracts.expression_registry import FunctionClass, FunctionInfo, FunctionRegistry
 from feedbax.contracts.expression_text import ParsedField, parse
 

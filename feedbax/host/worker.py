@@ -247,7 +247,7 @@ def _execute(message: dict, report: int, entrypoint, import_error, *, reusable: 
 def _record_execution(message, recorder, log: Path, entrypoint, argv) -> int:
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
     from feedbax.validity.environment import EnvironmentMismatch
-    from feedbax.validity.evidence import release_staged_evidence, stage_evidence
+    from feedbax.persistence.evidence import release_staged_evidence, stage_evidence
 
     root = Path(message["store_root"])
     try:

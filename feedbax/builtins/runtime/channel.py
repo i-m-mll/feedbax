@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict
 from pydantic import Field as ConfigField
 
 import feedbax._vendor.jax_cookbook.tree as jtree
-from feedbax.component_registry.history import Change, History
+from feedbax.contracts.component_history import Change, History
 from feedbax._vendor.jax_cookbook import identity
 from feedbax.contracts.component import PortType
 from feedbax.contracts.portable import ComponentOptions, Ports

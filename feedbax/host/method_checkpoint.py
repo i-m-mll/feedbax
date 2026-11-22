@@ -49,15 +49,15 @@ from feedbax.persistence.method_checkpoint import (
 )
 from feedbax.persistence.model_tree import MODEL_CHECKPOINT_STORE
 from feedbax.persistence.semantic_fingerprint import UnsupportedSemanticValue, fingerprint_semantic_values
-from feedbax.training.checkpoint_errors import CheckpointCustodyError
-from feedbax.training.model_checkpoint import SemanticModelSlot
+from feedbax.persistence.checkpoint_errors import CheckpointCustodyError
+from feedbax.host.model_checkpoint import SemanticModelSlot
 
 if TYPE_CHECKING:
     from feedbax.component_registry import ComponentRegistry
     from feedbax.contracts.artifact_custody import ContentBinding
     from feedbax.runtime.graph import Graph
     from feedbax.training.methods import TrainingState
-    from feedbax.training.model_checkpoint import SemanticModelWriter
+    from feedbax.host.model_checkpoint import SemanticModelWriter
 
 
 _EXTRA_SCHEMA = "feedbax.method_extra.v1"

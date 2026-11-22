@@ -158,7 +158,7 @@ def test_warm_entrypoint_reports_checkpoint_stop_and_typed_error(host, tmp_path)
 
 def test_studio_resume_retires_only_the_continued_attempt(host):
     from feedbax.jobs import JobService
-    from feedbax.plugins.application import new_application_registry_bundle
+    from feedbax.application.bundle import new_application_registry_bundle
 
     worker = "import os\n" + until_exists('os.environ["FEEDBAX_HOST_STOP_FILE"]') + """
 import json
@@ -663,17 +663,17 @@ def test_real_studio_worker_resume_binds_completion_after_daemon_restart(
     from feedbax.contracts.artifact_custody import ContentObjectRef
     from feedbax.contracts.receipt_validity import CheckConditions, ValidityCheckDelivery
     from feedbax.contracts.method_checkpoint import CheckpointLatestPointer
-    from feedbax.host.completion import read_completion_bindings
+    from feedbax.persistence.completion import read_completion_bindings
     from feedbax.job_completion import verify_bound_training_completion
     from feedbax.jobs import JobService
-    from feedbax.plugins.application import new_application_registry_bundle
+    from feedbax.application.bundle import new_application_registry_bundle
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
     from feedbax.persistence.effective_success import SuccessView
     from feedbax.persistence.method_checkpoint import LATEST_NAME, retain_checkpoint_evidence
-    from feedbax.training.checkpoint_errors import CheckpointCustodyError
+    from feedbax.persistence.checkpoint_errors import CheckpointCustodyError
     from feedbax.training.method_runtime import TrainingLoop
     from feedbax.training_host_worker import check_train
-    from feedbax.validity.evidence import read_execution_evidence, release_checkpoint_evidence, stage_checkpoint_evidence
+    from feedbax.persistence.evidence import read_execution_evidence, release_checkpoint_evidence, stage_checkpoint_evidence
     from feedbax.web.api import jobs, projects
     from feedbax.web.services.project_folder import ProjectFolderService
     from feedbax.web.services.job_activity import JobActivity

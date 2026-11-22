@@ -16,7 +16,7 @@ from feedbax.jobs import JobConflict, JobNotFound, JobService
 from feedbax.persistence.array_container import ArrayContainerReader
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
-from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.training.validation_placement import ValidationBudget, ValidationQualification, validation_runtime
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
@@ -252,8 +252,8 @@ _Events.append = append
     from feedbax.contracts.receipt_validity import CheckConditions, ValidityCheckDelivery
     from feedbax.persistence.content_retention import require_active_root
     from feedbax.persistence.live_evaluate import read_live_evaluation_evidence
-    from feedbax.training.evaluate_worker import check_evaluate
-    from feedbax.validity.evidence import StagedEvidenceMissing, read_staged_evidence
+    from feedbax.host.evaluate_worker import check_evaluate
+    from feedbax.persistence.evidence import StagedEvidenceMissing, read_staged_evidence
 
     for raw in accepted_points:
         accepted = BoundLiveEvaluationPoint.model_validate(raw)
@@ -274,7 +274,7 @@ _Events.append = append
 
 
 def test_lost_pinned_continuation_does_not_wait_for_a_sibling(tmp_path, monkeypatch):
-    from feedbax.host.checkpoint_selection import CheckpointSelection
+    from feedbax.persistence.checkpoint_selection import CheckpointSelection
     from feedbax.host.live_evaluate import choose_evaluation
     from feedbax.host.store import Store, dump
 

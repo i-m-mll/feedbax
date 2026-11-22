@@ -119,7 +119,7 @@ def _stop_live(client: HostClient) -> None:
 
 @cache
 def _registries():
-    from feedbax.plugins.application import new_application_registry_bundle
+    from feedbax.application.bundle import new_application_registry_bundle
 
     return new_application_registry_bundle()
 

@@ -19,7 +19,7 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.store_sync import collect_success
 from feedbax.persistence.train_job import collect_train_job, read_train_job
-from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.support.finite_train import install_finite_gate

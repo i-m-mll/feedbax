@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from feedbax.acausal._component import NonNegativeFloat
 from feedbax.acausal._scalar_mechanics import TRANSLATIONAL
 from feedbax.acausal.base import AcausalElement
-from feedbax._acausal_payload import FORCE_PAYLOAD, PRESCRIBED_MOTION_PAYLOAD
+from feedbax.contracts.acausal_payload import FORCE_PAYLOAD, PRESCRIBED_MOTION_PAYLOAD
 from feedbax.contracts.portable import ComponentOwner, ComponentOptions
 from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID, MECHANICS_DOMAIN_ID
 

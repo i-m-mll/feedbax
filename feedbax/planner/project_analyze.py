@@ -36,7 +36,7 @@ from feedbax.contracts.operation import (
     DatasetInputPort, DatasetOutputPort, DatasetPort, WholeDimensions, require_dataset_fields, require_dataset_port,
 )
 from feedbax.contracts.project import Document, Payload, json_pointer_parts
-from feedbax.contracts.project_plan import (
+from feedbax.planner.project_plan import (
     ElementKey,
     LabelName,
     LabelNames,

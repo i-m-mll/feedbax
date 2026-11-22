@@ -6,7 +6,7 @@ from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.contracts.model_attachment import MODEL_DIFFERENCE_BATCHES
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.project import Project, diff
-from feedbax.contracts.project_plan import _builtin_model_registry
+from feedbax.planner.project_plan import _builtin_model_registry
 from feedbax.contracts.project_resolution import compose_document
 
 

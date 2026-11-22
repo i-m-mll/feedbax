@@ -18,8 +18,8 @@ from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.objective_document import ObjectiveDocument, ObjectiveTerm
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_plan import PlanRequests, ProjectPlanMemo, RunKey, compile_project
-from feedbax.contracts.project_plan_io import dump_plan_requests, load_plan_requests
+from feedbax.planner.project_plan import PlanRequests, ProjectPlanMemo, RunKey, compile_project
+from feedbax.planner.project_plan_io import dump_plan_requests, load_plan_requests
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
@@ -30,7 +30,7 @@ from feedbax.plugins.declarations import DistributionSource, callable_declaratio
 from feedbax.runtime._graph_key_schedule import model_initialization_key
 from feedbax.tasks.document import TaskParameters
 from feedbax.tasks.registry import application_python_tasks
-from feedbax.training.evaluate_worker import score_paired_validation
+from feedbax.host.evaluate_worker import score_paired_validation
 from feedbax.training.method_runtime import TrainingLoop, initialize_method, replica_value
 from feedbax.training.methods import TrainingMethodRegistry
 from feedbax.web.services import project_plan as window_service
@@ -488,9 +488,9 @@ def document_project(authored, *, evaluation=False):
 
 
 def test_managed_host_train_and_evaluate_share_document_runtime(host, tmp_path, authored, monkeypatch):
-    from feedbax.contracts.project_plan import RunKey
+    from feedbax.planner.project_plan import RunKey
     from feedbax.jobs import JobService
-    from feedbax.plugins.composition import load_application
+    from feedbax.application.composition import load_application
     from feedbax.web.services.project_folder import ProjectFolderService
     from tests.test_canonical_evaluate_admission import _save_project
     from tests.support.host import job_row, token, wait_until

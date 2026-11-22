@@ -9,12 +9,12 @@ from dataclasses import asdict, replace
 from fastapi.testclient import TestClient
 
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
-from feedbax.contracts.project_plan import RunKey
+from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.jobs import StudioSubmissionActor
 from feedbax.contracts.manifest import canonical_manifest_path
 from feedbax.host import AdmissionItem
 from feedbax.jobs import JobService
-from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.managed_train_fixture import managed_train_project

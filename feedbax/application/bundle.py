@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Generic, TypeVar
 
 from feedbax.analysis.operations import OperationRegistry
 from feedbax.component_registry import ComponentRegistry
@@ -11,8 +12,10 @@ from feedbax.plot.templates import FigureTemplateRegistry
 from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.training.methods import TrainingMethodRegistry
 
-from .bootstrap import RegistryKey
-from .declarations import DeclarationRegistry, DistributionSource
+from feedbax.plugins.declarations import DeclarationRegistry, DistributionSource
+
+
+T = TypeVar("T")
 
 
 @dataclass(frozen=True)
@@ -41,6 +44,34 @@ class ApplicationRegistryBundle:
         self.expression_functions.seal()
         self.python_tasks.seal()
         self.figure_templates.seal()
+
+
+@dataclass(frozen=True)
+class RegistryKey(Generic[T]):
+    family: str
+    attribute: str
+    expected_type: type[T]
+
+
+@dataclass(frozen=True)
+class PluginProvenance:
+    source: DistributionSource
+
+
+@dataclass(frozen=True)
+class BootstrapState:
+    bundle: ApplicationRegistryBundle
+
+    @property
+    def provenance(self) -> tuple[PluginProvenance, ...]:
+        return tuple(PluginProvenance(source) for source in self.bundle.package_sources)
+
+    def registry(self, key: RegistryKey[T]) -> T:
+        value = getattr(self.bundle, key.attribute)
+        if not isinstance(value, key.expected_type):
+            raise TypeError(f"Unexpected {key.family!r} registry type {type(value).__name__}")
+        return value
+
 
 
 COMPONENTS = RegistryKey("components", "components", ComponentRegistry)
@@ -72,6 +103,6 @@ def empty_application_registry_bundle(
 
 def new_application_registry_bundle() -> ApplicationRegistryBundle:
     """Return a fresh, mutable copy of the discovered application registries."""
-    from .composition import build_application
+    from feedbax.application.composition import build_application
 
     return build_application().bundle

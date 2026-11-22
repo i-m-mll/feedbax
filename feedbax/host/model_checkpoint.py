@@ -50,7 +50,7 @@ from feedbax.persistence.model_tree import (
 )
 from feedbax.runtime.graph import Graph
 from feedbax.contracts.model_values import model_owner_problem
-from feedbax.training.checkpoint_errors import CheckpointCustodyError
+from feedbax.persistence.checkpoint_errors import CheckpointCustodyError
 
 if TYPE_CHECKING:
     from feedbax.component_registry import ComponentRegistry

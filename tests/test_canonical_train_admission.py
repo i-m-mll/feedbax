@@ -13,14 +13,14 @@ import pytest
 from feedbax.contracts.checkpoint_projection import ContinuationEncoding
 from feedbax.contracts.jobs import StudioSubmissionActor
 from feedbax.contracts.manifest import canonical_manifest_path, load_manifest
-from feedbax.contracts.project_plan import RunKey
+from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import NamedMember, ProductRef
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef, read_store_closure_ref
 from feedbax.contracts.studio_project import StudioProjectCreateFile, StudioProjectPatch
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.host import HostError, Job, Launch
-from feedbax.host.completion import CompletionFileError
+from feedbax.persistence.completion import CompletionFileError
 from feedbax.job_completion import verify_bound_training_completion, verify_training_model_product
 from feedbax.jobs import JobConflict, JobService
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -28,9 +28,9 @@ from feedbax.persistence.effective_success import SuccessView, run_ref_name
 from feedbax.persistence.method_checkpoint import read_method_checkpoint_manifest
 from feedbax.persistence.receipt_closure import ReceiptClosure
 from feedbax.persistence.store_sync import sync_store
-from feedbax.plugins.composition import load_application
-from feedbax.studio.canonical_train import BoundStudioTrainingJobInput, verify_training_request_binding
-from feedbax.validity.evidence import evidence_objects
+from feedbax.application.composition import load_application
+from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput, verify_training_request_binding
+from feedbax.persistence.evidence import evidence_objects
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.managed_train_fixture import managed_train_payload
 from tests.support.host import admit, held_until_released, job_row, restart, run_job, token, wait_until

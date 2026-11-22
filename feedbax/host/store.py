@@ -18,12 +18,12 @@ from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.request_refs import BestRank, ContentRef, LastMember, ProductRef
 from feedbax.contracts.validation_placement import ValidationPlacement
 from feedbax.host import live_evaluate
-from feedbax.host.best_selection import BestMetricUnavailable, completion_score, ranked_requests
-from feedbax.host.checkpoint_selection import (
+from feedbax.persistence.best_selection import BestMetricUnavailable, completion_score, ranked_requests
+from feedbax.persistence.checkpoint_selection import (
     CheckpointSelection, is_checkpoint_producer, requested_checkpoint_selection, selector_sha256, verify_selected_publication,
     verify_dependency_files,
 )
-from feedbax.host.completion import CompletionFileError, train_source_slots, verify_completion_files
+from feedbax.persistence.completion import CompletionFileError, train_source_slots, verify_completion_files
 from feedbax.host.deferred_reuse import DEFERRED_REUSE_SCHEMA, DeferredAdmissions
 from feedbax.host.plan_history import advance_plan, plan_ref_key
 from feedbax.host.protocol import LIGHT_ENTRYPOINT, LIVE_STATES, TERMINAL_STATES, HostError, can_resume_attempt
@@ -301,7 +301,7 @@ class Store:
                 try:
                     if self._is_managed_launch(row, "feedbax.training_host_worker:main"):
                         outcome = self._publish_train_result(row, outcome)
-                    elif self._is_managed_launch(row, "feedbax.training.evaluate_worker:main"):
+                    elif self._is_managed_launch(row, "feedbax.host.evaluate_worker:main"):
                         outcome = self._publish_evaluate_result(row, outcome)
                     elif json.loads(row["launch"])["warm_entrypoint"] == LIGHT_ENTRYPOINT:
                         outcome = self._publish_light_result(row, outcome)
@@ -472,7 +472,7 @@ class Store:
         self, job: dict, receipt: dict, progress: dict | None, delivery: int,
     ) -> None:
         """Record the terminal attempt only after its exact Store receipt is admitted locally."""
-        from feedbax.studio.canonical_evaluate import (
+        from feedbax.persistence.canonical_evaluate import (
             BoundEvaluationJobInput, decode_rollout_request, evaluation_manifest_id,
         )
 
@@ -482,7 +482,7 @@ class Store:
         if (
             not job["request"].startswith("evaluate:") or type(delivery) is not int or delivery < 1
             or job["continues"] is not None or job["edges"] or job["slot"] != "compute"
-            or job["launch"]["warm_entrypoint"] != "feedbax.training.evaluate_worker:main"
+            or job["launch"]["warm_entrypoint"] != "feedbax.host.evaluate_worker:main"
             or (payload.project_id, payload.request_id, root)
             != (job["project"], job["request"], job["data"].get("manifest_root"))
             or job["data"].get("collected_evaluate") is not True
@@ -816,7 +816,7 @@ class Store:
                 initial = canonical_request.get("initial_model") if evaluate else None
                 if initial is not None:
                     from feedbax.contracts.model_input import read_document_input
-                    from feedbax.studio.canonical_evaluate import (
+                    from feedbax.persistence.canonical_evaluate import (
                         BoundEvaluationJobInput, decode_rollout_request, initial_evaluation_references,
                     )
 
@@ -824,7 +824,7 @@ class Store:
                         launch = BoundEvaluationJobInput.model_validate(payload)
                         if (
                             job["continues"] is not None or job["edges"]
-                            or job["launch"]["warm_entrypoint"] != "feedbax.training.evaluate_worker:main"
+                            or job["launch"]["warm_entrypoint"] != "feedbax.host.evaluate_worker:main"
                         ):
                             raise ValueError("Initial Evaluate requires a standalone rollout launch.")
                         view = self._success_view(str(launch.manifest_root))
@@ -849,7 +849,7 @@ class Store:
                         if (
                             not allow_completion or job["continues"] is not None or job["edges"]
                             or subject.role != "checkpoint" or not isinstance(subject.select, LastMember)
-                            or job["launch"]["warm_entrypoint"] != "feedbax.training.evaluate_worker:main"
+                            or job["launch"]["warm_entrypoint"] != "feedbax.host.evaluate_worker:main"
                         ):
                             raise ValueError("Store terminal subject requires one pinned last checkpoint.")
                         pin = TerminalTrainSubject.model_validate(terminal)
@@ -2200,7 +2200,7 @@ class Store:
                 tip_id = tip["id"] if tip is not None else None
                 terminal_model = (
                     job["request"].startswith("evaluate:") and selection is None
-                    and launch["warm_entrypoint"] == "feedbax.training.evaluate_worker:main"
+                    and launch["warm_entrypoint"] == "feedbax.host.evaluate_worker:main"
                     and isinstance(checkpoint, dict) and (checkpoint.get("select") or {}).get("kind") == "last"
                 )
                 key = anchor, selection, train_slots, tip_id, terminal_model

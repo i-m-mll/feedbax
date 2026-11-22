@@ -30,7 +30,7 @@ def main(argv: list[str]) -> int:
 def _observation_guard(delivery: ValidityCheckDelivery) -> Callable[[], None]:
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
     from feedbax.persistence.effective_success import SuccessView
-    from feedbax.plugins.composition import load_application
+    from feedbax.application.composition import load_application
     from feedbax.validity.project_admission import ProjectValidity
 
     store = ImmutableArtifactBlobProvider(delivery.store_root)
@@ -59,7 +59,7 @@ def _check(delivery: ValidityCheckDelivery) -> ValidityCheckEvidence:
 
             return check_train(delivery)
         case "evaluate":
-            from feedbax.training.evaluate_worker import check_evaluate
+            from feedbax.host.evaluate_worker import check_evaluate
 
             return check_evaluate(delivery)
         case _:

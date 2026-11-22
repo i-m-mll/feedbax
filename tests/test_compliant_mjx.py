@@ -99,7 +99,7 @@ def test_studio_opens_spatial_project_with_imported_asset(tmp_path, monkeypatch)
     from fastapi.testclient import TestClient
 
     from feedbax.contracts.artifact_custody import ContentGcRequest
-    from feedbax.studio import paths
+    from feedbax.persistence import paths
     from feedbax.web.api import graphs, projects
     from feedbax.persistence.model_assets import model_artifact_provider
     from feedbax.web.services.project_folder import ProjectFolderService

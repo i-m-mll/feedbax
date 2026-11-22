@@ -14,9 +14,9 @@ from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.jobs import JobService
 from feedbax.persistence.array_container import decode_array_container
-from feedbax.plugins.composition import load_application
+from feedbax.application.composition import load_application
 from feedbax.runtime._graph_key_schedule import model_initialization_key
-from feedbax.training.method_checkpoint import read_method_checkpoint
+from feedbax.host.method_checkpoint import read_method_checkpoint
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.installed_package import install_discovery_fixture
 from tests.support.model_documents import read_changed_model

@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from feedbax.cli import main
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_plan import ElementKey, PlannedAnalyzeRun, compile_project
+from feedbax.planner.project_plan import ElementKey, PlannedAnalyzeRun, compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.light_jobs import dataset_member
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider

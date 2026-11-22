@@ -9,7 +9,7 @@ from feedbax.contracts.jobs import JobReceipt
 from feedbax.contracts.manifest import canonical_manifest_path, training_run_manifest_id
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.request_refs import BestRank, RequestId
-from feedbax.host.completion import CompletionFileError, completion_file
+from feedbax.persistence.completion import CompletionFileError, completion_file
 
 
 class BestMetricUnavailable(ValueError):

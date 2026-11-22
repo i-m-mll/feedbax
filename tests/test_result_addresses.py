@@ -7,7 +7,7 @@ import pytest
 
 from feedbax.cli import main
 from feedbax.contracts.project import BasedDocument, RootDocument
-from feedbax.contracts.project_plan import ElementKey, RunKey, compile_project
+from feedbax.planner.project_plan import ElementKey, RunKey, compile_project
 from feedbax.contracts.project_resolution import ResolutionCode
 from feedbax.host import HostClient
 from feedbax.web.app import create_app

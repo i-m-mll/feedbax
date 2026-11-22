@@ -4,7 +4,7 @@ from copy import copy, deepcopy
 from dataclasses import dataclass, replace
 import logging
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, Optional
 
 from feedbax.contracts.portable import ComponentOwner, GraphTemplate
 
@@ -30,7 +30,10 @@ from feedbax.plugins.declarations import (
 from .migration_routes import migration_route, source_endpoint, validate_migration_routes
 from .declarations import DeclaredComponent
 from .discovery import compile_owner, component_declaration_key, source_path
-from .history import History
+from feedbax.contracts.component_history import History
+
+if TYPE_CHECKING:
+    from feedbax.plugins.bootstrap import PackageDeclarations
 
 
 logger = logging.getLogger(__name__)
@@ -71,11 +74,7 @@ class ComponentRegistry:
         if declarations is None:
             from feedbax.plugins.bootstrap import installed_declarations
 
-            declarations = (
-                (owner, package.source)
-                for package in installed_declarations()
-                for owner in package.components
-            )
+            declarations = installed_components(installed_declarations())
         self.register_declarations(declarations)
 
     def register_declarations(
@@ -213,7 +212,7 @@ class ComponentRegistry:
         if legacy_token is not None and not isinstance(legacy_token, str):
             raise ValueError(f"Legacy component version token must be a string: {legacy_token!r}")
         if revision is not None:
-            from .history import require_revision
+            from feedbax.contracts.component_history import require_revision
 
             require_revision(revision)
             if legacy_token is not None:
@@ -317,7 +316,7 @@ class ComponentRegistry:
         """Serialize one runtime leaf through the declaration that owns it."""
 
         if revision is not None:
-            from .history import require_revision
+            from feedbax.contracts.component_history import require_revision
 
             require_revision(revision)
         from feedbax.runtime.graph import Component
@@ -650,4 +649,17 @@ def format_missing_interior_message(
     return (
         f"Node {node_name!r} ({node_type}) requires {article} {label} interior "
         f"({domain_id}) but none is present. Open it in Studio and save."
+    )
+
+
+def installed_components(
+    packages: Iterable[PackageDeclarations],
+) -> tuple[tuple[type[ComponentOwner], DistributionSource], ...]:
+    """The concrete component owners each scanned package defines."""
+    from feedbax.runtime.graph import Component
+
+    return tuple(
+        (owner, package.source)
+        for package in packages
+        for owner in package.subclasses(ComponentOwner, Component)
     )

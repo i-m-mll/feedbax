@@ -18,8 +18,8 @@ from feedbax.host import HostClient
 from feedbax.job_completion import verify_bound_training_completion
 from feedbax.jobs import JobService
 from feedbax.persistence.array_container import ArrayContainerReader
-from feedbax.plugins.application import new_application_registry_bundle
-from feedbax.studio.canonical_evaluate import RAW_STATES_SCHEMA, state_key
+from feedbax.application.bundle import new_application_registry_bundle
+from feedbax.persistence.canonical_evaluate import RAW_STATES_SCHEMA, state_key
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_document_train_pair import authored_documents, document_project

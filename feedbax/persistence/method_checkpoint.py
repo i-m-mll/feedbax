@@ -41,7 +41,7 @@ from feedbax.persistence.model_tree import (
     checkpoint_model_object_path,
     read_model_tree,
 )
-from feedbax.training.checkpoint_errors import CheckpointCustodyError
+from feedbax.persistence.checkpoint_errors import CheckpointCustodyError
 
 
 LATEST_NAME = "latest.json"
@@ -129,7 +129,7 @@ def retain_checkpoint_evidence(
     evidence: tuple[ContentObjectRef | ContentTreeRef, ...],
 ) -> None:
     """Give the authenticated checkpoint custody of its staged evidence."""
-    from feedbax.validity.evidence import release_checkpoint_evidence
+    from feedbax.persistence.evidence import release_checkpoint_evidence
 
     relative, _, ref = _local_manifest(root, pointer)
     with store._exclusive_lock():

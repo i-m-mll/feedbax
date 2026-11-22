@@ -62,7 +62,7 @@ from feedbax.contracts.manifest import (
     load_manifest_bytes,
     training_run_manifest_id,
 )
-from feedbax.contracts.project_plan import (
+from feedbax.planner.project_plan import (
     ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedRow, PlannedRun, ProjectPlan, RunKey,
     planned_input_groups,
 )
@@ -80,10 +80,10 @@ from feedbax.orchestration.session import SessionError
 from feedbax.orchestration.targets import TargetRegistry
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.store_damage import inspect_without_recording
-from feedbax.plugins.application import ApplicationRegistryBundle
+from feedbax.application.bundle import ApplicationRegistryBundle
 from feedbax.validity.admission import QUICK_RECEIPT_DURATION, validity_reason
-from feedbax.studio.canonical_evaluate import ROLLOUT_JAX_BACKEND, ROLLOUT_JAX_ENABLE_X64
-from feedbax.studio.canonical_train import (
+from feedbax.persistence.canonical_evaluate import ROLLOUT_JAX_BACKEND, ROLLOUT_JAX_ENABLE_X64
+from feedbax.persistence.canonical_train import (
     BoundStudioTrainingJobInput,
     CanonicalTrainRequestBinding,
     bind_canonical_train,
@@ -97,7 +97,7 @@ if TYPE_CHECKING:
     from feedbax.persistence.store_sync import StoreEndpoint
     from feedbax.training.validation_placement import ValidationQualification
     from feedbax.component_registry import ComponentRegistry
-    from feedbax.studio.canonical_evaluate import EvaluationResult, RolloutParameters
+    from feedbax.persistence.canonical_evaluate import EvaluationResult, RolloutParameters
     from feedbax.project_folder import ProjectFolder, SavedProjectPlans, SettledProjectPlan
 
 
@@ -283,7 +283,8 @@ class PlanJobReader:
         self, plan: ProjectPlan, run: PlannedRun,
     ) -> tuple[RolloutParameters, ProductRef | BestRank | ContentRef]:
         """Resolve the saved request capability shared by Plan and admission."""
-        from feedbax.studio.canonical_evaluate import CannotRun, decode_rollout_request
+        from feedbax.persistence.canonical_evaluate import decode_rollout_request
+        from feedbax.contracts.rollout import CannotRun
 
         if run.requires:
             raise CannotRun("/requires", "Evaluate has unresolved capabilities.")
@@ -498,8 +499,8 @@ class JobService(PlanJobReader):
                 "JAX_PLATFORMS": ROLLOUT_JAX_BACKEND,
                 "JAX_ENABLE_X64": str(int(ROLLOUT_JAX_ENABLE_X64)),
             },
-            warm_entrypoint="feedbax.training.evaluate_worker:main",
-            preload=(*base_worker.preload, "feedbax.plugins.composition"),
+            warm_entrypoint="feedbax.host.evaluate_worker:main",
+            preload=(*base_worker.preload, "feedbax.application.composition"),
         )
         self._light_worker = Launch(
             argv=(base_worker.argv[0],), cwd=base_worker.cwd,
@@ -883,7 +884,7 @@ class JobService(PlanJobReader):
         store: ImmutableArtifactBlobProvider, subject: ProductRef | BestRank | ContentRef, params: RolloutParameters,
         *, terminal: TerminalTrainSubject | None, documents: Mapping[str, bytes],
     ) -> AdmissionItem:
-        from feedbax.studio.canonical_evaluate import (
+        from feedbax.persistence.canonical_evaluate import (
             BoundEvaluationJobInput,
             EvaluationRequestBinding,
         )
@@ -955,7 +956,7 @@ class JobService(PlanJobReader):
     @staticmethod
     def _retained_evaluation(job: dict[str, Any], store: Path) -> EvaluationResult:
         from feedbax.persistence.effective_success import SuccessView
-        from feedbax.studio.canonical_evaluate import EvaluationResult
+        from feedbax.persistence.canonical_evaluate import EvaluationResult
 
         damage = _owned_result_damage(SuccessView(ImmutableArtifactBlobProvider(store)), job)
         if damage is not None:
@@ -1199,7 +1200,7 @@ class JobService(PlanJobReader):
         directly_selected: Collection[RequestId],
     ) -> Admission:
         from feedbax.persistence.effective_success import SuccessView
-        from feedbax.studio.canonical_evaluate import EvaluationRequestBinding
+        from feedbax.persistence.canonical_evaluate import EvaluationRequestBinding
 
         terminal_inputs = {}
         for item in candidates if reuse_completed else ():
@@ -1549,7 +1550,7 @@ class JobService(PlanJobReader):
         progress: Callable[[StoreTransferProgress], None] | None = None,
     ) -> StudioActivityJob:
         from feedbax.persistence.store_sync import collect_success
-        from feedbax.studio.canonical_evaluate import (
+        from feedbax.persistence.canonical_evaluate import (
             BoundEvaluationJobInput, EvaluationRequestBinding, decode_rollout_request, evaluation_manifest_id,
         )
 
@@ -2240,7 +2241,7 @@ def _verified_evaluation_result(
 ) -> _VerifiedEvaluation | None:
     from feedbax.contracts.artifact_custody import ContentObjectRef
     from feedbax.persistence.effective_success import SuccessView
-    from feedbax.studio.canonical_evaluate import states_product, states_ref, verify_evaluation_receipt
+    from feedbax.persistence.canonical_evaluate import states_product, states_ref, verify_evaluation_receipt
 
     try:
         outcome = job.get("outcome") or {}
@@ -2298,7 +2299,7 @@ def _verify_stored_evaluation(
 ) -> _VerifiedEvaluation:
     from feedbax.contracts.effective_success import EvaluationSubjectValue
     from feedbax.persistence.evaluation_subject import verify_evaluation_success_evidence
-    from feedbax.studio.canonical_evaluate import (
+    from feedbax.persistence.canonical_evaluate import (
         decode_evaluation_manifest, evaluation_checkpoint_coordinates, states_ref,
     )
 
@@ -2379,7 +2380,7 @@ def _evaluation_checkpoint_attempt(job: dict[str, Any]) -> StudioEvaluationCheck
 
 
 def _best_subject(job: dict[str, Any]) -> StudioBoundBestSubject | None:
-    from feedbax.studio.canonical_evaluate import best_bound_rank, evaluation_subject_provenance
+    from feedbax.persistence.canonical_evaluate import best_bound_rank, evaluation_subject_provenance
 
     try:
         raw = job["launch"]["payload"]["canonical_request"]["checkpoint"]

@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from time import monotonic, perf_counter_ns, sleep
 
-from feedbax.training import live_evaluate
+from feedbax.host import live_evaluate_worker as live_evaluate
 from feedbax.training_host_worker import _Events
 from tests.support.hang import HANG_SECONDS
 

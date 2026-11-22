@@ -27,7 +27,7 @@ from equinox import field
 from equinox.nn import State, StateIndex
 from jaxtyping import PRNGKeyArray, PyTree
 
-from feedbax.component_registry.history import Change, History
+from feedbax.contracts.component_history import Change, History
 from feedbax.mechanics.hill_muscles import ActivationDynamics
 from feedbax.contracts.component import PortType
 from feedbax.runtime.graph import Component

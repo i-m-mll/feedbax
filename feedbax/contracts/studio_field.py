@@ -14,7 +14,7 @@ from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_sweep import RangeValues, SampleValues
 from feedbax.contracts.studio_authoring import StudioRunSelection
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
-from feedbax.expression_site import SiteProjection
+from feedbax.contracts.expression_site import SiteProjection
 
 
 class FieldTextEdit(StrictModel):

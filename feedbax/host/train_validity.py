@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from feedbax.contracts.code_validity import ComputationUnavailable
     from feedbax.contracts.receipt_validity import CheckOutcome, ValidityCheckDelivery, ValidityCheckEvidence
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-    from feedbax.plugins.application import ApplicationRegistryBundle
+    from feedbax.application.bundle import ApplicationRegistryBundle
     from feedbax.runtime.graph import Graph
     from feedbax.training.method_runtime import BlockResult, LoweredBlock, TrainingLoop
     from feedbax.training.methods import TrainingState
@@ -188,7 +188,7 @@ class TrainCapture:
 
 def archive_checkpoint_validity(store: ImmutableArtifactBlobProvider) -> ContentTreeRef | None:
     """Encode current immutable evidence for the checkpoint's Store closure."""
-    from feedbax.validity.evidence import evidence_objects
+    from feedbax.persistence.evidence import evidence_objects
     from feedbax.validity.recording import snapshot_execution
 
     evidence = snapshot_execution(store)
@@ -219,7 +219,7 @@ def _reprepare(
     from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
     from feedbax.contracts.train_settings import normalize_train_method
     from feedbax.persistence.method_checkpoint import materialize_checkpoint_content, verify_method_checkpoint_content
-    from feedbax.studio.canonical_train import (
+    from feedbax.persistence.canonical_train import (
         BoundStudioTrainingJobInput, CanonicalTrainRequestBinding, _decode_train, resolve_training_request_binding,
     )
     from feedbax.training_host_worker import _prepare_train
@@ -342,7 +342,7 @@ def recheck_train(delivery: ValidityCheckDelivery, registries: ApplicationRegist
     from feedbax.contracts.receipt_validity import CheckOutcome, ValidityCheckEvidence
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
     from feedbax.persistence.effective_success import SuccessView
-    from feedbax.validity.evidence import read_execution_evidence
+    from feedbax.persistence.evidence import read_execution_evidence
 
     store = ImmutableArtifactBlobProvider(delivery.store_root)
     receipt = SuccessView(store).read_receipt(delivery.receipt)

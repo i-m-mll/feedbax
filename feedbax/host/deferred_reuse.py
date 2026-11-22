@@ -15,7 +15,7 @@ from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.effective_success import TerminalTrainSubject
 from feedbax.contracts.execution_target import attempt_target
 from feedbax.contracts.request_refs import BestRank
-from feedbax.host.checkpoint_selection import requested_checkpoint_selection
+from feedbax.persistence.checkpoint_selection import requested_checkpoint_selection
 from feedbax.host.live_evaluate import PLACEMENT_EVENT
 from feedbax.host.protocol import DeferredReuse, HostError, LIGHT_ENTRYPOINT, MANAGED_ENTRYPOINTS
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -239,7 +239,7 @@ class DeferredAdmissions:
         self.store.verify_completion_bindings(row, launch, bindings)
         for binding in bindings:
             if "best_rank" in binding:
-                from feedbax.studio.canonical_evaluate import best_bound_rank
+                from feedbax.persistence.canonical_evaluate import best_bound_rank
 
                 rank = BestRank.model_validate(launch["payload"]["canonical_request"]["checkpoint"])
                 best_bound_rank(rank, binding, verify_metrics=True)

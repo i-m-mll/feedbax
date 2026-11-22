@@ -33,6 +33,7 @@ from feedbax.contracts.model_input import DocumentInput, InitialModelSource, aut
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.model_values import model_owner_problem
 from feedbax.contracts.operation import DatasetPort
+from feedbax.contracts.studio_authoring import InputProducer, InputRole
 from feedbax.contracts.studio_place import path_parts, variation_targets
 from feedbax.contracts.project import (
     DifferenceNotApplied, Differences, Document, InlineBase, Payload, Project, RootDocument, Step, StepBase, StepKind,
@@ -670,26 +671,6 @@ class ProjectPlan:
         return MappingProxyType(
             {key: definition.sources for key, definition in self.selected_definitions.items()}
         )
-
-
-class InputProducer(StrictModel):
-    """The step whose rows an input's selections read, and the product they read of each row."""
-
-    kind: StepKind
-    product: str
-    operation_outputs: bool
-    """Whether a selection may instead name an Analyze operation's dataset product, read from the card that holds it."""
-
-
-class InputRole(StrictModel):
-    """A step input as the planner resolves it: whether it is required, whether it takes a list of selections, the
-    producer its selections read, the documents it may read instead, and whether its checkpoint may be a finite set."""
-
-    required: bool
-    gathers: bool
-    producer: InputProducer | None
-    documents: list[Literal["model", "task"]]
-    checkpoint_sets: bool
 
 
 @dataclass(frozen=True)
@@ -2446,7 +2427,7 @@ class _Compiler:
     ) -> tuple[_LoweredRow, dict[str, PlannedInput]]:
         from feedbax.compiler.model_document import ModelCompilationProblem
         from feedbax.compiler.trial_execution import pair_trial_source
-        from feedbax.studio.canonical_evaluate import CannotRun
+        from feedbax.contracts.rollout import CannotRun
         from feedbax.tasks.registry import application_python_tasks
         from feedbax.training.evaluation_variant import resolve_evaluation_variant
 
@@ -2571,7 +2552,7 @@ class _Compiler:
         self, key: RunKey, payload: Payload, reference: object, model_source: _ModelSource | None,
     ) -> Payload | ProjectDiagnostic:
         from feedbax.compiler.trial_execution import evaluation_conditions, pair_trial_source
-        from feedbax.studio.canonical_evaluate import CannotRun
+        from feedbax.contracts.rollout import CannotRun
         from feedbax.training.evaluation_variant import resolve_evaluation_variant
 
         if (
@@ -2635,7 +2616,7 @@ class _Compiler:
         from feedbax.compiler.model_attachment import lower_evaluate_attachments
         from feedbax.compiler.model_document import ModelCompilationProblem
         from feedbax.studio.schema import validate_graph_connection_schema
-        from feedbax.studio.canonical_evaluate import CannotRun
+        from feedbax.contracts.rollout import CannotRun
         from feedbax.training.evaluation_variant import resolve_evaluation_variant
 
         address = None
@@ -3212,7 +3193,7 @@ class _Compiler:
         inputs: Mapping[str, tuple[PlannedInput, ...]],
         resolved: SelectedRunDefinition | ResolvedStep,
     ) -> PlannedAnalyzeRun:
-        from feedbax.contracts.project_analyze import lower_analyze
+        from feedbax.planner.project_analyze import lower_analyze
 
         assert self.operations is not None
         evaluations = {
@@ -3800,7 +3781,7 @@ def compile_project(
 ) -> ProjectPlan:
     """Plan static requests and value sources with the supplied declaration registries."""
     if training_methods is None and any(step.kind == "train" for step in project.steps.values()):
-        from feedbax.plugins.composition import load_application
+        from feedbax.application.composition import load_application
 
         training_methods = load_application().bundle.training_methods
     readers = replace(

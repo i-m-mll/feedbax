@@ -17,7 +17,7 @@ from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE
 from feedbax.contracts.request_refs import ContentRef, ProductRef
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.strict_json import strict_model_validate_json
-from feedbax.host.completion import completion_file
+from feedbax.persistence.completion import completion_file
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.receipt_content import success_content_objects

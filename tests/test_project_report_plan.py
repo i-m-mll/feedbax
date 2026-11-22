@@ -7,7 +7,7 @@ from pathlib import Path
 from feedbax.contracts.figure_document import PlotlyFigurePort
 from feedbax.contracts.project import RootDocument, Project, Step
 from feedbax.contracts.project_inputs import StepReference
-from feedbax.contracts.project_plan import (
+from feedbax.planner.project_plan import (
     ElementChange,
     ElementKey,
     ProjectPlanMemo,

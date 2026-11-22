@@ -26,7 +26,7 @@ from feedbax.persistence.dataset import open_stored_dataset, publish_dataset
 from feedbax.persistence.effective_success import SuccessView, store_request
 from feedbax.web.api.figures import router as figure_router
 from feedbax.web.api.projects import router
-from feedbax.plugins.composition import load_application
+from feedbax.application.composition import load_application
 from tests.support.installed_package import install_discovery_fixture
 from tests.support.hang import HANG_SECONDS
 

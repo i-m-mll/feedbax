@@ -26,9 +26,9 @@ type ReusePolicy = Literal["selected", "automatic", "prerequisite"]
 # Ends a hung exchange with the Host, and only that: no wait that load can stretch may reach it.
 HANG_SECONDS = 60
 LIGHT_ENTRYPOINT = "feedbax.light_host_worker:main"
-VALIDITY_CHECK_ENTRYPOINT = "feedbax.validity.check_worker:main"
+VALIDITY_CHECK_ENTRYPOINT = "feedbax.host.check_worker:main"
 MANAGED_ENTRYPOINTS = frozenset({
-    LIGHT_ENTRYPOINT, "feedbax.training_host_worker:main", "feedbax.training.evaluate_worker:main",
+    LIGHT_ENTRYPOINT, "feedbax.training_host_worker:main", "feedbax.host.evaluate_worker:main",
 })
 
 VERSION = 1

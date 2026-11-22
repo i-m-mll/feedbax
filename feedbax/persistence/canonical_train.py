@@ -25,7 +25,7 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 if TYPE_CHECKING:
     from feedbax.compiler.trial_execution import ResolvedTrialExecution
     from feedbax.persistence.train_job import TrainJobEntry
-    from feedbax.plugins.application import ApplicationRegistryBundle
+    from feedbax.application.bundle import ApplicationRegistryBundle
     from feedbax.training.methods import RegisteredTrainingMethod
     from pydantic import BaseModel
 

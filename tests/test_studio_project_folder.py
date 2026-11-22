@@ -18,18 +18,18 @@ import pytest
 from feedbax.contracts.project import json_pointer_parts
 from feedbax._atomic import write_bytes_atomic
 from feedbax import project_folder
-from feedbax.contracts import project_plan, request_identity
+from feedbax.planner import project_plan, request_identity
 from feedbax.contracts.jobs import StudioJobEventHistory
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import InlineBase, Project, StepBase
 from feedbax.builtins.training import StandardTrainingSettings, supervised_gradient
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
-from feedbax.contracts.project_plan import RunKey, compile_project
+from feedbax.planner.project_plan import RunKey, compile_project
 from feedbax.contracts.studio_place import definition_place, path_parts
 from feedbax.contracts.project_resolution import ResolutionCode
 from feedbax.contracts.studio_authoring import StudioAuthoringChange, StudioSweptParameterMissing
 from feedbax.host import HostError
-from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.plugins.declarations import DistributionSource, callable_declaration
 from feedbax.training.methods import TrainingMethodDeclaration, TrainingMethodRegistry
 from feedbax.studio.authoring import project_train_fields

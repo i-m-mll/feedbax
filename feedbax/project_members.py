@@ -13,7 +13,7 @@ from feedbax.contracts.project import (
     BasedDocument, Document, Project, RootDocument, diff, json_pointer_parts, nearest_shared_base,
 )
 from feedbax.contracts.project_inputs import DocumentReference
-from feedbax.contracts.project_plan import ProjectPlan
+from feedbax.planner.project_plan import ProjectPlan
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.result_address import (

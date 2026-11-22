@@ -11,7 +11,7 @@ from feedbax.contracts._request_codec import same_typed_value
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_plan import (
+from feedbax.planner.project_plan import (
     ElementKey, PlanRequest, PlanRequests, PlanSourceIndex, RunKey, SourceSnapshot, SourceSweep, SubsetSource,
 )
 from feedbax.contracts.project_sources import ValueSource, pointer

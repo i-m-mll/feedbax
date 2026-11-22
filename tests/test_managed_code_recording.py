@@ -34,7 +34,7 @@ from feedbax.persistence.receipt_closure import ReceiptClosure
 from feedbax.persistence.store_sync import sync_store
 from feedbax.plugins.declarations import DeclarationRegistry, DistributionSource
 from feedbax.validity.environment import EnvironmentMismatch, InstalledInventory, read_environment
-from feedbax.validity.evidence import read_execution_evidence
+from feedbax.persistence.evidence import read_execution_evidence
 from feedbax.validity.recording import WorkerRecorder, checkpoint_execution_endpoint, numerical_work
 from feedbax.validity.source import SourceCatalog, source_catalog
 

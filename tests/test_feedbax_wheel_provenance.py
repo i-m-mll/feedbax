@@ -119,7 +119,7 @@ from feedbax import pca
 import feedbax.models.cde as cde
 import feedbax.models.feedback as feedback
 from feedbax.orchestration.revision import assert_feedbax_revision_exact, resolve_feedbax_revision
-from feedbax.plugins.composition import load_application
+from feedbax.application.composition import load_application
 
 assert_feedbax_revision_exact(sys.argv[2])
 registry = load_application().bundle

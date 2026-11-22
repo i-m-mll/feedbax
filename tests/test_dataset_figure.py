@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySettings
-from feedbax.plugins.composition import load_application
+from feedbax.application.composition import load_application
 from feedbax.analysis.report_document import render as render_report
 from feedbax.contracts.dataset import DATASET_MEDIA_TYPE
 from feedbax.contracts.effective_success import BoundMember, success_content_ref

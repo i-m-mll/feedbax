@@ -13,7 +13,7 @@ from feedbax.contracts.effective_success import (
     RequestObject, exact_model_checkpoint_input, read_success_request,
 )
 from feedbax.contracts.request_refs import BatchMember, RequestId
-from feedbax.host.completion import CompletionFileError, verify_completion_files
+from feedbax.persistence.completion import CompletionFileError, verify_completion_files
 
 
 @dataclass(frozen=True)

@@ -46,7 +46,7 @@ from feedbax.plugins.declarations import DistributionSource, ResolvedDeclaration
 
 if TYPE_CHECKING:
     from feedbax.analysis.operations import RegisteredOperation
-    from feedbax.plugins.application import ApplicationRegistryBundle
+    from feedbax.application.bundle import ApplicationRegistryBundle
 
 
 class LightDelivery(StrictModel):
@@ -74,7 +74,7 @@ _PROVIDER = TypeAdapter(DistributionSource)
 
 @cache
 def operation_application() -> ApplicationRegistryBundle:
-    from feedbax.plugins.composition import load_application
+    from feedbax.application.composition import load_application
 
     return load_application().bundle
 
@@ -125,7 +125,7 @@ def validate_light_request(
     read_document: Callable[[ContentRef], DocumentInput] | None = None,
 ) -> tuple[str, ResolvedDeclaration[RegisteredOperation] | None]:
     """Check declaration and binding metadata before managed dataset delivery."""
-    from feedbax.analysis.operation_runtime import require_task_source
+    from feedbax.analysis.operation_inputs import require_task_source
 
     spec = request.spec
     operation = None
@@ -251,7 +251,7 @@ def _verify_dataset_output(
     store: ImmutableArtifactBlobProvider, product: Product, port: DatasetPort
 ) -> None:
     # Opening a dataset loads JAX; the Host admits light jobs and must not pay for it.
-    from feedbax.analysis.operation_runtime import uses_replicate_axis, verify_dataset
+    from feedbax.analysis.operation_inputs import uses_replicate_axis, verify_dataset
     from feedbax.dataset_replicates import replicate_ids, select_replicate
     from feedbax.persistence.dataset import open_stored_dataset
 

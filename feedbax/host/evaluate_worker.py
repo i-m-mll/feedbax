@@ -39,19 +39,18 @@ from feedbax.contracts.rollout import (
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.strict_json import strict_model_validate_json
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
-from feedbax.host.completion import CompletionFileError
+from feedbax.persistence.completion import CompletionFileError
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset, publish_dataset
 from feedbax.persistence.evaluation_subject import read_terminal_train_subject, terminal_train_provenance
-from feedbax.plugins.composition import load_application
-from feedbax.runtime.model_input import prepare_model_task, reconstruct_model
-from feedbax.studio.canonical_evaluate import (
+from feedbax.application.composition import load_application
+from feedbax.host.model_input import prepare_model_task, reconstruct_model
+from feedbax.persistence.canonical_evaluate import (
     ROLLOUT_TYPE,
     ROLLOUT_JAX_BACKEND,
     ROLLOUT_JAX_ENABLE_X64,
     STATES_MEDIA_TYPE,
     BoundEvaluationJobInput,
-    CannotRun,
     RolloutParameters,
     decode_rollout_request,
     evaluation_checkpoint_coordinates,
@@ -61,10 +60,11 @@ from feedbax.studio.canonical_evaluate import (
     initial_evaluation_provenance,
     initial_evaluation_references,
 )
-from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
+from feedbax.contracts.rollout import CannotRun
+from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
 from feedbax.training_host_worker import _Events, _Result, _error
 from feedbax.job_completion import read_host_completion_binding
-from feedbax.training.evaluate_computation import EvaluationComputation, RolloutExecutables, drive_replicas
+from feedbax.host.evaluate_computation import EvaluationComputation, RolloutExecutables, drive_replicas
 from feedbax.validity.recording import numerical_work, record_computation, set_execution_prefix
 
 
@@ -78,9 +78,9 @@ if TYPE_CHECKING:
     from feedbax.runtime.graph import Graph
     from feedbax.runtime.raw_state import RawStateLayout
     from feedbax.runtime.trial_execution import TrialEvaluation
-    from feedbax.plugins.application import ApplicationRegistryBundle
+    from feedbax.application.bundle import ApplicationRegistryBundle
     from feedbax.training.evaluation_variant import EvaluationVariant
-    from feedbax.training.model_checkpoint import SemanticModelSlot
+    from feedbax.host.model_checkpoint import SemanticModelSlot
     from feedbax.training.rollout_scoring import LoweredRollout, RolloutKernel, RolloutScorer
 
 
@@ -189,7 +189,7 @@ def resolve_rollout(
 def prepare_rollout(
     source: BoundStudioTrainingJobInput, checkpoint: PublishedTrainingCheckpoint, params: RolloutParameters,
 ) -> PreparedRollout:
-    from feedbax.training.method_checkpoint import read_method_checkpoint
+    from feedbax.host.method_checkpoint import read_method_checkpoint
     from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 
     documents = source.spec.trial_documents
@@ -293,7 +293,7 @@ def _prepare_stored_rollout(
     store: ImmutableArtifactBlobProvider, model: Product, documents: TrialDocuments, params: RolloutParameters,
     coordinate: int, *, registry: ApplicationRegistryBundle, seed: int,
 ) -> PreparedRollout:
-    from feedbax.training.model_checkpoint import SemanticModelSlot
+    from feedbax.host.model_checkpoint import SemanticModelSlot
 
     tree = success_content_ref(model.content)
     if not isinstance(tree, ContentTreeRef):

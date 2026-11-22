@@ -22,7 +22,7 @@ from feedbax.contracts.project import (
     document_edit_value, json_pointer_parts, same_json,
 )
 from feedbax.contracts.project_inputs import SweepExceptionTerms
-from feedbax.contracts.project_plan import PlannedRow, RunKey, compile_project
+from feedbax.planner.project_plan import PlannedRow, RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.project_resolution import (
     ProjectDiagnostic, StepTemplate, compose_document, compose_step, document_write_target,

@@ -21,7 +21,7 @@ from feedbax.persistence.evaluation_subject import evaluation_subject_objects, v
 from feedbax.persistence.checkpoint_publication import checkpoint_model_objects
 from feedbax.persistence.receipt_content import ClosureVisitors, continuation_objects, success_content_objects, tree_objects
 from feedbax.contracts.code_validity import CheckpointEvidenceRoot
-from feedbax.validity.evidence import checkpoint_evidence_objects, evidence_objects
+from feedbax.persistence.evidence import checkpoint_evidence_objects, evidence_objects
 
 
 @dataclass(frozen=True)

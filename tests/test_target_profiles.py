@@ -10,7 +10,7 @@ from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.effective_success import INDEX_REF, read_success_object
 from feedbax.contracts.execution_target import LOCAL_TARGET, CloseWhenIdle, SessionTarget, SessionTargetProfile
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_plan import RunKey
+from feedbax.planner.project_plan import RunKey
 from feedbax.host import HostError
 from feedbax.orchestration.session import KeepOpen, SessionRequest
 from feedbax.orchestration.targets import TargetRegistry

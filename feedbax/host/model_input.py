@@ -14,7 +14,7 @@ from feedbax.contracts.model_input import CheckpointModelSource, InitialModelSou
 from feedbax.contracts.project import json_pointer_parts
 from feedbax.objectives.document import ObjectiveUse
 from feedbax.runtime._graph_key_schedule import model_initialization_key
-from feedbax.training.model_checkpoint import ModelCheckpointError, ModelRestoreTarget, SemanticModelSlot
+from feedbax.host.model_checkpoint import ModelCheckpointError, ModelRestoreTarget, SemanticModelSlot
 
 if TYPE_CHECKING:
     from feedbax.compiler.graph import ResolvedGraph
@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from feedbax.contracts.objective_document import ObjectiveDocument
     from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-    from feedbax.plugins.application import ApplicationRegistryBundle
+    from feedbax.application.bundle import ApplicationRegistryBundle
     from feedbax.runtime.graph import Graph
 
 

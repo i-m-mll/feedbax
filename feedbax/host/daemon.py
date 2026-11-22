@@ -19,8 +19,8 @@ from pathlib import Path
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.host import jax_cache, live_evaluate
-from feedbax.host.checkpoint_selection import requested_checkpoint_selection
-from feedbax.host.completion import CompletionFileError
+from feedbax.persistence.checkpoint_selection import requested_checkpoint_selection
+from feedbax.persistence.completion import CompletionFileError
 from feedbax.host.io import JAX_CACHE_ENV, OWNER_ENV, TOKEN_ENV, encode, private_directory, socket_path, write_json
 from feedbax.host.launcher import command
 from feedbax.host.platform import FileChanges, ProcessExit, local_filesystem

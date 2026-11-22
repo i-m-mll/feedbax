@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import BasedDocument, Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
-from feedbax.contracts.project_plan import compile_project
+from feedbax.planner.project_plan import compile_project
 from feedbax.contracts.project_resolution import compose_document
 from feedbax.web.app import create_app
 from tests.support.managed_train_fixture import managed_evaluation_step

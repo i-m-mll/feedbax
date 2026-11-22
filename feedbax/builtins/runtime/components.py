@@ -19,7 +19,7 @@ from jaxtyping import Array, PRNGKeyArray, PyTree
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from pydantic import Field as ConfigField
 
-from feedbax.component_registry.history import Change, History
+from feedbax.contracts.component_history import Change, History
 from feedbax.contracts.component import DynamicPortPolicy, PortType
 from feedbax.contracts.model_values import ModelFacts, ModelValue, StateReset, StateValue
 from feedbax.contracts.portable import (

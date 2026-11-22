@@ -138,7 +138,7 @@ def test_plugin_facade_import_defers_registry_and_analysis_subsystems() -> None:
             "diffrax",
             "equinox",
             "plotly",
-            "feedbax.plugins.application",
+            "feedbax.application.bundle",
             "feedbax.component_registry",
             "feedbax.analysis",
             "feedbax.contracts",

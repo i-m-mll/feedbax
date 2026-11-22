@@ -11,7 +11,7 @@ import pytest
 
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_plan import ElementKey, RunKey
+from feedbax.planner.project_plan import ElementKey, RunKey
 from feedbax.contracts.rollout import ROLLOUT_TYPE
 from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.jobs import JobStatus
@@ -20,7 +20,7 @@ from feedbax.light_jobs import dataset_member
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset
 from feedbax.persistence.effective_success import SuccessView
-from feedbax.plugins.composition import compose_application
+from feedbax.application.composition import compose_application
 from feedbax.validity.environment import installed_versions
 from feedbax.validity.source import plugin_packages
 from feedbax.web.services.project_folder import ProjectFolderService

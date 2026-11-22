@@ -11,7 +11,7 @@ from typing import Any
 from feedbax.contracts.portable import ComponentOwner, GraphTemplate
 from feedbax.plugins.declarations import DistributionSource, declaration_key
 
-from .history import History
+from feedbax.contracts.component_history import History
 
 
 def component_declaration_key(owner: type[ComponentOwner], source: DistributionSource) -> str:

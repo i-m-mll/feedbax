@@ -21,7 +21,7 @@ from feedbax.contracts.studio_project import (
     StudioProjectPatchBatch, StudioProjectRename,
 )
 from feedbax.contracts.task_document import Cell, Signal
-from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.project_folder import AppliedModelEdit, ProjectFolder, write_new_project_folder
 from feedbax.studio import model_edit
 from tests.test_document_train_pair import authored_documents, document_project

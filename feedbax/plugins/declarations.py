@@ -6,13 +6,11 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from copy import copy
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from pydantic import BaseModel
-from feedbax.registry_errors import RegistryCollisionError
 
-if TYPE_CHECKING:
-    from feedbax.contracts.graph import ParamSchema
+from feedbax.registry_errors import RegistryCollisionError
 
 
 @dataclass(frozen=True)
@@ -156,31 +154,3 @@ def mark_callable[F: Callable[..., Any]](function: F, declaration: CallableDecla
 def callable_declaration(function: object) -> CallableDeclaration | None:
     declaration = getattr(function, "__feedbax_declaration__", None)
     return declaration if isinstance(declaration, CallableDeclaration) else None
-
-
-@dataclass(frozen=True)
-class SettingsSchema:
-    param_schema: tuple[ParamSchema, ...]
-    parameter_json_schema: dict[str, Any]
-    static_parameters: tuple[str, ...]
-
-
-def settings_schema(model: type[BaseModel]) -> SettingsSchema:
-    from feedbax.component_registry.declarations import parameter_schema_from_model
-
-    field_schema = model.model_json_schema(by_alias=False)
-    fields = field_schema.get("properties", {})
-    schema = (
-        model.model_json_schema()
-        if any(field.validation_alias is not None for field in model.model_fields.values())
-        else field_schema
-    )
-    return SettingsSchema(
-        param_schema=parameter_schema_from_model(model, properties=fields),
-        parameter_json_schema=schema,
-        static_parameters=tuple(
-            name
-            for name in model.model_fields
-            if fields.get(name, {}).get("feedbax", {}).get("static") is True
-        ),
-    )

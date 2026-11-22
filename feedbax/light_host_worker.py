@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from feedbax.analysis.operation_runtime import run_operation
+from feedbax.host.operation_runtime import run_operation
 from feedbax.contracts.artifact_custody import ContentRootRecord
 from feedbax.contracts.dataset import DATASET_MEDIA_TYPE, DatasetProductRef
 from feedbax.contracts.effective_success import Bindings, Product, Products, success_content_ref
@@ -28,7 +28,7 @@ from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.dataset import Dataset
 from feedbax.contracts.member_stack import labelled_members
 from feedbax.dataset_sweep import dataset_entries, stack_dataset_members
-from feedbax.host.completion import read_completion_bindings
+from feedbax.persistence.completion import read_completion_bindings
 from feedbax.host.io import append
 from feedbax.host.model_checkpoint_input import bind_managed_inputs
 from feedbax.light_jobs import (

@@ -4,12 +4,12 @@ from copy import deepcopy
 import re
 
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_plan import compile_project
+from feedbax.planner.project_plan import compile_project
 from feedbax.contracts.request_refs import BestRank, ProductRef
 from feedbax.contracts.studio_project import StudioProjectPatchBatch
 from feedbax.contracts.studio_subset import StudioSubsetToRowsRequest
 from feedbax.jobs import JobService
-from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.support.host import job_row, token, wait_until

@@ -133,6 +133,6 @@ def python_task_parameter_site(path: str, trial_documents, registry: PythonTaskR
 
 
 def application_python_tasks() -> PythonTaskRegistry:
-    from feedbax.plugins.composition import load_application
+    from feedbax.application.composition import load_application
 
     return load_application().bundle.python_tasks

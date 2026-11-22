@@ -11,7 +11,7 @@ from feedbax.light_jobs import dataset_member
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset
 from feedbax.persistence.effective_success import SuccessView
-from feedbax.plugins.composition import load_application
+from feedbax.application.composition import load_application
 from feedbax.project_folder import ProjectFolder
 from tests.support.managed_train_fixture import managed_train_project
 from tests.support.host import private_host as host, job_row, wait_until  # noqa: F401 -- pytest fixture

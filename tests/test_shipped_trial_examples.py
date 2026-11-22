@@ -10,7 +10,7 @@ from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_tri
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.project_plan import compile_project
+from feedbax.planner.project_plan import compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
@@ -18,11 +18,11 @@ from feedbax.contracts.train_settings import normalize_train_method
 from feedbax.examples import load_shipped_projects
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.model_tree import MODEL_CHECKPOINT_STORE
-from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.runtime._graph_key_schedule import model_initialization_key
 from feedbax.tasks.document import TaskParameters
 from feedbax.training.method_runtime import TrainingLoop, initialize_method, replica_value
-from feedbax.training.model_checkpoint import SemanticModelSlot, SemanticModelWriter
+from feedbax.host.model_checkpoint import SemanticModelSlot, SemanticModelWriter
 
 
 _VALIDATION_COUNTS = {"simple-reaches": 28, "delayed-reaches": 28, "stabilization": 4}

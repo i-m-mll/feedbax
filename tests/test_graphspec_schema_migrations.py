@@ -157,7 +157,7 @@ def test_acausal_graph_spec_rejects_unknown_extra_fields() -> None:
 
 
 def test_nested_acausal_reader_preserves_component_revisions_through_containers(tmp_path):
-    from feedbax.component_registry.history import Change, History
+    from feedbax.contracts.component_history import Change, History
     from tests.support.component_owners import register_owners
     from feedbax.contracts.portable import Ports
     from feedbax.runtime.graph import Component

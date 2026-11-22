@@ -22,7 +22,7 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.method_checkpoint import read_method_checkpoint_manifest
 from feedbax.persistence.train_job import read_train_job
-from feedbax.plugins.composition import load_application
+from feedbax.application.composition import load_application
 from feedbax.project_folder import ProjectFolder
 from tests.support import external_method_witness
 from tests.support.hang import HANG_SECONDS

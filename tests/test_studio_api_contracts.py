@@ -32,7 +32,7 @@ from feedbax.contracts.studio_api import (
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.representation import REPRESENTATION_SCHEMA_VERSION
 from feedbax.web.app import create_app
-from feedbax.plugins.bootstrap import BootstrapState
+from feedbax.application.bundle import BootstrapState
 from scripts.generate_studio_contracts import (
     AUTHORED_CONTRACT_MODELS,
     CONTRACT_MODEL_NAMES,

@@ -10,18 +10,18 @@ from feedbax.cli import main
 from feedbax.contracts.jobs import JobReceipt
 from feedbax.contracts.manifest import canonical_manifest_path
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_plan import ElementChange, PlanRequests, compile_project, diff_plan_requests
-from feedbax.contracts.project_plan_io import dump_plan_requests, load_plan_requests
+from feedbax.planner.project_plan import ElementChange, PlanRequests, compile_project, diff_plan_requests
+from feedbax.planner.project_plan_io import dump_plan_requests, load_plan_requests
 from feedbax.contracts.project_sources import ValueSource
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.request_refs import BestRank, ProductRef
 from feedbax.contracts.studio_project import StudioProjectPatchBatch
 from feedbax.contracts.studio_subset import StudioSubsetToRowsRequest
-from feedbax.host.best_selection import rank_train_metric
+from feedbax.persistence.best_selection import rank_train_metric
 from feedbax.jobs import JobService
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
-from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import _save_project

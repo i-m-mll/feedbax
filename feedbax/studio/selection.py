@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pydantic import JsonValue
 
 from feedbax.contracts.manifest import OverridePatch
-from feedbax.contracts.project_plan import PlannedRow
+from feedbax.planner.project_plan import PlannedRow
 from feedbax.contracts.project_sweep import AxisCondition, SweepCoordinate
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
 

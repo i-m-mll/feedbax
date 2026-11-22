@@ -19,7 +19,7 @@ from feedbax.contracts.model_edit import ModelEditRequest
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.objective_document import ObjectiveTerm
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_plan import RunKey
+from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.rollout import ResolvedRolloutBinding, RolloutParameters
 from feedbax.contracts.semantic_values import semantic_key
@@ -27,9 +27,9 @@ from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.contracts.task_document import Cell, Signal
 from feedbax.jobs import JobService
 from feedbax.builtins.mechanics.muscles.thelen_muscle import RigidTendonHillMuscleThelen
-from feedbax.plugins.application import new_application_registry_bundle
-from feedbax.studio.canonical_evaluate import CannotRun
-from feedbax.training.method_checkpoint import read_method_checkpoint
+from feedbax.application.bundle import new_application_registry_bundle
+from feedbax.contracts.rollout import CannotRun
+from feedbax.host.method_checkpoint import read_method_checkpoint
 from feedbax.training.evaluation_variant import resolve_evaluation_variant, validate_evaluation_source
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import read_settled_project_plan

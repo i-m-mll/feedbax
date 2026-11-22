@@ -17,12 +17,12 @@ from feedbax.contracts.jobs import JobReceipt, JobStatus
 from feedbax.contracts.manifest import canonical_manifest_path
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
-from feedbax.contracts.project_plan import RunKey
+from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.host import HostError
 from feedbax.job_completion import verify_bound_training_completion
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
+from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectRevisionConflict
 from tests.support.host import admit, held_until_released, run_job, token, wait_until

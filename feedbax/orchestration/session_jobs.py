@@ -15,7 +15,7 @@ from feedbax.contracts.artifact_custody import ContentObjectRef, StoreTransferPr
 from feedbax.contracts.execution_target import SESSION_RUN_KINDS, OpeningStep, SessionTarget
 from feedbax.contracts.jobs import JobStatus, StudioJobSubmission
 from feedbax.contracts.project_inputs import ProjectName
-from feedbax.contracts.project_plan import RunKey
+from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.request_refs import RequestId
 from feedbax.contracts.strict_json import strict_model_validate_json
 from feedbax.host.client import HostClient

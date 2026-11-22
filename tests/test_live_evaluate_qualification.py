@@ -14,7 +14,7 @@ from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.contracts.task_document import TaskDocument
 from feedbax.jobs import JobService
 from feedbax.persistence.method_checkpoint import read_method_checkpoint_manifest
-from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.training.validation_placement import ValidationBudget, ValidationQualification, validation_runtime
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService

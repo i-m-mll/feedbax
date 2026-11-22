@@ -20,9 +20,9 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.contracts.request_refs import ContentRef
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
-from feedbax.host.checkpoint_selection import selected_coordinates, verify_dependency_files
-from feedbax.host.completion import CompletionFileError, completion_file, read_completion_bindings, verify_completion_files
-from feedbax.studio.canonical_train import (
+from feedbax.persistence.checkpoint_selection import selected_coordinates, verify_dependency_files
+from feedbax.persistence.completion import CompletionFileError, completion_file, read_completion_bindings, verify_completion_files
+from feedbax.persistence.canonical_train import (
     BoundStudioTrainingJobInput,
     verify_training_request_binding,
 )
@@ -30,7 +30,7 @@ from feedbax.persistence.method_checkpoint import method_checkpoint_files, read_
 from feedbax.plugins.declarations import DistributionSource
 
 if TYPE_CHECKING:
-    from feedbax.training.model_checkpoint import SemanticModelSlot
+    from feedbax.host.model_checkpoint import SemanticModelSlot
 
 
 type CheckpointReadScope = Literal["full", "model_only"]
@@ -253,8 +253,8 @@ def verify_bound_training_completion(
 
 def verify_training_model_product(completion: dict) -> tuple[Product, SemanticModelSlot]:
     """Project an exact approved Train completion to its independent model product."""
-    from feedbax.plugins.composition import load_application
-    from feedbax.training.method_checkpoint import read_method_checkpoint
+    from feedbax.application.composition import load_application
+    from feedbax.host.method_checkpoint import read_method_checkpoint
 
     verify_bound_training_completion(completion, scope="model_only")
     checkpoint = PublishedTrainingCheckpoint.model_validate(completion["checkpoint"])

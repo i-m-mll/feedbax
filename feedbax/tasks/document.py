@@ -38,7 +38,7 @@ from feedbax.contracts.task_document import (
     ValidationValue,
     Variable as Variable,
 )
-from feedbax.expression_check import dependency_order
+from feedbax.contracts.expression_check import dependency_order
 from feedbax.expression_compile import Compiled, Inputs, compile_expression
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.contracts.rollout import trial_indices

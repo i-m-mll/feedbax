@@ -29,7 +29,7 @@ from feedbax.acausal.base import (
     AcausalPort,
     Domain,
 )
-from feedbax._acausal_payload import TORQUE_PAYLOAD
+from feedbax.contracts.acausal_payload import TORQUE_PAYLOAD
 from feedbax.contracts.portable import ComponentOwner, ComponentOptions
 from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID
 

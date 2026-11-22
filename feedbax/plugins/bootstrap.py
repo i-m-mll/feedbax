@@ -10,20 +10,13 @@ from importlib import import_module, metadata
 from inspect import isabstract, isfunction
 from pkgutil import iter_modules
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import Any
 
 from packaging.utils import canonicalize_name
 
 from .declarations import CallableDeclaration, DistributionSource, callable_declaration
 
-if TYPE_CHECKING:
-    from feedbax.contracts.portable import ComponentOwner
-    from feedbax.tasks.registry import PythonTask
-
-    from .application import ApplicationRegistryBundle
-
 PLUGIN_ENTRY_POINT_GROUP = "feedbax.plugins"
-T = TypeVar("T")
 
 
 class BootstrapErrorCode(StrEnum):
@@ -42,38 +35,18 @@ class BootstrapError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class RegistryKey(Generic[T]):
-    family: str
-    attribute: str
-    expected_type: type[T]
-
-
-@dataclass(frozen=True)
-class PluginProvenance:
-    source: DistributionSource
-
-
-@dataclass(frozen=True)
-class BootstrapState:
-    bundle: ApplicationRegistryBundle
-
-    @property
-    def provenance(self) -> tuple[PluginProvenance, ...]:
-        return tuple(PluginProvenance(source) for source in self.bundle.package_sources)
-
-    def registry(self, key: RegistryKey[T]) -> T:
-        value = getattr(self.bundle, key.attribute)
-        if not isinstance(value, key.expected_type):
-            raise TypeError(f"Unexpected {key.family!r} registry type {type(value).__name__}")
-        return value
-
-
-@dataclass(frozen=True)
 class PackageDeclarations:
+    """The concrete classes and declared functions each module of one package defines."""
+
     source: DistributionSource
-    components: tuple[type[ComponentOwner], ...]
-    tasks: tuple[type[PythonTask], ...]
+    classes: tuple[type, ...]
     functions: tuple[tuple[Any, CallableDeclaration], ...]
+
+    def subclasses[T](self, base: type[T], *excluded: type) -> tuple[type[T], ...]:
+        return tuple(
+            value for value in self.classes
+            if value is not base and value not in excluded and issubclass(value, base)
+        )
 
 
 def installed_packages() -> tuple[DistributionSource, ...]:
@@ -150,10 +123,6 @@ def _package_modules(package: ModuleType, source: DistributionSource) -> Iterato
 
 @lru_cache(maxsize=1)
 def scan_packages(sources: tuple[DistributionSource, ...]) -> tuple[PackageDeclarations, ...]:
-    from feedbax.contracts.portable import ComponentOwner
-    from feedbax.runtime.graph import Component
-    from feedbax.tasks.registry import PythonTask
-
     scans = []
     for source in sources:
         root = _load_module(source.package, source)
@@ -163,8 +132,7 @@ def scan_packages(sources: tuple[DistributionSource, ...]) -> tuple[PackageDecla
                 f"Distribution {source.distribution!r} must name a package, got module {source.package!r}",
                 plugin_id=source.distribution,
             )
-        components = []
-        tasks = []
+        classes = []
         functions = []
         seen = set()
         for module in _package_modules(root, source):
@@ -178,11 +146,8 @@ def scan_packages(sources: tuple[DistributionSource, ...]) -> tuple[PackageDecla
                     if (declaration := callable_declaration(value)) is not None:
                         functions.append((value, declaration))
                 elif not isabstract(value):
-                    if value not in (Component, ComponentOwner) and issubclass(value, ComponentOwner):
-                        components.append(value)
-                    elif value is not PythonTask and issubclass(value, PythonTask):
-                        tasks.append(value)
-        scans.append(PackageDeclarations(source, tuple(components), tuple(tasks), tuple(functions)))
+                    classes.append(value)
+        scans.append(PackageDeclarations(source, tuple(classes), tuple(functions)))
     return tuple(scans)
 
 

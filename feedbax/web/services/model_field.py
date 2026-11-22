@@ -18,7 +18,7 @@ from feedbax.contracts.model_edit import (
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project import BasedDocument, InlineBase, SetProjectValue, base_chain
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
-from feedbax.contracts.project_plan import RunKey
+from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.jobs import StudioPlanReviewSource
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_sweep import _paths_overlap, authored_row

@@ -10,7 +10,7 @@ from feedbax.contracts.live_evaluate import (
     LiveEvaluationPoint, ScoredEvaluationPoint, require_evaluation_coverage, rollout_slot,
 )
 from feedbax.persistence.content_retention import require_active_root
-from feedbax.validity.evidence import StagedEvidenceMissing, read_execution_evidence, read_staged_evidence
+from feedbax.persistence.evidence import StagedEvidenceMissing, read_execution_evidence, read_staged_evidence
 
 if TYPE_CHECKING:
     from feedbax.contracts.code_validity import ReceiptEvidence

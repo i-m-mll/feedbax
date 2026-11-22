@@ -6,36 +6,35 @@ from functools import lru_cache
 
 from feedbax.analysis.operations import OperationDeclaration
 from feedbax.component_registry import ComponentRegistry
+from feedbax.component_registry.registry import installed_components
 from feedbax.plot.templates import FigureTemplateDeclaration
 from feedbax.registry_errors import RegistryCollisionError
+from feedbax.tasks.registry import PythonTask
 from feedbax.training.methods import TrainingMethodDeclaration
 
-from .application import empty_application_registry_bundle
-from .bootstrap import (
+from feedbax.application.bundle import BootstrapState, empty_application_registry_bundle
+from feedbax.plugins.bootstrap import (
     BootstrapError,
     BootstrapErrorCode,
-    BootstrapState,
     PackageDeclarations,
     installed_declarations,
     installed_packages,
     scan_packages,
 )
-from .declarations import DistributionSource, declaration_key
+from feedbax.plugins.declarations import DistributionSource, declaration_key
 
 
 def build_application(
     packages: tuple[PackageDeclarations, ...] | None = None,
 ) -> BootstrapState:
     packages = installed_declarations() if packages is None else packages
-    components = ComponentRegistry(
-        (owner, package.source) for package in packages for owner in package.components
-    )
+    components = ComponentRegistry(installed_components(packages))
     bundle = empty_application_registry_bundle(components, tuple(package.source for package in packages))
     for package in packages:
         source = package.source
         current = package.source.package
         try:
-            for task in package.tasks:
+            for task in package.subclasses(PythonTask):
                 current = f"{task.__module__}.{task.__qualname__}"
                 key = declaration_key(task.__name__, vars(task).get("key"), source)
                 bundle.python_tasks.register_declaration(task, key=key, source=source)

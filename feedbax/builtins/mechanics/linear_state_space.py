@@ -11,7 +11,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, PRNGKeyArray, PyTree
 
-from feedbax.component_registry.history import Change, History
+from feedbax.contracts.component_history import Change, History
 from feedbax.contracts.component import PortType
 from feedbax.runtime.graph import Component
 from feedbax.contracts.portable import Ports, ConfigBinding, ComponentOptions

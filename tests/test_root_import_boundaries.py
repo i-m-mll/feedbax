@@ -8,7 +8,7 @@ from tests.support.hang import HANG_SECONDS
 
 @pytest.mark.parametrize(
     "module_name",
-    ["feedbax.analysis", "feedbax.analysis.aligned", "feedbax.analysis.operation_runtime"],
+    ["feedbax.analysis", "feedbax.analysis.aligned", "feedbax.host.operation_runtime"],
 )
 def test_analysis_import_does_not_require_persistence_or_viz_extras(module_name: str):
     script = textwrap.dedent(

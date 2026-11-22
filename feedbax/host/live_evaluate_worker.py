@@ -17,13 +17,13 @@ from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import publish_dataset
-from feedbax.studio.canonical_evaluate import BoundEvaluationJobInput, decode_rollout_request
-from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
-from feedbax.training.method_checkpoint import read_method_checkpoint
-from feedbax.training.evaluate_computation import EvaluationComputation, RolloutExecutables
-from feedbax.training.evaluate_worker import _prepare_model_rollout, _rollouts
+from feedbax.persistence.canonical_evaluate import BoundEvaluationJobInput, decode_rollout_request
+from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
+from feedbax.host.method_checkpoint import read_method_checkpoint
+from feedbax.host.evaluate_computation import EvaluationComputation, RolloutExecutables
+from feedbax.host.evaluate_worker import _prepare_model_rollout, _rollouts
 from feedbax.training_host_worker import _Events, _error
-from feedbax.validity.evidence import release_staged_evidence, stage_evidence
+from feedbax.persistence.evidence import release_staged_evidence, stage_evidence
 from feedbax.validity.recording import (
     execution_dependencies, inherit_execution_dependencies, nested_execution, numerical_work, record_computation,
     snapshot_execution,
@@ -31,7 +31,7 @@ from feedbax.validity.recording import (
 
 if TYPE_CHECKING:
     from feedbax.runtime.graph import Graph
-    from feedbax.plugins.application import ApplicationRegistryBundle
+    from feedbax.application.bundle import ApplicationRegistryBundle
 
 
 def live_evaluation_callback(

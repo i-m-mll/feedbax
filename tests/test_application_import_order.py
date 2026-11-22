@@ -13,7 +13,7 @@ import pytest
 @pytest.mark.parametrize(
     "module_name",
     (
-        "feedbax.analysis.operation_runtime",
+        "feedbax.host.operation_runtime",
         "feedbax.light_host_worker",
         "feedbax.orchestration.runpod",
         "feedbax.web.app",
@@ -45,7 +45,7 @@ import sys
 import feedbax.config
 
 assert "feedbax.plugins" not in sys.modules
-assert "feedbax.plugins.application" not in sys.modules
+assert "feedbax.application.bundle" not in sys.modules
 assert "feedbax.analysis" not in sys.modules
 """
 

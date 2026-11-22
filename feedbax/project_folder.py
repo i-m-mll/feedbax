@@ -58,7 +58,7 @@ from feedbax.contracts.project_io import (
     text_file_stamp,
     text_project_fingerprint,
 )
-from feedbax.contracts.project_plan import ProjectPlan, ProjectPlanMemo, RunKey, compile_project, compiler_authority
+from feedbax.planner.project_plan import ProjectPlan, ProjectPlanMemo, RunKey, compile_project, compiler_authority
 from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, compose_document
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_target
 from feedbax.contracts.result_address import ANALYSIS_SCHEMA, payload_elements

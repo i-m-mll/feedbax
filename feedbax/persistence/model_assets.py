@@ -6,7 +6,7 @@ from feedbax.compiler.model_assets import model_asset_refs
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.graph import GraphSpec
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-from feedbax.studio import paths
+from feedbax.persistence import paths
 
 
 def _provider() -> ImmutableArtifactBlobProvider:

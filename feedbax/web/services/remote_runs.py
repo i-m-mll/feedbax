@@ -21,7 +21,7 @@ from feedbax.contracts.jobs import (
     StudioMachineQuote, StudioMachineQuoteRow, StudioRemoteSession, StudioSavedMachineQuoteRequest, StudioVenueCursor,
     StudioVenueStream,
 )
-from feedbax.contracts.project_plan import RunKey
+from feedbax.planner.project_plan import RunKey
 from feedbax.host import HostError
 from feedbax.host.protocol import JsonObject
 from feedbax.jobs import JobConflict, JobNotFound, JobService

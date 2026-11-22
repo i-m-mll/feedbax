@@ -8,7 +8,7 @@ from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.graph import StudioTaskBindingSpec, StudioTaskDataSpec
 from feedbax.contracts.model_document import ModelDocument, SignalType
 from feedbax.contracts.model_edit import ModelProjectionRequest, ModelTaskSignal
-from feedbax.contracts.project_plan import RunKey, SelectedRunDefinition
+from feedbax.planner.project_plan import RunKey, SelectedRunDefinition
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 
 if TYPE_CHECKING:

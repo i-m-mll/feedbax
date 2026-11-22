@@ -18,16 +18,16 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from feedbax.contracts.artifact_custody import ContentObjectRef, ContentTreeRef
     from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
-    from feedbax.plugins.application import ApplicationRegistryBundle
+    from feedbax.application.bundle import ApplicationRegistryBundle
     from feedbax.contracts.method_checkpoint import MethodCheckpointClock
     from feedbax.contracts.receipt_validity import ValidityCheckDelivery, ValidityCheckEvidence
     from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
     from feedbax.runtime.graph import Graph
     from feedbax.runtime.trial_execution import TrialExecution
-    from feedbax.studio.canonical_train import BoundStudioTrainingJobInput, VerifiedTrainBinding
+    from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput, VerifiedTrainBinding
     from feedbax.training.method_runtime import TrainingLoop
     from feedbax.training.methods import TrainingState
-    from feedbax.training.model_checkpoint import SemanticModelWriter
+    from feedbax.host.model_checkpoint import SemanticModelWriter
     from feedbax.training.train_driver import TrainSchedule
 
 
@@ -38,7 +38,7 @@ def prewarm() -> None:
     """Discover installed declarations before accepting a delivery."""
     global _warm_registries
 
-    from feedbax.plugins.composition import load_application
+    from feedbax.application.composition import load_application
 
     _warm_registries = load_application().bundle
 
@@ -177,7 +177,7 @@ def _error(exc: Exception, phase: str) -> dict[str, str]:
         path = diagnostics[0].source_anchor.authored_path
     elif diagnostics := getattr(exc, "diagnostics", ()):
         path = (diagnostics[0].location or {}).get("path")
-    from feedbax.host.completion import CompletionFileError
+    from feedbax.persistence.completion import CompletionFileError
 
     if isinstance(exc, CompletionFileError):
         code = "dependency_corrupt"
@@ -245,10 +245,10 @@ def _prepare_train(
     from feedbax.contracts.model_input import CheckpointModelSource, InitialModelSource
     from feedbax.persistence.model_assets import model_artifact_provider
     from feedbax.runtime._graph_key_schedule import model_initialization_key
-    from feedbax.runtime.model_input import reconstruct_model
-    from feedbax.training.method_checkpoint import read_method_checkpoint, validate_method_extra
+    from feedbax.host.model_input import reconstruct_model
+    from feedbax.host.method_checkpoint import read_method_checkpoint, validate_method_extra
     from feedbax.training.method_runtime import TrainingLoop, initialize_method, stack_replicas
-    from feedbax.training.model_checkpoint import SemanticModelWriter
+    from feedbax.host.model_checkpoint import SemanticModelWriter
     from feedbax.training.train_driver import TrainSchedule, carries_method_state, train_start_clock
     from feedbax.validity.recording import numerical_work
 
@@ -297,7 +297,7 @@ def _prepare_train(
         source_graph = trial.graph
         variant = None
         if documents != spec.trial_documents:
-            from feedbax.studio.canonical_train import _resolve_trial
+            from feedbax.persistence.canonical_train import _resolve_trial
 
             with numerical_work():
                 source_graph = _resolve_trial(source_spec, registries).graph
@@ -368,7 +368,7 @@ def _run(
     from feedbax.contracts.method_checkpoint import MethodCheckpointIdentity
     from feedbax.contracts.strict_json import strict_json_loads
     from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
-    from feedbax.host.completion import CompletionFileError, read_completion_bindings
+    from feedbax.persistence.completion import CompletionFileError, read_completion_bindings
     from feedbax.job_completion import (
         attest_checkpoint_publication, checkpoint_reference, training_binding_path,
         verify_bound_training_completion, verify_training_completion, verify_training_model_product,
@@ -379,16 +379,16 @@ def _run(
     )
     from feedbax.persistence.train_metrics import MetricDelta, latest_metrics as read_latest_metrics, materialize_metrics, read_metric_prefix
     from feedbax.runtime._graph_key_schedule import derive_key
-    from feedbax.studio.canonical_train import (
+    from feedbax.persistence.canonical_train import (
         BoundStudioTrainingJobInput, PinnedTrainCheckpoint, read_collected_train_job, resolve_training_request_binding,
     )
     from feedbax.tasks.document import TaskParameters
-    from feedbax.training.method_checkpoint import write_method_checkpoint
+    from feedbax.host.method_checkpoint import write_method_checkpoint
     from feedbax.training.method_runtime import replica_value
     from feedbax.training.train_driver import drive_train
-    from feedbax.validity.evidence import stage_checkpoint_evidence
+    from feedbax.persistence.evidence import stage_checkpoint_evidence
     from feedbax.validity.recording import numerical_work, record_computation, set_execution_prefix
-    from feedbax.validity.train import (
+    from feedbax.host.train_validity import (
         CheckpointStart, TrainCapture, TrainReplay, archive_checkpoint_validity, checkpoint_evidence,
     )
 
@@ -579,7 +579,7 @@ def _run(
         })
         evaluate_checkpoint = None
         if "FEEDBAX_HOST_LIVE_EVALUATE" in os.environ:
-            from feedbax.training.live_evaluate import live_evaluation_callback
+            from feedbax.host.live_evaluate_worker import live_evaluation_callback
 
             try:
                 evaluate_checkpoint = live_evaluation_callback(launch, events, registry=registries)
@@ -743,7 +743,7 @@ def _run(
 
 def check_train(delivery: ValidityCheckDelivery) -> ValidityCheckEvidence:
     """Re-prepare the exact recorded Train start for code or environment confirmation."""
-    from feedbax.validity.train import recheck_train
+    from feedbax.host.train_validity import recheck_train
 
     if _warm_registries is None:
         prewarm()
