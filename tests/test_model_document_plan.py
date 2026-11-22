@@ -1033,15 +1033,18 @@ def test_stored_model_plan_uses_the_supplied_component_registry():
     registered = compile_project(project, memo=memo, components=registry)
     (train,) = registered.runs
     assert train.kind == "train"
-    (problem,) = registered.diagnostics
-    assert (problem.step, problem.code, problem.blocked_by) == ("baseline", "blocked_input", train.key)
+    problem, blocked = sorted(registered.diagnostics, key=lambda item: item.code == "blocked_input")
+    assert problem.step == "baseline" and "has no declared Evaluate layout" in problem.detail
+    assert (blocked.step, blocked.row, blocked.code, blocked.blocked_by) == (
+        "baseline", problem.row, "blocked_input", train.key,
+    )
     assert train.admission_problem is not None
     assert "has no typed model checkpoint owner" in train.admission_problem.detail
     address = ModelAddress.model_validate({
         "composites": [],
         "element": {"kind": "component", "id": "custom"},
     })
-    assert train.admission_problem.model_address == address
+    assert problem.model_address == train.admission_problem.model_address == address
     assert compile_project(project, memo=memo) == first
 
 
@@ -1563,8 +1566,17 @@ def test_saved_managed_mechanics_refuses_at_model_address(host, tmp_path, domain
     else:
         assert train.path == "/trial_documents/model/interior/components/arm"
         assert "no typed model checkpoint owner for solver 'euler'" in train.detail
-        evaluate = next(problem for problem in response.window_map.problems if problem.step == "baseline")
-        assert (evaluate.code, evaluate.blocked_by.step) == ("blocked_input", "train")
+        evaluate = next(
+            problem for problem in response.window_map.problems
+            if problem.step == "baseline" and problem.code != "blocked_input"
+        )
+        assert evaluate.place.member == train.place.member
+        assert "no qualified Evaluate realization" in evaluate.detail
+        (blocked,) = [
+            problem for problem in response.window_map.problems
+            if problem.step == "baseline" and problem.code == "blocked_input"
+        ]
+        assert (blocked.row, blocked.blocked_by.step) == (evaluate.row, "train")
 
     snapshot = view.settled
     train_key = RunKey("default", "train", "default")

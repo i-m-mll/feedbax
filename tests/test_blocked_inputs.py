@@ -5,12 +5,17 @@ from fastapi.testclient import TestClient
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import BlockedRow, PlannedRun, ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.project_resolution import ResolutionCode
+from feedbax.jobs import JobService
+from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.tasks.registry import application_python_tasks
 from feedbax.web.app import create_app
 from feedbax.web.services import project_plan as window_service
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import _two_optimizer_rates, authored_documents, document_project
+from tests.test_model_document_plan import _end, _model_controller, _wire
+from tests.test_studio_trial_authoring import _python_project
+from tests.support.host import token
 
 BAD_LINEAR = {"kind": "leaf", "name": "Left", "type": "feedbax.equinox.Linear", "fields": {}}
 
@@ -41,6 +46,27 @@ def test_one_bad_train_row_blocks_only_the_evaluate_row_that_reads_it():
     assert [(problem.code, problem.row, problem.path, problem.blocked_by) for problem in problems] == [
         (ResolutionCode.BLOCKED_INPUT, blocked.key.row, "inputs.subject", bad),
     ]
+
+
+def test_an_evaluate_of_an_unadmissible_train_keeps_its_own_problem():
+    raw = document_project(authored_documents(), evaluation=True)
+    for term in raw["documents"]["objective"]["payload"]["terms"]:
+        term["enabled"] = False
+    controller = _model_controller(raw)
+    controller["components"]["passthrough"] = {
+        "kind": "leaf", "name": "Passthrough", "type": "feedbax.Gain", "fields": {"gain": 1.0},
+    }
+    original = controller["wires"]["read"]
+    original["target"], output = _end("passthrough", "input"), original["target"]
+    controller["wires"]["read-output"] = _wire(_end("passthrough", "output"), output)
+    plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
+    (train,) = [run for run in plan.runs if run.key.step == "train"]
+    assert train.admission_problem is not None and "no enabled terms" in train.admission_problem.detail
+    problems = [problem for problem in plan.diagnostics if problem.step == "baseline"]
+    assert {problem.row for problem in problems} == {"default"}
+    blocked = [problem for problem in problems if problem.code == ResolutionCode.BLOCKED_INPUT]
+    assert [problem.blocked_by for problem in blocked] == [train.key]
+    assert any("no declared Evaluate layout" in problem.detail for problem in problems)
 
 
 def test_window_keeps_conditions_and_batches_of_a_train_row_that_cannot_run(tmp_path):
@@ -98,3 +124,18 @@ def test_objective_expressions_stay_editable_when_the_model_does_not_pair(tmp_pa
         assert edit.status_code == 200, edit.text
         assert edit.json()["files"], edit.text
         assert not [problem for problem in edit.json()["problems"] if problem["path"][:1] == ["objective"]]
+
+
+def test_a_lowered_row_waiting_on_its_producer_cannot_run_and_is_never_submitted(host, tmp_path):
+    folders = ProjectFolderService(tmp_path / "projects")
+    _save_project(folders, "waiting", Project.model_validate(_python_project()))
+    snapshot = folders.read_plan("waiting", revision=None)
+    (train,) = [run for run in snapshot.plan.runs if run.key.step == "train"]
+    (evaluate,) = [run for run in snapshot.plan.runs if run.key.step == "baseline"]
+    assert train.admission_problem is not None
+    view = window_service.ProjectPlanRead.without_history(snapshot)
+    assert next(row for row in view.status_rows() if row.key == evaluate.key).status == "cannot_run"
+    jobs = JobService(host, new_application_registry_bundle())
+    (item,) = jobs.admit_plan(folders, snapshot, run_keys=(evaluate.key,), token=token("waiting")).items
+    assert item.disposition == "rejected" and "inputs.subject" in (item.reason or ""), item
+    assert not host.jobs(project=snapshot.project_id)

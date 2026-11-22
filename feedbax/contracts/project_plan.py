@@ -234,7 +234,7 @@ def label_value_names(labels: Mapping[str, MemberLabel], names: LabelNames) -> d
 
 
 class PendingProduct(ReferenceValue):
-    """The product of a row that cannot run, which a reading row waits on."""
+    """The product of a row that has no request, which a reading row waits on."""
 
     variant: str
     step: str
@@ -246,7 +246,7 @@ class PendingProduct(ReferenceValue):
 
 
 class PendingMember(ReferenceValue):
-    """A member whose producer cannot run: it keeps its key and labels, and no request reads it."""
+    """A member whose producer has no request: it keeps its key and labels, and no request reads it."""
 
     key: str
     reference: PendingProduct
@@ -283,7 +283,7 @@ class PlannedInput:
 
     @property
     def waits_on(self) -> RunKey | None:
-        """The producer row that cannot run, when this member's product waits on one."""
+        """The producer row that has no request, when this member's product waits on one."""
         return self.member.reference.run if isinstance(self.member, PendingMember) else None
 
     @property
@@ -384,7 +384,7 @@ class PlannedRow:
 
 @dataclass(frozen=True)
 class BlockedRow(PlannedRow):
-    """A row an input of which waits on a producer row that cannot run."""
+    """A row an input of which waits on a producer row that has no request; it is never lowered."""
 
     inputs: Mapping[str, tuple[PlannedInput, ...]]
     blocked_by: RunKey
@@ -1470,6 +1470,8 @@ class _Compiler:
         self.steps: dict[tuple[str, str], PlannedStep] = {}
         self.rows: dict[RunKey, PlannedRow] = {}
         self.excluded_checkpoint_rows: set[RunKey] = set()
+        self.waiting: dict[RunKey, RunKey] = {}
+        """Each row with a ``blocked_input``, and the producer it names."""
         self.runs: dict[tuple[str, str], tuple[_CompiledRun, ...]] = {}
         self.swept_step_axes: dict[tuple[str, str], tuple[str, ...]] = {}
         self.requests: dict[RequestId, bytes] = {}
@@ -2848,25 +2850,42 @@ class _Compiler:
                 result.append(run)
         return tuple(result)
 
+    def cannot_run(self, key: RunKey) -> bool:
+        """Whether a planned row cannot run: it has no request, an admission problem, or a producer that cannot run."""
+        row = self.rows.get(key)
+        return (
+            key in self.waiting
+            or not isinstance(row, (PlannedRun, PlannedAnalyzeRun))
+            or isinstance(row, PlannedRun) and row.admission_problem is not None
+        )
+
     def block_row(
         self, key: RunKey, template: StepComposition, row: ExpandedRow,
         inputs: Mapping[str, tuple[PlannedInput, ...]],
     ) -> bool:
-        """Record ``key`` as blocked when one of its members waits on a producer row that cannot run.
+        """Give ``key`` one ``blocked_input`` when a producer of its members cannot run, and report whether ``key``
+        must stay unlowered because that producer has no request.
 
-        The row keeps its own definition and documents, so it stays authorable; it is never lowered."""
+        A row left unlowered is a ``BlockedRow`` that keeps its own definition and documents, so it stays authorable.
+        A row whose producer has a request is lowered as usual and keeps every problem of its own."""
         waiting = next((
             (role, binding, producer) for role, bindings in inputs.items() for binding in bindings
             if (producer := binding.waits_on) is not None
+        ), None) or next((
+            (role, binding, producer) for role, bindings in inputs.items() for binding in bindings
+            for producer in binding.sources if self.cannot_run(producer)
         ), None)
         if waiting is None:
             return False
         role, binding, producer = waiting
+        self.waiting[key] = producer
         self.diagnostics.append(ProjectDiagnostic(
             ResolutionCode.BLOCKED_INPUT, _selection_path(template.inputs.get(role), role, binding.selection),
             f"{producer.variant}/{producer.step}/{producer.row} cannot run",
             key.step, row=key.row, variant=key.variant, blocked_by=producer,
         ))
+        if binding.waits_on is None:
+            return False
         definition = self.select_definition(template, key, row, inputs)
         resolved = definition if definition is not None else self.resolve_row(template, key, row, None)
         planned = self.rows[key]
@@ -3244,7 +3263,7 @@ class _Compiler:
                 return refusal(f"Best requests {best.k} ranks from {len(grouped)} candidates{target}.")
             candidates = []
             keys = []
-            waiting = next((item.waits_on for item, _ in grouped if item.waits_on is not None), None)
+            waiting = next((producer.key for _, producer in grouped if self.cannot_run(producer.key)), None)
             for item, producer in grouped:
                 keys.append(producer.key)
                 if waiting is None:
@@ -3634,7 +3653,7 @@ class _Compiler:
                         f"{address} has no planned {role.product_role!r} product", name,
                     )
                 requests = tuple((element.request_id, element) for element in elements)
-            elif isinstance(run, PlannedRun) and run.admission_problem is None and not element_input:
+            elif isinstance(run, PlannedRun) and not element_input:
                 requests = ((run.request_id, None),)
             try:
                 coordinates = self.member_coordinates(run)
