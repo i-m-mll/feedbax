@@ -318,7 +318,7 @@ class ProjectPlanRead:
                         source_step_id=reference.step,
                         checkpoint=(
                             axis[1].checkpoint_rule if axis is not None
-                            else reference.checkpoint if step.kind == "evaluate" and role == "subject" else None
+                            else reference.checkpoint
                         ),
                         checkpoint_axis=axis[0] if axis is not None else None,
                         subset=StudioProjectWindowMapSubset(
