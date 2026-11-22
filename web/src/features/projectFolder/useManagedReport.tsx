@@ -33,6 +33,17 @@ function figureAddress({ key, name, figure }: ReportFigureSource) {
 /** Where a refusal lands: a field, a block by index, or the open dialog. */
 type Place = 'title' | 'completeness' | `block:${number}` | 'dialog';
 
+/** The report document a Report step holds, as the draft has it. */
+export function stepReport({ draft, saved }: Pick<ProjectEditSnapshot, 'draft' | 'saved'>, stepId: string | undefined) {
+  const step = stepId ? draft.steps?.[stepId] : undefined;
+  const base = step?.kind === 'report' ? step.base : undefined;
+  const document = base && 'document' in base && !base.pointer ? base.document : undefined;
+  const authored = document ? draft.documents?.[document] : undefined;
+  const parsed = authored?.schema === 'feedbax.report_document.v1'
+    ? ReportDocumentSchema.safeParse(documentPayload(draft.documents, saved.composed, document!)) : undefined;
+  return { step, document, report: parsed?.success ? parsed.data : undefined };
+}
+
 export function useManagedReport({
   editor, snapshot, plan, projection, variant, stepId, run, wholeStep, focused, failures,
 }: {
@@ -49,13 +60,7 @@ export function useManagedReport({
   focused: boolean;
 }) {
   const { draft, outside, pending, saved } = snapshot;
-  const step = stepId ? draft.steps?.[stepId] : undefined;
-  const base = step?.kind === 'report' ? step.base : undefined;
-  const document = base && 'document' in base && !base.pointer ? base.document : undefined;
-  const authored = document ? draft.documents?.[document] : undefined;
-  const parsed = authored?.schema === 'feedbax.report_document.v1'
-    ? ReportDocumentSchema.safeParse(documentPayload(draft.documents, saved.composed, document!)) : undefined;
-  const report = parsed?.success ? parsed.data : undefined;
+  const { step, document, report } = stepReport(snapshot, stepId);
   const planned = run && projection?.window_map?.rows.find(({ key }) => savedRunId(key) === savedRunId(run));
   const retained = planned?.light?.result ?? planned?.light?.previous;
   const previewUrl = retained?.products.report;

@@ -8,28 +8,6 @@
 @tailwind components;
 @tailwind utilities;
 
-/* The chrome edge belongs to the window shell's tokens.css and frame.css; it is here until the vendored shell carries it. */
-:root { --app-boundary-line-color: #2c2c2c; }
-[data-theme='light'] { --app-boundary-line-color: #e5e5e6; }
-
-.shell-frame__content { position: relative; }
-
-.shell-frame__content::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: var(--z-app-subdivision);
-  border: 1px solid var(--app-boundary-line-color);
-  border-inline-end-width: 0;
-  border-block-end-width: 0;
-  border-radius: inherit;
-  pointer-events: none;
-}
-
-.shell-frame:has(> .shell-frame__footer) > .shell-frame__content::after {
-  border-block-end-width: 1px;
-}
-
 :root {
   --studio-shell-accent: #5d4b87;
   --studio-shell-selection: color-mix(in srgb, var(--text-primary) 10%, transparent);

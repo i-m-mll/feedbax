@@ -24,7 +24,7 @@ const shown = { revision: 'before', rows: [], window_map: { evaluations: [evalua
 
 it('keeps the Results of the plan on screen while the current plan is read, pending and with Replay waiting', () => {
   const runIds = new Set([savedRunId(key)]);
-  render(<SavedResults shown={shown} current={false} project="project" fallback={null} onReplay={vi.fn()}
+  render(<SavedResults shown={shown} current={false} project="project" onReplay={vi.fn()}
     result={focusedResult(shown, 'validation', null, runIds, undefined)} />);
   const replay = screen.getByRole('button', { name: 'Replay update 7' });
   const region = replay.closest('[aria-busy]');
