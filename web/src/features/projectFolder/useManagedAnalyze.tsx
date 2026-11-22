@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { baseChain, documentPayload } from './documentPayload';
+import { baseChain, baseOf, documentPayload } from './documentPayload';
 import { ChartLine, Database, Sigma } from 'lucide-react';
 import { useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
@@ -217,8 +217,9 @@ export function useManagedAnalyze({
   const changedPaths = new Set(catalog?.document === document ? catalog?.changed ?? [] : []);
   function changedAt(path: readonly string[]): ChangeMark | undefined {
     const pointer = authoredPointer(path);
-    if (!changedPaths.has(pointer)) return undefined;
-    return { text: studioName('changed'), reset: canEdit ? async () => {
+    const base = baseOf(saved.project.documents, document);
+    if (!changedPaths.has(pointer) || base === undefined) return undefined;
+    return { from: { kind: 'base', document: base }, reset: canEdit ? async () => {
       try { await editor.command((current) => save(current, studioName('reset'), { kind: 'reset', paths: [pointer] })); return undefined; }
       catch (cause) { return cause instanceof Error ? cause.message : String(cause); }
     } : undefined };

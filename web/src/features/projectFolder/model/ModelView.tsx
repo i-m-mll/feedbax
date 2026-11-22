@@ -7,7 +7,7 @@ import { projectModelFields, readEvaluateModel, readModelProjection, reviewModel
 import { ApiRequestError, isRefusal } from '@/api/request';
 import { shownError } from '@/api/shownErrors';
 import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
-import { studioAccessibleName, studioEvaluateValueSource, studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { baseChain, documentPayload } from '../documentPayload';
 import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import { Box, Crosshair, House, Search, TriangleAlert, X } from 'lucide-react';
@@ -23,7 +23,7 @@ import { TextField } from '@/components/ui/TextField';
 import { ValueField } from '@/components/values/ValueField';
 import { fromFieldView, type ExceptionMentions } from '@/components/values/adapters/fieldView';
 import { rawField } from '@/components/values/adapters/raw';
-import type { FieldModel } from '@/components/values/fieldModel';
+import type { ChangeSource, FieldModel } from '@/components/values/fieldModel';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { bindStudioCommand, commandAttributes } from '@/features/projectWindow/studioCommands';
 import type {
@@ -322,14 +322,15 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   }
   const fieldName = (address: ModelAddress) => address.element.kind === 'field' ? address.element.path.map(String).join('.') : addressKey(address);
   const shownChain = model ? baseChain(saved.project.documents, model.id) : [];
-  const changedText = evaluate ? studioEvaluateValueSource({ kind: 'evaluate', step: evaluate.run.step }) : studioName('changed');
+  const changedFrom: ChangeSource | undefined = evaluate ? { kind: 'evaluate', step: evaluate.run.step }
+    : shownChain[1] === undefined ? undefined : { kind: 'base', document: shownChain[1] };
   const projectedLists = fieldBodies.map((fieldBody, index) => (fieldsData?.[index]?.fields ?? []).map((field) => {
     const model = fromFieldView(field, {
       id: addressKey(field.address),
       planSources: field.sources?.filter((source) => !(source.kind === 'document' && shownChain.includes(source.name))),
       exceptions,
-      changed: field.changed ? {
-        text: changedText,
+      changed: field.changed && changedFrom ? {
+        from: changedFrom,
         reset: canEditField ? () => editField(fieldBody, field.address, { kind: 'reset' }) : undefined,
       } : undefined,
       source: attachments.data?.field_sources?.[addressKey(field.address)] ??
