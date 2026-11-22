@@ -22,7 +22,7 @@ from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
 from feedbax.host.method_checkpoint import read_method_checkpoint
 from feedbax.host.evaluate_computation import EvaluationComputation, RolloutExecutables
 from feedbax.host.evaluate_worker import _prepare_model_rollout, _rollouts
-from feedbax.training_host_worker import _Events, _error
+from feedbax.host.training_worker import _Events, _error
 from feedbax.persistence.evidence import release_staged_evidence, stage_evidence
 from feedbax.validity.recording import (
     execution_dependencies, inherit_execution_dependencies, nested_execution, numerical_work, record_computation,

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 from pydantic import Field, TypeAdapter, ValidationError
 from pydantic_core import to_json
 
+from feedbax.application.composition import application_python_tasks, load_application
 from feedbax.checkpoint_coordinates import MAX_CHECKPOINT_COORDINATE
 from feedbax.contracts import request_identity
 from feedbax.contracts._request_codec import same_typed_value
@@ -341,10 +342,9 @@ _CHECKPOINT_INITIALIZATION: TypeAdapter[Literal["initialize_from"] | TrainContin
 )
 
 
-def _train_facts(payload: Payload, python_tasks: PythonTaskRegistry | None) -> TrainFacts:
+def _train_facts(payload: Payload, python_tasks: PythonTaskRegistry) -> TrainFacts:
     """Read the Task as the request would carry it: a Python task by its canonical selection."""
     from feedbax.tasks.registry import resolve_python_task_instance
-    from feedbax.application.composition import application_python_tasks
 
     trial = payload.get("trial_documents")
     task: TaskDocument | PythonTaskSelection | None = None
@@ -354,7 +354,7 @@ def _train_facts(payload: Payload, python_tasks: PythonTaskRegistry | None) -> T
                 task = TaskDocument.model_validate(trial["task"])
             elif trial.get("python_task") is not None:
                 selection = PythonTaskSelection.model_validate(trial["python_task"])
-                resolved = resolve_python_task_instance(selection, python_tasks or application_python_tasks())
+                resolved = resolve_python_task_instance(selection, python_tasks)
                 task = None if isinstance(resolved, tuple) else request_identity.canonical_python_task_selection(
                     resolved.selection(),
                 )
@@ -533,7 +533,7 @@ class PlanSourceIndex:
     @cached_property
     def _resolver(self) -> _Compiler:
         readers = BaseReaders(external=self.externals.get, figure_external=self.externals.get)
-        return _Compiler(self.snapshot.project, readers, ())
+        return _Compiler(self.snapshot.project, readers, (), python_tasks=application_python_tasks())
 
     @cached_property
     def _templates(self) -> Callable[[str, str], tuple[StepTemplate, dict[str, ExpandedRow]]]:
@@ -1115,14 +1115,13 @@ def _integer_model_site(
 
 
 def _integer_train_site(
-    path: str, payload: Payload, python_tasks: PythonTaskRegistry | None,
+    path: str, payload: Payload, python_tasks: PythonTaskRegistry,
     training_methods: TrainingMethodRegistry | None,
 ) -> bool:
-    from feedbax.application.composition import application_python_tasks
     from feedbax.tasks.registry import python_task_parameter_site
 
     documents = payload.get("trial_documents")
-    site = python_task_parameter_site(path, documents, python_tasks or application_python_tasks())
+    site = python_task_parameter_site(path, documents, python_tasks)
     if site is not None:
         return site.expected.base is ValueBase.INTEGER and not site.expected.shape
     segments = path.split(".")
@@ -1259,7 +1258,7 @@ def _encode_row(
     document_memo: RequestDocumentMemo,
     prepare_trial: Callable[[TrialDocuments], _TrainPreparation | tuple[Problem, ...]],
     document_ids: Mapping[str, str],
-    python_tasks: PythonTaskRegistry | None = None,
+    python_tasks: PythonTaskRegistry,
     model_source: _ModelSource | None = None,
     prepared_train: _PreparedTrainRow | None = None,
     remember_train: Callable[[_PreparedTrainRow], None] | None = None,
@@ -1277,13 +1276,12 @@ def _encode_row(
         model_source = prepared_train.model
     elif kind == "train":
         from feedbax.tasks.registry import resolve_python_task_instance
-        from feedbax.application.composition import application_python_tasks
         from feedbax.contracts.request_specs import TrialDocuments
 
         try:
             authored = TrialDocuments.model_validate(payload.get("trial_documents"))
             if authored.python_task is not None:
-                resolved = resolve_python_task_instance(authored.python_task, python_tasks or application_python_tasks())
+                resolved = resolve_python_task_instance(authored.python_task, python_tasks)
                 if isinstance(resolved, tuple):
                     return _LoweredRow(None, tuple(
                         _trial_problem(key, problem, document_ids) for problem in resolved
@@ -1486,8 +1484,8 @@ class _Compiler:
         operations: OperationRegistry | None = None,
         components: ComponentRegistry | None = None,
         functions: FunctionRegistry | None = None,
-        python_tasks: PythonTaskRegistry | None = None,
         *,
+        python_tasks: PythonTaskRegistry,
         training_methods: TrainingMethodRegistry | None = None,
         figure_templates: FigureTemplateRegistry | None = None,
         capture_sources: bool = False,
@@ -2430,7 +2428,6 @@ class _Compiler:
         from feedbax.compiler.model_document import ModelCompilationProblem
         from feedbax.execution.trial_resolution import pair_trial_source
         from feedbax.contracts.rollout import CannotRun
-        from feedbax.application.composition import application_python_tasks
         from feedbax.training.evaluation_variant import resolve_evaluation_variant
 
         resolved = self.resolve_row(template, key, row, None)
@@ -2446,7 +2443,7 @@ class _Compiler:
             source = self.initial_model_source(subject_ref, resolved.input_documents["subject"], differences)
             components = self.components or _builtin_model_registry()
             functions = self.functions or _builtin_expression_registry()
-            tasks = self.python_tasks or application_python_tasks()
+            tasks = self.python_tasks
             path = "inputs.task"
             task_ref = template.inputs.get("task")
             if not isinstance(task_ref, TaskDocumentReference):
@@ -3782,8 +3779,9 @@ def compile_project(
     capture_sources: bool = False,
 ) -> ProjectPlan:
     """Plan static requests and value sources with the supplied declaration registries."""
+    if python_tasks is None:
+        python_tasks = application_python_tasks()
     if training_methods is None and any(step.kind == "train" for step in project.steps.values()):
-        from feedbax.application.composition import load_application
 
         training_methods = load_application().bundle.training_methods
     readers = replace(
@@ -3803,7 +3801,7 @@ def compile_project(
     authority = compiler_authority(components, operations, functions, python_tasks, training_methods, figure_templates)
     ticket, previous = memo._begin(authority)
     compiler = _Compiler(
-        project, readers, source_runs, previous, operations, components, functions, python_tasks,
+        project, readers, source_runs, previous, operations, components, functions, python_tasks=python_tasks,
         training_methods=training_methods, figure_templates=figure_templates,
     )
     plan = compiler.plan()

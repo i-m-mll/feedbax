@@ -83,7 +83,7 @@ from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, Evaluat
 from feedbax.contracts.workspace_replay import WorkspaceReplayTrial
 from feedbax.persistence.completion import completion_file
 from feedbax.host.plan_history import PlanRowRef, PlanSuccess, plan_run_key, settled_results
-from feedbax.job_completion import training_binding_path
+from feedbax.host.job_completion import training_binding_path
 from feedbax.jobs import (
     EVALUATION_SUBJECT_REQUIRED,
     JobConflict,

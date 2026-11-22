@@ -20,6 +20,7 @@ DOMAIN_DIAGNOSTIC_SCHEMA_ID = "feedbax.diagnostic.domain"
 DOMAIN_DIAGNOSTIC_SCHEMA_VERSION = "feedbax.diagnostic.domain.v1"
 
 CAUSAL_DOMAIN_ID = "feedbax.domain.causal"
+PENZAI_COMPILER_ID = "feedbax.compiler.penzai"
 ACAUSAL_DOMAIN_ID = "feedbax.domain.acausal"
 MECHANICS_DOMAIN_ID = "feedbax.domain.mechanics"
 PENZAI_DOMAIN_ID = "feedbax.domain.penzai"

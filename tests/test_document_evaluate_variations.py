@@ -140,6 +140,7 @@ def test_saved_addressed_condition_restores_document_train_model(host, tmp_path,
         variant.task,
         registry.components,
         registry.expression_functions,
+        python_tasks=registry.python_tasks,
         input_overrides=documents.input_overrides,
         graph_override=variant.graph,
     )
@@ -293,7 +294,7 @@ def test_saved_source_field_rebuilds_derived_owner(host, tmp_path, authored):  #
     assert variant.source_overrides == expected_overrides
     paired = compile_trial_execution(
         documents.model, documents.task_source,
-        registry.components, registry.expression_functions,
+        registry.components, registry.expression_functions, python_tasks=registry.python_tasks,
         input_overrides=documents.input_overrides, graph_override=variant.graph,
     )
     assert isinstance(paired, PreparedTrialExecution), paired

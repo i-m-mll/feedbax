@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from feedbax.runtime.graph import Graph
     from feedbax.training.method_runtime import BlockResult, LoweredBlock, TrainingLoop
     from feedbax.training.methods import TrainingState
-    from feedbax.training_host_worker import _PreparedTrain
+    from feedbax.host.training_worker import _PreparedTrain
 
 
 _SLOT = "updates"
@@ -222,7 +222,7 @@ def _reprepare(
     from feedbax.persistence.canonical_train import (
         BoundStudioTrainingJobInput, CanonicalTrainRequestBinding, _decode_train, resolve_training_request_binding,
     )
-    from feedbax.training_host_worker import _prepare_train
+    from feedbax.host.training_worker import _prepare_train
 
     request = replay.request
     documents = {ref.sha256: ref for ref in request.documents}

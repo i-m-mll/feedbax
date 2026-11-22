@@ -15,7 +15,7 @@ from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.contracts.rollout import ROLLOUT_TYPE
 from feedbax.desktop.release import AppPaths
 from feedbax.host import HostClient
-from feedbax.job_completion import verify_bound_training_completion
+from feedbax.host.job_completion import verify_bound_training_completion
 from feedbax.jobs import JobService
 from feedbax.persistence.array_container import ArrayContainerReader
 from feedbax.application.bundle import new_application_registry_bundle

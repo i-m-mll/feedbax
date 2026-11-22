@@ -55,7 +55,7 @@ def _observation_guard(delivery: ValidityCheckDelivery) -> Callable[[], None]:
 def _check(delivery: ValidityCheckDelivery) -> ValidityCheckEvidence:
     match delivery.request_id.partition(":")[0]:
         case "train":
-            from feedbax.training_host_worker import check_train
+            from feedbax.host.training_worker import check_train
 
             return check_train(delivery)
         case "evaluate":
@@ -67,7 +67,7 @@ def _check(delivery: ValidityCheckDelivery) -> ValidityCheckEvidence:
 
 
 def _check_light(delivery: ValidityCheckDelivery) -> ValidityCheckEvidence:
-    from feedbax.light_host_worker import check_light_environment
+    from feedbax.host.light_worker import check_light_environment
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
     from feedbax.persistence.effective_success import SuccessView
 

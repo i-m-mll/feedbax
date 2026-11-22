@@ -14,7 +14,7 @@ import pytest
     "module_name",
     (
         "feedbax.host.operation_runtime",
-        "feedbax.light_host_worker",
+        "feedbax.host.light_worker",
         "feedbax.orchestration.runpod",
         "feedbax.web.app",
     ),

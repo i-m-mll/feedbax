@@ -37,7 +37,6 @@ from feedbax.tasks.registry import (
     PythonTaskTemplate,
     resolve_python_task_instance,
 )
-from feedbax.application.composition import application_python_tasks
 
 
 @dataclass(frozen=True)
@@ -96,10 +95,10 @@ def resolve_python_task(
     return resolved if isinstance(resolved, tuple) else resolved.template()
 
 
-def evaluation_conditions(task: TaskDocument | PythonTaskSelection, registry: PythonTaskRegistry | None) -> tuple[str, ...]:
+def evaluation_conditions(task: TaskDocument | PythonTaskSelection, registry: PythonTaskRegistry) -> tuple[str, ...]:
     if isinstance(task, TaskDocument):
         return task.condition_ids
-    template = resolve_python_task(task, registry or application_python_tasks())
+    template = resolve_python_task(task, registry)
     if isinstance(template, tuple):
         raise ValueError(template[0].reason)
     return template.condition_ids
@@ -126,14 +125,14 @@ def pair_trial_source(
     components: ComponentRegistry,
     functions: FunctionRegistry,
     *,
-    python_tasks: PythonTaskRegistry | None = None,
+    python_tasks: PythonTaskRegistry,
     input_overrides: Mapping[str, str] | None = None,
     graph_override: GraphSpec | None = None,
     task_sites: dict[tuple[str | int, ...], Site] | None = None,
 ) -> TrialPair | tuple[Problem, ...]:
     overrides = input_overrides or {}
     if isinstance(task, PythonTaskSelection):
-        resolved = resolve_python_task_instance(task, python_tasks or application_python_tasks())
+        resolved = resolve_python_task_instance(task, python_tasks)
         if isinstance(resolved, tuple):
             return resolved
         template = resolved.template()
@@ -227,7 +226,7 @@ def compile_trial_execution(
     components: ComponentRegistry,
     functions: FunctionRegistry,
     *,
-    python_tasks: PythonTaskRegistry | None = None,
+    python_tasks: PythonTaskRegistry,
     objective: ObjectiveDocument | None = None,
     objective_use: ObjectiveUse = ObjectiveUse.TRAIN,
     input_overrides: Mapping[str, str] | None = None,
@@ -252,7 +251,7 @@ def resolve_trial_execution(
     components: ComponentRegistry,
     functions: FunctionRegistry,
     *,
-    python_tasks: PythonTaskRegistry | None = None,
+    python_tasks: PythonTaskRegistry,
     objective: ObjectiveDocument | None = None,
     objective_use: ObjectiveUse = ObjectiveUse.TRAIN,
     input_overrides: Mapping[str, str] | None = None,

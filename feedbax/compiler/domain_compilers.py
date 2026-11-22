@@ -44,7 +44,7 @@ def register_builtin_domain_compilers() -> None:
     if _BUILTINS_REGISTERED:
         return
     from feedbax.compiler.acausal_compiler import compile_acausal_graph
-    from feedbax.compiler.penzai_compiler import PENZAI_COMPILER_ID
+    from feedbax.contracts.domain import PENZAI_COMPILER_ID
 
     register_domain_compiler("feedbax.compiler.acausal", compile_acausal_graph)
     register_domain_compiler(

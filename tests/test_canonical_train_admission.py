@@ -21,7 +21,7 @@ from feedbax.contracts.studio_project import StudioProjectCreateFile, StudioProj
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.host import HostError, Job, Launch
 from feedbax.persistence.completion import CompletionFileError
-from feedbax.job_completion import verify_bound_training_completion, verify_training_model_product
+from feedbax.host.job_completion import verify_bound_training_completion, verify_training_model_product
 from feedbax.jobs import JobConflict, JobService
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView, run_ref_name

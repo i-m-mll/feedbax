@@ -20,7 +20,7 @@ from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.host import HostError
-from feedbax.job_completion import verify_bound_training_completion
+from feedbax.host.job_completion import verify_bound_training_completion
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
 from feedbax.web.app import create_app

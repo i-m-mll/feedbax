@@ -22,7 +22,8 @@ from feedbax.runtime.where_selectors import (
     attr_str_tree_to_where_func,
     where_func_to_attr_str_tree,
 )
-from feedbax.builtins.models.networks import LeakyRNNCell, recurrent_controller
+from feedbax.builtins.models.networks import LeakyRNNCell
+from feedbax.models.controllers import recurrent_controller
 from feedbax.models.feedback import SimpleFeedback
 
 

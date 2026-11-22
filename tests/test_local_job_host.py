@@ -664,7 +664,7 @@ def test_real_studio_worker_resume_binds_completion_after_daemon_restart(
     from feedbax.contracts.receipt_validity import CheckConditions, ValidityCheckDelivery
     from feedbax.contracts.method_checkpoint import CheckpointLatestPointer
     from feedbax.persistence.completion import read_completion_bindings
-    from feedbax.job_completion import verify_bound_training_completion
+    from feedbax.host.job_completion import verify_bound_training_completion
     from feedbax.jobs import JobService
     from feedbax.application.bundle import new_application_registry_bundle
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -672,7 +672,7 @@ def test_real_studio_worker_resume_binds_completion_after_daemon_restart(
     from feedbax.persistence.method_checkpoint import LATEST_NAME, retain_checkpoint_evidence
     from feedbax.persistence.checkpoint_errors import CheckpointCustodyError
     from feedbax.training.method_runtime import TrainingLoop
-    from feedbax.training_host_worker import check_train
+    from feedbax.host.training_worker import check_train
     from feedbax.persistence.evidence import read_execution_evidence, release_checkpoint_evidence, stage_checkpoint_evidence
     from feedbax.web.api import jobs, projects
     from feedbax.web.services.project_folder import ProjectFolderService

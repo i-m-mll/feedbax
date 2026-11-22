@@ -20,12 +20,12 @@ from feedbax.builtins.models.networks import (
     POPULATION_STRUCTURE_SCHEMA_ID,
     POPULATION_STRUCTURE_SCHEMA_VERSION,
     PopulationStructure,
-    recurrent_controller,
     lower_population_constraints,
     population_input_kernel_mask,
     population_readout_kernel_mask,
     population_structure_from_spec,
 )
+from feedbax.models.controllers import recurrent_controller
 from feedbax.builtins.runtime.components import Linear
 from feedbax.runtime.graph import Graph
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints

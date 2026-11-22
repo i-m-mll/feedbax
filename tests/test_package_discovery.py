@@ -20,7 +20,7 @@ from feedbax.contracts.request_identity import encode_request
 from feedbax.contracts.request_refs import InputMember, ProductRef
 from feedbax.contracts.request_specs import AnalysisRequestSpec
 from feedbax.dataset import Dataset, Variable
-from feedbax.light_jobs import LightDelivery, publish_light_success
+from feedbax.host.light_jobs import LightDelivery, publish_light_success
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset, publish_dataset
 from feedbax.persistence.effective_success import SuccessView, store_request
@@ -129,7 +129,7 @@ def test_managed_worker_runs_the_installed_operation(installed_site, monkeypatch
     log = tmp_path / "events.jsonl"
     log.touch()
     worker = subprocess.run(
-        [sys.executable, "-c", "from feedbax.light_host_worker import main; raise SystemExit(main([]))"],
+        [sys.executable, "-c", "from feedbax.host.light_worker import main; raise SystemExit(main([]))"],
         env=_child_environment(installed_site) | {
             "FEEDBAX_HOST_JOB_ID": "test-attempt",
             "FEEDBAX_HOST_EVENT_LOG": str(log),

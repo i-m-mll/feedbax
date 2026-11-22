@@ -100,7 +100,7 @@ def test_external_owner_trains_checkpoints_and_records_an_evaluate_difference(ho
     documents = request.trial_documents
     initial = compile_trial_execution(
         documents.model, documents.task_source,
-        registry.components, registry.expression_functions,
+        registry.components, registry.expression_functions, python_tasks=registry.python_tasks,
         objective=documents.objective, initialization_key=model_initialization_key(request.seed),
     )
     assert isinstance(initial, PreparedTrialExecution), initial

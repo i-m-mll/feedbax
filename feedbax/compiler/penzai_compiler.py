@@ -25,8 +25,6 @@ from feedbax.contracts.domain import (
     report_status_for_diagnostics,
 )
 
-PENZAI_COMPILER_ID = "feedbax.compiler.penzai"
-
 
 def penzai_builder_options() -> list[dict[str, Any]]:
     """Return registry-visible Penzai builder metadata."""

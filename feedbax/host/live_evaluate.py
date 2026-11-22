@@ -142,7 +142,7 @@ def live_objective_series(
     objective: ObjectiveDocument, observation: LiveEvaluationObservation,
 ) -> StudioEvaluationObjectiveSeries:
     """Authenticate a live objective from the exact datasets accepted by the Host."""
-    from feedbax.job_completion import read_training_binding
+    from feedbax.host.job_completion import read_training_binding
     from feedbax.persistence.content_retention import read_active_roots
     from feedbax.persistence.dataset import open_stored_dataset
     from feedbax.persistence.live_evaluate import read_live_evaluation_evidence

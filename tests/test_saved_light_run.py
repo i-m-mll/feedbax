@@ -15,7 +15,7 @@ from feedbax.contracts.project import Project
 from feedbax.planner.project_plan import ElementKey, RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID
-from feedbax.light_jobs import dataset_member
+from feedbax.host.light_jobs import dataset_member
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset
 from feedbax.persistence.effective_success import SuccessView

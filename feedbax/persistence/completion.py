@@ -6,6 +6,7 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import BinaryIO, Iterator
 
+from feedbax.host.protocol import TRAINING_ENTRYPOINT
 from feedbax._secure_fs import (
     SecurePathRigor,
     open_directory_chain,
@@ -32,7 +33,7 @@ def read_completion_bindings() -> dict:
 
 
 def train_source_slots(launch: dict) -> frozenset[str] | None:
-    if launch.get("warm_entrypoint") != "feedbax.training_host_worker:main":
+    if launch.get("warm_entrypoint") != TRAINING_ENTRYPOINT:
         return None
     payload = launch["payload"]
     if not (payload.get("canonical_request") or {}).get("checkpoint"):

@@ -62,8 +62,8 @@ from feedbax.persistence.canonical_evaluate import (
 )
 from feedbax.contracts.rollout import CannotRun
 from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
-from feedbax.training_host_worker import _Events, _Result, _error
-from feedbax.job_completion import read_host_completion_binding
+from feedbax.host.training_worker import _Events, _Result, _error
+from feedbax.host.job_completion import read_host_completion_binding
 from feedbax.host.evaluate_computation import EvaluationComputation, RolloutExecutables, drive_replicas
 from feedbax.validity.recording import numerical_work, record_computation, set_execution_prefix
 
@@ -109,7 +109,7 @@ class PreparedRollout:
 def _bound_native_subject(
     request: BoundEvaluationJobInput, binding: dict,
 ) -> tuple[tuple[PublishedTrainingCheckpoint, BoundStudioTrainingJobInput], ...]:
-    from feedbax.job_completion import (
+    from feedbax.host.job_completion import (
         load_bound_checkpoint_selection,
         verify_bound_training_completion,
     )

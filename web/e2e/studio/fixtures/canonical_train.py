@@ -15,7 +15,7 @@ from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.desktop.release import AppPaths
 from feedbax.host import HostClient
 from feedbax.host.plan_history import plan_run_key
-from feedbax.job_completion import verify_bound_training_completion
+from feedbax.host.job_completion import verify_bound_training_completion
 from feedbax.jobs import JobService
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView

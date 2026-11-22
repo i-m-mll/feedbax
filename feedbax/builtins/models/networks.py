@@ -25,7 +25,7 @@ from pydantic import Field as ConfigField
 from feedbax.contracts.component import PortType
 from feedbax.contracts.graph import ParameterConstraintSpec
 from feedbax.contracts.portable import ComponentOptions, ConfigBinding, Ports
-from feedbax.models.support import (
+from feedbax.builtins.models.support import (
     interleave_unequal,
 )
 from feedbax.builtins.runtime.components import (
@@ -785,4 +785,3 @@ def gru_weight_idxs_func(
     return gru_weight_idxs
 
 
-from feedbax.models.controllers import recurrent_controller as recurrent_controller

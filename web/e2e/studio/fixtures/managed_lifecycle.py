@@ -91,7 +91,7 @@ def declare_variants(paths, project, revision):
 
 
 def completed_train(host, project, attempt, successor):
-    from feedbax.job_completion import verify_bound_training_completion
+    from feedbax.host.job_completion import verify_bound_training_completion
 
     completed = read_job(host, project, successor)
     assert completed["continues"] == attempt

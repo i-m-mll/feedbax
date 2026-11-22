@@ -21,7 +21,7 @@ from feedbax.contracts.request_specs import AnalysisRequestSpec, RenderRequestSp
 from feedbax.dataset import Dataset, Variable
 from feedbax.host.protocol import AdmissionItem, DeferredReuse, Edge, Job, Launch, LIGHT_ENTRYPOINT
 from feedbax.host.store import Store
-from feedbax.light_jobs import LightDelivery
+from feedbax.host.light_jobs import LightDelivery
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import publish_dataset
 from feedbax.persistence.effective_success import SuccessView, store_request

@@ -31,7 +31,7 @@ from feedbax.dataset_sweep import dataset_entries, stack_dataset_members
 from feedbax.persistence.completion import read_completion_bindings
 from feedbax.host.io import append
 from feedbax.host.model_checkpoint_input import bind_managed_inputs
-from feedbax.light_jobs import (
+from feedbax.host.light_jobs import (
     LightCompletionBindings,
     LightDelivery,
     dataset_member,

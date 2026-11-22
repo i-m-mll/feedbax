@@ -88,6 +88,7 @@ def test_bounded_train_and_evaluate_share_trial_objective(authored):
         task,
         registry,
         functions,
+        python_tasks=application_python_tasks(),
         objective=objective,
         input_overrides={"reach_target": "target_pos"},
         initialization_key=model_initialization_key(seed),

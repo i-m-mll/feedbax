@@ -24,8 +24,8 @@ from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.request_refs import ContentRef, InputMember, ProductRef
 from feedbax.contracts.request_specs import RenderRequestSpec
 from feedbax.dataset import Dataset, Variable
-from feedbax.light_host_worker import _compute
-from feedbax.light_jobs import validate_light_request
+from feedbax.host.light_worker import _compute
+from feedbax.host.light_jobs import validate_light_request
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_dataset, publish_dataset
 from feedbax.plot.dataset_figure import render

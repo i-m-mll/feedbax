@@ -374,7 +374,7 @@ def _run(
     from feedbax.contracts.strict_json import strict_json_loads
     from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
     from feedbax.persistence.completion import CompletionFileError, read_completion_bindings
-    from feedbax.job_completion import (
+    from feedbax.host.job_completion import (
         attest_checkpoint_publication, checkpoint_reference, training_binding_path,
         verify_bound_training_completion, verify_training_completion, verify_training_model_product,
     )

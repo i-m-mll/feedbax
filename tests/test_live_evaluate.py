@@ -9,6 +9,7 @@ import signal
 
 import pytest
 
+from feedbax.host.protocol import TRAINING_ENTRYPOINT
 from feedbax.contracts.jobs import StudioSavedEvaluationRead
 from feedbax.contracts.live_evaluate import LiveEvaluationObservation, ScoredEvaluationPoint
 from feedbax.contracts.project import Project
@@ -48,7 +49,7 @@ import os
 from pathlib import Path
 import threading
 
-from feedbax.training_host_worker import _Events
+from feedbax.host.training_worker import _Events
 
 original = _Events.append
 
@@ -281,7 +282,7 @@ def test_lost_pinned_continuation_does_not_wait_for_a_sibling(tmp_path, monkeypa
     store = Store(tmp_path / "host.sqlite")
     checkpoint = {"completed_updates": 2}
     train = {"spec": managed_train_payload(batches=4)}
-    parent_launch = {"payload": train, "warm_entrypoint": "feedbax.training_host_worker:main"}
+    parent_launch = {"payload": train, "warm_entrypoint": TRAINING_ENTRYPOINT}
     resume_launch = parent_launch | {"payload": train | {"resume": checkpoint}}
     selector = {"kind": "update_series", "updates": [4]}
     evaluate_launch = {"payload": {"canonical_request": {"checkpoint": {"select": selector}}}}

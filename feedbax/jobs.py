@@ -75,7 +75,7 @@ from feedbax.contracts.validation_placement import ValidationPlacement
 from feedbax.host import Admission, AdmissionItem, Edge, HostClient, HostError, Job, Launch
 from feedbax.host.live_evaluate import DELEGATION_EVENT
 from feedbax.host.plan_history import AuthoredTrainPlanRef, plan_ref_key, plan_run_key
-from feedbax.host.protocol import DeferredReuse, LIGHT_ENTRYPOINT, JobsSnapshot, ReusePolicy, TerminalReuse, can_resume_attempt
+from feedbax.host.protocol import EVALUATE_ENTRYPOINT, DeferredReuse, LIGHT_ENTRYPOINT, TRAINING_ENTRYPOINT, JobsSnapshot, ReusePolicy, TerminalReuse, can_resume_attempt
 from feedbax.orchestration.session import SessionError
 from feedbax.orchestration.targets import TargetRegistry
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -490,7 +490,7 @@ class JobService(PlanJobReader):
         )
         self._training_worker = replace(
             base_worker,
-            warm_entrypoint="feedbax.training_host_worker:main",
+            warm_entrypoint=TRAINING_ENTRYPOINT,
             preload=(*base_worker.preload, "feedbax.host.training_prewarm"),
         )
         self._evaluation_worker = replace(
@@ -499,7 +499,7 @@ class JobService(PlanJobReader):
                 "JAX_PLATFORMS": ROLLOUT_JAX_BACKEND,
                 "JAX_ENABLE_X64": str(int(ROLLOUT_JAX_ENABLE_X64)),
             },
-            warm_entrypoint="feedbax.host.evaluate_worker:main",
+            warm_entrypoint=EVALUATE_ENTRYPOINT,
             preload=(*base_worker.preload, "feedbax.application.composition"),
         )
         self._light_worker = Launch(
@@ -812,7 +812,7 @@ class JobService(PlanJobReader):
         self, project: str, plan: ProjectPlan, store: ImmutableArtifactBlobProvider,
         row: PlannedRow, node: PlannedRun | PlannedElement, items: Mapping[str, AdmissionItem],
     ) -> AdmissionItem:
-        from feedbax.light_jobs import LightDelivery, validate_light_request
+        from feedbax.host.light_jobs import LightDelivery, validate_light_request
         from feedbax.contracts.model_input import decode_document_input
         from feedbax.persistence.effective_success import store_document_inputs, store_request
 

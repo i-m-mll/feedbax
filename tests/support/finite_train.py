@@ -32,7 +32,7 @@ import os
 from pathlib import Path
 from time import monotonic, sleep
 from feedbax.training.method_runtime import TrainingLoop
-from feedbax.training_host_worker import _Events
+from feedbax.host.training_worker import _Events
 
 run_block = TrainingLoop.run_block
 
