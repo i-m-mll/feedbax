@@ -1,6 +1,8 @@
 """Addressed operations and the model-document transaction invariants."""
 
+from itertools import count
 from shutil import copytree
+from uuid import UUID
 
 from hypothesis import settings, strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, initialize, invariant, rule
@@ -13,6 +15,7 @@ from feedbax.contracts.model_document import SignalType
 from feedbax.contracts.model_edit import ModelEditCommand, ModelEditProblem, ModelEditState
 from feedbax.contracts.project import RootDocument, Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.studio import model_edit
 from feedbax.studio.model_edit import Port, apply_model_edit
 from feedbax.studio.model_undo import apply_delta, inverse_delta
 from feedbax.web.app import create_app
@@ -262,6 +265,14 @@ def _graphs(owner, scope=()):
 
 
 class ModelEdits(RuleBasedStateMachine):
+    """Element ids the service mints are counted, not random, so Hypothesis can replay a case exactly."""
+
+    def __init__(self):
+        super().__init__()
+        ids = count(1)
+        self._uuid4 = model_edit.uuid4
+        model_edit.uuid4 = lambda: UUID(int=next(ids))
+
     @initialize(inner=st.text(alphabet="abc", min_size=1, max_size=5), decorated=st.booleans())
     def initialize_project(self, inner, decorated):
         self.current = self.initial = _start(inner, decorated=decorated)
@@ -417,14 +428,17 @@ class ModelEdits(RuleBasedStateMachine):
                         assert end.port in {p.id for p in owner.ports.physical}
 
     def teardown(self):
-        final = _bytes(self.current)
-        steps = len(self.undo)
-        for _ in range(steps):
-            self.undo_edit()
-        assert _bytes(self.current) == _bytes(self.initial)
-        for _ in range(steps):
-            self.redo_edit()
-        assert _bytes(self.current) == final
+        try:
+            final = _bytes(self.current)
+            steps = len(self.undo)
+            for _ in range(steps):
+                self.undo_edit()
+            assert _bytes(self.current) == _bytes(self.initial)
+            for _ in range(steps):
+                self.redo_edit()
+            assert _bytes(self.current) == final
+        finally:
+            model_edit.uuid4 = self._uuid4
 
 
 TestModelEdits = ModelEdits.TestCase
