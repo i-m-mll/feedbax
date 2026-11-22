@@ -11,6 +11,14 @@ export type ProjectWindowView = typeof projectWindowViews[number];
 export type ProjectWindowSlot = 'primary' | 'secondary';
 export type ProjectWindowMode = 'map' | 'both' | 'details';
 
+/** The views of a selection: those with something to show, the first being the default, and why each other has nothing. */
+export interface ViewOffer {
+  readonly available: readonly ProjectWindowView[];
+  readonly absent: Readonly<Partial<Record<ProjectWindowView, string>>>;
+}
+
+export const noViews: ViewOffer = { available: [], absent: {} };
+
 export interface ProjectWindowState {
   mode: ProjectWindowMode;
   primaryView: ProjectWindowView;

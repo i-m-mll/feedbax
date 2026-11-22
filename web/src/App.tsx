@@ -1,7 +1,7 @@
 import { lazy, Suspense, useLayoutEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { createProjectFolder, openProjectFolder } from '@/api/projectFolders';
-import { apiErrorMessage } from '@/api/request';
+import { shownError } from '@/api/shownErrors';
 import { StudioJobsProvider } from '@/hooks/useStudioJobs';
 import { StudioActivityPane } from '@/components/activity/StudioActivity';
 import { studioName } from '@/components/activity/studioVocabulary';
@@ -35,7 +35,7 @@ function ProjectEntry({ requestedId }: { requestedId: string | null }) {
   );
   if (project.isError && !project.isFetching) return (
     <main className="p-4">
-      <p role="alert">{apiErrorMessage(project.error)}</p>
+      <p role="alert">{shownError(project.error)}</p>
       <Button onClick={() => void project.refetch()}>{studioName('retry')}</Button>
     </main>
   );

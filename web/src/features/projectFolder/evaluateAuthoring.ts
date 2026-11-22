@@ -26,6 +26,42 @@ export function editableCheckpointRule(rule: CheckpointRule | null | undefined):
   return series.success ? series.data : undefined;
 }
 
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+/** A checkpoint rule and the selections of a subject that hold it, by index. */
+export interface SelectionCheckpoint {
+  readonly rule: EditableCheckpointRule;
+  readonly selections: readonly number[];
+}
+
+/**
+ * The checkpoint rules of a subject's selections as Studio edits them: one rule for every selection when they share
+ * it, else one per selection. A selection whose rule Studio does not edit leaves none.
+ */
+export function selectionCheckpoints(selections: readonly StepReference[]): SelectionCheckpoint[] | undefined {
+  const rules = selections.map(({ checkpoint }) => editableCheckpointRule(checkpoint));
+  if (!rules.length || rules.some((rule) => rule === undefined)) return undefined;
+  const [first] = rules as EditableCheckpointRule[];
+  return rules.every((rule) => same(rule, first))
+    ? [{ rule: first, selections: selections.map((_, index) => index) }]
+    : (rules as EditableCheckpointRule[]).map((rule, index) => ({ rule, selections: [index] }));
+}
+
+/** An update of a step's run that bounds the checkpoints a rule can read. */
+export interface CheckpointBound {
+  readonly step: string;
+  readonly update: number;
+}
+
+/**
+ * The updates every run a checkpoint rule reads has: past the largest origin, and up to the fewest batches. Each end
+ * names the step whose run sets it.
+ */
+export interface CheckpointRange {
+  readonly after: CheckpointBound;
+  readonly through: CheckpointBound;
+}
+
 /** The kinds of checkpoint rule the Evaluate inspector edits: the last update, one update, a list, or a series. */
 export type CheckpointKind = 'last' | 'at' | 'list' | 'every';
 
@@ -60,14 +96,22 @@ export function emptyCheckpointDraft(kind: CheckpointKind): CheckpointDraft {
  * The rule a draft says, or why it says none: a reason on the field that is wrong, or none while a required field is
  * empty.
  */
-export function checkpointDraftRule(draft: CheckpointDraft):
+export function checkpointDraftRule(draft: CheckpointDraft, range?: CheckpointRange):
   { rule: EditableCheckpointRule } | { field?: CheckpointDraftField; reason?: string } {
+  /** The end of `range` that `update` lies beyond, if any. */
+  const beyond = (update: number) => !range ? undefined
+    : update <= range.after.update ? range.after : update > range.through.update ? range.through : undefined;
+  const outside = (bound: CheckpointBound) => range && studioFormat('checkpointRange', {
+    step: bound.step, from: range.after.update + 1, through: range.through.update,
+  });
   switch (draft.kind) {
     case 'last': return { rule: 'last' };
     case 'at': {
       if (draft.at === null) return {};
       const parsed = BatchCheckpointSchema.safeParse({ at: draft.at });
-      return parsed.success ? { rule: parsed.data } : { field: 'at', reason: studioReason('wholeUpdate', String(draft.at)) };
+      if (!parsed.success) return { field: 'at', reason: studioReason('wholeUpdate', String(draft.at)) };
+      const bound = beyond(parsed.data.at);
+      return bound ? { field: 'at', reason: outside(bound) } : { rule: parsed.data };
     }
     case 'list': {
       const text = draft.updates.trim();
@@ -75,8 +119,11 @@ export function checkpointDraftRule(draft: CheckpointDraft):
       if (!/^\d+(?:\s*,\s*\d+)*$/.test(text)) return { field: 'updates', reason: studioReason('invalidCheckpointRule', text) };
       const updates = text.split(',').map(Number);
       const parsed = UpdateRuleSchema.safeParse(updates.map((at) => ({ at })));
-      return parsed.success && new Set(updates).size === updates.length
-        ? { rule: parsed.data } : { field: 'updates', reason: studioReason('invalidUpdateList', text) };
+      if (!parsed.success || new Set(updates).size !== updates.length) {
+        return { field: 'updates', reason: studioReason('invalidUpdateList', text) };
+      }
+      const bound = updates.map(beyond).find((end) => end !== undefined);
+      return bound ? { field: 'updates', reason: outside(bound) } : { rule: parsed.data };
     }
     case 'every': {
       if (draft.every === null) return {};
@@ -160,6 +207,11 @@ export function conditionLabels(ids: readonly string[]): ReadonlyMap<string, str
   }));
 }
 
+/** The trials an authored rule names by itself, which are what is offered while the subject's Task is unknown. */
+export function authoredTrialDomain(rule: TrialSet): TrialDomain {
+  return rule.kind === 'sample' ? { kind: 'sampler' } : { kind: 'fixed', conditions: rule.kind === 'conditions' ? rule.ids : [] };
+}
+
 export function validTrialSet(rule: TrialSet, domain: TrialDomain | undefined): boolean {
   if (rule.kind === 'sample') {
     return domain?.kind === 'sampler' && Number.isInteger(rule.count) && rule.count >= 1 && rule.count <= 10_000;
@@ -194,7 +246,6 @@ export function ordinaryEvaluation(step: Step): { subjects: EvaluationSubject[];
     if ((editableCheckpointRule(reference.checkpoint) === undefined && !axes.some((axis) => 'checkpoint_rule' in axis)) ||
         reference.row != null || reference.variants != null) return undefined;
     const where = reference.where ?? {};
-    if (!('subset' in where) && where.when) return undefined;
     const terms = 'subset' in where ? undefined : where;
     subjects.push({ reference, terms, where: listed ? `/inputs/subject/${index}/where` : '/inputs/subject/where' });
   }

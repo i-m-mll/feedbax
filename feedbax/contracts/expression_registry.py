@@ -21,6 +21,9 @@ from feedbax.contracts.expression_values import (
 )
 
 
+POINT_INTERPOLATIONS = ("linear", "hold", "cubic")
+
+
 class FunctionClass(StrEnum):
     MATH = "math"
     SHAPE = "shape"
@@ -39,9 +42,17 @@ class StateReset(StrEnum):
     EPOCH = "epoch"
 
 
+class FunctionParameter(ValueRecord):
+    name: str
+    label: str
+
+
 class FunctionInfo(ValueRecord):
     id: str
     signature: str
+    label: str | None = None
+    parameters: tuple[FunctionParameter, ...] = ()
+    """The named positional parameters, by which a part of a call is addressed and shown."""
     display_class: FunctionClass
     min_args: int
     max_args: int | None
@@ -79,6 +90,14 @@ type ArgumentContext = Callable[
 type ResultDimensions = Callable[[tuple[Dimensions | None, ...]], Dimensions | None]
 
 
+class Density(NamedTuple):
+    """A draw's density over its bulk, ``low`` to ``high``, for arguments that are numbers."""
+
+    low: float
+    high: float
+    pdf: Callable[[Any], Any]
+
+
 @dataclass(frozen=True)
 class Function:
     info: FunctionInfo
@@ -88,7 +107,11 @@ class Function:
     argument_context: ArgumentContext | None = None
     result_dimensions: ResultDimensions | None = None
     bind: Callable[[Function, CallValue], tuple[Function, CallValue] | SignatureError] | None = None
-    positional_names: tuple[str, ...] = ()
+    density: Callable[..., Density | None] | None = None
+
+    @property
+    def positional_names(self) -> tuple[str, ...]:
+        return tuple(parameter.name for parameter in self.info.parameters)
 
 
 class FunctionRegistry:
@@ -112,10 +135,8 @@ class FunctionRegistry:
             or (info.max_args is not None and info.max_args < info.min_args)
         ):
             raise ValueError("Invalid expression function declaration.")
-        if entry.positional_names and (
-            len(set(entry.positional_names)) != len(entry.positional_names)
-            or len(entry.positional_names) != info.max_args
-        ):
+        names = entry.positional_names
+        if names and (len(set(names)) != len(names) or len(names) != info.max_args):
             raise ValueError("Invalid positional parameter names.")
         self._entries[info.id] = entry
 
@@ -123,7 +144,8 @@ class FunctionRegistry:
         return self._entries.get(key)
 
     def keys(self) -> tuple[str, ...]:
-        return tuple(sorted(self._entries))
+        """The functions in the order declared, so an editor offers a kind's functions in their declared order."""
+        return tuple(self._entries)
 
     def definitions(self) -> tuple[FunctionInfo, ...]:
         return tuple(self._entries[key].info for key in self.keys())

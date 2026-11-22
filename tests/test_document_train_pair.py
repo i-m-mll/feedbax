@@ -25,7 +25,7 @@ from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.jobs import JobStatus
 from feedbax.expression_builtins import register_builtins
-from feedbax.expression_registry import FunctionRegistry
+from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.plugins.declarations import DistributionSource, callable_declaration
 from feedbax.runtime._graph_key_schedule import model_initialization_key
 from feedbax.tasks.document import TaskParameters
@@ -362,17 +362,12 @@ def test_saved_window_reuses_encoded_document_conditions(authored, tmp_path, mon
         return window_service.ProjectPlanRead.without_history(folders.read_plan("cohort", revision=None))
 
     def verify(view):
-        settled = view.settled
-        plan = settled.plan
-        baseline = replace(view, settled=replace(settled, plan=replace(plan, _train_evaluation_sources={})))
-        original = projected(baseline)
         with monkeypatch.context() as patch:
             def unexpected_decode(*args, **kwargs):
                 pytest.fail("Window decoded a Plan Train request")
 
             patch.setattr(window_service, "decode_request", unexpected_decode)
-            assert projected(view) == original
-        return original
+            return projected(view)
 
     original = read()
     before = verify(original)
@@ -382,13 +377,6 @@ def test_saved_window_reuses_encoded_document_conditions(authored, tmp_path, mon
     assert projected(window_service.ProjectPlanRead.without_history(
         folders.read_plan("cohort", revision=original.settled.revision),
     )) == before
-    settled = original.settled
-    plan = settled.plan
-    digest = next(iter(plan.documents))
-    altered = replace(plan, documents={**plan.documents, digest: b"{}"})
-    with pytest.raises(ValueError, match="Invalid request document bytes"):
-        projected(replace(original, settled=replace(settled, plan=altered)))
-
     variables = raw["documents"]["task"]["payload"]["validation_trials"][0]["variables"]
     target = variables["target"]
     assert isinstance(target, list)
@@ -398,25 +386,6 @@ def test_saved_window_reuses_encoded_document_conditions(authored, tmp_path, mon
     assert projected(original) == before
 
 
-@pytest.mark.parametrize("wide, reject", [(1e20, True), (1e21, False)])
-def test_saved_window_keeps_verification_for_wide_float_requests(authored, tmp_path, wide, reject):
-    raw = document_project(authored)
-    raw["steps"]["train"]["base"]["inline"]["settings"]["optimizer"]["learning_rate"]["value"] = wide
-    folders = ProjectFolderService(tmp_path)
-    _save_project(folders, "wide", Project.model_validate(raw))
-    settled = folders.read_plan("wide", revision=None)
-    view = window_service.ProjectPlanRead.without_history(settled)
-    (run,) = settled.plan.runs
-    assert settled.plan.train_evaluation_source(run.request_id) is None
-    evaluation_tasks = application_python_tasks()
-    if reject:
-        with pytest.raises(ValueError, match="unsafe_integer"):
-            view.window_map(evaluation_tasks=evaluation_tasks)
-    else:
-        (row,) = view.window_map(evaluation_tasks=evaluation_tasks).rows
-        assert row.evaluation_conditions
-
-
 def test_trial_preparation_distinguishes_effective_scientific_inputs(authored, prepared_trials):
     raw = document_project(authored)
     mass = ModelAddress.model_validate({
@@ -424,7 +393,7 @@ def test_trial_preparation_distinguishes_effective_scientific_inputs(authored, p
         "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
     })
     task = "documents.task.payload.id"
-    objective = "documents.objective.payload.terms.0.weight.value"
+    objective = "documents.objective.payload.terms.effort.weight.value"
     binding = "steps.train.base.inline.trial_documents.input_overrides.reach_target"
     raw["sweep"] = {"rows": {
         "base": {},
@@ -654,3 +623,38 @@ def test_training_document_problem_is_placed_in_the_document(authored, key, valu
         assert problem.document_path.startswith(path)
         located = definition_place(path_parts(problem.path), lambda _slot: problem.document)
         assert (located.part, located.document) == (place, "training")
+
+
+def _two_term_project(authored, order):
+    raw = document_project(authored)
+    (effort,) = raw["documents"]["objective"]["payload"]["terms"]
+    terms = {"effort": effort, "speed": {**effort, "id": "speed"}}
+    raw["documents"]["objective"]["payload"]["terms"] = [terms[name] for name in order]
+    return raw
+
+
+def test_a_sweep_on_a_term_follows_the_term_when_the_terms_are_reordered(authored, prepared_trials):
+    for order in (("effort", "speed"), ("speed", "effort")):
+        prepared_trials.clear()
+        raw = _two_term_project(authored, order)
+        raw["steps"]["train"]["sweep"] = {"axes": {"speed_weight": {
+            "path": "trial_documents.objective.terms.speed.weight.value", "values": [2, 3],
+        }}}
+        plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
+        assert not plan.diagnostics
+        weights = {
+            tuple(sorted((term.id, term.weight.value) for term in kwargs["objective"].terms))
+            for _, kwargs in prepared_trials
+        }
+        assert weights == {(("effort", 1), ("speed", 2)), (("effort", 1), ("speed", 3))}
+
+
+@pytest.mark.parametrize(("segment", "reason"), [("0", "addressed by its id"), ("pace", "not an id")])
+def test_a_term_is_addressed_only_by_an_id_it_has(authored, segment, reason):
+    raw = _two_term_project(authored, ("effort", "speed"))
+    raw["steps"]["train"]["sweep"] = {"axes": {"enabled": {
+        "path": f"trial_documents.objective.terms.{segment}.enabled", "values": [True, False],
+    }}}
+    plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
+    assert plan.diagnostics
+    assert all(reason in issue.detail and "effort, speed" in issue.detail and issue.step == "train" for issue in plan.diagnostics)

@@ -10,7 +10,7 @@ export default {
     },
     extend: {
       borderColor: {
-        DEFAULT: 'var(--app-divider)'
+        DEFAULT: 'var(--border-muted)'
       },
       colors: {
         shell: {
@@ -19,7 +19,8 @@ export default {
           sidebar: 'var(--surface-sidebar)',
           surface: 'var(--surface-main)',
           subtle: 'var(--surface-toolbar)',
-          divider: 'var(--app-divider)',
+          edge: 'var(--app-boundary-line-color)',
+          divider: 'var(--border-muted)',
           control: 'var(--studio-control-border)',
           field: 'var(--neutral-alpha-10)',
           foreground: 'var(--text-primary)',
@@ -39,6 +40,7 @@ export default {
           'status-success': 'var(--studio-status-success)',
           'status-failure': 'var(--studio-status-failure)',
           'status-ink': 'var(--studio-status-ink)',
+          change: 'var(--studio-change-mark)',
           'scene-feature': 'var(--studio-scene-feature)',
           'scene-guide': 'var(--studio-scene-guide)',
         }

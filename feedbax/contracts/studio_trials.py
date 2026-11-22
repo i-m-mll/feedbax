@@ -15,15 +15,15 @@ from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.project import Pointer, ProjectValueEdit, Sha256
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_authoring import StudioSweptParameterMissing
+from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioFieldView
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
 from feedbax.contracts.task_document import Epoch, PythonTaskSelection, TaskDocument
-from feedbax.expression_site import SiteProjection
 
 
-class StudioTrialField(StrictModel):
+class StudioTrialField(StudioFieldView):
+    """A field of the pairing at ``path``; an Objective term's Weight carries the step's sweep of it."""
+
     path: str
-    projection: SiteProjection
-    text: str | None = None
 
 
 class StudioTaskType(StrictModel):
@@ -82,7 +82,7 @@ class StudioTrialExpressionEdit(StrictModel):
     kind: Literal["expression"]
     term: str
     field: Literal["measure", "weight"]
-    text: Annotated[str, Field(max_length=8192)]
+    edit: Annotated[FieldTextEdit | FieldKindEdit | FieldNameEdit, Field(discriminator="kind")]
 
 
 class StudioTrialStepScope(StrictModel):

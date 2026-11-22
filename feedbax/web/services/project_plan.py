@@ -13,6 +13,8 @@ from types import MappingProxyType
 from typing import NotRequired, TypedDict
 from urllib.parse import quote
 
+from pydantic_core import to_json
+
 from feedbax.analysis.report_document import PLOTLY_SCRIPT_NAME, REPORT_HTML_NAME, report_content_security_policy
 from feedbax.compiler.trial_execution import evaluation_conditions
 from feedbax.contracts._request_codec import same_typed_value
@@ -28,6 +30,7 @@ from feedbax.contracts.jobs import (
     StudioPlanRequest,
     StudioProjectWindowMap,
     StudioProjectWindowMapCoordinate,
+    StudioProjectWindowMapInputAxis,
     StudioProjectWindowMapEdge,
     StudioProjectWindowMapElement,
     StudioProjectWindowMapRequest,
@@ -59,18 +62,22 @@ from feedbax.contracts.project_inputs import (
 )
 from feedbax.contracts.studio_place import StudioStepPlace, definition_place, path_parts, variation_targets
 from feedbax.contracts.studio_project import AuthoredFileAddress
-from feedbax.contracts.studio_subset import StudioSubsetToRowsEdit, StudioSubsetToRowsRequest
+from feedbax.contracts.studio_subset import (
+    StudioRunRuleCheck, StudioRunRuleChosen, StudioRunRuleRefused, StudioRunRuleRequest, StudioSubsetToRowsEdit,
+    StudioSubsetToRowsRequest,
+)
 from feedbax.contracts.project_io import project_declaration_name
 from feedbax.contracts.project_plan import (
-    ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedInput, PlannedRun, RunKey, authored_request_change,
+    BlockedRow, ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedInput, PlannedRow, PlannedRun, RunKey, authored_request_change,
 )
 from feedbax.contracts.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.result_address import parse_labels
-from feedbax.contracts.project_sweep import CheckpointRuleAxis
-from feedbax.contracts.request_identity import decode_python_task_selection, decode_request
+from feedbax.contracts.project_sweep import CheckpointRuleAxis, axis_coordinates
+from feedbax.contracts.run_rule import RuleRefusal, choose, value_text
+from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import (
-    BatchMember, BatchSetMember, BestRank, LastMember, ProductRef, RequestId, UpdateSeriesMember,
+    BatchMember, BatchSetMember, BestRank, LastMember, ProductRef, UpdateSeriesMember,
 )
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec
 from feedbax.contracts.workspace_replay import WorkspaceReplayTrial
@@ -270,28 +277,20 @@ class ProjectPlanRead:
             )
         statuses = {item.key: item for row in self.status_rows() for item in row.flattened()}
         elements = plan.elements.values()
-        conditions: dict[RequestId, list[str] | None] = {}
-        if evaluation_tasks is not None:
-            for run in plan.runs:
-                if run.kind != "train" or run.request_id in conditions:
-                    continue
-                source = plan.train_evaluation_source(run.request_id)
-                if isinstance(source, tuple):
-                    conditions[run.request_id] = list(source)
-                    continue
-                if source is not None:
-                    task = decode_python_task_selection(source)
-                else:
-                    train = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
-                    if not isinstance(train, DocumentTrainingRequestSpec):
-                        continue
-                    task = train.trial_documents.task_source
-                conditions[run.request_id] = None
+        conditions: dict[str, list[str] | None] = {}
+
+        def task_conditions(row: PlannedRow) -> list[str] | None:
+            if evaluation_tasks is None or row.train is None or (task := row.train.task) is None:
+                return None
+            identity = to_json(task.model_dump(mode="json")).decode()
+            if identity not in conditions:
                 try:
-                    conditions[run.request_id] = list(evaluation_conditions(task, evaluation_tasks))
+                    conditions[identity] = list(evaluation_conditions(task, evaluation_tasks))
                 except ValueError:
                     # An unresolved Task has no authorable trial domain.
-                    continue
+                    conditions[identity] = None
+            return conditions[identity]
+
         counts: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
         for key, status in statuses.items():
             if isinstance(key, RunKey):
@@ -303,7 +302,7 @@ class ProjectPlanRead:
         ]
         edge_keys.extend(
             (producer, row.key)
-            for row in plan.rows if isinstance(row, PlannedAnalyzeRun)
+            for row in plan.rows if isinstance(row, (PlannedAnalyzeRun, BlockedRow))
             for members in row.inputs.values()
             for binding in members
             for producer in binding.sources
@@ -323,7 +322,7 @@ class ProjectPlanRead:
                         source_step_id=reference.step,
                         checkpoint=(
                             axis[1].checkpoint_rule if axis is not None
-                            else reference.checkpoint if step.kind == "evaluate" and role == "subject" else None
+                            else reference.checkpoint
                         ),
                         checkpoint_axis=axis[0] if axis is not None else None,
                         subset=StudioProjectWindowMapSubset(
@@ -343,6 +342,15 @@ class ProjectPlanRead:
         def includes(variant: str | None) -> bool:
             return variants is None or variant is None or variant in variants
 
+        rule_axes: dict[tuple[str, str], dict[str, dict[str, str]]] = defaultdict(dict)
+        rule_metrics: dict[tuple[str, str], set[str]] = defaultdict(set)
+        for row in plan.rows:
+            at = row.key.variant, row.key.step
+            for axis, coordinate in axis_coordinates(row.coordinates, row.input_axes).items():
+                rule_axes[at].setdefault(axis, {}).setdefault(coordinate.value_id, value_text(coordinate))
+            for attempt in self.attempts_by_run.get(row.key, ()):
+                rule_metrics[at].update(attempt.metric_names)
+
         return StudioProjectWindowMap(
             variants=[variant for variant in plan.variants if includes(variant)],
             steps=[
@@ -358,6 +366,8 @@ class ProjectPlanRead:
                         for name, rows in plan.exception_matches.get((variant, step_id), {}).items()
                     ],
                     status_counts=dict(counts[variant, step_id]),
+                    rule_axes=rule_axes[variant, step_id],
+                    rule_metrics=sorted(rule_metrics[variant, step_id]),
                 )
                 for (variant, step_id), step in plan.steps.items() if includes(variant)
             ],
@@ -374,14 +384,20 @@ class ProjectPlanRead:
                     ), None),
                     light=StudioSavedLightHistory(result=light.result, previous=light.previous, changed=light.changed)
                     if (light := self.light.get(row.key)) is not None else None,
-                    evaluation_conditions=conditions.get(row.request_id) if isinstance(row, PlannedRun) else None,
+                    evaluation_conditions=task_conditions(row),
+                    origin=row.train.origin if row.train is not None else None,
+                    target_total=row.train.target_total if row.train is not None else None,
                     member_key=producer_member_key(row.key.variant, row.key.row, gathers_variants=False)
                     if row.kind in {"train", "evaluate"} else None,
                     coordinates={
-                        axis: StudioProjectWindowMapCoordinate.model_validate(
-                            coordinate, from_attributes=True
+                        axis: StudioProjectWindowMapCoordinate.model_validate(coordinate, from_attributes=True)
+                        for axis, coordinate in row.coordinates.items()
+                    },
+                    input_axes={
+                        axis: StudioProjectWindowMapInputAxis(
+                            value_id=member.value_id, label=member.label, carries=list(member.carries),
                         )
-                        for axis, coordinate in (*row.coordinates.items(), *row.input_axes.items())
+                        for axis, member in row.input_axes.items()
                     },
                 )
                 for row in plan.rows if includes(row.key.variant)
@@ -572,6 +588,28 @@ class ProjectPlanService:
             return SavedLightProduct(store.get_object(content), "application/json")
         except (OSError, TypeError, ValueError, KeyError) as error:
             raise JobConflict("The saved product could not be authenticated.") from error
+
+    def check_run_rule(self, project_id: str, body: StudioRunRuleRequest) -> StudioRunRuleCheck:
+        """What ``body.rule`` chooses among the producer's planned rows, as the plan would choose them."""
+        plan = self.folders.read_plan(project_id, revision=body.revision).plan
+        step = plan.steps.get((body.variant, body.step))
+        if step is None:
+            raise ProjectFolderInvalid(f"{body.step} is not a step of {body.variant}.")
+        rows = [row for row in plan.rows if (row.key.variant, row.key.step) == (body.variant, body.step)]
+        coordinates = {id(row): axis_coordinates(row.coordinates, row.input_axes) for row in rows}
+        try:
+            chosen = choose(
+                body.rule, rows, coordinates=lambda row: coordinates[id(row)], producer=step.label or body.step,
+                ranked=body.ranked,
+            )
+        except RuleRefusal as refusal:
+            return StudioRunRuleCheck(total=len(rows), result=StudioRunRuleRefused(reason=refusal.detail))
+        best = chosen.best
+        groups = {tuple(coordinates[id(row)][axis].value_id for axis in best.per) for row in chosen.rows} if best else ()
+        return StudioRunRuleCheck(total=len(rows), result=StudioRunRuleChosen(
+            runs=[row.key.row for row in chosen.rows],
+            count=best.count * len(groups) if best else len(chosen.rows),
+        ))
 
     def subset_to_rows(self, project_id: str, body: StudioSubsetToRowsRequest) -> StudioSubsetToRowsEdit:
         """Replace one measured selection of an Evaluate subject with the rows its chosen attempts bound.

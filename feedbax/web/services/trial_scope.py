@@ -1,6 +1,6 @@
 """Store an edit of a step's definition by the scope of the runs it is made for."""
 
-from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from functools import partial
@@ -22,16 +22,17 @@ from feedbax.contracts.project import (
     document_edit_value, json_pointer_parts, same_json,
 )
 from feedbax.contracts.project_inputs import SweepExceptionTerms
-from feedbax.contracts.project_plan import RunKey, compile_project
+from feedbax.contracts.project_plan import PlannedRow, RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.project_resolution import (
     ProjectDiagnostic, StepTemplate, compose_document, compose_step, document_write_target,
 )
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_sweep import (
-    AxisCondition, NamedAxis, SetAxis, SetValue, RemoveValue, _compose_writes, axis_values,
+    AxisCondition, NamedAxis, SetAxis, SetValue, RemoveValue, SweepCoordinate, _compose_writes, axis_coordinates,
 )
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
+from feedbax.contracts.run_rule import value_text
 from feedbax.contracts.studio_project import AuthoredFileAddress, CreateNamedDocument, StudioProjectFilePatch
 from feedbax.project_members import generated_name
 from feedbax.project_folder import _free_member_name, document_file
@@ -48,6 +49,8 @@ class SweepValuesRuns:
     """Runs selected as values of the step's sweeps, other than one named value of one sweep."""
 
     axes: dict[str, tuple[str, ...]]
+    rule: str
+    """The run rule that chooses those values' runs."""
 
 
 type RunScope = (
@@ -71,12 +74,21 @@ def selection_scope(project, plan, key, rows=(), axes=None) -> RunScope:
         return StepRuns(kind="step")
     if key.variant != plan.variants[0]:
         raise ProjectFolderInvalid("A selection of runs is stored in the primary variant only.")
+    return runs_scope(project, plan, key, rows, axes)
+
+
+def runs_scope(project, plan, key, rows, axes) -> RunScope:
+    """What ``rows`` of ``key``'s step and variant are: one named value, values per sweep, or listed rows."""
     available = {row.key.row: row for row in plan.rows if (row.key.variant, row.key.step) == (key.variant, key.step)}
     if not set(rows) <= available.keys() or len(set(rows)) != len(rows):
         raise ProjectFolderInvalid("The selected rows no longer belong to this step.")
     covered = {
         row_id for row_id, row in available.items()
-        if all(axis_values(row.coordinates, row.input_axes).get(axis) in values for axis, values in axes.items())
+        if all(
+            (coordinate := axis_coordinates(row.coordinates, row.input_axes).get(axis)) is not None
+            and coordinate.value_id in values
+            for axis, values in axes.items()
+        )
     }
     if not axes or set(rows) != covered:
         return ListedRuns(kind="rows", rows=tuple(rows))
@@ -86,7 +98,21 @@ def selection_scope(project, plan, key, rows=(), axes=None) -> RunScope:
         named = sweep.axes.get(axis) if sweep else None
         if len(values) == 1 and isinstance(named, NamedAxis) and named.values.get(values[0]) is not None:
             return AxisValueRuns(kind="axis_value", axis=axis, value=values[0])
-    return SweepValuesRuns({axis: tuple(values) for axis, values in axes.items()})
+    return SweepValuesRuns(
+        {axis: tuple(values) for axis, values in axes.items()}, values_rule(available.values(), axes),
+    )
+
+
+def values_rule(rows: Iterable[PlannedRow], axes: Mapping[str, Iterable[str]]) -> str:
+    """The run rule naming, for each axis, the values whose IDs are ``axes[axis]``."""
+    coordinates: dict[tuple[str, str], SweepCoordinate] = {}
+    for row in rows:
+        for axis, coordinate in axis_coordinates(row.coordinates, row.input_axes).items():
+            coordinates.setdefault((axis, coordinate.value_id), coordinate)
+    return " ".join(
+        f"{axis}=" + ",".join(value_text(coordinates[axis, value]) for value in sorted(set(values)))
+        for axis, values in sorted(axes.items())
+    )
 
 
 def file_value(address, raw, parts, value):
@@ -154,8 +180,8 @@ def row_exception_file(address, raw, rows, writes):
     return _exception_file(address, raw, {"rows": sorted(set(rows))}, writes)
 
 
-def values_exception_file(address, raw, axes, writes):
-    return _exception_file(address, raw, {"axes": {axis: sorted(set(values)) for axis, values in sorted(axes.items())}}, writes)
+def values_exception_file(address, raw, rule, writes):
+    return _exception_file(address, raw, {"rule": rule}, writes)
 
 
 def _canonical_where(where) -> bytes | None:
@@ -166,8 +192,6 @@ def _canonical_where(where) -> bytes | None:
     selector = terms.model_dump(mode="json", exclude_defaults=True)
     if "rows" in selector:
         selector["rows"] = sorted(set(selector["rows"]))
-    if "axes" in selector:
-        selector["axes"] = {axis: sorted(set(values)) for axis, values in selector["axes"].items()}
     return canonical_json_v2_bytes(selector)
 
 
@@ -726,12 +750,20 @@ def _holds(payload: Any, parts: Sequence[str]) -> bool:
     return True
 
 
-def _in_form_of(before: Payload, after: Payload) -> Payload:
-    """``after``, a normalized Model, spelled as ``before`` wherever the two mean the same Model."""
+def _in_form_of(before: Payload, after: Payload, reference: Payload | None = None) -> Payload:
+    """``after``, a normalized Model, spelled as ``before`` wherever the two mean the same Model.
+
+    A member ``before`` lacks is spelled as the Model ``reference`` spells it, when it means the same there, so that
+    restoring what a document differs from leaves no difference.
+    """
     from feedbax.contracts.model_document import ModelDocument
 
+    def normalized(payload: Payload) -> Payload:
+        return ModelDocument.model_validate(payload).model_dump(mode="json")
+
     result = deepcopy(before)
-    for path, record in diff(ModelDocument.model_validate(before).model_dump(mode="json"), after).items():
+    lacked: list[tuple[str, ...]] = []
+    for path, record in diff(normalized(before), after).items():
         target, source = result, after
         parts = json_pointer_parts(path)
         for index, part in enumerate(parts):
@@ -739,17 +771,35 @@ def _in_form_of(before: Payload, after: Payload) -> Payload:
                 if isinstance(record, RemoveDocumentValue) and index == len(parts) - 1:
                     target.pop(part, None)
                 elif part in source:
+                    if part not in target:
+                        lacked.append(parts[:index + 1])
                     target[part] = deepcopy(source[part])
                 break
             target, source = target[part], source[part]
-    return result
+    if reference is None or not lacked:
+        return result
+    spelled = deepcopy(result)
+    for parts in lacked:
+        if (member := _member(reference, parts)) is not _ABSENT:
+            _member(spelled, parts[:-1])[parts[-1]] = deepcopy(member)
+    return spelled if normalized(spelled) == normalized(result) else result
+
+
+def _member(payload: Any, parts: Sequence[str]) -> Any:
+    for part in parts:
+        if not isinstance(payload, dict) or part not in payload:
+            return _ABSENT
+        payload = payload[part]
+    return payload
 
 
 def model_document_store(folders, project_id: str, project: Project, body, before: Payload, after: Payload) -> StoredEdit:
     """Store a Model edit of ``body.document`` by the document rule, after the request's step files."""
     head = StoredEdit(list(body.files), reached=frozenset(file.address.id for file in body.files))
     project = preview_authored_files(project, body.files)
-    edits = content_edits(before, _in_form_of(before, after))
+    entry = project.documents[body.document]
+    base = _composed(project, entry.base.document) if isinstance(entry, BasedDocument) else None
+    edits = content_edits(before, _in_form_of(before, after, base))
     if body.step is None:
         return head.then(_document_stores(project, body.document, edits, None, lambda name: (), set()).files)
     plan = folders.read_plan(project_id, revision=body.revision).plan
@@ -836,7 +886,7 @@ def _selection_file(address, raw, authored, scope, writes) -> StudioProjectFileP
             raise ProjectFolderInvalid("The group needs a named sweep value authored on this step.")
         return sweep_value_file(address, raw, scope.axis, scope.value, writes)
     if isinstance(scope, SweepValuesRuns):
-        return values_exception_file(address, raw, scope.axes, writes)
+        return values_exception_file(address, raw, scope.rule, writes)
     return row_exception_file(address, raw, scope.rows, writes)
 
 
@@ -926,9 +976,11 @@ def train_selection(
     scoped = not isinstance(scope, StepRuns)
     named = definitions.get(key)
     values = (
-        AxisCondition(axes={scope.axis: [scope.value]}) if isinstance(scope, AxisValueRuns)
-        else AxisCondition(axes={axis: sorted(set(ids)) for axis, ids in sorted(scope.axes.items())})
-        if isinstance(scope, SweepValuesRuns) else None
+        AxisCondition(rule=values_rule(
+            (row for row in plan.rows if row.key.variant == key.variant and row.key.step == step_id),
+            {scope.axis: [scope.value]},
+        )) if isinstance(scope, AxisValueRuns)
+        else AxisCondition(rule=scope.rule) if isinstance(scope, SweepValuesRuns) else None
     )
     return TrainSelection(
         payloads, next((row for row in plan.rows if row.key == key), None),
@@ -1021,7 +1073,7 @@ def row_model(folders, project_id: str, project: Project, body) -> RowModel:
         named = selected_value(project, body.step, scope)
         content = _composed(project, body.document)
         if named is not None:
-            content = _value_model(project, body.step, named, body.document)
+            content = value_model(project, body.step, named, body.document)
         return RowModel(content, scope, True)
     raise ProjectFolderInvalid(f"The selected runs do not read {body.document}.")
 
@@ -1051,7 +1103,7 @@ def _value_differences(project: Project, step: str, named: SelectedValue, docume
     }
 
 
-def _value_model(project: Project, step: str, named: SelectedValue, document: str) -> Payload:
+def value_model(project: Project, step: str, named: SelectedValue, document: str) -> Payload:
     try:
         return apply_differences(_composed(project, document), _value_differences(project, step, named, document))
     except DifferenceNotApplied as error:
@@ -1085,7 +1137,7 @@ def scoped_model_store(project: Project, body, row: RowModel, after: Payload) ->
     """
     step = body.step
     document = body.document
-    delta = diff(row.content, _in_form_of(row.content, after))
+    delta = diff(row.content, _in_form_of(row.content, after, _composed(project, document)))
     address = AuthoredFileAddress(kind="step", id=step)
     authored = project.steps[step]
     raw = authored.model_dump(mode="json", by_alias=True, exclude_unset=True)
@@ -1105,7 +1157,7 @@ def scoped_model_store(project: Project, body, row: RowModel, after: Payload) ->
     else:
         base = _composed(project, document)
         try:
-            edited = apply_differences(_value_model(project, step, named, document), delta)
+            edited = apply_differences(value_model(project, step, named, document), delta)
         except DifferenceNotApplied as error:
             raise ProjectFolderInvalid(f"The edit does not apply to the selected value: {error}") from error
         differences = diff(base, edited)

@@ -277,6 +277,12 @@ def decode_python_task_selection(selection: bytes) -> PythonTaskSelection:
     return PythonTaskSelection.model_validate_json(json.dumps(spec))
 
 
+def canonical_python_task_selection(selection: PythonTaskSelection) -> PythonTaskSelection:
+    """The selection as a Train request carries it, after the request codec's round trip."""
+    projection = encode(selection, PythonTaskSelection, PinnedFields(_identity_contract()["fields"]))
+    return decode_python_task_selection(_dump_canonical_json_v2(projection))
+
+
 def encode_request(
     spec: RequestSpec, inputs: RequestInputs, *, document_memo: RequestDocumentMemo | None = None,
     capture_train_task: bool = False,

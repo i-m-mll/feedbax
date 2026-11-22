@@ -1,18 +1,26 @@
 import { serviceDidNotRespond, serviceResponded } from './connection';
+import { ContractViolation, parseContract, type ContractName, type ContractTypeMap } from '@/generated/studioContracts';
 
-export type ApiRequestErrorKind = 'network' | 'http' | 'contract';
+/**
+ * `request`: Studio's own check refused what it was about to send, so nothing was sent. `response`: the service's
+ * answer did not satisfy its contract.
+ */
+export type ApiRequestErrorKind = 'network' | 'http' | 'request' | 'response';
 
 export class ApiRequestError extends Error {
   readonly kind: ApiRequestErrorKind;
   readonly status: number | null;
   readonly path: string;
   readonly detail: unknown;
+  readonly method: string | undefined;
+  /** The body sent, or refused before sending. */
+  readonly sent: unknown;
 
   constructor(
     kind: ApiRequestErrorKind,
     path: string,
     message: string,
-    options: { status?: number | null; cause?: unknown; detail?: unknown } = {},
+    options: { status?: number | null; cause?: unknown; detail?: unknown; method?: string; sent?: unknown } = {},
   ) {
     super(message);
     this.name = 'ApiRequestError';
@@ -20,8 +28,28 @@ export class ApiRequestError extends Error {
     this.status = options.status ?? null;
     this.path = path;
     this.detail = options.detail;
+    this.method = options.method;
+    this.sent = options.sent;
     (this as Error & { cause?: unknown }).cause = options.cause;
   }
+
+  /** The contract violation behind a `request` or `response` error. */
+  get violation(): ContractViolation | undefined {
+    const { cause } = this as Error & { cause?: unknown };
+    return cause instanceof ContractViolation ? cause : undefined;
+  }
+}
+
+/** The JSON body of a request, once it satisfies `contract`; a body that does not is Studio's defect and is not sent. */
+export function sentBody<K extends ContractName>(contract: K, body: ContractTypeMap[K], path: string, method = 'POST') {
+  try {
+    parseContract(contract, body);
+  } catch (error) {
+    throw new ApiRequestError('request', path, error instanceof Error ? error.message : String(error), {
+      cause: error, method, sent: body,
+    });
+  }
+  return JSON.stringify(body);
 }
 
 async function parseErrorBody(response: Response): Promise<unknown> {
@@ -54,12 +82,7 @@ export async function requestResponse(path: string, options?: RequestInit): Prom
   } catch (error) {
     if (options?.signal?.aborted) throw error;
     serviceDidNotRespond();
-    throw new ApiRequestError(
-      'network',
-      path,
-      'Service unreachable',
-      { cause: error },
-    );
+    throw new ApiRequestError('network', path, 'Service unreachable', { cause: error, method: options?.method });
   }
   serviceResponded();
 
@@ -69,7 +92,7 @@ export async function requestResponse(path: string, options?: RequestInit): Prom
       'http',
       path,
       detailMessage(detail) || `Request failed with status ${response.status}`,
-      { status: response.status, detail },
+      { status: response.status, detail, method: options?.method },
     );
   }
 
@@ -81,9 +104,10 @@ export async function requestJson(path: string, options?: RequestInit): Promise<
   return response.json() as Promise<unknown>;
 }
 
-export function asApiRequestError(error: unknown, path: string, context: string): ApiRequestError {
+/** A failure reading the service's answer at `path`: the error itself when the request failed, else a `response` error. */
+export function asApiRequestError(error: unknown, path: string): ApiRequestError {
   if (error instanceof ApiRequestError) return error;
-  return new ApiRequestError('contract', path, context, { cause: error });
+  return new ApiRequestError('response', path, error instanceof Error ? error.message : String(error), { cause: error });
 }
 
 /** The request got no response: the window's connection reports it, not the region that asked. */
@@ -108,10 +132,4 @@ export function landsOnGesture(error: unknown): boolean {
 
 export function isHttpConflict(error: unknown): error is ApiRequestError {
   return error instanceof ApiRequestError && error.kind === 'http' && error.status === 409;
-}
-
-export function apiErrorMessage(error: unknown, fallback = 'Request failed'): string {
-  if (error instanceof ApiRequestError) return error.message;
-  if (error instanceof Error && error.message) return error.message;
-  return fallback;
 }

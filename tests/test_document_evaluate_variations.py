@@ -362,7 +362,10 @@ def test_saved_evaluate_refuses_undeclared_subject_owner(host, tmp_path, authore
     plan = snapshot.plan
     assert {run.key.step for run in plan.runs} == {"train"}
     (train,) = plan.runs
-    (problem,) = plan.diagnostics
+    problem, blocked = sorted(plan.diagnostics, key=lambda item: item.code == "blocked_input")
+    assert (blocked.step, blocked.row, blocked.code, blocked.blocked_by) == (
+        "baseline", problem.row, "blocked_input", train.key,
+    )
     assert problem.step == "baseline"
     assert problem.model_address == ModelAddress.model_validate({
         "composites": ["wrapper", "controller"],

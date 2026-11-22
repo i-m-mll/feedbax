@@ -1,6 +1,8 @@
 """Addressed operations and the model-document transaction invariants."""
 
+from itertools import count
 from shutil import copytree
+from uuid import UUID
 
 from hypothesis import settings, strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, initialize, invariant, rule
@@ -13,6 +15,7 @@ from feedbax.contracts.model_document import SignalType
 from feedbax.contracts.model_edit import ModelEditCommand, ModelEditProblem, ModelEditState
 from feedbax.contracts.project import RootDocument, Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
+from feedbax.studio import model_edit
 from feedbax.studio.model_edit import Port, apply_model_edit
 from feedbax.studio.model_undo import apply_delta, inverse_delta
 from feedbax.web.app import create_app
@@ -109,6 +112,24 @@ def test_boundary_cards_keep_positions_until_their_graph_goes():
         {"address": _address(("absent",), "inputs"), "position": {"x": 0, "y": 0}},
     ])
     assert isinstance(missing, ModelEditProblem)
+
+
+def test_added_component_takes_the_id_it_is_given_and_refuses_one_in_use():
+    """Studio draws a dropped card under the id it sends, so the stored component must carry that id."""
+    placed = _execute(_start(), "add_component", graph=_address(("outer",)), component=_leaf(), position={"x": 1, "y": 2}, id="dropped")
+    assert not isinstance(placed, ModelEditProblem), placed
+    assert placed.changed == (ModelAddress.model_validate(_address(("outer",), "component", id="dropped")),)
+    assert "dropped" in placed.state.document.interior.components["outer"].interior.components
+    inserted = _execute(_start(), "insert_component", address=_address(("outer",), "wire", id="in"), component=_leaf(),
+                        input_port="in", output_port="out", position={"x": 1, "y": 2}, id="between")
+    assert not isinstance(inserted, ModelEditProblem), inserted
+    assert inserted.changed[0] == ModelAddress.model_validate(_address(("outer",), "component", id="between"))
+    start = _start()
+    before = _bytes(start)
+    clash = _execute(start, "add_component", graph=_address(("outer",)), component=_leaf(), position={"x": 1, "y": 2}, id="in")
+    assert isinstance(clash, ModelEditProblem)
+    assert clash.address == ModelAddress.model_validate(_address(("outer",), "wire", id="in"))
+    assert _bytes(start) == before
 
 
 def test_ungroup_preserves_attachment_order_and_refuses_shared_delay():
@@ -244,6 +265,14 @@ def _graphs(owner, scope=()):
 
 
 class ModelEdits(RuleBasedStateMachine):
+    """Element ids the service mints are counted, not random, so Hypothesis can replay a case exactly."""
+
+    def __init__(self):
+        super().__init__()
+        ids = count(1)
+        self._uuid4 = model_edit.uuid4
+        model_edit.uuid4 = lambda: UUID(int=next(ids))
+
     @initialize(inner=st.text(alphabet="abc", min_size=1, max_size=5), decorated=st.booleans())
     def initialize_project(self, inner, decorated):
         self.current = self.initial = _start(inner, decorated=decorated)
@@ -399,14 +428,17 @@ class ModelEdits(RuleBasedStateMachine):
                         assert end.port in {p.id for p in owner.ports.physical}
 
     def teardown(self):
-        final = _bytes(self.current)
-        steps = len(self.undo)
-        for _ in range(steps):
-            self.undo_edit()
-        assert _bytes(self.current) == _bytes(self.initial)
-        for _ in range(steps):
-            self.redo_edit()
-        assert _bytes(self.current) == final
+        try:
+            final = _bytes(self.current)
+            steps = len(self.undo)
+            for _ in range(steps):
+                self.undo_edit()
+            assert _bytes(self.current) == _bytes(self.initial)
+            for _ in range(steps):
+                self.redo_edit()
+            assert _bytes(self.current) == final
+        finally:
+            model_edit.uuid4 = self._uuid4
 
 
 TestModelEdits = ModelEdits.TestCase

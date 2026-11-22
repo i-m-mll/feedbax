@@ -14,7 +14,7 @@ from pydantic_core import to_json, to_jsonable_python
 
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
-from feedbax.contracts.matrix_core import apply_override_patch_copy
+from feedbax.contracts.matrix_core import apply_override_patch_copy, resolve_segment
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, SetField
 from feedbax.contracts.project import (
@@ -92,6 +92,14 @@ class ResolutionCode(StrEnum):
     UNKNOWN_SCHEMA = "unknown_schema"
     INVALID_DOCUMENT = "invalid_document"
     UNSUPPORTED_PLAN = "unsupported_plan"
+    BLOCKED_INPUT = "blocked_input"
+
+
+@dataclass(frozen=True)
+class RunKey:
+    variant: str
+    step: str
+    row: str
 
 
 @dataclass(frozen=True)
@@ -111,6 +119,8 @@ class ProjectDiagnostic:
     authored_path: str | None = None
     variation_target: str | None = None
     """The dotted path the variation entry at ``path`` patches, which places the problem."""
+    blocked_by: RunKey | None = None
+    """For ``blocked_input``, the producer row that cannot run."""
 
 
 @dataclass(frozen=True)
@@ -311,12 +321,9 @@ def reference_write_target(value: Any, parts: Sequence[str]) -> tuple[str, str] 
             value = DocumentReference.model_validate(value)
         if isinstance(value, DocumentReference):
             return value.document, ".".join((*json_pointer_parts(value.pointer), *parts[index:]))
-        if isinstance(value, dict):
-            value = value.get(part)
-        elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
-            value = value[int(part)]
-        else:
+        if (key := resolve_segment(value, part, path=".".join(parts))) is None:
             return None
+        value = value[key]
     return None
 
 
@@ -587,6 +594,7 @@ class _Documents:
                     self.inline_sources(item, source_at(shape, (str(i),)), f"{path}.{i}", active)
                     for i, item in enumerate(value)
                 ),
+                value,
             )
         return shape
 
@@ -1055,7 +1063,7 @@ class _Resolver:
                         sources.append(source_shape(patch.model_dump(mode="json"), *self.row_source(author, row, path)))
                     origins = patch_source(origins, OverridePatch(
                         path=f"{MODEL_ATTACHMENTS}.{batch}", op="add", value=records,
-                    ), SourceList(None, iter(sources)))
+                    ), SourceList(None, iter(sources), records))
                 payload = payload | {MODEL_ATTACHMENTS: batches | {batch: records}}
         except ValueError as error:
             raise _Problem(

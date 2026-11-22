@@ -189,7 +189,7 @@ def _duplicate_run(folders, project_id, revision, project: Project, command: Dup
     value = generated_name(name, name.__eq__)
     axis: dict[str, Any] = {"values": {value: {}}, "optional": True}
     if isinstance(scope, SweepValuesRuns):
-        axis["where"] = {"axes": {other: sorted(set(ids)) for other, ids in sorted(scope.axes.items())}}
+        axis["where"] = {"rule": scope.rule}
         picked = {
             row.key.row for row in rows if all(
                 (coordinate := row.coordinates.get(other)) is not None and coordinate.value_id in ids

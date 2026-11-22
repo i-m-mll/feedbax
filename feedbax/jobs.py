@@ -226,6 +226,8 @@ class PlanJobAttempt:
     collection_progress: StoreTransferProgress | None = None
     validity: ReceiptValidity | None = None
     provenance: AttemptProvenance | None = None
+    metric_names: tuple[str, ...] = ()
+    """The numeric summary metrics a successful Train attempt reports, which a lowest or highest term can rank by."""
 
 
 @dataclass(frozen=True)
@@ -350,6 +352,7 @@ class PlanJobReader:
             store_success = None
             checkpoint_source = None if collected_train else _train_checkpoint_source(job, by_id)
             damage = None
+            metric_names: tuple[str, ...] = ()
             if succeeded:
                 if success_view is None:
                     success_view = SuccessView(ImmutableArtifactBlobProvider(store))
@@ -368,7 +371,8 @@ class PlanJobReader:
                 if collected_train and store_success is not None:
                     checkpoint_source = _collected_train_checkpoint_source(success_view, store_success)
             else:
-                receipt = _verified_training_receipt(job, store) if succeeded else None
+                verified_train = _verified_training_receipt(job, store) if succeeded else None
+                receipt, metric_names = verified_train if verified_train is not None else (None, ())
             validity = provenance = None
             if observer is not None and receipt is not None and success_view is not None:
                 from feedbax.persistence.effective_success import PublishedSuccess
@@ -422,6 +426,7 @@ class PlanJobReader:
                 light_success=store_success if light else None,
                 train_request=store_success.request if collected_train and store_success is not None else None,
                 collected_evaluate=collected_evaluate, validity=validity, provenance=provenance,
+                metric_names=metric_names if receipt is not None else (),
             )
             attempts.setdefault(request_id, []).append(attempt)
             if light and address in light_addresses:
@@ -603,8 +608,17 @@ class JobService(PlanJobReader):
             heavy_selection = {
                 name: key for name, key in selected.items() if key not in light_rows and key not in light
             }
+            row_problems = {
+                RunKey(problem.variant, problem.step, problem.row): problem
+                for problem in reversed(current.plan.diagnostics)
+                if problem.variant is not None and problem.step is not None and problem.row is not None
+                and problem.element is None
+            }
             for name, key in heavy_selection.items():
                 old, run = before.get(key), after.get(key)
+                if (problem := row_problems.get(key)) is not None:
+                    items[name] = _rejected(name, f"cannot_run {problem.path}: {problem.detail}")
+                    continue
                 if old is not None and old.kind == "evaluate":
                     if run is None:
                         items[name] = _rejected(name, "/runs: the reviewed Evaluate row is no longer runnable.")
@@ -740,6 +754,9 @@ class JobService(PlanJobReader):
                         items[name] = _rejected(name, f"The selected request changed at {path}.")
                         continue
                     row = row_index[key.run if isinstance(key, ElementKey) else key]
+                    if (problem := row_problems.get(row.key)) is not None:
+                        items[name] = _rejected(name, f"cannot_run {problem.path}: {problem.detail}")
+                        continue
                     try:
                         item = self._light_item(project, current.plan, store, row, node, items)
                     except (ValueError, KeyError) as error:
@@ -2141,6 +2158,8 @@ def _planned_checkpoint_catalogs(plan: ProjectPlan) -> dict[RequestId, set[int]]
         if planned is not None and isinstance(ref := planned.member.reference, ProductRef):
             if isinstance(ref.select, BatchSetMember):
                 catalogs.setdefault(ref.request_id, set()).update(ref.select.batches)
+            elif isinstance(ref.select, BatchMember):
+                catalogs.setdefault(ref.request_id, set()).add(ref.select.batch)
     for element in plan.elements.values():
         for bindings in element.inputs.values():
             for binding in bindings:
@@ -2400,8 +2419,8 @@ def _project_best_subject(
     )
 
 
-def _verified_training_receipt(job: dict[str, Any], store: Path) -> JobReceipt | None:
-    """Authenticate the successful manifest named by this exact Host attempt."""
+def _verified_training_receipt(job: dict[str, Any], store: Path) -> tuple[JobReceipt, tuple[str, ...]] | None:
+    """Authenticate the successful manifest named by this exact Host attempt, and name its numeric summary metrics."""
     outcome = job.get("outcome") or {}
     try:
         receipt = JobReceipt.model_validate(outcome.get("receipt"))
@@ -2431,7 +2450,10 @@ def _verified_training_receipt(job: dict[str, Any], store: Path) -> JobReceipt |
             and (manifest.id, manifest.job_id, manifest.status)
             == (receipt.manifest_id, job_id, "completed")
         ):
-            return receipt
+            return receipt, tuple(sorted(
+                name for name, value in manifest.summary_metrics.items()
+                if type(value) in (int, float)
+            ))
     except (OSError, ValueError):
         return None
     return None

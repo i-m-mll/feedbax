@@ -5,10 +5,12 @@ import { createPortal } from 'react-dom';
 import type { FieldKind } from '@/generated/studioContracts';
 import { appTip } from '@window-shell/browser/tooltip';
 import {
-  studioAccessibleName, studioFieldKindLabel, studioFieldLabel, studioName, studioParameterLabel,
+  studioAccessibleName, studioEvaluateValueSource, studioFieldKindLabel, studioFieldLabel, studioFormat, studioName,
+  studioParameterLabel,
 } from '@/components/activity/studioVocabulary';
 import { selectionButton } from '@/features/pipeline/selection';
 import { Button, IconButton } from '@/components/ui/Button';
+import { ChangeMark } from '@/components/ui/ChangeMark';
 import { Checkbox } from '@/components/ui/Checkbox';
 import { Combobox } from '@/components/ui/Combobox';
 import { FieldRow } from '@/components/ui/FieldRow';
@@ -19,29 +21,42 @@ import { Section } from '@/components/ui/Section';
 import { popupItem, popupSurface, primaryText, secondaryText } from '@/components/ui/styles';
 import { TextField } from '@/components/ui/TextField';
 import {
-  completions, hasMark, kindEdit, kindOffers, type Completion, type FieldEdit, type FieldModel, type FieldOption,
+  completions, hasMark, kindEdit, kindOffers, type ChangeMark as FieldChangeMark, type ChangeSource, type Completion,
+  type FieldEdit, type FieldModel, type FieldOption,
 } from './fieldModel';
+import { clearDraw, DrawParts, startDraw, useDrawDraft, useShownDraw } from './DrawParts';
 import { FieldIntent } from './fieldIntent';
 import { useFieldGroup } from './fieldGroups';
 import './valueField.css';
 
 export type ValueFieldForm = 'row' | 'cell';
 
-/** Where the value comes from; a link to that object when it names one, or the changed mark's Reset. */
-export function Origin({ id, text, reveal, reset }: { id: string; text: string; reveal?: () => void; reset?: () => void }) {
-  if (reset) return <Menu>
-    <MenuTrigger render={<Button id={id} variant="ghost" size="content" className="justify-self-start text-left text-shell-muted" />}>
-      {text}
-    </MenuTrigger>
-    <MenuContent aria-label={studioName('changed')}>
-      <MenuItem onClick={reset}>{studioName('reset')}</MenuItem>
-    </MenuContent>
-  </Menu>;
+/** Where the value comes from, when that is not a change; a link to that object when it names one. */
+function Origin({ id, text, reveal }: { id: string; text: string; reveal?: () => void }) {
   return reveal
     ? <Button id={id} variant="ghost" size="content" className="justify-self-start text-left text-shell-muted" onClick={reveal}>
       {text}
     </Button>
     : <span id={id} className="text-shell-muted">{text}</span>;
+}
+
+/** What a changed value differs from, as its mark's tip. */
+export function changeTip(from: ChangeSource) {
+  switch (from.kind) {
+    case 'base': return studioFormat('changedFrom', { name: from.document });
+    case 'value': return studioFormat('changedFrom', { name: from.text });
+    case 'selected': return studioFormat('fieldSource', { kind: studioName('selectedValue'), name: from.text });
+    case 'evaluate': return studioEvaluateValueSource({ kind: 'evaluate', step: from.step });
+  }
+}
+
+/**
+ * A field's changed mark, inside its box. `id` names the tip's text, which describes the field's control; `onReset` is
+ * the field's Reset, where the change offers one and the field takes edits.
+ */
+export function FieldChange({ change, id, onReset }: { change?: FieldChangeMark; id: string; onReset?: () => void }) {
+  if (!change) return null;
+  return <ChangeMark tip={changeTip(change.from)} id={id} reset={change.reset && onReset} />;
 }
 
 function Outline({ children }: { children: ReactNode }) {
@@ -108,12 +123,14 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
   const labelId = useId();
   const reasonId = useId();
   const originId = useId();
+  const changeId = useId();
   const { reason, setReason, submit } = useSubmit(model);
   const readOnly = !model.commit;
-  const describedBy = [model.origin && originId, (reason ?? model.reason) && reasonId].filter(Boolean).join(' ') || undefined;
+  const describedBy = [model.change && changeId, model.origin && originId, (reason ?? model.reason) && reasonId]
+    .filter(Boolean).join(' ') || undefined;
+  const mark = <FieldChange change={model.change} id={changeId} onReset={readOnly ? undefined : () => void submit({ kind: 'reset' })} />;
   const below = <>
-    {model.origin && <Origin id={originId} text={model.origin} reveal={model.revealOrigin}
-      reset={model.changed && !readOnly ? () => void submit({ kind: 'reset' }) : undefined} />}
+    {model.origin && <Origin id={originId} text={model.origin} reveal={model.revealOrigin} />}
     {(reason ?? model.reason) && <p role="alert" id={reasonId}>{reason ?? model.reason}</p>}
   </>;
 
@@ -127,18 +144,21 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
   const widget = (() => {
     switch (type.kind) {
       case 'boolean':
-        return <Checkbox aria-labelledby={labelId} checked={model.value === true} disabled={readOnly}
-          aria-describedby={describedBy} onCheckedChange={(checked) => void submit({ kind: 'set', value: checked })} />;
+        return <span className="value-field-check">
+          <Checkbox aria-labelledby={labelId} checked={model.value === true} disabled={readOnly}
+            aria-describedby={describedBy} onCheckedChange={(checked) => void submit({ kind: 'set', value: checked })} />
+          {mark}
+        </span>;
       case 'choice': {
         const index = optionIndex(type.options, model.value);
         return <Select aria-labelledby={labelId} aria-describedby={describedBy} className="w-full" disabled={readOnly}
-          value={index < 0 ? null : String(index)} placeholder={studioName('mixed')}
+          value={index < 0 ? null : String(index)} placeholder={studioName('mixed')} trailing={model.change && mark}
           items={type.options.map((option, position) => ({ value: String(position), label: option.label }))}
           onValueChange={(position) => void submit({ kind: 'set', value: type.options[Number(position)].value })} />;
       }
       case 'class':
         return <ClassPicker model={model} labelId={labelId} inline={boxed} readOnly={readOnly} submit={submit}
-          chooseKind={chooseKind} />;
+          chooseKind={chooseKind} mark={boxed ? undefined : model.change && mark} describedBy={describedBy} />;
       case 'vector':
         return <div className="grid min-w-0 auto-cols-[minmax(0,1fr)] grid-flow-col gap-1">
           {model.parts?.map((part) => <ValueField key={part.id} model={part} form="cell" />)}
@@ -147,11 +167,13 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
         return null;
       default:
         return <ValueText model={model} id={id} readOnly={readOnly} describedBy={describedBy} invalid={!!reason}
-          submit={submit} clearReason={() => setReason(undefined)} chooseKind={chooseKind} />;
+          submit={submit} clearReason={() => setReason(undefined)} chooseKind={chooseKind} changeMark={model.change && mark} />;
     }
   })();
 
   const textual = textualKind(type.kind);
+  const shownDraw = useShownDraw(model);
+  const draw = textual ? shownDraw : undefined;
   if (form === 'cell') {
     return <div className="value-field value-field-cell grid min-w-0 gap-0.5 tabular-nums" role="group"
       aria-label={studioFieldLabel('field', label)}>
@@ -161,7 +183,8 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
     </div>;
   }
 
-  const parts = (indented: boolean) => (indented || model.members || model.canList) && <div className="value-field-parts grid gap-1">
+  const parts = (indented: boolean) => (indented || model.members || model.canList || draw) && <div className="value-field-parts grid gap-1">
+    {draw && <DrawParts model={model} draw={draw} />}
     {model.members && <Members model={model} />}
     {indented && model.parts!.map((part) => <ValueField key={part.id} model={part} />)}
     {model.canList && <Button variant="ghost" className="justify-self-start" disabled={readOnly}
@@ -177,13 +200,14 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
     </section>;
   }
   if (type.kind === 'group' || type.kind === 'class' || type.kind === 'list') {
-    return <FieldGroup model={model} labelId={labelId} picker={widget}>
+    return <FieldGroup model={model} labelId={labelId} picker={widget} mark={type.kind === 'class' ? undefined : model.change && mark}>
       {(model.origin || reason || model.reason) && <div className="field-row-below">{below}</div>}
       {parts(!!model.parts?.length)}
     </FieldGroup>;
   }
   return <section className="value-field grid min-w-0 tabular-nums" aria-label={studioFieldLabel('field', label)}>
     <FieldRow label={label} labelId={labelId} htmlFor={textual ? id : undefined}
+      actions={type.kind === 'vector' ? model.change && mark : undefined}
       below={model.origin || reason || model.reason ? below : undefined}>
       {widget}
     </FieldRow>
@@ -197,11 +221,14 @@ const optionIndex = (options: readonly FieldOption[], value: unknown) =>
 const textualKind = (kind: FieldModel['type']['kind']) =>
   !['boolean', 'choice', 'class', 'vector', 'group', 'list'].includes(kind);
 
-/** A field whose value is a group of fields: a folding header in the label style; a class's picker under it, kept when folded. */
-function FieldGroup({ model, labelId, picker, children }: {
-  model: FieldModel; labelId: string; picker: ReactNode; children: ReactNode;
+/**
+ * A field whose value is a group of fields: a folding header in the label style, its changed mark at the header's end;
+ * a class's picker under it, kept when folded, holds the class's mark.
+ */
+function FieldGroup({ model, labelId, picker, mark, children }: {
+  model: FieldModel; labelId: string; picker: ReactNode; mark?: ReactNode; children: ReactNode;
 }) {
-  return <Section level="field" name={model.label} nameId={labelId} control={picker} bodyClassName="grid gap-1"
+  return <Section level="field" name={model.label} nameId={labelId} control={picker} actions={mark} bodyClassName="grid gap-1"
     className="value-field tabular-nums" {...useFieldGroup(model.id)}>
     {children}
   </Section>;
@@ -219,11 +246,15 @@ function ClassValue({ model, parameter, labelId, picker, pickReason }: {
   const id = useId();
   const reasonId = useId();
   const originId = useId();
+  const changeId = useId();
   const { reason, setReason, submit } = useSubmit(parameter);
   const readOnly = !parameter.commit;
   const shown = reason ?? pickReason ?? parameter.reason ?? model.reason;
   const origin = parameter.origin ?? model.origin;
-  const describedBy = [origin && originId, shown && reasonId].filter(Boolean).join(' ') || undefined;
+  const change = parameter.change ?? model.change;
+  const reset = readOnly ? undefined : parameter.change ? () => void submit({ kind: 'reset' })
+    : model.commit ? () => void model.commit!({ kind: 'reset' }).then(setReason) : undefined;
+  const describedBy = [change && changeId, origin && originId, shown && reasonId].filter(Boolean).join(' ') || undefined;
   function chooseKind(kind: FieldKind) {
     const edit = kindEdit(parameter, kind);
     if (edit) void submit(edit);
@@ -231,15 +262,13 @@ function ClassValue({ model, parameter, labelId, picker, pickReason }: {
   return <section className={clsx('value-field value-field-class grid min-w-0 tabular-nums', parameter.members && 'value-field-class-swept')}
     aria-label={studioFieldLabel('field', model.label)}>
     <FieldRow label={model.label} labelId={labelId} below={origin || shown ? <>
-      {origin && <Origin id={originId} text={origin}
-        reveal={parameter.origin ? parameter.revealOrigin : model.revealOrigin}
-        reset={readOnly ? undefined : parameter.origin ? parameter.changed ? () => void submit({ kind: 'reset' }) : undefined
-          : model.changed && model.commit ? () => void model.commit!({ kind: 'reset' }).then(setReason) : undefined} />}
+      {origin && <Origin id={originId} text={origin} reveal={parameter.origin ? parameter.revealOrigin : model.revealOrigin} />}
       {shown && <p role="alert" id={reasonId}>{shown}</p>}
     </> : undefined}>
       <div data-field={parameter.anchor} className="contents">
         <ValueText model={parameter} id={id} readOnly={readOnly} describedBy={describedBy} invalid={!!reason}
           submit={submit} clearReason={() => setReason(undefined)} chooseKind={chooseKind}
+          changeMark={change && <FieldChange change={change} id={changeId} onReset={reset} />}
           end={picker} parameterOf={[model.label, parameter.parameter!]} />
       </div>
     </FieldRow>
@@ -251,10 +280,12 @@ function ClassValue({ model, parameter, labelId, picker, pickReason }: {
   </section>;
 }
 
-function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearReason, chooseKind, end, parameterOf }: {
+function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearReason, chooseKind, changeMark, end, parameterOf }: {
   model: FieldModel; id: string; readOnly: boolean; describedBy?: string; invalid: boolean;
   submit(edit: FieldEdit): Promise<boolean>; clearReason(): void;
   chooseKind(kind: FieldKind): void;
+  /** The changed mark, at the box's trailing end. */
+  changeMark?: ReactNode;
   end?: ReactNode;
   /** The field and parameter whose names make the input's accessible name, for a chosen class's only parameter. */
   parameterOf?: readonly [field: string, parameter: string];
@@ -280,11 +311,13 @@ function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearRea
   }, [intent?.key]);
   /** A kind chosen in the kind menu that the field takes when the menu gives the keyboard back to it. */
   const chosen = useRef<FieldKind>();
-  /** Sweep is made by the text the field commits; another kind by its own edit. */
+  /** Sweep is made by the text the field commits, Draw by its parts, another kind by its own edit. */
   function choose(kind: FieldKind) {
     if (kind === 'sweep') chosen.current = kind;
+    else if (kind === 'draw') startDraw(model);
     else chooseKind(kind);
   }
+  const drafted = useDrawDraft(model.id);
   const text = draft ?? model.text ?? '';
   const offered = draft !== undefined && !dismissed && caret !== undefined
     ? completions(model, text.slice(0, caret)) : { token: '', items: [] };
@@ -324,6 +357,7 @@ function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearRea
       if (open) { setDismissed(true); return; }
       setDraft(undefined);
       setPending(undefined);
+      clearDraw(model.id);
       clearReason();
       setMenu(false);
     }
@@ -338,12 +372,10 @@ function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearRea
     }
   }
 
-  const markMenu = mark ? <KindMark model={model} kind={pending ?? model.kind} readOnly={readOnly} open={menu}
+  const markMenu = mark ? <KindMark model={model} kind={pending ?? (drafted ? 'draw' : model.kind)} readOnly={readOnly} open={menu}
     onOpenChange={setMenu} finalFocus={input} onChoose={choose} /> : undefined;
-  const differs = model.differs !== undefined ? <output {...appTip(studioName('selectedValue'))} aria-description={model.differs}
-    aria-label={studioFieldLabel('selectedValue', label)}>◆</output> : undefined;
   return <>
-    <TextField ref={input} id={id} type="text" value={text} leading={markMenu} trailing={differs} end={end} className="min-w-0"
+    <TextField ref={input} id={id} type="text" value={text} leading={markMenu} trailing={changeMark} end={end} className="min-w-0"
       aria-label={parameterOf ? studioParameterLabel(...parameterOf) : undefined} size={end ? Math.max(6, text.length + 1) : undefined}
       placeholder={model.text === null && draft === undefined ? studioName('mixed') : undefined}
       readOnly={readOnly || model.type.kind === 'readOnly'} invalid={invalid}
@@ -397,9 +429,12 @@ function KindMark({ model, kind = model.kind, label = model.label, readOnly, ope
  * A class-valued field's filter-select of classes, its kind mark inside the box. A swept field's members are the
  * classes checked in its list: choosing a class adds it as a member or removes it, except the last member.
  */
-function ClassPicker({ model, labelId, inline, readOnly, submit, chooseKind }: {
+function ClassPicker({ model, labelId, inline, readOnly, submit, chooseKind, mark, describedBy }: {
   model: FieldModel; labelId: string; inline: boolean; readOnly: boolean;
   submit(edit: FieldEdit): Promise<boolean>; chooseKind(kind: FieldKind): void;
+  /** The class's changed mark, at the box's trailing end. */
+  mark?: ReactNode;
+  describedBy?: string;
 }) {
   const input = useRef<HTMLInputElement>(null);
   const [menu, setMenu] = useState(false);
@@ -410,7 +445,8 @@ function ClassPicker({ model, labelId, inline, readOnly, submit, chooseKind }: {
   const leading = hasMark(model) ? <KindMark model={model} label={markLabel} readOnly={readOnly} open={menu} onOpenChange={setMenu}
     finalFocus={input} onChoose={chooseKind} /> : undefined;
   const common = {
-    'aria-labelledby': labelId, className: inline ? undefined : 'w-full', inline, disabled: readOnly, leading, inputRef: input,
+    'aria-labelledby': labelId, 'aria-describedby': inline ? undefined : describedBy,
+    className: inline ? undefined : 'w-full', inline, disabled: readOnly, leading, trailing: mark, inputRef: input,
   };
   const members = model.members?.values;
   if (members) {

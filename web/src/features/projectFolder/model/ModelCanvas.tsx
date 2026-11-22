@@ -4,7 +4,7 @@ import {
   type Edge, type EdgeProps, type Node, type NodeProps, type OnConnectStart,
 } from '@xyflow/react';
 import {
-  createContext, memo, useCallback, useContext, useEffect, useId, useImperativeHandle, useRef, useState,
+  createContext, memo, useCallback, useContext, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState,
   type MouseEvent as ReactMouseEvent, type ReactNode, type Ref,
 } from 'react';
 import { Lock, Plus, Unlock, ChevronsDownUp } from 'lucide-react';
@@ -16,6 +16,7 @@ import type { ModelAddress, ModelPosition } from '@/generated/studioContracts';
 import { commandAttributes, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import { Button, IconButton } from '@/components/ui/Button';
 import { Card as SurfaceCard, CardHead } from '@/components/ui/Card';
+import { ChangeMark, type ChangeMarkProps } from '@/components/ui/ChangeMark';
 import { TextField } from '@/components/ui/TextField';
 import { portId, portTypeLabel, type Port } from './modelGraph';
 import type { ModelLocation } from '@/features/projectWindow/elementSelection';
@@ -33,6 +34,11 @@ export type ModelCardData = {
   selected?: boolean;
   holdsSelection?: boolean;
   problem?: string;
+  /** What the shown document or value removed, drawn where it was: it cannot be wired to or edited. */
+  ghost?: boolean;
+  change?: ChangeMarkProps;
+  /** The marks of the ports whose connection changed, by port id. */
+  portChanges?: ReadonlyMap<string, ChangeMarkProps>;
   pickPort?: (port: Port) => void;
   canPick?: (port: Port) => boolean;
   cancelPick?: () => void;
@@ -51,7 +57,12 @@ export type ModelEdgeData = {
   address: ModelAddress;
   selected?: boolean;
   waypoints?: readonly ModelPosition[];
-  attachments?: readonly { id: string; label: string; description: string; mark: string; delay: boolean; select(): void; drag?: ModelLocation }[];
+  attachments?: readonly {
+    id: string; label: string; description: string; mark: string; delay: boolean; select(): void; drag?: ModelLocation;
+    ghost?: boolean; change?: ChangeMarkProps;
+  }[];
+  ghost?: boolean;
+  change?: ChangeMarkProps;
   self?: number;
   bundleCount?: number;
   moveWaypoint?: (index: number, point: ModelPosition) => void;
@@ -101,6 +112,7 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
   useEffect(() => { update(id); }, [id, update, geometry]);
   useEffect(() => { if (data.renaming) input.current?.select(); }, [data.renaming]);
   return <SurfaceCard as="article" className="studio-model-card" data-stacked={data.stacked} selected={data.selected}
+    data-ghost={data.ghost || undefined}
     data-holds-selection={data.holdsSelection} data-boundary={data.address.element.kind === 'inputs' || data.address.element.kind === 'outputs'}
     aria-labelledby={nameId}>
     <CardHead as="header" className="studio-model-card-header">
@@ -116,8 +128,10 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
           }} />
       </form>}
       {data.problem && <span role="img" aria-label={studioName('problems')} aria-description={data.problem}>◆</span>}
+      {data.change && <ChangeMark className="nodrag nopan" {...data.change} />}
     </CardHead>
     {ports.map(({ port, key, reason, available, problem, verdict }) => {
+      const change = data.portChanges?.get(key);
       const location = side(port, Boolean(data.flipped));
       const physical = port.direction === 'physical';
       const interactive = !data.locked && !data.canPick;
@@ -168,6 +182,7 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
         {!data.collapsed && port.mark && <span role="img" aria-label={studioName(port.mark)}
           {...appTip(studioName(port.mark))}>{port.mark === 'task' ? '▥' : '◇'}</span>}
         {!data.collapsed && problem && <span role="img" aria-description={problem} aria-label={studioName('problems')}>◆</span>}
+        {!data.collapsed && change && <ChangeMark className="nodrag nopan" {...change} />}
         {!data.collapsed && reason && <span className="studio-model-port-reason" role="status">{reason}</span>}
       </div>;
     })}
@@ -232,8 +247,8 @@ const Wire = memo(function Wire({ id, data, type, source, sourceX, sourceY, targ
     {delayed && <path d={path} ref={pathRef} visibility="hidden" aria-hidden="true" />}
     <BaseEdge id={id} path={path} markerEnd={markerEnd} className="studio-model-wire"
       style={{ strokeWidth: data?.selected || data?.bundleCount ? 3 : physical ? 2.4 : 1.3,
-        strokeDasharray: delayed ? dash : undefined }} />
-    {data?.attachments?.length || data?.bundleCount || data?.problem || data?.selected && waypoints?.length ? <EdgeLabelRenderer>
+        strokeDasharray: data?.ghost ? '4 3' : delayed ? dash : undefined }} />
+    {data?.attachments?.length || data?.bundleCount || data?.problem || data?.change || data?.selected && waypoints?.length ? <EdgeLabelRenderer>
       {data.selected && waypoints?.map((point, index) => <Button key={index} size="mark" aria-label={studioAccessibleName('waypoint', index + 1)}
         className="studio-model-waypoint nodrag nopan aspect-square" style={{ transform: `translate(-50%, -50%) translate(${point.x}px, ${point.y}px)` }}
         disabled={!data.moveWaypoint}
@@ -252,14 +267,17 @@ const Wire = memo(function Wire({ id, data, type, source, sourceX, sourceY, targ
       <div className="studio-model-attachments nodrag nopan" style={{ transform: `translate(-50%, -50%) translate(${mid.x}px, ${mid.y}px)` }}>
         {data.problem && <span role="img" aria-label={studioName('problems')} aria-description={data.problem}>◆</span>}
         {data.bundleCount && <span className="rounded-row border border-shell-divider bg-shell-chrome px-1 text-xs">{data.bundleCount}</span>}
-        {data.attachments?.map(({ id, label, description, mark, select, drag }) =>
-          <Button key={id} size="mark" aria-label={studioAccessibleName('attachment', label)}
-            aria-description={description}
+        {data.change && <ChangeMark {...data.change} />}
+        {data.attachments?.map(({ id, label, description, mark, select, drag, ghost, change }) => <span key={id} className="contents">
+          <Button size="mark" aria-label={studioAccessibleName('attachment', label)}
+            aria-description={description} data-ghost={ghost || undefined}
             {...appTip(studioAccessibleName('attachment', label))}
             draggable={!!drag} onDragStart={(event) => {
               if (drag) event.dataTransfer.setData('application/x-feedbax-attachment', JSON.stringify(drag));
             }}
-            onClick={(event) => { event.stopPropagation(); select(); }}>{mark}</Button>)}
+            onClick={(event) => { event.stopPropagation(); select(); }}>{mark}</Button>
+          {change && <ChangeMark {...change} />}
+        </span>)}
       </div>
     </EdgeLabelRenderer> : null}
   </>;
@@ -312,7 +330,8 @@ function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdi
   const [initial] = useState(() => ({ nodes, edges }));
   const [boxSelecting, setBoxSelecting] = useState(false);
   const point = (event: { clientX: number; clientY: number }) => screenToFlowPosition({ x: event.clientX, y: event.clientY });
-  useEffect(() => {
+  /** The cards follow their props before the browser paints, so a card added by a gesture is drawn in the next frame. */
+  useLayoutEffect(() => {
     setNodes((prior) => {
       const current = new Map(prior.map((node) => [node.id, node]));
       return nodes.map((node) => {
@@ -326,7 +345,7 @@ function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdi
       });
     });
   }, [nodes, setNodes, getInternalNode]);
-  useEffect(() => { setEdges(edges); }, [edges, setEdges]);
+  useLayoutEffect(() => { setEdges(edges); }, [edges, setEdges]);
   return <CanvasStrip viewport={viewportCommands} tools={<>
     <IconButton label={collapse.label} icon={<ChevronsDownUp />} {...commandAttributes(collapse, 'right')} pressed={collapsed}
       disabled={!collapse.enabled} onClick={collapse.invoke} />

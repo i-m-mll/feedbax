@@ -428,7 +428,7 @@ def test_analyze_collects_static_rows_in_each_named_variant():
         {
             "kind": "analyze",
             "base": {"document": "velocity-analysis"},
-            "inputs": {"states": {"step": "conditions", "where": {"axes": {"mass": ["heavy", "nominal"]}}}},
+            "inputs": {"states": {"step": "conditions", "where": {"rule": "mass=heavy,nominal"}}},
         }
     )
     operations = _operations()

@@ -40,7 +40,7 @@ def grouped_project():
         name: {"value": seed, "patches": {"seed": {"value": seed}}}
         for name, seed in (("one", 1), ("two", 2))
     }}
-    raw["steps"]["baseline"]["inputs"]["subject"]["where"]["best"]["per"] = ["seed"]
+    raw["steps"]["baseline"]["inputs"]["subject"]["where"]["rule"] = "lowest 2 train_loss per seed"
     return raw
 
 
@@ -88,21 +88,21 @@ def test_grouped_rank_plan_preserves_group_keys_and_diagnoses_invalid_groups():
     named_plan = compile_project(Project.model_validate(named), source_runs=(next(iter(ranks.values())).key,))
     assert named_plan.requests == plan.requests
     assert named_plan.subsets["default", "baseline", "subject"].source.origin == ValueSource(
-        "document", "ranked", "/best",
+        "document", "ranked", "/rule",
     )
     sources, = named_plan.sources.values()
-    assert sources["/inputs/subject/where"] == ValueSource("document", "ranked", "/best")
+    assert sources["/inputs/subject/where"] == ValueSource("document", "ranked", "/rule")
     assert "/inputs/subject" not in sources
 
     named["sweep"] = {"rows": {
         "default": {},
-        "reverse": {"patches": {"documents.ranked.payload.best.order": {"value": "max"}}},
+        "reverse": {"patches": {"documents.ranked.payload.rule": {"value": "highest 2 train_loss per seed"}}},
     }}
     varied = Project.model_validate(named)
     unnamed_plan = compile_project(varied)
     named_key = next(run.key for run in unnamed_plan.runs if (run.key.variant, run.kind) == ("reverse", "evaluate"))
     projected = compile_project(varied, source_runs=(named_key,))
-    origin = ValueSource("variant", "reverse", "/documents/ranked/payload/best/order", variant="reverse")
+    origin = ValueSource("variant", "reverse", "/documents/ranked/payload/rule", variant="reverse")
     assert projected.sources[named_key]["/inputs/subject/where"] == origin
     review = PlanRequests.from_plan(unnamed_plan)
     restored, scope = load_plan_requests(dump_plan_requests(review, ("reverse",)))
@@ -121,7 +121,7 @@ def test_grouped_rank_plan_preserves_group_keys_and_diagnoses_invalid_groups():
 
     changed = deepcopy(raw)
     changed["steps"]["train"]["sweep"]["exceptions"] = {
-        "longer-task-for-one": {"where": {"axes": {"seed": ["one"]}}, "patches": {
+        "longer-task-for-one": {"where": {"rule": "seed=one"}, "patches": {
             "documents.task.payload.fixed_steps": {"value": 81},
         }},
     }
@@ -132,29 +132,29 @@ def test_grouped_rank_plan_preserves_group_keys_and_diagnoses_invalid_groups():
     assert all((run.request_id != current[key].request_id) == (run.coordinates["seed"].value_id == "one")
                for key, run in ranks.items())
 
-    best = raw["steps"]["baseline"]["inputs"]["subject"]["where"]["best"]
-    for per in (["unknown"], ["seed", "seed"]):
-        best["per"] = per
+    where = raw["steps"]["baseline"]["inputs"]["subject"]["where"]
+    for per in ("unknown", "seed, seed"):
+        where["rule"] = f"lowest 2 train_loss per {per}"
         invalid = compile_project(Project.model_validate(raw))
-        assert [problem.path for problem in invalid.diagnostics] == ["inputs.subject.where.best.per"]
-    best["per"] = ["seed", "rate"]
+        assert [problem.path for problem in invalid.diagnostics] == ["inputs.subject.where.rule"]
+    where["rule"] = "lowest 2 train_loss per seed, rate"
     invalid = compile_project(Project.model_validate(raw))
     diagnostic, = invalid.diagnostics
-    assert diagnostic.path == "inputs.subject.where.best" and "1 candidates in group" in diagnostic.detail
-    best["k"] = 1
+    assert diagnostic.path == "inputs.subject.where.rule" and "asks for 2 of 1 runs in group" in diagnostic.detail
+    where["rule"] = "lowest 1 train_loss per seed, rate"
     multiple_axes = compile_project(Project.model_validate(raw))
     assert not multiple_axes.diagnostics
     assert len(evaluation_ranks(multiple_axes)) == 4
     assert all(set(run.coordinates) == {"seed", "rate"} for run in evaluation_ranks(multiple_axes).values())
-    best["per"].reverse()
+    where["rule"] = "lowest 1 train_loss per rate, seed"
     reordered_axes = compile_project(Project.model_validate(raw))
     assert reordered_axes.requests == multiple_axes.requests
 
-    best["per"] = ["seed"]
+    where["rule"] = "lowest 2 train_loss per seed"
     del raw["steps"]["baseline"]["sweep"]
     invalid = compile_project(Project.model_validate(raw))
     diagnostic, = invalid.diagnostics
-    assert diagnostic.path == "inputs.subject.where.best" and "subject input axis" in diagnostic.detail
+    assert diagnostic.path == "inputs.subject.where.rule" and "subject input axis" in diagnostic.detail
 
 
 def test_saved_grouped_best_binds_and_freezes_each_group(host, tmp_path, monkeypatch, capsys):
@@ -172,7 +172,7 @@ def test_saved_grouped_best_binds_and_freezes_each_group(host, tmp_path, monkeyp
     ranks = evaluation_ranks(saved.plan)
     groups = saved.plan.subsets["default", "baseline", "subject"].rank_groups
     source_key = ("default", "baseline", "subject")
-    before_origin = ValueSource("step", "baseline", "/inputs/subject/where/best", step="baseline")
+    before_origin = ValueSource("step", "baseline", "/inputs/subject/where/rule", step="baseline")
     after_origin = ValueSource("step", "baseline", "/inputs/subject/where/rows", step="baseline")
     root = folders.root / project
     baseline = tmp_path / "best.json"

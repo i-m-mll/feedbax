@@ -3,12 +3,17 @@
 from feedbax.compiler.model_document import lower_model_document
 from feedbax.compiler.resolution import resolve_graph_parameters
 from feedbax.contracts.model_address import ComponentPortAddress, ModelAddress, PortElement
-from feedbax.contracts.model_document import SignalType
+from feedbax.contracts.model_document import ModelDocument, SignalType
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.model_edit import ModelPortProjection, ModelProjection
 from feedbax.expression_check import references
 from feedbax.studio.schema import _enumerate_graph_ports
+from feedbax.contracts.project import BasedDocument
+from feedbax.contracts.project_plan import RunKey
+from feedbax.project_folder import model_edit_source
 from feedbax.project_model_selection import selected_model as selected_model, selected_model_and_task, task_signal
+from feedbax.studio.model_differences import structural_differences
+from feedbax.web.services.trial_scope import runs_scope, selected_value, value_model
 
 
 def _port(composites, component, direction, port):
@@ -19,7 +24,34 @@ def _port(composites, component, direction, port):
     )
 
 
+def _dumped(payload) -> dict:
+    return ModelDocument.model_validate(payload).model_dump(mode="json")
+
+
+def model_differences(folders, project_id, body):
+    """The shown document's structural differences from its base, and the selected value's from the step's Model."""
+    snapshot = folders.read(project_id, revision=body.revision)
+    project = snapshot.project
+    payload, layout = model_edit_source(snapshot, body.document)
+    shown = _dumped(payload)
+    from_base = from_value = ()
+    entry = project.documents[body.document]
+    if isinstance(entry, BasedDocument):
+        base, base_layout = model_edit_source(snapshot, entry.base.document)
+        from_base = structural_differences(_dumped(base), shown, base_layout.get("positions", {}))
+    if body.rows:
+        plan = folders.read_plan(project_id, revision=body.revision).plan
+        key = RunKey(body.run.variant, body.run.step, body.rows[0])
+        named = selected_value(project, key.step, runs_scope(project, plan, key, tuple(body.rows), body.axes or {}))
+        if named is not None:
+            from_value = structural_differences(
+                shown, _dumped(value_model(project, key.step, named, body.document)), layout.get("positions", {}),
+            )
+    return {"base_differences": from_base, "value_differences": from_value}
+
+
 def model_projection(folders, project_id, body, components):
+    differences = model_differences(folders, project_id, body)
     model, task, objective, overrides = selected_model_and_task(folders, project_id, body)
     task_signals = tuple(task_signal(item) for item in task.exposed_data if item.bindable)
     names = {signal.id for signal in task_signals}
@@ -31,7 +63,7 @@ def model_projection(folders, project_id, body, components):
     except ValueError:
         # The selected Plan carries the addressed failure. Exposed task signals
         # are still known when the Model cannot be lowered.
-        return ModelProjection(task_signals=task_signals, resolved_model=model)
+        return ModelProjection(task_signals=task_signals, resolved_model=model, **differences)
     task_inputs = tuple(
         ModelAddress.model_validate({
             "composites": [],
@@ -43,7 +75,7 @@ def model_projection(folders, project_id, body, components):
             lowered.graph, {}, components, allow_incomplete=True,
         )
     except ValueError:
-        return ModelProjection(task_signals=task_signals, task_inputs=task_inputs, resolved_model=model)
+        return ModelProjection(task_signals=task_signals, task_inputs=task_inputs, resolved_model=model, **differences)
     ports = []
     def collect(resolved, owner, composites):
         for port in _enumerate_graph_ports(resolved.graph, component_registry=components, resolution=resolved):
@@ -84,5 +116,5 @@ def model_projection(folders, project_id, body, components):
                     objective_ports[reference] = address
     return ModelProjection(
         ports=tuple(ports), task_signals=task_signals, task_inputs=task_inputs,
-        objective_ports=tuple(objective_ports.values()), resolved_model=model,
+        objective_ports=tuple(objective_ports.values()), resolved_model=model, **differences,
     )

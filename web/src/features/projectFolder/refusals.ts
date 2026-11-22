@@ -1,10 +1,10 @@
 import type { StudioResultState } from '@/components/activity/studioVocabulary';
 import type { PlanStepView, PlanView } from '@/features/pipeline/planView';
-import type { EvaluateField } from './StudioEvaluateAuthoring';
+import type { StepField } from './StudioEvaluateAuthoring';
 
 /** A gesture the service or the editor refused, with its reason, on the object the gesture acted on. */
 export type Refusal =
-  | { kind: 'field'; step: string; field: EvaluateField; reason: string }
+  | { kind: 'field'; step: string; field: StepField; reason: string }
   /** Reasons by run id. */
   | { kind: 'runs'; reasons: Readonly<Record<string, string>> }
   | { kind: 'step'; step: string; reason: string }

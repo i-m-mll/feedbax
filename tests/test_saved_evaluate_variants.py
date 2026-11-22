@@ -155,7 +155,7 @@ def test_saved_raw_graph_edit_refuses_at_its_exact_author(tmp_path, scope, site,
     else:
         step["base"]["inline"]["params"]["variation"] = {}
         step["sweep"] = {"exceptions": {"heavy": {
-            "where": {"axes": {}},
+            "where": {"rule": ""},
             "patches": {f"params.variation.{site}": {"op": "add", "value": edit}},
         }}}
     folders = ProjectFolderService(tmp_path / "projects")

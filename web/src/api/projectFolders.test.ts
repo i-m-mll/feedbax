@@ -78,7 +78,7 @@ describe('Studio project folder HTTP contracts', () => {
       method: 'POST', body: JSON.stringify({ revision, name: 'renamed' }),
     }));
     await expect(openProjectFolder('reaches')).resolves.toEqual(distinct);
-    await expect(readProjectFolder('reaches')).rejects.toMatchObject({ kind: 'contract' });
+    await expect(readProjectFolder('reaches')).rejects.toMatchObject({ kind: 'response' });
   });
 
   it('replays one revision-bound authored history transaction', async () => {
@@ -99,7 +99,7 @@ describe('Studio project folder HTTP contracts', () => {
       address: { kind: 'document' as const, id: 'model' },
       patches: [{ op: 'remove' as const, path: '/parameters/width', value: 8 }],
     };
-    await expect(patchProjectFolder('reaches', edit)).rejects.toMatchObject({ kind: 'contract' });
+    await expect(patchProjectFolder('reaches', edit)).rejects.toMatchObject({ kind: 'request' });
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -113,7 +113,7 @@ describe('Studio project folder HTTP contracts', () => {
       .mockResolvedValueOnce(Response.json({ detail }, { status: 409 }));
     vi.stubGlobal('fetch', fetch);
 
-    await expect(openProjectFolder('reaches')).rejects.toMatchObject({ kind: 'contract' });
+    await expect(openProjectFolder('reaches')).rejects.toMatchObject({ kind: 'response' });
     await expect(writeProjectPresentation('reaches', {
       revision: presentationRevision,
       presentation: { visible_groups: ['calibration'] },

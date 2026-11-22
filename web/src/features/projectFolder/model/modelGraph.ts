@@ -1,6 +1,6 @@
 import type {
-  ComponentDefinition, CompositeComponent, LeafComponent, ModelAddress, ModelDocument, ModelPorts,
-  PhysicalInterior, PortElement, PortType, SignalType,
+  ComponentDefinition, CompositeComponent, GraphInterior, LeafComponent, ModelAddress, ModelDocument,
+  ModelPhysicalConnection, ModelPorts, ModelRemovedElement, ModelWire, PhysicalInterior, PortElement, PortType, SignalType,
 } from '@/generated/studioContracts';
 import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import { studioName } from '@/components/activity/studioVocabulary';
@@ -20,6 +20,7 @@ export type Port = {
   readonly growing?: boolean;
 };
 export type Registry = ReadonlyMap<string, ComponentDefinition>;
+type ModelAttachment = NonNullable<ModelWire['attachments']>[number];
 
 export function portTypeLabel({ type }: Port) {
   if (typeof type === 'string') return humanizeLabel(type);
@@ -182,4 +183,41 @@ export function holds(holder: ModelAddress, address: ModelAddress) {
   if (address.composites.length !== depth) return false;
   const key = canonicalJsonV2(holder.element);
   return owners(address.element).some((element) => canonicalJsonV2(element) === key);
+}
+
+/** `model` with each of `removed` put back where it was, so that what a document or value removes can be drawn in place. */
+export function withRemoved(model: ModelDocument, removed: readonly ModelRemovedElement[]): ModelDocument {
+  if (!removed.length) return model;
+  const drawn = structuredClone(model);
+  for (const { address, definition, wires, connections } of removed) {
+    const reached = modelPath(drawn, address.composites);
+    if (reached.entries.length !== address.composites.length) continue;
+    const interior: Omit<GraphInterior, 'physical_domain'> & Partial<Pick<PhysicalInterior, 'connections'>> = reached.owner.interior;
+    const element = address.element;
+    if (element.kind === 'component') {
+      interior.components = { ...interior.components, [element.id]: definition as Component };
+      interior.wires = { ...interior.wires, ...wires };
+      if (connections && Object.keys(connections).length) interior.connections = { ...interior.connections, ...connections };
+    } else if (element.kind === 'wire') {
+      interior.wires = { ...interior.wires, [element.id]: definition as ModelWire };
+    } else if (element.kind === 'physical_connection') {
+      interior.connections = { ...interior.connections, [element.id]: definition as ModelPhysicalConnection };
+    } else if (element.kind === 'attachment') {
+      const parent = element.parent;
+      const item = definition as ModelAttachment;
+      if (parent.kind === 'wire') {
+        const wire = interior.wires?.[parent.id];
+        if (wire) wire.attachments = [...wire.attachments ?? [], item];
+        continue;
+      }
+      const end = parent.end;
+      const holder = end.owner === 'component' ? interior.components?.[end.component] : interior;
+      if (!holder || end.owner === 'boundary' || end.owner === 'component' && end.direction === 'physical') continue;
+      const store = holder.attachments ??= {};
+      const side = end.owner === 'inputs' || end.owner === 'component' && end.direction === 'output' ? 'sources' : 'sinks';
+      const chains = (store[side] ??= {}) as Record<string, ModelAttachment[]>;
+      chains[end.port] = [...chains[end.port] ?? [], item];
+    }
+  }
+  return drawn;
 }

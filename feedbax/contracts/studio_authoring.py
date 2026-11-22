@@ -8,10 +8,11 @@ from pydantic import Field, JsonValue, StrictFloat, StrictInt
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.component import ComponentDefinition
-from feedbax.expression_registry import FunctionInfo
+from feedbax.contracts.expression_registry import FunctionInfo
 from feedbax.contracts.operation import OperationDefinition
 from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName, StepReference
+from feedbax.contracts.project_plan import InputRole
 from feedbax.contracts.request_refs import Name
 from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
@@ -57,6 +58,10 @@ class StudioAuthoringCatalog(StrictModel):
     step_payloads: dict[str, dict[str, JsonValue]]
     document_families: dict[str, StudioAuthoredDocumentFamily]
     registries: dict[str, StudioAuthoringRegistry]
+    step_inputs: dict[str, dict[str, InputRole]]
+    """Each step kind's inputs by name."""
+    analyze_inputs: dict[str, InputRole]
+    """The input an Analyze document's declaration of each kind gives its step."""
 
 
 class StudioAuthoringOption(StrictModel):

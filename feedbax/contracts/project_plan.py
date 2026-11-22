@@ -11,14 +11,14 @@ from threading import Lock
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import Field, TypeAdapter, ValidationError
 from pydantic_core import to_json
 
 from feedbax.checkpoint_coordinates import MAX_CHECKPOINT_COORDINATE
 from feedbax.contracts import request_identity
 from feedbax.contracts._request_codec import same_typed_value
 from feedbax.contracts.analysis_document import AnalyzeDatasetInput, AnalyzeInput, AnalyzeModelInput, AnalyzeTaskInput
-from feedbax.contracts.base import sha256_bytes
+from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.expression_values import Problem, ValueBase
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, FigureDocument, PlotlyFigurePort
@@ -38,6 +38,8 @@ from feedbax.contracts.project import (
     DifferenceNotApplied, Differences, Document, InlineBase, Payload, Project, RootDocument, Step, StepBase, StepKind,
     apply_differences, base_chain, diff, json_pointer_parts, nearest_shared_base,
 )
+from feedbax.contracts.run_rule import RuleRefusal
+from feedbax.contracts.expression_text import RuleBest
 from feedbax.contracts.project_inputs import (
     BarrierCheckpoint,
     BatchCheckpoint,
@@ -56,7 +58,6 @@ from feedbax.contracts.project_inputs import (
     RunReference,
     SelectedRow,
     StepReference,
-    SubsetSelectionError,
     SubsetTerms,
     TaskDocumentReference,
     producer_member_key,
@@ -67,6 +68,7 @@ from feedbax.contracts.project_resolution import (
     ProjectDiagnostic,
     ResolutionCode,
     ResolvedStep,
+    RunKey,
     StepComposition,
     StepTemplate,
     TerminalTrainSource,
@@ -90,10 +92,11 @@ from feedbax.contracts.project_sweep import (
     SetAxis,
     Sweep,
     SweepCoordinate,
+    SweepInputCoordinate,
     SweepExpansionCode,
     SweepExpansionError,
     SweepInputMember,
-    axis_values,
+    axis_coordinates,
     checkpoint_rule_write,
     coordinate_text,
     expand_sweep,
@@ -116,13 +119,17 @@ from feedbax.contracts.request_refs import (
     MemberLabel,
     ProductRef,
     ProductSelector,
+    ReferenceValue,
     RequestId,
     RequestKind,
     UpdateCadence,
     UpdateSeriesMember,
+    best_rank_key,
 )
 from feedbax.contracts.request_specs import (
+    DocumentTrainingConfig,
     DocumentTrainingRequestSpec,
+    TrainContinuation,
     ReportRequestSpec,
 )
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
@@ -136,7 +143,7 @@ if TYPE_CHECKING:
     from feedbax.training.methods import TrainingMethodRegistry
     from feedbax.component_registry import ComponentRegistry
     from feedbax.compiler.model_document import LoweredModelDocument
-    from feedbax.expression_registry import FunctionRegistry
+    from feedbax.contracts.expression_registry import FunctionRegistry
     from feedbax.plot.templates import FigureTemplateRegistry
 
 
@@ -147,13 +154,6 @@ def _builtin_model_registry() -> ComponentRegistry:
     registry = ComponentRegistry()
     registry.seal()
     return registry
-
-
-@dataclass(frozen=True)
-class RunKey:
-    variant: str
-    step: str
-    row: str
 
 
 @dataclass(frozen=True)
@@ -192,6 +192,8 @@ class PlannedSubset:
     document: str | None
     rank_groups: tuple[PlannedRankGroup, ...] = ()
     source: SubsetSource | None = None
+    best: RuleBest | None = None
+    """The rule's lowest or highest term, which ranks the members once they have run."""
 
     @property
     def ranks(self) -> tuple[str, ...]:
@@ -235,10 +237,30 @@ def label_value_names(labels: Mapping[str, MemberLabel], names: LabelNames) -> d
     }
 
 
+class PendingProduct(ReferenceValue):
+    """The product of a row that has no request, which a reading row waits on."""
+
+    variant: str
+    step: str
+    row: str
+
+    @property
+    def run(self) -> RunKey:
+        return RunKey(self.variant, self.step, self.row)
+
+
+class PendingMember(ReferenceValue):
+    """A member whose producer has no request: it keeps its key and labels, and no request reads it."""
+
+    key: str
+    reference: PendingProduct
+    labels: dict[str, MemberLabel] = Field(default_factory=dict)
+
+
 @dataclass(frozen=True)
 class PlannedInput:
     producer: RunKey | None
-    member: InputMember
+    member: InputMember | PendingMember
     producer_element: str | None = None
     producer_member: str | None = None
     """The mapped request of ``producer_element`` this member reads, when the element maps over labels."""
@@ -250,12 +272,23 @@ class PlannedInput:
     """The authored selection that chose this member."""
     named: Mapping[str, LabelName] = field(default_factory=dict)
     """What the member's step-valued labels name. The request identifies each by content (`_identified`)."""
-    best_path: str = field(default="inputs.subject.where.best", compare=False)
+    best_path: str = field(default="inputs.subject.where.rule", compare=False)
     """Where a ranked member's Best is authored: its role's, or its list item's."""
 
     @property
     def sources(self) -> tuple[RunKey, ...]:
         return (self.producer,) if self.producer is not None else self.candidates
+
+    @property
+    def request_member(self) -> InputMember:
+        """The member a request reads. A row that reads a pending member is blocked and never lowered."""
+        assert isinstance(self.member, InputMember), f"lowered a member waiting on {self.waits_on}"
+        return self.member
+
+    @property
+    def waits_on(self) -> RunKey | None:
+        """The producer row that has no request, when this member's product waits on one."""
+        return self.member.reference.run if isinstance(self.member, PendingMember) else None
 
     @property
     def element(self) -> ElementKey | None:
@@ -291,6 +324,50 @@ def _upstream_source(binding: PlannedInput) -> ValueSource | None:
 
 
 @dataclass(frozen=True)
+class TrainFacts:
+    """What a Train row's Task and run controls say, whether or not its request lowers."""
+
+    task: TaskDocument | PythonTaskSelection | None
+    """None when the Task does not resolve."""
+    origin: int | None
+    """The completed-update count the run starts from: 0 when fresh; None when the run controls do not resolve."""
+    target_total: int | None
+    """The completed-update count at the run's end; None when the run controls do not resolve."""
+
+
+_CHECKPOINT_INITIALIZATION: TypeAdapter[Literal["initialize_from"] | TrainContinuation | None] = TypeAdapter(
+    Literal["initialize_from"] | TrainContinuation | None,
+)
+
+
+def _train_facts(payload: Payload, python_tasks: PythonTaskRegistry | None) -> TrainFacts:
+    """Read the Task as the request would carry it: a Python task by its canonical selection."""
+    from feedbax.tasks.registry import application_python_tasks, resolve_python_task_instance
+
+    trial = payload.get("trial_documents")
+    task: TaskDocument | PythonTaskSelection | None = None
+    if isinstance(trial, dict):
+        try:
+            if trial.get("task") is not None:
+                task = TaskDocument.model_validate(trial["task"])
+            elif trial.get("python_task") is not None:
+                selection = PythonTaskSelection.model_validate(trial["python_task"])
+                resolved = resolve_python_task_instance(selection, python_tasks or application_python_tasks())
+                task = None if isinstance(resolved, tuple) else request_identity.canonical_python_task_selection(
+                    resolved.selection(),
+                )
+        except ValidationError:
+            task = None
+    try:
+        batches = DocumentTrainingConfig.model_validate(payload.get("training_config")).n_batches
+        start = _CHECKPOINT_INITIALIZATION.validate_python(payload.get("checkpoint_initialization"))
+    except ValidationError:
+        return TrainFacts(task, None, None)
+    origin = start.source_completed_updates if isinstance(start, TrainContinuation) else 0
+    return TrainFacts(task, origin, origin + batches)
+
+
+@dataclass(frozen=True)
 class PlannedRow:
     """An expanded row, including a row whose request validation fails."""
 
@@ -301,7 +378,7 @@ class PlannedRow:
     axis_keys: Mapping[str, str] = field(default_factory=dict, kw_only=True)
     """Each axis of the row's sweep and its value id there, or for an input axis the member key, which an address's
     selector matches."""
-    input_axes: Mapping[str, SweepCoordinate] = field(default_factory=dict, kw_only=True)
+    input_axes: Mapping[str, SweepInputCoordinate] = field(default_factory=dict, kw_only=True)
     """Each input axis's member on this row; ``axes`` terms select it by its key."""
     document_ids: Mapping[str, str] = field(default_factory=dict, kw_only=True)
     document_uses: frozenset[str] = field(default=frozenset(), kw_only=True)
@@ -309,6 +386,15 @@ class PlannedRow:
     followed_documents: frozenset[str] = field(default=frozenset(), kw_only=True)
     # The Model document an Evaluate row names, and its subject run's Model document.
     evaluated_model: tuple[str, str] | None = field(default=None, kw_only=True)
+    train: TrainFacts | None = field(default=None, kw_only=True)
+
+
+@dataclass(frozen=True)
+class BlockedRow(PlannedRow):
+    """A row an input of which waits on a producer row that has no request; it is never lowered."""
+
+    inputs: Mapping[str, tuple[PlannedInput, ...]]
+    blocked_by: RunKey
 
 
 @dataclass(frozen=True)
@@ -423,13 +509,6 @@ class SelectedRunDefinition:
 
 
 @dataclass(frozen=True)
-class _TrainEvaluationSource:
-    request: bytes
-    documents: tuple[tuple[str, bytes], ...]
-    task: tuple[str, ...] | bytes
-
-
-@dataclass(frozen=True)
 class SourceSweep:
     inputs: dict[str, tuple[SweepInputMember, ...]] = field(default_factory=dict)
     integer_sites: dict[str, bool] = field(default_factory=dict)
@@ -540,9 +619,6 @@ class ProjectPlan:
     diagnostics: tuple[ProjectDiagnostic, ...]
     subsets: Mapping[tuple[str, str, str], PlannedSubset]
     selected_definitions: Mapping[RunKey, SelectedRunDefinition]
-    _train_evaluation_sources: Mapping[RequestId, _TrainEvaluationSource] = field(
-        default_factory=lambda: MappingProxyType({}), repr=False,
-    )
     source_snapshot: SourceSnapshot | None = field(default=None, repr=False, compare=False)
     exception_matches: Mapping[tuple[str, str], Mapping[str, tuple[str, ...]]] = field(default_factory=dict)
     variant_projects: Mapping[str, Project] = field(default_factory=dict, repr=False, compare=False)
@@ -554,15 +630,6 @@ class ProjectPlan:
             key: replace(definition, payload=deepcopy(definition.payload))
             for key, definition in self.selected_definitions.items()
         }))
-
-    def train_evaluation_source(self, request_id: RequestId) -> tuple[str, ...] | bytes | None:
-        """Read the compiled Task facts only for their exact request and documents."""
-        source = self._train_evaluation_sources.get(request_id)
-        if source is not None and self.requests.get(request_id) == source.request and all(
-            self.documents.get(digest) == data for digest, data in source.documents
-        ):
-            return source.task
-        return None
 
     def row(self, key: RunKey) -> PlannedRow | None:
         return self._rows_by_key.get(key)
@@ -605,6 +672,26 @@ class ProjectPlan:
         )
 
 
+class InputProducer(StrictModel):
+    """The step whose rows an input's selections read, and the product they read of each row."""
+
+    kind: StepKind
+    product: str
+    operation_outputs: bool
+    """Whether a selection may instead name an Analyze operation's dataset product, read from the card that holds it."""
+
+
+class InputRole(StrictModel):
+    """A step input as the planner resolves it: whether it is required, whether it takes a list of selections, the
+    producer its selections read, the documents it may read instead, and whether its checkpoint may be a finite set."""
+
+    required: bool
+    gathers: bool
+    producer: InputProducer | None
+    documents: list[Literal["model", "task"]]
+    checkpoint_sets: bool
+
+
 @dataclass(frozen=True)
 class _Role:
     name: str
@@ -615,17 +702,58 @@ class _Role:
     """Whether the role takes a list of selections."""
     operation_outputs: bool = False
     """Whether a selection may instead name an Analyze operation's dataset product, read from the card that holds it."""
+    documents: tuple[Literal["model", "task"], ...] = ()
+    """The documents the role may read instead of a step's rows."""
+    checkpoint_sets: bool = False
+    """Whether a selection's checkpoint may name a finite set of updates, each a row of the reading step."""
+
+    @property
+    def entry(self) -> InputRole:
+        return InputRole(
+            required=self.required, gathers=self.gathers,
+            producer=InputProducer(
+                kind=self.producer_kind, product=self.product_role, operation_outputs=self.operation_outputs,
+            ),
+            documents=list(self.documents), checkpoint_sets=self.checkpoint_sets,
+        )
 
 
 _ROLES = {
     "train": _Role("checkpoint", False, "train", "checkpoint"),
-    "evaluate": _Role("subject", True, "train", "checkpoint", gathers=True),
+    "evaluate": _Role("subject", True, "train", "checkpoint", gathers=True, documents=("model",), checkpoint_sets=True),
 }
+_ANALYZE_TASK_ROLE = InputRole(required=True, gathers=False, producer=None, documents=["task"], checkpoint_sets=False)
+
+
+def _analyze_role(name: str, declaration: AnalyzeInput) -> _Role | None:
+    """The role an Analyze document's input declares; a Task input reads only a Task document and has none."""
+    match declaration:
+        case AnalyzeModelInput():
+            return _Role(name, True, "train", "checkpoint", documents=("model",))
+        case AnalyzeDatasetInput():
+            return _Role(name, True, "evaluate", "states", gathers=True, operation_outputs=True)
+        case AnalyzeTaskInput():
+            return None
+
+
+def step_input_roles() -> dict[str, dict[str, InputRole]]:
+    """Each step kind's inputs by name, as the planner resolves them."""
+    return {kind: {role.name: role.entry} for kind, role in _ROLES.items()}
+
+
+def analyze_input_roles() -> dict[str, InputRole]:
+    """The input an Analyze document's declaration of each kind gives its step."""
+    roles = {}
+    for kind in ("model", "dataset", "task"):
+        role = _analyze_role(kind, _ANALYZE_INPUT.validate_python({"kind": kind}))
+        roles[kind] = role.entry if role is not None else _ANALYZE_TASK_ROLE
+    return roles
 _ANALYZE_INPUTS = TypeAdapter(dict[ProjectName, AnalyzeInput])
+_ANALYZE_INPUT: TypeAdapter[AnalyzeInput] = TypeAdapter(AnalyzeInput)
 DOCUMENTS: TypeAdapter[dict[str, Document]] = TypeAdapter(dict[str, Document])
 
 type _CompiledRun = PlannedRun | PlannedAnalyzeRun
-type _Members = tuple[tuple[PlannedInput, _CompiledRun | None], ...]
+type _Members = tuple[tuple[PlannedInput, PlannedRow | None], ...]
 
 
 def _identified(
@@ -710,10 +838,23 @@ def _checkpoint(rule: CheckpointRule | None, *, horizon: int | None = None) -> P
             return BarrierMember(name=name)
 
 
-def _train_checkpoint_horizon(train: object) -> int | None:
-    if not isinstance(train, DocumentTrainingRequestSpec):
-        return None
-    return train.target_total
+def _update_outside_run(rule: CheckpointRule | None, origin: int, total: int) -> int | None:
+    """The first update an At or List rule selects outside a run from ``origin`` to ``total`` completed updates."""
+    match rule:
+        case BatchCheckpoint(at=batch):
+            updates: tuple[int, ...] = (batch,)
+        case CheckpointBatches(batches=listed):
+            updates = tuple(listed)
+        case _:
+            return None
+    return next((update for update in updates if not origin < update <= total), None)
+
+
+def _selection_path(authored: object, role: str, selection: StepReference | None) -> str:
+    """Where a member's selection is authored: its role, or its item of a listed role."""
+    if isinstance(authored, list) and selection is not None and selection in authored:
+        return f"inputs.{role}.{authored.index(selection)}"
+    return f"inputs.{role}"
 
 
 def _paired_checkpoint_step(step: Step, reference: InputBinding | None) -> str | None:
@@ -1037,7 +1178,7 @@ class _LoweredRow:
     document_ids: Mapping[str, str] = field(default_factory=dict)
     document_uses: frozenset[str] = frozenset()
     model_source: _ModelSource | None = None
-    evaluation_source: tuple[str, ...] | bytes | None = None
+    train: TrainFacts | None = None
     encoded_spec: RequestSpec | None = None
 
 
@@ -1045,7 +1186,6 @@ class _LoweredRow:
 class _TrainPreparation:
     checkpoint_problem: RunProblem | None
     evaluation: GraphSpec | ProjectDiagnostic
-    condition_ids: tuple[str, ...]
     graph: GraphSpec
     lowered: LoweredModelDocument
 
@@ -1066,7 +1206,7 @@ class _TrainRows:
 @cache
 def _builtin_expression_registry():
     from feedbax.expression_builtins import register_builtins
-    from feedbax.expression_registry import FunctionRegistry
+    from feedbax.contracts.expression_registry import FunctionRegistry
 
     registry = FunctionRegistry()
     register_builtins(registry)
@@ -1148,12 +1288,10 @@ def _encode_row(
     components: ComponentRegistry | None = None,
 ) -> _LoweredRow:
     checkpoint_problem = None
-    condition_ids = None
     if prepared_train is not None:
         payload = payload | {"trial_documents": prepared_train.documents}
         preparation = prepared_train.preparation
         checkpoint_problem = preparation.checkpoint_problem
-        condition_ids = preparation.condition_ids
         model_source = prepared_train.model
     elif kind == "train":
         from feedbax.tasks.registry import application_python_tasks, resolve_python_task_instance
@@ -1180,7 +1318,6 @@ def _encode_row(
                 _trial_problem(key, problem, document_ids) for problem in preparation
             ), lowering_stamp)
         checkpoint_problem = preparation.checkpoint_problem
-        condition_ids = preparation.condition_ids
         assert model_source is not None
         if isinstance(preparation.evaluation, ProjectDiagnostic):
             model_source = replace(
@@ -1240,7 +1377,7 @@ def _encode_row(
         else:
             encoded = request_identity.encode_request(
                 spec,
-                {role: (binding.member,) for role, binding in inputs.items()},
+                {role: (binding.request_member,) for role, binding in inputs.items()},
                 document_memo=document_memo,
                 capture_train_task=kind == "train",
             )
@@ -1266,7 +1403,6 @@ def _encode_row(
             if checkpoint_problem is None and checkpoint_source is not None:
                 assert components is not None
                 checkpoint_problem = _checkpoint_fit_problem(checkpoint_source, preparation, spec, components)
-        evaluation_source = None
         problem = (
             RunProblem("/trial_documents/model/interior/components", "Model has no components.")
             if isinstance(spec, DocumentTrainingRequestSpec) and not spec.trial_documents.model.interior.components else
@@ -1275,12 +1411,9 @@ def _encode_row(
                 term.enabled for term in spec.trial_documents.objective.terms
             ) else checkpoint_problem
         )
-        if encoded.train_task is not None:
-            selection = encoded.train_task.python_selection
-            evaluation_source = selection if selection is not None else condition_ids
         return _LoweredRow(
             encoded, (), lowering_stamp, admission_problem=problem,
-            model_source=model_source, evaluation_source=evaluation_source, encoded_spec=encoded_spec,
+            model_source=model_source, encoded_spec=encoded_spec,
         )
     return _LoweredRow(
         None,
@@ -1405,6 +1538,8 @@ class _Compiler:
         self.steps: dict[tuple[str, str], PlannedStep] = {}
         self.rows: dict[RunKey, PlannedRow] = {}
         self.excluded_checkpoint_rows: set[RunKey] = set()
+        self.waiting: dict[RunKey, RunKey] = {}
+        """Each row with a ``blocked_input``, and the producer it names."""
         self.runs: dict[tuple[str, str], tuple[_CompiledRun, ...]] = {}
         self.swept_step_axes: dict[tuple[str, str], tuple[str, ...]] = {}
         self.requests: dict[RequestId, bytes] = {}
@@ -1413,10 +1548,8 @@ class _Compiler:
         self.subsets: dict[tuple[str, str, str], PlannedSubset] = {}
         self.exception_matches: dict[tuple[str, str], Mapping[str, tuple[str, ...]]] = {}
         self.selected_definitions: dict[RunKey, SelectedRunDefinition] = {}
-        self.train_evaluation_sources: dict[RequestId, _TrainEvaluationSource] = {}
         self.model_sources: dict[RunKey, _ModelSource] = {}
         self.terminal_sources: dict[RequestId, TerminalTrainSource] = {}
-        self.checkpoint_horizons: dict[RequestId, int | None] = {}
         self.element_holders: dict[str, ElementHolders] = {}
 
     def expand_variants(self, known_sites: Mapping[str, bool] | None = None) -> None:
@@ -1617,7 +1750,6 @@ class _Compiler:
             tuple(self.diagnostics),
             MappingProxyType(self.subsets),
             MappingProxyType(self.selected_definitions),
-            MappingProxyType(self.train_evaluation_sources),
             SourceSnapshot(self.project.model_copy(deep=True), self.variant_sites, self.source_sweeps)
             if self.source_sweeps is not None else None,
             MappingProxyType(self.exception_matches),
@@ -1665,6 +1797,10 @@ class _Compiler:
         if key not in self.runs:
             self.runs[key] = self.compile_step(variant, name, (*active, key))
         return self.runs[key]
+
+    def step_rows(self, variant: str, name: str) -> tuple[PlannedRow, ...]:
+        """Every expanded row of a compiled step, whether or not it can run."""
+        return tuple(row for key, row in self.rows.items() if key.variant == variant and key.step == name)
 
     def inline_origin(self, payload: Payload, source: ValueSource) -> Any:
         if self.previous is None:
@@ -1721,9 +1857,9 @@ class _Compiler:
         checkpoint_axis = kind == "evaluate" and composition.sweep is not None and any(
             isinstance(axis, CheckpointRuleAxis) for axis in composition.sweep.axes.values()
         )
-        def member(role: str, item: PlannedInput, producer: _CompiledRun | None) -> SweepInputMember:
-            horizon = self.checkpoint_horizon(producer.request_id) \
-                if checkpoint_axis and role == "subject" and isinstance(producer, PlannedRun) else None
+        def member(role: str, item: PlannedInput, producer: PlannedRow | None) -> SweepInputMember:
+            horizon = producer.train.target_total \
+                if checkpoint_axis and role == "subject" and producer is not None and producer.train is not None else None
             if producer is not None and item.producer is not None:
                 return SweepInputMember(item.member.key, item.coordinates, producer.label, horizon)
             group = {
@@ -1872,13 +2008,6 @@ class _Compiler:
         if matches:
             self.exception_matches[variant, name] = MappingProxyType(matches)
         return rows
-
-    def checkpoint_horizon(self, request: RequestId) -> int | None:
-        if request not in self.checkpoint_horizons:
-            self.checkpoint_horizons[request] = _train_checkpoint_horizon(request_identity.decode_request(
-                self.requests[request], self.documents.__getitem__,
-            ).spec)
-        return self.checkpoint_horizons[request]
 
     def resolve_row(
         self,
@@ -2032,6 +2161,7 @@ class _Compiler:
             authored_model = None
             prepared_train = None
             remember_train = None
+            train = _train_facts(payload, self.python_tasks) if kind == "train" else None
             has_differences = MODEL_ATTACHMENTS in payload
             lowering_stamp = (
                 _RowLoweringStamp(kind, sha256_bytes(to_json((
@@ -2086,6 +2216,7 @@ class _Compiler:
             if isinstance(payload, ProjectDiagnostic):
                 return _LoweredRow(
                     None, (payload,), lowering_stamp, document_ids=document_ids, document_uses=document_uses,
+                    train=train,
                 )
             lowered = _encode_row(
                 key, kind, payload, inputs, lowering_stamp,
@@ -2100,6 +2231,7 @@ class _Compiler:
                 document_ids=document_ids,
                 document_uses=document_uses,
                 model_source=lowered.model_source or authored_model,
+                train=train,
             )
 
         if self.previous is None:
@@ -2146,7 +2278,7 @@ class _Compiler:
                     model_address=address,
                 )
             result = _TrainPreparation(
-                checkpoint_problem, evaluation, paired.execution.task.condition_ids, graph, paired.lowered,
+                checkpoint_problem, evaluation, graph, paired.lowered,
             )
         self.trial_preparations[identity] = result
         return result
@@ -2618,7 +2750,7 @@ class _Compiler:
         if kind == "analyze":
             return self.compile_analyze_step(variant, name, template, active)
         assert role is not None
-        initial = kind == "evaluate" and isinstance(template.inputs.get("subject"), InitialModelReference)
+        initial = "model" in role.documents and isinstance(template.inputs.get(role.name), InitialModelReference)
         roles = {"subject", "task", "objective"} if initial else {role.name}
         extra_roles = sorted(template.inputs.keys() - roles)
         if extra_roles:
@@ -2713,6 +2845,8 @@ class _Compiler:
                 continue
             if chosen is None and members:
                 chosen = members[0][0]
+            if chosen is not None and self.block_row(run_key, template, row, {role.name: (chosen,)}):
+                continue
             if (
                 chosen is not None and isinstance(chosen.member.reference, BestRank)
                 and CHECKPOINT_RULE_TARGET in row.patches
@@ -2736,12 +2870,26 @@ class _Compiler:
                     if rule is None and has_checkpoint_axis:
                         raise ValueError("The selected row has no checkpoint rule")
                     horizon = None
-                    if isinstance(rule, UpdateCadence):
-                        horizon = self.checkpoint_horizon(reference.request_id)
+                    if isinstance(rule, UpdateCadence) and chosen.producer is not None:
+                        facts = self.rows[chosen.producer].train
+                        horizon = facts.target_total if facts is not None else None
                     selector = _checkpoint(rule, horizon=horizon)
                 except (OSError, ValueError) as error:
                     self.diagnostics.append(ProjectDiagnostic(
                         ResolutionCode.BAD_REFERENCE, "inputs.subject.checkpoint", str(error),
+                        name, row=row.id, variant=variant,
+                    ))
+                    continue
+                facts = self.rows[chosen.producer].train if chosen.producer is not None else None
+                if facts is not None and facts.origin is not None and facts.target_total is not None and (
+                    outside := _update_outside_run(rule, facts.origin, facts.target_total)
+                ) is not None:
+                    assert chosen.producer is not None
+                    self.diagnostics.append(ProjectDiagnostic(
+                        ResolutionCode.BAD_REFERENCE,
+                        f"{_selection_path(subject, 'subject', chosen.selection)}.checkpoint",
+                        f"Update {outside} is outside {chosen.producer.step!r}, "
+                        f"which runs updates {facts.origin + 1} to {facts.target_total}.",
                         name, row=row.id, variant=variant,
                     ))
                     continue
@@ -2769,6 +2917,55 @@ class _Compiler:
             if (run := self.record_run(run_key, lowered, inputs, omissions, template.requires)) is not None:
                 result.append(run)
         return tuple(result)
+
+    def cannot_run(self, key: RunKey) -> bool:
+        """Whether a planned row cannot run: it has no request, an admission problem, or a producer that cannot run."""
+        row = self.rows.get(key)
+        return (
+            key in self.waiting
+            or not isinstance(row, (PlannedRun, PlannedAnalyzeRun))
+            or isinstance(row, PlannedRun) and row.admission_problem is not None
+        )
+
+    def block_row(
+        self, key: RunKey, template: StepComposition, row: ExpandedRow,
+        inputs: Mapping[str, tuple[PlannedInput, ...]],
+    ) -> bool:
+        """Give ``key`` one ``blocked_input`` when a producer of its members cannot run, and report whether ``key``
+        must stay unlowered because that producer has no request.
+
+        A row left unlowered is a ``BlockedRow`` that keeps its own definition and documents, so it stays authorable.
+        A row whose producer has a request is lowered as usual and keeps every problem of its own."""
+        waiting = next((
+            (role, binding, producer) for role, bindings in inputs.items() for binding in bindings
+            if (producer := binding.waits_on) is not None
+        ), None) or next((
+            (role, binding, producer) for role, bindings in inputs.items() for binding in bindings
+            for producer in binding.sources if self.cannot_run(producer)
+        ), None)
+        if waiting is None:
+            return False
+        role, binding, producer = waiting
+        self.waiting[key] = producer
+        self.diagnostics.append(ProjectDiagnostic(
+            ResolutionCode.BLOCKED_INPUT, _selection_path(template.inputs.get(role), role, binding.selection),
+            f"{producer.variant}/{producer.step}/{producer.row} cannot run",
+            key.step, row=key.row, variant=key.variant, blocked_by=producer,
+        ))
+        if binding.waits_on is None:
+            return False
+        definition = self.select_definition(template, key, row, inputs)
+        resolved = definition if definition is not None else self.resolve_row(template, key, row, None)
+        planned = self.rows[key]
+        self.rows[key] = BlockedRow(
+            planned.key, planned.kind, planned.label, planned.coordinates, MappingProxyType(dict(inputs)), producer,
+            axis_keys=planned.axis_keys, input_axes=planned.input_axes,
+            **({} if isinstance(resolved, ProjectDiagnostic) else {
+                "document_ids": MappingProxyType(dict(resolved.document_ids)),
+                "document_uses": resolved.document_uses,
+            }),
+        )
+        return True
 
     def locate_authored_problem(self, problem: ProjectDiagnostic, origin: ValueSource) -> ProjectDiagnostic:
         if origin.kind == "document":
@@ -2828,15 +3025,11 @@ class _Compiler:
         if (encoded := lowered.request) is None:
             self.rows[key] = replace(
                 row, document_ids=lowered.document_ids, document_uses=lowered.document_uses,
-                followed_documents=followed, evaluated_model=evaluated,
+                followed_documents=followed, evaluated_model=evaluated, train=lowered.train,
             )
             return None
         self.requests[encoded.id] = encoded.data
         self.documents.update(encoded.documents)
-        if lowered.evaluation_source is not None:
-            self.train_evaluation_sources[encoded.id] = _TrainEvaluationSource(
-                encoded.data, tuple(encoded.documents.items()), lowered.evaluation_source,
-            )
         if lowered.model_source is not None:
             self.model_sources[key] = lowered.model_source
         run = PlannedRun(
@@ -2849,6 +3042,7 @@ class _Compiler:
             document_uses=lowered.document_uses,
             followed_documents=followed,
             evaluated_model=evaluated,
+            train=lowered.train,
         )
         self.rows[key] = run
         return run
@@ -2897,6 +3091,8 @@ class _Compiler:
                     ))
                     break
             else:
+                if self.block_row(key, template, row, {role: (binding,) for role, binding in inputs.items()}):
+                    continue
                 definition = self.select_definition(
                     template, key, row, {role: (binding,) for role, binding in inputs.items()},
                 )
@@ -2950,9 +3146,8 @@ class _Compiler:
                 ):
                     problem(f"{path}.checkpoint", "Select a positive completed Train update.")
                     return ()
-                role = _Role(name_of_role, True, "train", "checkpoint")
-            else:
-                role = _Role(name_of_role, True, "evaluate", "states", gathers=True, operation_outputs=True)
+            role = _analyze_role(name_of_role, declaration)
+            assert role is not None
             resolved = self.select_input(variant, name, template, role, active)
             if isinstance(resolved, ProjectDiagnostic):
                 self.diagnostics.append(replace(resolved, variant=variant))
@@ -2990,6 +3185,8 @@ class _Compiler:
                     problem(f"inputs.{role}", f"Select one member from {candidates}.", row.id)
                     break
             else:
+                if self.block_row(key, template, row, inputs):
+                    continue
                 definition = self.select_definition(template, key, row, inputs)
                 resolved = definition if definition is not None else self.resolve_row(template, key, row, None)
                 if isinstance(resolved, ProjectDiagnostic):
@@ -3064,14 +3261,6 @@ class _Compiler:
         subset: PlannedSubset, reference: StepReference, at: str,
     ) -> tuple[_Members, dict[str, str], PlannedSubset] | ProjectDiagnostic:
         path = f"{at}.where"
-        terms = subset.terms
-        if terms.when is not None:
-            return ProjectDiagnostic(
-                ResolutionCode.BAD_REFERENCE, f"{path}.when",
-                "When requires a many-valued input and cannot supply an input axis.", name,
-            )
-        best = terms.best
-        assert best is not None
         if role.name != "subject":
             reason = "Best currently binds saved Evaluate subjects."
         elif reference.checkpoint not in (None, "last") or (
@@ -3079,15 +3268,16 @@ class _Compiler:
         ):
             reason = "Best requires the selected Train's last checkpoint."
         else:
-            return self.rank_groups(name, template, role, members, subset, reference, f"{path}.best")
-        return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, f"{path}.best", reason, name)
+            return self.rank_groups(name, template, role, members, subset, reference, f"{path}.rule")
+        return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, f"{path}.rule", reason, name)
 
     def rank_groups(
         self, name: str, template: StepComposition, role: _Role, members: _Members, subset: PlannedSubset,
         reference: StepReference, path: str,
     ) -> tuple[_Members, dict[str, str], PlannedSubset] | ProjectDiagnostic:
-        best = subset.terms.best
+        best = subset.best
         assert best is not None
+        written = subset.terms.rule[best.span.start:best.span.end]
         source = LabelName(reference.step, self.variants[members[0][1].key.variant].steps[reference.step].label) \
             if members else None
 
@@ -3096,64 +3286,62 @@ class _Compiler:
 
         axes = tuple(sorted(best.per))
         if len(set(axes)) != len(axes):
-            return refusal("Best group axes must be distinct.", f"{path}.per")
+            return refusal(f"{written}: per names an axis twice.")
         if not members:
             return refusal("Best requires at least one candidate.")
-        groups: dict[tuple[str, ...], list[tuple[PlannedInput, _CompiledRun]]] = {}
+        groups: dict[tuple[str, ...], list[tuple[PlannedInput, PlannedRow]]] = {}
         for item, producer in members:
             assert producer is not None
             for axis in axes:
                 if axis not in producer.coordinates:
-                    return refusal(
-                        f"Best group axis {axis!r} is missing on {producer.key.variant}/{producer.key.row}.",
-                        f"{path}.per",
-                    )
+                    return refusal(f"{written}: {axis} is missing on {producer.key.variant}/{producer.key.row}.")
             group = tuple(producer.coordinates[axis].value_id for axis in axes)
             grouped = groups.setdefault(group, [])
             if grouped and any(
                 not same_typed_value(producer.coordinates[axis].value, grouped[0][1].coordinates[axis].value)
                 for axis in axes
             ):
-                return refusal(f"Best group {dict(zip(axes, group, strict=True))!r} has conflicting axis values.",
-                               f"{path}.per")
+                return refusal(f"{written}: group {dict(zip(axes, group, strict=True))!r} has conflicting axis values.")
             grouped.append((item, producer))
-        if best.k * len(groups) > 1 and not (
+        if best.count * len(groups) > 1 and not (
             template.sweep is not None and any(
                 isinstance(axis, InputAxis) and axis.input == role.name for axis in template.sweep.axes.values()
             )
         ):
-            return refusal("Best with more than one rank requires a subject input axis.")
+            return refusal(f"{written}: more than one rank requires a subject input axis.")
 
         ranked = []
         planned_groups = []
         for group, grouped in groups.items():
             coordinates = dict(zip(axes, group, strict=True))
-            if best.k > len(grouped):
+            if best.count > len(grouped):
                 target = f" in group {coordinates!r}" if coordinates else ""
-                return refusal(f"Best requests {best.k} ranks from {len(grouped)} candidates{target}.")
+                return refusal(f"{written}: asks for {best.count} of {len(grouped)} runs{target}.")
             candidates = []
             keys = []
+            waiting = next((producer.key for _, producer in grouped if self.cannot_run(producer.key)), None)
             for item, producer in grouped:
-                assert isinstance(producer, PlannedRun)
-                if producer.admission_problem is not None:
-                    return refusal(
-                        f"Best candidate {producer.key.row!r} cannot produce a checkpoint: "
-                        f"{producer.admission_problem.detail}",
-                    )
                 keys.append(producer.key)
-                candidates.append(BestCandidate(
-                    key=item.member.key, variant=producer.key.variant, row=producer.key.row,
-                    reference=ProductRef(request_id=producer.request_id, role=role.product_role, select=LastMember()),
-                ))
+                if waiting is None:
+                    assert isinstance(producer, PlannedRun)
+                    candidates.append(BestCandidate(
+                        key=item.member.key, variant=producer.key.variant, row=producer.key.row,
+                        reference=ProductRef(request_id=producer.request_id, role=role.product_role, select=LastMember()),
+                    ))
             ranks = []
-            for position in range(1, best.k + 1):
-                rank = BestRank(
-                    metric=best.by, order=best.order, count=best.k, rank=position, candidates=tuple(candidates),
-                    group=coordinates,
+            for position in range(1, best.count + 1):
+                member: InputMember | PendingMember = (
+                    InputMember(key=best_rank_key(position, coordinates), reference=BestRank(
+                        metric=best.metric, order=best.order, count=best.count, rank=position, candidates=tuple(candidates),
+                        group=coordinates,
+                    )) if waiting is None else PendingMember(
+                        key=best_rank_key(position, coordinates),
+                        reference=PendingProduct(variant=waiting.variant, step=waiting.step, row=waiting.row),
+                    )
                 )
-                ranks.append(rank.key)
+                ranks.append(member.key)
                 ranked.append((PlannedInput(
-                    None, InputMember(key=rank.key, reference=rank), candidates=tuple(keys),
+                    None, member, candidates=tuple(keys), selection=reference,
                     named=MappingProxyType({"source": source}) if source is not None else MappingProxyType({}),
                     best_path=path,
                 ), grouped[0][1]))
@@ -3161,7 +3349,7 @@ class _Compiler:
         return tuple(ranked), {}, replace(subset, rank_groups=tuple(planned_groups))
 
     def subset_origin(
-        self, variant: str, step: str, at: str, document: str | None, term: Literal["best", "rows"],
+        self, variant: str, step: str, at: str, document: str | None, term: Literal["rule", "rows"],
     ) -> ValueSource:
         """Where the subset terms of the selection at ``at`` (``inputs.<role>`` or ``inputs.<role>.<i>``) are authored."""
         if document is not None:
@@ -3190,11 +3378,14 @@ class _Compiler:
             return None
         return self.terminal_sources.setdefault(terminal.request_id, terminal)
 
-    def subject_model(self, run: _CompiledRun) -> tuple[RunKey | None, LabelName] | None:
+    def subject_model(self, run: PlannedRow) -> tuple[RunKey | None, LabelName] | None:
         """What an Evaluate row's ``model`` names: its subject's Train step or stored run, or its untrained Model."""
-        if not isinstance(run, PlannedRun) or run.kind != "evaluate":
+        if run.kind != "evaluate":
             return None
-        subject = run.inputs.get("subject")
+        subject = (
+            run.inputs.get("subject") if isinstance(run, PlannedRun)
+            else next(iter(run.inputs.get("subject", ())), None) if isinstance(run, BlockedRow) else None
+        )
         if subject is not None and subject.producer is not None:
             producer = subject.producer
             return producer, LabelName(producer.step, self.variants[producer.variant].steps[producer.step].label)
@@ -3206,7 +3397,7 @@ class _Compiler:
             return None, LabelName(document, kind="document")
         return None
 
-    def member_coordinates(self, run: _CompiledRun) -> dict[str, SweepCoordinate]:
+    def member_coordinates(self, run: PlannedRow) -> dict[str, SweepCoordinate]:
         """What a gathered row is about: its coordinates, and for an Evaluate row the ``model`` it evaluates."""
         coordinates = dict(run.coordinates)
         if (model := self.subject_model(run)) is None:
@@ -3223,7 +3414,7 @@ class _Compiler:
         return coordinates
 
     def member_labels(
-        self, run: _CompiledRun, coordinates: Mapping[str, SweepCoordinate], *, gathers_variants: bool,
+        self, run: PlannedRow, coordinates: Mapping[str, SweepCoordinate], *, gathers_variants: bool,
     ) -> tuple[dict[str, MemberLabel], dict[str, LabelName]]:
         """The labels a stacked dataset carries: the content labels, and the step-valued ones by what they name."""
         named = {"source": LabelName(run.key.step, self.variants[run.key.variant].steps[run.key.step].label)}
@@ -3437,8 +3628,7 @@ class _Compiler:
                     ResolutionCode.BAD_REFERENCE, f"{path}.where.rows",
                     f"row variants outside reference scope: {outside!r}", name,
                 )
-        runs: tuple[_CompiledRun, ...] = ()
-        failures: list[ProjectDiagnostic] = []
+        runs: tuple[PlannedRow, ...] = ()
         for source_variant in variants:
             target = source_variant, reference.step
             if target in active:
@@ -3453,33 +3643,11 @@ class _Compiler:
                     f"{source_variant}/{reference.step} must be a {role.producer_kind} step",
                     name,
                 )
-            runs += self.step(*target, active)
-            failures.extend(
-                problem for problem in self.diagnostics if (problem.variant, problem.step) == target
-                and (not element_input or problem.element is None)
-            )
-        addresses = (
-            {(row.variant, row.row) for row in terms.rows}
-            if terms is not None and terms.rows is not None else None
-        )
-
-        def selected_failure(failure: ProjectDiagnostic) -> bool:
-            if failure.row is None:
-                return True
-            if reference.row is not None:
-                return failure.row == reference.row
-            return addresses is None or (failure.variant, failure.row) in addresses
-
-        if any(map(selected_failure, failures)):
-            return ProjectDiagnostic(
-                ResolutionCode.BAD_REFERENCE,
-                path,
-                f"referenced step {reference.step!r} has unplannable rows",
-                name,
-            )
+            self.step(*target, active)
+            runs += self.step_rows(*target)
         candidate_count = len(runs)
 
-        def member_key(run: _CompiledRun) -> str:
+        def member_key(run: PlannedRow) -> str:
             key = run.key
             return producer_member_key(key.variant, key.row, gathers_variants=reference.variants is not None)
 
@@ -3495,14 +3663,15 @@ class _Compiler:
                 )
             terms = SubsetTerms(rows=selected)
         try:
-            keyed_runs = select_step_rows(
+            keyed_runs, best = select_step_rows(
                 terms,
                 runs,
                 address=lambda run: (run.key.variant, run.key.row),
                 member_key=member_key,
-                coordinates=lambda run: axis_values(run.coordinates, run.input_axes),
+                coordinates=lambda run: axis_coordinates(run.coordinates, run.input_axes),
+                producer=self.variants[variants[0]].steps[reference.step].label or reference.step,
             )
-        except SubsetSelectionError as error:
+        except RuleRefusal as error:
             return ProjectDiagnostic(
                 ResolutionCode.BAD_REFERENCE, f"{path}.where.{error.path}", error.detail, name
             )
@@ -3514,11 +3683,11 @@ class _Compiler:
             return ProjectDiagnostic(
                 ResolutionCode.BAD_REFERENCE,
                 path,
-                f"no plannable rows for {reference.step!r}",
+                f"no rows of {reference.step!r} are selected",
                 name,
             )
         rule = None if role.name == "subject" else reference.checkpoint
-        if isinstance(rule, (CheckpointBatches, CheckpointCadence, UpdateCadence, tuple)) and role.name != "subject":
+        if isinstance(rule, (CheckpointBatches, CheckpointCadence, UpdateCadence, tuple)) and not role.checkpoint_sets:
             return ProjectDiagnostic(
                 ResolutionCode.BAD_REFERENCE, f"{path}.checkpoint",
                 "finite checkpoint sets require an Evaluate subject", name,
@@ -3531,30 +3700,46 @@ class _Compiler:
                 return ProjectDiagnostic(
                     ResolutionCode.BAD_REFERENCE, f"{path}.checkpoint", str(error), name,
                 )
-            requests: tuple[tuple[RequestId, PlannedElement | None], ...]
-            if isinstance(run, PlannedAnalyzeRun):
-                assert reference.element is not None
-                elements = run.requests(reference.element)
+            requests: tuple[tuple[RequestId, PlannedElement | None], ...] = ()
+            if isinstance(run, PlannedAnalyzeRun) and (elements := run.requests(reference.element or "")):
                 port = DatasetPort if role.operation_outputs else PlotlyFigurePort
-                if not elements or not all(isinstance(element.outputs.get(role.product_role), port) for element in elements):
+                if not all(isinstance(element.outputs.get(role.product_role), port) for element in elements):
                     address = f"{run.key.variant}/{run.key.step}/{run.key.row}/{reference.element}"
                     return ProjectDiagnostic(
                         ResolutionCode.BAD_REFERENCE, f"{path}.element",
                         f"{address} has no planned {role.product_role!r} product", name,
                     )
                 requests = tuple((element.request_id, element) for element in elements)
-            else:
+            elif isinstance(run, PlannedRun) and not element_input:
                 requests = ((run.request_id, None),)
             try:
                 coordinates = self.member_coordinates(run)
                 labels, named = self.member_labels(run, coordinates, gathers_variants=reference.variants is not None)
                 if role.operation_outputs and element_input:
                     del named["source"]
-                    named["element"] = LabelName(reference.element, elements[0].label, kind="element", card=run.key.step)
+                    label = requests[0][1].label if requests and requests[0][1] is not None else None
+                    named["element"] = LabelName(reference.element, label, kind="element", card=run.key.step)
                 elif role.producer_kind != "evaluate":
                     labels = {}
             except ValueError as error:
                 return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, str(error), name)
+            if not requests:
+                members.append((
+                    PlannedInput(
+                        run.key,
+                        PendingMember(
+                            key=key,
+                            reference=PendingProduct(variant=run.key.variant, step=run.key.step, row=run.key.row),
+                            labels=labels,
+                        ),
+                        producer_element=reference.element,
+                        coordinates=MappingProxyType(coordinates),
+                        selection=reference,
+                        named=MappingProxyType(named),
+                    ),
+                    run,
+                ))
+                continue
             for request, element in requests:
                 mapped = element.stack_key if element is not None and element.key.member is not None else None
                 members.append((
@@ -3562,11 +3747,7 @@ class _Compiler:
                         run.key,
                         InputMember(
                             key=key if mapped is None else mapped if len(keyed_runs) == 1 else f"{key}/{mapped}",
-                            reference=ProductRef(
-                                request_id=request,
-                                role=role.product_role,
-                                select=selector,
-                            ),
+                            reference=ProductRef(request_id=request, role=role.product_role, select=selector),
                             labels=labels | (dict(element.mapped) if element is not None else {}),
                         ),
                         producer_element=reference.element,
@@ -3579,9 +3760,9 @@ class _Compiler:
                 ))
         source = None
         if terms is not None and role.name in {"subject", "states"}:
-            if terms.best is not None and role.name == "subject":
+            if best is not None and role.name == "subject":
                 source = SubsetSource(
-                    self.subset_origin(variant, name, path, subset_document, "best"), reference.step,
+                    self.subset_origin(variant, name, path, subset_document, "rule"), reference.step,
                 )
             elif reference.row is None and terms.rows is not None:
                 source = SubsetSource(
@@ -3593,11 +3774,12 @@ class _Compiler:
                 deepcopy(terms), candidate_count,
                 tuple(run.key for _, run in keyed_runs), subset_document,
                 source=source,
+                best=best,
             )
             if terms is not None
             else None
         )
-        if terms is not None and (terms.best is not None or terms.when is not None):
+        if subset is not None and best is not None:
             return self.rank_input(name, template, role, tuple(members), subset, reference, path)
         return tuple(members), {}, subset
 

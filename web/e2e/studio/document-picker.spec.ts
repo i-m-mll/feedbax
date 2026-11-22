@@ -174,8 +174,8 @@ test('the slot header switches, creates, duplicates, renames and re-keys a step\
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
   await expect(picker('Model')).toHaveText('arm');
 
-  await page.getByRole('tab', { name: 'Scene', exact: true }).click();
-  await expect(picker('Model')).toHaveText('arm');
+  // A Model with no planar geometry leaves the Scene empty, so its tab is disabled rather than showing the picker.
+  await expect(page.getByRole('tab', { name: 'Scene', exact: true })).toHaveAttribute('aria-disabled', 'true');
 
   await header.getByRole('button', { name: 'Split Details', exact: true }).click();
   const slots = page.locator('[data-slot]');

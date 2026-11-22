@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { baseChain, documentPayload } from './documentPayload';
+import { baseChain, baseOf, documentPayload } from './documentPayload';
 import { ChartLine, Database, Sigma } from 'lucide-react';
 import { useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
@@ -32,7 +32,11 @@ import {
 import { shownName, type PlanStepView } from '@/features/pipeline/planView';
 import { heldElementKeys } from './analysisElements';
 import { isMemberName } from './projectMemberName';
-import { AnalyzeElementInputs, AnalyzeRoleBinding } from './AnalyzeReferences';
+import { AnalyzeElementInputs } from './AnalyzeReferences';
+import { SelectionRule } from './SelectionRule';
+import { changedSelections, stepSelections } from './selectionEdits';
+import { InputEditor } from './InputEditor';
+import { useAuthoringCatalog } from '@/api/studioAuthoring';
 import { selectionProblem } from './selectionEdits';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import type { ChangeMark } from '@/components/values/fieldModel';
@@ -162,6 +166,8 @@ export function useManagedAnalyze({
     return `${shownCard}/${shownName(source, cardAnalysis(card)?.operations?.[source])}.${product}`;
   }
   const selectedInput = selected ? declarations[selected] : undefined;
+  const inputRoles = useAuthoringCatalog().data?.analyze_inputs;
+  const inputRole = selectedInput && inputRoles?.[selectedInput.kind];
   const armed = usePick(selection);
   const canvasPick = useMemo(() => armed && document ? {
     accepts: (id: string) => armed.accepts({ kind: 'element', address: { document, element: { kind: 'named', id } } }),
@@ -217,8 +223,9 @@ export function useManagedAnalyze({
   const changedPaths = new Set(catalog?.document === document ? catalog?.changed ?? [] : []);
   function changedAt(path: readonly string[]): ChangeMark | undefined {
     const pointer = authoredPointer(path);
-    if (!changedPaths.has(pointer)) return undefined;
-    return { text: studioName('changed'), reset: canEdit ? async () => {
+    const base = baseOf(saved.project.documents, document);
+    if (!changedPaths.has(pointer) || base === undefined) return undefined;
+    return { from: { kind: 'base', document: base }, reset: canEdit ? async () => {
       try { await editor.command((current) => save(current, studioName('reset'), { kind: 'reset', paths: [pointer] })); return undefined; }
       catch (cause) { return cause instanceof Error ? cause.message : String(cause); }
     } : undefined };
@@ -365,11 +372,34 @@ export function useManagedAnalyze({
       onEditingChange={(editing) => setNaming(editing ? { scope, element: selected, field: 'key' } : undefined)}
       onCommit={(key) => changeElementKey(selected, key)}
       refusal={landed && typeof landed.at === 'object' && 'key' in landed.at && landed.at.key === selected ? landed.reason : undefined} />}
-    {selected && selectedInput && <AnalyzeRoleBinding role={selected} kind={selectedInput.kind} binding={step?.inputs?.[selected]}
-      project={saved.project} steps={steps} picking={selection} refusal={roleRefusal(selected, selected)}
-      inputs={steps.find(({ id }) => id === key?.step)?.inputs} outputs={cardOutputs}
-      problem={(index) => key && selectionProblem(projection?.window_map?.problems ?? [], key.step, key.variant, selected, index)}
-      onBind={canBind ? (binding) => bind(selected, binding) : undefined} />}
+    {selected && selectedInput && key && inputRole && <InputEditor label={humanizeLabel(selected)} role={inputRole}
+      binding={step?.inputs?.[selected]} self={key.step} project={saved.project} steps={steps} picking={selection}
+      refusal={roleRefusal(selected, selected)} outputs={cardOutputs}
+      selection={(index, reference) => {
+        const binding = step?.inputs?.[selected];
+        const listed = Array.isArray(binding);
+        const subset = steps.find(({ id }) => id === key.step)?.inputs.find(({ id }) => id === (listed ? `${selected}.${index}` : selected))?.subset;
+        const source = steps.find(({ id }) => id === reference.step);
+        const where = reference.where ?? {};
+        return {
+          problem: selectionProblem(projection?.window_map?.problems ?? [], key.step, key.variant, selected, index, listed),
+          runs: source && projection && !('subset' in where) && <SelectionRule
+            scope={{ project: saved.project_id, revision: projection.revision, variant: key.variant }} source={source}
+            rule={where.rule ?? ''} pinned={where.rows?.map(({ key: row }) => row)} planned={subset} picking={selection}
+            disabled={!canBind} refusal={roleRefusal(selected, selected)}
+            onCommit={(rule) => {
+              const { rule: _written, ...rest } = where;
+              const next = { ...reference, where: rule ? { ...rest, rule } : rest };
+              bind(selected, listed ? changedSelections(stepSelections(binding)!, { kind: 'replace', index, reference: next }) : next);
+            }} />,
+        };
+      }}
+      onChange={canBind ? (gesture) => {
+        if (gesture.kind === 'select') bind(selected, gesture.binding);
+        else if (gesture.kind === 'document') bind(selected, inputRole.documents[0] === 'task'
+          ? { kind: 'task', source: { document: gesture.document } }
+          : { kind: 'initial_model', source: { document: gesture.document } });
+      } : undefined} />}
     {selected && document && (operation ?? figure) && <AnalyzeElementInputs document={document} element={selected} roles={roles}
       inputs={(operation ?? figure)!.inputs} declarations={declarations} outputs={outputs} picking={selection}
       refusal={(role) => roleRefusal(selected, role)} onWire={canEdit ? (role, source) => wire(selected, role, source) : undefined} />}

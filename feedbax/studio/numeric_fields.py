@@ -19,10 +19,14 @@ from feedbax.contracts.studio_authoring import (
     StudioAuthoringSweepChange, StudioNameSweepValue, StudioSetSweepValue, StudioSweepEdit, StudioToSweep,
 )
 from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioFieldView, StudioSweepValue
-from feedbax.expression_registry import FunctionRegistry
+from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.expression_site import FieldKind, field_kind, project_site, read_field
-from feedbax.expression_text import ParsedField, print_field
+from feedbax.contracts.expression_text import ParsedField, print_field
 from feedbax.studio.authoring_sweeps import FieldSweeps, drop_axis, named_axis
+from feedbax.studio.value_structure import value_structure
+
+_STORED_KINDS = (FieldKind.VALUE, FieldKind.SWEEP)
+"""The kinds a numeric field stores: a number, or a sweep of numbers."""
 
 
 @dataclass(frozen=True)
@@ -164,6 +168,7 @@ def project_numeric_field[View: StudioFieldView](
     """
     own = not scoped or bool(axis and axis.for_selection)
     site = project_site(field.site, functions)
+    site = site.model_copy(update={"kinds": tuple(kind for kind in site.kinds if kind in _STORED_KINDS)})
     view = axis.view() if axis else None
     coordinate = selected.coordinates.get(view.id) if selected and view else None
     source = axis.shown[0][1] if axis and len(axis.covering) == 1 and len(axis.shown) == 1 else None
@@ -190,6 +195,7 @@ def project_numeric_field[View: StudioFieldView](
         ]
     return view_type(
         **address, label=field.label, text=print_field(shown, field.site), unit=field.unit,
+        structure=value_structure(shown, field.site, functions),
         conversion=_conversion(field, period) if source is None else None,
         effective=print_field(field.literal(effective), field.site)
         if type(effective) in (int, float) and effective != field.value else None,

@@ -28,7 +28,7 @@ from feedbax.contracts.expression_values import (
     scope_problems,
 )
 from feedbax.contracts.model_address import ModelAddress
-from feedbax.expression_registry import (
+from feedbax.contracts.expression_registry import (
     Function,
     FunctionClass,
     FunctionRegistry,

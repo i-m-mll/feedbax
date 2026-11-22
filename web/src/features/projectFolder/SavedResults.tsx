@@ -73,9 +73,9 @@ function TrainResults({ row, attempt, ...plot }: Omit<Parameters<typeof StudioTr
 
 /**
  * The Results of the focused run in the plan on screen. Until a plan has been read they are loading; after that they
- * keep the plan on screen, marked pending while the shown revision's plan is read, and a replay waits for that plan.
+ * keep the plan on screen, marked pending while the shown revision's plan is read.
  */
-export function SavedResults({ shown, current, failure, result, project, stopped, onReplay, fallback }: {
+export function SavedResults({ shown, current, failure, result, project, stopped, onReplay }: {
   /** The plan on screen, which is of an earlier revision while the shown revision's plan is read. */
   shown: StudioSavedTrainRuns | undefined;
   /** Whether `shown` is the plan of the shown revision. */
@@ -86,17 +86,15 @@ export function SavedResults({ shown, current, failure, result, project, stopped
   project: string;
   stopped?: ReactNode;
   onReplay(update: number): void;
-  /** Shown when the plan on screen has no Results for the focus. */
-  fallback: ReactNode;
 }) {
   const region = useRegionPending(!!shown && !current);
   if (failure) return <StudioRegion state={failure} />;
   if (!shown) return <StudioRegion state={{ kind: 'loading' }} />;
   const { row, attempt, evaluation } = result;
   if (evaluation?.checkpoint_series) return <div {...region}>
-    <StudioEvaluationResults evaluation={evaluation} replayable={current} onReplay={onReplay} />
+    <StudioEvaluationResults evaluation={evaluation} onReplay={onReplay} />
   </div>;
-  if (!row) return <>{fallback}</>;
+  if (!row) return null;
   return <div {...region}>
     {stopped}
     <TrainResults key={savedRunId(row.key)} project={project} revision={shown.revision}

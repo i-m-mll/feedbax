@@ -12,7 +12,7 @@ from typing import Literal
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from feedbax.contracts.studio_api import StudioRenderFailure
+from feedbax.contracts.studio_api import StudioErrorReport
 from feedbax.host import HostClient
 from feedbax.jobs import JobService, SessionSubmission
 from feedbax.orchestration.targets import TargetRegistry
@@ -135,12 +135,9 @@ def create_app(
     async def health():
         return {"status": "ready"}
 
-    @app.post("/api/studio/render-failure", status_code=204)
-    async def render_failure(report: StudioRenderFailure) -> None:
-        service_log.error(
-            "Studio render failure region=%r type=%r detail=%r components=%r",
-            report.region, report.error_type, report.detail, report.component_stack,
-        )
+    @app.post("/api/studio/errors", status_code=204)
+    async def studio_error(report: StudioErrorReport) -> None:
+        service_log.error("Studio error %s %s", report.ref, report.model_dump_json(exclude_defaults=True))
 
     app.include_router(jobs.router)
     app.include_router(projects.router)

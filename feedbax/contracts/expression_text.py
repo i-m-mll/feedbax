@@ -9,6 +9,7 @@ import json
 from math import isfinite
 import re
 from types import MappingProxyType
+from typing import Literal
 
 from lark import Lark, Token, Tree, UnexpectedInput
 
@@ -33,13 +34,20 @@ from feedbax.contracts.expression_values import (
     TextSpan,
     scope_problems,
 )
-from feedbax.expression_builtins import POINT_INTERPOLATIONS
-from feedbax.expression_registry import FunctionClass, FunctionRegistry
+from feedbax.contracts.expression_registry import POINT_INTERPOLATIONS, FunctionClass, FunctionRegistry
+from feedbax.contracts.strict_json import strict_json_loads
 
 
 _GRAMMAR = r"""
 ?field: expr
       | expr "," [expr ("," expr)*] -> sweep
+rule: [term (["and"] term)*]
+term: NAME "=" unary ("," unary)* -> member_term
+    | NAME "=" unary ".." unary -> span_term
+    | (LOWEST | HIGHEST) NUMBER (NAME | ESCAPED_STRING) ["per" NAME ("," NAME)*] -> best_term
+    | disjunction -> condition_term
+LOWEST: "lowest"
+HIGHEST: "highest"
 ?expr: disjunction
 ?disjunction: disjunction "or" conjunction -> or_
             | conjunction
@@ -70,9 +78,9 @@ _GRAMMAR = r"""
          | expr
 CMP: "==" | "!=" | "<=" | ">=" | "<" | ">"
 ADD: "+" | "-" | "−"
-MUL: "*" | "/" | "·"
-NUMBER: /(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?/
-NAME: /[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*/
+MUL: "*" | "/" | "·" | "%"
+NUMBER: /(?:[0-9]+(?:\.(?!\.)[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?/
+NAME: /NAME_PATTERN/
 UNIT: /UNIT_PATTERN/
 %import common.WS
 %import common.ESCAPED_STRING
@@ -85,6 +93,7 @@ _OPERATORS = {
     "*": "mul",
     "·": "mul",
     "/": "div",
+    "%": "mod",
     "==": "eq",
     "!=": "ne",
     "<": "lt",
@@ -105,18 +114,24 @@ DRAW_ALIASES = MappingProxyType(
 )
 _DRAW_SPELLINGS = {family: alias for alias, family in DRAW_ALIASES.items()}
 _IDENTIFIER = re.compile(r"[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*")
+RULE_NAME = re.compile(r"[a-zA-Z_](?:[a-zA-Z0-9_-]*[a-zA-Z0-9_])?")
+"""A name as a run rule writes it unquoted: project names take hyphens (``learning-rate``), so subtraction is spaced."""
 _KEYWORDS = frozenset({"true", "false", "and", "or", "not"})
 
 
-@lru_cache(maxsize=1)
-def _parser() -> Lark:
+@lru_cache(maxsize=2)
+def _parser(start: Literal["field", "rule"] = "field") -> Lark:
+    """The parser of a field's text, or of a run rule's, where terms are separated by spaces and so take no units, and
+    names are project names, which take hyphens."""
     units = sorted(filter(None, UNITS), key=len, reverse=True)
     unit_pattern = (
         "(?:" + "|".join(re.escape(unit).replace("/", r"\/") for unit in units) + r")(?![\w.])"
+        if start == "field" else "(?!)_"
     )
+    name_pattern = _IDENTIFIER.pattern if start == "field" else RULE_NAME.pattern
     return Lark(
-        _GRAMMAR.replace("UNIT_PATTERN", unit_pattern),
-        start="field",
+        _GRAMMAR.replace("UNIT_PATTERN", unit_pattern).replace("NAME_PATTERN", name_pattern),
+        start=start,
         parser="lalr",
         propagate_positions=True,
         maybe_placeholders=False,
@@ -151,8 +166,9 @@ def _fail(node: Tree | Token, code: ProblemCode, reason: str, path: NodePath) ->
 
 
 class _Reader:
-    def __init__(self, site: Site, functions: FunctionRegistry | None):
-        self.names = {item.name: item.id for item in site.names}
+    def __init__(self, names: Mapping[str, str] | None, functions: FunctionRegistry | None):
+        """``names`` maps the names in scope to their references; ``None`` takes every name as its own reference."""
+        self.names = names
         self.spans: dict[NodePath, TextSpan] = {}
         self.functions = functions
 
@@ -216,7 +232,9 @@ class _Reader:
                 return LiteralValue(value=node.data == "true")
             case "name" | "quoted_name":
                 spelling = str(node.children[0])
-                name = json.loads(spelling) if node.data == "quoted_name" else spelling
+                name = strict_json_loads(spelling) if node.data == "quoted_name" else spelling
+                if self.names is None:
+                    return NameValue(reference=name)
                 if name not in self.names:
                     code = (
                         ProblemCode.OUT_OF_SCOPE
@@ -324,7 +342,7 @@ def parse(
         return problems
     try:
         tree = _parser().parse(text)
-        reader = _Reader(site, functions)
+        reader = _Reader({item.name: item.id for item in site.names}, functions)
         value = reader.field(tree)
         return ParsedField(value, MappingProxyType(reader.spans))
     except _ReadError as error:
@@ -346,6 +364,103 @@ def parse(
         return (
             Problem(code=ProblemCode.PARSE, reason="Expression exceeds the supported structure."),
         )
+
+
+@dataclass(frozen=True)
+class RuleChoice:
+    """``name=a,b``: the runs whose value of ``name`` is one of ``values``, each a literal or a value's name."""
+
+    name: str
+    values: tuple[LiteralValue | NameValue, ...]
+    span: TextSpan
+
+
+@dataclass(frozen=True)
+class RuleInterval:
+    """``name=first..last``: the runs whose value of ``name`` lies between the two, both included."""
+
+    name: str
+    first: LiteralValue
+    last: LiteralValue
+    span: TextSpan
+
+
+@dataclass(frozen=True)
+class RuleCondition:
+    """A comparison in the expression language, whose names are axes or metrics."""
+
+    expression: Expression
+    span: TextSpan
+
+
+@dataclass(frozen=True)
+class RuleBest:
+    """``lowest 3 loss per lr``: the ``count`` runs of each ``per`` group that rank first by ``metric``."""
+
+    order: Literal["min", "max"]
+    count: int
+    metric: str
+    per: tuple[str, ...]
+    span: TextSpan
+
+
+type RuleTerm = RuleChoice | RuleInterval | RuleCondition | RuleBest
+
+
+def _rule_value(reader: _Reader, node: Tree) -> LiteralValue | NameValue:
+    value = reader.expr(node, ())
+    if not isinstance(value, LiteralValue | NameValue):
+        _fail(node, ProblemCode.STRUCTURE, "A value is a number or a name.", ())
+    return value
+
+
+def _rule_terms(reader: _Reader, node: Tree) -> list[RuleTerm]:
+    span = _span(node)
+    match node.data:
+        case "member_term":
+            name, *values = node.children
+            return [RuleChoice(str(name), tuple(_rule_value(reader, value) for value in values), span)]
+        case "span_term":
+            name, *ends = node.children
+            first, last = (_rule_value(reader, end) for end in ends)
+            if not isinstance(first, LiteralValue) or not isinstance(last, LiteralValue):
+                _fail(node, ProblemCode.STRUCTURE, "A range runs between two numbers.", ())
+            return [RuleInterval(str(name), first, last, span)]
+        case "best_term":
+            order, count, metric, *per = node.children
+            if not count.isdigit() or int(count) < 1:
+                _fail(count, ProblemCode.TYPE_MISMATCH, "Count must be a positive integer.", ())
+            return [RuleBest(
+                "min" if order.type == "LOWEST" else "max", int(count),
+                strict_json_loads(metric) if metric.type == "ESCAPED_STRING" else str(metric), tuple(map(str, per)), span,
+            )]
+        case "condition_term":
+            (expression,) = node.children
+            conjuncts = []
+            while isinstance(expression, Tree) and expression.data == "and_":
+                expression, right = expression.children
+                conjuncts.append(right)
+            conjuncts.append(expression)
+            return [RuleCondition(reader.expr(item, ()), _span(item)) for item in reversed(conjuncts)]
+    raise AssertionError(f"Unexpected rule grammar rule {node.data!r}")
+
+
+def parse_rule(text: str) -> tuple[RuleTerm, ...] | Problem:
+    """Parse a run rule: terms separated by spaces or ``and``, every one of which a chosen run meets."""
+    try:
+        tree = _parser("rule").parse(text)
+        reader = _Reader(None, None)
+        return tuple(term for node in tree.children for term in _rule_terms(reader, node))
+    except _ReadError as error:
+        return error.problem
+    except UnexpectedInput as error:
+        offset = len(text) if error.pos_in_stream is None or error.pos_in_stream < 0 else error.pos_in_stream
+        return Problem(
+            code=ProblemCode.PARSE, reason="Expected a rule term.",
+            span=TextSpan(start=offset, end=min(offset + 1, len(text))),
+        )
+    except (ValueError, RecursionError):
+        return Problem(code=ProblemCode.PARSE, reason="Rule exceeds the supported structure.")
 
 
 def _print(node: Expression, names: Mapping[str, str]) -> str:

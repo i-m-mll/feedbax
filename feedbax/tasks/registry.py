@@ -17,7 +17,7 @@ from feedbax.plugins.declarations import (
 
 if TYPE_CHECKING:
     from feedbax.compiler.model_document import ResolvedModelInterface
-    from feedbax.expression_registry import FunctionRegistry
+    from feedbax.contracts.expression_registry import FunctionRegistry
     from feedbax.tasks.document import TrialSource
 
 

@@ -31,7 +31,7 @@ import {
 } from '@/components/activity/studioVocabulary';
 import { useCommandSource } from '@/features/projectWindow/heldGestures';
 import { commandAttributes, unboundStudioCommand, type StudioCommand } from '@/features/projectWindow/studioCommands';
-import type { ReferencePick } from '@/features/projectWindow/elementSelection';
+import type { ReferencePick, RuleChoice } from '@/features/projectWindow/elementSelection';
 import { StudioCanvas, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { Button, IconButton } from '@/components/ui/Button';
 import { InlineEdit } from '@/components/ui/InlineEdit';
@@ -99,6 +99,8 @@ function chooseMapStep(apply: ApplyMapSelection, toggle?: ChooseStep): ChooseSte
 
 export interface StudioPipelineMapProps {
   plan: PlanView;
+  /** The runs a rule field being written chooses, boxed on their step's card. */
+  choosing?: RuleChoice | null;
   state: PipelineSelectionState;
   onSelectionChange: (state: PipelineSelectionState) => void;
   documentScope?: MapDocumentScope;
@@ -302,6 +304,7 @@ const StepCard = memo(function StepCard({
   dimmed,
   upstream,
   downstream,
+  boxed,
   runMenu,
   axisMenu,
   stepMenu,
@@ -326,6 +329,7 @@ const StepCard = memo(function StepCard({
   dimmed: boolean;
   upstream?: ReadonlySet<string>;
   downstream?: ReadonlySet<string>;
+  boxed?: ReadonlySet<string>;
   runMenu?: RunMenu;
   axisMenu?: AxisMenu;
   stepMenu?: StepMenu;
@@ -421,6 +425,7 @@ const StepCard = memo(function StepCard({
           selected={selected}
           upstream={upstream}
           downstream={downstream}
+          boxed={boxed}
           applySelection={applySelection}
           runMenu={runMenu}
           axisMenu={axisMenu}
@@ -812,6 +817,7 @@ export function StudioPipelineMap({
   stepMenu,
   rename,
   pick,
+  choosing,
   connect,
   onEnterStep,
   pending = false,
@@ -927,6 +933,7 @@ export function StudioPipelineMap({
                   !ancestry.upstream.has(step.id) && !ancestry.downstream.has(step.id)}
                 upstream={upstream?.get(step.id)}
                 downstream={downstream?.get(step.id)}
+                boxed={choosing?.step === step.id ? choosing.runs : undefined}
                 onPresentationChange={onPresentationChange}
                 newStep={newStepCommand?.({ stepId: step.id, selection: stepRunSelection(state.selection, step.id) }, step.label)}
                 newSweep={newSweepCommand?.(step.id, step.label)}

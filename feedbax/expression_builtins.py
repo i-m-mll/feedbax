@@ -19,13 +19,16 @@ from feedbax.contracts.expression_values import (
     ValueBase,
     ValueType,
 )
-from feedbax.expression_registry import (
+from feedbax.contracts.expression_registry import (
+    Density,
     Evaluation,
     Function,
     FunctionClass,
     FunctionInfo,
+    FunctionParameter,
     FunctionRegistry,
     OperandHint,
+    POINT_INTERPOLATIONS,
     SignatureError,
     StateReset,
 )
@@ -307,6 +310,34 @@ def _sample(family: str, context: CallContext, *args):
     raise AssertionError(family)
 
 
+def _uniform_density(low: float, high: float) -> Density | None:
+    if not low < high:
+        return None
+    return Density(low, high, lambda x: (x >= low) & (x <= high))
+
+
+def _loguniform_density(low: float, high: float) -> Density | None:
+    if not 0 < low < high:
+        return None
+    return Density(low, high, lambda x: ((x >= low) & (x <= high)) / x)
+
+
+def _normal_density(mean: float, sd: float) -> Density | None:
+    if not sd > 0:
+        return None
+    import numpy as np
+
+    return Density(mean - 3 * sd, mean + 3 * sd, lambda x: np.exp(-0.5 * ((x - mean) / sd) ** 2))
+
+
+def _truncexp_density(mean: float, low: float, high: float) -> Density | None:
+    if not (mean > 0 and low < high):
+        return None
+    import numpy as np
+
+    return Density(low, high, lambda x: np.exp(-(x - low) / mean))
+
+
 def _choose(context: CallContext, condition, yes, no):
     import jax.numpy as jnp
 
@@ -468,9 +499,6 @@ def _points_type(mode, args, kwargs):
         shape=values.shape[1:],
         dimensions=values.dimensions,
     )
-
-
-POINT_INTERPOLATIONS = ("linear", "hold", "cubic")
 
 
 def _bind_points(function, node):
@@ -665,14 +693,18 @@ def register_builtins(registry: FunctionRegistry) -> None:
         result_dimensions=_known_result,
         reset=StateReset.TRIAL,
         bind=None,
-        positional_names=(),
+        label=None,
+        parameters=(),
+        density=None,
     ):
         minimum, maximum = count if isinstance(count, tuple) else (count, count)
         registry.register(
             Function(
                 FunctionInfo(
                     id=name,
-                    signature=f"{name}({', '.join(positional_names) if positional_names else signature})",
+                    signature=f"{name}({', '.join(item for item, _ in parameters) if parameters else signature})",
+                    label=label,
+                    parameters=tuple(FunctionParameter(name=item, label=text) for item, text in parameters),
                     display_class=display_class,
                     min_args=minimum,
                     max_args=maximum,
@@ -690,7 +722,7 @@ def register_builtins(registry: FunctionRegistry) -> None:
                 argument_context,
                 result_dimensions,
                 bind,
-                positional_names,
+                density,
             )
         )
 
@@ -699,6 +731,7 @@ def register_builtins(registry: FunctionRegistry) -> None:
         ("sub", "subtract", "same", None),
         ("mul", "multiply", "product", None),
         ("div", "true_divide", "quotient", _REAL),
+        ("mod", "remainder", "same", None),
         ("lt", "less", "same", _BOOL),
         ("le", "less_equal", "same", _BOOL),
         ("gt", "greater", "same", _BOOL),
@@ -916,23 +949,27 @@ def register_builtins(registry: FunctionRegistry) -> None:
             level=Level.STEP,
             argument_context=partial(_operand_context, base=_REAL),
         )
-    for family, names, infer in (
-        ("uniform", ("low", "high"), partial(_elementwise, base=_REAL)),
-        ("loguniform", ("low", "high"), partial(_elementwise, base=_REAL)),
-        ("normal", ("mean", "sd"), partial(_elementwise, base=_REAL)),
-        ("bernoulli", ("probability",), _bernoulli),
-        ("choice", (), _choice),
-        ("truncexp", ("mean", "low", "high"), partial(_elementwise, base=_REAL)),
-        ("uniform_region", ("centre", "radius"), _region),
+    for family, label, parameters, infer, density in (
+        ("uniform", "Uniform", (("low", "Low"), ("high", "High")), partial(_elementwise, base=_REAL), _uniform_density),
+        ("loguniform", "Log-uniform", (("low", "Low"), ("high", "High")), partial(_elementwise, base=_REAL),
+         _loguniform_density),
+        ("normal", "Normal", (("mean", "Mean"), ("sd", "SD")), partial(_elementwise, base=_REAL), _normal_density),
+        ("bernoulli", "Bernoulli", (("probability", "Probability"),), _bernoulli, None),
+        ("choice", "Choice", (), _choice, None),
+        ("truncexp", "Truncated exponential", (("mean", "Mean"), ("low", "Low"), ("high", "High")),
+         partial(_elementwise, base=_REAL), _truncexp_density),
+        ("uniform_region", "Uniform region", (("centre", "Centre"), ("radius", "Radius")), _region, None),
     ):
         add(
             family,
             "values…",
-            len(names) if names else (1, None),
+            len(parameters) if parameters else (1, None),
             infer,
             partial(_sample, family),
             display_class=_DRAW,
-            positional_names=names,
+            label=label,
+            parameters=parameters,
+            density=density,
             random=True,
             argument_context=(
                 partial(_operand_context, base=_REAL, dimensionless=True)

@@ -291,6 +291,8 @@ test('a press on a run\'s row shows that run\'s Results, and a reload keeps it',
   const jobs = ((await accepted.json()) as { items: { job_id: string }[] }).items.map(({ job_id }) => job_id);
   await expect(table.getByText('Done', { exact: true })).toHaveCount(2, { timeout: 25_000 });
 
+  const status = (index: number) => table.locator('tbody tr[data-index]').nth(index).getByRole('cell').filter({ hasText: 'Done' });
+  await status(0).click();
   await openResultsSlot(page);
   const results = page.locator('[data-slot="secondary"]').getByRole('region', { name: 'Results', exact: true }).last();
   const shown = async () => {
@@ -298,8 +300,6 @@ test('a press on a run\'s row shows that run\'s Results, and a reload keeps it',
     await expect(history.first()).toBeAttached({ timeout: 10_000 });
     return await history.first().getAttribute('data-attempt');
   };
-  const status = (index: number) => table.locator('tbody tr[data-index]').nth(index).getByRole('cell').filter({ hasText: 'Done' });
-  await status(0).click();
   const first = await shown();
   await status(1).click();
   await expect.poll(shown).not.toBe(first);

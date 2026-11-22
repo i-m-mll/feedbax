@@ -267,7 +267,7 @@ def test_addressed_field_range_sample_and_row_provenance(tmp_path):
                 "run": {"variant": "default", "step": "train", "row": "default"}}
         state = client.post(url + "/model/fields", json=body).json()["fields"][0]
         assert state["text"] == "0.02 s"
-        assert state["site"]["kinds"] == ["value", "sweep", "formula"]
+        assert state["site"]["kinds"] == ["value", "sweep"]
         response = client.post(url + "/model/fields", json=body | {
             "address": state["address"], "edit": {"kind": "text", "text": "linspace(10 ms, 30 ms, 3)"},
         })
@@ -443,7 +443,7 @@ def test_a_sweep_with_an_exception_can_still_sweep_the_fields_the_exception_leav
             "fast": {"value": 0.003, "patches": {rate: {"value": 0.003}}},
         }}},
         "exceptions": {"wide": {
-            "where": {"axes": {"learning-rate": ["fast"]}},
+            "where": {"rule": "learning-rate=fast"},
             "patches": {"training_config.batch_size": {"value": 8}},
         }},
     }
@@ -725,11 +725,9 @@ def test_a_parameter_swept_for_one_optimizer_divides_only_its_runs(tmp_path):
         continued = {run.key.row: run.inputs["checkpoint"].producer for run in plan.runs if run.key.step == "train-2"}
         assert {row: producer.row for row, producer in continued.items()} == {key.row: key.row for key in coordinate}
 
-        point_nine = next(row.coordinates[axis].value_id for row in runs if axis in row.coordinates
-                          and row.coordinates[axis].value == 0.9)
         train.save(Mock(status_code=200, json=lambda: {"files": [{
             "address": {"kind": "step", "id": "picked"},
-            "patches": [{"op": "add", "path": "/inputs/subject/where", "value": {"axes": {axis: [point_nine]}}}],
+            "patches": [{"op": "add", "path": "/inputs/subject/where", "value": {"rule": f"{axis}=0.9"}}],
         }]}))
         picked = [run for run in train.plan(tmp_path, name).runs if run.key.step == "picked"]
         assert [run.inputs["subject"].producer.row for run in picked] == [
@@ -787,7 +785,7 @@ def test_a_class_swept_for_some_runs_reads_as_the_selected_runs_have_it(tmp_path
                                                       if row.coordinates["learning-rate"].value_id == value_id))
         train.save(Mock(status_code=200, json=lambda: {"files": [{
             "address": {"kind": "step", "id": "train"},
-            "patches": [{"op": "add", "path": "/sweep/axes/optimizer/where", "value": {"axes": {"learning-rate": [fast]}}}],
+            "patches": [{"op": "add", "path": "/sweep/axes/optimizer/where", "value": {"rule": f"learning-rate={fast}"}}],
         }]}))
         assert len(train.plan(tmp_path, "fast-optimizer").rows) == 3
         fast_runs = train.runs(tmp_path, "fast-optimizer", **{"learning-rate": fast})
@@ -823,7 +821,7 @@ def test_a_model_field_swept_for_some_runs_reads_as_the_selected_runs_have_it(tm
                     if name != "seed")
         train.save(Mock(status_code=200, json=lambda: {"files": [{
             "address": {"kind": "step", "id": "train"},
-            "patches": [{"op": "add", "path": f"/sweep/axes/{axis}/where", "value": {"axes": {"seed": ["seed-1"]}}}],
+            "patches": [{"op": "add", "path": f"/sweep/axes/{axis}/where", "value": {"rule": 'seed="seed-1"'}}],
         }]}))
         first = train.runs(tmp_path, "seed-mass", seed="seed-1")
         (second,) = train.runs(tmp_path, "seed-mass", seed="seed-2")
@@ -1033,8 +1031,11 @@ def test_stored_model_plan_uses_the_supplied_component_registry():
     registered = compile_project(project, memo=memo, components=registry)
     (train,) = registered.runs
     assert train.kind == "train"
-    (problem,) = registered.diagnostics
+    problem, blocked = sorted(registered.diagnostics, key=lambda item: item.code == "blocked_input")
     assert problem.step == "baseline" and "has no declared Evaluate layout" in problem.detail
+    assert (blocked.step, blocked.row, blocked.code, blocked.blocked_by) == (
+        "baseline", problem.row, "blocked_input", train.key,
+    )
     assert train.admission_problem is not None
     assert "has no typed model checkpoint owner" in train.admission_problem.detail
     address = ModelAddress.model_validate({
@@ -1559,13 +1560,21 @@ def test_saved_managed_mechanics_refuses_at_model_address(host, tmp_path, domain
         assert train.path == "payload.trial_documents.model.interior.components.arm"
         assert "requires an authored spatial asset" in train.detail
         evaluate = next(problem for problem in response.window_map.problems if problem.step == "baseline")
-        assert evaluate.path == "inputs.subject" and "unplannable rows" in evaluate.detail
+        assert (evaluate.path, evaluate.code) == ("inputs.subject", "blocked_input")
     else:
         assert train.path == "/trial_documents/model/interior/components/arm"
         assert "no typed model checkpoint owner for solver 'euler'" in train.detail
-        evaluate = next(problem for problem in response.window_map.problems if problem.step == "baseline")
+        evaluate = next(
+            problem for problem in response.window_map.problems
+            if problem.step == "baseline" and problem.code != "blocked_input"
+        )
         assert evaluate.place.member == train.place.member
         assert "no qualified Evaluate realization" in evaluate.detail
+        (blocked,) = [
+            problem for problem in response.window_map.problems
+            if problem.step == "baseline" and problem.code == "blocked_input"
+        ]
+        assert (blocked.row, blocked.blocked_by.step) == (evaluate.row, "train")
 
     snapshot = view.settled
     train_key = RunKey("default", "train", "default")

@@ -39,7 +39,9 @@ from feedbax.contracts.studio_project import (
 from feedbax.contracts.studio_sets import StudioSetEdit, StudioSetEditRequest, StudioSetsOffered, StudioSetsOfferedRequest
 from feedbax.contracts.studio_trials import StudioTrialAuthoring, StudioTrialAuthoringRequest
 from feedbax.contracts.studio_checkpoint_rule import StudioCheckpointRuleEdit, StudioCheckpointRuleRequest
-from feedbax.contracts.studio_subset import StudioSubsetToRowsEdit, StudioSubsetToRowsRequest
+from feedbax.contracts.studio_subset import (
+    StudioRunRuleCheck, StudioRunRuleRequest, StudioSubsetToRowsEdit, StudioSubsetToRowsRequest,
+)
 from feedbax.contracts.studio_scene import StudioPlanarSceneRequest, StudioPlanarSceneResponse
 from feedbax.contracts.studio_field import ModelFieldRequest, ModelFieldResponse, TrainFieldRequest, TrainFieldResponse
 from feedbax.web.services.project_folder import (
@@ -187,6 +189,13 @@ def edit_checkpoint_rule(
     return _project_response(response, lambda: prepare_checkpoint_rule_edit(
         request.app.state.project_folders, project_id, body,
     ))
+
+
+@router.post("/{project_id}/authoring/run-rule")
+def check_run_rule(
+    project_id: ProjectName, body: StudioRunRuleRequest, request: Request, response: Response,
+) -> StudioRunRuleCheck:
+    return _project_response(response, lambda: request.app.state.project_plan.check_run_rule(project_id, body))
 
 
 @router.post("/{project_id}/authoring/subset-to-rows", response_model_exclude_unset=True)
