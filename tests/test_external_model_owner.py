@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
+from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution
 from feedbax.contracts.project import Project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec

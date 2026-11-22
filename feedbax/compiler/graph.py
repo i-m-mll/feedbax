@@ -46,7 +46,7 @@ from feedbax.runtime._graph import instant_execution_order
 from feedbax.runtime._graph_key_schedule import KEY_SCHEDULE_ID
 from feedbax.runtime._signal_schedule import SignalSchedule, needs_signal_schedule, resolve_signal_schedule
 from feedbax.runtime.graph import Graph
-from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
+from feedbax.builtins.runtime.graph_channel_adapters import materialize_additive_channel_adapters
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
 
 

@@ -8,7 +8,7 @@ import jax
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 
-from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
+from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.studio_refinements import validate_cross_field_refinements

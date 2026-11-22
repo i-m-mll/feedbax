@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
+from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution
 from feedbax.contracts.authored_canonical import canonical_sha256
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.expression_values import LiteralValue, NameValue, ValueBase, ValueType

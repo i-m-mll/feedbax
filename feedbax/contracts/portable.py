@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from feedbax.contracts.component_history import History
-    from feedbax.studio.component_presentation import PresentationOverride
+    from feedbax.contracts.component_presentation import PresentationOverride
 
 
 @dataclass(frozen=True)

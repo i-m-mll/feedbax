@@ -8,7 +8,6 @@ from typing import Any, Callable
 import equinox as eqx
 import jax.numpy as jnp
 
-from feedbax.builtins.runtime.components import GRU, LSTM, LinearLayer
 from feedbax.contracts.graph import ParameterConstraintSpec
 from feedbax.runtime.graph import Graph, GraphNode
 
@@ -78,11 +77,6 @@ def recurrent_parameter_role(component: GraphNode, role: str) -> tuple[Any, Call
     raise ValueError(
         f"Unsupported {type(component).__name__} parameter role {role!r}; expected {expected}"
     )
-
-
-register_parameter_role_resolver(LinearLayer, linear_parameter_role)
-register_parameter_role_resolver(GRU, recurrent_parameter_role)
-register_parameter_role_resolver(LSTM, recurrent_parameter_role)
 
 
 def _resolve_role(component: GraphNode, role: str) -> tuple[Any, Callable[[Any], Any]]:

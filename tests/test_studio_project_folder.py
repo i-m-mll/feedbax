@@ -18,7 +18,8 @@ import pytest
 from feedbax.contracts.project import json_pointer_parts
 from feedbax._atomic import write_bytes_atomic
 from feedbax import project_folder
-from feedbax.planner import project_plan, request_identity
+from feedbax.contracts import request_identity
+from feedbax.planner import project_plan
 from feedbax.contracts.jobs import StudioJobEventHistory
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import InlineBase, Project, StepBase

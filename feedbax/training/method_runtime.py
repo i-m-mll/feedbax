@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from pydantic import BaseModel
 
     from feedbax.objectives.document import ObjectiveExecutor, ObjectiveResult
-    from feedbax.runtime.trial_execution import TrialExecution
+    from feedbax.execution.trial_execution import TrialExecution
     from feedbax.tasks.document import Trial
     from feedbax.training.methods import RegisteredTrainingMethod, TrainingMetrics
 

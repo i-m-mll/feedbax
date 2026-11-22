@@ -17,8 +17,8 @@ if TYPE_CHECKING:
 
     from feedbax.persistence.array_container import EncodedArrayContainer
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
-    from feedbax.runtime.trial_execution import TrialEvaluation
-    from feedbax.training.rollout_scoring import LoweredRollout
+    from feedbax.execution.trial_execution import TrialEvaluation
+    from feedbax.host.rollout_scoring import LoweredRollout
 
 
 def drive_replicas[T, U](

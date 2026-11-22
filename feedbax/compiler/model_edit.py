@@ -23,7 +23,7 @@ from feedbax.contracts.model_document import (
     SignalOutput,
     SignalType,
 )
-from feedbax.studio.model_differences import structural_differences
+from feedbax.compiler.model_differences import structural_differences
 
 type Record = dict[str, Any]
 type Direction = Literal["input", "output", "physical"]

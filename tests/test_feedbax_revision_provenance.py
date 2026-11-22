@@ -21,8 +21,8 @@ from pathlib import Path
 
 import pytest
 
-from feedbax.orchestration import revision
-from feedbax.orchestration.revision import (
+from feedbax import revision
+from feedbax.revision import (
     FeedbaxProvenance,
     FeedbaxRevisionAncestryWarning,
     FeedbaxRevisionError,

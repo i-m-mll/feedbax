@@ -12,7 +12,7 @@ from feedbax.contracts.artifact_custody import ArtifactBlobProvider
 from feedbax.models.feedback import feedback_state_view
 from feedbax.runtime._graph_key_schedule import derive_key
 from feedbax.runtime._signal_schedule import SignalSchedule
-from feedbax.runtime.trial_history import trial_history_plan
+from feedbax.builtins.runtime.trial_history import trial_history_plan
 from feedbax.runtime.graph import (
     AuthoredArrayEncoding,
     Component,

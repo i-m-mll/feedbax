@@ -30,11 +30,14 @@ from feedbax.contracts.task_document import PythonTaskSelection
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.objectives.document import ObjectiveDocument, ObjectiveExecutor, ObjectiveUse, compile_objective
 from feedbax.runtime.graph import GraphTraceRequest
-from feedbax.runtime.trial_execution import TrialExecution
+from feedbax.execution.trial_execution import TrialExecution
 from feedbax.tasks.document import TaskDocument, TrialSource, bind_task_inputs, compile_task
 from feedbax.tasks.registry import (
-    PythonTaskRegistry, PythonTaskTemplate, application_python_tasks, resolve_python_task_instance,
+    PythonTaskRegistry,
+    PythonTaskTemplate,
+    resolve_python_task_instance,
 )
+from feedbax.application.composition import application_python_tasks
 
 
 @dataclass(frozen=True)

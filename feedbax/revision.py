@@ -57,7 +57,7 @@ class FeedbaxRevisionAncestryWarning(UserWarning):
     recorded execution revision. Callers who want the
     undeterminable case to be fatal can promote it with
     ``warnings.simplefilter("error", FeedbaxRevisionAncestryWarning)`` or
-    ``-W error::feedbax.orchestration.revision.FeedbaxRevisionAncestryWarning``.
+    ``-W error::feedbax.revision.FeedbaxRevisionAncestryWarning``.
     """
 
 

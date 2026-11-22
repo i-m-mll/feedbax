@@ -7,7 +7,7 @@ from typing import Annotated
 import jax.numpy as jnp
 import jax.random as jr
 from pydantic import Field
-from feedbax.studio.component_presentation import PresentationOverride
+from feedbax.contracts.component_presentation import PresentationOverride
 from feedbax.studio.muscle_representation import (
     _default_two_link_muscle_path_geometry,
     _two_link_muscle_representation,

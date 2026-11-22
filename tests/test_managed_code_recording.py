@@ -26,7 +26,7 @@ from feedbax.host import worker
 from feedbax.host.io import EVIDENCE_FILE, TOKEN_ENV, append, read_worker_result
 from feedbax.host.source_roster import SourceRoster
 from feedbax.host.worker import _record_execution
-from feedbax.orchestration.revision import FeedbaxProvenance
+from feedbax.revision import FeedbaxProvenance
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView, store_request
 from feedbax.persistence.reachability import measure_store
@@ -192,7 +192,7 @@ def test_warm_job_retains_observed_source_registry_and_file_identity(tmp_path, m
     assert created_path in trace.indeterminate
     runner = next(item for item in trace.sources if item.path == SourcePath(scope="feedbax", path="host/worker.py"))
     assert "_record_execution" in runner.host_product
-    custody = next(item for item in trace.sources if item.path == SourcePath(scope="feedbax", path="validity/evidence.py"))
+    custody = next(item for item in trace.sources if item.path == SourcePath(scope="feedbax", path="persistence/evidence.py"))
     assert "stage_evidence" in custody.host_product
     (registered,) = trace.registry
     assert (registered.requested_key, registered.key, registered.source_path) == (

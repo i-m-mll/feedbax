@@ -9,7 +9,7 @@ from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.component import derive_dynamic_port_count, derive_dynamic_port_layout
 from feedbax.contracts.model_document import SignalType
 from feedbax.contracts.strict_json import strict_json_loads
-from feedbax.studio.model_edit import Direction, Port, Record
+from feedbax.compiler.model_edit import Direction, Port, Record
 
 
 class ModelRegistryPorts:

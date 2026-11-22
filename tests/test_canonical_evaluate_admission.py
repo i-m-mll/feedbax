@@ -8,7 +8,7 @@ import jax
 import numpy as np
 import pytest
 
-from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
+from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.code_validity import ReceiptEvidence
 from feedbax.contracts.dataset import DatasetProductRef

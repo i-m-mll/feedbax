@@ -9,7 +9,7 @@ from feedbax.component_registry import ComponentRegistry
 from feedbax.component_registry.registry import installed_components
 from feedbax.plot.templates import FigureTemplateDeclaration
 from feedbax.registry_errors import RegistryCollisionError
-from feedbax.tasks.registry import PythonTask
+from feedbax.tasks.registry import PythonTask, PythonTaskRegistry
 from feedbax.training.methods import TrainingMethodDeclaration
 
 from feedbax.application.bundle import BootstrapState, empty_application_registry_bundle
@@ -76,3 +76,7 @@ def load_application() -> BootstrapState:
 
 async def compose_application() -> BootstrapState:
     return load_application()
+
+
+def application_python_tasks() -> PythonTaskRegistry:
+    return load_application().bundle.python_tasks

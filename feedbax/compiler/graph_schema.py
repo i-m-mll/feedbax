@@ -9,16 +9,16 @@ from pydantic import BaseModel, ConfigDict, Field
 from feedbax.contracts._causal_inputs import input_driver_conflicts
 from feedbax.contracts.value_schema import SchemaOrigin, ValueSchema
 from feedbax.component_registry import format_missing_interior_message, required_interior_domain
-from feedbax.studio.protocol import (
+from feedbax.runtime.task_data_roles import (
     GRAPH_BINDABLE_TASK_DATA_ROLES,
     PROTOCOL_TASK_DATA_KINDS,
     TASK_DATA_ROLES,
     is_bindable_task_data,
-    task_binding_id,
     task_data_role,
     task_data_surface,
     task_data_uses_protocol_path,
 )
+from feedbax.contracts.graph import task_binding_id
 from feedbax.compiler.prototypes import (
     DerivedDimensionConflict,
     DerivedDimensionError,

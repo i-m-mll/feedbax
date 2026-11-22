@@ -16,7 +16,7 @@ from urllib.parse import quote
 from pydantic_core import to_json
 
 from feedbax.analysis.report_document import PLOTLY_SCRIPT_NAME, REPORT_HTML_NAME, report_content_security_policy
-from feedbax.compiler.trial_execution import evaluation_conditions
+from feedbax.execution.trial_resolution import evaluation_conditions
 from feedbax.contracts._request_codec import same_typed_value
 from feedbax.contracts.artifact_custody import ContentObjectRef, ContentTreeRef
 from feedbax.contracts.effective_success import RequestObject, read_success_request, success_content_ref

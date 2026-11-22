@@ -29,6 +29,11 @@ from feedbax.contracts.portable import (
     Ports,
 )
 from feedbax.runtime.graph import Component, GraphNode
+from feedbax.runtime.parameter_constraints import (
+    linear_parameter_role,
+    recurrent_parameter_role,
+    register_parameter_role_resolver,
+)
 from feedbax.runtime.prototypes import (
     _missing_input,
     _required_input,
@@ -1884,3 +1889,8 @@ class RateLimiter(Component):
 
     def configuration_values(self):
         return array_input_configuration(self)
+
+
+register_parameter_role_resolver(LinearLayer, linear_parameter_role)
+register_parameter_role_resolver(GRU, recurrent_parameter_role)
+register_parameter_role_resolver(LSTM, recurrent_parameter_role)

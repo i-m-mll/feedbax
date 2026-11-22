@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Annotated, Any
 from functools import partial
 from pydantic import Field
-from feedbax.studio.component_presentation import PresentationOverride
+from feedbax.contracts.component_presentation import PresentationOverride
 from feedbax.studio.direct_force_presentation import (
     _point_mass_representation,
     _two_link_arm_representation,

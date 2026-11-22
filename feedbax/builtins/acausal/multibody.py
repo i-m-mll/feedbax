@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from feedbax.studio.component_presentation import PresentationOverride
+from feedbax.contracts.component_presentation import PresentationOverride
 from feedbax.studio.acausal_representation import (
     _muscle_path_representation,
     _planar_link_representation,

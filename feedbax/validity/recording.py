@@ -28,7 +28,7 @@ from feedbax.contracts.code_validity import (
 )
 from feedbax.contracts.computation_validity import ComputationPrograms, ComputationTrace
 from feedbax.host.source_roster import SourceRoster
-from feedbax.orchestration.revision import resolve_feedbax_provenance
+from feedbax.revision import resolve_feedbax_provenance
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.plugins.declarations import ResolvedDeclaration, observe_declarations
 from feedbax.validity.environment import EnvironmentMismatch, EnvironmentSnapshot, InstalledInventory, read_environment

@@ -19,7 +19,7 @@ from feedbax.validity.computation import (
 if TYPE_CHECKING:
     from feedbax.objectives.document import ObjectiveExecutor
     from feedbax.runtime.graph import Graph
-    from feedbax.runtime.trial_execution import TrialEvaluation, TrialExecution
+    from feedbax.execution.trial_execution import TrialEvaluation, TrialExecution
 
 
 @dataclass(frozen=True)

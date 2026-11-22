@@ -17,7 +17,7 @@ from feedbax.runtime._graph_key_schedule import (
     validation_trial_keys,
 )
 from feedbax.runtime.graph import Graph, GraphTraceRequest
-from feedbax.runtime.model_reset import ModelResetPlan
+from feedbax.compiler.model_reset import ModelResetPlan
 from feedbax.tasks.document import TaskParameters, Trial, TrialSource
 
 

@@ -13,9 +13,9 @@ python_sources(
         "jobs.py": {
             "dependencies": [
                 "feedbax/training_host_worker.py:feedbax",
-                "feedbax/training/evaluate_worker.py:../feedbax",
-                "feedbax/training/host_prewarm.py:../feedbax",
-                "feedbax/plugins/composition.py:../feedbax",
+                "feedbax/host/evaluate_worker.py:../feedbax",
+                "feedbax/host/training_prewarm.py:../feedbax",
+                "feedbax/application/composition.py:../feedbax",
             ],
         },
     },

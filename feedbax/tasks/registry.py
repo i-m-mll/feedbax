@@ -132,7 +132,3 @@ def python_task_parameter_site(path: str, trial_documents, registry: PythonTaskR
     return definition.parameter_sites.get(path.removeprefix(prefix)) if definition else None
 
 
-def application_python_tasks() -> PythonTaskRegistry:
-    from feedbax.application.composition import load_application
-
-    return load_application().bundle.python_tasks

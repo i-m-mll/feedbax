@@ -30,7 +30,7 @@ from feedbax.builtins.runtime.feedback import (
 from feedbax.builtins.runtime.filters import FilterState, FirstOrderFilter, LowPassFilter
 from feedbax.runtime.graph import Component, ComponentBinding, Graph, Wire
 from feedbax.runtime.noise import Normal
-from feedbax.runtime.trial_history import trial_history_plan
+from feedbax.builtins.runtime.trial_history import trial_history_plan
 
 T = TypeVar("T")
 

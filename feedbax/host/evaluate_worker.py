@@ -69,7 +69,7 @@ from feedbax.validity.recording import numerical_work, record_computation, set_e
 
 
 if TYPE_CHECKING:
-    from feedbax.compiler.trial_execution import PreparedTrialExecution
+    from feedbax.execution.trial_resolution import PreparedTrialExecution
     from feedbax.contracts.graph import GraphSpec
     from feedbax.contracts.receipt_validity import ValidityCheckDelivery, ValidityCheckEvidence
     from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
@@ -77,11 +77,11 @@ if TYPE_CHECKING:
     from feedbax.dataset import Dataset
     from feedbax.runtime.graph import Graph
     from feedbax.runtime.raw_state import RawStateLayout
-    from feedbax.runtime.trial_execution import TrialEvaluation
+    from feedbax.execution.trial_execution import TrialEvaluation
     from feedbax.application.bundle import ApplicationRegistryBundle
     from feedbax.training.evaluation_variant import EvaluationVariant
     from feedbax.host.model_checkpoint import SemanticModelSlot
-    from feedbax.training.rollout_scoring import LoweredRollout, RolloutKernel, RolloutScorer
+    from feedbax.host.rollout_scoring import LoweredRollout, RolloutKernel, RolloutScorer
 
 
 @dataclass(frozen=True)
@@ -154,7 +154,7 @@ def resolve_rollout(
 
     from feedbax.objectives.document import ObjectiveUse
     from feedbax.training.evaluation_variant import resolve_evaluation_variant, validate_evaluation_source
-    from feedbax.training.rollout_scoring import RolloutScorer
+    from feedbax.host.rollout_scoring import RolloutScorer
 
     if jax.default_backend() != ROLLOUT_JAX_BACKEND or jax.config.jax_enable_x64 != ROLLOUT_JAX_ENABLE_X64:
         raise CannotRun("/numerical_settings", "requires CPU execution with JAX x64 disabled")

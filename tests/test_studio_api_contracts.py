@@ -7,7 +7,7 @@ from tests.support.component_owners import register_owners
 from feedbax.contracts.representation import RepresentationSpec
 
 from feedbax.builtins.runtime.components import Gain
-from feedbax.studio.component_presentation import PresentationOverride
+from feedbax.contracts.component_presentation import PresentationOverride
 
 from dataclasses import replace
 from typing import get_args, get_origin

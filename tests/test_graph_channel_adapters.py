@@ -16,7 +16,7 @@ from feedbax.contracts.graph import (
 from feedbax.runtime.graph import init_state_from_component
 from feedbax.builtins.mechanics.linear_state_space import LinearStateSpace
 from feedbax.builtins.runtime.components import Constant, Gain, Sum
-from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
+from feedbax.builtins.runtime.graph_channel_adapters import materialize_additive_channel_adapters
 from tests.support.graph_compiler_test_support import spec_to_graph
 
 

@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from feedbax.contracts.receipt_validity import ValidityCheckDelivery, ValidityCheckEvidence
     from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
     from feedbax.runtime.graph import Graph
-    from feedbax.runtime.trial_execution import TrialExecution
+    from feedbax.execution.trial_execution import TrialExecution
     from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput, VerifiedTrainBinding
     from feedbax.training.method_runtime import TrainingLoop
     from feedbax.training.methods import TrainingState

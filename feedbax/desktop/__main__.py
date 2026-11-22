@@ -89,7 +89,7 @@ async def _serve(release: Release, paths: AppPaths, studio_socket: socket.socket
     from feedbax.desktop.preferences import register_preferences
     from feedbax.desktop.remote_runs import load_remote_runs
     from feedbax.desktop.transport import DesktopTransport
-    from feedbax.orchestration.revision import assert_feedbax_revision_exact
+    from feedbax.revision import assert_feedbax_revision_exact
     from feedbax.web.app import create_app
 
     revision = assert_feedbax_revision_exact(release.document["source_commit"])

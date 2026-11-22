@@ -7,7 +7,7 @@ from feedbax.planner.project_plan import BlockedRow, PlannedRun, ProjectPlanMemo
 from feedbax.contracts.project_resolution import ResolutionCode
 from feedbax.jobs import JobService, _planned_checkpoint_catalogs
 from feedbax.application.bundle import new_application_registry_bundle
-from feedbax.tasks.registry import application_python_tasks
+from feedbax.application.composition import application_python_tasks
 from feedbax.web.app import create_app
 from feedbax.web.services import project_plan as window_service
 from feedbax.web.services.project_folder import ProjectFolderService

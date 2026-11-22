@@ -15,8 +15,8 @@ from feedbax.contracts.model_attachment import (
 )
 from feedbax.contracts.model_document import ModelDocument, ModelWire
 from feedbax.contracts.model_edit import ModelEditState
-from feedbax.studio.model_edit import ModelEditDraft
-from feedbax.studio.model_ports import ModelRegistryPorts
+from feedbax.compiler.model_edit import ModelEditDraft
+from feedbax.compiler.model_ports import ModelRegistryPorts
 
 
 def _chain(draft: dict, address: ModelAddress, ports: ModelRegistryPorts) -> list[dict]:

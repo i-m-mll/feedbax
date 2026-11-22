@@ -74,8 +74,7 @@ def test_core_training_contract_imports_do_not_load_web_package() -> None:
             "feedbax.orchestration.repo_snapshot",
             "feedbax.training.methods",
             "feedbax.compiler.serialization",
-            "feedbax.studio.protocol",
-            "feedbax.studio.schema",
+            "feedbax.compiler.graph_schema",
         ]:
             importlib.import_module(module_name)
 

@@ -128,8 +128,8 @@ class ProjectFolderService(ProjectFolder):
     ) -> ModelConnectionReview:
         from feedbax.contracts.model_document import ModelDocument
         from feedbax.contracts.model_edit import ModelProjectionRequest, TaskSignalSource
-        from feedbax.studio.model_edit import review_model_connections
-        from feedbax.studio.model_ports import ModelRegistryPorts
+        from feedbax.compiler.model_edit import review_model_connections
+        from feedbax.compiler.model_ports import ModelRegistryPorts
 
         snapshot = self.read(project_id, revision=body.revision)
         payload, _ = model_edit_source(snapshot, body.document)

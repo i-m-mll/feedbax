@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from feedbax.compiler.graph import ExecutableGraph, GraphCompilationError, GraphDocument, GraphResolution, realize_graph, resolve_graph
 from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
-from feedbax.compiler.trial_execution import PreparedTrialExecution, declared_model_input_prototypes, resolve_trial_execution
+from feedbax.execution.trial_resolution import PreparedTrialExecution, declared_model_input_prototypes, resolve_trial_execution
 from feedbax.contracts.expression_values import Problem, ProblemCode
 from feedbax.contracts.model_input import CheckpointModelSource, InitialModelSource, ModelSource
 from feedbax.contracts.project import json_pointer_parts

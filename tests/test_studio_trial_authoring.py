@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import AliasChoices, Field, StrictFloat, StrictInt
 
-from feedbax.compiler.trial_execution import evaluation_conditions
+from feedbax.execution.trial_resolution import evaluation_conditions
 from feedbax.contracts.expression_values import LENGTH, CallValue, LiteralValue, NameValue
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
@@ -17,7 +17,7 @@ from feedbax.planner.project_plan import ProjectPlanMemo, RunKey, compile_projec
 from feedbax.contracts.studio_trials import StudioTrialAuthoring
 from feedbax.contracts.request_identity import decode_request
 from feedbax.builtins.reaching import REACHING_TASK, ReachingParameters, reaching_document
-from feedbax.tasks.registry import application_python_tasks
+from feedbax.application.composition import application_python_tasks
 from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.web.app import create_app
 from feedbax.web.services import project_plan as window_service

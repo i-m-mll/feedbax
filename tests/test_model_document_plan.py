@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from feedbax.cli import main
 from feedbax.compiler import GraphDocument, compile_graph
-from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
+from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution
 from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
 from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.builtins.templates.mechanics_templates import two_link_arm_6muscle_template_graph
@@ -37,8 +37,8 @@ from feedbax.jobs import JobService
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.application.bundle import new_application_registry_bundle
-from feedbax.studio.model_edit import apply_model_edit
-from feedbax.studio.model_ports import ModelRegistryPorts
+from feedbax.compiler.model_edit import apply_model_edit
+from feedbax.compiler.model_ports import ModelRegistryPorts
 from feedbax.runtime.graph import GraphTraceRequest
 from feedbax.builtins.runtime.components import Input
 from feedbax.runtime._signal_schedule import SignalScheduleError, resolve_signal_schedule
@@ -1852,7 +1852,8 @@ def test_same_seed_nested_rename_preserves_values_and_batch_loss():
 def _refuse_realization(monkeypatch):
     """Makes realizing a graph, or constructing any registered component but an acausal element descriptor, raise."""
     from feedbax.acausal.base import AcausalElement
-    from feedbax.compiler import graph, trial_execution
+    from feedbax.compiler import graph
+    from feedbax.execution import trial_resolution as trial_execution
     from feedbax.component_registry.declarations import ComponentParamContract
     from feedbax.host import model_input
 

@@ -343,7 +343,8 @@ _CHECKPOINT_INITIALIZATION: TypeAdapter[Literal["initialize_from"] | TrainContin
 
 def _train_facts(payload: Payload, python_tasks: PythonTaskRegistry | None) -> TrainFacts:
     """Read the Task as the request would carry it: a Python task by its canonical selection."""
-    from feedbax.tasks.registry import application_python_tasks, resolve_python_task_instance
+    from feedbax.tasks.registry import resolve_python_task_instance
+    from feedbax.application.composition import application_python_tasks
 
     trial = payload.get("trial_documents")
     task: TaskDocument | PythonTaskSelection | None = None
@@ -1117,7 +1118,7 @@ def _integer_train_site(
     path: str, payload: Payload, python_tasks: PythonTaskRegistry | None,
     training_methods: TrainingMethodRegistry | None,
 ) -> bool:
-    from feedbax.tasks.registry import application_python_tasks
+    from feedbax.application.composition import application_python_tasks
     from feedbax.tasks.registry import python_task_parameter_site
 
     documents = payload.get("trial_documents")
@@ -1275,7 +1276,8 @@ def _encode_row(
         checkpoint_problem = preparation.checkpoint_problem
         model_source = prepared_train.model
     elif kind == "train":
-        from feedbax.tasks.registry import application_python_tasks, resolve_python_task_instance
+        from feedbax.tasks.registry import resolve_python_task_instance
+        from feedbax.application.composition import application_python_tasks
         from feedbax.contracts.request_specs import TrialDocuments
 
         try:
@@ -2227,7 +2229,7 @@ class _Compiler:
         )
 
     def prepare_train_trial(self, authored: TrialDocuments) -> _TrainPreparation | tuple[Problem, ...]:
-        from feedbax.compiler.trial_execution import resolve_trial_execution
+        from feedbax.execution.trial_resolution import resolve_trial_execution
 
         identity = to_json(
             authored.model_dump(exclude_unset=True, round_trip=True), inf_nan_mode="constants",
@@ -2426,9 +2428,9 @@ class _Compiler:
         self, template: StepComposition, key: RunKey, row: ExpandedRow,
     ) -> tuple[_LoweredRow, dict[str, PlannedInput]]:
         from feedbax.compiler.model_document import ModelCompilationProblem
-        from feedbax.compiler.trial_execution import pair_trial_source
+        from feedbax.execution.trial_resolution import pair_trial_source
         from feedbax.contracts.rollout import CannotRun
-        from feedbax.tasks.registry import application_python_tasks
+        from feedbax.application.composition import application_python_tasks
         from feedbax.training.evaluation_variant import resolve_evaluation_variant
 
         resolved = self.resolve_row(template, key, row, None)
@@ -2551,7 +2553,7 @@ class _Compiler:
     def lower_evaluate_trials(
         self, key: RunKey, payload: Payload, reference: object, model_source: _ModelSource | None,
     ) -> Payload | ProjectDiagnostic:
-        from feedbax.compiler.trial_execution import evaluation_conditions, pair_trial_source
+        from feedbax.execution.trial_resolution import evaluation_conditions, pair_trial_source
         from feedbax.contracts.rollout import CannotRun
         from feedbax.training.evaluation_variant import resolve_evaluation_variant
 
@@ -2615,7 +2617,7 @@ class _Compiler:
     ) -> Payload | ProjectDiagnostic:
         from feedbax.compiler.model_attachment import lower_evaluate_attachments
         from feedbax.compiler.model_document import ModelCompilationProblem
-        from feedbax.studio.schema import validate_graph_connection_schema
+        from feedbax.compiler.graph_schema import validate_graph_connection_schema
         from feedbax.contracts.rollout import CannotRun
         from feedbax.training.evaluation_variant import resolve_evaluation_variant
 

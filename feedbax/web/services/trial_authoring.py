@@ -6,7 +6,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
 
-from feedbax.compiler.trial_execution import TrialPair, pair_trial_source
+from feedbax.execution.trial_resolution import TrialPair, pair_trial_source
 from feedbax.contracts.expression_values import (
     Level, LiteralValue, Problem, ProblemCode, ScopedValue, Site, SweepList, SweepRange, SweepSample,
     ValueBase, ValueType,

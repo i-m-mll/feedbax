@@ -491,7 +491,7 @@ class JobService(PlanJobReader):
         self._training_worker = replace(
             base_worker,
             warm_entrypoint="feedbax.training_host_worker:main",
-            preload=(*base_worker.preload, "feedbax.training.host_prewarm"),
+            preload=(*base_worker.preload, "feedbax.host.training_prewarm"),
         )
         self._evaluation_worker = replace(
             base_worker,

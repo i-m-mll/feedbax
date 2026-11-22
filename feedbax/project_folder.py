@@ -193,7 +193,7 @@ def _model_field_exists(payload, path):
 
 
 def _loses_model_target(payload, next_payload, targets, state, result, authority, functions):
-    from feedbax.studio.model_edit import ModelEditDraft
+    from feedbax.compiler.model_edit import ModelEditDraft
 
     if any(_model_field_exists(payload, path) and not _model_field_exists(next_payload, path)
            for path in targets if isinstance(path, tuple)):
@@ -1366,8 +1366,8 @@ class ProjectFolder:
         A document the edit creates gets the layout of its base, the edited layout when its base is the shown one.
         """
         from feedbax.contracts.model_edit import ModelEditProblem, ModelEditState, ModelProjectionRequest
-        from feedbax.studio.model_edit import apply_model_edit
-        from feedbax.studio.model_ports import ModelRegistryPorts
+        from feedbax.compiler.model_edit import apply_model_edit
+        from feedbax.compiler.model_ports import ModelRegistryPorts
         from feedbax.project_model_selection import selected_task_signal
 
         snapshot = self.read(project_id, revision=body.revision)

@@ -11,8 +11,8 @@ import numpy as np
 import pytest
 
 from feedbax.builtins.training import StandardTrainingSettings, supervised_gradient
-from feedbax.compiler import trial_execution
-from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution, resolve_trial_execution
+from feedbax.execution import trial_resolution as trial_execution
+from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution, resolve_trial_execution
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
@@ -29,7 +29,7 @@ from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.plugins.declarations import DistributionSource, callable_declaration
 from feedbax.runtime._graph_key_schedule import model_initialization_key
 from feedbax.tasks.document import TaskParameters
-from feedbax.tasks.registry import application_python_tasks
+from feedbax.application.composition import application_python_tasks
 from feedbax.host.evaluate_worker import score_paired_validation
 from feedbax.training.method_runtime import TrainingLoop, initialize_method, replica_value
 from feedbax.training.methods import TrainingMethodRegistry

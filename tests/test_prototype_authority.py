@@ -13,7 +13,7 @@ from feedbax.runtime.graph import Component
 from feedbax.contracts.portable import Ports, ComponentOptions
 from feedbax.contracts.component import PortType
 from feedbax.compiler.resolution import resolve_graph_parameters
-from feedbax.studio.schema import _enumerate_graph_ports, validate_graph_connection_schema
+from feedbax.compiler.graph_schema import _enumerate_graph_ports, validate_graph_connection_schema
 
 
 @pytest.mark.parametrize("declared_size", [None, 4])
@@ -670,7 +670,7 @@ def test_parameter_determined_prototypes_are_equivalent_across_subgraph_boundari
 )
 def test_invalid_derived_rules_reject_in_compilation_and_studio(rule_patch, shape, reason) -> None:
     from feedbax.compiler import GraphCompilationError
-    from feedbax.studio.schema import validate_graph_connection_schema
+    from feedbax.compiler.graph_schema import validate_graph_connection_schema
     from feedbax.contracts.graph import StudioTaskBindingSpec
 
     rule = {"node": "linear", "param": "input_size", "port": "input", **rule_patch}

@@ -24,7 +24,7 @@ from feedbax.host.source_roster import SourceRoster
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import publish_dataset
 from feedbax.application.composition import load_application
-from feedbax.runtime.trial_execution import TrialExecution
+from feedbax.execution.trial_execution import TrialExecution
 from feedbax.host.evaluate_computation import EvaluationComputation, RolloutExecutables, drive_replicas
 from feedbax.host import evaluate_worker
 from feedbax.host.evaluate_worker import _lower_rollouts, _prepare_initial_rollout, _rollouts, _scored_product

@@ -20,8 +20,8 @@ from types import SimpleNamespace
 import pytest
 
 from feedbax._distribution_provenance import build_provenance_from_git
-from feedbax.orchestration import revision
-from feedbax.orchestration.revision import (
+from feedbax import revision
+from feedbax.revision import (
     FEEDBAX_DISTRIBUTION_PROVENANCE_SCHEMA_VERSION,
     FeedbaxRevisionError,
     assert_feedbax_revision_exact,
@@ -118,7 +118,7 @@ import feedbax
 from feedbax import pca
 import feedbax.models.cde as cde
 import feedbax.models.feedback as feedback
-from feedbax.orchestration.revision import assert_feedbax_revision_exact, resolve_feedbax_revision
+from feedbax.revision import assert_feedbax_revision_exact, resolve_feedbax_revision
 from feedbax.application.composition import load_application
 
 assert_feedbax_revision_exact(sys.argv[2])

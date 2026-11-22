@@ -13,7 +13,7 @@ import jax
 import pytest
 
 import feedbax
-from feedbax.orchestration import revision as _revision
+from feedbax import revision as _revision
 
 
 pytest_plugins = ["scripts.pytest_jax_cache", "tests.support.host", "tests.support.probe_plugin"]
@@ -93,7 +93,7 @@ path still goes through genuine Git dirty detection.
 from pathlib import Path
 
 import feedbax
-from feedbax.orchestration import revision as _revision
+from feedbax import revision as _revision
 
 _WORKING_PACKAGE_ROOT = Path(feedbax.__file__).resolve().parent
 _original_tree_is_dirty = _revision._feedbax_tree_is_dirty

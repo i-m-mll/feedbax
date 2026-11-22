@@ -23,7 +23,7 @@ from feedbax.contracts.train_settings import normalize_train_method
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 
 if TYPE_CHECKING:
-    from feedbax.compiler.trial_execution import ResolvedTrialExecution
+    from feedbax.execution.trial_resolution import ResolvedTrialExecution
     from feedbax.persistence.train_job import TrainJobEntry
     from feedbax.application.bundle import ApplicationRegistryBundle
     from feedbax.training.methods import RegisteredTrainingMethod
@@ -113,7 +113,7 @@ def _decode_train(
 def _resolve_trial(
     request: DocumentTrainingRequestSpec, registries: ApplicationRegistryBundle,
 ) -> ResolvedTrialExecution:
-    from feedbax.compiler.trial_execution import resolve_trial_execution
+    from feedbax.execution.trial_resolution import resolve_trial_execution
 
     documents = request.trial_documents
     paired = resolve_trial_execution(
