@@ -923,8 +923,13 @@ export interface UngroupComposite {
   address: ModelAddress;
 }
 
+export interface ResetDifference {
+  op: "reset_difference";
+  address: ModelAddress;
+}
+
 export interface ModelEditCommand {
-  operation: AddComponent | MoveCards | FlipComponent | CollapseGraph | RouteWire | DeleteElements | ConnectSignal | ConnectTaskSignal | ConnectPhysical | AddPort | RemovePort | RenameElement | MovePort | SetField | SetModelAttachment | MoveWireAttachment | InsertComponentOnWire | BringSignalIn | CopyComponents | CutComponents | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite;
+  operation: AddComponent | MoveCards | FlipComponent | CollapseGraph | RouteWire | DeleteElements | ConnectSignal | ConnectTaskSignal | ConnectPhysical | AddPort | RemovePort | RenameElement | MovePort | SetField | SetModelAttachment | MoveWireAttachment | InsertComponentOnWire | BringSignalIn | CopyComponents | CutComponents | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite | ResetDifference;
 }
 
 export interface ModelEditProblem {
@@ -1002,18 +1007,42 @@ export interface ModelPortProjection {
   type: SignalType;
 }
 
+export interface ModelAddedElement {
+  change: "added";
+  address: ModelAddress;
+}
+
+export interface ModelRemovedElement {
+  change: "removed";
+  address: ModelAddress;
+  definition: LeafComponent | CompositeComponent | ModelWire | ModelPhysicalConnection | DelayAttachment | InterventionAttachment | ProbeAttachment;
+  position?: ModelPosition | null;
+  wires?: Record<string, ModelWire>;
+  connections?: Record<string, ModelPhysicalConnection>;
+}
+
+export interface ModelRewiredElement {
+  change: "rewired";
+  address: ModelAddress;
+  previous: ModelWire | ModelPhysicalConnection;
+}
+
 export interface ModelProjection {
   ports?: ModelPortProjection[];
   task_signals?: ModelTaskSignal[];
   task_inputs?: ModelAddress[];
   objective_ports?: ModelAddress[];
   resolved_model?: ModelDocument | null;
+  base_differences?: Array<ModelAddedElement | ModelRemovedElement | ModelRewiredElement>;
+  value_differences?: Array<ModelAddedElement | ModelRemovedElement | ModelRewiredElement>;
 }
 
 export interface ModelProjectionRequest {
   revision: string;
   run: StudioSavedTrainKey;
   document: string;
+  rows?: string[];
+  axes?: Record<string, string[]>;
 }
 
 export interface ModelTaskSignal {
@@ -6092,10 +6121,19 @@ export const UngroupCompositeSchema: z.ZodType<UngroupComposite> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<UngroupComposite>;
 
+export const ResetDifferenceSchema: z.ZodType<ResetDifference> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("reset_difference"),
+      "address": ModelAddressSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<ResetDifference>;
+
 export const ModelEditCommandSchema: z.ZodType<ModelEditCommand> = z.lazy(() =>
   z
     .object({
-      "operation": z.union([AddComponentSchema, MoveCardsSchema, FlipComponentSchema, CollapseGraphSchema, RouteWireSchema, DeleteElementsSchema, ConnectSignalSchema, ConnectTaskSignalSchema, ConnectPhysicalSchema, AddPortSchema, RemovePortSchema, RenameElementSchema, MovePortSchema, SetFieldSchema, SetModelAttachmentSchema, MoveWireAttachmentSchema, InsertComponentOnWireSchema, BringSignalInSchema, CopyComponentsSchema, CutComponentsSchema, DuplicateComponentsSchema, PasteComponentsSchema, GroupComponentsSchema, UngroupCompositeSchema]),
+      "operation": z.union([AddComponentSchema, MoveCardsSchema, FlipComponentSchema, CollapseGraphSchema, RouteWireSchema, DeleteElementsSchema, ConnectSignalSchema, ConnectTaskSignalSchema, ConnectPhysicalSchema, AddPortSchema, RemovePortSchema, RenameElementSchema, MovePortSchema, SetFieldSchema, SetModelAttachmentSchema, MoveWireAttachmentSchema, InsertComponentOnWireSchema, BringSignalInSchema, CopyComponentsSchema, CutComponentsSchema, DuplicateComponentsSchema, PasteComponentsSchema, GroupComponentsSchema, UngroupCompositeSchema, ResetDifferenceSchema]),
     })
     .strict()
 ) as unknown as z.ZodType<ModelEditCommand>;
@@ -6232,6 +6270,38 @@ export const ModelPortProjectionSchema: z.ZodType<ModelPortProjection> = z.lazy(
     .strict()
 ) as unknown as z.ZodType<ModelPortProjection>;
 
+export const ModelAddedElementSchema: z.ZodType<ModelAddedElement> = z.lazy(() =>
+  z
+    .object({
+      "change": z.literal("added"),
+      "address": ModelAddressSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<ModelAddedElement>;
+
+export const ModelRemovedElementSchema: z.ZodType<ModelRemovedElement> = z.lazy(() =>
+  z
+    .object({
+      "change": z.literal("removed"),
+      "address": ModelAddressSchema,
+      "definition": z.union([LeafComponentSchema, CompositeComponentSchema, ModelWireSchema, ModelPhysicalConnectionSchema, z.union([DelayAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema])]),
+      "position": ModelPositionSchema.nullable().optional(),
+      "wires": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), ModelWireSchema).optional(),
+      "connections": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), ModelPhysicalConnectionSchema).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelRemovedElement>;
+
+export const ModelRewiredElementSchema: z.ZodType<ModelRewiredElement> = z.lazy(() =>
+  z
+    .object({
+      "change": z.literal("rewired"),
+      "address": ModelAddressSchema,
+      "previous": z.union([ModelWireSchema, ModelPhysicalConnectionSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelRewiredElement>;
+
 export const ModelProjectionSchema: z.ZodType<ModelProjection> = z.lazy(() =>
   z
     .object({
@@ -6240,6 +6310,8 @@ export const ModelProjectionSchema: z.ZodType<ModelProjection> = z.lazy(() =>
       "task_inputs": z.array(ModelAddressSchema).optional(),
       "objective_ports": z.array(ModelAddressSchema).optional(),
       "resolved_model": ModelDocumentSchema.nullable().optional(),
+      "base_differences": z.array(z.union([ModelAddedElementSchema, ModelRemovedElementSchema, ModelRewiredElementSchema])).optional(),
+      "value_differences": z.array(z.union([ModelAddedElementSchema, ModelRemovedElementSchema, ModelRewiredElementSchema])).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelProjection>;
@@ -6250,6 +6322,8 @@ export const ModelProjectionRequestSchema: z.ZodType<ModelProjectionRequest> = z
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
       "run": StudioSavedTrainKeySchema,
       "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).optional(),
+      "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1))).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelProjectionRequest>;
