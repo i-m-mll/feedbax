@@ -267,7 +267,7 @@ def test_addressed_field_range_sample_and_row_provenance(tmp_path):
                 "run": {"variant": "default", "step": "train", "row": "default"}}
         state = client.post(url + "/model/fields", json=body).json()["fields"][0]
         assert state["text"] == "0.02 s"
-        assert state["site"]["kinds"] == ["value", "sweep", "formula"]
+        assert state["site"]["kinds"] == ["value", "sweep"]
         response = client.post(url + "/model/fields", json=body | {
             "address": state["address"], "edit": {"kind": "text", "text": "linspace(10 ms, 30 ms, 3)"},
         })

@@ -253,6 +253,14 @@ class StudioProjectWindowMapCoordinate(StrictModel):
     value: JsonValue
 
 
+class StudioProjectWindowMapInputAxis(StrictModel):
+    """A row's member of one input axis, with the axes of the row's coordinates the member carries."""
+
+    value_id: str
+    label: str | None
+    carries: list[str]
+
+
 class StudioSavedLightResult(StrictModel):
     job_id: str
     request_id: str
@@ -272,12 +280,17 @@ class StudioProjectWindowMapRow(StrictModel):
     key: StudioSavedTrainKey
     label: str
     coordinates: dict[str, StudioProjectWindowMapCoordinate]
+    input_axes: dict[str, StudioProjectWindowMapInputAxis] = Field(
+        default_factory=dict, exclude_if=lambda value: not value,
+    )
     member_key: str | None = Field(default=None, exclude_if=lambda value: value is None)
     status: JobStatus
     reason: str | None = Field(default=None, exclude_if=lambda value: value is None)
     opening_step: OpeningStep | None = Field(default=None, exclude_if=lambda value: value is None)
     collection_progress: StoreTransferProgress | None = Field(default=None, exclude_if=lambda value: value is None)
     evaluation_conditions: list[str] | None = Field(default=None, exclude_if=lambda value: value is None)
+    origin: int | None = Field(default=None, exclude_if=lambda value: value is None)
+    """A Train row's completed-update count at its start (0 when fresh); its readers select updates after it."""
     target_total: int | None = Field(default=None, exclude_if=lambda value: value is None)
     """A Train row's completed-update count at its end, which bounds the checkpoints its readers select."""
     light: StudioSavedLightHistory | None = Field(default=None, exclude_if=lambda value: value is None)

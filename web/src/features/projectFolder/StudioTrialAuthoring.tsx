@@ -4,7 +4,7 @@ import { Plus } from 'lucide-react';
 import { useId, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { catalogEntries, readStudioTrialAuthoring, useAuthoringCatalog } from '@/api/studioAuthoring';
-import { apiErrorMessage } from '@/api/request';
+import { shownError } from '@/api/shownErrors';
 import { studioAccessibleName, studioDefinitionStatus, studioEvaluateValueSource, studioName, studioRunReason } from '@/components/activity/studioVocabulary';
 import { IconButton } from '@/components/ui/Button';
 import { Inspector } from '@/components/ui/Inspector';
@@ -78,12 +78,12 @@ export function useTrialAuthoring(
       });
       await editor.flush();
       const settled = await stored;
-      if (settled.status === 'refused') return apiErrorMessage(settled.error);
+      if (settled.status === 'refused') return shownError(settled.error);
     } else if (result.problems.length) {
       return result.problems[0].reason;
     }
     return undefined;
-  }).catch(apiErrorMessage) : undefined;
+  }).catch(shownError) : undefined;
   return { view: query.data, error: query.error, retry: () => { void query.refetch(); }, commit };
 }
 
@@ -202,11 +202,11 @@ function termFields(view: StudioTrialAuthoring, term: ObjectiveTerm, index: numb
   const expression = (field: 'measure' | 'weight'): FieldModel => {
     const label = humanizeLabel(field);
     const projection = view.fields.find((site) => site.path === authoredPointer(['objective', 'terms', term.id, field]));
-    if (!projection) return rawField({ id: term.id + field, label, type: { kind: 'readOnly' }, value: '—' });
+    if (!projection) throw new Error(`The Objective's ${field} of term ${term.id} has no field`);
     const value = term[field];
     const kind = value?.kind === 'name' ? 'link' : value?.kind === 'call' ? 'formula' : value?.kind === 'draw' ? 'draw' : 'value';
     return fromFieldView({
-      label, text: projection.text ?? '',
+      label, text: projection.text ?? '', structure: projection.structure,
       site: { ...projection.projection, kinds: projection.projection.kinds.filter((kind) => kind !== 'sweep') },
     }, {
       id: term.id + field, kind, changed: changed(field),

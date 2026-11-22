@@ -7,6 +7,6 @@ export async function fetchComponents() {
     const response = parseContract('ComponentListResponse', await requestJson(path));
     return response.data.components;
   } catch (error) {
-    throw asApiRequestError(error, path, 'The component catalog did not match its contract');
+    throw asApiRequestError(error, path);
   }
 }

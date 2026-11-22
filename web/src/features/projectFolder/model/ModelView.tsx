@@ -4,7 +4,8 @@ import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type M
 import { useStore } from 'zustand';
 import { fetchComponents } from '@/api/components';
 import { projectModelFields, readEvaluateModel, readModelProjection, reviewModelConnections } from '@/api/projectFolders';
-import { ApiRequestError, apiErrorMessage, isRefusal } from '@/api/request';
+import { ApiRequestError, isRefusal } from '@/api/request';
+import { shownError } from '@/api/shownErrors';
 import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
 import { studioAccessibleName, studioEvaluateValueSource, studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { baseChain, documentPayload } from '../documentPayload';
@@ -228,7 +229,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   });
   const effectiveModel = evaluate ? attachments.data?.resolved_model : projection.data?.resolved_model;
   /** Why the service refuses an evaluation's read: it lands on the Model picker, and the view shows the read document. */
-  const refused = evaluate && isRefusal(attachments.error) ? apiErrorMessage(attachments.error) : undefined;
+  const refused = evaluate && isRefusal(attachments.error) ? shownError(attachments.error) : undefined;
   const shownModel = evaluate && !refused ? effectiveModel : model?.value;
   const resolved = useMemo(() => shownModel && modelPath(shownModel, path), [shownModel, path]);
   const currentPath = useMemo(() => resolved?.entries.map(({ id }) => id) ?? emptyPath, [resolved]);
@@ -237,8 +238,15 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const owner = resolved?.owner;
   const interior = owner?.interior;
   const physical = interior?.physical_domain ?? null;
+  /**
+   * Whether the topology applies is decided with the plan. From a new revision until its plan is read it keeps its last
+   * value, so the cards keep their commands and a gesture made then waits for the plan.
+   */
+  const topology = useRef<{ subject: string; applies: boolean }>();
+  const topologySubject = JSON.stringify([saved.project_id, model?.id]);
+  if (planCurrent || topology.current?.subject !== topologySubject) topology.current = { subject: topologySubject, applies: topologyApplies };
   /** An Evaluate edits the topology of one selected value's Model; the edit is stored on the value. */
-  const editTopology = topologyApplies && (!evaluate || evaluate.scope.kind === 'axis_value');
+  const editTopology = topology.current.applies && (!evaluate || evaluate.scope.kind === 'axis_value');
   const selectedRuns = evaluate?.scope.kind === 'axis_value' ? evaluateEditRuns(evaluate.scope, evaluate.run, fieldRows)
     : !evaluate && fieldRows?.length && fieldAxes ? { rows: [...fieldRows], axes: fieldAxes } : undefined;
   const selectedHere = selected.filter((item) => inGraph(item, graph));
@@ -304,11 +312,11 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
               ...(fieldBody.run ? [{ kind: 'step' as const, id: fieldBody.run.step }] : []),
               ...(attachments.data?.source ? [{ kind: 'step' as const, id: attachments.data.source.step }] : [])];
           const settled = await editor.editFiles('Set Field', result.files, { reviewedRevision: current.revision, dependencies });
-          if (settled.status === 'refused') return apiErrorMessage(settled.error);
+          if (settled.status === 'refused') return shownError(settled.error);
         }
         return undefined;
       } catch (error) {
-        return apiErrorMessage(error);
+        return shownError(error);
       }
     });
   }
@@ -378,6 +386,17 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     },
   })), [definitions]);
   const persisted = model && positionsOf(saved, model.id);
+  /** Where each card without a saved position was first shown: it stays there, whatever is added or removed. */
+  const placed = useRef(new Map<string, ModelPosition>());
+  function cardPosition(address: ModelAddress, initial: () => ModelPosition) {
+    const key = addressKey(address);
+    const stored = held?.get(key) ?? persisted?.[key];
+    if (stored) return stored;
+    const shown = JSON.stringify([saved.project_id, model?.id, key]);
+    const first = placed.current.get(shown) ?? initial();
+    if (interior) placed.current.set(shown, first);
+    return first;
+  }
   const presentation = model && saved.presentation?.documents?.[model.id];
   const collapsed = presentation?.collapsed;
   const flipped = presentation?.flipped;
@@ -437,7 +456,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           return null;
         } catch (error) {
           const problem = ModelEditProblemSchema.safeParse(error instanceof ApiRequestError ? error.detail : undefined);
-          return problem.success ? { address: problem.data.address, reason: problem.data.detail } : { reason: apiErrorMessage(error) };
+          return problem.success ? { address: problem.data.address, reason: problem.data.detail } : { reason: shownError(error) };
         }
     });
   }
@@ -474,8 +493,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           }
           return undefined;
         } catch (error) {
-          if (onField) return apiErrorMessage(error);
-          setIssue({ document: model.id, reason: apiErrorMessage(error) });
+          if (onField) return shownError(error);
+          setIssue({ document: model.id, reason: shownError(error) });
           return undefined;
         }
     });
@@ -547,7 +566,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           if (target) connect(idFor(port.end), portId(port), id, portId(target));
         },
       } });
-    }).catch((error) => { if (!request.signal.aborted) setIssue({ document: model.id, reason: apiErrorMessage(error) }); })
+    }).catch((error) => { if (!request.signal.aborted) setIssue({ document: model.id, reason: shownError(error) }); })
       .finally(() => { if (keyboardReview.current === request) keyboardReview.current = undefined; });
   }
   function openSearch(point = cursor.current ?? positionAt(objects.length), source?: Port) {
@@ -557,11 +576,11 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     setSearchSource(source);
     setSearchLibrary(undefined);
     if (source) void libraryReview.current?.then((result) => setSearchLibrary(result.library)).catch((error) => {
-      if (!(error instanceof DOMException && error.name === 'AbortError')) setIssue({ document: model.id, reason: apiErrorMessage(error) });
+      if (!(error instanceof DOMException && error.name === 'AbortError')) setIssue({ document: model.id, reason: shownError(error) });
     });
   }
   function add(definition: ComponentDefinition, point?: ModelPosition, from?: Port, to?: string) {
-    const occupied = objects.map(([id], index) => persisted?.[addressKey(at(graph, { kind: 'component', id }))] ?? positionAt(index));
+    const occupied = objects.map(([id], index) => cardPosition(at(graph, { kind: 'component', id }), () => positionAt(index)));
     let index = 0;
     let available = positionAt(index);
     while (occupied.some(({ x, y }) => Math.abs(x - available.x) < 196 && Math.abs(y - available.y) < 150)) {
@@ -628,7 +647,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       .then(({ targets }) => {
         if (!request.signal.aborted) setVerdict(new Map(targets.map(({ target, reason }) => [endKey(target), reason])));
       })
-      .catch((error) => { if (!request.signal.aborted) setIssue({ document: model.id, reason: apiErrorMessage(error) }); });
+      .catch((error) => { if (!request.signal.aborted) setIssue({ document: model.id, reason: shownError(error) }); });
   };
   function connect(sourceNode: string, sourceHandle: string | null, targetNode: string, targetHandle: string | null) {
     const a = portAt(sourceNode, sourceHandle), b = portAt(targetNode, targetHandle);
@@ -726,8 +745,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           enter();
         } }),
       },
-      position: held?.get(key) ?? persisted?.[key] ?? (definition ? positionAt(index) :
-        { x: id === inputCard ? 18 : 245 + 235 * Math.max(1, Math.min(objects.length, 4)), y: 38 }),
+      position: cardPosition(address, () => definition ? positionAt(index)
+        : { x: id === inputCard ? 18 : 245 + 235 * Math.max(1, Math.min(objects.length, 4)), y: 38 }),
       selected: !!definition && selectedIds.has(key),
       draggable: editTopology && !locked && !pick,
       selectable: !!definition && !pick,

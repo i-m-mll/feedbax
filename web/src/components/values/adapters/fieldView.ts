@@ -124,6 +124,8 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
     origin: [field.conversion, source.text].filter(Boolean).join(' · ') || undefined,
     changed: !!reset,
     revealOrigin: source.reveal,
+    structure: field.structure ?? undefined,
+    finest: field.site.site.finest,
     names: field.site.site.names ?? [],
     functions: field.site.functions,
     commit,

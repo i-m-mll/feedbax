@@ -14,7 +14,7 @@ function studio(
   ],
 ) {
   return <ProjectWindowPalette><ProjectWindow state={defaultProjectWindowState} onStateChange={() => {}}
-    projectName={projectName} availableViews={withScene ? ['runs', 'scene'] : ['runs']}
+    projectName={projectName} views={{ available: withScene ? ['runs', 'scene'] : ['runs'], absent: {} }}
     renderView={() => ({ body: <input aria-label="Training field" /> })}
     map={<button>Map item</button>} mapDrawer={null} compactMap={<button>Compact item</button>}
     activity={<div data-studio-activity-panel><button>Activity item</button></div>}
