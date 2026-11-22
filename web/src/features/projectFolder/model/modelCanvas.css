@@ -1,6 +1,7 @@
 .studio-model-surface { flex: 1; min-width: 0; min-height: 0; }
 .studio-model-card { width: 180px; font-size: 12px; }
 .studio-model-card[data-boundary="true"] { border-style: dashed; }
+.studio-model-card[data-ghost="true"], .studio-model-attachments [data-ghost="true"] { border-style: dashed; color: var(--text-muted); }
 .studio-model-card[data-stacked="true"] { box-shadow: 3px 3px 0 -1px var(--studio-control-border), 6px 6px 0 -2px var(--app-divider); }
 .studio-model-card[data-holds-selection="true"] header { border-bottom: 3px solid currentColor; }
 .studio-model-card-header { display: flex; align-items: baseline; gap: 6px; justify-content: space-between; padding: 5px 8px; overflow-wrap: anywhere; }
