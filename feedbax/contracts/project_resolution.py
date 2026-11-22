@@ -92,6 +92,14 @@ class ResolutionCode(StrEnum):
     UNKNOWN_SCHEMA = "unknown_schema"
     INVALID_DOCUMENT = "invalid_document"
     UNSUPPORTED_PLAN = "unsupported_plan"
+    BLOCKED_INPUT = "blocked_input"
+
+
+@dataclass(frozen=True)
+class RunKey:
+    variant: str
+    step: str
+    row: str
 
 
 @dataclass(frozen=True)
@@ -111,6 +119,8 @@ class ProjectDiagnostic:
     authored_path: str | None = None
     variation_target: str | None = None
     """The dotted path the variation entry at ``path`` patches, which places the problem."""
+    blocked_by: RunKey | None = None
+    """For ``blocked_input``, the producer row that cannot run."""
 
 
 @dataclass(frozen=True)

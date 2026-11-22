@@ -2,7 +2,7 @@
   position: relative;
   height: 320px;
   overflow: hidden;
-  border: 1px solid var(--app-divider);
+  border: 1px solid var(--border-muted);
   border-radius: var(--radius-md);
 }
 

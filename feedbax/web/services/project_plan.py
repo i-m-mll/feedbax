@@ -13,6 +13,8 @@ from types import MappingProxyType
 from typing import NotRequired, TypedDict
 from urllib.parse import quote
 
+from pydantic_core import to_json
+
 from feedbax.analysis.report_document import PLOTLY_SCRIPT_NAME, REPORT_HTML_NAME, report_content_security_policy
 from feedbax.compiler.trial_execution import evaluation_conditions
 from feedbax.contracts._request_codec import same_typed_value
@@ -62,15 +64,15 @@ from feedbax.contracts.studio_project import AuthoredFileAddress
 from feedbax.contracts.studio_subset import StudioSubsetToRowsEdit, StudioSubsetToRowsRequest
 from feedbax.contracts.project_io import project_declaration_name
 from feedbax.contracts.project_plan import (
-    ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedInput, PlannedRun, RunKey, authored_request_change,
+    BlockedRow, ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedInput, PlannedRow, PlannedRun, RunKey, authored_request_change,
 )
 from feedbax.contracts.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.result_address import parse_labels
 from feedbax.contracts.project_sweep import CheckpointRuleAxis
-from feedbax.contracts.request_identity import decode_python_task_selection, decode_request
+from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import (
-    BatchMember, BatchSetMember, BestRank, LastMember, ProductRef, RequestId, UpdateSeriesMember,
+    BatchMember, BatchSetMember, BestRank, LastMember, ProductRef, UpdateSeriesMember,
 )
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec
 from feedbax.contracts.workspace_replay import WorkspaceReplayTrial
@@ -270,28 +272,20 @@ class ProjectPlanRead:
             )
         statuses = {item.key: item for row in self.status_rows() for item in row.flattened()}
         elements = plan.elements.values()
-        conditions: dict[RequestId, list[str] | None] = {}
-        if evaluation_tasks is not None:
-            for run in plan.runs:
-                if run.kind != "train" or run.request_id in conditions:
-                    continue
-                source = plan.train_evaluation_source(run.request_id)
-                if isinstance(source, tuple):
-                    conditions[run.request_id] = list(source)
-                    continue
-                if source is not None:
-                    task = decode_python_task_selection(source)
-                else:
-                    train = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
-                    if not isinstance(train, DocumentTrainingRequestSpec):
-                        continue
-                    task = train.trial_documents.task_source
-                conditions[run.request_id] = None
+        conditions: dict[str, list[str] | None] = {}
+
+        def task_conditions(row: PlannedRow) -> list[str] | None:
+            if evaluation_tasks is None or row.train is None or (task := row.train.task) is None:
+                return None
+            identity = to_json(task.model_dump(mode="json")).decode()
+            if identity not in conditions:
                 try:
-                    conditions[run.request_id] = list(evaluation_conditions(task, evaluation_tasks))
+                    conditions[identity] = list(evaluation_conditions(task, evaluation_tasks))
                 except ValueError:
                     # An unresolved Task has no authorable trial domain.
-                    continue
+                    conditions[identity] = None
+            return conditions[identity]
+
         counts: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
         for key, status in statuses.items():
             if isinstance(key, RunKey):
@@ -303,7 +297,7 @@ class ProjectPlanRead:
         ]
         edge_keys.extend(
             (producer, row.key)
-            for row in plan.rows if isinstance(row, PlannedAnalyzeRun)
+            for row in plan.rows if isinstance(row, (PlannedAnalyzeRun, BlockedRow))
             for members in row.inputs.values()
             for binding in members
             for producer in binding.sources
@@ -374,7 +368,8 @@ class ProjectPlanRead:
                     ), None),
                     light=StudioSavedLightHistory(result=light.result, previous=light.previous, changed=light.changed)
                     if (light := self.light.get(row.key)) is not None else None,
-                    evaluation_conditions=conditions.get(row.request_id) if isinstance(row, PlannedRun) else None,
+                    evaluation_conditions=task_conditions(row),
+                    target_total=row.train.target_total if row.train is not None else None,
                     member_key=producer_member_key(row.key.variant, row.key.row, gathers_variants=False)
                     if row.kind in {"train", "evaluate"} else None,
                     coordinates={
