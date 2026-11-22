@@ -37,6 +37,7 @@ from feedbax.contracts.request_refs import (
     Sha256,
 )
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
+from feedbax.contracts.strict_json import strict_model_validate_json
 from feedbax.plugins.declarations import DistributionSource
 
 
@@ -336,7 +337,7 @@ def read_success_object(
 ) -> Success:
     """Read the immutable receipt bytes at an already authorized exact ref."""
     raw = read_object(ref)
-    receipt = Success.model_validate_json(raw)
+    receipt = strict_model_validate_json(Success, raw)
     if raw != canonical_json_v2_bytes(receipt.model_dump(mode="json")):
         raise ValueError("Successful receipt bytes are not canonical")
     return receipt
