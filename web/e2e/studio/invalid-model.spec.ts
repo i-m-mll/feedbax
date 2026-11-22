@@ -30,7 +30,7 @@ test('keeps the steps that read an invalid Model editable and marks them waiting
   await mapStep(page, 'conditions').click();
   await tab(page, 'Runs').click();
   await reveal(page, 'Inspector');
-  await expect(inspector.getByRole('region', { name: 'Runs', exact: true })).toBeVisible();
+  await expect(inspector.getByRole('combobox', { name: 'Runs', exact: true })).toBeVisible();
   await expect(inspector.getByRole('combobox', { name: 'Checkpoint', exact: true })).toHaveText('Last');
   await expect(inspector.getByRole('combobox', { name: 'Trials', exact: true })).toBeVisible();
   await expect(runs.getByRole('row')).toHaveCount(3);
