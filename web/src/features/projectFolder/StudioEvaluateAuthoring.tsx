@@ -1,6 +1,6 @@
 import { useId, useRef, type ReactNode } from 'react';
 import { useDraft } from '@/hooks/useDraft';
-import { studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
 import { Checkbox } from '@/components/ui/Checkbox';
 import { NumberField } from '@/components/ui/NumberField';
@@ -91,7 +91,7 @@ export function CheckpointEditor({ initial, step, limit, disabled, readOnly, ref
     setDraft(saved);
   }}><Section level="field" name={step ?? name} bodyClassName={members}
     control={<>
-      <Select aria-label={step ? studioFormat('fieldSource', { kind: name, name: step }) : name} value={draft.kind}
+      <Select aria-label={studioAccessibleName('checkpoint', step)} value={draft.kind}
         disabled={fixed}
         aria-invalid={draft.kind === 'last' && refusal !== undefined}
         items={checkpointKinds.map((kind) => ({ value: kind, label: studioName(kind) }))}
