@@ -19,6 +19,8 @@ from feedbax.contracts.selection import ManifestPredicate
 # These names serve as file stems and path segments in project-level patches.
 ProjectName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")]
 RowKey = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_][A-Za-z0-9_=-]*$")]
+AxisValueId = Name
+"""An axis value's ID: a value's name, or an input axis's member key (``seed=0``, ``variant/row``)."""
 NonemptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 type Pointer = Annotated[str, StringConstraints(pattern=r"^(?:/(?:[^~/]|~[01])*)*$")]
 
@@ -76,8 +78,7 @@ def producer_member_key(variant: str, row: str, *, gathers_variants: bool) -> st
 
 
 class SelectionTerms(StrictModel):
-    axes: dict[ProjectName, list[Name]] = Field(default_factory=dict)
-    """Each axis's value IDs: a value's name, or an input axis's member key (``train/rank-1``)."""
+    axes: dict[ProjectName, list[AxisValueId]] = Field(default_factory=dict)
     best: Best | None = None
     when: When | None = None
 
