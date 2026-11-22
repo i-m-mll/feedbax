@@ -486,7 +486,7 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   const batches = stepInspector.getByRole('textbox', { name: 'Batches', exact: true });
   await batches.fill('4');
   await batches.press('Enter');
-  await page.getByRole('tabpanel', { name: 'Scene', exact: true }).focus();
+  await page.locator('[data-slot="secondary"]').getByRole('tabpanel').focus();
   const acknowledged = await edit;
   expect(acknowledged.ok(), await acknowledged.text()).toBe(true);
   snapshot = await acknowledged.json() as StudioProjectSnapshot;
