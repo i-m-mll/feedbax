@@ -4,7 +4,7 @@ import { ChartLine, Database, Sigma } from 'lucide-react';
 import { useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import { readStudioAnalyze } from '@/api/studioAnalyze';
-import { studioAccessibleName, studioChangeDetail, studioCountOf, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioChangeDetail, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
 import { CanvasStrip } from '@/components/canvas/CanvasStrip';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { Button } from '@/components/ui/Button';
@@ -33,6 +33,8 @@ import { shownName, type PlanStepView } from '@/features/pipeline/planView';
 import { heldElementKeys } from './analysisElements';
 import { isMemberName } from './projectMemberName';
 import { AnalyzeElementInputs } from './AnalyzeReferences';
+import { SelectionRule } from './SelectionRule';
+import { changedSelections, stepSelections } from './selectionEdits';
 import { InputEditor } from './InputEditor';
 import { useAuthoringCatalog } from '@/api/studioAuthoring';
 import { selectionProblem } from './selectionEdits';
@@ -373,14 +375,23 @@ export function useManagedAnalyze({
     {selected && selectedInput && key && inputRole && <InputEditor label={humanizeLabel(selected)} role={inputRole}
       binding={step?.inputs?.[selected]} self={key.step} project={saved.project} steps={steps} picking={selection}
       refusal={roleRefusal(selected, selected)} outputs={cardOutputs}
-      selection={(index) => {
-        const listed = Array.isArray(step?.inputs?.[selected]);
+      selection={(index, reference) => {
+        const binding = step?.inputs?.[selected];
+        const listed = Array.isArray(binding);
         const subset = steps.find(({ id }) => id === key.step)?.inputs.find(({ id }) => id === (listed ? `${selected}.${index}` : selected))?.subset;
+        const source = steps.find(({ id }) => id === reference.step);
+        const where = reference.where ?? {};
         return {
           problem: selectionProblem(projection?.window_map?.problems ?? [], key.step, key.variant, selected, index, listed),
-          runs: subset && <div className="px-control-inline text-shell-muted">
-            {[...subset.terms, studioCountOf(subset.count, subset.total)].join(' · ')}
-          </div>,
+          runs: source && projection && !('subset' in where) && <SelectionRule
+            scope={{ project: saved.project_id, revision: projection.revision, variant: key.variant }} source={source}
+            rule={where.rule ?? ''} pinned={where.rows?.map(({ key: row }) => row)} planned={subset} picking={selection}
+            disabled={!canBind} refusal={roleRefusal(selected, selected)}
+            onCommit={(rule) => {
+              const { rule: _written, ...rest } = where;
+              const next = { ...reference, where: rule ? { ...rest, rule } : rest };
+              bind(selected, listed ? changedSelections(stepSelections(binding)!, { kind: 'replace', index, reference: next }) : next);
+            }} />,
         };
       }}
       onChange={canBind ? (gesture) => {

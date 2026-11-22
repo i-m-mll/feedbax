@@ -1,3 +1,4 @@
+import { valuesRule } from '@/components/values/runRule';
 import type { PipelineMapStepSource } from '@/components/pipeline/StudioPipelineMap';
 import type { PlanView } from '@/features/pipeline/planView';
 import { selectedRuns } from '@/features/pipeline/selection';
@@ -39,7 +40,8 @@ export function trainSourceSubset(
   if (selection) {
     const selected = new Set(members.map(({ id }) => id));
     if (selection.kind === 'values') {
-      where = { axes: Object.fromEntries(selection.terms.map(({ sweepId, valueIds }) => [sweepId, [...valueIds]])) };
+      where = { rule: valuesRule(step.ruleAxes ?? {},
+        Object.fromEntries(selection.terms.map(({ sweepId, valueIds }) => [sweepId, valueIds]))) };
     } else if (sharedProject) {
       where = sharedRowTerms(step, members);
       if (!where) throw new ProjectEditConflictError();

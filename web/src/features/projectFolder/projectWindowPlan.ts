@@ -1,4 +1,5 @@
-import { studioFormat, studioName, studioOpeningStage, studioOpeningStep } from '@/components/activity/studioVocabulary';
+import { studioFormat, studioOpeningStage, studioOpeningStep } from '@/components/activity/studioVocabulary';
+import { valuesRule } from '@/components/values/runRule';
 import {
   runResultState, shownName, type PlanResultView, type PlanRunView, type PlanStepView, type PlanSweepView, type PlanView,
 } from '@/features/pipeline/planView';
@@ -24,6 +25,7 @@ export function stepSourceRows(saved: StudioSavedTrainRuns, step: string, varian
     ? [{ key: member_key, variant: key.variant, row: key.row }] : []) ?? [];
 }
 
+/** The rule choosing exactly `members` of the step by their values, when one does. */
 export function sharedRowTerms(
   step: PlanStepView, members: readonly PlanRunView[],
 ): SubsetTerms | undefined {
@@ -34,7 +36,8 @@ export function sharedRowTerms(
   }));
   const selected = new Set(members.map(({ id }) => id));
   const matches = step.runs.filter(({ values }) => Object.entries(axes).every(([axis, ids]) => ids.includes(values[axis])));
-  return matches.length === selected.size && matches.every(({ id }) => selected.has(id)) ? { axes } : undefined;
+  return matches.length === selected.size && matches.every(({ id }) => selected.has(id))
+    ? { rule: valuesRule(step.ruleAxes ?? {}, axes) } : undefined;
 }
 
 export function planVariants(saved: StudioSavedTrainRuns | undefined) {
@@ -53,19 +56,8 @@ function coordinateText({ value, label, value_id }: StudioProjectWindowMapCoordi
   return value_id;
 }
 
-function subsetTerms(terms: SubsetTerms, sweeps?: ReadonlyMap<string, ReadonlyMap<string, string>>): string[] {
-  const best = terms.best;
-  return [
-    ...Object.entries(terms.axes ?? {}).map(([axis, ids]) =>
-      `${axis} ${ids.map((id) => sweeps?.get(axis)?.get(id) ?? id).join(', ')}`),
-    ...(terms.rows ?? []).map(({ key }) => key),
-    ...(best ? [
-      studioFormat('bestSubset', {
-        order: studioName(best.order === 'min' ? 'lowest' : 'highest'), metric: best.by, count: best.k,
-      }),
-      ...(best.per?.length ? [studioFormat('subsetPer', { axes: best.per.join(', ') })] : []),
-    ] : []),
-  ];
+function subsetTerms(terms: SubsetTerms): string[] {
+  return [...terms.rule ? [terms.rule] : [], ...(terms.rows ?? []).map(({ key }) => key)];
 }
 
 function savedResult(result: { request_id: string; job_id: string; validity?: PlanResultView['validity'] | null } | null | undefined) {
@@ -351,7 +343,8 @@ export function projectWindowPlan(
       id: input.id, label: input.id, sourceStepId: input.source_step_id,
       subset: input.subset ? {
         ...input.subset,
-        terms: subsetTerms(input.subset.terms, sweepsByStep.get(input.source_step_id)),
+        terms: subsetTerms(input.subset.terms),
+        ranked: !!input.subset.ranks?.length,
         memberGroups: inputMemberGroups(input.subset, id, input.source_step_id),
       } : undefined,
     })) ?? [];
@@ -384,6 +377,8 @@ export function projectWindowPlan(
       }), labelled),
       runs: labelled,
       statusCounts: resultCounts(projected?.status_counts ?? {}, runs),
+      ruleAxes: projected?.rule_axes,
+      ruleMetrics: projected?.rule_metrics,
     };
   });
   return {

@@ -6,6 +6,7 @@ import {
   type StudioAuthoringCatalog,
   type StudioCheckpointRuleRequest,
   type StudioRemovedRunsRequest,
+  type StudioRunRuleRequest,
   type StudioSetEditRequest,
   type StudioSetsOfferedRequest,
   type StudioSubsetToRowsRequest,
@@ -180,4 +181,17 @@ export function useAuthoringCatalog() {
     queryFn: ({ signal }) => readAuthoringCatalog(signal),
     staleTime: Infinity,
   });
+}
+
+/** What a run rule being written chooses among the runs of the step it reads, or why it is refused. */
+export async function checkRunRule(projectId: string, body: StudioRunRuleRequest, signal: AbortSignal) {
+  const path = `/api/projects/${encodeURIComponent(projectId)}/authoring/run-rule`;
+  try {
+    const response = await requestJson(path, {
+      method: 'POST', body: sentBody('StudioRunRuleRequest', body, path), cache: 'no-store', signal,
+    });
+    return parseContract('StudioRunRuleCheck', response);
+  } catch (error) {
+    throw asApiRequestError(error, path);
+  }
 }

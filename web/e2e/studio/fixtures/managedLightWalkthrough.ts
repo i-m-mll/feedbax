@@ -185,8 +185,9 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
 
   await selectTwo();
   await addSuccessor('Evaluate', subsetStep);
-  const input = stepInspector(page);
-  await expect(input).toContainText('2 of 3');
+  const rule = stepInspector(page).getByRole('combobox', { name: 'Runs', exact: true });
+  const ruleRow = rule.locator('..');
+  await expect(ruleRow).toContainText('2/3');
   const subsetPlan = await plan(context);
   const partial = evaluationRows(subsetPlan, subsetStep);
   const nominal = evaluationRows(subsetPlan, pairedStep)[0];
@@ -200,14 +201,14 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const settled = evaluationRows(await plan(context), subsetStep);
   const beforeWidening = await attempts();
   expect(beforeWidening).toEqual([...beforeSubset, ...admitted].sort());
-  const subset = stepInspector(page).getByRole('region', { name: 'Runs', exact: true });
-  const fast = subset.getByRole('checkbox', { name: '0.003', exact: true });
-  await activate(page, fast, 'Space');
-  await expect(fast).toBeChecked();
+  await rule.focus();
+  await page.keyboard.press('End');
+  await page.keyboard.type(',0.003');
+  await expect(ruleRow).toContainText('3/3');
   const edited = mutation(context, 'PATCH');
-  await activate(page, subset.getByRole('button', { name: 'Apply Subset', exact: true }));
+  await page.keyboard.press('Enter');
   expect((await edited).ok()).toBe(true);
-  await expect(input).toContainText('3 of 3');
+  await expect(rule).toHaveValue(/,0\.003$/);
   const widened = evaluationRows(await plan(context), subsetStep);
   expect(widened.slice(0, 2)).toEqual(settled);
   expect(widened).toHaveLength(3);

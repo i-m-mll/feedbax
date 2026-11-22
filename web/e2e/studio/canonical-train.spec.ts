@@ -408,7 +408,6 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   expect(authored.problems).toEqual([]);
   expect(authored.rows).toHaveLength(3);
   const selected = authored.rows.filter(({ coordinates }) => coordinates['learning-rate'].value !== 0.002);
-  const valueIds = selected.map(({ coordinates }) => coordinates['learning-rate'].value_id);
   const rowKeys = selected.map(({ key }) => key.row);
   expect(selected.map(({ coordinates }) => coordinates['learning-rate'].value)).toEqual([0.001, 0.003]);
   const run = async (step: string) => {
@@ -446,7 +445,7 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   const childId = 'train-2';
   expect(snapshot.project.steps?.[childId]).toMatchObject({
     base: { step: 'train' },
-    inputs: { checkpoint: { step: 'train', checkpoint: 'last', where: { axes: { 'learning-rate': valueIds } } } },
+    inputs: { checkpoint: { step: 'train', checkpoint: 'last', where: { rule: `learning-rate=${selected.map(({ coordinates }) => coordinates['learning-rate'].value).join(',')}` } } },
     deltas: [{ patches: [{ value: 'initialize_from' }] }],
   });
   const child = map.getByRole('article', { name: `Train ${childId}`, exact: true });

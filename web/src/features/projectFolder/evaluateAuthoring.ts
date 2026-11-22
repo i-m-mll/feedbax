@@ -246,7 +246,6 @@ export function ordinaryEvaluation(step: Step): { subjects: EvaluationSubject[];
     if ((editableCheckpointRule(reference.checkpoint) === undefined && !axes.some((axis) => 'checkpoint_rule' in axis)) ||
         reference.row != null || reference.variants != null) return undefined;
     const where = reference.where ?? {};
-    if (!('subset' in where) && where.when) return undefined;
     const terms = 'subset' in where ? undefined : where;
     subjects.push({ reference, terms, where: listed ? `/inputs/subject/${index}/where` : '/inputs/subject/where' });
   }

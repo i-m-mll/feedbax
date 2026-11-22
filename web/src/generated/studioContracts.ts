@@ -4103,6 +4103,30 @@ export type StudioReportStep = {
   "group"?: string | null;
 };
 
+export type StudioRunRuleCheck = {
+  "total": number;
+  "result": StudioRunRuleChosen | StudioRunRuleRefused;
+};
+
+export type StudioRunRuleChosen = {
+  "kind"?: "chosen";
+  "runs": Array<string>;
+  "count": number;
+};
+
+export type StudioRunRuleRefused = {
+  "kind"?: "refused";
+  "reason": string;
+};
+
+export type StudioRunRuleRequest = {
+  "revision": string;
+  "variant": string;
+  "step": string;
+  "rule": string;
+  "ranked"?: boolean;
+};
+
 export type StudioSavedLightHistory = {
   "result"?: StudioSavedLightResult | null;
   "previous"?: StudioSavedLightResult | null;
@@ -11099,6 +11123,38 @@ export const StudioReportStepSchema: z.ZodType<StudioReportStep> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<StudioReportStep>;
 
+export const StudioRunRuleCheckSchema: z.ZodType<StudioRunRuleCheck> = z.lazy(() =>
+  z.object({
+    "total": z.number().int().safe(),
+    "result": z.union([StudioRunRuleChosenSchema, StudioRunRuleRefusedSchema]),
+  }).strict()
+) as unknown as z.ZodType<StudioRunRuleCheck>;
+
+export const StudioRunRuleChosenSchema: z.ZodType<StudioRunRuleChosen> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("chosen").optional(),
+    "runs": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))),
+    "count": z.number().int().safe(),
+  }).strict()
+) as unknown as z.ZodType<StudioRunRuleChosen>;
+
+export const StudioRunRuleRefusedSchema: z.ZodType<StudioRunRuleRefused> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("refused").optional(),
+    "reason": z.string(),
+  }).strict()
+) as unknown as z.ZodType<StudioRunRuleRefused>;
+
+export const StudioRunRuleRequestSchema: z.ZodType<StudioRunRuleRequest> = z.lazy(() =>
+  z.object({
+    "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "variant": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$")),
+    "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "rule": z.string(),
+    "ranked": z.boolean().optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioRunRuleRequest>;
+
 export const StudioSavedLightHistorySchema: z.ZodType<StudioSavedLightHistory> = z.lazy(() =>
   z.object({
     "result": z.union([StudioSavedLightResultSchema, z.null()]).optional(),
@@ -11712,6 +11768,8 @@ export const contractSchemas = {
   StudioCheckpointRuleRequest: StudioCheckpointRuleRequestSchema,
   StudioSubsetToRowsEdit: StudioSubsetToRowsEditSchema,
   StudioSubsetToRowsRequest: StudioSubsetToRowsRequestSchema,
+  StudioRunRuleRequest: StudioRunRuleRequestSchema,
+  StudioRunRuleCheck: StudioRunRuleCheckSchema,
   StudioSetEditRequest: StudioSetEditRequestSchema,
   StudioSetEdit: StudioSetEditSchema,
   StudioSetsOfferedRequest: StudioSetsOfferedRequestSchema,
@@ -11873,6 +11931,8 @@ export interface ContractTypeMap {
   StudioCheckpointRuleRequest: StudioCheckpointRuleRequest;
   StudioSubsetToRowsEdit: StudioSubsetToRowsEdit;
   StudioSubsetToRowsRequest: StudioSubsetToRowsRequest;
+  StudioRunRuleRequest: StudioRunRuleRequest;
+  StudioRunRuleCheck: StudioRunRuleCheck;
   StudioSetEditRequest: StudioSetEditRequest;
   StudioSetEdit: StudioSetEdit;
   StudioSetsOfferedRequest: StudioSetsOfferedRequest;

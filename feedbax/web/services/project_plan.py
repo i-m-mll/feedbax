@@ -62,7 +62,10 @@ from feedbax.contracts.project_inputs import (
 )
 from feedbax.contracts.studio_place import StudioStepPlace, definition_place, path_parts, variation_targets
 from feedbax.contracts.studio_project import AuthoredFileAddress
-from feedbax.contracts.studio_subset import StudioSubsetToRowsEdit, StudioSubsetToRowsRequest
+from feedbax.contracts.studio_subset import (
+    StudioRunRuleCheck, StudioRunRuleChosen, StudioRunRuleRefused, StudioRunRuleRequest, StudioSubsetToRowsEdit,
+    StudioSubsetToRowsRequest,
+)
 from feedbax.contracts.project_io import project_declaration_name
 from feedbax.contracts.project_plan import (
     BlockedRow, ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedInput, PlannedRow, PlannedRun, RunKey, authored_request_change,
@@ -71,7 +74,7 @@ from feedbax.contracts.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.result_address import parse_labels
 from feedbax.contracts.project_sweep import CheckpointRuleAxis, axis_coordinates
-from feedbax.contracts.run_rule import value_text
+from feedbax.contracts.run_rule import RuleRefusal, choose, value_text
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import (
     BatchMember, BatchSetMember, BestRank, LastMember, ProductRef, UpdateSeriesMember,
@@ -585,6 +588,28 @@ class ProjectPlanService:
             return SavedLightProduct(store.get_object(content), "application/json")
         except (OSError, TypeError, ValueError, KeyError) as error:
             raise JobConflict("The saved product could not be authenticated.") from error
+
+    def check_run_rule(self, project_id: str, body: StudioRunRuleRequest) -> StudioRunRuleCheck:
+        """What ``body.rule`` chooses among the producer's planned rows, as the plan would choose them."""
+        plan = self.folders.read_plan(project_id, revision=body.revision).plan
+        step = plan.steps.get((body.variant, body.step))
+        if step is None:
+            raise ProjectFolderInvalid(f"{body.step} is not a step of {body.variant}.")
+        rows = [row for row in plan.rows if (row.key.variant, row.key.step) == (body.variant, body.step)]
+        coordinates = {id(row): axis_coordinates(row.coordinates, row.input_axes) for row in rows}
+        try:
+            chosen = choose(
+                body.rule, rows, coordinates=lambda row: coordinates[id(row)], producer=step.label or body.step,
+                ranked=body.ranked,
+            )
+        except RuleRefusal as refusal:
+            return StudioRunRuleCheck(total=len(rows), result=StudioRunRuleRefused(reason=refusal.detail))
+        best = chosen.best
+        groups = {tuple(coordinates[id(row)][axis].value_id for axis in best.per) for row in chosen.rows} if best else ()
+        return StudioRunRuleCheck(total=len(rows), result=StudioRunRuleChosen(
+            runs=[row.key.row for row in chosen.rows],
+            count=best.count * len(groups) if best else len(chosen.rows),
+        ))
 
     def subset_to_rows(self, project_id: str, body: StudioSubsetToRowsRequest) -> StudioSubsetToRowsEdit:
         """Replace one measured selection of an Evaluate subject with the rows its chosen attempts bound.

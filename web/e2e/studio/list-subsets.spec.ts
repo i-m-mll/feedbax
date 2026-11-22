@@ -49,17 +49,28 @@ test('freezes one measured selection of a listed Evaluate subject and leaves the
   const requests = Object.fromEntries(before.evaluations!.filter(({ key }) => key.step === 'baseline')
     .map(({ key, request_id, bound_subject }) => [key.row, { request_id, rank: bound_subject?.key }]));
 
-  // Each measured selection has its own To Rows; the named subset has none.
+  // Each measured selection has To Rows on its rule field's menu; the named subset has no rule field.
   const selections = inspector.getByRole('list', { name: 'Subject', exact: true }).locator(':scope > li');
   await expect(selections).toHaveCount(3);
-  const toRows = (index: number) => selections.nth(index).getByRole('button', { name: 'To Rows', exact: true });
-  await expect(toRows(0)).toBeEnabled();
-  await expect(toRows(1)).toBeEnabled();
-  await expect(toRows(2)).toHaveCount(0);
+  const rule = (index: number) => selections.nth(index).getByRole('combobox', { name: 'Runs', exact: true });
+  const toRows = page.getByRole('menuitem', { name: 'To Rows', exact: true });
+  async function menu(index: number) {
+    await rule(index).click({ button: 'right' });
+    return toRows;
+  }
+  async function close() {
+    await page.keyboard.press('Escape');
+    await expect(toRows).toHaveCount(0);
+  }
+  await expect(await menu(0)).toBeEnabled();
+  await close();
+  await expect(await menu(1)).toBeEnabled();
+  await close();
+  await expect(rule(2)).toHaveCount(0);
 
   const preparing = mutation('POST', path + '/authoring/subset-to-rows');
   const saving = mutation('PATCH', path);
-  await toRows(0).click();
+  await (await menu(0)).click();
   expect((await preparing).request().postDataJSON()).toMatchObject({ step: 'baseline', input: 'subject.0' });
   const saved = await saving;
   expect(saved.ok(), await saved.text()).toBe(true);
@@ -67,10 +78,10 @@ test('freezes one measured selection of a listed Evaluate subject and leaves the
     step: string; where: Record<string, unknown>;
   }>;
   expect(subject.map(({ step, where }) => [step, Object.keys(where)])).toEqual([
-    ['train', ['rows']], ['train_b', ['best']], ['train', ['subset']],
+    ['train', ['rule', 'rows']], ['train_b', ['rule']], ['train', ['subset']],
   ]);
-  await expect(toRows(0)).toHaveCount(0);
-  await expect(toRows(1)).toBeEnabled();
+  await expect(await menu(0)).toHaveCount(0);
+  await expect(await menu(1)).toBeEnabled();
 
   // The frozen selection's rows keep their IDs; the other selections' rows keep their requests.
   const first = new Set(inputs[0].subset!.ranks);

@@ -217,20 +217,15 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   await train.getByRole('button', { name: 'New Step train', exact: true }).click();
   await chooseStepKind(page, 'Evaluate');
   expect((await created).status()).toBe(201);
-  const subset = inspector.getByRole('region', { name: 'Runs', exact: true });
-  const metric = subset.getByRole('textbox', { name: 'Metric', exact: true });
-  const count = subset.getByRole('textbox', { name: 'Count', exact: true });
-  const best = subset.getByRole('checkbox', { name: 'Best', exact: true });
-  const apply = subset.getByRole('button', { name: 'Apply Subset', exact: true });
-  const order = subset.getByRole('combobox', { name: 'Order', exact: true });
-  const per = subset.getByRole('group', { name: 'Per', exact: true })
-    .getByRole('checkbox', { name: 'replicate', exact: true });
+  const rule = inspector.getByRole('combobox', { name: 'Runs', exact: true });
+  const ruleRow = rule.locator('..');
+  const written = `lowest 2 ${metricName}${grouped ? ' per replicate' : ''}`;
   const inputs = inspector;
   const members = inputs.getByRole('list', { name: 'Members', exact: true }).getByRole('listitem');
   const groupLabels = ['replicate First', 'replicate Second'];
   const groupedLists = groupLabels.map((label) =>
     inputs.getByRole('list', { name: `Members ${label}`, exact: true }).getByRole('listitem'));
-  const freeze = inspector.getByRole('button', { name: 'To Rows', exact: true });
+  const freeze = page.getByRole('menuitem', { name: 'To Rows', exact: true });
   const saveWhere = async (click: () => Promise<void>) => {
     const saved = page.waitForResponse((response) => response.request().method() === 'PATCH'
       && new URL(response.url()).pathname === projectPath
@@ -241,27 +236,17 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
     return (await response.json() as StudioProjectSnapshot).project.steps!.evaluate.inputs?.subject;
   };
 
-  await best.check();
-  await expect(apply).toBeDisabled();
-  await metric.fill(metricName);
-  await count.fill('2');
-  if (grouped) await per.check();
-  expect(await saveWhere(() => apply.click())).toMatchObject({
-    step: 'train', checkpoint: 'last',
-    where: { best: { by: metricName, k: 2, order: 'min', ...(grouped && { per: ['replicate'] }) } },
+  await rule.fill(written);
+  expect(await saveWhere(() => rule.press('Enter'))).toMatchObject({
+    step: 'train', checkpoint: 'last', where: { rule: written },
   });
 
   await page.reload();
   await select(page, 'evaluate');
-  await expect(best).toBeChecked();
-  await expect(metric).toHaveValue(metricName);
-  await expect(count).toHaveValue('2');
-  await expect(order).toHaveText('Lowest');
-  await expect(inputs).toContainText(grouped ? '4 of 4' : '2 of 3');
+  await expect(rule).toHaveValue(written);
+  await expect(ruleRow).toContainText(grouped ? '4/4' : '2/3');
   const memberLists = grouped ? groupedLists : [members];
   if (grouped) {
-    await expect(per).toBeChecked();
-    await expect(inputs).toContainText('Per replicate');
     // The inspector also lists the step's inputs and lineage; the subset's members are the lists named Members.
     const memberGroups = inputs.getByRole('list', { name: /^Members\b/ });
     await expect(memberGroups).toHaveCount(2);
@@ -313,6 +298,7 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
 
   await select(page, 'evaluate');
   for (const list of memberLists) await expect(list).toHaveText(['Rank 1', 'Rank 2']);
+  await rule.click({ button: 'right' });
   await expect(freeze).toHaveCount(0);
   const ranked = (await readPlan()).window_map!.evaluations!.filter(({ key }) => key.step === 'evaluate');
   expect(ranked.map(({ key }) => key)).toEqual(ranks.map(({ key }) => key));
@@ -325,6 +311,7 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
     await select(page, 'evaluate');
     await expect(groupedLists[0]).toHaveText(expected.slice(0, 2).map(({ label }, index) => `Rank ${index + 1} · ${label}`));
     await expect(groupedLists[1]).toHaveText(['Rank 1', 'Rank 2']);
+    await rule.click({ button: 'right' });
     await expect(freeze).toHaveCount(0);
   }
   await launchRows(page, projectPath, (grouped ? ranked.slice(2) : ranked).map(({ key }) => key));
@@ -347,10 +334,7 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
     if (grouped) await expect(runs(page).getByRole('rowheader').nth(index))
       .toHaveAccessibleName(runName(`${groupLabels[group]} · Rank ${position + 1} · ${producer.label}`));
   }
-  await expect(freeze).toBeEnabled();
-  await count.fill('1');
-  await expect(freeze).toBeDisabled();
-  await count.fill('2');
+  await rule.click({ button: 'right' });
   await expect(freeze).toBeEnabled();
   const preparing = responseFor(page, projectPath + '/authoring/subset-to-rows');
   const frozen = await saveWhere(() => freeze.click());
@@ -363,9 +347,8 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   });
   expect(frozen).toMatchObject({
     step: 'train', checkpoint: 'last',
-    where: { rows: expected.map(({ key: { variant, row } }, index) => ({ key: keys[index], variant, row })) },
+    where: { rule: written, rows: expected.map(({ key: { variant, row } }, index) => ({ key: keys[index], variant, row })) },
   });
-  expect(frozen).not.toHaveProperty('where.best');
   const staleFreeze = await request.post(projectPath + '/authoring/subset-to-rows', { data: preparedBody });
   expect(staleFreeze.status()).toBe(409);
   const replanned = (await readPlan()).window_map!.evaluations!.filter(({ key }) => key.step === 'evaluate');
@@ -373,8 +356,8 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   for (const [index, row] of replanned.entries()) expect(row.request_id).not.toBe(completed[index].request_id);
   await page.reload();
   await select(page, 'evaluate');
-  await expect(best).not.toBeChecked();
-  await expect(members).toHaveText(expected.map(({ label }) => label));
+  await expect(rule).toHaveValue(written);
+  await expect(ruleRow).toContainText(`Rows${grouped ? '4/4' : '2/3'}`);
 });
 
 test('M2 authors and widens a saved Evaluate subset without resubmitting completed rows', { tag: '@round' }, async ({ page, request }) => {
@@ -400,7 +383,6 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   expect(sourceRows.map(({ coordinates }) => coordinates['learning-rate'].value)).toEqual([0.001, 0.002, 0.003]);
   expect(sourceRows.map(({ key, member_key }) => member_key === key.row)).toEqual([true, true, true]);
   const authoredRows = sourceRows.map(({ key: { variant, row }, member_key }) => ({ key: member_key, variant, row }));
-  const ids = sourceRows.map(({ coordinates }) => coordinates['learning-rate'].value_id);
   const conditionIds = sourceRows[0].evaluation_conditions!.slice(0, 2);
   expect(conditionIds).toHaveLength(2);
   await launchRows(page, projectPath, sourceRows.map(({ key }) => key));
@@ -415,13 +397,13 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   expect(response.status(), await response.text()).toBe(201);
   const authored = (await response.json() as StudioProjectDocument).snapshot.project.steps!.evaluate;
   expect(authored).toMatchObject({
-    inputs: { subject: { step: 'train', checkpoint: 'last', where: { axes: { 'learning-rate': ids.slice(0, 2) } } } },
+    inputs: { subject: { step: 'train', checkpoint: 'last', where: { rule: 'learning-rate=0.001,0.002' } } },
     sweep: { axes: { subject: { input: 'subject' } } },
   });
-  const inputs = inspector;
-  await expect(inputs).toContainText('learning-rate 0.001, 0.002 · 2 of 3');
-  const members = inputs.getByRole('list', { name: 'Members', exact: true });
-  await expect(members.getByRole('listitem')).toHaveText(sourceRows.slice(0, 2).map(({ label }) => label));
+  const rule = inspector.getByRole('combobox', { name: 'Runs', exact: true });
+  const ruleRow = rule.locator('..');
+  await expect(rule).toHaveValue('learning-rate=0.001,0.002');
+  await expect(ruleRow).toContainText('2/3');
   const trialSet = inspector.getByRole('region', { name: 'Trials', exact: true });
   await expect(inspector.getByRole('combobox', { name: 'Subject', exact: true })).toBeFocused();
   await pick(trialSet.getByRole('combobox'), 'Selected Conditions');
@@ -461,14 +443,12 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await expect(evaluated.locator('[data-map-focus="downstream"]')).toHaveCount(1);
 
   await select(page, 'evaluate');
-  const subset = inspector.getByRole('region', { name: 'Runs', exact: true });
-  await subset.getByRole('checkbox', { name: '0.003', exact: true }).check();
+  await rule.fill('learning-rate=0.001,0.002,0.003');
   const subsetEdit = edited('/inputs/subject/where');
-  await subset.getByRole('button', { name: 'Apply Subset', exact: true }).click();
+  await rule.press('Enter');
   const savedSubset = await subsetEdit;
   expect(savedSubset.ok(), await savedSubset.text()).toBe(true);
-  await expect(inputs).toContainText('3 of 3');
-  await expect(members.getByRole('listitem')).toHaveText(sourceRows.map(({ label }) => label));
+  await expect(ruleRow).toContainText('3/3');
   await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(2);
   const widened = (await readPlan()).window_map!.evaluations!;
   expect(widened.slice(0, 2)).toEqual(before);
@@ -478,7 +458,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
 
   await page.reload();
   await select(page, 'evaluate');
-  await expect(inputs).toContainText('3 of 3');
+  await expect(ruleRow).toContainText('3/3');
   await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(3);
   await runs(page).getByRole('row').filter({ hasText: '0.003' }).getByRole('button').click();
   await expect(inspector.getByRole('button', { name: /^Select Made From / })).toContainText('1 of 3');
@@ -509,26 +489,15 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   const secondCreated = await second;
   expect(secondCreated.status(), await secondCreated.text()).toBe(201);
   const { snapshot: withSecond } = await secondCreated.json() as StudioProjectDocument;
-  const picked = [sourceRows[0], sourceRows[2]];
   expect(withSecond.project.steps!['evaluate-2'].inputs?.subject).toMatchObject({
     where: { rows: [authoredRows[0], authoredRows[2]] },
   });
-  await expect(members.getByRole('listitem')).toHaveText(picked.map(({ label }) => label));
+  await expect(ruleRow).toContainText('Rows2/3');
   await expect(trialSet.getByRole('combobox')).toHaveText('Every Condition');
   await select(page, 'evaluate');
   await expect(trialSet.getByRole('combobox')).toHaveText('Selected Conditions');
   await select(page, 'evaluate-2');
   await expect(trialSet.getByRole('combobox')).toHaveText('Every Condition');
-  await subset.getByRole('checkbox', { name: sourceRows[1].label, exact: true }).check();
-  const widenRows = edited('/inputs/subject/where');
-  await subset.getByRole('button', { name: 'Apply Subset', exact: true }).click();
-  const widenedRows = await widenRows;
-  expect(widenedRows.ok(), await widenedRows.text()).toBe(true);
-  const widenedSnapshot = await widenedRows.json() as StudioProjectSnapshot;
-  expect(widenedSnapshot.project.steps!['evaluate-2'].inputs?.subject).toMatchObject({
-    where: { rows: authoredRows },
-  });
-  await expect(members.getByRole('listitem')).toHaveText(sourceRows.map(({ label }) => label));
   console.info('Mounted Evaluate subset receipts', JSON.stringify({ project: snapshot.project_id, revision: final.revision, results }));
 });
 
