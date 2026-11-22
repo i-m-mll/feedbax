@@ -303,7 +303,7 @@ class _Lowerer:
             producer = self._producer(inputs[0])
             return producer.entries if producer is not None else ()
         entries = []
-        for binding, outer in zip(inputs, labelled_members(tuple(binding.member for binding in inputs)), strict=True):
+        for binding, outer in zip(inputs, labelled_members(tuple(binding.request_member for binding in inputs)), strict=True):
             producer = self._producer(binding)
             if producer is None or not producer.entries:
                 entries.append(outer)
@@ -403,7 +403,7 @@ class _Lowerer:
                 for label, values in sorted(names.items()) if label in printed
             }})
         encoded = encode_request(
-            spec, {role: tuple(binding.member for binding in bindings) for role, bindings in inputs.items()}
+            spec, {role: tuple(binding.request_member for binding in bindings) for role, bindings in inputs.items()}
         )
         kind = "analyze" if isinstance(spec, AnalysisRequestSpec) else "render"
         self.elements.setdefault(name, []).append(PlannedElement(

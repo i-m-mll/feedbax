@@ -355,7 +355,8 @@ test('the managed window shares selection and retains the folded slot without ed
   const secondary = page.locator('[data-slot="secondary"]');
   await expect(primary.getByRole('table', { name: 'Runs' })).toBeVisible();
   await page.getByRole('button', { name: 'Split Details', exact: true }).click();
-  await expect(secondary.getByRole('heading', { name: 'Scene', exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: 'Results', exact: true }).click();
+  await expect(secondary.getByRole('heading', { name: 'Results', exact: true })).toBeVisible();
 
   await mapStep(page, 'successor').click();
   await expect(mapStep(page, 'successor')).toHaveAttribute('aria-pressed', 'true');
@@ -380,7 +381,7 @@ test('the managed window shares selection and retains the folded slot without ed
   await expect(mapStep(page, 'successor')).toBeHidden();
   await expect(page.locator('.studio-window-map__compact').getByRole('button', { name: 'Select successor' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Show Details', exact: true })).toHaveAttribute('aria-pressed', 'true');
-  await expect(secondary.getByRole('heading', { name: 'Scene', exact: true })).toBeVisible();
+  await expect(secondary.getByRole('heading', { name: 'Results', exact: true })).toBeVisible();
   await expect(separator).toHaveAttribute('aria-valuenow', width!);
 
   const latest = await request.get(projectPath);
@@ -404,7 +405,7 @@ test('keyboard reaches the last Runs column in a narrow split', async ({ page, r
   await page.getByRole('tabpanel', { name: 'Runs', exact: true }).focus();
   await page.getByRole('button', { name: 'Hide Inspector', exact: true }).click();
   await page.setViewportSize({ width: 620, height: 860 });
-  await expect(page.getByRole('tabpanel', { name: 'Scene', exact: true })).toBeVisible();
+  await expect(page.getByRole('tabpanel', { name: 'Model', exact: true })).toBeVisible();
   const table = page.getByRole('table', { name: 'Runs', exact: true });
   const scroll = table.locator('..');
   const progress = table.getByRole('columnheader', { name: 'Progress', exact: true });
@@ -595,4 +596,52 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   await problemButton.click();
   await expect(list.getByRole('listitem')).toHaveCount(problems.length);
   await anchored();
+});
+
+test('a view with nothing to show is dimmed in the rail, and an open one gives way to the default view', async ({ page, request }) => {
+  const [planarModel] = JSON.parse(await runProjectFixture('tests.fixtures.scene_geometry', 'files'));
+  const [,,, template] = await fixture('ordinary-files', '2');
+  const task = { kind: 'document', id: 'task', document: {
+    schema: 'feedbax.spec.python_task', payload: { type: 'feedbax.Reaching', params: {} },
+  } };
+  const objective = { kind: 'document', id: 'objective', document: {
+    schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] },
+  } };
+  const flatModel = { ...planarModel, id: 'flat-model', document: {
+    ...planarModel.document, payload: { step_seconds: 0.01, ports: {}, interior: {} },
+  } };
+  const step = (id: string, model: string) => ({
+    ...template, id, step: { ...template.step, base: { inline: { ...template.step.base.inline, trial_documents: {
+      model: { document: model }, python_task: { document: task.id }, objective: { document: objective.id },
+    } } } },
+  });
+  const { snapshot } = await seedManagedProject(request, [
+    planarModel, flatModel, task, objective, step('planar', planarModel.id), step('flat', flatModel.id),
+  ]);
+  await page.goto(`/?project=${snapshot.project_id}`);
+  const sceneTab = page.getByRole('tab', { name: 'Scene', exact: true });
+  const runsTab = page.getByRole('tab', { name: 'Runs', exact: true });
+  const scene = page.getByRole('tabpanel', { name: 'Scene', exact: true });
+  const runs = page.getByRole('tabpanel', { name: 'Runs', exact: true });
+
+  await mapStep(page, 'flat').click();
+  await expect(runs).toBeVisible();
+  await expect(sceneTab).toHaveAttribute('aria-disabled', 'true');
+  await sceneTab.hover();
+  await expect(page.getByRole('tooltip')).toHaveText('Scene · Model has no planar geometry');
+  await sceneTab.click({ force: true });
+  await expect(runsTab).toHaveAttribute('aria-selected', 'true');
+  await expect(scene).toHaveCount(0);
+
+  await mapStep(page, 'planar').click();
+  await expect(sceneTab).not.toHaveAttribute('aria-disabled', 'true');
+  // The first plan of a multibody model compiles its kinematics in the backend, which this read waits on.
+  await sceneTab.click({ timeout: 20_000 });
+  await expect(scene).toBeVisible();
+  await mapStep(page, 'flat').click();
+  await expect(runs).toBeVisible();
+  await expect(scene).toHaveCount(0);
+  await expect(page.getByText('Unavailable', { exact: true })).toHaveCount(0);
+  await mapStep(page, 'planar').click();
+  await expect(scene).toBeVisible();
 });

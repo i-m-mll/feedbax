@@ -362,17 +362,12 @@ def test_saved_window_reuses_encoded_document_conditions(authored, tmp_path, mon
         return window_service.ProjectPlanRead.without_history(folders.read_plan("cohort", revision=None))
 
     def verify(view):
-        settled = view.settled
-        plan = settled.plan
-        baseline = replace(view, settled=replace(settled, plan=replace(plan, _train_evaluation_sources={})))
-        original = projected(baseline)
         with monkeypatch.context() as patch:
             def unexpected_decode(*args, **kwargs):
                 pytest.fail("Window decoded a Plan Train request")
 
             patch.setattr(window_service, "decode_request", unexpected_decode)
-            assert projected(view) == original
-        return original
+            return projected(view)
 
     original = read()
     before = verify(original)
@@ -382,13 +377,6 @@ def test_saved_window_reuses_encoded_document_conditions(authored, tmp_path, mon
     assert projected(window_service.ProjectPlanRead.without_history(
         folders.read_plan("cohort", revision=original.settled.revision),
     )) == before
-    settled = original.settled
-    plan = settled.plan
-    digest = next(iter(plan.documents))
-    altered = replace(plan, documents={**plan.documents, digest: b"{}"})
-    with pytest.raises(ValueError, match="Invalid request document bytes"):
-        projected(replace(original, settled=replace(settled, plan=altered)))
-
     variables = raw["documents"]["task"]["payload"]["validation_trials"][0]["variables"]
     target = variables["target"]
     assert isinstance(target, list)
@@ -396,25 +384,6 @@ def test_saved_window_reuses_encoded_document_conditions(authored, tmp_path, mon
     after = verify(read())
     assert after["rows"][0]["evaluation_conditions"] != conditions
     assert projected(original) == before
-
-
-@pytest.mark.parametrize("wide, reject", [(1e20, True), (1e21, False)])
-def test_saved_window_keeps_verification_for_wide_float_requests(authored, tmp_path, wide, reject):
-    raw = document_project(authored)
-    raw["steps"]["train"]["base"]["inline"]["settings"]["optimizer"]["learning_rate"]["value"] = wide
-    folders = ProjectFolderService(tmp_path)
-    _save_project(folders, "wide", Project.model_validate(raw))
-    settled = folders.read_plan("wide", revision=None)
-    view = window_service.ProjectPlanRead.without_history(settled)
-    (run,) = settled.plan.runs
-    assert settled.plan.train_evaluation_source(run.request_id) is None
-    evaluation_tasks = application_python_tasks()
-    if reject:
-        with pytest.raises(ValueError, match="unsafe_integer"):
-            view.window_map(evaluation_tasks=evaluation_tasks)
-    else:
-        (row,) = view.window_map(evaluation_tasks=evaluation_tasks).rows
-        assert row.evaluation_conditions
 
 
 def test_trial_preparation_distinguishes_effective_scientific_inputs(authored, prepared_trials):

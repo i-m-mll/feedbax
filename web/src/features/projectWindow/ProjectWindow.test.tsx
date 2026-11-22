@@ -14,7 +14,7 @@ afterEach(() => {
 function Window({ zoom }: { zoom: () => void }) {
   const [state, setState] = useState<ProjectWindowState>(defaultProjectWindowState);
   return (
-    <ProjectWindow state={state} onStateChange={setState} projectName="Reaching" availableViews={['runs', 'scene']}
+    <ProjectWindow state={state} onStateChange={setState} projectName="Reaching" views={{ available: ['runs', 'scene'], absent: {} }}
       renderView={(view) => ({ body: <p>{view} body</p> })} map={<p>map</p>} mapDrawer={null} compactMap={null}
       mapCommands={[bindStudioCommand('zoomIn', zoom)]} commands={[]} />
   );

@@ -1,6 +1,6 @@
 import { useId, useRef, type ReactNode } from 'react';
 import { useDraft } from '@/hooks/useDraft';
-import { studioName, studioReason } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
 import { Checkbox } from '@/components/ui/Checkbox';
 import { NumberField } from '@/components/ui/NumberField';
@@ -18,7 +18,7 @@ import {
 import type { AuthoredProject } from './authoredEdits';
 import {
   checkpointDraft, checkpointDraftRule, conditionLabels, emptyCheckpointDraft, evaluateSubject, evaluateSubjectEdits, validTrialSet,
-  type CheckpointDraft, type CheckpointDraftField, type CheckpointKind, type EditableCheckpointRule, type EvaluateSubject,
+  type CheckpointDraft, type CheckpointDraftField, type CheckpointKind, type CheckpointRange, type EditableCheckpointRule, type EvaluateSubject,
   type TrialDomain, type TrialSet,
 } from './evaluateAuthoring';
 import {
@@ -49,8 +49,11 @@ const firstMember: Record<CheckpointKind, CheckpointDraftField | undefined> = {
  * Which updates of the subject's training the Evaluate tests: the kind of rule as the group's control, its updates
  * beneath. A kind with updates saves once they say a rule; Escape restores the saved one.
  */
-export function CheckpointEditor({ initial, disabled, readOnly, refusal, onSave, onToSweep }: {
+export function CheckpointEditor({ initial, step, range, disabled, readOnly, refusal, onSave, onToSweep }: {
   initial: EditableCheckpointRule;
+  /** The name of the one step whose selection this editor holds, beside other selections' editors. */
+  step?: string;
+  range?: CheckpointRange;
   disabled: boolean;
   readOnly?: boolean;
   refusal?: string;
@@ -61,13 +64,14 @@ export function CheckpointEditor({ initial, disabled, readOnly, refusal, onSave,
   const [draft, setDraft] = useDraft(saved);
   const ids = useId();
   const first = useRef<HTMLInputElement>(null);
-  const held = checkpointDraftRule(draft);
+  const held = checkpointDraftRule(draft, range);
+  const name = studioName('checkpoint');
   const fixed = disabled || readOnly;
   const reason = (field: CheckpointDraftField) => !('rule' in held) && held.field === field ? held.reason
     : field === firstMember[draft.kind] ? refusal : undefined;
   function commit(next: CheckpointDraft) {
     setDraft(next);
-    const result = checkpointDraftRule(next);
+    const result = checkpointDraftRule(next, range);
     if (!fixed && 'rule' in result && !same(result.rule, initial)) onSave(result.rule);
   }
   function number(field: 'at' | 'every' | 'from' | 'through', value: number | null, next: (value: number | null) => CheckpointDraft) {
@@ -85,9 +89,10 @@ export function CheckpointEditor({ initial, disabled, readOnly, refusal, onSave,
     event.preventDefault();
     event.stopPropagation();
     setDraft(saved);
-  }}><Section level="field" name={studioName('checkpoint')} bodyClassName={members}
+  }}><Section level="field" name={step ?? name} bodyClassName={members}
     control={<>
-      <Select aria-label={studioName('checkpoint')} value={draft.kind} disabled={fixed}
+      <Select aria-label={studioAccessibleName('checkpoint', step)} value={draft.kind}
+        disabled={fixed}
         aria-invalid={draft.kind === 'last' && refusal !== undefined}
         items={checkpointKinds.map((kind) => ({ value: kind, label: studioName(kind) }))}
         finalFocus={() => first.current}
