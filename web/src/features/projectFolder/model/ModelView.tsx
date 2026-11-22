@@ -7,7 +7,7 @@ import { projectModelFields, readEvaluateModel, readModelProjection, reviewModel
 import { ApiRequestError, isRefusal } from '@/api/request';
 import { shownError } from '@/api/shownErrors';
 import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
-import { studioAccessibleName, studioEvaluateValueSource, studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { baseChain, documentPayload } from '../documentPayload';
 import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import { Box, Crosshair, House, Search, TriangleAlert, X } from 'lucide-react';
@@ -23,7 +23,7 @@ import { TextField } from '@/components/ui/TextField';
 import { ValueField } from '@/components/values/ValueField';
 import { fromFieldView, type ExceptionMentions } from '@/components/values/adapters/fieldView';
 import { rawField } from '@/components/values/adapters/raw';
-import type { FieldModel } from '@/components/values/fieldModel';
+import type { ChangeSource, FieldModel } from '@/components/values/fieldModel';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { bindStudioCommand, commandAttributes } from '@/features/projectWindow/studioCommands';
 import type {
@@ -116,6 +116,8 @@ function inGraph(address: ModelAddress, graph: ModelAddress) {
     address.composites.every((id, index) => id === graph.composites[index]);
 }
 
+type Placing = { document: string; graph: string; id: string; component: Component; position: ModelPosition; flipped: boolean };
+
 function positionsOf(saved: StudioProjectSnapshot, document: string) {
   return saved.presentation?.documents?.[document]?.positions;
 }
@@ -204,6 +206,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const [menu, setMenu] = useState<{ address: ModelAddress; x: number; y: number; point: ModelPosition }>();
   const [verdict, setVerdict] = useState<ReadonlyMap<string, string | null>>();
   const [held, setHeld] = useState<ReadonlyMap<string, ModelPosition>>();
+  /** Components whose add is pending, drawn where they were placed under the id the add gives them. */
+  const [placing, setPlacing] = useState<readonly Placing[]>([]);
 
   const registryQuery = useQuery({ queryKey: ['components'], queryFn: fetchComponents, enabled: active && !!model, staleTime: 300_000 });
   const registry = useMemo(() => modelRegistry(registryQuery.data ?? []), [registryQuery.data]);
@@ -322,14 +326,15 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   }
   const fieldName = (address: ModelAddress) => address.element.kind === 'field' ? address.element.path.map(String).join('.') : addressKey(address);
   const shownChain = model ? baseChain(saved.project.documents, model.id) : [];
-  const changedText = evaluate ? studioEvaluateValueSource({ kind: 'evaluate', step: evaluate.run.step }) : studioName('changed');
+  const changedFrom: ChangeSource | undefined = evaluate ? { kind: 'evaluate', step: evaluate.run.step }
+    : shownChain[1] === undefined ? undefined : { kind: 'base', document: shownChain[1] };
   const projectedLists = fieldBodies.map((fieldBody, index) => (fieldsData?.[index]?.fields ?? []).map((field) => {
     const model = fromFieldView(field, {
       id: addressKey(field.address),
       planSources: field.sources?.filter((source) => !(source.kind === 'document' && shownChain.includes(source.name))),
       exceptions,
-      changed: field.changed ? {
-        text: changedText,
+      changed: field.changed && changedFrom ? {
+        from: changedFrom,
         reset: canEditField ? () => editField(fieldBody, field.address, { kind: 'reset' }) : undefined,
       } : undefined,
       source: attachments.data?.field_sources?.[addressKey(field.address)] ??
@@ -387,14 +392,14 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   })), [definitions]);
   const persisted = model && positionsOf(saved, model.id);
   /** Where each card without a saved position was first shown: it stays there, whatever is added or removed. */
-  const placed = useRef(new Map<string, ModelPosition>());
+  const shownAt = useRef(new Map<string, ModelPosition>());
   function cardPosition(address: ModelAddress, initial: () => ModelPosition) {
     const key = addressKey(address);
     const stored = held?.get(key) ?? persisted?.[key];
     if (stored) return stored;
     const shown = JSON.stringify([saved.project_id, model?.id, key]);
-    const first = placed.current.get(shown) ?? initial();
-    if (interior) placed.current.set(shown, first);
+    const first = shownAt.current.get(shown) ?? initial();
+    if (interior) shownAt.current.set(shown, first);
     return first;
   }
   const presentation = model && saved.presentation?.documents?.[model.id];
@@ -402,6 +407,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const flipped = presentation?.flipped;
   const waypoints = presentation?.waypoints;
   const objects = Object.entries(interior?.components ?? {});
+  const placed = model ? placing.filter((item) => item.document === model.id && item.graph === graphId && !interior?.components?.[item.id]) : [];
   const wires = Object.entries(interior?.wires ?? {});
   const mountKey = JSON.stringify([saved.project_id, model?.id, graphId]);
   const handledReveal = useRef<typeof reveal>();
@@ -580,7 +586,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     });
   }
   function add(definition: ComponentDefinition, point?: ModelPosition, from?: Port, to?: string) {
-    const occupied = objects.map(([id], index) => cardPosition(at(graph, { kind: 'component', id }), () => positionAt(index)));
+    const occupied = [...objects.map(([id], index) => cardPosition(at(graph, { kind: 'component', id }), () => positionAt(index))),
+      ...placed.map((item) => item.position)];
     let index = 0;
     let available = positionAt(index);
     while (occupied.some(({ x, y }) => Math.abs(x - available.x) < 196 && Math.abs(y - available.y) < 150)) {
@@ -588,12 +595,24 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     }
     const position = point ?? available;
     const source = from && wireEnd(from);
-    void apply(studioName('addComponent'), {
-      op: 'add_component', graph, position,
+    const component = leaf(definition);
+    void place(component, position, false, (id) => apply(studioName('addComponent'), {
+      op: 'add_component', graph, position, id,
       ...(source && to && (source.owner === 'inputs' || source.owner === 'component')
         ? { connect_from: source, connect_to_port: to } : {}),
-      component: leaf(definition),
-    }).then((ok) => { if (ok) setSearch(undefined); });
+      component,
+    })).then((ok) => { if (ok) setSearch(undefined); });
+  }
+  /** Draws `component` at `position` from now until `adding` it under the id it is given has been answered. */
+  async function place(component: Component, position: ModelPosition, flipped: boolean, adding: (id: string) => Promise<boolean>) {
+    if (!model) return false;
+    const item = { document: model.id, graph: graphId, id: crypto.randomUUID().replace(/-/g, ''), component, position, flipped };
+    setPlacing((prior) => [...prior, item]);
+    try {
+      return await adding(item.id);
+    } finally {
+      setPlacing((prior) => prior.filter((other) => other !== item));
+    }
   }
   function leaf(definition: ComponentDefinition) {
     return {
@@ -622,10 +641,11 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       setIssue({ document: model.id, address, reason: 'This component has no matching ports for the wire.' });
       return;
     }
-    void apply(studioName('insertComponent'), {
-      op: 'insert_component', address, component: leaf(definition), position: point, flipped,
+    const component = leaf(definition);
+    void place(component, point, flipped, (id) => apply(studioName('insertComponent'), {
+      op: 'insert_component', address, component, position: point, flipped, id,
       input_port: input.end.port, output_port: output.end.port,
-    });
+    }));
   }
   function portAt(node: string, handle: string | null) {
     return handle ? portMap.get(node)?.find((port) => portId(port) === handle) : undefined;
@@ -722,6 +742,20 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     }));
   }
 
+  /** The card of a component whose add is pending: the card it will be, which cannot be wired, edited or selected. */
+  function placingCard(item: Placing): ModelCard {
+    const card = makeCard(item.id, objects.length, item.component);
+    return {
+      ...card, position: item.position, draggable: false, selectable: false, selected: false,
+      initialWidth: 1, initialHeight: 1,
+      data: {
+        ...card.data, ports: componentPorts(item.id, item.component, registry), flipped: item.flipped, locked: true,
+        selected: false, problem: undefined, portProblems: undefined, portReasons: undefined,
+        onPort: () => {}, keyboardConnect: () => {}, rename: undefined, renaming: false, enter: undefined,
+      },
+    };
+  }
+
   function makeCard(id: string, index: number, definition?: typeof objects[number][1]): ModelCard {
     const address = at(graph, definition ? { kind: 'component', id } : { kind: id === inputCard ? 'inputs' : 'outputs' });
     const key = addressKey(address);
@@ -776,7 +810,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     };
   }
 
-  const nodes = [makeCard(inputCard, 0), ...objects.map(([id, component], index) => makeCard(id, index, component)), makeCard(outputCard, 0)];
+  const nodes = [makeCard(inputCard, 0), ...objects.map(([id, component], index) => makeCard(id, index, component)),
+    ...placed.map(placingCard), makeCard(outputCard, 0)];
   const selfLoops = new Map<string, number>();
   const bundled = new Map<string, ModelEdge>();
   const makeEdge = (id: string, from: Parameters<typeof idFor>[0] & { port: string },

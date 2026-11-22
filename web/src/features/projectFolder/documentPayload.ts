@@ -11,6 +11,12 @@ export function documentPayload(
   return 'payload' in document ? document.payload : composed?.[name];
 }
 
+/** The document `name` is based on, where it is based on one. */
+export function baseOf(documents: Readonly<Record<string, Document>> | null | undefined, name: string | null | undefined) {
+  const document = name ? documents?.[name] : undefined;
+  return document && 'base' in document ? document.base.document : undefined;
+}
+
 /** `name`, its base, that document's base, and so on. */
 export function baseChain(documents: Readonly<Record<string, Document>> | null | undefined, name: string): readonly string[] {
   const chain: string[] = [];

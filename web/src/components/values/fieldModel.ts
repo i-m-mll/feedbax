@@ -1,5 +1,5 @@
 import type {
-  FieldKind, FieldKindEdit, FieldNameEdit, FieldTextEdit, FunctionInfo, JsonValue, Level, ScopedValue,
+  FieldKind, FieldKindEdit, FieldNameEdit, FieldTextEdit, FunctionInfo, JsonValue, Level, ScopedValue, StudioEvaluateValueSource,
   StudioAddClassMember, StudioRemoveClassMember, StudioValueStructure, ValueType,
 } from '@/generated/studioContracts';
 
@@ -25,10 +25,26 @@ export type FieldEdit = FieldTextEdit | FieldKindEdit | FieldNameEdit | StudioAd
   { readonly kind: 'set'; readonly value: JsonValue } | { readonly kind: 'reset' };
 export type FieldCommit = (edit: FieldEdit) => Promise<string | undefined>;
 
-/** The changed mark of a value a difference of the shown document sets: its text, and the Reset that gives the value the inherited one. */
+/**
+ * What a changed value differs from: the base of the document whose difference sets it, the document's value where the
+ * field shows the selected runs' other one, or the Evaluate step whose document changes it. A field that shows the
+ * document's value marks the selected runs' other one (`selected`).
+ */
+export type ChangeSource =
+  | { readonly kind: 'base'; readonly document: string }
+  | { readonly kind: 'value'; readonly text: string }
+  | { readonly kind: 'selected'; readonly text: string }
+  | { readonly kind: 'evaluate'; readonly step: string };
+
+/** The changed mark of a value: what it differs from, and the Reset that gives the value the inherited one. */
 export interface ChangeMark {
-  readonly text: string;
+  readonly from: ChangeSource;
   readonly reset?: () => Promise<string | undefined>;
+}
+
+/** The mark of a value an Evaluate step changes; a value it trains is not a change, and is its origin. */
+export function evaluateChange(source: StudioEvaluateValueSource | undefined): ChangeMark | undefined {
+  return source?.kind === 'evaluate' ? { from: { kind: 'evaluate', step: source.step } } : undefined;
 }
 
 /** `commit`, with Reset going to `change`'s reset. A field that takes no edit takes no Reset. */
@@ -85,11 +101,10 @@ export interface FieldModel {
   readonly parts?: readonly FieldModel[];
   /** The sweep may be turned into its listed values. */
   readonly canList?: boolean;
-  /** The value set on the selected runs, where it differs from the document's. */
-  readonly differs?: string;
+  /** Where the value comes from, when that is not a change. */
   readonly origin?: string;
-  /** The value is a difference of the shown document: its origin is the changed mark, and offers Reset. */
-  readonly changed?: boolean;
+  /** The value differs from what it inherits, or the selected runs hold another than the document's. */
+  readonly change?: ChangeMark;
   /** Shows the object the origin names, where it names one. */
   readonly revealOrigin?: () => void;
   readonly reason?: string;

@@ -6,6 +6,8 @@ import { fromFieldView, type ProjectedEdit } from '@/components/values/adapters/
 import { setIn } from '@/components/values/adapters/jsonSchema';
 import { SettingsForm } from '@/components/values/SettingsForm';
 import { fromParamSchema } from '@/components/values/adapters/paramSchema';
+import { rawField } from '@/components/values/adapters/raw';
+import type { ChangeMark } from '@/components/values/fieldModel';
 
 const site = (kinds: SiteProjection['kinds']): SiteProjection => ({
   site: {
@@ -155,6 +157,10 @@ function useHistory(initial: JsonValue) {
   };
 }
 
+/** A value a based document changes, whose Reset the gallery takes and drops. */
+const changed: ChangeMark = { from: { kind: 'base', document: 'training' }, reset: async () => undefined };
+const changedPaths = new Set(['n_reaches', 'workspace', 'optimizer']);
+
 function useRaw(initial: Record<string, JsonValue>) {
   const [values, setValues] = useState(initial);
   return { values, change: (key: string) => (value: JsonValue) => { setValues({ ...values, [key]: value }); } };
@@ -196,13 +202,18 @@ export function ValueFieldGallery() {
             { id: 'selected', commit: hidden.commit, rowSelection: true })} />
           <ValueField model={fromFieldView({ ...hidden.field, label: 'Several' },
             { id: 'several', commit: hidden.commit, rowSelection: true, multipleRows: true })} />
+          <ValueField model={project(step, { changed })} />
+          <ValueField model={rawField({ id: 'reduction', label: 'Reduction', value: 'mean', changed, change: () => undefined,
+            type: { kind: 'choice', options: [{ value: 'mean', label: 'Mean' }, { value: 'sum', label: 'Sum' }] } })} />
+          <ValueField model={rawField({ id: 'enabled', label: 'Enabled', value: true, changed, change: () => undefined, type: { kind: 'boolean' } })} />
         </div>
         <div className="grid w-80 content-start gap-2 rounded-control border border-shell-divider p-2" aria-label="Parameters">
           {params.map((schema) => <ValueField key={schema.name}
             model={fromParamSchema(schema, raw.values[schema.name], raw.change(schema.name))} />)}
         </div>
         <div className="grid w-80 content-start gap-2 rounded-control border border-shell-divider p-2" aria-label="SettingsForm">
-          <SettingsForm schema={settingsSchema} value={settings.value} write={settings.write} choose={settings.choose} />
+          <SettingsForm schema={settingsSchema} value={settings.value} write={settings.write} choose={settings.choose}
+            changed={(path) => path.length === 1 && changedPaths.has(path[0]) ? changed : undefined} />
           <Button className="justify-self-start" disabled={!settings.undo} onClick={settings.undo}>Undo</Button>
           <ValueField model={fromParamSchema({ name: 'locked', type: 'float', default: 3 }, undefined)} />
         </div>
@@ -213,6 +224,9 @@ export function ValueFieldGallery() {
           <div className="w-[90px]"><ValueField form="cell" model={project(step)} /></div>
           <div className="w-[90px]"><ValueField form="cell" model={drawn(delay)} /></div>
           <div className="w-[90px]"><ValueField form="cell" model={fromParamSchema(params[2], raw.values.hidden_size, raw.change('hidden_size'))} /></div>
+          <div className="w-[90px]"><ValueField form="cell" model={project(step, { changed })} /></div>
+          <div className="w-[90px]"><ValueField form="cell" model={rawField({ id: 'on', label: 'On', value: true, changed,
+            change: () => undefined, type: { kind: 'boolean' } })} /></div>
         </div>
       </div>
     </section>
