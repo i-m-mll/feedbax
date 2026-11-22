@@ -26,6 +26,33 @@ export function editableCheckpointRule(rule: CheckpointRule | null | undefined):
   return series.success ? series.data : undefined;
 }
 
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+
+/** A checkpoint rule and the selections of a subject that hold it, by index. */
+export interface SelectionCheckpoint {
+  readonly rule: EditableCheckpointRule;
+  readonly selections: readonly number[];
+}
+
+/**
+ * The checkpoint rules of a subject's selections as Studio edits them: one rule for every selection when they share
+ * it, else one per selection. A selection whose rule Studio does not edit leaves none.
+ */
+export function selectionCheckpoints(selections: readonly StepReference[]): SelectionCheckpoint[] | undefined {
+  const rules = selections.map(({ checkpoint }) => editableCheckpointRule(checkpoint));
+  if (!rules.length || rules.some((rule) => rule === undefined)) return undefined;
+  const [first] = rules as EditableCheckpointRule[];
+  return rules.every((rule) => same(rule, first))
+    ? [{ rule: first, selections: selections.map((_, index) => index) }]
+    : (rules as EditableCheckpointRule[]).map((rule, index) => ({ rule, selections: [index] }));
+}
+
+/** The fewest batches of any run a checkpoint rule reads, and the step whose run has them. */
+export interface CheckpointLimit {
+  readonly step: string;
+  readonly batches: number;
+}
+
 /** The kinds of checkpoint rule the Evaluate inspector edits: the last update, one update, a list, or a series. */
 export type CheckpointKind = 'last' | 'at' | 'list' | 'every';
 
@@ -60,14 +87,17 @@ export function emptyCheckpointDraft(kind: CheckpointKind): CheckpointDraft {
  * The rule a draft says, or why it says none: a reason on the field that is wrong, or none while a required field is
  * empty.
  */
-export function checkpointDraftRule(draft: CheckpointDraft):
+export function checkpointDraftRule(draft: CheckpointDraft, limit?: CheckpointLimit):
   { rule: EditableCheckpointRule } | { field?: CheckpointDraftField; reason?: string } {
+  const pastEnd = (update: number) => limit !== undefined && update > limit.batches;
+  const end = () => limit && studioFormat('subjectEnd', { step: limit.step, batches: limit.batches });
   switch (draft.kind) {
     case 'last': return { rule: 'last' };
     case 'at': {
       if (draft.at === null) return {};
       const parsed = BatchCheckpointSchema.safeParse({ at: draft.at });
-      return parsed.success ? { rule: parsed.data } : { field: 'at', reason: studioReason('wholeUpdate', String(draft.at)) };
+      if (!parsed.success) return { field: 'at', reason: studioReason('wholeUpdate', String(draft.at)) };
+      return pastEnd(parsed.data.at) ? { field: 'at', reason: end() } : { rule: parsed.data };
     }
     case 'list': {
       const text = draft.updates.trim();
@@ -75,8 +105,10 @@ export function checkpointDraftRule(draft: CheckpointDraft):
       if (!/^\d+(?:\s*,\s*\d+)*$/.test(text)) return { field: 'updates', reason: studioReason('invalidCheckpointRule', text) };
       const updates = text.split(',').map(Number);
       const parsed = UpdateRuleSchema.safeParse(updates.map((at) => ({ at })));
-      return parsed.success && new Set(updates).size === updates.length
-        ? { rule: parsed.data } : { field: 'updates', reason: studioReason('invalidUpdateList', text) };
+      if (!parsed.success || new Set(updates).size !== updates.length) {
+        return { field: 'updates', reason: studioReason('invalidUpdateList', text) };
+      }
+      return updates.some(pastEnd) ? { field: 'updates', reason: end() } : { rule: parsed.data };
     }
     case 'every': {
       if (draft.every === null) return {};
@@ -158,6 +190,11 @@ export function conditionLabels(ids: readonly string[]): ReadonlyMap<string, str
     const terms = shown.filter((name) => name in variables).map((name) => `${name}=${text(variables[name])}`);
     return [id, terms.join(' ') || id];
   }));
+}
+
+/** The trials an authored rule names by itself, which are what is offered while the subject's Task is unknown. */
+export function authoredTrialDomain(rule: TrialSet): TrialDomain {
+  return rule.kind === 'sample' ? { kind: 'sampler' } : { kind: 'fixed', conditions: rule.kind === 'conditions' ? rule.ids : [] };
 }
 
 export function validTrialSet(rule: TrialSet, domain: TrialDomain | undefined): boolean {

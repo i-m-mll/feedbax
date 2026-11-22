@@ -64,7 +64,7 @@ import { createCheckpointTrain } from './createCheckpointTrain';
 import { analyzeInput, createAnalyze, createReport, isReportFigureSource, type ReportFigureSource } from './createManagedStep';
 import { createTrain } from './createTrain';
 import { trainingDocumentId } from './trainingDocument';
-import { checkpointLabel, createEvaluation, editableCheckpointRule, exactCheckpoint, managedTrialDomain, ordinaryEvaluation, type EditableCheckpointRule, type StoppedEvaluationSubject } from './evaluateAuthoring';
+import { authoredTrialDomain, checkpointLabel, createEvaluation, editableCheckpointRule, exactCheckpoint, managedTrialDomain, ordinaryEvaluation, selectionCheckpoints, type CheckpointLimit, type EditableCheckpointRule, type SelectionCheckpoint, type StoppedEvaluationSubject } from './evaluateAuthoring';
 import { bindProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
 import { bestRankGroups, projectWindowPlan, planVariants, savedRunId, stepSourceRows, unvalued } from './projectWindowPlan';
@@ -72,7 +72,7 @@ import { placeField, placeMember, placeView, removeGraphVariation, type Reveal }
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
 import { planWithRefusal, problemKey, type GestureFailures, type Refusal } from './refusals';
 import { CheckpointEditor, EvaluateSubjectFields, SubjectSubset, TrialsEditor, type EvaluateField } from './StudioEvaluateAuthoring';
-import { connection, selectionProblem } from './selectionEdits';
+import { connection, selectionProblem, stepSelections } from './selectionEdits';
 import { StudioEvaluationAttemptDetails } from './StudioEvaluationResults';
 import { focusedResult, SavedResults } from './SavedResults';
 import { filesRemoval, RunRemovalContext, useRunRemovalDialog } from './runRemoval';
@@ -536,23 +536,44 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const subjectIds = subject && rankGroups.length
     ? new Set(rankedSubjects.map((bound) => savedRunId({ ...bound, step: subject.source_step_id })))
     : subjectSubset?.members && new Set(subjectSubset.members.map(savedRunId));
-  const evaluationEditor = evaluationAuthoring && evaluationSources && evaluationSources.length === evaluationAuthoring.subjects.length &&
-    evaluationSources.every(({ source }) => authoredMap?.rows.some(({ key, evaluation_conditions }) =>
-      key.step === source.id && key.variant === variant && evaluation_conditions != null))
+  const evaluationEditor = evaluationAuthoring && evaluationSources && evaluationSources.length === evaluationAuthoring.subjects.length
     ? {
       authored: evaluationAuthoring, subjects: evaluationSources,
       domain: managedTrialDomain(projection.data, evaluationSources.length === 1
         ? subjectIds ? evaluationSources[0].source.runs.filter(({ id }) => subjectIds.has(id))
           : evaluationSources[0].reference.where == null ? evaluationSources[0].source.runs : []
-        : evaluationSources.flatMap(({ source }) => source.runs)),
+        : evaluationSources.flatMap(({ source }) => source.runs)) ?? authoredTrialDomain(evaluationAuthoring.trialSet),
     } : undefined;
   const checkpointVariant = variant && saved.project.sweep?.rows?.[variant] ? variant : undefined;
-  const localSubject = StepReferenceSchema.safeParse(authored?.inputs?.subject);
-  const stepCheckpointRule = data && singleStep && (wholeStep && !saved.project.sweep || checkpointVariant)
-    && authored?.kind === 'evaluate' && !authored.deltas?.length
+  const evaluated = authored?.kind === 'evaluate' && !authored.deltas?.length ? authored : undefined;
+  const subjectReferences = stepSelections(evaluated?.inputs?.subject);
+  const listedSubject = Array.isArray(evaluated?.inputs?.subject);
+  const localSubject = StepReferenceSchema.safeParse(evaluated?.inputs?.subject);
+  /** A checkpoint axis or a variant's patch says the rule the plan read; otherwise the authored reference does. */
+  const stepCheckpointRule = singleStep && (wholeStep && !saved.project.sweep || checkpointVariant)
     && localSubject.success && (localSubject.data.checkpoint != null || subject?.checkpoint_axis)
-    ? editableCheckpointRule(subject?.checkpoint)
+    ? editableCheckpointRule(subject?.checkpoint_axis || checkpointVariant ? data && subject?.checkpoint : localSubject.data.checkpoint)
     : undefined;
+  const listedCheckpoints = wholeStep && !saved.project.sweep && listedSubject && subjectReferences &&
+    !Object.values(evaluated?.sweep?.axes ?? {}).some((axis) => axis && 'checkpoint_rule' in axis)
+    ? selectionCheckpoints(subjectReferences) : undefined;
+  const stepLabel = (id: string) => plan.steps.find((item) => item.id === id)?.label ?? id;
+  /** The fewest batches of any run that `selections` read, among the runs whose batches the plan knows. */
+  function checkpointLimit(selections: readonly number[]): CheckpointLimit | undefined {
+    let limit: CheckpointLimit | undefined;
+    for (const index of selections) {
+      const reference = subjectReferences?.[index];
+      if (!reference) continue;
+      const members = mapInputs?.find(({ id }) => id === (listedSubject ? `subject.${index}` : 'subject'))?.subset?.members;
+      const read = members && new Set(members.map(savedRunId));
+      for (const { key, target_total } of projection.data?.window_map?.rows ?? []) {
+        if (key.step !== reference.step || key.variant !== variant || target_total == null) continue;
+        if (read && !read.has(savedRunId(key))) continue;
+        if (!limit || target_total < limit.batches) limit = { step: stepLabel(reference.step), batches: target_total };
+      }
+    }
+    return limit;
+  }
   const exactSources = selectedEvaluation?.result?.checkpoint_sources;
   const exactSource = subjectCheckpoint !== undefined && exactSources?.length === 1 ? exactSources[0] : undefined;
   const evaluationReplay = useSavedEvaluationScene(saved.project_id, saved.revision, selectedEvaluation,
@@ -632,7 +653,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const selectedRules = new Map(sceneRows.map((item) => [JSON.stringify(item.checkpoint_rule), item.checkpoint_rule]));
   const scopedRule = checkpointScope && selectedRules.size === 1
     ? editableCheckpointRule(selectedRules.values().next().value) : undefined;
-  const evaluationCheckpointRule = stepCheckpointRule || scopedRule;
+  const unlisted = stepCheckpointRule || (!listedSubject ? scopedRule : undefined);
+  const checkpointEditors: readonly SelectionCheckpoint[] | undefined = listedCheckpoints ??
+    (unlisted ? [{ rule: unlisted, selections: [0] }] : undefined);
   const canSweepCheckpoint = Boolean(namedRun && stepCheckpointRule && !checkpointVariant && !subject?.checkpoint_axis &&
     stepCheckpointRule !== 'last' && (Array.isArray(stepCheckpointRule) || 'every' in stepCheckpointRule));
   function saveElementPosition(document: string, node: string, position: PresentationPosition) {
@@ -1139,9 +1162,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     }, refuseField(`subset.${index}`));
   }
 
-  function editEvaluationCheckpoint(rule: EditableCheckpointRule) {
-    if (!step || !subject || !evaluationCheckpointRule || !applies) return;
-    if (checkpointScope) {
+  function editEvaluationCheckpoint(rule: EditableCheckpointRule, selections: readonly number[]) {
+    if (!step || !subjectReferences || !checkpointEditors || !applies) return;
+    if (checkpointScope && !listedSubject) {
       void applyCheckpointSweepEdit({ kind: 'set', scope: { ...checkpointScope,
         ...('rows' in checkpointScope && { rows: [...checkpointScope.rows ?? []] }),
       }, rule });
@@ -1149,22 +1172,25 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     }
     const name = 'Set Evaluate checkpoints';
     const stepId = step.id;
-    const source = subject.source_step_id;
+    const sources = [...new Set(selections.map((index) => subjectReferences[index].step))];
+    const listed = listedSubject;
     void perform(async (current) => {
-      const dependencies = [{ kind: 'step' as const, id: source }];
+      const dependencies = sources.map((id) => ({ kind: 'step' as const, id }));
       let address: { kind: 'step' | 'variant'; id: string } = { kind: 'step', id: stepId };
-      let patch: ProjectValueEdit = { op: 'replace', path: '/inputs/subject/checkpoint', value: rule };
-      if (checkpointVariant) {
+      let patches: ProjectValueEdit[] = listed
+        ? selections.map((index) => ({ op: 'replace', path: `/inputs/subject/${index}/checkpoint`, value: rule }))
+        : [{ op: 'replace', path: '/inputs/subject/checkpoint', value: rule }];
+      if (checkpointVariant && !listed) {
         const row = current.project.sweep?.rows?.[checkpointVariant];
         if (!row) return;
         const key = `steps.${stepId}.inputs.subject.checkpoint`;
         address = { kind: 'variant', id: checkpointVariant };
         dependencies.push({ kind: 'step', id: stepId });
-        patch = row.patches
+        patches = [row.patches
           ? { op: key in row.patches ? 'replace' : 'add', path: authoredPointer(['patches', key]), value: { value: rule } }
-          : { op: 'add', path: '/patches', value: { [key]: { value: rule } } };
+          : { op: 'add', path: '/patches', value: { [key]: { value: rule } } }];
       }
-      const files = [{ address, patches: [patch] }];
+      const files = [{ address, patches }];
       if (!await runRemoval.confirm(filesRemoval(current.project_id, current.revision, files, editor.signal))) return;
       editor.editFiles(name, files, { reviewedRevision: current.revision, dependencies });
       await editor.flush();
@@ -1635,7 +1661,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                 detail={selectedEvaluation?.checkpoint_series
                   ? <StudioEvaluationAttemptDetails evaluation={selectedEvaluation}
                     onShowStep={(stepId) => selection.select(selectStep(state, stepId))} /> : undefined}
-                fields={(authoring || evaluateInputs || evaluationCheckpointRule || evaluationEditor) &&
+                fields={(authoring || evaluateInputs || checkpointEditors || evaluationEditor) &&
                   <FocusedFields request={slot === focusSlot && fieldFocus?.step === step.id ? fieldFocus : undefined}
                     onFocused={() => setFieldFocus(undefined)}>
                     {authoring && <StudioTrainAuthoringForm {...authoring} run={namedRun} runPending={!data && !projection.isError}
@@ -1652,7 +1678,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                           problem: listed ? selectionProblem(authoredMap?.problems ?? [], step.id, variant, 'subject', index) : undefined,
                           detail: <>
                             {input && inputDetail(input)}
-                            {subset?.terms && projection.data && variant && reference.checkpoint === 'last' && <SubjectSubset
+                            {subset?.terms && projection.data && variant && <SubjectSubset
                               key={JSON.stringify([step.id, index, subset.source.id])}
                               terms={subset.terms} where={subset.where} hasWhere={reference.where !== undefined}
                               source={subset.source} sourceRows={stepSourceRows(projection.data, subset.source.id, variant)}
@@ -1664,14 +1690,15 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                         };
                       }}
                       onEdit={applies && wholeStep ? editEvaluateSubject : undefined} />}
-                    {evaluationCheckpointRule &&
-                      <CheckpointEditor key={JSON.stringify(['checkpoint', step.id, variant, checkpointScope])}
-                        initial={evaluationCheckpointRule}
+                    {checkpointEditors?.map(({ rule, selections }) =>
+                      <CheckpointEditor key={JSON.stringify(['checkpoint', step.id, variant, checkpointScope, selections])}
+                        initial={rule} limit={checkpointLimit(selections)}
+                        step={checkpointEditors.length > 1 ? stepLabel(subjectReferences![selections[0]].step) : undefined}
                         disabled={!applies} readOnly={Boolean(stepCheckpointRule && subject?.checkpoint_axis)}
                         refusal={refusedAt('checkpoint')}
-                        onSave={editEvaluationCheckpoint}
-                        onToSweep={canSweepCheckpoint ? () => { void applyCheckpointSweepEdit({ kind: 'to_sweep' }); } : undefined} />}
-                    {evaluationEditor?.domain && <TrialsEditor key={step.id} initial={evaluationEditor.authored.trialSet}
+                        onSave={(next) => editEvaluationCheckpoint(next, selections)}
+                        onToSweep={canSweepCheckpoint ? () => { void applyCheckpointSweepEdit({ kind: 'to_sweep' }); } : undefined} />)}
+                    {evaluationEditor && <TrialsEditor key={step.id} initial={evaluationEditor.authored.trialSet}
                       domain={evaluationEditor.domain} disabled={!applies} refusal={refusedAt('trials')}
                       onSave={(rule) => editEvaluation('trials', studioName('trials'),
                         { op: 'replace', path: '/base/inline/params/trial_set', value: rule })} />}

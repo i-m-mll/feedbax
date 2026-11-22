@@ -3,6 +3,7 @@ import type { Step } from '@/generated/studioContracts';
 import { applyAuthoredEdits, type ProjectEditContent } from './authoredEdits';
 import {
   checkpointDraft, checkpointDraftRule, conditionLabels, editableCheckpointRule, evaluateSubject, evaluateSubjectEdits,
+  selectionCheckpoints,
   type EvaluateSubject,
 } from './evaluateAuthoring';
 
@@ -63,4 +64,21 @@ it('names each condition by the variables that vary across its cohort', () => {
   expect([...conditionLabels([a, b]).values()]).toEqual(['goal=[1,0]', 'goal=[0,1]']);
   expect(conditionLabels(['{"goal":[1,0]}']).get('{"goal":[1,0]}')).toBe('goal=[1,0]');
   expect(conditionLabels(['left']).get('left')).toBe('left');
+});
+
+// Catches a listed subject drawing no Checkpoint editor, or one editor hiding selections whose rules differ.
+it('reads one checkpoint rule for selections that share it and one per selection otherwise', () => {
+  expect(selectionCheckpoints([{ step: 'a', checkpoint: { at: 5 } }, { step: 'b', checkpoint: { at: 5 } }]))
+    .toEqual([{ rule: { at: 5 }, selections: [0, 1] }]);
+  expect(selectionCheckpoints([{ step: 'a', checkpoint: 'last' }, { step: 'b', checkpoint: { at: 5 } }]))
+    .toEqual([{ rule: 'last', selections: [0] }, { rule: { at: 5 }, selections: [1] }]);
+});
+
+// Catches a checkpoint past the subject's training reaching a job.
+it('refuses an update past the fewest batches of the runs read, on its field', () => {
+  const limit = { step: 'train-2', batches: 8000 };
+  expect(checkpointDraftRule({ kind: 'at', at: 8000 }, limit)).toEqual({ rule: { at: 8000 } });
+  expect(checkpointDraftRule({ kind: 'at', at: 9000 }, limit)).toMatchObject({ field: 'at', reason: expect.stringContaining('8000') });
+  expect(checkpointDraftRule({ kind: 'list', updates: '10, 9000' }, limit)).toMatchObject({ field: 'updates' });
+  expect(checkpointDraftRule({ kind: 'last' }, limit)).toEqual({ rule: 'last' });
 });
