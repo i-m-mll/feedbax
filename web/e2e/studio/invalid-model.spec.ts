@@ -48,7 +48,18 @@ test('keeps the steps that read an invalid Model editable and marks them waiting
   await expect(mapStep(page, 'train')).toHaveAttribute('aria-pressed', 'true');
 
   await mapStep(page, 'conditions').click();
-  const listed = await edit(() => pick(inspector.getByRole('combobox', { name: 'Add Subject', exact: true }), 'train_b'));
+  // Add makes an empty row and writes nothing; the step chosen in that row is the write.
+  const writes: string[] = [];
+  page.on('request', (sent) => { if (sent.method() === 'PATCH' && new URL(sent.url()).pathname === path) writes.push(sent.url()); });
+  const before = (await (await request.get(path)).json() as StudioProjectSnapshot).revision;
+  const subject = inspector.getByRole('list', { name: 'Subject', exact: true });
+  await inspector.getByRole('button', { name: 'Add Subject', exact: true }).click();
+  const empty = subject.getByRole('combobox', { name: 'Subject', exact: true }).last();
+  await expect(subject.getByRole('listitem')).toHaveCount(2);
+  await expect(empty).toHaveText('—');
+  await expect.poll(async () => (await (await request.get(path)).json() as StudioProjectSnapshot).revision).toBe(before);
+  expect(writes).toEqual([]);
+  const listed = await edit(() => pick(empty, 'train_b'));
   expect(listed.steps!.conditions.inputs!.subject).toEqual([
     { step: 'train', checkpoint: 'last' }, { step: 'train_b', checkpoint: 'last' },
   ]);
