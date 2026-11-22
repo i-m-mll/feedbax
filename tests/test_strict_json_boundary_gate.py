@@ -1,17 +1,20 @@
 """Structural gate: every JSON parse in audited authority packages is accounted for.
 
-``feedbax/contracts`` is the layer that reads authority documents — manifests,
-packets, envelopes, compile locks, content-pinned bases, declarations, array
-stores. Every one of those parses must go through
-:func:`feedbax.contracts.strict_json.strict_json_loads`, which refuses a
-document that states one member twice.
+The audited packages read authority documents — manifests, packets, envelopes,
+compile locks, content-pinned bases, declarations, array stores, session rows,
+venue replies, job inputs. Every parse of bytes that came from outside the
+process goes through one of the helpers in :mod:`feedbax.contracts.strict_json`,
+which refuse a document that states one member twice:
 
-A parse that is genuinely trusted-internal — bytes this process serialized
-moments earlier from a value it already holds — is not an authority boundary and
-does not need the strict loader. Those are enumerated below, one entry per
-enclosing function, each with the reason it is not a boundary. The gate fails
-when a JSON parse appears anywhere in the package that is neither routed through
-the strict loader nor listed here, so a new bypass cannot be added silently.
+* ``strict_json_loads`` for plain JSON;
+* ``strict_model_validate_json`` for a Pydantic model;
+* ``strict_validate_json`` for a Pydantic ``TypeAdapter``.
+
+A parse that does not route through a helper is enumerated below, one entry per
+enclosing function, each with the reason it is not an authority boundary. The
+gate fails when a JSON parse appears anywhere in the audited packages that is
+neither routed through a helper nor listed here, so a new bypass cannot be
+added silently.
 
 The permissive parsers this gate looks for are the ones that all share the same
 last-value-wins behavior for a repeated object member name:
@@ -49,9 +52,10 @@ BOUNDARY_PACKAGES = tuple(
 #: boundary implementation.
 GATE_EXEMPT_MODULES = frozenset({"feedbax/contracts/strict_json.py"})
 
-#: Trusted-internal parses, keyed by (module, enclosing qualified name). Each
-#: value states why the bytes carry no external authority. Adding an entry here
-#: is a deliberate, reviewable claim — not a way to silence the gate.
+#: Parses that do not route through a strict helper, keyed by (module, enclosing
+#: qualified name). Each value states why the bytes carry no external authority.
+#: Adding an entry here is a deliberate, reviewable claim — not a way to silence
+#: the gate.
 TRUSTED_INTERNAL_PARSES: dict[tuple[str, str], str] = {
     ("feedbax/contracts/portable.py", "validate_authoring"): (
         "Validation consumes json.dumps of the in-memory authoring mapping; "
@@ -59,6 +63,31 @@ TRUSTED_INTERNAL_PARSES: dict[tuple[str, str], str] = {
     ),
     ("feedbax/contracts/portable.py", "validate_configuration"): (
         "Field validation consumes json.dumps of the current in-memory runtime value."
+    ),
+    ("feedbax/contracts/_request_codec.py", "_project_absent"): (
+        "Validates, in Pydantic's JSON mode, json.dumps of the absent value this "
+        "function just restored."
+    ),
+    ("feedbax/contracts/request_identity.py", "decode_python_task_selection"): (
+        "The selection bytes go through strict_json_loads; the remaining parse "
+        "validates, in Pydantic's JSON mode, json.dumps of the value this function "
+        "just decoded."
+    ),
+    ("feedbax/contracts/request_identity.py", "decode_request"): (
+        "Stored objects go through the strict reader; the remaining parse validates, "
+        "in Pydantic's JSON mode, json.dumps of the spec this function just restored."
+    ),
+    ("feedbax/contracts/request_identity.py", "effective_binding_id"): (
+        "Parses the bytes encode_request produced in this function from an "
+        "authenticated request."
+    ),
+    ("feedbax/orchestration/runpod_bootstrap.py", "bootstrap"): (
+        "Standard-library source sent to the venue before feedbax is importable; "
+        "stdin carries json.dumps of the controller's in-memory settings."
+    ),
+    ("feedbax/orchestration/runpod_venue_cutoff.py", "_own_pod_exists"): (
+        "Standard-library source sent to the venue before feedbax is importable; "
+        "the parse refuses a repeated member with its own object_pairs_hook."
     ),
 }
 
@@ -129,7 +158,7 @@ def _observed_parses() -> dict[tuple[str, str], list[int]]:
 
 
 def test_no_unaccounted_permissive_json_parse_in_audited_packages() -> None:
-    """A JSON parse here is either the strict loader or a documented exception."""
+    """A JSON parse here is either a strict helper or a documented exception."""
     observed = _observed_parses()
     offenders = sorted(key for key in observed if key not in TRUSTED_INTERNAL_PARSES)
     detail = "\n".join(
@@ -141,8 +170,9 @@ def test_no_unaccounted_permissive_json_parse_in_audited_packages() -> None:
         f"{', '.join(package.as_posix() for package in BOUNDARY_PACKAGES)}:\n{detail}\n"
         "This layer reads authority documents, where a repeated object member "
         "name states two authorities for one fact and the standard parse "
-        "silently keeps the last. Route the call through "
-        "feedbax.contracts.strict_json.strict_json_loads, or — if the bytes "
+        "silently keeps the last. Route the call through a helper in "
+        "feedbax.contracts.strict_json (strict_json_loads, "
+        "strict_model_validate_json, strict_validate_json), or — if the bytes "
         "were serialized by this process from a value it already holds — add "
         "the site to TRUSTED_INTERNAL_PARSES in this module with the reason."
     )
@@ -187,6 +217,12 @@ def parses_with_type_adapter(raw):
 
 def routes_through_the_strict_loader(raw):
     return strict_json_loads(raw, ref="ok")
+
+def routes_through_the_strict_model_reader(raw):
+    return strict_model_validate_json(SomeModel, raw)
+
+def routes_through_the_strict_adapter_reader(raw):
+    return strict_validate_json(pydantic.TypeAdapter(dict), raw)
 """
     found = {qualname for qualname, _lineno, _expr in _permissive_parse_calls(ast.parse(source))}
     assert found == {

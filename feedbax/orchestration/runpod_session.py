@@ -16,6 +16,7 @@ from pydantic import Field, field_validator, model_validator
 
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.execution_target import OpeningStep
+from feedbax.contracts.strict_json import strict_json_loads, strict_model_validate_json
 from feedbax.host import watchdog
 from feedbax.host.client import HostClient, StdioAttachment
 from feedbax.host.protocol import HostError, JsonObject, SessionAccess
@@ -183,7 +184,7 @@ class RunPodSessionProvider:
         if unopened is not None or resource is None:
             return unopened
         raw = self._call(self._connection(resource), self._layout(resource), "close-opening")
-        return (resource,) if json.loads(raw) is True else None
+        return (resource,) if strict_json_loads(raw) is True else None
 
     def _layout(self, resource: ProviderResource) -> _Layout:
         if resource.kind != "venue" or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", resource.id):
@@ -205,7 +206,7 @@ class RunPodSessionProvider:
 
     def _read(self, connection: SSHStoreConnection, layout: _Layout) -> SessionRealization | None:
         raw = self._call(connection, layout, "read")
-        return SessionRealization.model_validate_json(raw) if raw else None
+        return strict_model_validate_json(SessionRealization, raw) if raw else None
 
     def realization(self, resource: ProviderResource) -> SessionRealization:
         realization = self._read(self._connection(resource), self._layout(resource))
@@ -272,7 +273,7 @@ class RunPodSessionProvider:
                     },
                 }
             prepare["uv_sha256"] = self.environment.uv_sha256
-            prepared = json.loads(self._call(bounded(), layout, "prepare", prepare))
+            prepared = strict_json_loads(self._call(bounded(), layout, "prepare", prepare))
             if prepared["send_uv"] or prepared["send"]:
                 opening("copying")
             if prepared["send_uv"]:
@@ -302,7 +303,7 @@ class RunPodSessionProvider:
                 "backend": self.environment.backend,
                 "worker_env": self.environment.worker_environment,
             })
-            evidence = json.loads(probe) | {"placement": placement}
+            evidence = strict_json_loads(probe) | {"placement": placement}
             if self.environment.uv_sha256 is not None:
                 evidence["uv_sha256"] = self.environment.uv_sha256
             if cutoff_proof is not None:

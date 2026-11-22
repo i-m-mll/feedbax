@@ -37,6 +37,7 @@ from feedbax.contracts.rollout import (
     ResolvedInitialRollout, ResolvedRolloutBinding, ResolvedRolloutMember, rollout_objective_sha256, rollout_semantics,
 )
 from feedbax.contracts.semantic_values import semantic_key
+from feedbax.contracts.strict_json import strict_model_validate_json
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.host.completion import CompletionFileError
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -671,7 +672,8 @@ def main(argv: Sequence[str]) -> int:
             raise ValueError("Evaluate accepts the authored Host input document.")
         job_id = os.environ["FEEDBAX_HOST_JOB_ID"]
         stop = Path(os.environ["FEEDBAX_HOST_STOP_FILE"])
-        request = BoundEvaluationJobInput.model_validate_json(
+        request = strict_model_validate_json(
+            BoundEvaluationJobInput,
             Path(os.environ["FEEDBAX_HOST_INPUT"]).read_bytes()
         )
         store = ImmutableArtifactBlobProvider(request.manifest_root)

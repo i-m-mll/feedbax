@@ -18,7 +18,7 @@ from feedbax.checkpoint_coordinates import MAX_CHECKPOINT_COORDINATE
 from feedbax.contracts import request_identity
 from feedbax.contracts._request_codec import same_typed_value
 from feedbax.contracts.analysis_document import AnalyzeDatasetInput, AnalyzeInput, AnalyzeModelInput, AnalyzeTaskInput
-from feedbax.contracts.base import sha256_bytes
+from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.expression_values import Problem, ValueBase
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, FigureDocument, PlotlyFigurePort
@@ -672,6 +672,26 @@ class ProjectPlan:
         )
 
 
+class InputProducer(StrictModel):
+    """The step whose rows an input's selections read, and the product they read of each row."""
+
+    kind: StepKind
+    product: str
+    operation_outputs: bool
+    """Whether a selection may instead name an Analyze operation's dataset product, read from the card that holds it."""
+
+
+class InputRole(StrictModel):
+    """A step input as the planner resolves it: whether it is required, whether it takes a list of selections, the
+    producer its selections read, the documents it may read instead, and whether its checkpoint may be a finite set."""
+
+    required: bool
+    gathers: bool
+    producer: InputProducer | None
+    documents: list[Literal["model", "task"]]
+    checkpoint_sets: bool
+
+
 @dataclass(frozen=True)
 class _Role:
     name: str
@@ -682,13 +702,54 @@ class _Role:
     """Whether the role takes a list of selections."""
     operation_outputs: bool = False
     """Whether a selection may instead name an Analyze operation's dataset product, read from the card that holds it."""
+    documents: tuple[Literal["model", "task"], ...] = ()
+    """The documents the role may read instead of a step's rows."""
+    checkpoint_sets: bool = False
+    """Whether a selection's checkpoint may name a finite set of updates, each a row of the reading step."""
+
+    @property
+    def entry(self) -> InputRole:
+        return InputRole(
+            required=self.required, gathers=self.gathers,
+            producer=InputProducer(
+                kind=self.producer_kind, product=self.product_role, operation_outputs=self.operation_outputs,
+            ),
+            documents=list(self.documents), checkpoint_sets=self.checkpoint_sets,
+        )
 
 
 _ROLES = {
     "train": _Role("checkpoint", False, "train", "checkpoint"),
-    "evaluate": _Role("subject", True, "train", "checkpoint", gathers=True),
+    "evaluate": _Role("subject", True, "train", "checkpoint", gathers=True, documents=("model",), checkpoint_sets=True),
 }
+_ANALYZE_TASK_ROLE = InputRole(required=True, gathers=False, producer=None, documents=["task"], checkpoint_sets=False)
+
+
+def _analyze_role(name: str, declaration: AnalyzeInput) -> _Role | None:
+    """The role an Analyze document's input declares; a Task input reads only a Task document and has none."""
+    match declaration:
+        case AnalyzeModelInput():
+            return _Role(name, True, "train", "checkpoint", documents=("model",))
+        case AnalyzeDatasetInput():
+            return _Role(name, True, "evaluate", "states", gathers=True, operation_outputs=True)
+        case AnalyzeTaskInput():
+            return None
+
+
+def step_input_roles() -> dict[str, dict[str, InputRole]]:
+    """Each step kind's inputs by name, as the planner resolves them."""
+    return {kind: {role.name: role.entry} for kind, role in _ROLES.items()}
+
+
+def analyze_input_roles() -> dict[str, InputRole]:
+    """The input an Analyze document's declaration of each kind gives its step."""
+    roles = {}
+    for kind in ("model", "dataset", "task"):
+        role = _analyze_role(kind, _ANALYZE_INPUT.validate_python({"kind": kind}))
+        roles[kind] = role.entry if role is not None else _ANALYZE_TASK_ROLE
+    return roles
 _ANALYZE_INPUTS = TypeAdapter(dict[ProjectName, AnalyzeInput])
+_ANALYZE_INPUT: TypeAdapter[AnalyzeInput] = TypeAdapter(AnalyzeInput)
 DOCUMENTS: TypeAdapter[dict[str, Document]] = TypeAdapter(dict[str, Document])
 
 type _CompiledRun = PlannedRun | PlannedAnalyzeRun
@@ -2689,7 +2750,7 @@ class _Compiler:
         if kind == "analyze":
             return self.compile_analyze_step(variant, name, template, active)
         assert role is not None
-        initial = kind == "evaluate" and isinstance(template.inputs.get("subject"), InitialModelReference)
+        initial = "model" in role.documents and isinstance(template.inputs.get(role.name), InitialModelReference)
         roles = {"subject", "task", "objective"} if initial else {role.name}
         extra_roles = sorted(template.inputs.keys() - roles)
         if extra_roles:
@@ -3085,9 +3146,8 @@ class _Compiler:
                 ):
                     problem(f"{path}.checkpoint", "Select a positive completed Train update.")
                     return ()
-                role = _Role(name_of_role, True, "train", "checkpoint")
-            else:
-                role = _Role(name_of_role, True, "evaluate", "states", gathers=True, operation_outputs=True)
+            role = _analyze_role(name_of_role, declaration)
+            assert role is not None
             resolved = self.select_input(variant, name, template, role, active)
             if isinstance(resolved, ProjectDiagnostic):
                 self.diagnostics.append(replace(resolved, variant=variant))
@@ -3627,7 +3687,7 @@ class _Compiler:
                 name,
             )
         rule = None if role.name == "subject" else reference.checkpoint
-        if isinstance(rule, (CheckpointBatches, CheckpointCadence, UpdateCadence, tuple)) and role.name != "subject":
+        if isinstance(rule, (CheckpointBatches, CheckpointCadence, UpdateCadence, tuple)) and not role.checkpoint_sets:
             return ProjectDiagnostic(
                 ResolutionCode.BAD_REFERENCE, f"{path}.checkpoint",
                 "finite checkpoint sets require an Evaluate subject", name,

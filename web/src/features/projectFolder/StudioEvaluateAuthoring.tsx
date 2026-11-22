@@ -1,4 +1,4 @@
-import { useId, useRef, type ReactNode } from 'react';
+import { useId, useRef } from 'react';
 import { useDraft } from '@/hooks/useDraft';
 import { studioAccessibleName, studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
@@ -8,33 +8,24 @@ import { Select } from '@/components/ui/Select';
 import { TextField } from '@/components/ui/TextField';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { Section } from '@/components/ui/Section';
-import { ReferenceField, type ReferenceChoice } from '@/components/values/ReferenceField';
+import { ReferenceField } from '@/components/values/ReferenceField';
 import type { PlanStepView } from '@/features/pipeline/planView';
-import type { ElementSelectionStore } from '@/features/projectWindow/elementSelection';
+import { BestSchema, type Best, type SelectedRow, type SubsetTerms } from '@/generated/studioContracts';
 import {
-  BestSchema, type Best, type InputBinding, type ProjectValueEdit, type SelectedRow, type Step, type StepReference,
-  type SubsetTerms,
-} from '@/generated/studioContracts';
-import type { AuthoredProject } from './authoredEdits';
-import {
-  checkpointDraft, checkpointDraftRule, conditionLabels, emptyCheckpointDraft, evaluateSubject, evaluateSubjectEdits, validTrialSet,
-  type CheckpointDraft, type CheckpointDraftField, type CheckpointKind, type CheckpointRange, type EditableCheckpointRule, type EvaluateSubject,
+  checkpointDraft, checkpointDraftRule, conditionLabels, emptyCheckpointDraft, validTrialSet,
+  type CheckpointDraft, type CheckpointDraftField, type CheckpointKind, type CheckpointRange, type EditableCheckpointRule,
   type TrialDomain, type TrialSet,
 } from './evaluateAuthoring';
-import {
-  documentChoice, documentChoiceId, documentGroup, stepChoice, stepChoiceId, stepGroup,
-} from './referenceChoices';
-import { documentsOfRole } from './useProjectDocuments';
 import { savedRunId } from './projectWindowPlan';
-import { InputSelections } from './InputSelections';
-import { bindingEdit, changedSelections, stepSelections, subjectAxisEdits } from './selectionEdits';
+import type { AuthoredProject } from './authoredEdits';
+import { documentChoice, documentGroup } from './referenceChoices';
 import { ScrollFade } from '@/components/ui/ScrollFade';
 import '@/components/values/valueField.css';
 
 type Choice = { id: string; label: string };
 
-/** The Evaluate fields an edit can be refused on; a subset is named by its selection's index. */
-export type EvaluateField = 'subject' | 'checkpoint' | `subset.${number}` | 'trials';
+/** The inspector fields of a step an edit can be refused on: its input, a selection's Checkpoint or Runs by index, and Trials. */
+export type StepField = 'input' | 'checkpoint' | `subset.${number}` | 'trials';
 
 /** A field group's members, one step in; no space at all when the group's control is all there is. */
 const members = 'value-field-parts grid gap-1 empty:hidden';
@@ -49,8 +40,10 @@ const firstMember: Record<CheckpointKind, CheckpointDraftField | undefined> = {
  * Which updates of the subject's training the Evaluate tests: the kind of rule as the group's control, its updates
  * beneath. A kind with updates saves once they say a rule; Escape restores the saved one.
  */
-export function CheckpointEditor({ initial, step, range, disabled, readOnly, refusal, onSave, onToSweep }: {
+export function CheckpointEditor({ initial, step, kinds = checkpointKinds, range, disabled, readOnly, refusal, onSave, onToSweep }: {
   initial: EditableCheckpointRule;
+  /** The kinds of rule the input takes. */
+  kinds?: readonly CheckpointKind[];
   /** The name of the one step whose selection this editor holds, beside other selections' editors. */
   step?: string;
   range?: CheckpointRange;
@@ -94,7 +87,7 @@ export function CheckpointEditor({ initial, step, range, disabled, readOnly, ref
       <Select aria-label={studioAccessibleName('checkpoint', step)} value={draft.kind}
         disabled={fixed}
         aria-invalid={draft.kind === 'last' && refusal !== undefined}
-        items={checkpointKinds.map((kind) => ({ value: kind, label: studioName(kind) }))}
+        items={kinds.map((kind) => ({ value: kind, label: studioName(kind) }))}
         finalFocus={() => first.current}
         onValueChange={(kind) => commit(kind === saved.kind ? saved : emptyCheckpointDraft(kind))} />
       {draft.kind === 'last' && refusal && <p role="alert">{refusal}</p>}
@@ -226,17 +219,14 @@ export function TrialsEditor({ initial, domain, disabled, refusal, onSave }: {
   </Section>;
 }
 
-/** A Train selection's restriction: its rows, its sweep values, and Best, written at `where`. */
-export function SubjectSubset({ terms, where, hasWhere, source, sourceRows, disabled, refusal, onEdit, onToRows }: {
+/** A selection's Runs: the producer's rows, its sweep values, and Best. Apply saves them as the selection's `where`. */
+export function SelectionRuns({ terms, source, sourceRows, disabled, refusal, onApply, onToRows }: {
   terms: SubsetTerms;
-  /** The pointer of the selection's `where`. */
-  where: string;
-  hasWhere: boolean;
   source: PlanStepView;
   sourceRows: readonly SelectedRow[];
   disabled: boolean;
   refusal?: string;
-  onEdit(name: string, edit: ProjectValueEdit): void;
+  onApply(terms: SubsetTerms): void;
   onToRows?(): void;
 }) {
   const [draft, setDraft] = useDraft(terms);
@@ -283,106 +273,23 @@ export function SubjectSubset({ terms, where, hasWhere, source, sourceRows, disa
     {draft.best && <BestEditor rule={draft.best} sweeps={source.sweeps} disabled={disabled}
       onChange={(rule) => setDraft({ ...draft, best: rule })} />}
     <Button className="justify-self-start" disabled={disabled || !canApplySubject || !uniqueRows}
-      onClick={() => onEdit(studioName('applySubset'), {
-        op: hasWhere ? 'replace' : 'add', path: where,
-        value: { ...draft, ...(best?.success && { best: best.data }) },
-      })}>{studioName('applySubset')}</Button>
+      onClick={() => onApply({ ...draft, ...(best?.success && { best: best.data }) })}>{studioName('applySubset')}</Button>
     {onToRows && <Button className="justify-self-start" disabled={disabled || changed} onClick={onToRows}>{studioName('toRows')}</Button>}
     {changed && !hasMembers && <p role="status">{studioReason('emptySelection', studioName('runs'))}</p>}
     {refusal && <p role="alert">{refusal}</p>}
   </fieldset></Section>;
 }
 
-/**
- * An Evaluate step's subject, and the Task and Objective an initial Model subject declares. The subject is an
- * initial Model document or a Train step's checkpoint; a checkpoint subject reads its Task and Objective from its
- * Train step.
- */
-export function EvaluateSubjectFields({ step, project, trains, picking, selection, refusal, onEdit }: {
-  step: Step;
+/** The Task and Objective an initial Model subject declares; a checkpoint subject reads them from its Train step. */
+export function SubjectDocuments({ subject, project, onChoose }: {
+  subject: { task?: string; objective?: string };
   project: AuthoredProject;
-  trains: readonly PlanStepView[];
-  picking: ElementSelectionStore;
-  /** A Train selection's restriction, and why the plan refuses it. */
-  selection?: (index: number, reference: StepReference) => { detail?: ReactNode; problem?: string };
-  /** Why the last edit of the subject was refused. */
-  refusal?: string;
-  onEdit?: (name: string, edits: ProjectValueEdit[], documents: readonly string[]) => void;
+  onChoose?: (kind: 'task' | 'objective', document: string) => void;
 }) {
   const labels = useId();
-  const subject = evaluateSubject(step);
-  const choose = (name: string, next: EvaluateSubject) => {
-    const edits = evaluateSubjectEdits(step, next);
-    if (edits.length) onEdit?.(name, edits, next.kind === 'document'
-      ? [next.document, next.task, next.objective].filter((id): id is string => id !== undefined) : [next.step]);
-  };
-  const fromTrain = (id: string | undefined) => {
-    const documents = trains.find((train) => train.id === id)?.documentIds;
-    return {
-      task: documents?.['payload.trial_documents.task'] ?? documents?.['payload.trial_documents.python_task']
-        ?? documentsOfRole(project, 'task')[0],
-      objective: documents?.['payload.trial_documents.objective'],
-    };
-  };
-  const name = studioName('subject');
-  const trainChoice = (id: string): ReferenceChoice => {
-    const train = trains.find((train) => train.id === id);
-    return train ? stepChoice(train) : { id: stepChoiceId(id), label: id };
-  };
-  const trainOf = (choice: ReferenceChoice) => trains.find(({ id }) => stepChoiceId(id) === choice.id);
-  const toDocument = (choice: ReferenceChoice, current: string | undefined) => {
-    if (choice.id !== documentChoiceId(choice.label)) return;
-    choose(name, subject?.kind === 'document' ? { ...subject, document: choice.label }
-      : { kind: 'document', document: choice.label, ...fromTrain(current) });
-  };
-  const subjectId = `${labels}-subject`;
-  if (subject?.kind === 'steps') {
-    const { selections } = subject;
-    const change = (next: InputBinding) => {
-      const reads = stepSelections(next)?.map(({ step }) => step) ?? [];
-      const fans = (stepSelections(next)?.length ?? 0) > 1;
-      onEdit?.(name, [bindingEdit(step.inputs, 'subject', next), ...fans ? subjectAxisEdits(step) : []], [...new Set(reads)]);
-    };
-    return <InputSelections label={name} labelId={subjectId} picking={picking} refusal={refusal}
-      groups={[stepGroup(trains)]}
-      rows={selections.map((reference, index) => ({
-        value: trainChoice(reference.step),
-        ...selections.length === 1 && { groups: [documentGroup(project, 'model'), stepGroup(trains)] },
-        ...selection?.(index, reference),
-      }))}
-      onChange={onEdit && ((gesture) => {
-        if (gesture.kind === 'remove') return change(changedSelections(selections, gesture));
-        const train = trainOf(gesture.choice);
-        if (gesture.kind === 'add') {
-          if (train) change(changedSelections(selections, {
-            kind: 'add', reference: { step: train.id, checkpoint: selections[0].checkpoint ?? 'last' },
-          }));
-        } else if (!train) toDocument(gesture.choice, selections[0].step);
-        else if (selections.length === 1) choose(name, { kind: 'step', step: train.id });
-        else if (train.id !== selections[gesture.index].step) {
-          change(changedSelections(selections, { kind: 'replace', index: gesture.index, reference: { step: train.id } }));
-        }
-      })} />;
-  }
-  const value: ReferenceChoice | null = subject?.kind === 'document' ? documentChoice('model', subject.document) : null;
-  const role = (kind: 'task' | 'objective') => subject?.kind === 'document' && <FieldRow label={studioName(kind)}
-    labelId={`${labels}-${kind}`}>
-    <ReferenceField label={studioName(kind)} aria-labelledby={`${labels}-${kind}`}
-      groups={[documentGroup(project, kind)]}
+  return <>{(['task', 'objective'] as const).map((kind) => <FieldRow key={kind} label={studioName(kind)} labelId={`${labels}-${kind}`}>
+    <ReferenceField label={studioName(kind)} aria-labelledby={`${labels}-${kind}`} groups={[documentGroup(project, kind)]}
       value={subject[kind] === undefined ? null : documentChoice(kind, subject[kind]!)}
-      onChoose={onEdit && ((choice) => choose(studioName(kind), { ...subject, [kind]: choice.label }))} />
-  </FieldRow>;
-  return <>
-    <FieldRow label={name} labelId={subjectId} below={refusal && <p role="alert">{refusal}</p>}>
-      <ReferenceField label={name} aria-labelledby={subjectId} picking={picking} value={value}
-        groups={[documentGroup(project, 'model'), stepGroup(trains)]}
-        onChoose={onEdit && ((choice) => {
-          const train = trainOf(choice);
-          if (train) choose(name, { kind: 'step', step: train.id });
-          else toDocument(choice, undefined);
-        })} />
-    </FieldRow>
-    {role('task')}
-    {role('objective')}
-  </>;
+      onChoose={onChoose && ((choice) => onChoose(kind, choice.label))} />
+  </FieldRow>)}</>;
 }

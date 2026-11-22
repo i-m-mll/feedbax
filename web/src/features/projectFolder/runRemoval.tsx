@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type {
   StudioProjectFilePatch, StudioProjectWindowMapRow, StudioSavedTrainKey, StudioSavedTrainRuns, AttemptProvenance,
 } from '@/generated/studioContracts';
@@ -56,9 +56,9 @@ function seconds(provenance: AttemptProvenance | null | undefined) {
 }
 
 /** The removed runs, and whether any holds a Train result or a result that took at least `threshold` seconds. */
-export function removalCost(plan: StudioSavedTrainRuns | undefined, removes: RemovedRuns, threshold: number) {
-  const rows = plan?.window_map?.rows.filter(removes) ?? [];
-  const training = rows.map(({ key }) => plan!.rows.find((row) => sameKey(row.key, key)));
+export function removalCost(plan: StudioSavedTrainRuns, removes: RemovedRuns, threshold: number) {
+  const rows = plan.window_map?.rows.filter(removes) ?? [];
+  const training = rows.map(({ key }) => plan.rows.find((row) => sameKey(row.key, key)));
   const costly = rows.some((row, index) => {
     if (training[index]?.result) return true;
     const evaluation = plan!.window_map!.evaluations?.find(({ key }) => sameKey(key, row.key))?.result;
@@ -87,22 +87,22 @@ export const RunRemovalContext = createContext<ConfirmRunRemoval | null>(null);
 
 /**
  * The one confirmation for commands that remove runs: it asks only when a removed run holds a Train result or a
- * result that took at least the removal threshold. Results stay in the Store; Undo restores the runs. The window
- * draws `dialog` and passes `confirm` to its commands, through `RunRemovalContext` or directly.
+ * result that took at least the removal threshold, by the plan `read` gives of the latest revision. Results stay in the
+ * Store; Undo restores the runs. The window draws `dialog` and passes `confirm` to its commands, through
+ * `RunRemovalContext` or directly.
  */
-export function useRunRemovalDialog(plan: StudioSavedTrainRuns | undefined) {
+export function useRunRemovalDialog(read: () => Promise<StudioSavedTrainRuns>) {
   const [asking, setAsking] = useState<{ count: number; training: boolean; answer(remove: boolean): void }>();
-  const current = useRef(plan);
-  current.current = plan;
   const confirm = useCallback<ConfirmRunRemoval>(async (removal) => {
     if (!removal) return true;
     const threshold = removalThreshold();
-    if (!removalCost(current.current, () => true, threshold).costly) return true;
+    const plan = await read();
+    if (!removalCost(plan, () => true, threshold).costly) return true;
     const removes = typeof removal === 'function' ? removal : await removal.review();
-    const cost = removalCost(current.current, removes, threshold);
+    const cost = removalCost(plan, removes, threshold);
     if (!cost.costly) return true;
     return new Promise<boolean>((resolve) => setAsking({ ...cost, answer: (remove) => { setAsking(undefined); resolve(remove); } }));
-  }, []);
+  }, [read]);
   const title = asking && studioFormat(asking.training
     ? asking.count === 1 ? 'removeTrainingRun' : 'removeTrainingRuns'
     : asking.count === 1 ? 'removeRun' : 'removeRuns', { count: asking.count });

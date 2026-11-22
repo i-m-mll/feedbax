@@ -4,7 +4,7 @@ import { isRefusal } from '@/api/request';
 import { shownError } from '@/api/shownErrors';
 import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
 import {
-  catalogEntries, prepareTrainStart, projectTrainFields, readStudioTrainAuthoring, useAuthoringCatalog,
+  catalogEntries, projectTrainFields, readStudioTrainAuthoring, useAuthoringCatalog,
 } from '@/api/studioAuthoring';
 import { studioName, studioSweptParameterMissing } from '@/components/activity/studioVocabulary';
 import { CatalogPicker } from '@/components/ui/CatalogPicker';
@@ -12,28 +12,23 @@ import { FieldRow } from '@/components/ui/FieldRow';
 import { MenuItem, MenuSubmenu } from '@/components/ui/Menu';
 import { settingsFields } from '@/components/values/SettingsForm';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
-import { Origin, ValueField } from '@/components/values/ValueField';
+import { FieldChange, ValueField } from '@/components/values/ValueField';
 import { pointer } from '@/components/values/adapters/jsonSchema';
 import { fromFieldView, type ProjectedEdit } from '@/components/values/adapters/fieldView';
 import { rawField } from '@/components/values/adapters/raw';
 import type { PlanStepView } from '@/features/pipeline/planView';
 import { selectedRuns, type PipelineSelection } from '@/features/pipeline/selection';
-import {
-  StepReferenceSchema, type StepReference,
-} from '@/generated/studioContracts';
 import type {
   AuthoredFileAddress, FieldResetEdit, JsonValue, StudioAuthoringField, StudioClassField, StudioSavedTrainKey, StudioTrainAuthoringRequest,
   TrainFieldRequest, TrainFieldView,
 } from '@/generated/studioContracts';
 import type { ChangeMark, FieldCommit, FieldKindOffer, FieldModel } from '@/components/values/fieldModel';
+import { baseOf } from './documentPayload';
 import type { ClassProjection } from '@/components/values/adapters/jsonSchema';
-import { modelDocumentId, sameAuthoredFile, type AuthoredProject } from './authoredEdits';
+import { sameAuthoredFile, type AuthoredProject } from './authoredEdits';
 import { ProjectEditConflictError, type ProjectEditController, type ProjectEditValidation } from './projectEditController';
 import { filesRemoval, sweepValueRuns, useRunRemoval } from './runRemoval';
-import { inTrainingDocument } from './trainingDocument';
-import { documentChoice, stepChoice, stepChoiceId, stepGroup } from './referenceChoices';
-import { ReferenceField } from '@/components/values/ReferenceField';
-import type { ElementSelectionStore } from '@/features/projectWindow/elementSelection';
+import { inTrainingDocument, trainFieldDocument } from './trainingDocument';
 
 interface Props {
   readonly editor: ProjectEditController;
@@ -47,9 +42,6 @@ interface Props {
   readonly fieldAxes?: Readonly<Record<string, readonly string[]>>;
   readonly step?: PlanStepView;
   readonly onChooseSweepValue?: (sweepId: string, valueId: string, extend: boolean) => void;
-  /** The project's Train steps, whose checkpoints the step can start from. */
-  readonly trains?: readonly PlanStepView[];
-  readonly picking?: ElementSelectionStore;
   /** The form is the Training view's: it shows the training document's fields. */
   readonly trainingDocument?: boolean;
   /** The training document's users an edit is made for, the step among them; without them, the step alone. */
@@ -170,7 +162,7 @@ function useTrainFields(
 }
 
 /** A field a sweep can start from, or a group of them as the Inspector's form groups them. */
-type SweepTarget =
+export type SweepTarget =
   | { readonly kind: 'field'; readonly label: string; readonly anchor: string }
   | { readonly kind: 'group'; readonly label: string; readonly members: readonly SweepTarget[] };
 
@@ -184,7 +176,7 @@ function sweepTargets(model: FieldModel): SweepTarget[] {
   return offered && model.anchor ? [{ kind: 'field', label: model.label, anchor: model.anchor }] : [];
 }
 
-function SweepTargetItem({ target, onChoose }: { target: SweepTarget; onChoose(anchor: string): void }) {
+export function SweepTargetItem({ target, onChoose }: { target: SweepTarget; onChoose(anchor: string): void }) {
   return target.kind === 'field'
     ? <MenuItem onClick={() => onChoose(target.anchor)}>{target.label}</MenuItem>
     : <MenuSubmenu label={target.label}>
@@ -215,47 +207,6 @@ function choiceField(field: StudioAuthoringField, commit?: (value: JsonValue) =>
   };
 }
 
-/** Where a Train step starts: its Model, or another Train step's last checkpoint. */
-function CheckpointStart({ editor, stepId, step, trains, picking, editable }: {
-  editor: ProjectEditController; stepId: string; step?: PlanStepView; trains: readonly PlanStepView[];
-  picking?: ElementSelectionStore; editable: boolean;
-}) {
-  const { saved } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
-  const confirmRemoval = useRunRemoval();
-  const labelId = useId();
-  const [reason, setReason] = useState<string>();
-  const authored = saved.project.steps?.[stepId];
-  const model = modelDocumentId(step?.documentIds);
-  if (!authored || !model) return null;
-  const source = StepReferenceSchema.safeParse(authored.inputs?.checkpoint);
-  const sources = trains.filter(({ id }) => id !== stepId);
-  const current = source.success ? sources.find(({ id }) => id === source.data.step) : undefined;
-  const name = studioName('start');
-  function start(next: StepReference | null) {
-    return editor.command(async ({ project_id: projectId, revision }) => {
-      const { files } = await prepareTrainStart(projectId, stepId, { revision, source: next }, editor.signal);
-      if (!files.length || !await confirmRemoval(filesRemoval(projectId, revision, files, editor.signal))) return;
-      const based = 'step' in authored!.base ? [authored!.base.step] : [];
-      editor.editFiles(name, files, {
-        reviewedRevision: revision,
-        dependencies: [...new Set([...based, ...next ? [next.step] : []])].map((id) => ({ kind: 'step' as const, id })),
-      });
-      await editor.flush();
-    });
-  }
-  return <FieldRow label={name} labelId={labelId} below={reason && <p role="alert">{reason}</p>}>
-    <ReferenceField label={name} aria-labelledby={labelId} picking={picking}
-      groups={[{ label: studioName('documents'), choices: [documentChoice('model', model)] }, stepGroup(sources)]}
-      value={source.success ? current ? stepChoice(current) : { id: stepChoiceId(source.data.step), label: source.data.step }
-        : documentChoice('model', model)}
-      onChoose={editable ? (choice) => {
-        const train = sources.find(({ id }) => stepChoiceId(id) === choice.id);
-        setReason(undefined);
-        start(train ? { step: train.id, checkpoint: 'last' } : null).catch((error: unknown) => setReason(shownError(error)));
-      } : undefined} />
-  </FieldRow>;
-}
-
 /**
  * A Train step's form for the runs `props` selects: its definition, and its fields in the order and nesting the
  * Inspector draws them, each with its anchor. The Add Sweep menu reads the same fields for the whole step.
@@ -264,9 +215,14 @@ function useTrainForm(props: Props) {
   const { editor, stepId, onChooseSweepValue } = props;
   const selection = props.selection ?? { kind: 'steps', stepIds: [stepId] };
   const { saved, outside } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
+  /** The changed mark of the field at `id`, a pointer in the definition: the base of the document it is read from. */
+  const changeMark = (id: string, reset?: () => Promise<string | undefined>): ChangeMark | undefined => {
+    const base = baseOf(saved.project.documents, trainFieldDocument(saved.project.steps?.[stepId], id));
+    return base === undefined ? undefined : { from: { kind: 'base', document: base }, reset };
+  };
   const { project_id: projectId, revision } = saved;
   const methodLabel = useId();
-  const methodOrigin = useId();
+  const methodChangeId = useId();
   const [methodReason, setMethodReason] = useState<string>();
   const scope = runSelection(props.run, props.fieldRows, props.fieldAxes, props.chosen, props.step);
   const shows = (id: string) => !props.trainingDocument || inTrainingDocument(id);
@@ -325,9 +281,7 @@ function useTrainForm(props: Props) {
   const fieldModel = (field: TrainFieldView): FieldModel => ({ ...fromFieldView(field, {
     id: JSON.stringify([projectId, stepId, props.fieldRows, field.id]),
     commit: numeric.edit && ((edit) => numeric.edit!(field.id, edit)),
-    changed: field.changed ? {
-      text: studioName('changed'), reset: numeric.edit && (() => numeric.edit!(field.id, { kind: 'reset' })),
-    } : undefined,
+    changed: field.changed ? changeMark(field.id, numeric.edit && (() => numeric.edit!(field.id, { kind: 'reset' }))) : undefined,
     rowSelection: !!props.fieldRows?.length,
     selectedMembers: members(field.sweep?.id),
     chooseMember: field.sweep && onChooseSweepValue
@@ -348,9 +302,8 @@ function useTrainForm(props: Props) {
   const isMixed = (at: string) => mixed.some((differs) => at === differs || at.startsWith(differs + '/'));
   const classFields = new Map((shown?.classes ?? []).map((field) => [field.id, field]));
   /** The changed mark of the value at `id`, a pointer in the definition, when a difference of its document sets it. */
-  const changedAt = (id: string): ChangeMark | undefined => shown?.changed?.includes(id) ? {
-    text: studioName('changed'), reset: editable ? () => apply({ reset: id }, studioName('reset')) : undefined,
-  } : undefined;
+  const changedAt = (id: string): ChangeMark | undefined => shown?.changed?.includes(id)
+    ? changeMark(id, editable ? () => apply({ reset: id }, studioName('reset')) : undefined) : undefined;
   const methodChange = changedAt('/method');
   const rowSelection = !!scope.rows?.length;
   /** A class field's kind, members and edits. Its sweep is changed only with the whole step selected. */
@@ -404,7 +357,7 @@ function useTrainForm(props: Props) {
     }) : [],
   ];
   return {
-    shown, refusal, editable, methodField, methods, methodChange, methodReason, setMethodReason, methodLabel, methodOrigin,
+    shown, refusal, editable, methodField, methods, methodChange, methodReason, setMethodReason, methodLabel, methodChangeId,
     isMixed, apply, fields, definition, numeric, catalog,
   };
 }
@@ -412,7 +365,7 @@ function useTrainForm(props: Props) {
 export function StudioTrainAuthoringForm(props: Props) {
   const { editor, stepId } = props;
   const {
-    shown, refusal, editable, methodField, methods, methodChange, methodReason, setMethodReason, methodLabel, methodOrigin,
+    shown, refusal, editable, methodField, methods, methodChange, methodReason, setMethodReason, methodLabel, methodChangeId,
     isMixed, apply, fields, definition, numeric, catalog,
   } = useTrainForm(props);
   if (refusal !== undefined) return null;
@@ -424,15 +377,11 @@ export function StudioTrainAuthoringForm(props: Props) {
         void catalog.refetch();
       })}>
       <section aria-label={studioName('definition')} className="grid gap-1">
-        {props.trains && !props.trainingDocument && <CheckpointStart editor={editor} stepId={stepId} step={props.step} trains={props.trains}
-          picking={props.picking} editable={editable} />}
         {methodField && <div data-field={methodField.id} className="contents"><FieldRow label={methodField.label} labelId={methodLabel}
-          below={(methodChange || methodReason) && <>
-            {methodChange && <Origin id={methodOrigin} text={methodChange.text}
-              reset={methodChange.reset && (() => { void methodChange.reset!().then(setMethodReason); })} />}
-            {methodReason && <p role="alert">{methodReason}</p>}
-          </>}>
-          <CatalogPicker aria-labelledby={methodLabel} aria-describedby={methodChange ? methodOrigin : undefined} className="w-full" entries={methods}
+          below={methodReason && <p role="alert">{methodReason}</p>}>
+          <CatalogPicker aria-labelledby={methodLabel} aria-describedby={methodChange ? methodChangeId : undefined} className="w-full" entries={methods}
+            trailing={methodChange && <FieldChange change={methodChange} id={methodChangeId}
+              onReset={() => { void methodChange!.reset!().then(setMethodReason); }} />}
             value={typeof methodField.value === 'string' && !isMixed('/method') ? methodField.value : null}
             placeholder={isMixed('/method') ? studioName('mixed') : undefined}
             disabled={!editable || !methodField.control}

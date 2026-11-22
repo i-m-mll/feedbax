@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import replace
 from hashlib import sha256
-import json
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -14,6 +13,7 @@ from feedbax.contracts.artifact_custody import ContentRetentionTarget, ContentRo
 from feedbax.contracts.live_evaluate import (
     LIVE_EVALUATE_POINT, FailedEvaluationPoint, LiveEvaluationPoint, ScoredEvaluationPoint, live_point_root_id,
 )
+from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import publish_dataset
@@ -43,7 +43,7 @@ def live_evaluation_callback(
     raw = Path(sidecar).read_bytes()
     if sha256(raw).hexdigest() != os.environ.get("FEEDBAX_HOST_LIVE_EVALUATE_SHA256"):
         raise ValueError("Live Evaluate assignment changed after delivery.")
-    assignment = json.loads(raw)
+    assignment = strict_json_loads(raw)
     request = BoundEvaluationJobInput.model_validate(assignment["launch"])
     store = ImmutableArtifactBlobProvider(launch.manifest_root)
     _, params, subject = decode_rollout_request(

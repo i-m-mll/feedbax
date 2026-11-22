@@ -500,7 +500,7 @@ class ModelEditDraft:
         wire = graph["wires"][element.id]
         graph_address = _address(address.composites, "graph")
         self.add_component(edits.AddComponent(
-            op="add_component", graph=graph_address, component=command.component, position=command.position,
+            op="add_component", graph=graph_address, component=command.component, position=command.position, id=command.id,
         ))
         created = self.changed[-1]
         assert created.element.kind == "component"
@@ -574,7 +574,10 @@ class ModelEditDraft:
         component = command.component.model_dump(mode="json")
         if not self.accepts_component(component, graph["physical_domain"]):
             raise _Refusal(command.graph, "the destination graph cannot hold this component")
-        key = _id(graph)
+        key = command.id or _id(graph)
+        for kind, members in (("component", "components"), ("wire", "wires"), ("physical_connection", "connections")):
+            if key in graph.get(members, {}):
+                raise _Refusal(_address(command.graph.composites, kind, id=key), "This id is already used in the graph")
         graph["components"][key] = component
         address = _address(command.graph.composites, "component", id=key)
         self.positions[address.to_text()] = command.position

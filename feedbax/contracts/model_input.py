@@ -14,7 +14,7 @@ from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocu
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument
 from feedbax.contracts.project_inputs import DocumentInputReference, InitialModelReference, ObjectiveDocumentReference
 from feedbax.contracts.request_refs import ContentRef, ReferenceValue
-from feedbax.contracts.strict_json import strict_json_loads
+from feedbax.contracts.strict_json import strict_json_loads, strict_model_validate_json, strict_validate_json
 from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, TaskDocument
 
 if TYPE_CHECKING:
@@ -123,9 +123,9 @@ def decode_document_input(content: ContentRef, raw: bytes) -> DocumentInput:
     if content.media_type == INITIAL_MODEL_MEDIA_TYPE:
         value = InitialModelSource.decode(raw)
     elif content.media_type == TASK_INPUT_MEDIA_TYPE:
-        value = _TASK_INPUT.validate_json(raw)
+        value = strict_validate_json(_TASK_INPUT, raw)
     else:
-        value = ObjectiveDocument.model_validate_json(raw)
+        value = strict_model_validate_json(ObjectiveDocument, raw)
     if encode_document_input(value)[0] != content:
         raise ValueError("Document input does not match its canonical content reference")
     return value

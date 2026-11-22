@@ -75,7 +75,7 @@ test('a based document marks the value it changes, and Reset of its only one giv
   await expect(picker).toHaveText('point-mass-2');
   // The view stays on the element it showed when the header changed document.
   await expect(mass).toHaveValue('2.5');
-  await expect(mass).toHaveAccessibleDescription('Changed');
+  await expect(mass).toHaveAccessibleDescription('Changed from point-mass');
   expect((await requests()).train).not.toBe(initial.train);
 
   await page.getByRole('complementary', { name: 'Inspector', exact: true }).getByRole('button', { name: 'Changed', exact: true }).click();
@@ -218,7 +218,7 @@ test('a based Objective document marks the term value it changes, and Reset give
   await expect(picker).toHaveText('simple-reaches-objective-2');
   await name.click();
   await expect(inspected).toHaveValue('Effort');
-  await expect(inspected).toHaveAccessibleDescription('Changed');
+  await expect(inspected).toHaveAccessibleDescription('Changed from simple-reaches-objective');
   await expect(inspector.getByRole('combobox', { name: 'Reduction', exact: true })).not.toHaveAccessibleDescription(/Changed/);
   await inspector.getByRole('button', { name: 'Changed', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Reset', exact: true }).click();
@@ -265,7 +265,7 @@ test('an attachment a based Model document adds is marked as authored there, and
   await expect(delay(true)).toBeVisible();
 });
 
-test('a based Training document marks the value it changes, and Reset gives it the base\'s', async ({ page, request }) => {
+test('a based Training document marks the value it changes inside its field, and Reset on the mark gives it the base\'s', async ({ page, request }) => {
   test.setTimeout(60_000);
   const { snapshot: seeded, saved, requests, documents } = await project(request);
   const keys = ['method', 'settings', 'training_config'] as const;
@@ -282,6 +282,8 @@ test('a based Training document marks the value it changes, and Reset gives it t
   const primary = page.locator('[data-slot="primary"]').getByRole('tabpanel');
   const picker = primary.locator('.studio-window-slot__header').getByRole('button', { name: /^Training Document / });
   const batches = primary.getByRole('textbox', { name: 'Batches', exact: true });
+  const field = (name: string) => primary.getByRole('region', { name: `${name} field`, exact: true });
+  const height = async (name: string) => (await field(name).boundingBox())!.height;
 
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await mapStep(page, 'train').click();
@@ -295,8 +297,15 @@ test('a based Training document marks the value it changes, and Reset gives it t
   await batches.press('Enter');
   await expect(picker).toHaveText('training-2');
   await expect.poll(async () => (await saved()).revision).not.toBe(revision);
-  await expect(batches).toHaveAccessibleDescription('Changed');
-  await primary.getByRole('button', { name: 'Changed', exact: true }).click();
+  await expect(batches).toHaveAccessibleDescription('Changed from training');
+  // The mark is inside the field's box: the changed field is as tall as an unchanged one and draws no line under it.
+  const mark = field('Batches').getByRole('button', { name: 'Changed', exact: true });
+  const box = (await batches.locator('xpath=..').boundingBox())!;
+  const marked = (await mark.boundingBox())!;
+  expect(marked.y).toBeGreaterThanOrEqual(box.y);
+  expect(marked.y + marked.height).toBeLessThanOrEqual(box.y + box.height);
+  expect(await height('Batches')).toBe(await height('Batch Size'));
+  await mark.click();
   await page.getByRole('menuitem', { name: 'Reset', exact: true }).click();
   await expect(batches).toHaveValue(base);
   await expect(batches).not.toHaveAccessibleDescription(/Changed/);
@@ -361,7 +370,7 @@ test('an Evaluate step\'s Task edit marks the value its document changes, and Re
   await expect(target).toHaveAccessibleDescription('Changed by check');
   const created = Object.keys(await documents()).filter((name) => !before.includes(name));
   expect(created).toHaveLength(1);
-  await task.getByRole('button', { name: 'Changed by check', exact: true }).click();
+  await task.getByRole('button', { name: 'Changed', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Reset', exact: true }).click();
   await expect(target).toHaveValue(base);
   await expect(target).not.toHaveAccessibleDescription('Changed by check');

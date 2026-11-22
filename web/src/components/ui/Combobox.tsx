@@ -20,17 +20,20 @@ export type ComboboxProps<Value extends string> = ComboboxSelection<Value> & {
   invalid?: boolean;
   'aria-label'?: string;
   'aria-labelledby'?: string;
+  'aria-describedby'?: string;
   id?: string;
   /** Drawn without a frame and as wide as the chosen item, inside another field's box. */
   inline?: boolean;
   className?: string;
   /** A glyph at the box's start: the field's kind mark. */
   leading?: ReactNode;
+  /** A control at the box's trailing end, before the list's glyph: the changed mark. */
+  trailing?: ReactNode;
   inputRef?: Ref<HTMLInputElement>;
 };
 
 export function Combobox<Value extends string>(props: ComboboxProps<Value>) {
-  const { items, placeholder, disabled, invalid, id, inline, className, leading, inputRef } = props;
+  const { items, placeholder, disabled, invalid, id, inline, className, leading, trailing, inputRef } = props;
   const aria = { 'aria-label': props['aria-label'], 'aria-labelledby': props['aria-labelledby'] };
   const value = props.checked ? null : props.value;
   const selected = useMemo(() => items.find((item) => item.value === value) ?? null, [items, value]);
@@ -56,7 +59,8 @@ export function Combobox<Value extends string>(props: ComboboxProps<Value>) {
         <BaseCombobox.Input ref={inputRef} id={id} placeholder={shown} aria-invalid={invalid || undefined}
           size={inline ? Math.max(1, (selected?.label ?? shown ?? '').length) : undefined}
           className={clsx(fieldInput, 'text-ellipsis', inline && 'pr-0', leading && 'pl-1',
-            props.checked && 'placeholder:text-shell-foreground')} {...aria} />
+            props.checked && 'placeholder:text-shell-foreground')} aria-describedby={props['aria-describedby']} {...aria} />
+        {trailing ? <span className="flex shrink-0" onMouseDown={(event) => event.stopPropagation()}>{trailing}</span> : null}
         <BaseCombobox.Trigger tabIndex={-1} {...aria}
           className={clsx('flex h-full w-control shrink-0 items-center justify-center text-shell-muted outline-none', glyph)}>
           <ChevronDown />
