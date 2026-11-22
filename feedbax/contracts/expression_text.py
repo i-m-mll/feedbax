@@ -35,6 +35,7 @@ from feedbax.contracts.expression_values import (
     scope_problems,
 )
 from feedbax.contracts.expression_registry import POINT_INTERPOLATIONS, FunctionClass, FunctionRegistry
+from feedbax.contracts.strict_json import strict_json_loads
 
 
 _GRAMMAR = r"""
@@ -231,7 +232,7 @@ class _Reader:
                 return LiteralValue(value=node.data == "true")
             case "name" | "quoted_name":
                 spelling = str(node.children[0])
-                name = json.loads(spelling) if node.data == "quoted_name" else spelling
+                name = strict_json_loads(spelling) if node.data == "quoted_name" else spelling
                 if self.names is None:
                     return NameValue(reference=name)
                 if name not in self.names:
@@ -431,7 +432,7 @@ def _rule_terms(reader: _Reader, node: Tree) -> list[RuleTerm]:
                 _fail(count, ProblemCode.TYPE_MISMATCH, "Count must be a positive integer.", ())
             return [RuleBest(
                 "min" if order.type == "LOWEST" else "max", int(count),
-                json.loads(metric) if metric.type == "ESCAPED_STRING" else str(metric), tuple(map(str, per)), span,
+                strict_json_loads(metric) if metric.type == "ESCAPED_STRING" else str(metric), tuple(map(str, per)), span,
             )]
         case "condition_term":
             (expression,) = node.children
