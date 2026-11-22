@@ -14,6 +14,8 @@ export interface SelectionRow {
   readonly detail?: ReactNode;
   /** Why the plan refuses this selection. */
   readonly problem?: string;
+  /** The mark of a selection none of whose runs can run, beside its field. */
+  readonly mark?: ReactNode;
 }
 
 export type SelectionGesture =
@@ -48,6 +50,7 @@ export function InputSelections({ label, labelId, groups, rows, picking, refusal
           <ReferenceField className="flex-1" label={label} aria-labelledby={labelId} picking={picking}
             groups={row.groups ?? groups} value={row.value}
             onChoose={onChange && ((choice) => onChange({ kind: 'replace', index, choice }))} />
+          {row.mark}
           {onChange && rows.length > 1 && <IconButton size="mark"
             label={studioAccessibleName('remove', row.value?.label)} icon={<X aria-hidden="true" />}
             onClick={() => onChange({ kind: 'remove', index })} />}
