@@ -283,16 +283,11 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
     def evaluate(rule, source="train"):
         return baseline | {"inputs": {"subject": {"step": source, "checkpoint": rule}}}
 
+    # Last demands no checkpoint, so the Train launches with no catalogue.
     steps = {
         "train": _train(definition["steps"]["train"], 6),
         "short": _train(definition["steps"]["train"], 4),
         "last": evaluate("last"),
-        "exact": evaluate({"at": 3}),
-        "past": evaluate({"at": 1}),
-        "future": evaluate({"at": 4}),
-        # Within the run's 4 batches, so the plan accepts it, but not a scheduled checkpoint (every 2 batches).
-        "missing": evaluate({"at": 3}, source="short"),
-        "zero": evaluate({"at": 0}),
     }
 
     def save():
@@ -319,17 +314,18 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
         row = job_row(host, item.job_id, "queued")
         assert row["delivery"] == 0 and not row["edges"][0]["satisfied"]
 
-    subject = by_step["exact"].inputs["subject"].member.reference
-    assert subject.select == BatchMember(batch=3)
-    assert subject.request_id == by_step["train"].request_id
-    (held,) = launch("held", "exact", service=JobService(host, registries))
+    (held,) = launch("held", "last", service=JobService(host, registries))
     assert held.disposition == "rejected" and "/inputs/subject" in held.reason
-    (zero,) = launch("zero", "zero")
-    assert zero.disposition == "rejected" and "/inputs/subject/checkpoint" in zero.reason
 
     host.policy(compute=1)
     install_finite_gate(jobs, tmp_path, stop_at=3, resume_at=4)
     (producer,) = launch("producer", "train")
+    # Authored after the Train's admission, so its catalogue holds none of them; 1 and 3 are off its cadence.
+    steps |= {"exact": evaluate({"at": 3}), "past": evaluate({"at": 1}), "future": evaluate({"at": 4})}
+    plan, by_step = save()
+    subject = by_step["exact"].inputs["subject"].member.reference
+    assert subject.select == BatchMember(batch=3)
+    assert subject.request_id == by_step["train"].request_id
     last, exact = launch("consumers", "last", "exact")
     assert {last.disposition, exact.disposition} == {"admitted"}
     wait_until(lambda: (tmp_path / "before-stop").exists())
@@ -405,9 +401,12 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
     trial = settled.evaluations[by_step["exact"].key].trials[0]
     assert result.replay_trial(trial, anchor_id="effector").identity.stable_id == trial
 
-    # Outside the finite gate, which would hold this Train at batch 3 too.
+    # A Train that finished without update 3: it ran outside the finite gate, which would hold it at 3, before
+    # anything read it, so 3 was neither demanded nor on its cadence of 2.
     (short,) = launch("short", "short", service=JobService(host, registries))
     terminal(short.job_id, "succeeded")
+    steps["missing"] = evaluate({"at": 3}, source="short")
+    plan, by_step = save()
     (missing,) = launch("missing", "missing")
     unavailable = terminal(missing.job_id, "blocked")
     assert unavailable["delivery"] == 0 and not unavailable["edges"][0]["satisfied"]

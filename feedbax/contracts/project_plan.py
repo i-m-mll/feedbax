@@ -773,16 +773,16 @@ def _checkpoint(rule: CheckpointRule | None, *, horizon: int | None = None) -> P
             return BarrierMember(name=name)
 
 
-def _batch_past_end(rule: CheckpointRule | None, total: int) -> int | None:
-    """The first batch an At or List rule selects past a run of ``total`` batches."""
+def _update_outside_run(rule: CheckpointRule | None, origin: int, total: int) -> int | None:
+    """The first update an At or List rule selects outside a run from ``origin`` to ``total`` completed updates."""
     match rule:
         case BatchCheckpoint(at=batch):
-            batches: tuple[int, ...] = (batch,)
+            updates: tuple[int, ...] = (batch,)
         case CheckpointBatches(batches=listed):
-            batches = tuple(listed)
+            updates = tuple(listed)
         case _:
             return None
-    return next((batch for batch in batches if batch > total), None)
+    return next((update for update in updates if not origin < update <= total), None)
 
 
 def _selection_path(authored: object, role: str, selection: StepReference | None) -> str:
@@ -2816,15 +2816,15 @@ class _Compiler:
                     ))
                     continue
                 facts = self.rows[chosen.producer].train if chosen.producer is not None else None
-                if facts is not None and facts.target_total is not None and (
-                    past := _batch_past_end(rule, facts.target_total)
+                if facts is not None and facts.origin is not None and facts.target_total is not None and (
+                    outside := _update_outside_run(rule, facts.origin, facts.target_total)
                 ) is not None:
                     assert chosen.producer is not None
                     self.diagnostics.append(ProjectDiagnostic(
                         ResolutionCode.BAD_REFERENCE,
                         f"{_selection_path(subject, 'subject', chosen.selection)}.checkpoint",
-                        f"Batch {past} is past the end of {chosen.producer.step!r}, "
-                        f"which runs {facts.target_total} batches.",
+                        f"Update {outside} is outside {chosen.producer.step!r}, "
+                        f"which runs updates {facts.origin + 1} to {facts.target_total}.",
                         name, row=row.id, variant=variant,
                     ))
                     continue
