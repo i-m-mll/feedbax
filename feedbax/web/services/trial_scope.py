@@ -71,6 +71,11 @@ def selection_scope(project, plan, key, rows=(), axes=None) -> RunScope:
         return StepRuns(kind="step")
     if key.variant != plan.variants[0]:
         raise ProjectFolderInvalid("A selection of runs is stored in the primary variant only.")
+    return runs_scope(project, plan, key, rows, axes)
+
+
+def runs_scope(project, plan, key, rows, axes) -> RunScope:
+    """What ``rows`` of ``key``'s step and variant are: one named value, values per sweep, or listed rows."""
     available = {row.key.row: row for row in plan.rows if (row.key.variant, row.key.step) == (key.variant, key.step)}
     if not set(rows) <= available.keys() or len(set(rows)) != len(rows):
         raise ProjectFolderInvalid("The selected rows no longer belong to this step.")

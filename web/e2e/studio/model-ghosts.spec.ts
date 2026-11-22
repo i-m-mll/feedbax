@@ -1,22 +1,10 @@
 import { expect, test } from './fixtures/studio';
 import type { Locator, Page } from '@playwright/test';
 import type { StudioProjectSnapshot } from '../../src/generated/studioContracts';
-import { chooseSweepValue, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { chooseSweepValue, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
+import { pick } from './fixtures/controls';
 
 test.use({ viewport: { width: 1440, height: 900 } });
-
-type File = { kind: string; id: string; document?: unknown; step?: { sweep?: unknown } };
-
-/** The ordinary Train step, swept over a set whose `drop` entry removes the Point mass and the wire that drives it. */
-async function files() {
-  const ordinary = await fixture('ordinary-files', '2') as File[];
-  const set: File = { kind: 'document', id: 'arms', document: { schema: 'feedbax.set_document.v1', payload: { entries: {
-    keep: {},
-    drop: { differences: { '/interior/components/plant': { op: 'remove' }, '/interior/wires/drive': { op: 'remove' } } },
-  } } } };
-  return [...ordinary.filter(({ kind }) => kind === 'document'), set,
-    ...ordinary.filter(({ kind }) => kind === 'step').map((file) => ({ ...file, step: { ...file.step, sweep: { axes: { arm: { set: 'arms' } } } } }))];
-}
 
 async function boxes(model: Locator, ids: readonly string[]) {
   return Object.fromEntries(await Promise.all(ids.map(async (id) => {
@@ -29,8 +17,9 @@ async function boxes(model: Locator, ids: readonly string[]) {
  * A set entry that removes a component draws it where it was, dashed with the D mark, while the entry is selected;
  * nothing else moves, and Reset on the mark gives the entry the component back.
  */
-test('a component a selected set entry removes is drawn in place as a ghost, and Reset restores it', async ({ page, request }) => {
-  const { snapshot, projectPath } = await seedManagedProject(request, await files());
+test('a component a selected set entry removes is drawn in place as a ghost, and Reset restores it', async ({ page, request, studio }) => {
+  const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.model_ghosts', 'seed', studio.home, 'ghosts')) as string;
+  const projectPath = `/api/projects/${project}`;
   const card = page.locator('[data-map-step="train"]');
   const model = page.locator('[data-slot="primary"]').getByRole('tabpanel', { name: 'Model', exact: true });
   const plant = model.locator('.react-flow__node[data-id="plant"]');
@@ -40,7 +29,7 @@ test('a component a selected set entry removes is drawn in place as a ghost, and
   const placed = ['@inputs', 'cell', 'readout', 'plant', '@outputs'];
 
   async function open(page: Page) {
-    await page.goto(`/?project=${snapshot.project_id}`);
+    await page.goto(`/?project=${project}`);
     await mapStep(page, 'train').click();
     await page.keyboard.press('Meta+2');
   }
@@ -76,4 +65,19 @@ test('a component a selected set entry removes is drawn in place as a ghost, and
   const stored = await (await request.get(projectPath)).json() as StudioProjectSnapshot;
   const entries = (stored.project.documents!.arms as unknown as { payload: { entries: Record<string, { differences?: object }> } }).payload.entries;
   expect(entries.drop.differences ?? {}).toEqual({});
+});
+
+/** Outside the primary variant the Model read with the selected entry is not refused, and its removal is drawn the same way. */
+test('a set entry selected in another variant draws its removal as a ghost', async ({ page, studio }) => {
+  const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.model_ghosts', 'seed', studio.home, 'ghosts-variant')) as string;
+  const model = page.locator('[data-slot="primary"]').getByRole('tabpanel', { name: 'Model', exact: true });
+  const plant = model.locator('.react-flow__node[data-id="plant"]');
+  await page.goto(`/?project=${project}`);
+  await pick(page.getByRole('combobox', { name: 'Variant', exact: true }), 'control');
+  await mapStep(page, 'train').click();
+  await page.keyboard.press('Meta+2');
+  await expect(plant).toBeVisible();
+  await chooseSweepValue(page.locator('[data-map-step="train"]'), 'arms', 'drop');
+  await expect(plant.locator('[data-ghost="true"]')).toHaveCount(1);
+  await expect(plant.getByRole('img', { name: 'Removed', exact: true })).toBeVisible();
 });
