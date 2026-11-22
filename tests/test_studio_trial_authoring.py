@@ -570,6 +570,10 @@ def test_an_evaluate_task_choice_in_a_variant_is_its_row_s_task_reference(tmp_pa
     prior = {run.key: run.request_id for run in before.plan.runs}
     changed = {run.key for run in after.plan.runs if prior[run.key] != run.request_id}
     assert changed == {RunKey("treated", "baseline", "default")}
+    assert sorted(
+        (problem.variant, problem.blocked_by.variant) for problem in after.plan.diagnostics
+        if problem.step == "baseline" and problem.code == "blocked_input"
+    ) == [("control", "control"), ("treated", "treated")]
 
 
 @pytest.mark.parametrize("variant", ["default", "treated"])
