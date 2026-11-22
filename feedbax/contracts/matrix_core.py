@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from copy import copy, deepcopy
 import json
 import math
@@ -730,11 +730,27 @@ def ensure_value_collection(
         raise ValueError(f"collection at {path!r} has the wrong kind")
 
 
-def member_ids(items: Sequence[Any]) -> tuple[str, ...] | None:
-    """The ids of a list whose members each carry one, or ``None`` for a list addressed by index."""
+class MirrorList(list[Any]):
+    """A list that mirrors another one member for member, and names its members by that list's ids."""
+
+    def __init__(self, children: Iterable[Any], mirrored: Sequence[Any]):
+        super().__init__(children)
+        self.ids = _carried_ids(mirrored)
+
+
+def _carried_ids(items: Sequence[Any]) -> tuple[str, ...] | None:
+    if isinstance(items, MirrorList):
+        return items.ids
     if not items or not all(isinstance(item, dict) and isinstance(item.get("id"), str) for item in items):
         return None
-    ids = tuple(item["id"] for item in items)
+    return tuple(item["id"] for item in items)
+
+
+def member_ids(items: Sequence[Any]) -> tuple[str, ...] | None:
+    """The ids of a list whose members each carry one, or ``None`` for a list addressed by index."""
+    ids = _carried_ids(items)
+    if ids is None:
+        return None
     if len(set(ids)) != len(ids):
         repeated = sorted({member for member in ids if ids.count(member) > 1})
         raise ValueError(f"list members share an id: {', '.join(repeated)}")

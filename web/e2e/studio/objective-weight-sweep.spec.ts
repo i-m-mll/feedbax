@@ -35,7 +35,7 @@ test("a Weight cell's sweep is an axis on the Train step, listed in the Inspecto
   await expect(sweepLabel(card, 'speed-weight')).toHaveAccessibleName('Sweep speed-weight 3');
   await expect(card.locator('[data-status-mark="not_run"]')).toHaveCount(3);
   expect((await train()).sweep?.axes?.['speed-weight']).toMatchObject({ values: {
-    value: { patches: { 'trial_documents.objective.terms.speed.weight.value': { value: 0.1 } } },
+    'value-1': { patches: { 'trial_documents.objective.terms.speed.weight.value': { value: 0.1 } } },
   } });
 
   await weight(1).click();

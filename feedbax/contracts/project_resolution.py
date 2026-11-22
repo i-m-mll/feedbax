@@ -594,6 +594,7 @@ class _Documents:
                     self.inline_sources(item, source_at(shape, (str(i),)), f"{path}.{i}", active)
                     for i, item in enumerate(value)
                 ),
+                value,
             )
         return shape
 
@@ -1062,7 +1063,7 @@ class _Resolver:
                         sources.append(source_shape(patch.model_dump(mode="json"), *self.row_source(author, row, path)))
                     origins = patch_source(origins, OverridePatch(
                         path=f"{MODEL_ATTACHMENTS}.{batch}", op="add", value=records,
-                    ), SourceList(None, iter(sources)))
+                    ), SourceList(None, iter(sources), records))
                 payload = payload | {MODEL_ATTACHMENTS: batches | {batch: records}}
         except ValueError as error:
             raise _Problem(

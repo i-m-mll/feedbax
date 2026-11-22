@@ -214,7 +214,8 @@ type TermField = 'name' | 'enabled' | 'measure' | 'window' | 'weight' | 'reducti
 const columns = ['name', 'measure', 'window', 'weight', 'enabled'] as const satisfies readonly TermField[];
 const columnNames = { name: 'term', enabled: 'enabled', measure: 'measure', window: 'window', weight: 'weight' } as const;
 
-function termFields(view: TrialView, term: ObjectiveTerm, index: number, commit?: Commit): Record<TermField, FieldModel> {
+/** `runs` says the view is of runs the user selected, whose swept values are marked as differing from the step's. */
+function termFields(view: TrialView, term: ObjectiveTerm, index: number, commit?: Commit, runs = false): Record<TermField, FieldModel> {
   const path = '/terms/' + index;
   const changed = (field: keyof ObjectiveTerm) => changedAt(view, 'objective', path + '/' + field, commit);
   const set = (field: keyof ObjectiveTerm, name: string) => commit && ((value: JsonValue) => commit(
@@ -225,7 +226,7 @@ function termFields(view: TrialView, term: ObjectiveTerm, index: number, commit?
     if (!projection) throw new Error(`The Objective's ${field} of term ${term.id} has no field`);
     const value = term[field];
     const kind = value?.kind === 'name' ? 'link' : value?.kind === 'call' ? 'formula' : value?.kind === 'draw' ? 'draw' : 'value';
-    return fromFieldView({ ...projection, label }, {
+    return fromFieldView({ ...projection, label, effective: runs ? projection.effective : null }, {
       id: term.id + field, kind, changed: changed(field),
       commit: commit && ((edit) => commit('Set ' + label, { kind: 'expression', term: term.id, field, edit })),
     });
@@ -302,8 +303,8 @@ export function TrialObjectiveAdd({ view, commit, select }: {
   </>;
 }
 
-export function TrialObjectiveTable({ view, commit, selected, select }: {
-  view: TrialView; commit?: Commit; selected?: TermSelection; select(term: string, field?: string): void;
+export function TrialObjectiveTable({ view, commit, selected, select, runs }: {
+  view: TrialView; commit?: Commit; selected?: TermSelection; select(term: string, field?: string): void; runs?: boolean;
 }) {
   const terms = view.objective?.terms ?? [];
   return <ScrollFade axis="both" className="h-full min-h-0 [--fade-inset-top:var(--row-height)]">
@@ -314,7 +315,7 @@ export function TrialObjectiveTable({ view, commit, selected, select }: {
         </TableHeaderCell>)}
       </tr></thead>
       <tbody>{terms.map((term, index) => {
-        const fields = termFields(view, term, index, commit);
+        const fields = termFields(view, term, index, commit, runs);
         return <tr key={term.id} className="align-top">
           {columns.map((field) => {
             const chosenCell = selected?.term === term.id && selected.field === field;
@@ -370,13 +371,13 @@ export function TrialObjectiveOutline({ sections, view, commit, selected, select
   </Drawer>;
 }
 
-export function TrialObjectiveInspector({ view, commit, selected }: {
-  view: TrialView; commit?: Commit; selected?: TermSelection;
+export function TrialObjectiveInspector({ view, commit, selected, runs }: {
+  view: TrialView; commit?: Commit; selected?: TermSelection; runs?: boolean;
 }) {
   const index = view.objective?.terms?.findIndex(({ id }) => id === selected?.term) ?? -1;
   const term = view.objective?.terms?.[index];
   if (!term) return null;
-  const fields = termFields(view, term, index, commit);
+  const fields = termFields(view, term, index, commit, runs);
   const first = (Object.keys(fields) as TermField[]).find((field) => field === selected?.field);
   const order = [...first ? [first] : [], ...(Object.keys(fields) as TermField[]).filter((field) => field !== first)];
   return <Inspector name={term.name ?? studioAccessibleName('term', index + 1)} type={term.name ? studioName('term') : undefined}>
