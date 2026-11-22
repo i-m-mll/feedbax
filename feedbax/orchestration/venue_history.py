@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from uuid import UUID
 
+from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.host.protocol import Event, JobsSnapshot
 from feedbax.orchestration.session import SessionDriver, SessionError
 
@@ -30,7 +31,7 @@ class VenueHistory:
             row = db.execute(
                 "SELECT stream, cursor, snapshot FROM session_observations WHERE session=?", (str(session),)
             ).fetchone()
-        return (row[0], row[1], json.loads(row[2])) if row is not None else None
+        return (row[0], row[1], strict_json_loads(row[2])) if row is not None else None
 
     def cursors(self) -> dict[UUID, tuple[str, int]]:
         with self.driver.connection() as db:
@@ -90,7 +91,7 @@ class VenueHistory:
                 if len(events) == 256 or events and size > remaining:
                     return events[-1]["cursor"], tuple(events)
                 remaining -= size
-                events.append(json.loads(content))
+                events.append(strict_json_loads(content))
             return through, tuple(events)
 
     def record(
@@ -104,7 +105,7 @@ class VenueHistory:
             current = db.execute(
                 "SELECT stream, cursor, snapshot FROM session_observations WHERE session=?", (session,)
             ).fetchone()
-            current = (current[0], current[1], json.loads(current[2])) if current is not None else None
+            current = (current[0], current[1], strict_json_loads(current[2])) if current is not None else None
             if current != observed:
                 raise SessionError("Another poll advanced the session observation. Poll again.")
             db.executemany(
