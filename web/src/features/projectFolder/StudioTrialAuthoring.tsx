@@ -205,14 +205,9 @@ function termFields(view: StudioTrialAuthoring, term: ObjectiveTerm, index: numb
     if (!projection) throw new Error(`The Objective's ${field} of term ${term.id} has no field`);
     const value = term[field];
     const kind = value?.kind === 'name' ? 'link' : value?.kind === 'call' ? 'formula' : value?.kind === 'draw' ? 'draw' : 'value';
-    return fromFieldView({
-      label, text: projection.text ?? '', structure: projection.structure,
-      site: { ...projection.projection, kinds: projection.projection.kinds.filter((kind) => kind !== 'sweep') },
-    }, {
+    return fromFieldView({ ...projection, label }, {
       id: term.id + field, kind, changed: changed(field),
-      commit: commit && ((edit) => edit.kind === 'text'
-        ? commit('Set ' + label, { kind: 'expression', term: term.id, field, text: edit.text })
-        : Promise.resolve(undefined)),
+      commit: commit && ((edit) => commit('Set ' + label, { kind: 'expression', term: term.id, field, edit })),
     });
   };
   const epochs = term.epochs ?? [];

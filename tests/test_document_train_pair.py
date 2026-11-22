@@ -393,7 +393,7 @@ def test_trial_preparation_distinguishes_effective_scientific_inputs(authored, p
         "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]},
     })
     task = "documents.task.payload.id"
-    objective = "documents.objective.payload.terms.0.weight.value"
+    objective = "documents.objective.payload.terms.effort.weight.value"
     binding = "steps.train.base.inline.trial_documents.input_overrides.reach_target"
     raw["sweep"] = {"rows": {
         "base": {},
@@ -623,3 +623,38 @@ def test_training_document_problem_is_placed_in_the_document(authored, key, valu
         assert problem.document_path.startswith(path)
         located = definition_place(path_parts(problem.path), lambda _slot: problem.document)
         assert (located.part, located.document) == (place, "training")
+
+
+def _two_term_project(authored, order):
+    raw = document_project(authored)
+    (effort,) = raw["documents"]["objective"]["payload"]["terms"]
+    terms = {"effort": effort, "speed": {**effort, "id": "speed"}}
+    raw["documents"]["objective"]["payload"]["terms"] = [terms[name] for name in order]
+    return raw
+
+
+def test_a_sweep_on_a_term_follows_the_term_when_the_terms_are_reordered(authored, prepared_trials):
+    for order in (("effort", "speed"), ("speed", "effort")):
+        prepared_trials.clear()
+        raw = _two_term_project(authored, order)
+        raw["steps"]["train"]["sweep"] = {"axes": {"speed_weight": {
+            "path": "trial_documents.objective.terms.speed.weight.value", "values": [2, 3],
+        }}}
+        plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
+        assert not plan.diagnostics
+        weights = {
+            tuple(sorted((term.id, term.weight.value) for term in kwargs["objective"].terms))
+            for _, kwargs in prepared_trials
+        }
+        assert weights == {(("effort", 1), ("speed", 2)), (("effort", 1), ("speed", 3))}
+
+
+@pytest.mark.parametrize(("segment", "reason"), [("0", "addressed by its id"), ("pace", "not an id")])
+def test_a_term_is_addressed_only_by_an_id_it_has(authored, segment, reason):
+    raw = _two_term_project(authored, ("effort", "speed"))
+    raw["steps"]["train"]["sweep"] = {"axes": {"enabled": {
+        "path": f"trial_documents.objective.terms.{segment}.enabled", "values": [True, False],
+    }}}
+    plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
+    assert plan.diagnostics
+    assert all(reason in issue.detail and "effort, speed" in issue.detail and issue.step == "train" for issue in plan.diagnostics)

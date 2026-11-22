@@ -14,7 +14,7 @@ from pydantic_core import to_json, to_jsonable_python
 
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
-from feedbax.contracts.matrix_core import apply_override_patch_copy
+from feedbax.contracts.matrix_core import apply_override_patch_copy, resolve_segment
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, SetField
 from feedbax.contracts.project import (
@@ -321,12 +321,9 @@ def reference_write_target(value: Any, parts: Sequence[str]) -> tuple[str, str] 
             value = DocumentReference.model_validate(value)
         if isinstance(value, DocumentReference):
             return value.document, ".".join((*json_pointer_parts(value.pointer), *parts[index:]))
-        if isinstance(value, dict):
-            value = value.get(part)
-        elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
-            value = value[int(part)]
-        else:
+        if (key := resolve_segment(value, part, path=".".join(parts))) is None:
             return None
+        value = value[key]
     return None
 
 

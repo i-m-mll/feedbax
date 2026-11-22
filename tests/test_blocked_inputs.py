@@ -146,7 +146,7 @@ def test_objective_expressions_stay_editable_when_the_model_does_not_pair(tmp_pa
         assert fields["/objective/terms/effort/measure"] == "sqnorm(command)"
         assert fields["/objective/terms/effort/weight"] == "1"
         edit = client.post("/api/projects/unpaired/authoring/trials", json=body | {
-            "change": {"kind": "expression", "term": "effort", "field": "weight", "text": "2"},
+            "change": {"kind": "expression", "term": "effort", "field": "weight", "edit": {"kind": "text", "text": "2"}},
         })
         assert edit.status_code == 200, edit.text
         assert edit.json()["files"], edit.text
