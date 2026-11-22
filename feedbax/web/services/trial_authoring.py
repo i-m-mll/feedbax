@@ -38,7 +38,7 @@ from feedbax.contracts.task_document import (
     PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, Epoch, PythonTaskSelection, TaskDocument,
 )
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument
+from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument, ObjectiveTerm
 from feedbax.contracts.training import TrialDocuments
 from feedbax.expression_check import references
 from feedbax.expression_site import FieldKind, project_site, read_field
@@ -660,7 +660,8 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
         else:
             raise ProjectFolderInvalid("Evaluate authoring edits the task variation.")
     elif document is not None and whole:
-        stored = document_write(project, document, list(change.edits), chosen, readers, variant, view=view)
+        edits = _reordered_terms(project, document, documents.objective, change) or list(change.edits)
+        stored = document_write(project, document, edits, chosen, readers, variant, view=view)
     elif isinstance(change, StudioTrialSelectDocument) and change.role == "training":
         writes = training_document_choice(project, key.step, bundle.training_methods, change.document)
         if isinstance(writes, StudioSweptParameterMissing):
@@ -679,6 +680,33 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
         stored, project, settled, selected, reach, key.step, folders, bundle, change, expression,
         evaluate_field=evaluate_field and not isinstance(scope, StudioTrialStepScope),
     )
+
+
+def _reordered(terms: list, change) -> list | None:
+    """``terms`` in the order the change gives them, when it writes the Objective's whole term list as a reordering of
+    them: each run's terms carry the values its sweeps set, so a reorder is of the terms of the document it is stored
+    in, or of the run it is checked against, not of the run it was made in."""
+    if change.kind != "objective" or len(change.edits) != 1:
+        return None
+    (edit,) = change.edits
+    if not isinstance(edit, SetProjectValue) or edit.path != "/terms" or not isinstance(edit.value, list):
+        return None
+    order = [term.get("id") for term in edit.value if isinstance(term, dict)]
+    by_id = {term["id"]: term for term in terms}
+    return [by_id[term] for term in order] if sorted(order) == sorted(by_id) and len(order) == len(edit.value) else None
+
+
+def _reordered_terms(project, document, shown, change) -> list[SetProjectValue] | None:
+    """The document edit of a change that only reorders the terms the run shows."""
+    order = _reordered([term.model_dump(mode="json") for term in shown.terms], change)
+    if order is None or list(map(ObjectiveTerm.model_validate, order)) != list(
+        map(ObjectiveTerm.model_validate, change.edits[0].value),
+    ):
+        return None
+    entry = compose_document(project.documents.get, document)
+    if isinstance(entry, ProjectDiagnostic):
+        raise ProjectFolderInvalid(entry.detail)
+    return [change.edits[0].model_copy(update={"value": _reordered(entry.payload["terms"], change)})]
 
 
 def _whole_document(definition, path: str) -> str | None:
@@ -803,6 +831,8 @@ def _validate_files(
                 ]})
             if plan.steps[key.variant, key.step].kind == "train":
                 _, raw = _changed_value(old, plan.selected_definitions[key], change.kind)
+                if (order := _reordered(raw.get("terms", []), change)) is not None:
+                    requested = change.model_copy(update={"edits": [change.edits[0].model_copy(update={"value": order})]})
             expected = type(old_value).model_validate(_edit_value(raw, requested))
             if expected != new_value:
                 raise ProjectFolderInvalid("A selected value is controlled by a different authored source.")

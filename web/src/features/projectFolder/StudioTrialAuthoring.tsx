@@ -30,6 +30,7 @@ import { baseOf } from './documentPayload';
 import type { ProjectEditController } from './projectEditController';
 import { filesRemoval, type ConfirmRunRemoval } from './runRemoval';
 import { ScrollFade } from '@/components/ui/ScrollFade';
+import { SweepTargetItem, type SweepTarget } from './StudioTrainAuthoringForm';
 
 type Change = NonNullable<StudioTrialAuthoringRequest['change']>;
 /** The scope a change is made in. */
@@ -214,8 +215,18 @@ type TermField = 'name' | 'enabled' | 'measure' | 'window' | 'weight' | 'reducti
 const columns = ['name', 'measure', 'window', 'weight', 'enabled'] as const satisfies readonly TermField[];
 const columnNames = { name: 'term', enabled: 'enabled', measure: 'measure', window: 'window', weight: 'weight' } as const;
 
-/** `runs` says the view is of runs the user selected, whose swept values are marked as differing from the step's. */
-function termFields(view: TrialView, term: ObjectiveTerm, index: number, commit?: Commit, runs = false): Record<TermField, FieldModel> {
+/** The anchor of a term's Weight, which Add Sweep puts the keyboard on. */
+export const weightAnchor = (term: string) => `objective:${term}:weight`;
+
+/** The runs the Objective is shown for: `selected` says the user chose them, whose swept values are marked as differing
+ * from the step's; `values` are the chosen values of each sweep, and `choose` chooses one. */
+export interface TrialRuns {
+  readonly selected: boolean;
+  values(sweep: string): ReadonlySet<string>;
+  choose?(sweep: string, value: string, extend: boolean): void;
+}
+
+function termFields(view: TrialView, term: ObjectiveTerm, index: number, commit?: Commit, runs?: TrialRuns): Record<TermField, FieldModel> {
   const path = '/terms/' + index;
   const changed = (field: keyof ObjectiveTerm) => changedAt(view, 'objective', path + '/' + field, commit);
   const set = (field: keyof ObjectiveTerm, name: string) => commit && ((value: JsonValue) => commit(
@@ -226,10 +237,14 @@ function termFields(view: TrialView, term: ObjectiveTerm, index: number, commit?
     if (!projection) throw new Error(`The Objective's ${field} of term ${term.id} has no field`);
     const value = term[field];
     const kind = value?.kind === 'name' ? 'link' : value?.kind === 'call' ? 'formula' : value?.kind === 'draw' ? 'draw' : 'value';
-    return fromFieldView({ ...projection, label, effective: runs ? projection.effective : null }, {
+    const sweep = projection.sweep?.id;
+    const model = fromFieldView({ ...projection, label, effective: runs?.selected ? projection.effective : null }, {
       id: term.id + field, kind, changed: changed(field),
       commit: commit && ((edit) => commit('Set ' + label, { kind: 'expression', term: term.id, field, edit })),
+      selectedMembers: sweep ? runs?.values(sweep) : undefined,
+      chooseMember: sweep && runs?.choose ? (value, extend) => runs.choose!(sweep, value, extend) : undefined,
     });
+    return field === 'weight' ? { ...model, anchor: weightAnchor(term.id) } : model;
   };
   const epochs = term.epochs ?? [];
   return {
@@ -304,7 +319,7 @@ export function TrialObjectiveAdd({ view, commit, select }: {
 }
 
 export function TrialObjectiveTable({ view, commit, selected, select, runs }: {
-  view: TrialView; commit?: Commit; selected?: TermSelection; select(term: string, field?: string): void; runs?: boolean;
+  view: TrialView; commit?: Commit; selected?: TermSelection; select(term: string, field?: string): void; runs?: TrialRuns;
 }) {
   const terms = view.objective?.terms ?? [];
   return <ScrollFade axis="both" className="h-full min-h-0 [--fade-inset-top:var(--row-height)]">
@@ -372,7 +387,7 @@ export function TrialObjectiveOutline({ sections, view, commit, selected, select
 }
 
 export function TrialObjectiveInspector({ view, commit, selected, runs }: {
-  view: TrialView; commit?: Commit; selected?: TermSelection; runs?: boolean;
+  view: TrialView; commit?: Commit; selected?: TermSelection; runs?: TrialRuns;
 }) {
   const index = view.objective?.terms?.findIndex(({ id }) => id === selected?.term) ?? -1;
   const term = view.objective?.terms?.[index];
@@ -384,4 +399,27 @@ export function TrialObjectiveInspector({ view, commit, selected, runs }: {
     {order.map((field) => <ValueField key={term.id + field + JSON.stringify(fields[field].value ?? fields[field].text)}
       model={fields[field]} />)}
   </Inspector>;
+}
+
+/**
+ * The Objective's term Weights a sweep of the step can start from, as Add Sweep items under Objective, a term each.
+ * Choosing one goes to its cell; the sweep is made by the text it commits.
+ */
+export function ObjectiveSweepItems({ project, revision, run, onChoose }: {
+  project: string; revision: string; run?: StudioSavedTrainKey; onChoose(anchor: string): void;
+}) {
+  const { data } = useQuery({
+    queryKey: ['trial-authoring', project, revision, run],
+    queryFn: ({ signal }) => readStudioTrialAuthoring(project, { revision, run: run! }, signal),
+    enabled: !!run,
+  });
+  const terms = (data?.objective?.terms ?? []).flatMap((term, index) => data!.fields.some((field) =>
+    field.path === authoredPointer(['objective', 'terms', term.id, 'weight']) && field.can_sweep && !field.sweep)
+    ? [{ term, index }] : []);
+  if (!terms.length) return null;
+  const target: SweepTarget = { kind: 'group', label: studioName('objective'), members: terms.map(({ term, index }) => ({
+    kind: 'group', label: term.name ?? studioAccessibleName('term', index + 1),
+    members: [{ kind: 'field', label: humanizeLabel('weight'), anchor: weightAnchor(term.id) }],
+  })) };
+  return <SweepTargetItem target={target} onChoose={onChoose} />;
 }

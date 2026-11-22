@@ -17,7 +17,7 @@ async function twoTerms() {
 }
 
 // Catches a Weight that refuses a sweep, a sweep stored at the term's position (it would follow Move Earlier to the
-// other term), and an Inspector that shows the swept Weight without its values.
+// other term), an Inspector that shows the swept Weight without its values, and an Add Sweep that cannot reach a Weight.
 test("a Weight cell's sweep is an axis on the Train step, listed in the Inspector, that stays on its term", async ({ page, request }) => {
   test.setTimeout(60_000);
   const { snapshot, projectPath } = await seedManagedProject(request, await twoTerms());
@@ -50,4 +50,19 @@ test("a Weight cell's sweep is an axis on the Train step, listed in the Inspecto
   await expect(weight(1)).toHaveValue('1');
   await weight(0).click();
   await expect(inspector.getByRole('button', { name: /^Select Weight / })).toHaveText(['0.1', '1', '10']);
+
+  // A chosen value selects its run, and its cell is marked as differing from the step's Weight.
+  const cell = table.getByRole('row').nth(1).getByRole('group', { name: 'Weight field', exact: true });
+  await expect(cell.getByRole('img', { name: 'Changed', exact: true })).toHaveCount(0);
+  await inspector.getByRole('button', { name: 'Select Weight 10', exact: true }).click();
+  await expect(inspector.getByRole('button', { name: 'Select Weight 10', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(cell.getByRole('img', { name: 'Changed', exact: true })).toBeVisible();
+
+  // Add Sweep lists the other term's Weight under Objective and puts the keyboard on its cell, in Sweep kind.
+  await card.getByRole('button', { name: 'Add Sweep train' }).click();
+  await page.getByRole('menu', { name: 'Add Sweep' }).getByRole('menuitem', { name: 'Objective', exact: true }).click();
+  await page.getByRole('menu', { name: 'Objective' }).getByRole('menuitem', { name: 'Effort', exact: true }).click();
+  await page.getByRole('menu', { name: 'Effort' }).getByRole('menuitem', { name: 'Weight', exact: true }).click();
+  await expect(weight(1)).toBeFocused();
+  await expect(table.getByRole('row').nth(2).getByRole('button', { name: 'Weight kind: Sweep', exact: true })).toBeVisible();
 });
