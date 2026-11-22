@@ -2591,7 +2591,7 @@ export type AuthoredFileAddress = {
 export type Axis = NamedAxis | InputAxis | ListedAxis | RangeAxis | SampledAxis | CheckpointRuleAxis | SetAxis;
 
 export type AxisCondition = {
-  "axes"?: Record<string, Array<string>>;
+  "rule"?: string;
   "rows"?: Array<string> | null;
 };
 
@@ -2654,13 +2654,6 @@ export type BasedDocument = {
 
 export type BatchCheckpoint = {
   "at": number;
-};
-
-export type Best = {
-  "by": string;
-  "k": number;
-  "order"?: "min" | "max";
-  "per"?: Array<string>;
 };
 
 export type BestCheckpoint = {
@@ -3560,9 +3553,7 @@ export type StepReference = {
 };
 
 export type StoreSubset = {
-  "axes"?: Record<string, Array<string>>;
-  "best"?: Best | null;
-  "when"?: When | null;
+  "rule"?: string;
   "rows"?: Array<SelectedRow>;
   "query": ManifestPredicate;
 };
@@ -4060,6 +4051,8 @@ export type StudioProjectWindowMapStep = {
   "document_uses"?: Array<string>;
   "exceptions"?: Array<StudioProjectWindowMapException>;
   "status_counts": Record<string, number>;
+  "rule_axes"?: Record<string, Record<string, string>>;
+  "rule_metrics"?: Array<string>;
 };
 
 export type StudioProjectWindowMapSubset = {
@@ -4108,6 +4101,30 @@ export type StudioReportStep = {
   "requires"?: Array<PatchPath>;
   "note"?: StepNote | null;
   "group"?: string | null;
+};
+
+export type StudioRunRuleCheck = {
+  "total": number;
+  "result": StudioRunRuleChosen | StudioRunRuleRefused;
+};
+
+export type StudioRunRuleChosen = {
+  "kind"?: "chosen";
+  "runs": Array<string>;
+  "count": number;
+};
+
+export type StudioRunRuleRefused = {
+  "kind"?: "refused";
+  "reason": string;
+};
+
+export type StudioRunRuleRequest = {
+  "revision": string;
+  "variant": string;
+  "step": string;
+  "rule": string;
+  "ranked"?: boolean;
 };
 
 export type StudioSavedLightHistory = {
@@ -4358,9 +4375,7 @@ export type StudioValueStructure = {
 };
 
 export type SubsetTerms = {
-  "axes"?: Record<string, Array<string>>;
-  "best"?: Best | null;
-  "when"?: When | null;
+  "rule"?: string;
   "rows"?: Array<SelectedRow>;
 };
 
@@ -4379,9 +4394,7 @@ export type SweepException = {
 };
 
 export type SweepExceptionTerms = {
-  "axes"?: Record<string, Array<string>>;
-  "best"?: Best | null;
-  "when"?: When | null;
+  "rule"?: string;
   "rows"?: Array<string>;
 };
 
@@ -4507,12 +4520,6 @@ export type Variable = {
 export type VariableBinding = {
   "variable": Name;
   "select"?: Record<string, string | number | boolean | IndexSelection | null>;
-};
-
-export type When = {
-  "metric": string;
-  "op": "lt" | "le" | "eq" | "ne" | "ge" | "gt";
-  "value": number;
 };
 
 export type WholeDimensions = {
@@ -9099,7 +9106,7 @@ export const AxisSchema: z.ZodType<Axis> = z.lazy(() =>
 
 export const AxisConditionSchema: z.ZodType<AxisCondition> = z.lazy(() =>
   z.object({
-    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1)).min(1)).optional(),
+    "rule": z.string().optional(),
     "rows": z.union([z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).min(1), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<AxisCondition>;
@@ -9184,15 +9191,6 @@ export const BatchCheckpointSchema: z.ZodType<BatchCheckpoint> = z.lazy(() =>
     "at": z.number().int().safe().min(0),
   }).strict()
 ) as unknown as z.ZodType<BatchCheckpoint>;
-
-export const BestSchema: z.ZodType<Best> = z.lazy(() =>
-  z.object({
-    "by": z.string().min(1),
-    "k": z.number().int().safe().min(1),
-    "order": z.union([z.literal("min"), z.literal("max")]).optional(),
-    "per": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
-  }).strict()
-) as unknown as z.ZodType<Best>;
 
 export const BestCheckpointSchema: z.ZodType<BestCheckpoint> = z.lazy(() =>
   z.object({
@@ -10416,9 +10414,7 @@ export const StepReferenceSchema: z.ZodType<StepReference> = z.lazy(() =>
 
 export const StoreSubsetSchema: z.ZodType<StoreSubset> = z.lazy(() =>
   z.object({
-    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1))).optional(),
-    "best": z.union([BestSchema, z.null()]).optional(),
-    "when": z.union([WhenSchema, z.null()]).optional(),
+    "rule": z.string().optional(),
     "rows": z.array(SelectedRowSchema).optional(),
     "query": ManifestPredicateSchema,
   }).strict()
@@ -11060,6 +11056,8 @@ export const StudioProjectWindowMapStepSchema: z.ZodType<StudioProjectWindowMapS
     "document_uses": z.array(z.string()).optional(),
     "exceptions": z.array(StudioProjectWindowMapExceptionSchema).optional(),
     "status_counts": z.record(z.string(), z.number().int().safe()),
+    "rule_axes": z.record(z.string(), z.record(z.string(), z.string())).optional(),
+    "rule_metrics": z.array(z.string()).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapStep>;
 
@@ -11124,6 +11122,38 @@ export const StudioReportStepSchema: z.ZodType<StudioReportStep> = z.lazy(() =>
     "group": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioReportStep>;
+
+export const StudioRunRuleCheckSchema: z.ZodType<StudioRunRuleCheck> = z.lazy(() =>
+  z.object({
+    "total": z.number().int().safe(),
+    "result": z.union([StudioRunRuleChosenSchema, StudioRunRuleRefusedSchema]),
+  }).strict()
+) as unknown as z.ZodType<StudioRunRuleCheck>;
+
+export const StudioRunRuleChosenSchema: z.ZodType<StudioRunRuleChosen> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("chosen").optional(),
+    "runs": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))),
+    "count": z.number().int().safe(),
+  }).strict()
+) as unknown as z.ZodType<StudioRunRuleChosen>;
+
+export const StudioRunRuleRefusedSchema: z.ZodType<StudioRunRuleRefused> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("refused").optional(),
+    "reason": z.string(),
+  }).strict()
+) as unknown as z.ZodType<StudioRunRuleRefused>;
+
+export const StudioRunRuleRequestSchema: z.ZodType<StudioRunRuleRequest> = z.lazy(() =>
+  z.object({
+    "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "variant": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$")),
+    "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "rule": z.string(),
+    "ranked": z.boolean().optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioRunRuleRequest>;
 
 export const StudioSavedLightHistorySchema: z.ZodType<StudioSavedLightHistory> = z.lazy(() =>
   z.object({
@@ -11438,9 +11468,7 @@ export const StudioValueStructureSchema: z.ZodType<StudioValueStructure> = z.laz
 
 export const SubsetTermsSchema: z.ZodType<SubsetTerms> = z.lazy(() =>
   z.object({
-    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1))).optional(),
-    "best": z.union([BestSchema, z.null()]).optional(),
-    "when": z.union([WhenSchema, z.null()]).optional(),
+    "rule": z.string().optional(),
     "rows": z.array(SelectedRowSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<SubsetTerms>;
@@ -11465,9 +11493,7 @@ export const SweepExceptionSchema: z.ZodType<SweepException> = z.lazy(() =>
 
 export const SweepExceptionTermsSchema: z.ZodType<SweepExceptionTerms> = z.lazy(() =>
   z.object({
-    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1))).optional(),
-    "best": z.union([BestSchema, z.null()]).optional(),
-    "when": z.union([WhenSchema, z.null()]).optional(),
+    "rule": z.string().optional(),
     "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).optional(),
   }).strict()
 ) as unknown as z.ZodType<SweepExceptionTerms>;
@@ -11644,14 +11670,6 @@ export const VariableBindingSchema: z.ZodType<VariableBinding> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<VariableBinding>;
 
-export const WhenSchema: z.ZodType<When> = z.lazy(() =>
-  z.object({
-    "metric": z.string().min(1),
-    "op": z.union([z.literal("lt"), z.literal("le"), z.literal("eq"), z.literal("ne"), z.literal("ge"), z.literal("gt")]),
-    "value": z.number().finite(),
-  }).strict()
-) as unknown as z.ZodType<When>;
-
 export const WholeDimensionsSchema: z.ZodType<WholeDimensions> = z.lazy(() =>
   z.object({
     "parameter": z.string().min(1),
@@ -11750,6 +11768,8 @@ export const contractSchemas = {
   StudioCheckpointRuleRequest: StudioCheckpointRuleRequestSchema,
   StudioSubsetToRowsEdit: StudioSubsetToRowsEditSchema,
   StudioSubsetToRowsRequest: StudioSubsetToRowsRequestSchema,
+  StudioRunRuleRequest: StudioRunRuleRequestSchema,
+  StudioRunRuleCheck: StudioRunRuleCheckSchema,
   StudioSetEditRequest: StudioSetEditRequestSchema,
   StudioSetEdit: StudioSetEditSchema,
   StudioSetsOfferedRequest: StudioSetsOfferedRequestSchema,
@@ -11911,6 +11931,8 @@ export interface ContractTypeMap {
   StudioCheckpointRuleRequest: StudioCheckpointRuleRequest;
   StudioSubsetToRowsEdit: StudioSubsetToRowsEdit;
   StudioSubsetToRowsRequest: StudioSubsetToRowsRequest;
+  StudioRunRuleRequest: StudioRunRuleRequest;
+  StudioRunRuleCheck: StudioRunRuleCheck;
   StudioSetEditRequest: StudioSetEditRequest;
   StudioSetEdit: StudioSetEdit;
   StudioSetsOfferedRequest: StudioSetsOfferedRequest;

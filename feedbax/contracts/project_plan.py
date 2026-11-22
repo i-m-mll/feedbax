@@ -38,6 +38,8 @@ from feedbax.contracts.project import (
     DifferenceNotApplied, Differences, Document, InlineBase, Payload, Project, RootDocument, Step, StepBase, StepKind,
     apply_differences, base_chain, diff, json_pointer_parts, nearest_shared_base,
 )
+from feedbax.contracts.run_rule import RuleRefusal
+from feedbax.expression_text import RuleBest
 from feedbax.contracts.project_inputs import (
     BarrierCheckpoint,
     BatchCheckpoint,
@@ -56,7 +58,6 @@ from feedbax.contracts.project_inputs import (
     RunReference,
     SelectedRow,
     StepReference,
-    SubsetSelectionError,
     SubsetTerms,
     TaskDocumentReference,
     producer_member_key,
@@ -95,7 +96,7 @@ from feedbax.contracts.project_sweep import (
     SweepExpansionCode,
     SweepExpansionError,
     SweepInputMember,
-    axis_values,
+    axis_coordinates,
     checkpoint_rule_write,
     coordinate_text,
     expand_sweep,
@@ -191,6 +192,8 @@ class PlannedSubset:
     document: str | None
     rank_groups: tuple[PlannedRankGroup, ...] = ()
     source: SubsetSource | None = None
+    best: RuleBest | None = None
+    """The rule's lowest or highest term, which ranks the members once they have run."""
 
     @property
     def ranks(self) -> tuple[str, ...]:
@@ -269,7 +272,7 @@ class PlannedInput:
     """The authored selection that chose this member."""
     named: Mapping[str, LabelName] = field(default_factory=dict)
     """What the member's step-valued labels name. The request identifies each by content (`_identified`)."""
-    best_path: str = field(default="inputs.subject.where.best", compare=False)
+    best_path: str = field(default="inputs.subject.where.rule", compare=False)
     """Where a ranked member's Best is authored: its role's, or its list item's."""
 
     @property
@@ -3258,14 +3261,6 @@ class _Compiler:
         subset: PlannedSubset, reference: StepReference, at: str,
     ) -> tuple[_Members, dict[str, str], PlannedSubset] | ProjectDiagnostic:
         path = f"{at}.where"
-        terms = subset.terms
-        if terms.when is not None:
-            return ProjectDiagnostic(
-                ResolutionCode.BAD_REFERENCE, f"{path}.when",
-                "When requires a many-valued input and cannot supply an input axis.", name,
-            )
-        best = terms.best
-        assert best is not None
         if role.name != "subject":
             reason = "Best currently binds saved Evaluate subjects."
         elif reference.checkpoint not in (None, "last") or (
@@ -3273,15 +3268,16 @@ class _Compiler:
         ):
             reason = "Best requires the selected Train's last checkpoint."
         else:
-            return self.rank_groups(name, template, role, members, subset, reference, f"{path}.best")
-        return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, f"{path}.best", reason, name)
+            return self.rank_groups(name, template, role, members, subset, reference, f"{path}.rule")
+        return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, f"{path}.rule", reason, name)
 
     def rank_groups(
         self, name: str, template: StepComposition, role: _Role, members: _Members, subset: PlannedSubset,
         reference: StepReference, path: str,
     ) -> tuple[_Members, dict[str, str], PlannedSubset] | ProjectDiagnostic:
-        best = subset.terms.best
+        best = subset.best
         assert best is not None
+        written = subset.terms.rule[best.span.start:best.span.end]
         source = LabelName(reference.step, self.variants[members[0][1].key.variant].steps[reference.step].label) \
             if members else None
 
@@ -3290,7 +3286,7 @@ class _Compiler:
 
         axes = tuple(sorted(best.per))
         if len(set(axes)) != len(axes):
-            return refusal("Best group axes must be distinct.", f"{path}.per")
+            return refusal(f"{written}: per names an axis twice.")
         if not members:
             return refusal("Best requires at least one candidate.")
         groups: dict[tuple[str, ...], list[tuple[PlannedInput, PlannedRow]]] = {}
@@ -3298,33 +3294,29 @@ class _Compiler:
             assert producer is not None
             for axis in axes:
                 if axis not in producer.coordinates:
-                    return refusal(
-                        f"Best group axis {axis!r} is missing on {producer.key.variant}/{producer.key.row}.",
-                        f"{path}.per",
-                    )
+                    return refusal(f"{written}: {axis} is missing on {producer.key.variant}/{producer.key.row}.")
             group = tuple(producer.coordinates[axis].value_id for axis in axes)
             grouped = groups.setdefault(group, [])
             if grouped and any(
                 not same_typed_value(producer.coordinates[axis].value, grouped[0][1].coordinates[axis].value)
                 for axis in axes
             ):
-                return refusal(f"Best group {dict(zip(axes, group, strict=True))!r} has conflicting axis values.",
-                               f"{path}.per")
+                return refusal(f"{written}: group {dict(zip(axes, group, strict=True))!r} has conflicting axis values.")
             grouped.append((item, producer))
-        if best.k * len(groups) > 1 and not (
+        if best.count * len(groups) > 1 and not (
             template.sweep is not None and any(
                 isinstance(axis, InputAxis) and axis.input == role.name for axis in template.sweep.axes.values()
             )
         ):
-            return refusal("Best with more than one rank requires a subject input axis.")
+            return refusal(f"{written}: more than one rank requires a subject input axis.")
 
         ranked = []
         planned_groups = []
         for group, grouped in groups.items():
             coordinates = dict(zip(axes, group, strict=True))
-            if best.k > len(grouped):
+            if best.count > len(grouped):
                 target = f" in group {coordinates!r}" if coordinates else ""
-                return refusal(f"Best requests {best.k} ranks from {len(grouped)} candidates{target}.")
+                return refusal(f"{written}: asks for {best.count} of {len(grouped)} runs{target}.")
             candidates = []
             keys = []
             waiting = next((producer.key for _, producer in grouped if self.cannot_run(producer.key)), None)
@@ -3337,10 +3329,10 @@ class _Compiler:
                         reference=ProductRef(request_id=producer.request_id, role=role.product_role, select=LastMember()),
                     ))
             ranks = []
-            for position in range(1, best.k + 1):
+            for position in range(1, best.count + 1):
                 member: InputMember | PendingMember = (
                     InputMember(key=best_rank_key(position, coordinates), reference=BestRank(
-                        metric=best.by, order=best.order, count=best.k, rank=position, candidates=tuple(candidates),
+                        metric=best.metric, order=best.order, count=best.count, rank=position, candidates=tuple(candidates),
                         group=coordinates,
                     )) if waiting is None else PendingMember(
                         key=best_rank_key(position, coordinates),
@@ -3357,7 +3349,7 @@ class _Compiler:
         return tuple(ranked), {}, replace(subset, rank_groups=tuple(planned_groups))
 
     def subset_origin(
-        self, variant: str, step: str, at: str, document: str | None, term: Literal["best", "rows"],
+        self, variant: str, step: str, at: str, document: str | None, term: Literal["rule", "rows"],
     ) -> ValueSource:
         """Where the subset terms of the selection at ``at`` (``inputs.<role>`` or ``inputs.<role>.<i>``) are authored."""
         if document is not None:
@@ -3671,14 +3663,15 @@ class _Compiler:
                 )
             terms = SubsetTerms(rows=selected)
         try:
-            keyed_runs = select_step_rows(
+            keyed_runs, best = select_step_rows(
                 terms,
                 runs,
                 address=lambda run: (run.key.variant, run.key.row),
                 member_key=member_key,
-                coordinates=lambda run: axis_values(run.coordinates, run.input_axes),
+                coordinates=lambda run: axis_coordinates(run.coordinates, run.input_axes),
+                producer=self.variants[variants[0]].steps[reference.step].label or reference.step,
             )
-        except SubsetSelectionError as error:
+        except RuleRefusal as error:
             return ProjectDiagnostic(
                 ResolutionCode.BAD_REFERENCE, f"{path}.where.{error.path}", error.detail, name
             )
@@ -3767,9 +3760,9 @@ class _Compiler:
                 ))
         source = None
         if terms is not None and role.name in {"subject", "states"}:
-            if terms.best is not None and role.name == "subject":
+            if best is not None and role.name == "subject":
                 source = SubsetSource(
-                    self.subset_origin(variant, name, path, subset_document, "best"), reference.step,
+                    self.subset_origin(variant, name, path, subset_document, "rule"), reference.step,
                 )
             elif reference.row is None and terms.rows is not None:
                 source = SubsetSource(
@@ -3781,11 +3774,12 @@ class _Compiler:
                 deepcopy(terms), candidate_count,
                 tuple(run.key for _, run in keyed_runs), subset_document,
                 source=source,
+                best=best,
             )
             if terms is not None
             else None
         )
-        if terms is not None and (terms.best is not None or terms.when is not None):
+        if subset is not None and best is not None:
             return self.rank_input(name, template, role, tuple(members), subset, reference, path)
         return tuple(members), {}, subset
 

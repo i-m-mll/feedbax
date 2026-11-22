@@ -185,6 +185,7 @@ function MarkButton({
   stepId,
   selected,
   selectionKind,
+  boxed,
   upstream,
   downstream,
   applySelection,
@@ -195,6 +196,8 @@ function MarkButton({
   stepId: string;
   selected: ReadonlySet<string>;
   selectionKind?: PipelineSelection['kind'];
+  /** The runs a rule being written chooses, boxed as a selection of runs is. */
+  boxed?: ReadonlySet<string>;
   upstream?: ReadonlySet<string>;
   downstream?: ReadonlySet<string>;
   applySelection: ApplyMapSelection;
@@ -243,7 +246,8 @@ function MarkButton({
       aria-description={lineageDescription || undefined}
       {...appTip(studioAccessibleName('select', name))}
       data-map-focus={lineage}
-      data-boxed={selectionKind === 'rows' && selectedCount > 0 ? '' : undefined}
+      data-boxed={boxed ? runs.some(({ id }) => boxed.has(id)) ? '' : undefined
+        : selectionKind === 'rows' && selectedCount > 0 ? '' : undefined}
       data-group-member={selectionKind === 'values' && selectedCount > 0 && mark.kind === 'run' ? '' : undefined}
       className={clsx('studio-map-run-mark relative flex shrink-0', markRadius[size.id])}
       style={{ width: size.mark, height: size.mark }}
@@ -311,6 +315,7 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
   sweeps,
   selection,
   selected,
+  boxed,
   upstream,
   downstream,
   applySelection,
@@ -323,6 +328,7 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
   sweeps: readonly PlanSweepView[];
   selection: PipelineSelection | null;
   selected: ReadonlySet<string>;
+  boxed?: ReadonlySet<string>;
   upstream?: ReadonlySet<string>;
   downstream?: ReadonlySet<string>;
   applySelection: ApplyMapSelection;
@@ -412,7 +418,7 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
                   className="relative flex"
                   style={{ gridRow: cell.row + 1, gridColumn: cell.column + 1 }}>
                   <MarkButton item={cell.item} size={size} stepId={step.id} selected={selected}
-                    selectionKind={selection?.kind} upstream={upstream} downstream={downstream}
+                    selectionKind={selection?.kind} boxed={boxed} upstream={upstream} downstream={downstream}
                     applySelection={applySelection} runMenu={runMenu} />
                 </div>
               ))}

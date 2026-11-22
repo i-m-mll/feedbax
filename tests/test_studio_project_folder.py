@@ -347,7 +347,7 @@ def test_a_swept_train_with_an_exception_projects_and_writes_its_settings():
     raw["steps"]["train"]["sweep"] = {
         "axes": {"seed": {"values": {"a": {"patches": {"seed": {"value": 1}}}, "b": {"patches": {"seed": {"value": 2}}}}}},
         "exceptions": {"wide": {
-            "where": {"axes": {"seed": ["b"]}},
+            "where": {"rule": "seed=b"},
             "patches": {"training_config.batch_size": {"value": 20}},
         }},
     }
@@ -490,7 +490,7 @@ def test_checkpoint_carryover_uses_only_the_exact_paired_predecessors(tmp_path):
     child = {
         "kind": "train",
         "base": {"step": "train"},
-        "inputs": {"checkpoint": {"step": "train", "checkpoint": "last", "where": {"axes": {"rate": ["slow", "fast"]}}}},
+        "inputs": {"checkpoint": {"step": "train", "checkpoint": "last", "where": {"rule": "rate=slow,fast"}}},
         "deltas": [{"layer_id": "initialize", "patches": [
             {"path": carry_path, "op": "add", "value": "initialize_from"},
         ]}],

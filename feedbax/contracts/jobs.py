@@ -335,6 +335,10 @@ class StudioProjectWindowMapStep(StrictModel):
     document_uses: list[str] = Field(default_factory=list)
     exceptions: list[StudioProjectWindowMapException] = Field(default_factory=list, exclude_if=lambda value: not value)
     status_counts: dict[str, int]
+    rule_axes: dict[str, dict[str, str]] = Field(default_factory=dict, exclude_if=lambda value: not value)
+    """Each axis the step's runs carry, with each value, by its ID, as a run rule writes it."""
+    rule_metrics: list[str] = Field(default_factory=list, exclude_if=lambda value: not value)
+    """The metrics the step's finished Train runs report, which a lowest or highest term ranks by."""
 
 
 class StudioProjectWindowMapEdge(StrictModel):

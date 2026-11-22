@@ -400,7 +400,9 @@ from feedbax.contracts.request_specs import DocumentTrainingConfig, TrainContinu
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.studio_trials import StudioTrialAuthoring, StudioTrialAuthoringRequest
 from feedbax.contracts.studio_checkpoint_rule import StudioCheckpointRuleEdit, StudioCheckpointRuleRequest
-from feedbax.contracts.studio_subset import StudioSubsetToRowsEdit, StudioSubsetToRowsRequest
+from feedbax.contracts.studio_subset import (
+    StudioRunRuleCheck, StudioRunRuleRequest, StudioSubsetToRowsEdit, StudioSubsetToRowsRequest,
+)
 from feedbax.contracts.studio_sets import StudioSetEdit, StudioSetEditRequest, StudioSetsOffered, StudioSetsOfferedRequest
 from feedbax.contracts.studio_removed_runs import StudioRemovedRuns, StudioRemovedRunsRequest
 from scripts.studio_json_schema import emit_authored_contracts
@@ -478,6 +480,8 @@ AUTHORED_CONTRACT_MODELS = (
     StudioCheckpointRuleRequest,
     StudioSubsetToRowsEdit,
     StudioSubsetToRowsRequest,
+    StudioRunRuleRequest,
+    StudioRunRuleCheck,
     StudioSetEditRequest,
     StudioSetEdit,
     StudioSetsOfferedRequest,

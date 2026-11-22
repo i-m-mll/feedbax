@@ -733,6 +733,7 @@ def register_builtins(registry: FunctionRegistry) -> None:
         ("sub", "subtract", "same", None),
         ("mul", "multiply", "product", None),
         ("div", "true_divide", "quotient", _REAL),
+        ("mod", "remainder", "same", None),
         ("lt", "less", "same", _BOOL),
         ("le", "less_equal", "same", _BOOL),
         ("gt", "greater", "same", _BOOL),

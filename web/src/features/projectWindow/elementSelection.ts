@@ -41,13 +41,21 @@ type State = {
   pick: ReferencePick | null;
   /** A Model element the slot showing its document moves to. */
   reveal: ModelLocation | null;
+  /** The runs a rule field being written chooses, boxed on their step's card while it has focus. */
+  choosing: RuleChoice | null;
 };
+
+/** A step's runs, by run id, that a rule being written chooses. */
+export interface RuleChoice {
+  readonly step: string;
+  readonly runs: ReadonlySet<string>;
+}
 
 export type ElementSelectionStore = ReturnType<typeof useElementSelectionStore>;
 
 /** The window's one selection of elements, read by every tree, canvas, table and inspector. */
 export function useElementSelectionStore() {
-  const [store] = useState(() => createStore<State>(() => ({ selection: [], pick: null, reveal: null })));
+  const [store] = useState(() => createStore<State>(() => ({ selection: [], pick: null, reveal: null, choosing: null })));
   return store;
 }
 
@@ -92,11 +100,16 @@ export function pickKey(target: PickTarget) {
   }
 }
 
-const unpicked = createStore<State>(() => ({ selection: [], pick: null, reveal: null }));
+const unpicked = createStore<State>(() => ({ selection: [], pick: null, reveal: null, choosing: null }));
 
 /** The armed pick, or null while nothing is being picked. */
 export function usePick(store: ElementSelectionStore | undefined) {
   return useStore(store ?? unpicked, (state) => state.pick);
+}
+
+/** The runs a rule field being written chooses, or null while none has focus. */
+export function useChoosing(store: ElementSelectionStore | undefined) {
+  return useStore(store ?? unpicked, (state) => state.choosing);
 }
 
 /** Fills the armed reference with `target` and disarms it. */

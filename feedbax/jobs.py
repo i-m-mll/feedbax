@@ -226,6 +226,8 @@ class PlanJobAttempt:
     collection_progress: StoreTransferProgress | None = None
     validity: ReceiptValidity | None = None
     provenance: AttemptProvenance | None = None
+    metric_names: tuple[str, ...] = ()
+    """The numeric summary metrics a successful Train attempt reports, which a lowest or highest term can rank by."""
 
 
 @dataclass(frozen=True)
@@ -350,6 +352,7 @@ class PlanJobReader:
             store_success = None
             checkpoint_source = None if collected_train else _train_checkpoint_source(job, by_id)
             damage = None
+            metric_names: tuple[str, ...] = ()
             if succeeded:
                 if success_view is None:
                     success_view = SuccessView(ImmutableArtifactBlobProvider(store))
@@ -368,7 +371,8 @@ class PlanJobReader:
                 if collected_train and store_success is not None:
                     checkpoint_source = _collected_train_checkpoint_source(success_view, store_success)
             else:
-                receipt = _verified_training_receipt(job, store) if succeeded else None
+                verified_train = _verified_training_receipt(job, store) if succeeded else None
+                receipt, metric_names = verified_train if verified_train is not None else (None, ())
             validity = provenance = None
             if observer is not None and receipt is not None and success_view is not None:
                 from feedbax.persistence.effective_success import PublishedSuccess
@@ -422,6 +426,7 @@ class PlanJobReader:
                 light_success=store_success if light else None,
                 train_request=store_success.request if collected_train and store_success is not None else None,
                 collected_evaluate=collected_evaluate, validity=validity, provenance=provenance,
+                metric_names=metric_names if receipt is not None else (),
             )
             attempts.setdefault(request_id, []).append(attempt)
             if light and address in light_addresses:
@@ -2414,8 +2419,8 @@ def _project_best_subject(
     )
 
 
-def _verified_training_receipt(job: dict[str, Any], store: Path) -> JobReceipt | None:
-    """Authenticate the successful manifest named by this exact Host attempt."""
+def _verified_training_receipt(job: dict[str, Any], store: Path) -> tuple[JobReceipt, tuple[str, ...]] | None:
+    """Authenticate the successful manifest named by this exact Host attempt, and name its numeric summary metrics."""
     outcome = job.get("outcome") or {}
     try:
         receipt = JobReceipt.model_validate(outcome.get("receipt"))
@@ -2445,7 +2450,10 @@ def _verified_training_receipt(job: dict[str, Any], store: Path) -> JobReceipt |
             and (manifest.id, manifest.job_id, manifest.status)
             == (receipt.manifest_id, job_id, "completed")
         ):
-            return receipt
+            return receipt, tuple(sorted(
+                name for name, value in manifest.summary_metrics.items()
+                if type(value) in (int, float)
+            ))
     except (OSError, ValueError):
         return None
     return None

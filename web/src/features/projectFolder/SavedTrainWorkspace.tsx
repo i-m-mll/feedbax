@@ -61,7 +61,7 @@ import { withBaseDescendants } from './baseDescendants';
 import { useManagedProjectDetails, useSavedEvaluationScene, useStoredModel, type NamedDocumentScope } from './managedProjectDetails';
 import { viewOffer, viewsByKind } from './viewContent';
 import {
-  choosePick, clearSelection, isModelAddress, selectElement, useElementSelectionStore, usePick, type PickTarget,
+  choosePick, clearSelection, isModelAddress, selectElement, useChoosing, useElementSelectionStore, usePick, type PickTarget,
 } from '@/features/projectWindow/elementSelection';
 import { createCheckpointTrain } from './createCheckpointTrain';
 import { analyzeInput, createAnalyze, createReport, isReportFigureSource, type ReportFigureSource } from './createManagedStep';
@@ -74,11 +74,12 @@ import {
 } from './evaluateAuthoring';
 import { bindProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
-import { bestRankGroups, projectWindowPlan, planVariants, savedRunId, stepSourceRows, unvalued } from './projectWindowPlan';
+import { bestRankGroups, projectWindowPlan, planVariants, savedRunId, unvalued } from './projectWindowPlan';
 import { placeField, placeMember, placeView, removeGraphVariation, type Reveal } from './projectWindowProblems';
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
 import { planWithRefusal, problemKey, type GestureFailures, type Refusal } from './refusals';
-import { SelectionRuns, SubjectDocuments, TrialsEditor, type StepField } from './StudioEvaluateAuthoring';
+import { SubjectDocuments, TrialsEditor, type StepField } from './StudioEvaluateAuthoring';
+import { SelectionRule } from './SelectionRule';
 import { bindingEdit, connection, selectionProblem, stepSelections, subjectAxisEdits } from './selectionEdits';
 import { InputEditor, type InputGesture } from './InputEditor';
 import { documentChoice } from './referenceChoices';
@@ -213,6 +214,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const drawerSections = useDrawerSections(windowState, setWindowState);
   const elements = useElementSelectionStore();
   const armedPick = usePick(elements);
+  const choosing = useChoosing(elements);
   const mapPick = useMemo(() => armedPick && {
     accepts: armedPick.accepts, choose: (target: PickTarget) => { choosePick(elements, target); },
   }, [armedPick, elements]);
@@ -1042,12 +1044,13 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   /** The steps this step reads, each a link, and the inputs no field of the step draws. */
   const listedInputs = step?.inputs.filter(({ id, sourceStepId }) => !subjectSelection(id) &&
     (sourceStepId || !evaluateInputs || !['task', 'objective'].includes(id))) ?? [];
-  function inputDetail({ id, subset }: PlanStepView['inputs'][number]) {
+  /** An input's checkpoint and selection; where a rule field draws the selection, only the ranks it has bound. */
+  function inputDetail({ id, subset }: PlanStepView['inputs'][number], ruled = false) {
     return <>
       {id === 'subject' && subjectCheckpoint !== undefined &&
         <div className="px-control-inline text-shell-muted">{checkpointLabel(subjectCheckpoint)}</div>}
-      {subset && <div className="px-control-inline text-shell-muted">
-        {[...subset.terms, studioCountOf(subset.count, subset.total)].join(' · ')}
+      {subset && (!ruled || subset.ranked) && <div className="px-control-inline text-shell-muted">
+        {!ruled && [...subset.terms, studioCountOf(subset.count, subset.total)].join(' · ')}
         {subset.memberGroups?.map(({ label, members }) => <div key={members[0]?.id} className="mt-1">
           {label && <div className="font-medium">{label}</div>}
           <ol aria-label={label ? studioAccessibleName('members', label) : studioName('members')}
@@ -1079,15 +1082,22 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   /** The problem the plan reports on selection `index` of the step's input `role`. */
   const inputProblem = (role: string, index: number) => step && selectionProblem(shown?.window_map?.problems ?? [], step.id,
     variant ?? null, role, index, Array.isArray(authored?.inputs?.[role]));
-  /** Selection `index` of input `role` as the Runs control edits it: its terms, unless a named subset holds them. */
-  function selectionRuns(role: string, index: number, reference: StepReference, onApply: (terms: SubsetTerms) => void,
+  /** Selection `index` of input `role` as its rule field edits it: its terms, unless a named subset holds them. */
+  function selectionRuns(role: string, index: number, reference: StepReference, onCommit: (terms: SubsetTerms) => void,
     onToRows?: () => void) {
     const source = plan.steps.find(({ id }) => id === reference.step);
     const where = reference.where ?? {};
-    if (!source || !shown || !variant || 'subset' in where || where.when) return undefined;
-    return <SelectionRuns key={JSON.stringify([step?.id, role, index, source.id])} terms={where} source={source}
-      sourceRows={stepSourceRows(shown, source.id, variant)} disabled={!applies} refusal={refusedAt(`subset.${index}`)}
-      onApply={onApply} onToRows={onToRows} />;
+    if (!source || !shown || !variant || 'subset' in where) return undefined;
+    const inputId = Array.isArray(authored?.inputs?.[role]) ? `${role}.${index}` : role;
+    const subset = step?.inputs.find(({ id }) => id === inputId)?.subset;
+    return <SelectionRule key={JSON.stringify([step?.id, role, index, source.id])}
+      scope={{ project: saved.project_id, revision: shown.revision, variant }} source={source} rule={where.rule ?? ''}
+      pinned={where.rows?.map(({ key }) => key)} planned={subset} picking={elements} disabled={!applies}
+      refusal={refusedAt(`subset.${index}`)} onToRows={onToRows}
+      onCommit={(rule) => {
+        const { rule: _written, ...rest } = where;
+        onCommit(rule ? { ...rest, rule } : rest);
+      }} />;
   }
   const trainStart = authoring && authored?.kind === 'train' && step && readRefusal?.step !== step.id
     && modelDocumentId(step.documentIds);
@@ -1121,9 +1131,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
           problem: inputProblem('subject', index),
           mark: blockedSelectionMark('subject', index),
           runs: <>
-            {input && inputDetail(input)}
+            {input && inputDetail(input, !!evaluationEditor)}
             {evaluationEditor && selectionRuns('subject', index, reference,
-              (terms) => onCurrentPlan('editEvaluation')(`subset.${index}`, studioName('applySubset'), {
+              (terms) => onCurrentPlan('editEvaluation')(`subset.${index}`, studioName('runs'), {
                 op: reference.where !== undefined ? 'replace' : 'add', path: evaluationEditor.subjects[index].where, value: terms,
               }),
               attempts ? () => onCurrentPlan('freezeEvaluationSubset')(inputId, reference.step, attempts, index) : undefined)}
@@ -1231,21 +1241,20 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   }
 
   /**
-   * The runs an exception applies to, by axis and values (`seed 2`). Rows are read through their coordinates; an axis
-   * whose every value is included says nothing and is left out.
+   * The runs an exception applies to: its rule, and its rows by axis and values (`seed 2`). Rows are read through their
+   * coordinates; an axis whose every value is included says nothing and is left out.
    */
   function exceptionTerms(target: PlanStepView, where: SweepExceptionTerms | null | undefined) {
     const chosen = new Map<string, Set<string>>();
     const add = (axis: string, value: string) => chosen.set(axis, (chosen.get(axis) ?? new Set()).add(value));
-    for (const [axis, values] of Object.entries(where?.axes ?? {})) values.forEach((value) => add(axis, value));
     for (const row of where?.rows ?? []) {
       const coordinates = shown?.window_map?.rows.find(({ key }) => key.step === target.id && key.row === row)?.coordinates;
       for (const [axis, { value_id }] of Object.entries(coordinates ?? {})) add(axis, value_id);
     }
-    return [...chosen].filter(([axis, values]) => {
+    return [...where?.rule ? [where.rule] : [], ...[...chosen].filter(([axis, values]) => {
       const all = target.sweeps.find(({ id }) => id === axis)?.values;
       return !all || all.some(({ id }) => !values.has(id));
-    }).map(([axis, values]) => `${axis} ${[...values].map((value) => axisValueText(axis, value)).join(', ')}`);
+    }).map(([axis, values]) => `${axis} ${[...values].map((value) => axisValueText(axis, value)).join(', ')}`)];
   }
 
   function stepExceptions(stepId: string, scope: string | null = variant) {
@@ -1286,6 +1295,22 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         address: { kind: 'step', id: step.id },
         patches: [{ op: 'remove', path: authoredPointer(['sweep', 'exceptions', id]) }],
       }], { reviewedRevision: current.revision });
+      await editor.flush();
+    }, (reason) => ({ kind: 'exception', step: step.id, exception: id, reason }));
+  }
+
+  /** Writes `rule` as the rule of the step's exception `id`, keeping the rows it names. */
+  function editExceptionRule(id: string, rule: string) {
+    const exception = authored?.sweep?.exceptions?.[id];
+    if (!step || !applies || saved.project.sweep || !exception) return;
+    const { rule: _written, ...rest } = exception.where ?? {};
+    const files = [{ address: { kind: 'step' as const, id: step.id }, patches: [{
+      op: exception.where ? 'replace' as const : 'add' as const, path: authoredPointer(['sweep', 'exceptions', id, 'where']),
+      value: rule ? { ...rest, rule } : rest,
+    }] }];
+    void perform(async (current) => {
+      if (!await runRemoval.confirm(filesRemoval(current.project_id, current.revision, files, editor.signal))) return;
+      editor.editFiles(studioName('runs'), files, { reviewedRevision: current.revision });
       await editor.flush();
     }, (reason) => ({ kind: 'exception', step: step.id, exception: id, reason }));
   }
@@ -1361,9 +1386,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
 
   /** The inspector's gestures as last rendered: one made while the plan is read runs on the render of the current plan. */
   const latestGestures = useRef({ changeEvaluateSubject, chooseSubjectDocument, editEvaluation, editEvaluationCheckpoint,
-    applyCheckpointSweepEdit, freezeEvaluationSubset, removeSweepException, replay, startTrain, changeTrainStart });
+    applyCheckpointSweepEdit, freezeEvaluationSubset, removeSweepException, editExceptionRule, replay, startTrain, changeTrainStart });
   latestGestures.current = { changeEvaluateSubject, chooseSubjectDocument, editEvaluation, editEvaluationCheckpoint,
-    applyCheckpointSweepEdit, freezeEvaluationSubset, removeSweepException, replay, startTrain, changeTrainStart };
+    applyCheckpointSweepEdit, freezeEvaluationSubset, removeSweepException, editExceptionRule, replay, startTrain, changeTrainStart };
   type InspectorGestures = typeof latestGestures.current;
   /** `name`'s gesture, made now and run once the shown revision's plan is drawn, against that plan. */
   function onCurrentPlan<K extends keyof InspectorGestures>(name: K) {
@@ -1653,7 +1678,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         focusRequest={focusRequest}
         onBack={selection.back} onForward={selection.forward}
         map={renderMap(<StudioPipelineMap {...mapProps}
-          activeStepId={selection.stepId} viewportRef={mapViewport} fitReady={!!shown} sweepMenu={sweepMenu} pick={mapPick}
+          activeStepId={selection.stepId} viewportRef={mapViewport} fitReady={!!shown} sweepMenu={sweepMenu} pick={mapPick} choosing={choosing}
           presentation={presentation} onPresentationChange={changePresentation} />)}
         mapDrawer={renderMap(<StudioPipelineMapDrawer {...mapProps} />)}
         compactMap={renderMap(<StudioPipelineMap {...mapProps} mode="line" />)}
@@ -1814,10 +1839,18 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             const pivot = pivotCommand(slot);
             const pivotActive = pivotSlots[slot] === step.id;
             const run = state.focus?.stepId === step.id ? step.runs.find(({ id }) => id === state.focus?.runId) : undefined;
-            const exceptions = stepExceptions(step.id).map((exception) => ({ id: exception.id, text: [
-              ...exceptionPatchTexts(exception.rule.patches ?? {}, trainLabels, trainClasses),
-              exceptionRuns(step, exception),
-            ].join(' · ') }));
+            const exceptions = stepExceptions(step.id).map((exception) => {
+              const where = exception.rule.where;
+              const editable = !where?.rows && shown && variant;
+              return { id: exception.id, text: [
+                ...exceptionPatchTexts(exception.rule.patches ?? {}, trainLabels, trainClasses),
+                ...editable ? [] : [exceptionRuns(step, exception)],
+              ].join(' · '), rule: editable && <SelectionRule scope={{ project: saved.project_id, revision: shown.revision, variant }}
+                source={step} rule={where?.rule ?? ''} ranked={false} picking={elements}
+                planned={{ count: exception.count, total: step.runs.length }}
+                disabled={!applies || !!saved.project.sweep}
+                onCommit={(rule) => onCurrentPlan('editExceptionRule')(exception.id, rule)} /> };
+            });
             const revealedException = exceptionReveal?.revision === saved.revision && exceptionReveal.step === step.id
               ? exceptionReveal.id : undefined;
             return {

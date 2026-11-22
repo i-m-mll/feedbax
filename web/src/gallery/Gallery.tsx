@@ -32,6 +32,7 @@ import { Table, TableCell, TableHeaderCell, TableRow } from '@/components/ui/Tab
 import { TextField } from '@/components/ui/TextField';
 import { ValueFieldGallery } from './ValueFieldGallery';
 import { RunGridGallery } from './RunGridGallery';
+import { RuleFieldGallery } from './RuleFieldGallery';
 import { CardStyles } from './CardStyles';
 import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
 
@@ -458,6 +459,10 @@ export function Gallery() {
         </Group>
 
         <ValueFieldGallery />
+
+        <Group name="Rule field">
+          <RuleFieldGallery />
+        </Group>
 
         <Group name="Card styles">
           <CardStyles />

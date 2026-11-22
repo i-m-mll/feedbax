@@ -30,7 +30,7 @@ def listed_best():
     raw = authored_best()
     steps = raw["steps"]
     steps["train_b"] = deepcopy(steps["train"]) | {"sweep": _rates({"d": 0.004, "e": 0.0005, "f": 0.0015})}
-    best = {"best": {"by": "train_loss", "k": 2, "order": "min"}}
+    best = {"rule": "lowest 2 train_loss"}
     raw["documents"]["chosen"] = {"schema": "subset", "payload": {"rows": [
         {"key": "chosen", "variant": "default", "row": "rate=b"},
     ]}}
@@ -81,7 +81,7 @@ def test_a_second_measured_selection_of_one_step_takes_the_next_suffix():
     raw = listed_best()
     subject = raw["steps"]["baseline"]["inputs"]["subject"]
     subject[1] = deepcopy(subject[0])
-    subject[1]["where"]["best"]["order"] = "max"
+    subject[1]["where"]["rule"] = "highest 2 train_loss"
     plan = compile_project(Project.model_validate(raw))
     assert not plan.diagnostics, plan.diagnostics
     assert plan.subsets["default", "baseline", "subject.1"].ranks == ("train-2/rank-1", "train-2/rank-2")
@@ -96,7 +96,7 @@ def test_a_refused_best_lands_on_its_own_selection():
     patches["trial_documents.task"] = {"value": {"document": "fewer-trials"}}
     problems = compile_project(Project.model_validate(raw)).diagnostics
     assert problems and {(problem.step, problem.path) for problem in problems} == {
-        ("baseline", "inputs.subject.1.where.best"),
+        ("baseline", "inputs.subject.1.where.rule"),
     }
 
 
@@ -161,7 +161,7 @@ def test_grouped_ranks_of_listed_steps_are_named_and_selected_by_key():
     }}
     del steps["train"]["sweep"]["axes"]["rate"]["values"]["c"]
     steps["train_b"] = deepcopy(steps["train"])
-    best = {"best": {"by": "train_loss", "k": 1, "order": "min", "per": ["rate"]}}
+    best = {"rule": "lowest 1 train_loss per rate"}
     steps["baseline"]["inputs"]["subject"] = [
         {"step": "train", "checkpoint": "last", "where": deepcopy(best)},
         {"step": "train_b", "checkpoint": "last", "where": deepcopy(best)},
@@ -176,7 +176,7 @@ def test_grouped_ranks_of_listed_steps_are_named_and_selected_by_key():
     assert not any(re.search("[0-9a-f]{64}", run.label) for run in runs.values())
 
     steps["baseline"]["sweep"]["exceptions"] = {"dropped": {
-        "where": {"axes": {"subject": ["train_b/rate=a/rank-1"]}}, "exclude": True,
+        "where": {"rule": 'subject="train_b/rate=a/rank-1"'}, "exclude": True,
     }}
     excepted = compile_project(Project.model_validate(raw))
     assert not excepted.diagnostics, excepted.diagnostics

@@ -30,10 +30,14 @@ export async function tabTo(page: Page, target: Locator, limit = 100) {
 
 export async function activateMenuItem(page: Page, item: Locator, key = 'Enter') {
   await expect(item).toBeEnabled();
-  for (let index = 0; index < 20 && !await item.evaluate((element) => element === document.activeElement); index += 1) {
-    await page.keyboard.press('ArrowDown');
-  }
-  await expect(item).toBeFocused();
+  // A menu opened from the keyboard places its first focus a frame after it opens, which can take focus off an item
+  // the loop already reached; reaching it again after that settles.
+  await expect(async () => {
+    for (let index = 0; index < 20 && !await item.evaluate((element) => element === document.activeElement); index += 1) {
+      await page.keyboard.press('ArrowDown');
+    }
+    await expect(item).toBeFocused({ timeout: 250 });
+  }).toPass();
   await page.keyboard.press(key);
 }
 

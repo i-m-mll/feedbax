@@ -9,14 +9,11 @@ import { TextField } from '@/components/ui/TextField';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { Section } from '@/components/ui/Section';
 import { ReferenceField } from '@/components/values/ReferenceField';
-import type { PlanStepView } from '@/features/pipeline/planView';
-import { BestSchema, type Best, type SelectedRow, type SubsetTerms } from '@/generated/studioContracts';
 import {
   checkpointDraft, checkpointDraftRule, conditionLabels, emptyCheckpointDraft, validTrialSet,
   type CheckpointDraft, type CheckpointDraftField, type CheckpointKind, type CheckpointRange, type EditableCheckpointRule,
   type TrialDomain, type TrialSet,
 } from './evaluateAuthoring';
-import { savedRunId } from './projectWindowPlan';
 import type { AuthoredProject } from './authoredEdits';
 import { documentChoice, documentGroup } from './referenceChoices';
 import { ScrollFade } from '@/components/ui/ScrollFade';
@@ -133,39 +130,6 @@ function toggle(ids: readonly string[], id: string, checked: boolean) {
   return checked ? [...ids, id] : ids.filter((entry) => entry !== id);
 }
 
-function BestEditor({ rule, sweeps, disabled, onChange }: {
-  rule: Best;
-  sweeps: PlanStepView['sweeps'];
-  disabled: boolean;
-  onChange(rule: Best): void;
-}) {
-  return <div className="value-field-parts grid gap-1">
-    <label className="grid gap-1">
-      {studioName('metric')}
-      <TextField value={rule.by} spellCheck={false} onValueChange={(by) => onChange({ ...rule, by })} />
-    </label>
-    <div className="grid grid-cols-2 gap-1">
-      <label className="grid gap-1">
-        {studioName('order')}
-        <Select aria-label={studioName('order')} value={rule.order ?? 'max'} disabled={disabled}
-          items={[{ value: 'min', label: studioName('lowest') }, { value: 'max', label: studioName('highest') }]}
-          onValueChange={(order) => onChange({ ...rule, order })} />
-      </label>
-      <label className="grid gap-1">
-        {studioName('count')}
-        <NumberField className="min-w-0" min={1} step={1}
-          value={Number.isNaN(rule.k) ? null : rule.k}
-          onValueChange={(k) => onChange({ ...rule, k: k ?? Number.NaN })} />
-      </label>
-    </div>
-    {sweeps.length > 0 && <fieldset>
-      <legend>{studioName('per')}</legend>
-      <Checkboxes options={sweeps} selected={rule.per ?? []} disabled={disabled}
-        onToggle={(id, checked) => onChange({ ...rule, per: toggle(rule.per ?? [], id, checked) })} />
-    </fieldset>}
-  </div>;
-}
-
 /**
  * Which trials the Evaluate runs: every condition, chosen conditions, or a number sampled from the task. A choice
  * saves once it names some trials.
@@ -217,67 +181,6 @@ export function TrialsEditor({ initial, domain, disabled, refusal, onSave }: {
         onValueCommitted={(next) => commit({ kind: 'sample', count: next ?? Number.NaN })} />
     </FieldRow>}
   </Section>;
-}
-
-/** A selection's Runs: the producer's rows, its sweep values, and Best. Apply saves them as the selection's `where`. */
-export function SelectionRuns({ terms, source, sourceRows, disabled, refusal, onApply, onToRows }: {
-  terms: SubsetTerms;
-  source: PlanStepView;
-  sourceRows: readonly SelectedRow[];
-  disabled: boolean;
-  refusal?: string;
-  onApply(terms: SubsetTerms): void;
-  onToRows?(): void;
-}) {
-  const [draft, setDraft] = useDraft(terms);
-  const changed = JSON.stringify(draft) !== JSON.stringify(terms);
-  const best = draft.best ? BestSchema.safeParse({ ...draft.best, by: draft.best.by.trim() }) : undefined;
-  const hasMembers = draft.rows?.length !== 0 && Object.values(draft.axes ?? {}).every((values) => values.length > 0);
-  const canApplySubject = changed && hasMembers && (!best || best.success);
-  const address = ({ variant, row }: SelectedRow) => savedRunId({ step: source.id, variant, row });
-  const labels = new Map(source.runs.map(({ id, label }) => [id, label]));
-  const rows = sourceRows.map((row) => ({ id: address(row), label: labels.get(address(row)) ?? row.row }));
-  const selectedRows = draft.rows?.map(address) ?? [];
-  const editRows = terms.rows !== undefined;
-  const uniqueRows = !draft.rows || new Set(draft.rows.map(({ key }) => key)).size === draft.rows.length;
-  function toggleRow(id: string, checked: boolean) {
-    const selected = new Set(toggle(selectedRows, id, checked));
-    const picked = sourceRows.filter((row) => selected.has(address(row)));
-    const initial = terms.rows ?? [];
-    const entries = new Set(initial.map(address));
-    const ordinary = sourceRows.filter((row) => entries.has(address(row)));
-    const hasAuthoredOrder = ordinary.length !== initial.length || ordinary.some((row, index) =>
-      row.key !== initial[index].key || address(row) !== address(initial[index]));
-    const rows = hasAuthoredOrder
-      ? [...initial.filter((row) => selected.has(address(row))), ...picked.filter((row) => !entries.has(address(row)))]
-      : picked;
-    setDraft({ ...draft, rows });
-  }
-  const sweeps = editRows ? source.sweeps.filter(({ id }) => terms.axes?.[id] !== undefined) : source.sweeps;
-  return <Section level="field" name={studioName('runs')} bodyClassName={members}><fieldset className="contents" disabled={disabled}>
-    {editRows && rows.length > 0 && <Checkboxes options={rows} selected={selectedRows} disabled={disabled} onToggle={toggleRow} />}
-    {sweeps.map(({ id, label, values }) => {
-      const selected = draft.axes?.[id] ?? values.map((value) => value.id);
-      return <fieldset key={id}>
-        <legend>{label}</legend>
-        <Checkboxes options={values} selected={selected} disabled={disabled}
-          onToggle={(valueId, checked) => setDraft({
-            ...draft, axes: { ...draft.axes, [id]: toggle(selected, valueId, checked) },
-          })} />
-      </fieldset>;
-    })}
-    <Checkbox label={studioName('best')} checked={draft.best != null} disabled={disabled} onCheckedChange={(checked) => {
-      const { best: _best, ...staticTerms } = draft;
-      setDraft(checked ? { ...staticTerms, best: { by: '', k: 1, order: 'min' } } : staticTerms);
-    }} />
-    {draft.best && <BestEditor rule={draft.best} sweeps={source.sweeps} disabled={disabled}
-      onChange={(rule) => setDraft({ ...draft, best: rule })} />}
-    <Button className="justify-self-start" disabled={disabled || !canApplySubject || !uniqueRows}
-      onClick={() => onApply({ ...draft, ...(best?.success && { best: best.data }) })}>{studioName('applySubset')}</Button>
-    {onToRows && <Button className="justify-self-start" disabled={disabled || changed} onClick={onToRows}>{studioName('toRows')}</Button>}
-    {changed && !hasMembers && <p role="status">{studioReason('emptySelection', studioName('runs'))}</p>}
-    {refusal && <p role="alert">{refusal}</p>}
-  </fieldset></Section>;
 }
 
 /** The Task and Objective an initial Model subject declares; a checkpoint subject reads them from its Train step. */
