@@ -9,6 +9,7 @@ import {
   selectionButton,
   selectedRuns,
   selectRun,
+  selectStep,
   type PipelineSelectionState,
   type RunSetsByStep,
 } from "@/features/pipeline/selection";
@@ -230,7 +231,11 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
                   </TableCell>
                 ))}
                 <TableCell tabIndex={-1} className={cellFocus} aria-description={studioRunReason({ ...run, reason })}>
-                  <StudioRunStatus status={run.state} {...appTip(studioRunReason({ ...run, reason }))} />
+                  <span className="inline-flex items-center gap-1.5">
+                    <StudioRunStatus status={run.state} {...appTip(studioRunReason({ ...run, reason }))} />
+                    {run.blockedBy && <Button variant="bare" size="content" className="underline-offset-2 hover:underline"
+                      onClick={() => onSelectionChange(selectStep(state, run.blockedBy!.stepId))}>{run.blockedBy.label}</Button>}
+                  </span>
                 </TableCell>
                 <TableCell tabIndex={-1} className={cellFocus}>
                   {(run.status === "running" || run.status === "stopped") && run.progress &&

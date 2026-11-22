@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 test.use({
   headless: true,
@@ -6,7 +6,7 @@ test.use({
   trace: 'off',
 });
 
-test('uses the pinned shell surfaces, Studio’s accent and the shell’s title bar', async ({ page }) => {
+async function openShell(page: Page) {
   await page.route((url) => url.pathname.startsWith('/api/'), (route) => route.fulfill({ status: 503 }));
   const revision = 'a'.repeat(64);
   await page.route('**/api/projects/shell/open', (route) => route.fulfill({ json: {
@@ -17,6 +17,10 @@ test('uses the pinned shell surfaces, Studio’s accent and the shell’s title 
     },
   }}));
   await page.goto('/?project=shell');
+}
+
+test('uses the pinned shell surfaces, Studio’s accent and the shell’s title bar', async ({ page }) => {
+  await openShell(page);
 
   const frame = page.locator('.shell-frame.studio-project-window');
   const header = frame.locator('[data-studio-focus-region="top"]');
@@ -70,4 +74,26 @@ test('uses the pinned shell surfaces, Studio’s accent and the shell’s title 
   });
   const restored = await geometry();
   expect(Math.abs(restored.logoCentre - restored.railCentre)).toBeLessThanOrEqual(0.5);
+});
+
+test('the map drawer meets the main area with the divider, not the chrome edge', async ({ page }) => {
+  await openShell(page);
+  const drawer = page.locator('.studio-window-side').first();
+
+  for (const theme of ['light', 'dark']) {
+    const tokens = await page.evaluate((theme) => {
+      document.documentElement.dataset.theme = theme;
+      const resolve = (token: string) => {
+        const probe = document.createElement('div');
+        probe.style.color = `var(${token})`;
+        document.body.append(probe);
+        const colour = getComputedStyle(probe).color;
+        probe.remove();
+        return colour;
+      };
+      return { divider: resolve('--border-muted'), edge: resolve('--app-boundary-line-color') };
+    }, theme);
+    expect(tokens.divider).not.toBe(tokens.edge);
+    await expect(drawer).toHaveCSS('border-inline-end-color', tokens.divider);
+  }
 });

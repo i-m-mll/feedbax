@@ -40,6 +40,28 @@ export function ProblemRow({ problem, ...row }: {
   return <MentionRow place={problem.place} detail={studioProblemDetail(problem)} {...row} />;
 }
 
+/** A problem as the Problems list holds it: one per place and detail, with the number of runs it is on. */
+export interface ProblemEntry {
+  readonly problem: StudioProjectWindowMapProblem;
+  readonly runs: number;
+}
+
+/**
+ * The entries of the Problems list. A problem repeated across a step's rows is one entry; a run waiting on another
+ * step's run is not listed, its own row and step mark saying so.
+ */
+export function problemEntries(problems: readonly StudioProjectWindowMapProblem[]): ProblemEntry[] {
+  const entries = new Map<string, { problem: StudioProjectWindowMapProblem; rows: Set<string | null> }>();
+  for (const problem of problems) {
+    if (problem.code === 'blocked_input') continue;
+    const key = JSON.stringify([problem.step, problem.variant, problem.place, problem.path, problem.detail]);
+    const entry = entries.get(key) ?? { problem, rows: new Set() };
+    entry.rows.add(problem.row);
+    entries.set(key, entry);
+  }
+  return [...entries.values()].map(({ problem, rows }) => ({ problem, runs: rows.size }));
+}
+
 export function StudioProblems({ command, count, open, opener, onOpen, onClose, children }: {
   command: StudioCommand;
   count: number;

@@ -30,6 +30,11 @@ export function studioAccessibleName(id: StudioNameId, value?: string | number) 
   return value === undefined || value === '' ? studioName(id) : `${studioName(id)} ${value}`;
 }
 
+/** A name with why what it names does not apply. */
+export function studioReasonedName(id: StudioNameId, reason: string) {
+  return studioFormat('reasonedName', { name: studioName(id), reason });
+}
+
 export function studioUnit(id: keyof typeof vocabulary.unit) {
   return vocabulary.unit[id];
 }
