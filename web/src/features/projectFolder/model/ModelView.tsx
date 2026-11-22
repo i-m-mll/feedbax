@@ -237,15 +237,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const owner = resolved?.owner;
   const interior = owner?.interior;
   const physical = interior?.physical_domain ?? null;
-  /**
-   * Whether the topology applies is decided with the plan. From a new revision until its plan is read it keeps its last
-   * value, so the cards keep their commands and a gesture made then waits for the plan.
-   */
-  const topology = useRef<{ subject: string; applies: boolean }>();
-  const topologySubject = JSON.stringify([saved.project_id, model?.id]);
-  if (planCurrent || topology.current?.subject !== topologySubject) topology.current = { subject: topologySubject, applies: topologyApplies };
   /** An Evaluate edits the topology of one selected value's Model; the edit is stored on the value. */
-  const editTopology = topology.current.applies && (!evaluate || evaluate.scope.kind === 'axis_value');
+  const editTopology = topologyApplies && (!evaluate || evaluate.scope.kind === 'axis_value');
   const selectedRuns = evaluate?.scope.kind === 'axis_value' ? evaluateEditRuns(evaluate.scope, evaluate.run, fieldRows)
     : !evaluate && fieldRows?.length && fieldAxes ? { rows: [...fieldRows], axes: fieldAxes } : undefined;
   const selectedHere = selected.filter((item) => inGraph(item, graph));
@@ -268,15 +261,18 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     queryKey: ['model-fields', saved.project_id, fieldBody],
     queryFn: ({ signal }: { signal: AbortSignal }) => projectModelFields(saved.project_id, fieldBody, signal),
     enabled: active,
-    placeholderData: (previous: Awaited<ReturnType<typeof projectModelFields>> | undefined, query?: { queryKey: readonly unknown[] }) => {
-      const previousBody = query?.queryKey[2] as FieldBody | undefined;
-      return previousBody && previousBody.document === fieldBody.document && addressKey(previousBody.owner) === addressKey(fieldBody.owner)
-        && JSON.stringify(previousBody.evaluate_scope) === JSON.stringify(fieldBody.evaluate_scope)
-        && JSON.stringify(previousBody.rows) === JSON.stringify(fieldBody.rows) ? previous : undefined;
-    },
   })) });
   const fieldsError = fieldQueries.find((query) => query.error)?.error ?? null;
-  const fieldsData = fieldQueries.every((query) => query.data) ? fieldQueries.map((query) => query.data!) : undefined;
+  /**
+   * The fields read last for the same owners and runs stay shown while those of another revision or run are read.
+   * They are kept here, not as each query's placeholder: `useQueries` gives a query of a new key no previous data.
+   */
+  const fieldsSubject = JSON.stringify(fieldBodies.map(({ document, owner, evaluate_scope, rows }) =>
+    [document, addressKey(owner), evaluate_scope, rows]));
+  const readFields = fieldQueries.every((query) => query.data) ? fieldQueries.map((query) => query.data!) : undefined;
+  const lastFields = useRef<{ subject: string; fields: NonNullable<typeof readFields> }>();
+  if (readFields) lastFields.current = { subject: fieldsSubject, fields: readFields };
+  const fieldsData = readFields ?? (lastFields.current?.subject === fieldsSubject ? lastFields.current.fields : undefined);
   /**
    * Edits a projected field after the view's earlier commands, once the plan of the revision it edits is current: the
    * edit carries the steps that plan lights.
