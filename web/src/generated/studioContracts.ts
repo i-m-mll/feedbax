@@ -1124,6 +1124,7 @@ export interface StudioSweepSampler {
 export interface StudioFieldView {
   label: string;
   text: string;
+  structure?: StudioValueStructure | null;
   effective?: string | null;
   mixed?: boolean;
   unit?: string | null;
@@ -1140,6 +1141,7 @@ export interface StudioFieldView {
 export interface ModelFieldView {
   label: string;
   text: string;
+  structure?: StudioValueStructure | null;
   effective?: string | null;
   mixed?: boolean;
   unit?: string | null;
@@ -1158,6 +1160,7 @@ export interface ModelFieldView {
 export interface TrainFieldView {
   label: string;
   text: string;
+  structure?: StudioValueStructure | null;
   effective?: string | null;
   mixed?: boolean;
   unit?: string | null;
@@ -2967,6 +2970,8 @@ export type FunctionClass = "math" | "shape" | "draw" | "penalty" | "sweep_rule"
 export type FunctionInfo = {
   "id": string;
   "signature": string;
+  "label"?: string | null;
+  "parameters"?: Array<FunctionParameter>;
   "display_class": FunctionClass;
   "min_args": number;
   "max_args": number | null;
@@ -2977,6 +2982,11 @@ export type FunctionInfo = {
   "random"?: boolean;
   "stateful"?: boolean;
   "reset"?: StateReset;
+};
+
+export type FunctionParameter = {
+  "name": string;
+  "label": string;
 };
 
 export type GroupCombination = {
@@ -3765,6 +3775,12 @@ export type StudioDefinitionChange = {
   "place": StudioModelPlace | StudioTaskPlace | StudioObjectivePlace | StudioTrainingPlace | StudioMethodPlace | StudioAnalysisPlace | StudioInputPlace | StudioStepPlace;
 };
 
+export type StudioDensity = {
+  "low": number;
+  "high": number;
+  "values": Array<number>;
+};
+
 export type StudioEvaluateStep = {
   "kind": "evaluate";
   "label"?: string | null;
@@ -4262,6 +4278,7 @@ export type StudioTrialField = {
   "path": string;
   "projection": SiteProjection;
   "text"?: string | null;
+  "structure"?: StudioValueStructure | null;
 };
 
 export type StudioTrialInput = {
@@ -4294,6 +4311,12 @@ export type StudioTrialSelectDocument = {
 export type StudioTrialStepScope = {
   "kind": "step";
   "chosen_steps"?: Array<string>;
+};
+
+export type StudioValueStructure = {
+  "value": FieldValue;
+  "arguments"?: Array<string>;
+  "density"?: StudioDensity | null;
 };
 
 export type SubsetTerms = {
@@ -6460,6 +6483,7 @@ export const StudioFieldViewSchema: z.ZodType<StudioFieldView> = z.lazy(() =>
     .object({
       "label": z.string(),
       "text": z.string(),
+      "structure": StudioValueStructureSchema.nullable().optional(),
       "effective": z.string().nullable().optional(),
       "mixed": z.boolean().optional(),
       "unit": z.string().nullable().optional(),
@@ -6480,6 +6504,7 @@ export const ModelFieldViewSchema: z.ZodType<ModelFieldView> = z.lazy(() =>
     .object({
       "label": z.string(),
       "text": z.string(),
+      "structure": StudioValueStructureSchema.nullable().optional(),
       "effective": z.string().nullable().optional(),
       "mixed": z.boolean().optional(),
       "unit": z.string().nullable().optional(),
@@ -6502,6 +6527,7 @@ export const TrainFieldViewSchema: z.ZodType<TrainFieldView> = z.lazy(() =>
     .object({
       "label": z.string(),
       "text": z.string(),
+      "structure": StudioValueStructureSchema.nullable().optional(),
       "effective": z.string().nullable().optional(),
       "mixed": z.boolean().optional(),
       "unit": z.string().nullable().optional(),
@@ -9550,6 +9576,8 @@ export const FunctionInfoSchema: z.ZodType<FunctionInfo> = z.lazy(() =>
   z.object({
     "id": z.string(),
     "signature": z.string(),
+    "label": z.union([z.string(), z.null()]).optional(),
+    "parameters": z.array(FunctionParameterSchema).optional(),
     "display_class": FunctionClassSchema,
     "min_args": z.number().int().safe(),
     "max_args": z.union([z.number().int().safe(), z.null()]),
@@ -9562,6 +9590,13 @@ export const FunctionInfoSchema: z.ZodType<FunctionInfo> = z.lazy(() =>
     "reset": StateResetSchema.optional(),
   }).strict()
 ) as unknown as z.ZodType<FunctionInfo>;
+
+export const FunctionParameterSchema: z.ZodType<FunctionParameter> = z.lazy(() =>
+  z.object({
+    "name": z.string(),
+    "label": z.string(),
+  }).strict()
+) as unknown as z.ZodType<FunctionParameter>;
 
 export const GroupCombinationSchema: z.ZodType<GroupCombination> = z.lazy(() =>
   z.object({
@@ -10631,6 +10666,14 @@ export const StudioDefinitionChangeSchema: z.ZodType<StudioDefinitionChange> = z
   }).strict()
 ) as unknown as z.ZodType<StudioDefinitionChange>;
 
+export const StudioDensitySchema: z.ZodType<StudioDensity> = z.lazy(() =>
+  z.object({
+    "low": z.number().finite(),
+    "high": z.number().finite(),
+    "values": z.array(z.number().finite()),
+  }).strict()
+) as unknown as z.ZodType<StudioDensity>;
+
 export const StudioEvaluateStepSchema: z.ZodType<StudioEvaluateStep> = z.lazy(() =>
   z.object({
     "kind": z.literal("evaluate"),
@@ -11259,6 +11302,7 @@ export const StudioTrialFieldSchema: z.ZodType<StudioTrialField> = z.lazy(() =>
     "path": z.string(),
     "projection": SiteProjectionSchema,
     "text": z.union([z.string(), z.null()]).optional(),
+    "structure": z.union([StudioValueStructureSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialField>;
 
@@ -11303,6 +11347,14 @@ export const StudioTrialStepScopeSchema: z.ZodType<StudioTrialStepScope> = z.laz
     "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialStepScope>;
+
+export const StudioValueStructureSchema: z.ZodType<StudioValueStructure> = z.lazy(() =>
+  z.object({
+    "value": FieldValueSchema,
+    "arguments": z.array(z.string()).optional(),
+    "density": z.union([StudioDensitySchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioValueStructure>;
 
 export const SubsetTermsSchema: z.ZodType<SubsetTerms> = z.lazy(() =>
   z.object({
