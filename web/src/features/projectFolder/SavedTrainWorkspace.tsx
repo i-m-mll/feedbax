@@ -6,7 +6,7 @@ import { apiErrorMessage, isRefusal, isServiceFailure, isUnanswered, landsOnGest
 import { prepareCheckpointRuleEdit, prepareSubsetToRows } from '@/api/studioAuthoring';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import {
-  studioAccessibleName, studioCountOf, studioEvaluateValueSource, studioFormat, studioName, studioPlaceName, studioProblemDetail, studioReason, studioRunReason, type StudioPlace,
+  studioAccessibleName, studioCountOf, studioEvaluateValueSource, studioFormat, studioName, studioPlaceName, studioProblemDetail, studioReason, studioRunReason, studioRunStatus, type StudioPlace,
 } from '@/components/activity/studioVocabulary';
 import { HeaderActivity } from '@/components/layout/HeaderActivity';
 import {
@@ -39,6 +39,7 @@ import {
 } from '@/features/pipeline/selection';
 import { ProjectWindow } from '@/features/projectWindow/ProjectWindow';
 import { useHeldGestures } from '@/features/projectWindow/heldGestures';
+import { StatusMark } from '@/components/ui/StatusMark';
 import { ProblemRow, StudioProblems, problemEntries, type ProblemEntry } from '@/features/projectWindow/StudioProblems';
 import { holds } from './model/modelGraph';
 import { bindStudioCommand, commandAttributes, jobAllowsCommand, type StudioCommand } from '@/features/projectWindow/studioCommands';
@@ -72,7 +73,7 @@ import { placeField, placeMember, placeView, removeGraphVariation, type Reveal }
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
 import { planWithRefusal, problemKey, type GestureFailures, type Refusal } from './refusals';
 import { CheckpointEditor, EvaluateSubjectFields, SubjectSubset, TrialsEditor, type EvaluateField } from './StudioEvaluateAuthoring';
-import { connection, selectionProblem, stepSelections } from './selectionEdits';
+import { connection, stepSelections } from './selectionEdits';
 import { StudioEvaluationAttemptDetails } from './StudioEvaluationResults';
 import { focusedResult, SavedResults } from './SavedResults';
 import { filesRemoval, RunRemovalContext, useRunRemovalDialog } from './runRemoval';
@@ -558,18 +559,23 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     !Object.values(evaluated?.sweep?.axes ?? {}).some((axis) => axis && 'checkpoint_rule' in axis)
     ? selectionCheckpoints(subjectReferences) : undefined;
   const stepLabel = (id: string) => plan.steps.find((item) => item.id === id)?.label ?? id;
+  /** The rows of its Train step that selection `index` of the subject reads. */
+  function selectionRows(index: number) {
+    const reference = subjectReferences?.[index];
+    if (!reference) return [];
+    const members = mapInputs?.find(({ id }) => id === (listedSubject ? `subject.${index}` : 'subject'))?.subset?.members;
+    const read = members && new Set(members.map(savedRunId));
+    return projection.data?.window_map?.rows.filter(({ key }) =>
+      key.step === reference.step && key.variant === variant && (!read || read.has(savedRunId(key)))) ?? [];
+  }
   /** The fewest batches of any run that `selections` read, among the runs whose batches the plan knows. */
   function checkpointLimit(selections: readonly number[]): CheckpointLimit | undefined {
     let limit: CheckpointLimit | undefined;
     for (const index of selections) {
-      const reference = subjectReferences?.[index];
-      if (!reference) continue;
-      const members = mapInputs?.find(({ id }) => id === (listedSubject ? `subject.${index}` : 'subject'))?.subset?.members;
-      const read = members && new Set(members.map(savedRunId));
-      for (const { key, target_total } of projection.data?.window_map?.rows ?? []) {
-        if (key.step !== reference.step || key.variant !== variant || target_total == null) continue;
-        if (read && !read.has(savedRunId(key))) continue;
-        if (!limit || target_total < limit.batches) limit = { step: stepLabel(reference.step), batches: target_total };
+      for (const { key, target_total } of selectionRows(index)) {
+        if (target_total != null && (!limit || target_total < limit.batches)) {
+          limit = { step: stepLabel(key.step), batches: target_total };
+        }
       }
     }
     return limit;
@@ -1061,6 +1067,20 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         </div>)}
       </div>}
     </>;
+  }
+
+  /** A selection none of whose runs can run: the Cannot Run mark, and a link to the step it reads. */
+  function blockedSelectionMark(index: number) {
+    const rows = selectionRows(index);
+    if (!rows.length || rows.some(({ status }) => status !== 'cannot_run')) return undefined;
+    const source = rows[0].key.step;
+    return <span className="inline-flex items-center gap-1.5">
+      <StatusMark status="cannot_run" label={studioRunStatus('cannot_run')} />
+      <Button variant="bare" size="content" className="underline-offset-2 hover:underline"
+        onClick={() => selection.select(selectStep(state, source))}>
+        {rows.length === 1 ? studioFormat('blockedRun', { step: stepLabel(source), run: rows[0].label }) : stepLabel(source)}
+      </Button>
+    </span>;
   }
 
   const refusedAt = (field: EvaluateField) =>
@@ -1676,7 +1696,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                         const subset = evaluationEditor?.subjects[index];
                         const attempts = freezeAttempts(inputId);
                         return {
-                          problem: listed ? selectionProblem(authoredMap?.problems ?? [], step.id, variant, 'subject', index) : undefined,
+                          mark: blockedSelectionMark(index),
                           detail: <>
                             {input && inputDetail(input)}
                             {subset?.terms && projection.data && variant && <SubjectSubset

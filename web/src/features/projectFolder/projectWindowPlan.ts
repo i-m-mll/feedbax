@@ -305,10 +305,16 @@ export function projectWindowPlan(
       ...savedResult(row.light?.result),
       ...(elementResults.get(id) ?? []).flatMap(savedResult),
     ].map((result) => [result.requestId, result])).values()];
+    const problems = map?.problems.filter((problem) => problem.step === row.key.step &&
+      (problem.variant === null || problem.variant === row.key.variant) && (problem.row == null || problem.row === row.key.row));
+    const blocking = problems?.find(({ code, blocked_by }) => code === 'blocked_input' && blocked_by)?.blocked_by;
     addRun(row.key.step, {
       id, values, label: rowName(producer ? savedRunId(producer.key) : id, row.label), status: row.status, reason, variant: row.key.variant,
-      problems: map?.problems.filter((problem) => problem.step === row.key.step &&
-        (problem.variant === null || problem.variant === row.key.variant) && (problem.row == null || problem.row === row.key.row)),
+      problems,
+      blockedBy: blocking ? { stepId: blocking.step, label: studioFormat('blockedRun', {
+        step: shownName(blocking.step, project.steps?.[blocking.step]),
+        run: sourceRows.get(savedRunId(blocking))?.label ?? blocking.row,
+      }) } : undefined,
       change: change && row.status === 'stale' ? change : undefined,
       state: runResultState(row.status, results, checking), results,
       openingReason,

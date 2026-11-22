@@ -535,6 +535,7 @@
     "checkpointAtUpdate": "Checkpoint at update {update}",
     "subjectEnd": "{step} · {batches} batches",
     "runCount": "{count} runs",
+    "blockedRun": "{step} · {run}",
     "waitingForCheckpoint": "Waiting for {step} update {update}.",
     "waitingForCheckpoints": "Waiting for {step} to settle its checkpoints.",
     "waitingForTrainResume": "Waiting for {step} to resume.",
