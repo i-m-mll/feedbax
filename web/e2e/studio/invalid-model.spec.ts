@@ -38,8 +38,10 @@ test('keeps the steps that read an invalid Model editable and marks them waiting
 
   await page.getByRole('button', { name: /^Problems/ }).click();
   const problems = page.getByRole('dialog', { name: 'Problems', exact: true });
-  await expect(problems.getByRole('listitem')).toHaveCount(1);
-  await expect(problems.getByRole('listitem')).toContainText('train · 2 runs');
+  await expect(problems.getByRole('listitem')).toHaveCount(2);
+  for (const component of ['feedbax.equinox.Linear', 'feedbax.Conv2d']) {
+    await expect(problems.getByRole('listitem').filter({ hasText: component })).toContainText('train · 2 runs');
+  }
   await page.keyboard.press('Escape');
 
   await runs.getByRole('button', { name: /^train · / }).first().click();

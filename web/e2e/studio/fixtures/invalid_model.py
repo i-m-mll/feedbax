@@ -1,4 +1,5 @@
-"""Seed a Train step whose Model lacks required parameters, a sound 8000-batch Train step, and an Evaluate of the first."""
+"""Seed a Train step whose Model holds a Linear and a Conv2d without their required parameters, a sound 8000-batch
+Train step, and an Evaluate of the first."""
 
 import json
 import sys
@@ -15,12 +16,10 @@ def seed(home: str, project_id: str):
     for name in ("baseline", "analyze", "report"):
         steps.pop(name)
     documents = raw["documents"]
-    sound = deepcopy(documents["reach-model"])
-    controller = documents["reach-model"]["payload"]["interior"]["components"]["wrapper"]["interior"]["components"][
-        "controller"]["interior"]["components"]
-    del controller["cell"]["fields"]["hidden_size"]
-    del controller["readout"]["fields"]["output_size"]
-    documents["sound-model"] = sound
+    documents["sound-model"] = deepcopy(documents["reach-model"])
+    components = documents["reach-model"]["payload"]["interior"]["components"]
+    components["linear"] = {"kind": "leaf", "name": "Linear", "type": "feedbax.equinox.Linear", "fields": {}}
+    components["conv"] = {"kind": "leaf", "name": "Conv", "type": "feedbax.Conv2d", "fields": {}}
     train = steps["train"]
     train["base"]["inline"]["training_config"]["n_batches"] = 10000
     train["sweep"] = {"axes": {"rate": {
