@@ -3943,6 +3943,7 @@ export type StudioProjectWindowMapProblem = {
   "address"?: string | null;
   "layer"?: string | null;
   "authored_path"?: string | null;
+  "blocked_by"?: StudioSavedTrainKey | null;
 };
 
 export type StudioProjectWindowMapRequest = {
@@ -3965,6 +3966,7 @@ export type StudioProjectWindowMapRow = {
   "opening_step"?: "acquiring" | "connecting" | "copying" | "installing" | "starting_host" | null;
   "collection_progress"?: StoreTransferProgress | null;
   "evaluation_conditions"?: Array<string> | null;
+  "target_total"?: number | null;
   "light"?: StudioSavedLightHistory | null;
 };
 
@@ -10811,6 +10813,7 @@ export const StudioProjectWindowMapProblemSchema: z.ZodType<StudioProjectWindowM
     "address": z.union([z.string(), z.null()]).optional(),
     "layer": z.union([z.string(), z.null()]).optional(),
     "authored_path": z.union([z.string(), z.null()]).optional(),
+    "blocked_by": z.union([StudioSavedTrainKeySchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapProblem>;
 
@@ -10837,6 +10840,7 @@ export const StudioProjectWindowMapRowSchema: z.ZodType<StudioProjectWindowMapRo
     "opening_step": z.union([z.union([z.literal("acquiring"), z.literal("connecting"), z.literal("copying"), z.literal("installing"), z.literal("starting_host")]), z.null()]).optional(),
     "collection_progress": z.union([StoreTransferProgressSchema, z.null()]).optional(),
     "evaluation_conditions": z.union([z.array(z.string()), z.null()]).optional(),
+    "target_total": z.union([z.number().int().safe(), z.null()]).optional(),
     "light": z.union([StudioSavedLightHistorySchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapRow>;
