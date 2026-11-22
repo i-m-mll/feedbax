@@ -14,7 +14,8 @@ from feedbax.contracts.graph import ComponentSpec, GraphSpec, ParamSchema
 from feedbax.compiler.serialization import graph_to_spec
 from feedbax.mechanics.analytical_plant import AnalyticalMusculoskeletalPlant
 from feedbax.mechanics.skeleton.arm import TwoLinkArm
-from feedbax.builtins.models.networks import PopulationStructure, recurrent_controller
+from feedbax.builtins.models.networks import PopulationStructure
+from feedbax.models.controllers import recurrent_controller
 from tests.support.graph_compiler_test_support import spec_to_graph
 
 

@@ -15,8 +15,8 @@ from feedbax.contracts.model_document import SignalType
 from feedbax.contracts.model_edit import ModelEditCommand, ModelEditProblem, ModelEditState
 from feedbax.contracts.project import RootDocument, Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
-from feedbax.studio import model_edit
-from feedbax.studio.model_edit import Port, apply_model_edit
+from feedbax.compiler import model_edit
+from feedbax.compiler.model_edit import Port, apply_model_edit
 from feedbax.studio.model_undo import apply_delta, inverse_delta
 from feedbax.web.app import create_app
 

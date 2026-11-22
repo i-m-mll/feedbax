@@ -392,7 +392,7 @@ if DIRECTORY:
         "feedbax.host.io": _patch_io,
         "_feedbax_host_runtime.io": _patch_io,
         "_feedbax_host_runtime.worker": _patch_worker,
-        "feedbax.training_host_worker": _patch_training,
+        "feedbax.host.training_worker": _patch_training,
         "feedbax.host.client": _patch_client,
         "feedbax.host.store": _patch_store,
         "feedbax.host.daemon": _patch_daemon,

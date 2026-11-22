@@ -11,7 +11,7 @@ from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.method_checkpoint import parse_method_checkpoint_manifest
 from feedbax.persistence.receipt_content import ClosureVisitors, success_content_objects
-from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
+from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
 
 
 def read_retained_checkpoint(

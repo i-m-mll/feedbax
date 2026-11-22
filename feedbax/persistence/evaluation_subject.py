@@ -13,10 +13,10 @@ from feedbax.contracts.manifest import EvaluationRunManifest, EvaluationRunSpec,
 from feedbax.contracts.request_identity import DecodedRequest
 from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestRank, ContentRef, InputMember, LastMember, ProductRef, RequestId, UpdateSeriesMember
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec
-from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
+from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
 from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters
 from feedbax.contracts.jobs import JobReceipt
-from feedbax.studio.canonical_evaluate import (
+from feedbax.persistence.canonical_evaluate import (
     decode_evaluation_manifest, evaluation_manifest_id, initial_evaluation_references, states_product, states_ref,
     verify_initial_rollout,
 )
@@ -25,7 +25,7 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.checkpoint_publication import model_product, read_retained_checkpoint
 from feedbax.persistence.method_checkpoint import parse_method_checkpoint_manifest
 from feedbax.persistence.receipt_content import ClosureVisitors, success_content_objects, verify_success_content
-from feedbax.host.best_selection import rank_train_metric
+from feedbax.persistence.best_selection import rank_train_metric
 
 
 def read_terminal_train_subject(

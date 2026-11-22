@@ -6,7 +6,7 @@ import jax
 import pytest
 
 from feedbax.contracts.project import Project, diff
-from feedbax.contracts.project_plan import compile_project
+from feedbax.planner.project_plan import compile_project
 from tests.support.managed_train_fixture import managed_train_project
 
 

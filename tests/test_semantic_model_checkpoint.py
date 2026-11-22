@@ -37,14 +37,14 @@ from feedbax.persistence.method_checkpoint import (
     materialize_checkpoint_content,
     verify_method_checkpoint_content,
 )
-from feedbax.training.checkpoint_errors import CheckpointCustodyError
-from feedbax.training.method_checkpoint import (
+from feedbax.persistence.checkpoint_errors import CheckpointCustodyError
+from feedbax.host.method_checkpoint import (
     read_method_checkpoint,
     write_method_checkpoint,
 )
 from feedbax.training.method_runtime import stack_replicas
 from feedbax.training.methods import TrainingState
-from feedbax.training.model_checkpoint import (
+from feedbax.host.model_checkpoint import (
     ModelCheckpointError,
     SemanticModelWriter,
 )

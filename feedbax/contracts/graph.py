@@ -1634,3 +1634,7 @@ AcausalGraphSpec.model_rebuild(
 GraphSpec.model_rebuild(_types_namespace={"AcausalGraphSpec": AcausalGraphSpec})
 GraphUIState.model_rebuild()
 ParamSchema.model_rebuild()
+
+
+def task_binding_id(source_data_id: str, node_id: str, port: str) -> str:
+    return f"task:{source_data_id}->{node_id}:{port}"

@@ -1,6 +1,6 @@
 import pytest
 
-from feedbax.plugins.application import ApplicationRegistryBundle, new_application_registry_bundle
+from feedbax.application.bundle import ApplicationRegistryBundle, new_application_registry_bundle
 
 
 @pytest.fixture(name="application_registry_bundle")

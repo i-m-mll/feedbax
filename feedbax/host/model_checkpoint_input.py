@@ -12,12 +12,12 @@ from feedbax.contracts.effective_success import (
 )
 from feedbax.contracts.request_refs import BatchMember, EffectiveBindingId, RequestId
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
-from feedbax.job_completion import load_bound_checkpoint_selection
+from feedbax.host.job_completion import load_bound_checkpoint_selection
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.checkpoint_publication import checkpoint_model_objects, model_product, read_retained_checkpoint
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.method_checkpoint import method_checkpoint_files
-from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
+from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
 
 
 def _publication_files(publication: dict) -> dict[str, tuple[str, int]]:

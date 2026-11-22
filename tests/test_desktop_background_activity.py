@@ -309,7 +309,7 @@ def test_interrupted_owned_host_leaves_the_running_train_resumable_on_the_next_h
     from feedbax.host.io import append
     from feedbax.jobs import JobService
     from feedbax.web.services.desktop_jobs import StudioJobLifecycle
-    from feedbax.plugins.application import new_application_registry_bundle
+    from feedbax.application.bundle import new_application_registry_bundle
 
     registries = new_application_registry_bundle()
     runtime = os.path.realpath(sys.executable)
@@ -364,8 +364,8 @@ def test_background_interrupt_retires_owned_host_and_resumes_exact_train(tmp_pat
     from feedbax.host.process import process_group_member_pids
     from feedbax.host.io import append
     from feedbax.jobs import JobService
-    from feedbax.plugins.application import new_application_registry_bundle
-    from feedbax.training.method_checkpoint import read_method_checkpoint
+    from feedbax.application.bundle import new_application_registry_bundle
+    from feedbax.host.method_checkpoint import read_method_checkpoint
     from feedbax.web.services.project_folder import ProjectFolderService
 
     root = private_hosts / "host"

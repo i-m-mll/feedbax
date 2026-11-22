@@ -16,7 +16,7 @@ from feedbax.contracts.jobs import StudioSavedEvaluationRead
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.request_refs import UpdateSeriesMember
 from feedbax.jobs import JobNotFound, JobService
-from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import _save_project

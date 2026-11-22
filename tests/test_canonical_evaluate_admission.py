@@ -8,14 +8,14 @@ import jax
 import numpy as np
 import pytest
 
-from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
+from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.code_validity import ReceiptEvidence
 from feedbax.contracts.dataset import DatasetProductRef
 from feedbax.contracts.effective_success import INDEX_REF
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
-from feedbax.contracts.project_plan import RunKey
+from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.host.evaluate_success import publish_evaluate_success
@@ -23,16 +23,16 @@ from feedbax.jobs import JobConflict, JobService
 from feedbax.persistence.array_container import ArrayContainerError, ArrayContainerReader
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
-from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.runtime.raw_state import StateLayoutError, bind_raw_state
-from feedbax.studio.canonical_evaluate import (
+from feedbax.persistence.canonical_evaluate import (
     RAW_STATES_SCHEMA, ROLLOUT_TYPE, STATES_SCHEMA, evaluation_manifest_id, state_key,
 )
 from feedbax.tasks.document import TaskParameters
-from feedbax.training import evaluate_worker
-from feedbax.training.method_checkpoint import read_method_checkpoint
+from feedbax.host import evaluate_worker
+from feedbax.host.method_checkpoint import read_method_checkpoint
 from feedbax.runtime._graph_key_schedule import model_initialization_key
-from feedbax.validity.evidence import stage_evidence
+from feedbax.persistence.evidence import stage_evidence
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.support.host import admit, held_until_released, job_row, restart, run_job, token, wait_until
@@ -80,7 +80,7 @@ def managed_evaluation_definition():
 
 
 def test_managed_plan_resolves_task_owned_trial_ids():
-    from feedbax.contracts.project_plan import compile_project
+    from feedbax.planner.project_plan import compile_project
     from feedbax.contracts.task_document import TaskDocument
 
     raw = managed_evaluation_definition()
@@ -210,7 +210,8 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
     def template(initialization_seed):
         result = compile_trial_execution(
             documents.model, documents.task_source,
-            registry.components, registry.expression_functions, objective=documents.objective,
+            registry.components, registry.expression_functions, python_tasks=registry.python_tasks,
+            objective=documents.objective,
             input_overrides=documents.input_overrides,
             initialization_key=model_initialization_key(initialization_seed),
             artifact_provider=slot.provider,
@@ -495,7 +496,8 @@ def test_saved_raw_state_refuses_undeclared_registered_owner(host, tmp_path, mon
 
     prepared = compile_trial_execution(
         documents.model, documents.task_source,
-        registry.components, registry.expression_functions, input_overrides=documents.input_overrides,
+        registry.components, registry.expression_functions, python_tasks=registry.python_tasks,
+        input_overrides=documents.input_overrides,
     )
     assert isinstance(prepared, PreparedTrialExecution), prepared
     graph = prepared.executable.resolved.graph

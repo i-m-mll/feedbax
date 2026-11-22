@@ -19,8 +19,8 @@ from feedbax.persistence.array_container import ArrayContainerReader
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.evaluation_subject import evaluation_subject_objects
-from feedbax.plugins.application import new_application_registry_bundle
-from feedbax.studio.canonical_evaluate import CannotRun
+from feedbax.application.bundle import new_application_registry_bundle
+from feedbax.contracts.rollout import CannotRun
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.test_canonical_evaluate_admission import _save_project

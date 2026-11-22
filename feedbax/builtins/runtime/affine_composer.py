@@ -12,7 +12,7 @@ from jaxtyping import Array, PRNGKeyArray, PyTree
 from pydantic import BaseModel, ConfigDict
 from pydantic import Field as ConfigField
 
-from feedbax.component_registry.history import Change, History
+from feedbax.contracts.component_history import Change, History
 from feedbax.contracts.component import PortType
 from feedbax.contracts.portable import ComponentOptions, ConfigBinding, Ports
 from feedbax.runtime.graph import Component

@@ -4,7 +4,7 @@ import pytest
 
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.project import BasedDocument, Step
-from feedbax.contracts.project_plan import ElementChange, ElementKey, PlannedAnalyzeRun, RunKey, compile_project, diff_analyze_elements
+from feedbax.planner.project_plan import ElementChange, ElementKey, PlannedAnalyzeRun, RunKey, compile_project, diff_analyze_elements
 from feedbax.contracts.studio_analyze import StudioAnalyzeEdit, StudioAnalyzeRemove, StudioAnalyzeReset
 from feedbax.web.services.analyze_authoring import analyze_edit
 from feedbax.web.services.trial_scope import changed_from_base, preview_stored

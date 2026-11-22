@@ -21,12 +21,12 @@ from feedbax.contracts.request_specs import AnalysisRequestSpec, RenderRequestSp
 from feedbax.dataset import Dataset, Variable
 from feedbax.host.protocol import AdmissionItem, DeferredReuse, Edge, Job, Launch, LIGHT_ENTRYPOINT
 from feedbax.host.store import Store
-from feedbax.light_jobs import LightDelivery
+from feedbax.host.light_jobs import LightDelivery
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import publish_dataset
 from feedbax.persistence.effective_success import SuccessView, store_request
 from feedbax.validity.admission_projection import AdmissionProjection
-from feedbax.validity.evidence import stage_evidence
+from feedbax.persistence.evidence import stage_evidence
 
 
 @pytest.mark.parametrize("action", ["reuse", "stop", "rerun", "producer_stopped", "product_missing", "file_changed"])

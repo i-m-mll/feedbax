@@ -361,7 +361,7 @@ from feedbax.web.models.trajectory import (
     TrajectoryMetadata,
 )
 from feedbax.contracts.expression_values import FieldTextResult, Problem
-from feedbax.expression_site import SiteProjection
+from feedbax.contracts.expression_site import SiteProjection
 from feedbax.contracts.project_sweep import RangeValues, SampleValues
 from feedbax.contracts.studio_field import (
     FieldKindEdit, FieldNameEdit, FieldResetEdit, FieldTextEdit, ModelFieldRequest, ModelFieldResponse, ModelFieldView,

@@ -20,8 +20,8 @@ from feedbax.contracts.model_values import ModelFacts
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from feedbax.component_registry.history import History
-    from feedbax.studio.component_presentation import PresentationOverride
+    from feedbax.contracts.component_history import History
+    from feedbax.contracts.component_presentation import PresentationOverride
 
 
 @dataclass(frozen=True)

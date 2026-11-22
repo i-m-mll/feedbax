@@ -8,7 +8,7 @@ from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.graph import StudioTaskBindingSpec, StudioTaskDataSpec
 from feedbax.contracts.model_document import ModelDocument, SignalType
 from feedbax.contracts.model_edit import ModelProjectionRequest, ModelTaskSignal
-from feedbax.contracts.project_plan import RunKey, SelectedRunDefinition
+from feedbax.planner.project_plan import RunKey, SelectedRunDefinition
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 
 if TYPE_CHECKING:
@@ -37,9 +37,9 @@ def selected_model(definition: SelectedRunDefinition, document: str) -> object:
 
 
 def selected_model_and_task(folders: ProjectFolder, project_id: str, body: ModelProjectionRequest):
-    from feedbax.compiler.trial_execution import resolve_python_task
+    from feedbax.execution.trial_resolution import resolve_python_task
     from feedbax.project_folder import ProjectFolderInvalid
-    from feedbax.tasks.registry import application_python_tasks
+    from feedbax.application.composition import application_python_tasks
 
     key = RunKey(body.run.variant, body.run.step, body.run.row)
     plan = folders.read_plan(project_id, revision=body.revision, source_runs=(key,)).plan

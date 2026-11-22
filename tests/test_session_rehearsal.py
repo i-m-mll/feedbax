@@ -22,7 +22,7 @@ from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.execution_target import SessionTargetProfile
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, project_declaration_name
-from feedbax.contracts.project_plan import RunKey
+from feedbax.planner.project_plan import RunKey
 from feedbax.host import HostError
 from feedbax.jobs import JobService
 from feedbax.orchestration.session import (
@@ -32,7 +32,7 @@ from feedbax.orchestration.session_jobs import CollectedAttempt, SessionJobs
 from feedbax.orchestration.targets import TargetRegistry
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
-from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService

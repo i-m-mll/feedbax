@@ -10,7 +10,7 @@ from feedbax.contracts.expression_values import (
     CallValue, Level, LiteralValue, NameValue, Problem, Site, ValueBase, ValueType,
 )
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_plan import compile_project
+from feedbax.planner.project_plan import compile_project
 from feedbax.contracts.request_refs import BestRank
 from feedbax.contracts.run_rule import choose
 from feedbax.contracts.expression_text import RuleBest, RuleChoice, RuleCondition, RuleInterval, parse, parse_rule

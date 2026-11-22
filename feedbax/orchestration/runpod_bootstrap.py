@@ -110,7 +110,7 @@ import json
 import jax
 import sys
 from pathlib import Path
-from feedbax.orchestration.revision import assert_feedbax_source_residence
+from feedbax.revision import assert_feedbax_source_residence
 
 assert_feedbax_source_residence(Path(sys.argv[1]))
 backend = jax.default_backend()

@@ -183,3 +183,12 @@ class ResolvedRolloutBinding(StrictModel):
 
     def digest(self) -> str:
         return sha256_bytes(canonical_json_v2_bytes(self.model_dump(mode="json")))
+
+
+class CannotRun(ValueError):
+    """A capability required by the authored request is unavailable."""
+
+    def __init__(self, path: str, message: str):
+        self.path = path
+        self.reason = message
+        super().__init__(f"{path}: {message}")

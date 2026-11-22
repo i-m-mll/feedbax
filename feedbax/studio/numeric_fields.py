@@ -10,7 +10,7 @@ from feedbax.contracts.expression_values import (
 )
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project import SetProjectValue
-from feedbax.contracts.project_plan import PlannedRow
+from feedbax.planner.project_plan import PlannedRow
 from feedbax.contracts.project_sweep import (
     DEFAULT_SWEEP_LIMIT, ListedAxis, NamedAxis, RangeAxis, RangeValues, SampledAxis, SampleValues,
     sweep_value_identity_bytes,
@@ -20,7 +20,7 @@ from feedbax.contracts.studio_authoring import (
 )
 from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioFieldView, StudioSweepValue
 from feedbax.contracts.expression_registry import FunctionRegistry
-from feedbax.expression_site import FieldKind, field_kind, project_site, read_field
+from feedbax.contracts.expression_site import FieldKind, field_kind, project_site, read_field
 from feedbax.contracts.expression_text import ParsedField, print_field
 from feedbax.studio.authoring_sweeps import FieldSweeps, drop_axis, named_axis
 from feedbax.studio.value_structure import value_structure

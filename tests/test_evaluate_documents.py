@@ -4,7 +4,7 @@ from copy import deepcopy
 
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project, diff
-from feedbax.contracts.project_plan import ProjectPlanMemo, compile_project
+from feedbax.planner.project_plan import ProjectPlanMemo, compile_project
 from feedbax.contracts.project_resolution import ResolutionCode
 from feedbax.contracts.request_identity import decode_request
 from tests.support.managed_train_fixture import managed_evaluation_step, managed_train_project

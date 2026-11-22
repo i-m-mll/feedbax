@@ -23,7 +23,7 @@ from feedbax.models.cde import cde_controller
 from feedbax.runtime.graph import Component
 from feedbax.contracts.portable import Ports, ComponentOptions
 from feedbax.contracts.component import PortType
-from feedbax.studio.component_presentation import PresentationOverride
+from feedbax.contracts.component_presentation import PresentationOverride
 from tests.support.graph_compiler_test_support import spec_to_graph
 from feedbax.contracts.representation import REPRESENTATION_SCHEMA_VERSION
 

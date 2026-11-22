@@ -7,8 +7,8 @@ from typing import Annotated
 from pydantic import Field
 
 
-from feedbax.studio.component_presentation import PresentationOverride
-from feedbax.studio.muscle_representation import (
+from feedbax.contracts.component_presentation import PresentationOverride
+from feedbax.builtins.mechanics.muscle_representation import (
     _default_two_link_muscle_path_geometry,
     _point_mass_muscle_representation,
     _two_link_muscle_representation,

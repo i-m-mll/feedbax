@@ -37,8 +37,8 @@ from feedbax.jobs import JobService
 from feedbax.orchestration.session import Nonempty, SessionError, SessionModel
 from feedbax.orchestration.session_jobs import Delegation, admit_saved_delegation
 from feedbax.persistence.ssh_store import RemoteStore, SSHStoreConnection
-from feedbax.plugins.application import ApplicationRegistryBundle
-from feedbax.plugins.composition import load_application
+from feedbax.application.bundle import ApplicationRegistryBundle
+from feedbax.application.composition import load_application
 from feedbax.project_folder import (
     ProjectFolderLocation, SavedPlanMemo, SettledProjectPlan, _folder_lock, compile_saved_project,
 )

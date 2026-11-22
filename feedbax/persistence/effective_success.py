@@ -443,7 +443,7 @@ class SuccessView:
         target: AttemptTarget = LOCAL_TARGET,
         execution_evidence: ContentObjectRef | None = None,
     ) -> PublishedSuccess:
-        from feedbax.validity.evidence import read_staged_evidence, release_staged_evidence, verify_execution_replay
+        from feedbax.persistence.evidence import read_staged_evidence, release_staged_evidence, verify_execution_replay
 
         with self.store._exclusive_lock():
             if existing := self._index.attempts.get(attempt):

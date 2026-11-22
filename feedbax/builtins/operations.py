@@ -14,7 +14,7 @@ from feedbax.analysis.aligned import project_onto_direction
 from feedbax.analysis.operations import DatasetOutput, operation
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.dataset import FieldDescriptor
-from feedbax.analysis.operation_runtime import verify_dataset
+from feedbax.analysis.operation_inputs import verify_dataset
 from feedbax.contracts.operation import DatasetPort
 from feedbax.dataset import Dataset, Variable
 from feedbax.contracts.rollout import RAW_STATES_SCHEMA, STATES_SCHEMA

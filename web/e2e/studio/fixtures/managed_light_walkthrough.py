@@ -11,7 +11,7 @@ from feedbax.contracts.request_specs import EvaluationRequestSpec
 from feedbax.desktop.release import AppPaths
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.host import HostClient
-from feedbax.light_jobs import dataset_member
+from feedbax.host.light_jobs import dataset_member
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset
 from feedbax.persistence.effective_success import SuccessView

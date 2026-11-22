@@ -15,7 +15,7 @@ from feedbax.contracts.live_evaluate import (
 from feedbax.contracts.manifest import canonical_manifest_path
 from feedbax.contracts.request_refs import ContentRef, ProductRef, UpdateSeriesMember
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
-from feedbax.host.checkpoint_selection import verify_dependency_files
+from feedbax.persistence.checkpoint_selection import verify_dependency_files
 from feedbax.host.model_checkpoint_input import checkpoint_producer, retain_checkpoint, retain_checkpoint_model
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.array_container import open_array_container
@@ -23,12 +23,12 @@ from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.evaluation_subject import (
     read_terminal_train_subject, subject_tree, verify_initial_evaluation_states,
 )
-from feedbax.studio.canonical_evaluate import (
+from feedbax.persistence.canonical_evaluate import (
     BoundEvaluationJobInput, RolloutParameters, evaluation_checkpoint_coordinates,
     exact_evaluation_subject, states_product, states_ref, verify_evaluation_receipt,
 )
-from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
-from feedbax.validity.evidence import read_execution_evidence, release_staged_evidence, verify_execution_replay
+from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
+from feedbax.persistence.evidence import read_execution_evidence, release_staged_evidence, verify_execution_replay
 
 
 def publish_evaluate_success(
@@ -83,7 +83,7 @@ def publish_evaluate_success(
         trace = read_execution_evidence(store, execution_evidence).trace
         computation = trace.computation or trace.computation_unavailable
         if isinstance(subject, ContentRef):
-            from feedbax.studio.canonical_evaluate import initial_evaluation_references
+            from feedbax.persistence.canonical_evaluate import initial_evaluation_references
 
             verify_initial_evaluation_states(store, manifest, initial_evaluation_references(decoded))
             require_evaluation_coverage(computation, (rollout_slot(None, "0"),))

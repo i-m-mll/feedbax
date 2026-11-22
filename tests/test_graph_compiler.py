@@ -17,7 +17,7 @@ from feedbax.compiler import (
 )
 from feedbax.compiler.serialization import graph_to_spec
 from feedbax.component_registry import ComponentRegistry
-from feedbax.component_registry.history import Change, History
+from feedbax.contracts.component_history import Change, History
 from feedbax.contracts.component import PortType
 from feedbax.contracts.portable import ComponentOptions, Ports
 from feedbax.runtime.graph import Component

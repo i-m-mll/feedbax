@@ -17,8 +17,9 @@ from feedbax.dataset import Dataset
 from feedbax.contracts.task_document import TaskDocument
 from feedbax.plugins.declarations import (
     CallableDeclaration, DeclarationRegistry, DistributionSource, ResolvedDeclaration, mark_callable,
-    settings_schema, validate_declaration_key,
+    validate_declaration_key,
 )
+from feedbax.component_registry.declarations import settings_schema
 from feedbax.tasks.registry import PythonTaskInstance
 
 

@@ -39,7 +39,7 @@ from feedbax.compiler.prototypes import (
     validate_or_add_input_shape,
     _lookup_output_prototype_fn,
 )
-from feedbax.runtime.graph_channel_adapters import materialize_additive_channel_adapters
+from feedbax.builtins.runtime.graph_channel_adapters import materialize_additive_channel_adapters
 
 
 class ParameterResolutionError(ValueError):

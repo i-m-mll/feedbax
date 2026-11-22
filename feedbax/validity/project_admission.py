@@ -21,7 +21,7 @@ from feedbax.persistence.receipt_validity import read_validity_records
 from feedbax.validity.admission import QUICK_RECEIPT_DURATION, decide_validity, observe_differences
 from feedbax.validity.admission_projection import AdmissionProjection
 from feedbax.validity.environment import InstalledInventory, read_environment
-from feedbax.validity.evidence import execution_evidence_identity, read_execution_evidence
+from feedbax.persistence.evidence import execution_evidence_identity, read_execution_evidence
 from feedbax.validity.registry import snapshot_registry
 from feedbax.validity.source import SourceCatalog, admission_source_catalog
 
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from feedbax.host.protocol import ReusePolicy
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
     from feedbax.persistence.effective_success import PublishedSuccess, SuccessView
-    from feedbax.plugins.application import ApplicationRegistryBundle
+    from feedbax.application.bundle import ApplicationRegistryBundle
 
 
 @dataclass(frozen=True)

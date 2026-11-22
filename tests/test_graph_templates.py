@@ -18,7 +18,8 @@ from feedbax.builtins.templates.templates import (
 )
 from feedbax.compiler import GraphCompilationError, GraphDocument, compile_graph
 from feedbax.compiler.normalization import normalize_graph_for_studio_authoring
-from feedbax.builtins.models.networks import LeakyRNNCell, VanillaRNN, recurrent_controller
+from feedbax.builtins.models.networks import LeakyRNNCell, VanillaRNN
+from feedbax.models.controllers import recurrent_controller
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.compiler.prototypes import infer_node_input_prototypes
 from feedbax.compiler.serialization import graph_to_spec

@@ -6,12 +6,12 @@ from feedbax.cli import main
 from feedbax.contracts.jobs import JobStatus
 from feedbax.contracts.manifest import canonical_manifest_path
 from feedbax.contracts.project_io import dump_text_project, read_text_project_snapshot
-from feedbax.contracts.project_plan import RunKey
+from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.studio_place import StudioAnalysisPlace, StudioStepPlace
 from feedbax.host import HostClient
 from feedbax.host.plan_history import plan_ref_key
 from feedbax.jobs import JobService
-from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.support.managed_train_fixture import managed_train_project

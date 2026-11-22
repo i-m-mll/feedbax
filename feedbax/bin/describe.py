@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from feedbax.bin.project_commands import CommandOutput
 from feedbax.contracts.studio_authoring import StudioAuthoringCatalog
-from feedbax.plugins.composition import load_application
+from feedbax.application.composition import load_application
 
 
 def configure_parser(parser: argparse.ArgumentParser) -> None:

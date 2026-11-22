@@ -22,7 +22,7 @@ def read_job(host, project, attempt):
 def stopped_checkpoint(paths, host, project, attempt):
     from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
     from feedbax.persistence.method_checkpoint import read_method_checkpoint_manifest
-    from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
+    from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
     from feedbax.web.services.project_folder import ProjectFolderService
 
     row = read_job(host, project, attempt)
@@ -91,7 +91,7 @@ def declare_variants(paths, project, revision):
 
 
 def completed_train(host, project, attempt, successor):
-    from feedbax.job_completion import verify_bound_training_completion
+    from feedbax.host.job_completion import verify_bound_training_completion
 
     completed = read_job(host, project, successor)
     assert completed["continues"] == attempt
@@ -108,7 +108,7 @@ def result(paths, host, project, attempt, successor, revision, evaluation, trial
     from feedbax.jobs import JobService
     from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
     from feedbax.persistence.effective_success import SuccessView
-    from feedbax.plugins.application import new_application_registry_bundle
+    from feedbax.application.bundle import new_application_registry_bundle
     from feedbax.web.services.project_folder import ProjectFolderService
 
     train = completed_train(host, project, attempt, successor)

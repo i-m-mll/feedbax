@@ -29,7 +29,7 @@ from feedbax.contracts.project import (
 )
 from feedbax.contracts.project_sweep import Sweep, SweepCoordinate
 from feedbax.contracts.project_inputs import StepReference, SubsetTerms
-from feedbax.contracts.project_plan import ProjectPlan, RunKey, analyze_input_roles, step_input_roles
+from feedbax.planner.project_plan import ProjectPlan, RunKey, analyze_input_roles, step_input_roles
 from feedbax.contracts.project_resolution import (
     ProjectDiagnostic, ResolvedStep, StepTemplate, compose_document, compose_step, document_write_target,
 )
@@ -59,10 +59,10 @@ from feedbax.contracts.studio_project import SetProjectValue
 from feedbax.contracts.studio_field import FieldResetEdit, TrainFieldRequest, TrainFieldResponse, TrainFieldView
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
 from feedbax.contracts.expression_registry import FunctionRegistry
-from feedbax.plugins.application import (
+from feedbax.application.bundle import (
     COMPONENTS, EXPRESSION_FUNCTIONS, FIGURE_TEMPLATES, OPERATIONS, PYTHON_TASKS, TRAINING_METHODS,
 )
-from feedbax.plugins.bootstrap import BootstrapState
+from feedbax.application.bundle import BootstrapState
 from feedbax.plugins.declarations import ResolvedDeclaration
 from feedbax.studio.authoring_sweeps import SelectedValues, SweepTarget, FieldSweeps, sweep_paths
 from feedbax.studio.class_fields import ClassField, edit_class_sweep

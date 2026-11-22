@@ -15,7 +15,7 @@ from feedbax.contracts.figure_document import FigureDocument
 from feedbax.contracts.request_specs import AnalysisRequestSpec, RenderRequestSpec
 from feedbax.host import AdmissionItem, Edge, HostClient, HostError, Job, Launch
 from feedbax.host.protocol import LIGHT_ENTRYPOINT
-from feedbax.light_jobs import LightDelivery
+from feedbax.host.light_jobs import LightDelivery
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import store_request
 from tests.support.hang import HANG_SECONDS

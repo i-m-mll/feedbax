@@ -19,7 +19,7 @@ from jaxtyping import Array, PRNGKeyArray, PyTree, Scalar
 from pydantic import BaseModel, ConfigDict
 from pydantic import Field as ConfigField
 
-from feedbax.component_registry.history import Change, History
+from feedbax.contracts.component_history import Change, History
 from feedbax._ode import ode_init, ode_step
 from feedbax.contracts.component import PortType
 from feedbax.contracts.portable import ComponentOptions, Ports

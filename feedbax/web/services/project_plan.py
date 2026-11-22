@@ -16,7 +16,7 @@ from urllib.parse import quote
 from pydantic_core import to_json
 
 from feedbax.analysis.report_document import PLOTLY_SCRIPT_NAME, REPORT_HTML_NAME, report_content_security_policy
-from feedbax.compiler.trial_execution import evaluation_conditions
+from feedbax.execution.trial_resolution import evaluation_conditions
 from feedbax.contracts._request_codec import same_typed_value
 from feedbax.contracts.artifact_custody import ContentObjectRef, ContentTreeRef
 from feedbax.contracts.effective_success import RequestObject, read_success_request, success_content_ref
@@ -67,10 +67,10 @@ from feedbax.contracts.studio_subset import (
     StudioSubsetToRowsRequest,
 )
 from feedbax.contracts.project_io import project_declaration_name
-from feedbax.contracts.project_plan import (
+from feedbax.planner.project_plan import (
     BlockedRow, ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedInput, PlannedRow, PlannedRun, RunKey, authored_request_change,
 )
-from feedbax.contracts.project_plan_io import run_key
+from feedbax.planner.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.result_address import parse_labels
 from feedbax.contracts.project_sweep import CheckpointRuleAxis, axis_coordinates
@@ -81,9 +81,9 @@ from feedbax.contracts.request_refs import (
 )
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec
 from feedbax.contracts.workspace_replay import WorkspaceReplayTrial
-from feedbax.host.completion import completion_file
+from feedbax.persistence.completion import completion_file
 from feedbax.host.plan_history import PlanRowRef, PlanSuccess, plan_run_key, settled_results
-from feedbax.job_completion import training_binding_path
+from feedbax.host.job_completion import training_binding_path
 from feedbax.jobs import (
     EVALUATION_SUBJECT_REQUIRED,
     JobConflict,
@@ -100,8 +100,10 @@ from feedbax.orchestration.session_jobs import ApprovedRowStatus
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.store_damage import inspect_without_recording
-from feedbax.studio.canonical_evaluate import CannotRun, EvaluationResult, decode_rollout_request, live_objective_series
-from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
+from feedbax.persistence.canonical_evaluate import EvaluationResult, decode_rollout_request
+from feedbax.host.live_evaluate import live_objective_series
+from feedbax.contracts.rollout import CannotRun
+from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
 from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, SettledProjectPlan
 
@@ -618,7 +620,7 @@ class ProjectPlanService:
         """
         from feedbax.web.services.trial_scope import file_value
         from feedbax.web.services.project_folder import preview_authored_files
-        from feedbax.contracts.project_plan import compile_project
+        from feedbax.planner.project_plan import compile_project
 
         view = self.read(project_id, revision=body.revision)
         before = view.settled.plan

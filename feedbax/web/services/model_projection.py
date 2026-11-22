@@ -6,13 +6,13 @@ from feedbax.contracts.model_address import ComponentPortAddress, ModelAddress, 
 from feedbax.contracts.model_document import ModelDocument, SignalType
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.model_edit import ModelPortProjection, ModelProjection
-from feedbax.expression_check import references
-from feedbax.studio.schema import _enumerate_graph_ports
+from feedbax.contracts.expression_check import references
+from feedbax.compiler.graph_schema import _enumerate_graph_ports
 from feedbax.contracts.project import BasedDocument
-from feedbax.contracts.project_plan import RunKey
+from feedbax.planner.project_plan import RunKey
 from feedbax.project_folder import model_edit_source
 from feedbax.project_model_selection import selected_model as selected_model, selected_model_and_task, task_signal
-from feedbax.studio.model_differences import structural_differences
+from feedbax.compiler.model_differences import structural_differences
 from feedbax.web.services.trial_scope import runs_scope, selected_value, value_model
 
 

@@ -5,8 +5,7 @@ answers which task data can be wired into a graph and which data stays
 protocol-owned by the task/environment boundary.
 
 The classification is pure vocabulary over duck-typed records, so it lives with
-the graph runtime that consumes it rather than in the Studio integration layer.
-``feedbax.studio.protocol`` re-exports these names for Studio-facing callers.
+the graph runtime that consumes it.
 """
 
 from __future__ import annotations

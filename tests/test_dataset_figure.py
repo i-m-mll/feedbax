@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySettings
-from feedbax.plugins.composition import load_application
+from feedbax.application.composition import load_application
 from feedbax.analysis.report_document import render as render_report
 from feedbax.contracts.dataset import DATASET_MEDIA_TYPE
 from feedbax.contracts.effective_success import BoundMember, success_content_ref
@@ -24,8 +24,8 @@ from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.request_refs import ContentRef, InputMember, ProductRef
 from feedbax.contracts.request_specs import RenderRequestSpec
 from feedbax.dataset import Dataset, Variable
-from feedbax.light_host_worker import _compute
-from feedbax.light_jobs import validate_light_request
+from feedbax.host.light_worker import _compute
+from feedbax.host.light_jobs import validate_light_request
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_dataset, publish_dataset
 from feedbax.plot.dataset_figure import render

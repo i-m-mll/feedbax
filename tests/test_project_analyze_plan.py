@@ -17,7 +17,7 @@ from feedbax.contracts.project_io import (
     load_text_project,
     parse_studio_project,
 )
-from feedbax.contracts.project_plan import (
+from feedbax.planner.project_plan import (
     ElementChange,
     ElementKey,
     PlannedAnalyzeRun,
@@ -30,7 +30,7 @@ from feedbax.contracts.project_resolution import BaseReaders, ResolutionCode
 from feedbax.contracts.project_sweep import Sweep
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import ProductRef
-from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.application.bundle import new_application_registry_bundle
 from tests.support.managed_train_fixture import managed_evaluation_step, managed_train_project
 
 

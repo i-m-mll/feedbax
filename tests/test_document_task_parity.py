@@ -51,7 +51,7 @@ from feedbax.tasks.document import (
     compile_task,
 )
 from feedbax.runtime.graph import GraphTraceRequest
-from feedbax.runtime.model_reset import ModelResetError
+from feedbax.compiler.model_reset import ModelResetError
 from tests.test_model_document_plan import _nested_model
 
 PERIOD = 0.01

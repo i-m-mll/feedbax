@@ -26,7 +26,7 @@ from feedbax.contracts.objective_document import (
     ObjectiveTerm as ObjectiveTerm,
     Reduction as Reduction,
 )
-from feedbax.expression_check import references
+from feedbax.contracts.expression_check import references
 from feedbax.expression_compile import Compiled, Inputs, compile_expression
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.objectives.base import TermTree

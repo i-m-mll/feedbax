@@ -7,7 +7,7 @@ from tests.support.component_owners import register_owners
 from feedbax.contracts.representation import RepresentationSpec
 
 from feedbax.builtins.runtime.components import Gain
-from feedbax.studio.component_presentation import PresentationOverride
+from feedbax.contracts.component_presentation import PresentationOverride
 
 from dataclasses import replace
 from typing import get_args, get_origin
@@ -32,7 +32,7 @@ from feedbax.contracts.studio_api import (
 from feedbax.contracts.migrations import UnsupportedSpecVersion, default_spec_registry
 from feedbax.contracts.representation import REPRESENTATION_SCHEMA_VERSION
 from feedbax.web.app import create_app
-from feedbax.plugins.bootstrap import BootstrapState
+from feedbax.application.bundle import BootstrapState
 from scripts.generate_studio_contracts import (
     AUTHORED_CONTRACT_MODELS,
     CONTRACT_MODEL_NAMES,

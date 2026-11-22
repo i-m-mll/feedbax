@@ -14,8 +14,8 @@ from feedbax.contracts.receipt_validity import InputDifference
 from feedbax.contracts.request_refs import BestRank, ContentRef, RequestId
 from feedbax.contracts.rollout import ResolvedRolloutMember
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
-from feedbax.host.best_selection import completion_score, rank_train_metric, ranked_requests
-from feedbax.host.checkpoint_selection import CheckpointSelection, is_checkpoint_producer, requested_checkpoint_selection
+from feedbax.persistence.best_selection import completion_score, rank_train_metric, ranked_requests
+from feedbax.persistence.checkpoint_selection import CheckpointSelection, is_checkpoint_producer, requested_checkpoint_selection
 from feedbax.persistence.checkpoint_publication import model_product, read_retained_checkpoint
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.method_checkpoint import read_method_checkpoint_manifest, verify_method_checkpoint_content

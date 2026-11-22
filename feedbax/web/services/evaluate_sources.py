@@ -12,7 +12,7 @@ from feedbax.contracts.model_edit import (
     VariantRuns, StudioEvaluateValueSource,
 )
 from feedbax.contracts.project import DifferenceNotApplied, Differences, Project, apply_differences, diff, nearest_shared_base
-from feedbax.contracts.project_plan import EVALUATION_MODEL, ProjectPlan, RunKey, SelectedRunDefinition
+from feedbax.planner.project_plan import EVALUATION_MODEL, ProjectPlan, RunKey, SelectedRunDefinition
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.project_folder import ProjectFolderInvalid

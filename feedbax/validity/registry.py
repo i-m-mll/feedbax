@@ -11,7 +11,7 @@ from packaging.utils import canonicalize_name
 from feedbax.contracts.code_validity import RegistryBinding
 
 if TYPE_CHECKING:
-    from feedbax.plugins.application import ApplicationRegistryBundle
+    from feedbax.application.bundle import ApplicationRegistryBundle
     from feedbax.plugins.declarations import ResolvedDeclaration
     from feedbax.validity.source import SourceCatalog
 

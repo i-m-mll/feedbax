@@ -13,8 +13,8 @@ from feedbax.builtins.operations import (
 from feedbax.dataset import Dataset, Variable
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_dataset, publish_dataset
-from feedbax.plugins.composition import load_application
-from feedbax.studio.canonical_evaluate import RAW_STATES_SCHEMA, state_key
+from feedbax.application.composition import load_application
+from feedbax.persistence.canonical_evaluate import RAW_STATES_SCHEMA, state_key
 
 
 _POSITION = state_key("plant", "effector/position")

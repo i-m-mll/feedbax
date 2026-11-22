@@ -16,7 +16,7 @@ from feedbax.contracts.studio_api import StudioErrorReport
 from feedbax.host import HostClient
 from feedbax.jobs import JobService, SessionSubmission
 from feedbax.orchestration.targets import TargetRegistry
-from feedbax.plugins.composition import compose_application
+from feedbax.application.composition import compose_application
 from feedbax.validity.admission import QUICK_RECEIPT_DURATION
 
 from feedbax.web.api import (

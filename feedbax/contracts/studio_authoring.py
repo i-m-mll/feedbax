@@ -10,12 +10,31 @@ from feedbax.contracts.base import StrictModel
 from feedbax.contracts.component import ComponentDefinition
 from feedbax.contracts.expression_registry import FunctionInfo
 from feedbax.contracts.operation import OperationDefinition
-from feedbax.contracts.project import Sha256
+from feedbax.contracts.project import Sha256, StepKind
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName, StepReference
-from feedbax.contracts.project_plan import InputRole
 from feedbax.contracts.request_refs import Name
 from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
+
+
+class InputProducer(StrictModel):
+    """The step whose rows an input's selections read, and the product they read of each row."""
+
+    kind: StepKind
+    product: str
+    operation_outputs: bool
+    """Whether a selection may instead name an Analyze operation's dataset product, read from the card that holds it."""
+
+
+class InputRole(StrictModel):
+    """A step input as the planner resolves it: whether it is required, whether it takes a list of selections, the
+    producer its selections read, the documents it may read instead, and whether its checkpoint may be a finite set."""
+
+    required: bool
+    gathers: bool
+    producer: InputProducer | None
+    documents: list[Literal["model", "task"]]
+    checkpoint_sets: bool
 
 
 class StudioAuthoringDeclaration(StrictModel):

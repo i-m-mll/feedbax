@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import jax.numpy as jnp
 
 from feedbax.acausal.base import AcausalElement, AcausalEquation, AcausalPort, Domain
-from feedbax._acausal_payload import ACTIVATION_PAYLOAD
+from feedbax.contracts.acausal_payload import ACTIVATION_PAYLOAD
 from feedbax.contracts.portable import ComponentOwner, ComponentOptions
 from feedbax.contracts.domain import MECHANICS_DOMAIN_ID
 

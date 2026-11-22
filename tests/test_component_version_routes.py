@@ -5,7 +5,7 @@ from typing import ClassVar
 import pytest
 
 from feedbax.component_registry import ComponentRegistry
-from feedbax.component_registry.history import Change, History
+from feedbax.contracts.component_history import Change, History
 from feedbax.contracts.component import PortType
 from feedbax.contracts.portable import Ports
 from feedbax.runtime.graph import Component

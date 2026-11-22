@@ -15,7 +15,7 @@ from feedbax.contracts.project_io import TextProject
 from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.project_plan import compile_project
+from feedbax.planner.project_plan import compile_project
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import ProductRef
@@ -23,7 +23,7 @@ from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.host import HostClient, HostError
-from feedbax.host.completion import completion_file
+from feedbax.persistence.completion import completion_file
 from feedbax.host.plan_history import plan_ref_key
 from feedbax.host.protocol import LIVE_STATES, JobsSnapshot
 from feedbax.jobs import _verified_evaluation_result, _verified_training_receipt
@@ -42,10 +42,10 @@ from feedbax.persistence.reachability import (
     object_target,
     superseded_days,
 )
-from feedbax.studio.canonical_evaluate import BoundEvaluationJobInput, initial_evaluation_references
-from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
+from feedbax.persistence.canonical_evaluate import BoundEvaluationJobInput, initial_evaluation_references
+from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
 from feedbax.persistence.method_checkpoint import method_checkpoint_files
-from feedbax.training.checkpoint_errors import CheckpointCustodyError
+from feedbax.persistence.checkpoint_errors import CheckpointCustodyError
 
 
 @dataclass(frozen=True)
@@ -110,7 +110,7 @@ def _authored_roots(text: TextProject, gaps: list[str]) -> list[RootObservation]
             decoded = decode_request(plan.requests[run.request_id], plan.documents.__getitem__)
             assert isinstance(decoded.spec, DocumentTrainingRequestSpec)
             from feedbax.compiler.model_document import lower_model_document
-            from feedbax.plugins.composition import load_application
+            from feedbax.application.composition import load_application
 
             documents = decoded.spec.trial_documents
             graph = lower_model_document(documents.model, load_application().bundle.components).graph
@@ -198,7 +198,7 @@ def _job_roots(
         assert binding.canonical_request is not None
         refs.extend((binding.canonical_request.request, *binding.canonical_request.documents))
         from feedbax.compiler.model_document import lower_model_document
-        from feedbax.plugins.composition import load_application
+        from feedbax.application.composition import load_application
 
         documents = binding.spec.trial_documents
         graph = lower_model_document(documents.model, load_application().bundle.components).graph

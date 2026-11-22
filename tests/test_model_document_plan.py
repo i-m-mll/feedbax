@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from feedbax.cli import main
 from feedbax.compiler import GraphDocument, compile_graph
-from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
+from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution
 from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
 from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.builtins.templates.mechanics_templates import two_link_arm_6muscle_template_graph
@@ -28,7 +28,7 @@ from tests.support.component_owners import register_owners
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.model_edit import ModelEditCommand, ModelEditResult, ModelEditState
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_plan import ProjectPlanMemo, RunKey, compile_project
+from feedbax.planner.project_plan import ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.rollout import RolloutParameters
@@ -36,13 +36,13 @@ from feedbax.contracts.train_settings import normalize_train_method
 from feedbax.jobs import JobService
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
-from feedbax.plugins.application import new_application_registry_bundle
-from feedbax.studio.model_edit import apply_model_edit
-from feedbax.studio.model_ports import ModelRegistryPorts
+from feedbax.application.bundle import new_application_registry_bundle
+from feedbax.compiler.model_edit import apply_model_edit
+from feedbax.compiler.model_ports import ModelRegistryPorts
 from feedbax.runtime.graph import GraphTraceRequest
 from feedbax.builtins.runtime.components import Input
 from feedbax.runtime._signal_schedule import SignalScheduleError, resolve_signal_schedule
-from feedbax.training.method_checkpoint import read_method_checkpoint
+from feedbax.host.method_checkpoint import read_method_checkpoint
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.runtime._graph_key_schedule import model_initialization_key
 from feedbax.training.method_runtime import TrainingLoop, initialize_method, replica_value
@@ -1852,9 +1852,10 @@ def test_same_seed_nested_rename_preserves_values_and_batch_loss():
 def _refuse_realization(monkeypatch):
     """Makes realizing a graph, or constructing any registered component but an acausal element descriptor, raise."""
     from feedbax.acausal.base import AcausalElement
-    from feedbax.compiler import graph, trial_execution
+    from feedbax.compiler import graph
+    from feedbax.execution import trial_resolution as trial_execution
     from feedbax.component_registry.declarations import ComponentParamContract
-    from feedbax.runtime import model_input
+    from feedbax.host import model_input
 
     def refuse(*args, **kwargs):
         raise AssertionError("a plan read realized the model")

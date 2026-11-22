@@ -6,7 +6,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
 
-from feedbax.compiler.trial_execution import TrialPair, pair_trial_source
+from feedbax.execution.trial_resolution import TrialPair, pair_trial_source
 from feedbax.contracts.expression_values import (
     Level, LiteralValue, Problem, ProblemCode, ScopedValue, Site, SweepList, SweepRange, SweepSample,
     ValueBase, ValueType,
@@ -20,7 +20,7 @@ from feedbax.contracts.project import (
     SetProjectValue, apply_document_edits, based_on, json_pointer_parts,
 )
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
-from feedbax.contracts.project_plan import EVALUATION_TASK, RunKey, compile_project, own_task_variation
+from feedbax.planner.project_plan import EVALUATION_TASK, RunKey, compile_project, own_task_variation
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec
 from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings, authored_variation
@@ -40,12 +40,12 @@ from feedbax.contracts.task_document import (
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument, ObjectiveTerm
 from feedbax.contracts.training import TrialDocuments
-from feedbax.expression_check import references
-from feedbax.expression_site import FieldKind, project_site, read_field
+from feedbax.contracts.expression_check import references
+from feedbax.contracts.expression_site import FieldKind, project_site, read_field
 from feedbax.contracts.expression_text import ParsedField, parse, print_field
 from feedbax.studio.value_structure import value_structure
 from feedbax.objectives.document import ObjectiveExecutor, ObjectiveUse, compile_objective
-from feedbax.plugins.application import ApplicationRegistryBundle
+from feedbax.application.bundle import ApplicationRegistryBundle
 from feedbax.web.services.evaluate_sources import evaluate_subject, evaluate_value_source
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, preview_authored_files
 from feedbax.studio.selection import StoredEdit

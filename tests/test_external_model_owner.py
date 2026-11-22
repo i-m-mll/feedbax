@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution
+from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution
 from feedbax.contracts.project import Project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
@@ -14,9 +14,9 @@ from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.jobs import JobService
 from feedbax.persistence.array_container import decode_array_container
-from feedbax.plugins.composition import load_application
+from feedbax.application.composition import load_application
 from feedbax.runtime._graph_key_schedule import model_initialization_key
-from feedbax.training.method_checkpoint import read_method_checkpoint
+from feedbax.host.method_checkpoint import read_method_checkpoint
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.installed_package import install_discovery_fixture
 from tests.support.model_documents import read_changed_model
@@ -100,7 +100,7 @@ def test_external_owner_trains_checkpoints_and_records_an_evaluate_difference(ho
     documents = request.trial_documents
     initial = compile_trial_execution(
         documents.model, documents.task_source,
-        registry.components, registry.expression_functions,
+        registry.components, registry.expression_functions, python_tasks=registry.python_tasks,
         objective=documents.objective, initialization_key=model_initialization_key(request.seed),
     )
     assert isinstance(initial, PreparedTrialExecution), initial

@@ -15,8 +15,8 @@ from feedbax.contracts.project_io import (
     ProjectConfiguration,
     dump_text_project,
 )
-from feedbax.contracts.project_plan import PlanRequest, PlanRequests, RunKey, compile_project, diff_plan_requests
-from feedbax.contracts.project_plan_io import dump_plan_requests, load_plan_requests
+from feedbax.planner.project_plan import PlanRequest, PlanRequests, RunKey, compile_project, diff_plan_requests
+from feedbax.planner.project_plan_io import dump_plan_requests, load_plan_requests
 from feedbax.contracts.request_identity import encode_request
 from feedbax.contracts.request_specs import EvaluationRequestSpec
 from feedbax.web.services.project_folder import ProjectFolderService

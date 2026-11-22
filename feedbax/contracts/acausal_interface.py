@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable, Literal
 
-from feedbax._acausal_payload import (
+from feedbax.contracts.acausal_payload import (
     ACTIVATION_PAYLOAD as ACTIVATION_PAYLOAD,
     FORCE_PAYLOAD as FORCE_PAYLOAD,
     MUSCLE_EXCITATION_PAYLOAD as MUSCLE_EXCITATION_PAYLOAD,

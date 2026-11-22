@@ -4,7 +4,7 @@ from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_edit import AxisValueRuns
 from feedbax.contracts.project import RemoveProjectValue
 from feedbax.contracts.project_inputs import StepReference
-from feedbax.contracts.project_plan import RunKey, compile_project
+from feedbax.planner.project_plan import RunKey, compile_project
 from feedbax.contracts.project_sweep import CHECKPOINT_RULE_TARGET, CheckpointRuleAxis, NamedAxis
 from feedbax.contracts.request_refs import UpdateCadence
 from feedbax.contracts.studio_checkpoint_rule import (

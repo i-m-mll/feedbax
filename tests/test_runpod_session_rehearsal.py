@@ -37,7 +37,7 @@ from feedbax.orchestration.session import KeepOpen, SessionDriver, SessionError,
 from feedbax.orchestration.targets import TargetRegistry
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
-from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.remote_runs import StudioRemoteRuns, StudioVenue, StudioVenueQuote

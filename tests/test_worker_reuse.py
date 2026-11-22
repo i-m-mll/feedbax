@@ -50,7 +50,7 @@ def test_worker_retires_after_a_failure_a_left_thread_or_a_changed_source(reusin
 
 def test_reused_worker_trains_the_same_checkpoints_as_a_fresh_one(reusing_host, tmp_path, monkeypatch, private_hosts):
     from feedbax.jobs import JobService
-    from feedbax.plugins.application import new_application_registry_bundle
+    from feedbax.application.bundle import new_application_registry_bundle
     from feedbax.web.services.project_folder import ProjectFolderService
     from tests.test_desktop_background_activity import _project
 

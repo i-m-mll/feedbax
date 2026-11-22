@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from uuid import uuid4
 
-from feedbax.plugins.composition import load_application
+from feedbax.application.composition import load_application
 
 from .project_commands import CommandOutput, run_project_command
 
@@ -28,7 +28,7 @@ def run_saved_project(args: argparse.Namespace, output: CommandOutput) -> int:
     from feedbax.bin.project_plan import write_diagnostics
     from feedbax.contracts.jobs import StudioSubmissionActor
     from feedbax.contracts.project_io import ProjectReadError, locate_text_project, project_declaration_name
-    from feedbax.contracts.project_plan import PlannedAnalyzeRun, PlannedRun
+    from feedbax.planner.project_plan import PlannedAnalyzeRun, PlannedRun
     from feedbax.contracts.result_address import ResultAddress, row_names, selects
     from feedbax.host import HostClient, HostError
     from feedbax.jobs import JobConflict, JobService

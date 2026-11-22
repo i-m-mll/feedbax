@@ -38,7 +38,7 @@ from feedbax.contracts.request_specs import (
     DocumentTrainingConfig,
     DocumentTrainingRequestSpec,
 )
-from feedbax.contracts.project_plan import compile_project
+from feedbax.planner.project_plan import compile_project
 from tests.support.managed_train_fixture import managed_train_project
 
 _CORPUS = Path(__file__).parent / "fixtures" / "request_identity_corpus.json"

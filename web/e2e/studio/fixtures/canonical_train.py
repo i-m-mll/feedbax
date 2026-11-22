@@ -9,19 +9,19 @@ import sys
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
-from feedbax.contracts.project_plan import RunKey
+from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.desktop.release import AppPaths
 from feedbax.host import HostClient
 from feedbax.host.plan_history import plan_run_key
-from feedbax.job_completion import verify_bound_training_completion
+from feedbax.host.job_completion import verify_bound_training_completion
 from feedbax.jobs import JobService
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.method_checkpoint import read_method_checkpoint_manifest
-from feedbax.plugins.application import new_application_registry_bundle
-from feedbax.studio.canonical_train import BoundStudioTrainingJobInput
+from feedbax.application.bundle import new_application_registry_bundle
+from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
 from tests.support.managed_train_fixture import managed_train_project

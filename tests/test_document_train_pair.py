@@ -11,15 +11,15 @@ import numpy as np
 import pytest
 
 from feedbax.builtins.training import StandardTrainingSettings, supervised_gradient
-from feedbax.compiler import trial_execution
-from feedbax.compiler.trial_execution import PreparedTrialExecution, compile_trial_execution, resolve_trial_execution
+from feedbax.execution import trial_resolution as trial_execution
+from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution, resolve_trial_execution
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.objective_document import ObjectiveDocument, ObjectiveTerm
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_plan import PlanRequests, ProjectPlanMemo, RunKey, compile_project
-from feedbax.contracts.project_plan_io import dump_plan_requests, load_plan_requests
+from feedbax.planner.project_plan import PlanRequests, ProjectPlanMemo, RunKey, compile_project
+from feedbax.planner.project_plan_io import dump_plan_requests, load_plan_requests
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
@@ -29,8 +29,8 @@ from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.plugins.declarations import DistributionSource, callable_declaration
 from feedbax.runtime._graph_key_schedule import model_initialization_key
 from feedbax.tasks.document import TaskParameters
-from feedbax.tasks.registry import application_python_tasks
-from feedbax.training.evaluate_worker import score_paired_validation
+from feedbax.application.composition import application_python_tasks
+from feedbax.host.evaluate_worker import score_paired_validation
 from feedbax.training.method_runtime import TrainingLoop, initialize_method, replica_value
 from feedbax.training.methods import TrainingMethodRegistry
 from feedbax.web.services import project_plan as window_service
@@ -88,6 +88,7 @@ def test_bounded_train_and_evaluate_share_trial_objective(authored):
         task,
         registry,
         functions,
+        python_tasks=application_python_tasks(),
         objective=objective,
         input_overrides={"reach_target": "target_pos"},
         initialization_key=model_initialization_key(seed),
@@ -488,9 +489,9 @@ def document_project(authored, *, evaluation=False):
 
 
 def test_managed_host_train_and_evaluate_share_document_runtime(host, tmp_path, authored, monkeypatch):
-    from feedbax.contracts.project_plan import RunKey
+    from feedbax.planner.project_plan import RunKey
     from feedbax.jobs import JobService
-    from feedbax.plugins.composition import load_application
+    from feedbax.application.composition import load_application
     from feedbax.web.services.project_folder import ProjectFolderService
     from tests.test_canonical_evaluate_admission import _save_project
     from tests.support.host import job_row, token, wait_until

@@ -5,12 +5,12 @@ from copy import deepcopy
 import pytest
 
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_plan import compile_project
+from feedbax.planner.project_plan import compile_project
 from feedbax.contracts.project_sweep import NamedAxis
 from feedbax.contracts.set_document import (
     SET_DOCUMENT_SCHEMA_ID, SetDocument, axis_from_set, set_from_axis, sets_offered, step_model,
 )
-from feedbax.plugins.composition import load_application
+from feedbax.application.composition import load_application
 from tests.test_document_train_pair import authored_documents, document_project
 
 GAIN = {

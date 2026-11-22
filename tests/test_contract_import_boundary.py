@@ -74,8 +74,7 @@ def test_core_training_contract_imports_do_not_load_web_package() -> None:
             "feedbax.orchestration.repo_snapshot",
             "feedbax.training.methods",
             "feedbax.compiler.serialization",
-            "feedbax.studio.protocol",
-            "feedbax.studio.schema",
+            "feedbax.compiler.graph_schema",
         ]:
             importlib.import_module(module_name)
 
@@ -138,7 +137,7 @@ def test_plugin_facade_import_defers_registry_and_analysis_subsystems() -> None:
             "diffrax",
             "equinox",
             "plotly",
-            "feedbax.plugins.application",
+            "feedbax.application.bundle",
             "feedbax.component_registry",
             "feedbax.analysis",
             "feedbax.contracts",

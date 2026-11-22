@@ -1,7 +1,7 @@
 """Report the planned runs an authored edit takes out of the saved Plan."""
 
 from feedbax.contracts.jobs import StudioSavedTrainKey
-from feedbax.contracts.project_plan import compile_project
+from feedbax.planner.project_plan import compile_project
 from feedbax.contracts.studio_removed_runs import StudioRemovedRuns, StudioRemovedRunsRequest
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, preview_authored_files
 

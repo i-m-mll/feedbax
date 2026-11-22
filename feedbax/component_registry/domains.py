@@ -47,7 +47,7 @@ class DomainRegistry:
 def builtin_domain_registry() -> DomainRegistry:
     """Build the Feedbax builtin domain registry."""
 
-    from feedbax.compiler.penzai_compiler import PENZAI_COMPILER_ID
+    from feedbax.contracts.domain import PENZAI_COMPILER_ID
 
     registry = DomainRegistry()
     registry.register(

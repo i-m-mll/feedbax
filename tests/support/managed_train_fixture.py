@@ -77,7 +77,7 @@ def managed_evaluation_step(subject: str) -> dict:
 def managed_train_spec(*, batches: int = 2):
     from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
     from feedbax.contracts.train_settings import normalize_train_method
-    from feedbax.plugins.composition import load_application
+    from feedbax.application.composition import load_application
 
     registries = load_application().bundle
     spec, _, _ = normalize_train_method(

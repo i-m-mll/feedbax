@@ -10,11 +10,11 @@ from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_attachment import MODEL_DIFFERENCE_BATCHES
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_plan import ProjectPlanMemo, RunKey, compile_project
+from feedbax.planner.project_plan import ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.project_sweep import Sweep, SweepExpansionError, axis_to_list, expand_sweep
 from feedbax.contracts.request_identity import decode_request
 from feedbax.jobs import JobService
-from feedbax.plugins.application import new_application_registry_bundle
+from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored, document_project  # noqa: F401

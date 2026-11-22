@@ -30,9 +30,9 @@ from feedbax.contracts.model_document import (
 )
 from feedbax.contracts.project import json_pointer_parts
 from feedbax.runtime.task_data_roles import task_data_role
-from feedbax.runtime.model_reset import ModelResetPlan, resolve_model_reset
+from feedbax.compiler.model_reset import ModelResetPlan, resolve_model_reset
 from feedbax.runtime._signal_schedule import SignalScheduleError, resolve_signal_schedule
-from feedbax.studio.protocol import task_binding_id
+from feedbax.contracts.graph import task_binding_id
 
 
 class ModelCompilationProblem(ValueError):

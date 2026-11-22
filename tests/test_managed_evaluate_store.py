@@ -22,8 +22,8 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.receipt_closure import ReceiptClosure
 from feedbax.persistence.store_sync import sync_store
-from feedbax.plugins.application import new_application_registry_bundle
-from feedbax.studio.canonical_evaluate import states_ref
+from feedbax.application.bundle import new_application_registry_bundle
+from feedbax.persistence.canonical_evaluate import states_ref
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.support.host import admit, held_until_released, job_row, restart, run_job, token, wait_until

@@ -15,7 +15,7 @@ from feedbax.contracts.operation import (
 )
 from feedbax.contracts.project import DocumentReference, DocumentEdit, Project, RemoveProjectValue, SetProjectValue
 from feedbax.contracts.project_inputs import StepReference
-from feedbax.contracts.project_plan import PlannedAnalyzeRun, RunKey, compile_project
+from feedbax.planner.project_plan import PlannedAnalyzeRun, RunKey, compile_project
 from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, compose_document
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.studio_analyze import (

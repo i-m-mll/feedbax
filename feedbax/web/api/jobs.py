@@ -37,7 +37,7 @@ from feedbax.contracts.jobs import (
 )
 from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import ProjectName
-from feedbax.contracts.project_plan import RunKey
+from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.receipt_validity import ReceiptValidity, ValidityAcceptance, ValidityAction
 from feedbax.contracts.workspace_replay import WorkspaceReplayTrial
 from feedbax.host import HostError

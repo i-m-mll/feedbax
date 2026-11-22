@@ -28,7 +28,7 @@ from feedbax.contracts.model_values import ModelFacts
 from feedbax.contracts.portable import ComponentOwner, ComponentOptions, Ports
 from feedbax.contracts.component import PortType
 from feedbax.contracts.domain import ACAUSAL_DOMAIN_ID
-from feedbax._acausal_payload import SourcePayload
+from feedbax.contracts.acausal_payload import SourcePayload
 
 
 class AcausalSystemConfig(BaseModel):

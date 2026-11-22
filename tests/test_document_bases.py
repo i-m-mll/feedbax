@@ -6,7 +6,7 @@ from copy import deepcopy
 from hypothesis import given, strategies as st
 
 from feedbax.contracts.project import Project, apply_differences, diff
-from feedbax.contracts.project_plan import ProjectPlanMemo, compile_project
+from feedbax.planner.project_plan import ProjectPlanMemo, compile_project
 from feedbax.contracts.project_resolution import ResolutionCode
 from tests.support.managed_train_fixture import managed_train_project
 

@@ -13,7 +13,7 @@ from feedbax.contracts.project_io import (
     load_text_project,
     parse_studio_project,
 )
-from feedbax.contracts.project_plan import ProjectPlanMemo, RunKey, compile_project
+from feedbax.planner.project_plan import ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.project_resolution import ResolutionCode
 from feedbax.contracts.project_sweep import (
     SweepInputMember,
