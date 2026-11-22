@@ -60,9 +60,13 @@ test("a Weight cell's sweep is an axis on the Train step, listed in the Inspecto
 
   // Add Sweep lists the other term's Weight under Objective and puts the keyboard on its cell, in Sweep kind.
   await card.getByRole('button', { name: 'Add Sweep train' }).click();
-  await page.getByRole('menu', { name: 'Add Sweep' }).getByRole('menuitem', { name: 'Objective', exact: true }).click();
-  await page.getByRole('menu', { name: 'Objective' }).getByRole('menuitem', { name: 'Effort', exact: true }).click();
-  await page.getByRole('menu', { name: 'Effort' }).getByRole('menuitem', { name: 'Weight', exact: true }).click();
+  const open = async (menu: string, item: string) => {
+    await page.getByRole('menu', { name: menu }).getByRole('menuitem', { name: item, exact: true }).press('Enter');
+    await expect(page.getByRole('menu', { name: item })).toBeVisible();
+  };
+  await open('Add Sweep', 'Objective');
+  await open('Objective', 'Effort');
+  await page.getByRole('menu', { name: 'Effort' }).getByRole('menuitem', { name: 'Weight', exact: true }).press('Enter');
   await expect(weight(1)).toBeFocused();
   await expect(table.getByRole('row').nth(2).getByRole('button', { name: 'Weight kind: Sweep', exact: true })).toBeVisible();
 });
