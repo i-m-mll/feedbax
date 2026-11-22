@@ -278,6 +278,8 @@ class StudioProjectWindowMapRow(StrictModel):
     opening_step: OpeningStep | None = Field(default=None, exclude_if=lambda value: value is None)
     collection_progress: StoreTransferProgress | None = Field(default=None, exclude_if=lambda value: value is None)
     evaluation_conditions: list[str] | None = Field(default=None, exclude_if=lambda value: value is None)
+    target_total: int | None = Field(default=None, exclude_if=lambda value: value is None)
+    """A Train row's completed-update count at its end, which bounds the checkpoints its readers select."""
     light: StudioSavedLightHistory | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
@@ -340,6 +342,8 @@ class StudioProjectWindowMapProblem(StrictModel):
     address: str | None = Field(default=None, exclude_if=lambda value: value is None)
     layer: str | None = Field(default=None, exclude_if=lambda value: value is None)
     authored_path: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    blocked_by: StudioSavedTrainKey | None = Field(default=None, exclude_if=lambda value: value is None)
+    """The producer row a ``blocked_input`` row waits on."""
 
     @classmethod
     def from_diagnostic(cls, diagnostic: ProjectDiagnostic, *, declaration: str) -> StudioProjectWindowMapProblem:
@@ -354,6 +358,8 @@ class StudioProjectWindowMapProblem(StrictModel):
             ) if diagnostic.step else None,
             document_path=diagnostic.document_path, address=diagnostic.authored_file or source,
             layer=diagnostic.layer, authored_path=diagnostic.authored_path,
+            blocked_by=StudioSavedTrainKey.model_validate(diagnostic.blocked_by, from_attributes=True)
+            if diagnostic.blocked_by is not None else None,
         )
 
 

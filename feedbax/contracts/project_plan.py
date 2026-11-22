@@ -67,6 +67,7 @@ from feedbax.contracts.project_resolution import (
     ProjectDiagnostic,
     ResolutionCode,
     ResolvedStep,
+    RunKey,
     StepComposition,
     StepTemplate,
     TerminalTrainSource,
@@ -122,7 +123,9 @@ from feedbax.contracts.request_refs import (
     UpdateSeriesMember,
 )
 from feedbax.contracts.request_specs import (
+    DocumentTrainingConfig,
     DocumentTrainingRequestSpec,
+    TrainContinuation,
     ReportRequestSpec,
 )
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
@@ -147,13 +150,6 @@ def _builtin_model_registry() -> ComponentRegistry:
     registry = ComponentRegistry()
     registry.seal()
     return registry
-
-
-@dataclass(frozen=True)
-class RunKey:
-    variant: str
-    step: str
-    row: str
 
 
 @dataclass(frozen=True)
@@ -291,6 +287,47 @@ def _upstream_source(binding: PlannedInput) -> ValueSource | None:
 
 
 @dataclass(frozen=True)
+class TrainFacts:
+    """What a Train row's Task and run controls say, whether or not its request lowers."""
+
+    task: TaskDocument | PythonTaskSelection | None
+    """None when the Task does not resolve."""
+    target_total: int | None
+    """The completed-update count at the run's end; None when the run controls do not resolve."""
+
+
+_CHECKPOINT_INITIALIZATION: TypeAdapter[Literal["initialize_from"] | TrainContinuation | None] = TypeAdapter(
+    Literal["initialize_from"] | TrainContinuation | None,
+)
+
+
+def _train_facts(payload: Payload, python_tasks: PythonTaskRegistry | None) -> TrainFacts:
+    """Read the Task as the request would carry it: a Python task by its canonical selection."""
+    from feedbax.tasks.registry import application_python_tasks, resolve_python_task_instance
+
+    trial = payload.get("trial_documents")
+    task: TaskDocument | PythonTaskSelection | None = None
+    if isinstance(trial, dict):
+        try:
+            if trial.get("task") is not None:
+                task = TaskDocument.model_validate(trial["task"])
+            elif trial.get("python_task") is not None:
+                selection = PythonTaskSelection.model_validate(trial["python_task"])
+                resolved = resolve_python_task_instance(selection, python_tasks or application_python_tasks())
+                task = None if isinstance(resolved, tuple) else request_identity.canonical_python_task_selection(
+                    resolved.selection(),
+                )
+        except ValidationError:
+            task = None
+    try:
+        batches = DocumentTrainingConfig.model_validate(payload.get("training_config")).n_batches
+        start = _CHECKPOINT_INITIALIZATION.validate_python(payload.get("checkpoint_initialization"))
+    except ValidationError:
+        return TrainFacts(task, None)
+    return TrainFacts(task, batches + (start.source_completed_updates if isinstance(start, TrainContinuation) else 0))
+
+
+@dataclass(frozen=True)
 class PlannedRow:
     """An expanded row, including a row whose request validation fails."""
 
@@ -309,6 +346,7 @@ class PlannedRow:
     followed_documents: frozenset[str] = field(default=frozenset(), kw_only=True)
     # The Model document an Evaluate row names, and its subject run's Model document.
     evaluated_model: tuple[str, str] | None = field(default=None, kw_only=True)
+    train: TrainFacts | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -423,13 +461,6 @@ class SelectedRunDefinition:
 
 
 @dataclass(frozen=True)
-class _TrainEvaluationSource:
-    request: bytes
-    documents: tuple[tuple[str, bytes], ...]
-    task: tuple[str, ...] | bytes
-
-
-@dataclass(frozen=True)
 class SourceSweep:
     inputs: dict[str, tuple[SweepInputMember, ...]] = field(default_factory=dict)
     integer_sites: dict[str, bool] = field(default_factory=dict)
@@ -540,9 +571,6 @@ class ProjectPlan:
     diagnostics: tuple[ProjectDiagnostic, ...]
     subsets: Mapping[tuple[str, str, str], PlannedSubset]
     selected_definitions: Mapping[RunKey, SelectedRunDefinition]
-    _train_evaluation_sources: Mapping[RequestId, _TrainEvaluationSource] = field(
-        default_factory=lambda: MappingProxyType({}), repr=False,
-    )
     source_snapshot: SourceSnapshot | None = field(default=None, repr=False, compare=False)
     exception_matches: Mapping[tuple[str, str], Mapping[str, tuple[str, ...]]] = field(default_factory=dict)
     variant_projects: Mapping[str, Project] = field(default_factory=dict, repr=False, compare=False)
@@ -554,15 +582,6 @@ class ProjectPlan:
             key: replace(definition, payload=deepcopy(definition.payload))
             for key, definition in self.selected_definitions.items()
         }))
-
-    def train_evaluation_source(self, request_id: RequestId) -> tuple[str, ...] | bytes | None:
-        """Read the compiled Task facts only for their exact request and documents."""
-        source = self._train_evaluation_sources.get(request_id)
-        if source is not None and self.requests.get(request_id) == source.request and all(
-            self.documents.get(digest) == data for digest, data in source.documents
-        ):
-            return source.task
-        return None
 
     def row(self, key: RunKey) -> PlannedRow | None:
         return self._rows_by_key.get(key)
@@ -708,12 +727,6 @@ def _checkpoint(rule: CheckpointRule | None, *, horizon: int | None = None) -> P
             return UpdateSeriesMember(rule=rule, updates=rule.coordinates(horizon))
         case BarrierCheckpoint(barrier=name):
             return BarrierMember(name=name)
-
-
-def _train_checkpoint_horizon(train: object) -> int | None:
-    if not isinstance(train, DocumentTrainingRequestSpec):
-        return None
-    return train.target_total
 
 
 def _paired_checkpoint_step(step: Step, reference: InputBinding | None) -> str | None:
@@ -1037,7 +1050,7 @@ class _LoweredRow:
     document_ids: Mapping[str, str] = field(default_factory=dict)
     document_uses: frozenset[str] = frozenset()
     model_source: _ModelSource | None = None
-    evaluation_source: tuple[str, ...] | bytes | None = None
+    train: TrainFacts | None = None
     encoded_spec: RequestSpec | None = None
 
 
@@ -1045,7 +1058,6 @@ class _LoweredRow:
 class _TrainPreparation:
     checkpoint_problem: RunProblem | None
     evaluation: GraphSpec | ProjectDiagnostic
-    condition_ids: tuple[str, ...]
     graph: GraphSpec
     lowered: LoweredModelDocument
 
@@ -1148,12 +1160,10 @@ def _encode_row(
     components: ComponentRegistry | None = None,
 ) -> _LoweredRow:
     checkpoint_problem = None
-    condition_ids = None
     if prepared_train is not None:
         payload = payload | {"trial_documents": prepared_train.documents}
         preparation = prepared_train.preparation
         checkpoint_problem = preparation.checkpoint_problem
-        condition_ids = preparation.condition_ids
         model_source = prepared_train.model
     elif kind == "train":
         from feedbax.tasks.registry import application_python_tasks, resolve_python_task_instance
@@ -1180,7 +1190,6 @@ def _encode_row(
                 _trial_problem(key, problem, document_ids) for problem in preparation
             ), lowering_stamp)
         checkpoint_problem = preparation.checkpoint_problem
-        condition_ids = preparation.condition_ids
         assert model_source is not None
         if isinstance(preparation.evaluation, ProjectDiagnostic):
             model_source = replace(
@@ -1266,7 +1275,6 @@ def _encode_row(
             if checkpoint_problem is None and checkpoint_source is not None:
                 assert components is not None
                 checkpoint_problem = _checkpoint_fit_problem(checkpoint_source, preparation, spec, components)
-        evaluation_source = None
         problem = (
             RunProblem("/trial_documents/model/interior/components", "Model has no components.")
             if isinstance(spec, DocumentTrainingRequestSpec) and not spec.trial_documents.model.interior.components else
@@ -1275,12 +1283,9 @@ def _encode_row(
                 term.enabled for term in spec.trial_documents.objective.terms
             ) else checkpoint_problem
         )
-        if encoded.train_task is not None:
-            selection = encoded.train_task.python_selection
-            evaluation_source = selection if selection is not None else condition_ids
         return _LoweredRow(
             encoded, (), lowering_stamp, admission_problem=problem,
-            model_source=model_source, evaluation_source=evaluation_source, encoded_spec=encoded_spec,
+            model_source=model_source, encoded_spec=encoded_spec,
         )
     return _LoweredRow(
         None,
@@ -1413,10 +1418,8 @@ class _Compiler:
         self.subsets: dict[tuple[str, str, str], PlannedSubset] = {}
         self.exception_matches: dict[tuple[str, str], Mapping[str, tuple[str, ...]]] = {}
         self.selected_definitions: dict[RunKey, SelectedRunDefinition] = {}
-        self.train_evaluation_sources: dict[RequestId, _TrainEvaluationSource] = {}
         self.model_sources: dict[RunKey, _ModelSource] = {}
         self.terminal_sources: dict[RequestId, TerminalTrainSource] = {}
-        self.checkpoint_horizons: dict[RequestId, int | None] = {}
         self.element_holders: dict[str, ElementHolders] = {}
 
     def expand_variants(self, known_sites: Mapping[str, bool] | None = None) -> None:
@@ -1617,7 +1620,6 @@ class _Compiler:
             tuple(self.diagnostics),
             MappingProxyType(self.subsets),
             MappingProxyType(self.selected_definitions),
-            MappingProxyType(self.train_evaluation_sources),
             SourceSnapshot(self.project.model_copy(deep=True), self.variant_sites, self.source_sweeps)
             if self.source_sweeps is not None else None,
             MappingProxyType(self.exception_matches),
@@ -1873,13 +1875,6 @@ class _Compiler:
             self.exception_matches[variant, name] = MappingProxyType(matches)
         return rows
 
-    def checkpoint_horizon(self, request: RequestId) -> int | None:
-        if request not in self.checkpoint_horizons:
-            self.checkpoint_horizons[request] = _train_checkpoint_horizon(request_identity.decode_request(
-                self.requests[request], self.documents.__getitem__,
-            ).spec)
-        return self.checkpoint_horizons[request]
-
     def resolve_row(
         self,
         composition: StepComposition,
@@ -2032,6 +2027,7 @@ class _Compiler:
             authored_model = None
             prepared_train = None
             remember_train = None
+            train = _train_facts(payload, self.python_tasks) if kind == "train" else None
             has_differences = MODEL_ATTACHMENTS in payload
             lowering_stamp = (
                 _RowLoweringStamp(kind, sha256_bytes(to_json((
@@ -2086,6 +2082,7 @@ class _Compiler:
             if isinstance(payload, ProjectDiagnostic):
                 return _LoweredRow(
                     None, (payload,), lowering_stamp, document_ids=document_ids, document_uses=document_uses,
+                    train=train,
                 )
             lowered = _encode_row(
                 key, kind, payload, inputs, lowering_stamp,
@@ -2100,6 +2097,7 @@ class _Compiler:
                 document_ids=document_ids,
                 document_uses=document_uses,
                 model_source=lowered.model_source or authored_model,
+                train=train,
             )
 
         if self.previous is None:
@@ -2146,7 +2144,7 @@ class _Compiler:
                     model_address=address,
                 )
             result = _TrainPreparation(
-                checkpoint_problem, evaluation, paired.execution.task.condition_ids, graph, paired.lowered,
+                checkpoint_problem, evaluation, graph, paired.lowered,
             )
         self.trial_preparations[identity] = result
         return result
@@ -2736,8 +2734,9 @@ class _Compiler:
                     if rule is None and has_checkpoint_axis:
                         raise ValueError("The selected row has no checkpoint rule")
                     horizon = None
-                    if isinstance(rule, UpdateCadence):
-                        horizon = self.checkpoint_horizon(reference.request_id)
+                    if isinstance(rule, UpdateCadence) and chosen.producer is not None:
+                        facts = self.rows[chosen.producer].train
+                        horizon = facts.target_total if facts is not None else None
                     selector = _checkpoint(rule, horizon=horizon)
                 except (OSError, ValueError) as error:
                     self.diagnostics.append(ProjectDiagnostic(
@@ -2828,15 +2827,11 @@ class _Compiler:
         if (encoded := lowered.request) is None:
             self.rows[key] = replace(
                 row, document_ids=lowered.document_ids, document_uses=lowered.document_uses,
-                followed_documents=followed, evaluated_model=evaluated,
+                followed_documents=followed, evaluated_model=evaluated, train=lowered.train,
             )
             return None
         self.requests[encoded.id] = encoded.data
         self.documents.update(encoded.documents)
-        if lowered.evaluation_source is not None:
-            self.train_evaluation_sources[encoded.id] = _TrainEvaluationSource(
-                encoded.data, tuple(encoded.documents.items()), lowered.evaluation_source,
-            )
         if lowered.model_source is not None:
             self.model_sources[key] = lowered.model_source
         run = PlannedRun(
@@ -2849,6 +2844,7 @@ class _Compiler:
             document_uses=lowered.document_uses,
             followed_documents=followed,
             evaluated_model=evaluated,
+            train=lowered.train,
         )
         self.rows[key] = run
         return run
