@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import { keepPreviousData, useQueryClient } from '@tanstack/react-query';
 import { fetchSavedTrainRuns } from '@/api/jobs';
 import { useFollowingQuery } from '@/hooks/useFollowingQuery';
@@ -10,7 +10,8 @@ const planKey = (project: string, revision: string) => ['saved-train-runs', proj
 /**
  * The plan of a project window. What is drawn reads `shown`, the last plan read, with `project`, the project it was
  * compiled from: while a newer revision's plan is read both stay as they were and switch together when it arrives.
- * What a gesture does reads `read()`, the plan of the latest saved revision once it has been read.
+ * What a gesture does waits for the shown revision's plan: `whenCurrent` runs it once that plan is drawn, and `read()`
+ * gives the plan of the latest saved revision once it has been read.
  */
 export interface SavedPlan {
   readonly shown: StudioSavedTrainRuns | undefined;
@@ -21,6 +22,11 @@ export interface SavedPlan {
   readonly waiting: boolean;
   readonly error: Error | null;
   read(): Promise<StudioSavedTrainRuns>;
+  /**
+   * Runs `gesture` now if the shown plan is current, else after the render that draws the current plan, in the order
+   * made. A gesture runs then against the state of that render, so it reads it through refs, not its closure.
+   */
+  whenCurrent(gesture: () => void): void;
   refetch(): Promise<unknown>;
 }
 
@@ -50,9 +56,22 @@ export function useSavedPlan(editor: ProjectEditController, version: string): Sa
     });
   }, [editor, queries]);
   const current = pair.shown?.revision === saved.revision;
+  const held = useRef<(() => void)[]>([]);
+  const isCurrent = useRef(current);
+  isCurrent.current = current;
+  const whenCurrent = useCallback((gesture: () => void) => {
+    if (isCurrent.current && !held.current.length) gesture();
+    else held.current.push(gesture);
+  }, []);
+  useEffect(() => {
+    if (!current) return;
+    const gestures = held.current;
+    held.current = [];
+    gestures.forEach((gesture) => gesture());
+  });
   const { refetch } = query;
   return {
-    ...pair, current, error: query.error, read: readCurrent, refetch,
+    ...pair, current, error: query.error, read: readCurrent, whenCurrent, refetch,
     waiting: !current && (!!read || query.isPending),
   };
 }

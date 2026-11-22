@@ -574,16 +574,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const exactSource = subjectCheckpoint !== undefined && exactSources?.length === 1 ? exactSources[0] : undefined;
   const evaluationReplay = useSavedEvaluationScene(saved.project_id, saved.revision, selectedEvaluation,
     windowState.mode !== 'map' && [primaryView, secondaryView].includes('scene'));
-  /** A checkpoint chosen to replay, which is replayed from the evaluation of the shown revision's plan once it is read. */
-  const [replayRequest, setReplayRequest] = useState<{ update: number; slot: ProjectWindowSlot }>();
-  const { chooseCheckpoint } = evaluationReplay;
-  useEffect(() => {
-    if (!replayRequest || !plans.current) return;
-    setReplayRequest(undefined);
-    chooseCheckpoint(replayRequest.update);
-    setWindowState((current) => showProjectWindowView(current, 'scene', replayRequest.slot));
-    requestSlotFocus((count) => count + 1);
-  }, [replayRequest, plans.current, chooseCheckpoint, setWindowState]);
   const trialStep = step?.kind === 'train' || step?.kind === 'evaluate';
   const trialVisible = windowState.mode !== 'map' &&
     [primaryView, secondaryView].some((view) => view === 'task' || view === 'objective');
@@ -1225,6 +1215,25 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     }, refuseField('checkpoint'));
   }
 
+  function replay(update: number, slot: ProjectWindowSlot) {
+    evaluationReplay.chooseCheckpoint(update);
+    setWindowState((current) => showProjectWindowView(current, 'scene', slot));
+    requestSlotFocus((count) => count + 1);
+  }
+
+  /** The inspector's gestures as last rendered: one made while the plan is read runs on the render of the current plan. */
+  const latestGestures = useRef({ editEvaluateSubject, editEvaluation, editEvaluationCheckpoint, applyCheckpointSweepEdit,
+    freezeEvaluationSubset, removeSweepException, replay });
+  latestGestures.current = { editEvaluateSubject, editEvaluation, editEvaluationCheckpoint, applyCheckpointSweepEdit,
+    freezeEvaluationSubset, removeSweepException, replay };
+  type InspectorGestures = typeof latestGestures.current;
+  /** `name`'s gesture, made now and run once the shown revision's plan is drawn, against that plan. */
+  function onCurrentPlan<K extends keyof InspectorGestures>(name: K) {
+    return (...args: Parameters<InspectorGestures[K]>) => plans.whenCurrent(() => {
+      void (latestGestures.current[name] as (...gesture: Parameters<InspectorGestures[K]>) => unknown)(...args);
+    });
+  }
+
   function chooseReportFigure(revision: string, figure: ReportFigureSource) {
     setReportChoices(undefined);
     if (!primaryVariant || !ready || revision !== saved.revision) return;
@@ -1698,31 +1707,31 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                               terms={subset.terms} where={subset.where} hasWhere={reference.where !== undefined}
                               source={subset.source} sourceRows={stepSourceRows(shown, subset.source.id, variant)}
                               disabled={!applies} refusal={refusedAt(`subset.${index}`)}
-                              onEdit={(name, patch) => editEvaluation(`subset.${index}`, name, patch)}
+                              onEdit={(name, patch) => onCurrentPlan('editEvaluation')(`subset.${index}`, name, patch)}
                               onToRows={attempts
-                                ? () => freezeEvaluationSubset(inputId, reference.step, attempts, index) : undefined} />}
+                                ? () => onCurrentPlan('freezeEvaluationSubset')(inputId, reference.step, attempts, index) : undefined} />}
                           </>,
                         };
                       }}
-                      onEdit={applies && wholeStep ? editEvaluateSubject : undefined} />}
+                      onEdit={applies && wholeStep ? onCurrentPlan('editEvaluateSubject') : undefined} />}
                     {checkpointEditors?.map(({ rule, selections }) =>
                       <CheckpointEditor key={JSON.stringify(['checkpoint', step.id, variant, checkpointScope, selections])}
                         initial={rule} range={checkpointRange(selections)}
                         step={checkpointEditors.length > 1 ? stepLabel(subjectReferences![selections[0]].step) : undefined}
                         disabled={!applies} readOnly={Boolean(stepCheckpointRule && subject?.checkpoint_axis)}
                         refusal={refusedAt('checkpoint')}
-                        onSave={(next) => editEvaluationCheckpoint(next, selections)}
-                        onToSweep={canSweepCheckpoint ? () => { void applyCheckpointSweepEdit({ kind: 'to_sweep' }); } : undefined} />)}
+                        onSave={(next) => onCurrentPlan('editEvaluationCheckpoint')(next, selections)}
+                        onToSweep={canSweepCheckpoint ? () => onCurrentPlan('applyCheckpointSweepEdit')({ kind: 'to_sweep' }) : undefined} />)}
                     {evaluationEditor && <TrialsEditor key={step.id} initial={evaluationEditor.authored.trialSet}
                       domain={evaluationEditor.domain} disabled={!applies} refusal={refusedAt('trials')}
-                      onSave={(rule) => editEvaluation('trials', studioName('trials'),
+                      onSave={(rule) => onCurrentPlan('editEvaluation')('trials', studioName('trials'),
                         { op: 'replace', path: '/base/inline/params/trial_set', value: rule })} />}
                   </FocusedFields>}
                 attachments={(exceptions.length > 0 || listedInputs.length > 0) && <>
                   {exceptions.length > 0 && <SweepExceptions exceptions={exceptions} revealed={revealedException}
                     refusal={refusal?.kind === 'exception' && refusal.step === step.id
                       ? { id: refusal.exception, reason: refusal.reason } : undefined}
-                    onRemove={applies && !saved.project.sweep ? removeSweepException : undefined} />}
+                    onRemove={applies && !saved.project.sweep ? onCurrentPlan('removeSweepException') : undefined} />}
                   {listedInputs.length > 0 && <ul aria-label={studioName('inputs')}>{listedInputs.map((input) => {
                     const source = input.sourceStepId && plan.steps.find((item) => item.id === input.sourceStepId);
                     return <li key={input.id}>
@@ -1751,7 +1760,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                 <Button {...commandAttributes(stoppedNewStep)}
                   disabled={!stoppedNewStep.enabled} onClick={stoppedNewStep.invoke}>{studioName('newStep')}</Button>
               </section>}
-              onReplay={(update) => setReplayRequest({ update, slot })} />,
+              onReplay={(update) => onCurrentPlan('replay')(update, slot)} />,
           };
           return { body: null };
         }}
