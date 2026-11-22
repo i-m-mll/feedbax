@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_plan import BlockedRow, PlannedRun, ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.project_resolution import ResolutionCode
-from feedbax.jobs import JobService
+from feedbax.jobs import JobService, _planned_checkpoint_catalogs
 from feedbax.plugins.application import new_application_registry_bundle
 from feedbax.tasks.registry import application_python_tasks
 from feedbax.web.app import create_app
@@ -87,21 +87,47 @@ def test_window_keeps_conditions_and_batches_of_a_train_row_that_cannot_run(tmp_
     }
 
 
-def test_a_checkpoint_past_the_subjects_end_is_a_problem_on_the_row():
-    def compiled(at: int):
-        raw = document_project(authored_documents(), evaluation=True)
-        raw["steps"]["train"]["base"]["inline"]["training_config"]["n_batches"] = 100
-        raw["steps"]["baseline"]["inputs"]["subject"]["checkpoint"] = {"at": at}
-        return compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
+def _at(at: int, *, origin: int = 0):
+    """An Evaluate at update ``at`` of a 4-update Train with snapshot interval 2, continuing from ``origin``."""
+    raw = document_project(authored_documents(), evaluation=True)
+    raw["steps"]["train"]["base"]["inline"]["training_config"].update(n_batches=4, snapshot_interval=2)
+    source = "train"
+    if origin:
+        raw["steps"]["successor"] = {
+            "kind": "train",
+            "base": {"step": "train"},
+            "inputs": {"checkpoint": {"step": "train", "checkpoint": "last"}},
+            "deltas": [{"layer_id": "continue", "patches": [{
+                "path": "checkpoint_initialization", "op": "add", "value": {
+                    "mode": "continue_from", "source_completed_updates": origin,
+                    "state": "preserve", "schedule": "continue", "rng": "carry",
+                },
+            }]}],
+        }
+        source = "successor"
+    raw["steps"]["baseline"]["inputs"]["subject"] = {"step": source, "checkpoint": {"at": at}}
+    return compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
 
-    assert any(run.key.step == "baseline" for run in compiled(100).runs)
-    plan = compiled(150)
-    assert not any(run.key.step == "baseline" for run in plan.runs)
-    (problem,) = [problem for problem in plan.diagnostics if problem.step == "baseline"]
-    assert (problem.code, problem.path, problem.row) == (
-        ResolutionCode.BAD_REFERENCE, "inputs.subject.checkpoint", "default",
-    )
-    assert all(part in problem.detail for part in ("150", "'train'", "100"))
+
+def test_a_checkpoint_in_the_subjects_range_plans_and_is_demanded_of_the_train():
+    for at in (2, 3, 4):
+        plan = _at(at)
+        assert not plan.diagnostics
+        by_step = {run.key.step: run for run in plan.runs}
+        assert _planned_checkpoint_catalogs(plan) == {by_step["train"].request_id: {at}}
+
+
+def test_a_checkpoint_outside_the_subjects_range_is_a_problem_on_the_row():
+    for plan, at, step, first, last in (
+        (_at(5), 5, "'train'", "1", "4"), (_at(0), 0, "'train'", "1", "4"),
+        (_at(3, origin=4), 3, "'successor'", "5", "8"),
+    ):
+        assert not any(run.key.step == "baseline" for run in plan.runs)
+        (problem,) = [problem for problem in plan.diagnostics if problem.step == "baseline"]
+        assert (problem.code, problem.path, problem.row) == (
+            ResolutionCode.BAD_REFERENCE, "inputs.subject.checkpoint", "default",
+        )
+        assert all(part in problem.detail for part in (f"Update {at} ", step, first, last)), problem.detail
 
 
 def test_objective_expressions_stay_editable_when_the_model_does_not_pair(tmp_path):
