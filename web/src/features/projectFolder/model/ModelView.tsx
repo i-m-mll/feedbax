@@ -237,8 +237,15 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const owner = resolved?.owner;
   const interior = owner?.interior;
   const physical = interior?.physical_domain ?? null;
+  /**
+   * Whether the topology applies is decided with the plan. From a new revision until its plan is read it keeps its last
+   * value, so the cards keep their commands and a gesture made then waits for the plan.
+   */
+  const topology = useRef<{ subject: string; applies: boolean }>();
+  const topologySubject = JSON.stringify([saved.project_id, model?.id]);
+  if (planCurrent || topology.current?.subject !== topologySubject) topology.current = { subject: topologySubject, applies: topologyApplies };
   /** An Evaluate edits the topology of one selected value's Model; the edit is stored on the value. */
-  const editTopology = topologyApplies && (!evaluate || evaluate.scope.kind === 'axis_value');
+  const editTopology = topology.current.applies && (!evaluate || evaluate.scope.kind === 'axis_value');
   const selectedRuns = evaluate?.scope.kind === 'axis_value' ? evaluateEditRuns(evaluate.scope, evaluate.run, fieldRows)
     : !evaluate && fieldRows?.length && fieldAxes ? { rows: [...fieldRows], axes: fieldAxes } : undefined;
   const selectedHere = selected.filter((item) => inGraph(item, graph));
@@ -378,6 +385,17 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     },
   })), [definitions]);
   const persisted = model && positionsOf(saved, model.id);
+  /** Where each card without a saved position was first shown: it stays there, whatever is added or removed. */
+  const placed = useRef(new Map<string, ModelPosition>());
+  function cardPosition(address: ModelAddress, initial: () => ModelPosition) {
+    const key = addressKey(address);
+    const stored = held?.get(key) ?? persisted?.[key];
+    if (stored) return stored;
+    const shown = JSON.stringify([saved.project_id, model?.id, key]);
+    const first = placed.current.get(shown) ?? initial();
+    if (interior) placed.current.set(shown, first);
+    return first;
+  }
   const presentation = model && saved.presentation?.documents?.[model.id];
   const collapsed = presentation?.collapsed;
   const flipped = presentation?.flipped;
@@ -561,7 +579,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     });
   }
   function add(definition: ComponentDefinition, point?: ModelPosition, from?: Port, to?: string) {
-    const occupied = objects.map(([id], index) => persisted?.[addressKey(at(graph, { kind: 'component', id }))] ?? positionAt(index));
+    const occupied = objects.map(([id], index) => cardPosition(at(graph, { kind: 'component', id }), () => positionAt(index)));
     let index = 0;
     let available = positionAt(index);
     while (occupied.some(({ x, y }) => Math.abs(x - available.x) < 196 && Math.abs(y - available.y) < 150)) {
@@ -726,8 +744,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           enter();
         } }),
       },
-      position: held?.get(key) ?? persisted?.[key] ?? (definition ? positionAt(index) :
-        { x: id === inputCard ? 18 : 245 + 235 * Math.max(1, Math.min(objects.length, 4)), y: 38 }),
+      position: cardPosition(address, () => definition ? positionAt(index)
+        : { x: id === inputCard ? 18 : 245 + 235 * Math.max(1, Math.min(objects.length, 4)), y: 38 }),
       selected: !!definition && selectedIds.has(key),
       draggable: editTopology && !locked && !pick,
       selectable: !!definition && !pick,
