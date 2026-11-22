@@ -533,7 +533,7 @@
     "metricInterval": "Updates {start}–{end} ({count} samples), {min}–{max}",
     "metricStepSample": "{step} · Local updates {start}–{end}",
     "checkpointAtUpdate": "Checkpoint at update {update}",
-    "subjectEnd": "{step} · {batches} batches",
+    "checkpointRange": "{step} · {from} to {through}",
     "runCount": "{count} runs",
     "blockedRun": "{step} · {run}",
     "waitingForCheckpoint": "Waiting for {step} update {update}.",

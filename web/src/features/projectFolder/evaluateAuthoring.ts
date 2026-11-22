@@ -47,10 +47,19 @@ export function selectionCheckpoints(selections: readonly StepReference[]): Sele
     : (rules as EditableCheckpointRule[]).map((rule, index) => ({ rule, selections: [index] }));
 }
 
-/** The fewest batches of any run a checkpoint rule reads, and the step whose run has them. */
-export interface CheckpointLimit {
+/** An update of a step's run that bounds the checkpoints a rule can read. */
+export interface CheckpointBound {
   readonly step: string;
-  readonly batches: number;
+  readonly update: number;
+}
+
+/**
+ * The updates every run a checkpoint rule reads has: past the largest origin, and up to the fewest batches. Each end
+ * names the step whose run sets it.
+ */
+export interface CheckpointRange {
+  readonly after: CheckpointBound;
+  readonly through: CheckpointBound;
 }
 
 /** The kinds of checkpoint rule the Evaluate inspector edits: the last update, one update, a list, or a series. */
@@ -87,17 +96,22 @@ export function emptyCheckpointDraft(kind: CheckpointKind): CheckpointDraft {
  * The rule a draft says, or why it says none: a reason on the field that is wrong, or none while a required field is
  * empty.
  */
-export function checkpointDraftRule(draft: CheckpointDraft, limit?: CheckpointLimit):
+export function checkpointDraftRule(draft: CheckpointDraft, range?: CheckpointRange):
   { rule: EditableCheckpointRule } | { field?: CheckpointDraftField; reason?: string } {
-  const pastEnd = (update: number) => limit !== undefined && update > limit.batches;
-  const end = () => limit && studioFormat('subjectEnd', { step: limit.step, batches: limit.batches });
+  /** The end of `range` that `update` lies beyond, if any. */
+  const beyond = (update: number) => !range ? undefined
+    : update <= range.after.update ? range.after : update > range.through.update ? range.through : undefined;
+  const outside = (bound: CheckpointBound) => range && studioFormat('checkpointRange', {
+    step: bound.step, from: range.after.update + 1, through: range.through.update,
+  });
   switch (draft.kind) {
     case 'last': return { rule: 'last' };
     case 'at': {
       if (draft.at === null) return {};
       const parsed = BatchCheckpointSchema.safeParse({ at: draft.at });
       if (!parsed.success) return { field: 'at', reason: studioReason('wholeUpdate', String(draft.at)) };
-      return pastEnd(parsed.data.at) ? { field: 'at', reason: end() } : { rule: parsed.data };
+      const bound = beyond(parsed.data.at);
+      return bound ? { field: 'at', reason: outside(bound) } : { rule: parsed.data };
     }
     case 'list': {
       const text = draft.updates.trim();
@@ -108,7 +122,8 @@ export function checkpointDraftRule(draft: CheckpointDraft, limit?: CheckpointLi
       if (!parsed.success || new Set(updates).size !== updates.length) {
         return { field: 'updates', reason: studioReason('invalidUpdateList', text) };
       }
-      return updates.some(pastEnd) ? { field: 'updates', reason: end() } : { rule: parsed.data };
+      const bound = updates.map(beyond).find((end) => end !== undefined);
+      return bound ? { field: 'updates', reason: outside(bound) } : { rule: parsed.data };
     }
     case 'every': {
       if (draft.every === null) return {};

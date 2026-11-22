@@ -65,7 +65,7 @@ import { createCheckpointTrain } from './createCheckpointTrain';
 import { analyzeInput, createAnalyze, createReport, isReportFigureSource, type ReportFigureSource } from './createManagedStep';
 import { createTrain } from './createTrain';
 import { trainingDocumentId } from './trainingDocument';
-import { authoredTrialDomain, checkpointLabel, createEvaluation, editableCheckpointRule, exactCheckpoint, managedTrialDomain, ordinaryEvaluation, selectionCheckpoints, type CheckpointLimit, type EditableCheckpointRule, type SelectionCheckpoint, type StoppedEvaluationSubject } from './evaluateAuthoring';
+import { authoredTrialDomain, checkpointLabel, createEvaluation, editableCheckpointRule, exactCheckpoint, managedTrialDomain, ordinaryEvaluation, selectionCheckpoints, type CheckpointRange, type EditableCheckpointRule, type SelectionCheckpoint, type StoppedEvaluationSubject } from './evaluateAuthoring';
 import { bindProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
 import { bestRankGroups, projectWindowPlan, planVariants, savedRunId, stepSourceRows, unvalued } from './projectWindowPlan';
@@ -568,17 +568,20 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     return projection.data?.window_map?.rows.filter(({ key }) =>
       key.step === reference.step && key.variant === variant && (!read || read.has(savedRunId(key)))) ?? [];
   }
-  /** The fewest batches of any run that `selections` read, among the runs whose batches the plan knows. */
-  function checkpointLimit(selections: readonly number[]): CheckpointLimit | undefined {
-    let limit: CheckpointLimit | undefined;
+  /** The updates every run that `selections` read has, among the runs whose extent the plan knows. */
+  function checkpointRange(selections: readonly number[]): CheckpointRange | undefined {
+    let range: CheckpointRange | undefined;
     for (const index of selections) {
-      for (const { key, target_total } of selectionRows(index)) {
-        if (target_total != null && (!limit || target_total < limit.batches)) {
-          limit = { step: stepLabel(key.step), batches: target_total };
-        }
+      for (const { key, origin, target_total } of selectionRows(index)) {
+        if (origin == null || target_total == null) continue;
+        const step = stepLabel(key.step);
+        range = {
+          after: !range || origin > range.after.update ? { step, update: origin } : range.after,
+          through: !range || target_total < range.through.update ? { step, update: target_total } : range.through,
+        };
       }
     }
-    return limit;
+    return range;
   }
   const exactSources = selectedEvaluation?.result?.checkpoint_sources;
   const exactSource = subjectCheckpoint !== undefined && exactSources?.length === 1 ? exactSources[0] : undefined;
@@ -1713,7 +1716,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                       onEdit={applies && wholeStep ? editEvaluateSubject : undefined} />}
                     {checkpointEditors?.map(({ rule, selections }) =>
                       <CheckpointEditor key={JSON.stringify(['checkpoint', step.id, variant, checkpointScope, selections])}
-                        initial={rule} limit={checkpointLimit(selections)}
+                        initial={rule} range={checkpointRange(selections)}
                         step={checkpointEditors.length > 1 ? stepLabel(subjectReferences![selections[0]].step) : undefined}
                         disabled={!applies} readOnly={Boolean(stepCheckpointRule && subject?.checkpoint_axis)}
                         refusal={refusedAt('checkpoint')}

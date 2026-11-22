@@ -74,11 +74,14 @@ it('reads one checkpoint rule for selections that share it and one per selection
     .toEqual([{ rule: 'last', selections: [0] }, { rule: { at: 5 }, selections: [1] }]);
 });
 
-// Catches a checkpoint past the subject's training reaching a job.
-it('refuses an update past the fewest batches of the runs read, on its field', () => {
-  const limit = { step: 'train-2', batches: 8000 };
-  expect(checkpointDraftRule({ kind: 'at', at: 8000 }, limit)).toEqual({ rule: { at: 8000 } });
-  expect(checkpointDraftRule({ kind: 'at', at: 9000 }, limit)).toMatchObject({ field: 'at', reason: expect.stringContaining('8000') });
-  expect(checkpointDraftRule({ kind: 'list', updates: '10, 9000' }, limit)).toMatchObject({ field: 'updates' });
-  expect(checkpointDraftRule({ kind: 'last' }, limit)).toEqual({ rule: 'last' });
+// Catches a checkpoint outside a subject's training, before its origin or past its end, reaching a job.
+it('refuses an update outside the range every run read has, on its field, naming the step that bounds it', () => {
+  const range = { after: { step: 'train', update: 100 }, through: { step: 'train-2', update: 8000 } };
+  expect(checkpointDraftRule({ kind: 'at', at: 8000 }, range)).toEqual({ rule: { at: 8000 } });
+  expect(checkpointDraftRule({ kind: 'at', at: 101 }, range)).toEqual({ rule: { at: 101 } });
+  const late = checkpointDraftRule({ kind: 'at', at: 9000 }, range);
+  expect(late).toMatchObject({ field: 'at', reason: expect.stringMatching(/^train-2 · .*101\b.*8000/) });
+  const early = checkpointDraftRule({ kind: 'list', updates: '100, 200' }, range);
+  expect(early).toMatchObject({ field: 'updates', reason: expect.stringMatching(/^train · .*101\b.*8000/) });
+  expect(checkpointDraftRule({ kind: 'last' }, range)).toEqual({ rule: 'last' });
 });
