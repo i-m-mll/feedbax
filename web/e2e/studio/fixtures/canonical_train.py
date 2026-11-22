@@ -80,6 +80,11 @@ def seed_variants(home: str, project_id: str):
             "control": {"from": "base", "label": "Control"},
         }},
     })
+    return write_project(home, project_id, project)
+
+
+def write_project(home: str, project_id: str, project: Project) -> str:
+    """Write ``project`` as the folder ``project_id`` of the Studio home ``home``."""
     root = AppPaths.resolve(instance_root=Path(home)).web / "projects" / project_id
     for name, data in dump_text_project(
         project, ProjectConfiguration(project=project_id, store="results"),

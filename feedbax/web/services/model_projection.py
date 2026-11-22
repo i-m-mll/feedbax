@@ -13,7 +13,7 @@ from feedbax.contracts.project_plan import RunKey
 from feedbax.project_folder import model_edit_source
 from feedbax.project_model_selection import selected_model as selected_model, selected_model_and_task, task_signal
 from feedbax.studio.model_differences import structural_differences
-from feedbax.web.services.trial_scope import selected_value, selection_scope, value_model
+from feedbax.web.services.trial_scope import runs_scope, selected_value, value_model
 
 
 def _port(composites, component, direction, port):
@@ -42,7 +42,7 @@ def model_differences(folders, project_id, body):
     if body.rows:
         plan = folders.read_plan(project_id, revision=body.revision).plan
         key = RunKey(body.run.variant, body.run.step, body.rows[0])
-        named = selected_value(project, key.step, selection_scope(project, plan, key, tuple(body.rows), body.axes))
+        named = selected_value(project, key.step, runs_scope(project, plan, key, tuple(body.rows), body.axes or {}))
         if named is not None:
             from_value = structural_differences(
                 shown, _dumped(value_model(project, key.step, named, body.document)), layout.get("positions", {}),
