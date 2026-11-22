@@ -17,9 +17,32 @@
   flex-shrink: 1;
 }
 
-/* A boolean in a table cell is centred in its column, on the line of the cells' controls. */
-.value-field-cell:has(> [role='checkbox']) {
-  justify-items: center;
+/* A boolean's changed mark follows its box in a row, outside the flow so that it changes no height. */
+.value-field-check {
+  position: relative;
+  display: inline-flex;
+  vertical-align: middle;
+  align-items: center;
+}
+
+.value-field-check > [data-change-mark] {
+  position: absolute;
+  left: calc(100% + var(--space-1));
+}
+
+/* A boolean in a table cell is centred in its column, on the line of the cells' controls; its mark is at the cell's end. */
+.value-field-cell:has(> .value-field-check) {
   grid-template-rows: var(--control-height);
   align-items: center;
+}
+
+.value-field-cell > .value-field-check {
+  display: flex;
+  justify-content: center;
+  height: 100%;
+}
+
+.value-field-cell > .value-field-check > [data-change-mark] {
+  left: auto;
+  right: 0;
 }
