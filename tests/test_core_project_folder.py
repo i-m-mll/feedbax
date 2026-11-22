@@ -73,7 +73,16 @@ def _model_project():
         {"id": "one", "name": "One", "type": {}, "default": {"value": 0}},
         {"id": "two", "name": "Two", "type": {}, "default": {"value": 0}},
     ])
+    raw["documents"][_VARIANT] = {
+        "schema": raw["documents"]["reach-model"]["schema"], "base": {"document": "reach-model"},
+        "differences": {"/interior/components/d": {"op": "remove"}},
+    }
     return Project.model_validate(raw)
+
+
+_VARIANT = "reach-variant"
+_DOCUMENTS = {"reset_difference": _VARIANT}
+"""The document a case edits, when it is not the shared Model: one that differs from its base."""
 
 
 def _edit_cases():
@@ -119,6 +128,7 @@ def _edit_cases():
         "paste": {"graph": graph, "clipboard": {"components": {"a": _gain()}, "wires": {}, "connections": {}}},
         "group": {"selection": [a], "name": "Group"},
         "ungroup": {"address": outer},
+        "reset_difference": {"address": _address("component", id="d")},
     }
 
 
@@ -180,7 +190,7 @@ def test_each_named_operation_has_core_and_http_file_parity(tmp_path, monkeypatc
         original = _files(direct / operation)
         body = ModelEditRequest.model_validate({
             "revision": before.revision, "presentation_revision": before.presentation_revision,
-            "document": "reach-model", "command": {"operation": {"op": operation, **fields}},
+            "document": _DOCUMENTS.get(operation, "reach-model"), "command": {"operation": {"op": operation, **fields}},
         })
         ids = count()
         monkeypatch.setattr(model_edit, "uuid4", lambda: UUID(int=next(ids)))
