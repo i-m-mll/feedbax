@@ -8,7 +8,7 @@
   box-sizing: content-box;
   width: 28px;
   padding-block: var(--space-1);
-  border-inline-end: 1px solid var(--app-divider);
+  border-inline-end: 1px solid var(--border-muted);
 }
 .studio-canvas-strip__gap { flex: 1; }
 .studio-canvas-surface { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }

@@ -85,7 +85,7 @@
 .studio-window-panel__divider {
   position: relative;
   z-index: 2;
-  background: var(--app-divider);
+  background: var(--border-muted);
 }
 
 .studio-window-map,
@@ -135,12 +135,12 @@
   min-height: 0;
   flex: 0 0 auto;
   background: var(--surface-sidebar);
-  border-inline-end: 1px solid var(--app-divider);
+  border-inline-end: 1px solid var(--border-muted);
 }
 
 .studio-window-side--inspector {
   border-inline-end: 0;
-  border-inline-start: 1px solid var(--app-divider);
+  border-inline-start: 1px solid var(--border-muted);
 }
 
 .studio-window-side__contents {
@@ -172,7 +172,7 @@
 }
 
 .studio-window-slot + .studio-window-slot {
-  border-inline-start: 1px solid var(--app-divider);
+  border-inline-start: 1px solid var(--border-muted);
 }
 
 .studio-window-slot__view {
@@ -206,7 +206,7 @@
   height: var(--panel-header-height);
   padding-inline: var(--panel-header-padding-inline);
   background: var(--surface-toolbar);
-  border-block-end: 1px solid var(--app-divider);
+  border-block-end: 1px solid var(--border-muted);
 }
 
 .studio-window-slot__name {

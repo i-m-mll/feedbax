@@ -362,13 +362,19 @@ def test_saved_evaluate_refuses_undeclared_subject_owner(host, tmp_path, authore
     plan = snapshot.plan
     assert {run.key.step for run in plan.runs} == {"train"}
     (train,) = plan.runs
-    (problem,) = plan.diagnostics
-    assert (problem.step, problem.code, problem.blocked_by) == ("baseline", "blocked_input", train.key)
-    assert train.admission_problem is not None
-    assert train.admission_problem.model_address == ModelAddress.model_validate({
+    problem, blocked = sorted(plan.diagnostics, key=lambda item: item.code == "blocked_input")
+    assert (blocked.step, blocked.row, blocked.code, blocked.blocked_by) == (
+        "baseline", problem.row, "blocked_input", train.key,
+    )
+    assert problem.step == "baseline"
+    assert problem.model_address == ModelAddress.model_validate({
         "composites": ["wrapper", "controller"],
         "element": {"kind": "component", "id": "passthrough"},
     })
+    assert problem.path == "/inputs/subject/graph/subgraphs/wrapper/subgraphs/controller/nodes/passthrough"
+    assert "feedbax.Gain" in problem.detail and "no declared Evaluate layout" in problem.detail
+    assert train.admission_problem is not None
+    assert train.admission_problem.model_address == problem.model_address
     assert "no typed model checkpoint owner" in train.admission_problem.detail
     jobs = JobService(host, new_application_registry_bundle())
     key = RunKey("default", "baseline", "default")
