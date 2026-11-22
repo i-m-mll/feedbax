@@ -305,9 +305,11 @@ export function projectWindowPlan(
       ...savedResult(row.light?.result),
       ...(elementResults.get(id) ?? []).flatMap(savedResult),
     ].map((result) => [result.requestId, result])).values()];
-    const problems = map?.problems.filter((problem) => problem.step === row.key.step &&
+    const rowProblems = map?.problems.filter((problem) => problem.step === row.key.step &&
       (problem.variant === null || problem.variant === row.key.variant) && (problem.row == null || problem.row === row.key.row));
-    const blocking = problems?.find(({ code, blocked_by }) => code === 'blocked_input' && blocked_by)?.blocked_by;
+    const blocking = rowProblems?.find(({ code, blocked_by }) => code === 'blocked_input' && blocked_by)?.blocked_by;
+    /** A run's own problems; the run it waits on is its link, `blockedBy`. */
+    const problems = rowProblems?.filter(({ code }) => code !== 'blocked_input');
     addRun(row.key.step, {
       id, values, label: rowName(producer ? savedRunId(producer.key) : id, row.label), status: row.status, reason, variant: row.key.variant,
       problems,
