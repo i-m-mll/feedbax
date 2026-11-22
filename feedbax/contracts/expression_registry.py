@@ -21,6 +21,9 @@ from feedbax.contracts.expression_values import (
 )
 
 
+POINT_INTERPOLATIONS = ("linear", "hold", "cubic")
+
+
 class FunctionClass(StrEnum):
     MATH = "math"
     SHAPE = "shape"

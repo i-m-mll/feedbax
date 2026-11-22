@@ -39,7 +39,7 @@ from feedbax.contracts.project import (
     apply_differences, base_chain, diff, json_pointer_parts, nearest_shared_base,
 )
 from feedbax.contracts.run_rule import RuleRefusal
-from feedbax.expression_text import RuleBest
+from feedbax.contracts.expression_text import RuleBest
 from feedbax.contracts.project_inputs import (
     BarrierCheckpoint,
     BatchCheckpoint,
@@ -143,7 +143,7 @@ if TYPE_CHECKING:
     from feedbax.training.methods import TrainingMethodRegistry
     from feedbax.component_registry import ComponentRegistry
     from feedbax.compiler.model_document import LoweredModelDocument
-    from feedbax.expression_registry import FunctionRegistry
+    from feedbax.contracts.expression_registry import FunctionRegistry
     from feedbax.plot.templates import FigureTemplateRegistry
 
 
@@ -1206,7 +1206,7 @@ class _TrainRows:
 @cache
 def _builtin_expression_registry():
     from feedbax.expression_builtins import register_builtins
-    from feedbax.expression_registry import FunctionRegistry
+    from feedbax.contracts.expression_registry import FunctionRegistry
 
     registry = FunctionRegistry()
     register_builtins(registry)

@@ -40,7 +40,7 @@ from feedbax.contracts.task_document import (
 )
 from feedbax.expression_check import dependency_order
 from feedbax.expression_compile import Compiled, Inputs, compile_expression
-from feedbax.expression_registry import FunctionRegistry
+from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.contracts.rollout import trial_indices
 from feedbax.runtime._graph_key_schedule import map_trial_samples, validation_trial_keys
 from feedbax.runtime.epoch_windows import EpochRecord, in_epoch

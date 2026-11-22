@@ -20,9 +20,9 @@ from feedbax.contracts.expression_values import (
 from feedbax.expression_builtins import register_builtins
 from feedbax.expression_check import check, dependency_order
 from feedbax.expression_compile import Compiled, Inputs, compile_expression
-from feedbax.expression_registry import Function, FunctionClass, FunctionInfo, FunctionRegistry
+from feedbax.contracts.expression_registry import Function, FunctionClass, FunctionInfo, FunctionRegistry
 from feedbax.expression_site import FieldKind, field_kind, project_site, read_field
-from feedbax.expression_text import ParsedField, parse, print_field
+from feedbax.contracts.expression_text import ParsedField, parse, print_field
 
 
 @pytest.fixture

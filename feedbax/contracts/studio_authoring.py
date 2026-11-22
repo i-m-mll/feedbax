@@ -8,7 +8,7 @@ from pydantic import Field, JsonValue, StrictFloat, StrictInt
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.component import ComponentDefinition
-from feedbax.expression_registry import FunctionInfo
+from feedbax.contracts.expression_registry import FunctionInfo
 from feedbax.contracts.operation import OperationDefinition
 from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName, StepReference

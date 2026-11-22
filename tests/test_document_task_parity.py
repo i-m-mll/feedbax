@@ -27,8 +27,8 @@ from feedbax.contracts.expression_values import (
     ValueType,
 )
 from feedbax.expression_builtins import register_builtins
-from feedbax.expression_registry import FunctionRegistry
-from feedbax.expression_text import ParsedField, parse
+from feedbax.contracts.expression_registry import FunctionRegistry
+from feedbax.contracts.expression_text import ParsedField, parse
 from feedbax.objectives.document import (
     ObjectiveDocument,
     ObjectiveExecutor,

@@ -4,8 +4,8 @@ from math import isfinite
 
 from feedbax.contracts.expression_values import CallValue, DrawValue, FieldValue, LiteralValue, Site
 from feedbax.contracts.studio_field import StudioDensity, StudioValueStructure
-from feedbax.expression_registry import FunctionRegistry
-from feedbax.expression_text import print_field
+from feedbax.contracts.expression_registry import FunctionRegistry
+from feedbax.contracts.expression_text import print_field
 
 _DENSITY_POINTS = 48
 

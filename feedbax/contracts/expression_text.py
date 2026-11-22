@@ -34,8 +34,7 @@ from feedbax.contracts.expression_values import (
     TextSpan,
     scope_problems,
 )
-from feedbax.expression_builtins import POINT_INTERPOLATIONS
-from feedbax.expression_registry import FunctionClass, FunctionRegistry
+from feedbax.contracts.expression_registry import POINT_INTERPOLATIONS, FunctionClass, FunctionRegistry
 
 
 _GRAMMAR = r"""
