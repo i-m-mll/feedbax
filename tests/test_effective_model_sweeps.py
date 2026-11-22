@@ -89,7 +89,7 @@ def test_saved_train_and_evaluate_use_the_same_attachment_id(host, tmp_path, aut
     raw["steps"]["train"]["sweep"] = {"axes": {"factor": {"path": target, "values": [0.5]}}}
     raw["steps"]["baseline"]["sweep"] = {
         "axes": {"trained": {"input": "subject"}},
-        "exceptions": {"condition": {"where": {"axes": {}}, "patches": {target: {"value": 0.25}}}},
+        "exceptions": {"condition": {"where": {"rule": ""}, "patches": {target: {"value": 0.25}}}},
     }
     _save_project(folders, "addressed", Project.model_validate(raw))
     saved = folders.read("addressed").project
@@ -212,7 +212,7 @@ def test_named_draw_part_does_not_reset_attachment_anchors(authored):
     whole = _wire_field("first", "fields", "factor")
     sweep = Sweep.model_validate({
         "axes": {"draw": {"path": whole.to_text(), "values": [first["attachment"]["fields"]["factor"]]}},
-        "exceptions": {"part": {"where": {"axes": {}}, "patches": {address.to_text(): {"value": 0.2}}}},
+        "exceptions": {"part": {"where": {"rule": ""}, "patches": {address.to_text(): {"value": 0.2}}}},
     })
     with pytest.raises(SweepExpansionError, match="already writes"):
         expand_sweep(sweep)

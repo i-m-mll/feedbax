@@ -21,17 +21,17 @@ from feedbax.contracts.expression_values import DrawValue
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_address import FieldElement, ModelAddress
 from feedbax.contracts.model_attachment import SetField
-from feedbax.contracts.request_refs import Name, UpdateCadence, UpdateRule, axis_values_id
+from feedbax.contracts.request_refs import UpdateCadence, UpdateRule, axis_values_id
 from feedbax.contracts.project_inputs import (
     CheckpointRule,
     NonemptyText,
     ProjectName,
     RowKey,
     StepReference,
-    SubsetSelectionError,
     SweepExceptionTerms,
     select_sweep_exception_rows,
 )
+from feedbax.contracts.run_rule import RuleRefusal, rule_names
 type PatchPath = Annotated[str, Field(pattern=r"^[^.]+(?:\.[^.]+)*$")]
 type SweepTarget = Annotated[str, Field(pattern=r"^(?:(?:(?:steps|documents)\.[A-Za-z0-9_][A-Za-z0-9_-]*\.)?\{[\s\S]+\}|[^.]+(?:\.[^.]+)*)$")]
 type IntegerSite = Callable[[str], bool]
@@ -170,20 +170,19 @@ class SweepException(PatchSet):
 
 
 class AxisCondition(StrictModel):
-    """The rows an axis applies to, by the terms an exception's ``where`` takes: those whose value on each named axis,
-    or on a coordinate an input axis carries, is one of those listed, and that are among ``rows`` when it is given.
+    """The rows an axis applies to: those a run rule on the step's other axes chooses, among ``rows`` when given.
 
     ``rows`` names the rows the step has without this axis; an axis conditioned on rows divides its rows after every
     conditioned axis authored before it.
     """
 
-    axes: dict[ProjectName, Annotated[list[Name], Field(min_length=1)]] = Field(default_factory=dict)
+    rule: str = ""
     rows: Annotated[list[RowKey], Field(min_length=1)] | None = Field(default=None, exclude_if=lambda rows: rows is None)
 
     @model_validator(mode="after")
     def _has_terms(self) -> AxisCondition:
-        if not self.axes and self.rows is None:
-            raise ValueError("a condition names axis values or rows")
+        if not self.rule.strip() and self.rows is None:
+            raise ValueError("a condition has a rule or rows")
         return self
 
 
@@ -760,13 +759,18 @@ def _conditional_order(axes: Mapping[str, Axis]) -> tuple[str, ...]:
             graph[name] = set(earlier)
             earlier.append(name)
             continue
-        for other in where.axes:
-            if other == name:
-                raise SweepExpansionError(
-                    SweepExpansionCode.INVALID_CONDITION, f"sweep.axes.{name}.where.axes.{other}",
-                    f"axis {name!r} is conditioned on itself",
-                )
-        graph[name] = {other for other in where.axes if other in axes and _divides(axes[other])}
+        try:
+            names = rule_names(where.rule)
+        except RuleRefusal as error:
+            raise SweepExpansionError(
+                SweepExpansionCode.INVALID_CONDITION, f"sweep.axes.{name}.where.rule", error.detail
+            ) from error
+        if name in names:
+            raise SweepExpansionError(
+                SweepExpansionCode.INVALID_CONDITION, f"sweep.axes.{name}.where.rule",
+                f"axis {name!r} is conditioned on itself",
+            )
+        graph[name] = {other for other in names if other in axes and _divides(axes[other])}
         if where.rows is not None:
             graph[name] |= set(earlier)
         earlier.append(name)
@@ -1012,11 +1016,11 @@ def _choices(
     return choices
 
 
-def axis_values(
+def axis_coordinates(
     coordinates: Mapping[str, SweepCoordinate], input_axes: Mapping[str, SweepCoordinate],
-) -> dict[str, str]:
-    """The value ID of each axis a row is selected by: its coordinates, and its input axes' member keys."""
-    return {axis: coordinate.value_id for axis, coordinate in (*coordinates.items(), *input_axes.items())}
+) -> dict[str, SweepCoordinate]:
+    """Each axis a row is chosen by: its coordinates, and its input axes' members."""
+    return {**coordinates, **input_axes}
 
 
 def coordinate_text(coordinate: SweepCoordinate) -> str:
@@ -1103,9 +1107,9 @@ def _select_exception_rows(
             exception.where,
             rows,
             key=lambda row: row.id,
-            coordinates=lambda row: axis_values(row.coordinates, row.input_axes),
+            coordinates=lambda row: axis_coordinates(row.coordinates, row.input_axes), producer="this step",
         )
-    except SubsetSelectionError as error:
+    except RuleRefusal as error:
         term = f".{error.path}" if error.path else ""
         raise SweepExpansionError(
             SweepExpansionCode.INVALID_EXCEPTION, f"{path}.where{term}", error.detail
@@ -1198,12 +1202,11 @@ def _condition_picks(name: str, where: AxisCondition, rows: Sequence[ExpandedRow
     try:
         picked = {
             id(row) for row in select_sweep_exception_rows(
-                SweepExceptionTerms(axes=where.axes, rows=where.rows) if where.rows is not None
-                else SweepExceptionTerms(axes=where.axes), rows, key=lambda row: row.id,
-                coordinates=lambda row: axis_values(row.coordinates, row.input_axes),
+                SweepExceptionTerms.model_validate(where.model_dump(exclude_none=True)), rows, key=lambda row: row.id,
+                coordinates=lambda row: axis_coordinates(row.coordinates, row.input_axes), producer="this step",
             )
         }
-    except SubsetSelectionError as error:
+    except RuleRefusal as error:
         term = f".{error.path}" if error.path else ""
         raise SweepExpansionError(
             SweepExpansionCode.INVALID_CONDITION, f"sweep.axes.{name}.where{term}", error.detail
@@ -1389,7 +1392,7 @@ def authored_row(sweep: Sweep | None, row_id: str) -> ExpandedRow | None:
         return None
     exceptions = {name: item for name, item in resolved.exceptions.items() if item is not None}
     needs_generated = any(
-        where.axes or any(name not in rows for name in where.rows or ())
+        where.rule.strip() or any(name not in rows for name in where.rows or ())
         for item in exceptions.values()
         if (where := item.where) is not None
     )

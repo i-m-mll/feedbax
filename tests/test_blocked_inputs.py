@@ -26,7 +26,7 @@ def _one_bad_train_row() -> dict:
     raw = document_project(authored_documents(), evaluation=True)
     _two_optimizer_rates(raw)
     raw["steps"]["train"]["sweep"]["exceptions"] = {"broken": {
-        "where": {"axes": {"rate": ["low"]}},
+        "where": {"rule": "rate=low"},
         "patches": {"trial_documents.model.interior.components.left": {"value": BAD_LINEAR, "op": "add"}},
     }}
     raw["steps"]["baseline"]["sweep"] = {"axes": {"model": {"input": "subject"}}}

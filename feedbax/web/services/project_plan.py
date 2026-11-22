@@ -69,7 +69,8 @@ from feedbax.contracts.project_plan import (
 from feedbax.contracts.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.result_address import parse_labels
-from feedbax.contracts.project_sweep import CheckpointRuleAxis
+from feedbax.contracts.project_sweep import CheckpointRuleAxis, axis_coordinates
+from feedbax.contracts.run_rule import value_text
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import (
     BatchMember, BatchSetMember, BestRank, LastMember, ProductRef, UpdateSeriesMember,
@@ -337,6 +338,15 @@ class ProjectPlanRead:
         def includes(variant: str | None) -> bool:
             return variants is None or variant is None or variant in variants
 
+        rule_axes: dict[tuple[str, str], dict[str, dict[str, str]]] = defaultdict(dict)
+        rule_metrics: dict[tuple[str, str], set[str]] = defaultdict(set)
+        for row in plan.rows:
+            at = row.key.variant, row.key.step
+            for axis, coordinate in axis_coordinates(row.coordinates, row.input_axes).items():
+                rule_axes[at].setdefault(axis, {}).setdefault(coordinate.value_id, value_text(coordinate))
+            for attempt in self.attempts_by_run.get(row.key, ()):
+                rule_metrics[at].update(attempt.metric_names)
+
         return StudioProjectWindowMap(
             variants=[variant for variant in plan.variants if includes(variant)],
             steps=[
@@ -352,6 +362,8 @@ class ProjectPlanRead:
                         for name, rows in plan.exception_matches.get((variant, step_id), {}).items()
                     ],
                     status_counts=dict(counts[variant, step_id]),
+                    rule_axes=rule_axes[variant, step_id],
+                    rule_metrics=sorted(rule_metrics[variant, step_id]),
                 )
                 for (variant, step_id), step in plan.steps.items() if includes(variant)
             ],

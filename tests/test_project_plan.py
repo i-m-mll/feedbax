@@ -281,7 +281,7 @@ def test_chained_train_pairs_named_and_generated_rows_before_and_after_suffix_ed
 
     data["steps"]["flat"]["sweep"]["exceptions"] = {
         "extend": {
-            "where": {"axes": {"seed": ["b"], "rate": ["fast"]}},
+            "where": {"rule": "seed=b rate=fast"},
             "patches": {
                 "training_config.n_batches": {"value": 80},
             },
@@ -332,7 +332,7 @@ def test_checkpoint_subset_pairs_surviving_ids_even_with_one_candidate():
     rewarm_step["inputs"]["checkpoint"]["step"] = "flat"
     rewarm_step["deltas"] = [layer for layer in rewarm_step["deltas"] if layer["layer_id"] != "initialize"]
     checkpoint = data["steps"]["flat"]["inputs"]["checkpoint"]
-    checkpoint["where"] = {"axes": {"seed": ["b"]}}
+    checkpoint["where"] = {"rule": "seed=b"}
     memo = ProjectPlanMemo()
     plan = compile_project(Project.model_validate(data), memo=memo)
     assert not plan.diagnostics
@@ -500,7 +500,7 @@ def test_selection_by_axis_or_exact_rows_preserves_authored_keys_and_order():
     evaluation["sweep"] = {"axes": {"subject": {"input": "subject"}}}
     reference = evaluation["inputs"]["subject"]
     reference["where"] = {
-        "axes": {"seed": ["a", "c"]},
+        "rule": "seed=a,c",
         "rows": [{"key": row, "variant": "default", "row": row} for row in ("seed=c", "seed=a")],
     }
     plan = compile_project(Project.model_validate(data))
@@ -517,7 +517,7 @@ def test_selection_by_axis_or_exact_rows_preserves_authored_keys_and_order():
     assert named.runs == plan.runs and named.requests == plan.requests
     assert named.subsets["default", "baseline", "subject"].document == "selected"
 
-    measured = SubsetTerms.model_validate({"best": {"by": "train_loss", "k": 1}})
+    measured = SubsetTerms.model_validate({"rule": "lowest 1 train_loss"})
     reference["where"] = measured.model_dump(exclude_unset=True)
     ranked = compile_project(Project.model_validate(data))
     assert not ranked.diagnostics, ranked.diagnostics
@@ -534,9 +534,9 @@ def test_selection_by_axis_or_exact_rows_preserves_authored_keys_and_order():
     empty = compile_project(Project.model_validate(data))
     assert not empty.diagnostics and all(run.kind == "train" for run in empty.runs)
     assert empty.subsets["default", "baseline", "subject"].members == ()
-    reference["where"] = {"axes": {"seed": ["typo"]}}
+    reference["where"] = {"rule": "seed=typo"}
     [problem] = compile_project(Project.model_validate(data)).diagnostics
-    assert problem.path == "inputs.subject.where.axes.seed"
+    assert problem.path == "inputs.subject.where.rule"
     assert "typo" in problem.detail
 
 
