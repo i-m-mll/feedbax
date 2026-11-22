@@ -437,7 +437,7 @@ def test_scoped_objective_writes_preserve_other_requests(tmp_path, kind):
         if kind == "rows":
             expression = body | {
                 "revision": saved.json()["revision"],
-                "change": {"kind": "expression", "term": "term", "field": "weight", "text": "2"},
+                "change": {"kind": "expression", "term": "term", "field": "weight", "edit": {"kind": "text", "text": "2"}},
             }
             prepared = client.post(f"{route}/authoring/trials", json=expression)
             assert prepared.status_code == 200, prepared.text

@@ -4282,14 +4282,25 @@ export type StudioTrialExpressionEdit = {
   "kind": "expression";
   "term": string;
   "field": "measure" | "weight";
-  "text": string;
+  "edit": FieldTextEdit | FieldKindEdit | FieldNameEdit;
 };
 
 export type StudioTrialField = {
-  "path": string;
-  "projection": SiteProjection;
-  "text"?: string | null;
+  "label": string;
+  "text": string;
   "structure"?: StudioValueStructure | null;
+  "effective"?: string | null;
+  "mixed"?: boolean;
+  "unit"?: string | null;
+  "conversion"?: string | null;
+  "site": SiteProjection;
+  "sweep"?: StudioSweepList | StudioSweepRange | StudioSweepSampler | null;
+  "selected_value"?: string | null;
+  "can_sweep"?: boolean;
+  "can_change_axis"?: boolean;
+  "members"?: Array<StudioSweepValue>;
+  "changed"?: boolean;
+  "path": string;
 };
 
 export type StudioTrialInput = {
@@ -11315,16 +11326,27 @@ export const StudioTrialExpressionEditSchema: z.ZodType<StudioTrialExpressionEdi
     "kind": z.literal("expression"),
     "term": z.string(),
     "field": z.union([z.literal("measure"), z.literal("weight")]),
-    "text": z.string().max(8192),
+    "edit": z.union([FieldTextEditSchema, FieldKindEditSchema, FieldNameEditSchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialExpressionEdit>;
 
 export const StudioTrialFieldSchema: z.ZodType<StudioTrialField> = z.lazy(() =>
   z.object({
-    "path": z.string(),
-    "projection": SiteProjectionSchema,
-    "text": z.union([z.string(), z.null()]).optional(),
+    "label": z.string(),
+    "text": z.string(),
     "structure": z.union([StudioValueStructureSchema, z.null()]).optional(),
+    "effective": z.union([z.string(), z.null()]).optional(),
+    "mixed": z.boolean().optional(),
+    "unit": z.union([z.string(), z.null()]).optional(),
+    "conversion": z.union([z.string(), z.null()]).optional(),
+    "site": SiteProjectionSchema,
+    "sweep": z.union([StudioSweepListSchema, StudioSweepRangeSchema, StudioSweepSamplerSchema, z.null()]).optional(),
+    "selected_value": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+    "can_sweep": z.boolean().optional(),
+    "can_change_axis": z.boolean().optional(),
+    "members": z.array(StudioSweepValueSchema).optional(),
+    "changed": z.boolean().optional(),
+    "path": z.string(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialField>;
 
