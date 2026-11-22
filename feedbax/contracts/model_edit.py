@@ -15,7 +15,7 @@ from feedbax.contracts.model_document import (
 )
 from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.project import Sha256
-from feedbax.contracts.project_inputs import ProjectName, RowKey
+from feedbax.contracts.project_inputs import AxisValueId, ProjectName, RowKey
 from feedbax.contracts.request_refs import Name
 from feedbax.contracts.studio_project import StudioProjectSnapshot
 from feedbax.contracts.studio_project import StudioProjectFilePatch
@@ -370,7 +370,7 @@ class StepRuns(StrictModel):
 class AxisValueRuns(StrictModel):
     kind: Literal["axis_value"]
     axis: ProjectName
-    value: ProjectName
+    value: AxisValueId
 
 
 class ListedRuns(StrictModel):

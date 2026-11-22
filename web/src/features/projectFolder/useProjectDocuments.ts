@@ -1,6 +1,7 @@
 import { useState, useSyncExternalStore } from 'react';
 import { readStudioTrialAuthoring } from '@/api/studioAuthoring';
-import { apiErrorMessage, landsOnGesture } from '@/api/request';
+import { landsOnGesture } from '@/api/request';
+import { shownError } from '@/api/shownErrors';
 import {
   studioAccessibleName, studioName, studioSweptParameterMissing, type StudioNameId,
 } from '@/components/activity/studioVocabulary';
@@ -65,7 +66,7 @@ export interface ProjectDocumentInputs {
   readonly editable: boolean;
   /** The based documents whose Detach would leave an Evaluate step's Model document unrelated to its subject's. */
   readonly detachRefused?: readonly string[];
-  readonly onError: (message: string) => void;
+  readonly onError: (error: unknown) => void;
 }
 
 /** The project's documents a step can read in `role`, by name. */
@@ -138,8 +139,8 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
     try {
       return await editor.command(work);
     } catch (error) {
-      if (landsOnGesture(error)) refuse(role, apiErrorMessage(error));
-      else onError(apiErrorMessage(error));
+      if (landsOnGesture(error)) refuse(role, shownError(error));
+      else onError(error);
     }
   }
 
