@@ -4,7 +4,7 @@ import { Plus } from 'lucide-react';
 import { useId, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { catalogEntries, readStudioTrialAuthoring, useAuthoringCatalog } from '@/api/studioAuthoring';
-import { apiErrorMessage } from '@/api/request';
+import { shownError } from '@/api/shownErrors';
 import { studioAccessibleName, studioDefinitionStatus, studioEvaluateValueSource, studioName, studioRunReason } from '@/components/activity/studioVocabulary';
 import { IconButton } from '@/components/ui/Button';
 import { Inspector } from '@/components/ui/Inspector';
@@ -78,12 +78,12 @@ export function useTrialAuthoring(
       });
       await editor.flush();
       const settled = await stored;
-      if (settled.status === 'refused') return apiErrorMessage(settled.error);
+      if (settled.status === 'refused') return shownError(settled.error);
     } else if (result.problems.length) {
       return result.problems[0].reason;
     }
     return undefined;
-  }).catch(apiErrorMessage) : undefined;
+  }).catch(shownError) : undefined;
   return { view: query.data, error: query.error, retry: () => { void query.refetch(); }, commit };
 }
 

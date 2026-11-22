@@ -4,7 +4,8 @@ import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type M
 import { useStore } from 'zustand';
 import { fetchComponents } from '@/api/components';
 import { projectModelFields, readEvaluateModel, readModelProjection, reviewModelConnections } from '@/api/projectFolders';
-import { ApiRequestError, apiErrorMessage, isRefusal } from '@/api/request';
+import { ApiRequestError, isRefusal } from '@/api/request';
+import { shownError } from '@/api/shownErrors';
 import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
 import { studioAccessibleName, studioEvaluateValueSource, studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { baseChain, documentPayload } from '../documentPayload';
@@ -228,7 +229,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   });
   const effectiveModel = evaluate ? attachments.data?.resolved_model : projection.data?.resolved_model;
   /** Why the service refuses an evaluation's read: it lands on the Model picker, and the view shows the read document. */
-  const refused = evaluate && isRefusal(attachments.error) ? apiErrorMessage(attachments.error) : undefined;
+  const refused = evaluate && isRefusal(attachments.error) ? shownError(attachments.error) : undefined;
   const shownModel = evaluate && !refused ? effectiveModel : model?.value;
   const resolved = useMemo(() => shownModel && modelPath(shownModel, path), [shownModel, path]);
   const currentPath = useMemo(() => resolved?.entries.map(({ id }) => id) ?? emptyPath, [resolved]);
@@ -304,11 +305,11 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
               ...(fieldBody.run ? [{ kind: 'step' as const, id: fieldBody.run.step }] : []),
               ...(attachments.data?.source ? [{ kind: 'step' as const, id: attachments.data.source.step }] : [])];
           const settled = await editor.editFiles('Set Field', result.files, { reviewedRevision: current.revision, dependencies });
-          if (settled.status === 'refused') return apiErrorMessage(settled.error);
+          if (settled.status === 'refused') return shownError(settled.error);
         }
         return undefined;
       } catch (error) {
-        return apiErrorMessage(error);
+        return shownError(error);
       }
     });
   }
@@ -437,7 +438,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           return null;
         } catch (error) {
           const problem = ModelEditProblemSchema.safeParse(error instanceof ApiRequestError ? error.detail : undefined);
-          return problem.success ? { address: problem.data.address, reason: problem.data.detail } : { reason: apiErrorMessage(error) };
+          return problem.success ? { address: problem.data.address, reason: problem.data.detail } : { reason: shownError(error) };
         }
     });
   }
@@ -474,8 +475,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           }
           return undefined;
         } catch (error) {
-          if (onField) return apiErrorMessage(error);
-          setIssue({ document: model.id, reason: apiErrorMessage(error) });
+          if (onField) return shownError(error);
+          setIssue({ document: model.id, reason: shownError(error) });
           return undefined;
         }
     });
@@ -547,7 +548,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           if (target) connect(idFor(port.end), portId(port), id, portId(target));
         },
       } });
-    }).catch((error) => { if (!request.signal.aborted) setIssue({ document: model.id, reason: apiErrorMessage(error) }); })
+    }).catch((error) => { if (!request.signal.aborted) setIssue({ document: model.id, reason: shownError(error) }); })
       .finally(() => { if (keyboardReview.current === request) keyboardReview.current = undefined; });
   }
   function openSearch(point = cursor.current ?? positionAt(objects.length), source?: Port) {
@@ -557,7 +558,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     setSearchSource(source);
     setSearchLibrary(undefined);
     if (source) void libraryReview.current?.then((result) => setSearchLibrary(result.library)).catch((error) => {
-      if (!(error instanceof DOMException && error.name === 'AbortError')) setIssue({ document: model.id, reason: apiErrorMessage(error) });
+      if (!(error instanceof DOMException && error.name === 'AbortError')) setIssue({ document: model.id, reason: shownError(error) });
     });
   }
   function add(definition: ComponentDefinition, point?: ModelPosition, from?: Port, to?: string) {
@@ -628,7 +629,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       .then(({ targets }) => {
         if (!request.signal.aborted) setVerdict(new Map(targets.map(({ target, reason }) => [endKey(target), reason])));
       })
-      .catch((error) => { if (!request.signal.aborted) setIssue({ document: model.id, reason: apiErrorMessage(error) }); });
+      .catch((error) => { if (!request.signal.aborted) setIssue({ document: model.id, reason: shownError(error) }); });
   };
   function connect(sourceNode: string, sourceHandle: string | null, targetNode: string, targetHandle: string | null) {
     const a = portAt(sourceNode, sourceHandle), b = portAt(targetNode, targetHandle);

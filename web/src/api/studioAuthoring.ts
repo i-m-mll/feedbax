@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { asApiRequestError, requestJson } from '@/api/request';
+import { asApiRequestError, requestJson, sentBody } from '@/api/request';
 import type { CatalogEntry } from '@/components/ui/CatalogPicker';
 import {
   parseContract,
@@ -22,13 +22,13 @@ export async function prepareCheckpointRuleEdit(projectId: string, body: StudioC
   const path = `/api/projects/${encodeURIComponent(projectId)}/authoring/checkpoint-rule`;
   try {
     const response = await requestJson(path, {
-      method: 'POST', body: JSON.stringify(parseContract('StudioCheckpointRuleRequest', body)), cache: 'no-store', signal,
+      method: 'POST', body: sentBody('StudioCheckpointRuleRequest', body, path), cache: 'no-store', signal,
     });
     const edit = parseContract('StudioCheckpointRuleEdit', response);
     if (edit.revision !== body.revision) throw new Error('The checkpoint edit revision changed');
     return edit;
   } catch (error) {
-    throw asApiRequestError(error, path, 'The checkpoint edit did not match its contract');
+    throw asApiRequestError(error, path);
   }
 }
 
@@ -38,13 +38,13 @@ export async function prepareTrainStart(
   const path = `/api/projects/${encodeURIComponent(projectId)}/authoring/train/${encodeURIComponent(stepId)}/start`;
   try {
     const response = await requestJson(path, {
-      method: 'POST', body: JSON.stringify(parseContract('StudioTrainStartRequest', body)), cache: 'no-store', signal,
+      method: 'POST', body: sentBody('StudioTrainStartRequest', body, path), cache: 'no-store', signal,
     });
     const edit = parseContract('StudioTrainStartEdit', response);
     if (edit.revision !== body.revision) throw new Error('The start edit revision changed');
     return edit;
   } catch (error) {
-    throw asApiRequestError(error, path, 'The start edit did not match its contract');
+    throw asApiRequestError(error, path);
   }
 }
 
@@ -52,13 +52,13 @@ export async function prepareSubsetToRows(projectId: string, body: StudioSubsetT
   const path = `/api/projects/${encodeURIComponent(projectId)}/authoring/subset-to-rows`;
   try {
     const response = await requestJson(path, {
-      method: 'POST', body: JSON.stringify(parseContract('StudioSubsetToRowsRequest', body)), cache: 'no-store', signal,
+      method: 'POST', body: sentBody('StudioSubsetToRowsRequest', body, path), cache: 'no-store', signal,
     });
     const edit = parseContract('StudioSubsetToRowsEdit', response);
     if (edit.revision !== body.revision) throw new Error('The subset edit revision changed');
     return edit;
   } catch (error) {
-    throw asApiRequestError(error, path, 'The subset edit did not match its contract');
+    throw asApiRequestError(error, path);
   }
 }
 
@@ -67,13 +67,13 @@ export async function prepareSetEdit(projectId: string, body: StudioSetEditReque
   const path = `/api/projects/${encodeURIComponent(projectId)}/authoring/sets`;
   try {
     const response = await requestJson(path, {
-      method: 'POST', body: JSON.stringify(parseContract('StudioSetEditRequest', body)), cache: 'no-store', signal,
+      method: 'POST', body: sentBody('StudioSetEditRequest', body, path), cache: 'no-store', signal,
     });
     const edit = parseContract('StudioSetEdit', response);
     if (edit.revision !== body.revision) throw new Error('The set edit revision changed');
     return edit;
   } catch (error) {
-    throw asApiRequestError(error, path, 'The set edit did not match its contract');
+    throw asApiRequestError(error, path);
   }
 }
 
@@ -82,11 +82,11 @@ export async function readSetsOffered(projectId: string, body: StudioSetsOffered
   const path = `/api/projects/${encodeURIComponent(projectId)}/authoring/sets-offered`;
   try {
     const response = await requestJson(path, {
-      method: 'POST', body: JSON.stringify(parseContract('StudioSetsOfferedRequest', body)), cache: 'no-store', signal,
+      method: 'POST', body: sentBody('StudioSetsOfferedRequest', body, path), cache: 'no-store', signal,
     });
     return parseContract('StudioSetsOffered', response).sets;
   } catch (error) {
-    throw asApiRequestError(error, path, 'The offered sets did not match their contract');
+    throw asApiRequestError(error, path);
   }
 }
 
@@ -95,13 +95,13 @@ export async function reviewRemovedRuns(projectId: string, body: StudioRemovedRu
   const path = `/api/projects/${encodeURIComponent(projectId)}/authoring/removed-runs`;
   try {
     const response = await requestJson(path, {
-      method: 'POST', body: JSON.stringify(parseContract('StudioRemovedRunsRequest', body)), cache: 'no-store', signal,
+      method: 'POST', body: sentBody('StudioRemovedRunsRequest', body, path), cache: 'no-store', signal,
     });
     const removed = parseContract('StudioRemovedRuns', response);
     if (removed.revision !== body.revision) throw new Error('The removal review revision changed');
     return removed.runs;
   } catch (error) {
-    throw asApiRequestError(error, path, 'The removal review did not match its contract');
+    throw asApiRequestError(error, path);
   }
 }
 
@@ -111,7 +111,7 @@ export async function readStudioTrainAuthoring(
   const path = `/api/projects/${encodeURIComponent(projectId)}/authoring/train/${encodeURIComponent(stepId)}`;
   try {
     const response = await requestJson(path, {
-      method: 'POST', body: JSON.stringify(parseContract('StudioTrainAuthoringRequest', body)), cache: 'no-store', signal,
+      method: 'POST', body: sentBody('StudioTrainAuthoringRequest', body, path), cache: 'no-store', signal,
     });
     const projection = parseContract('StudioTrainAuthoring', response);
     if (projection.project_id !== projectId || projection.step_id !== stepId ||
@@ -120,7 +120,7 @@ export async function readStudioTrainAuthoring(
     }
     return projection;
   } catch (error) {
-    throw asApiRequestError(error, path, 'The Train authoring response did not match its contract');
+    throw asApiRequestError(error, path);
   }
 }
 
@@ -130,11 +130,11 @@ export async function projectTrainFields(
   const path = `/api/projects/${encodeURIComponent(projectId)}/authoring/train/${encodeURIComponent(stepId)}/fields`;
   try {
     const response = await requestJson(path, {
-      method: 'POST', body: JSON.stringify(parseContract('TrainFieldRequest', body)), cache: 'no-store', signal,
+      method: 'POST', body: sentBody('TrainFieldRequest', body, path), cache: 'no-store', signal,
     });
     return parseContract('TrainFieldResponse', response);
   } catch (error) {
-    throw asApiRequestError(error, path, 'The Train field response did not match its contract');
+    throw asApiRequestError(error, path);
   }
 }
 
@@ -144,7 +144,7 @@ export async function readStudioTrialAuthoring(
   const path = '/api/projects/' + encodeURIComponent(projectId) + '/authoring/trials';
   try {
     const response = await requestJson(path, {
-      method: 'POST', body: JSON.stringify(parseContract('StudioTrialAuthoringRequest', body)), cache: 'no-store', signal,
+      method: 'POST', body: sentBody('StudioTrialAuthoringRequest', body, path), cache: 'no-store', signal,
     });
     const projection = parseContract('StudioTrialAuthoring', response);
     if (projection.revision !== body.revision || projection.run.step !== body.run.step ||
@@ -153,7 +153,7 @@ export async function readStudioTrialAuthoring(
     }
     return projection;
   } catch (error) {
-    throw asApiRequestError(error, path, 'The trial authoring response did not match its contract');
+    throw asApiRequestError(error, path);
   }
 }
 
@@ -162,7 +162,7 @@ export async function readAuthoringCatalog(signal: AbortSignal): Promise<StudioA
   try {
     return parseContract('StudioAuthoringCatalog', await requestJson(path, { signal }));
   } catch (error) {
-    throw asApiRequestError(error, path, 'The authoring catalog did not match its contract');
+    throw asApiRequestError(error, path);
   }
 }
 

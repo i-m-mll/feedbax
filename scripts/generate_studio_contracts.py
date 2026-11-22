@@ -141,7 +141,7 @@ from feedbax.contracts.array_values import (
     SparseCooEntrySpec,
 )
 from feedbax.contracts.studio_api import (
-    StudioRenderFailure,
+    StudioErrorReport,
     ComponentDetailResponse,
     DomainListResponse,
     ComponentListPayload,
@@ -717,7 +717,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     StudioPlanarSceneRequest,
     StudioPlanarSceneResponse,
     DomainRegistryPayload,
-    StudioRenderFailure,
+    StudioErrorReport,
     DomainCompileReport,
     WorkspaceReplayWarning,
     WorkspaceReplayTrialIdentity,
@@ -879,7 +879,7 @@ CONTRACT_MODEL_NAMES = [
     "DomainCompileReport",
     "StudioPlanarSceneRequest",
     "StudioPlanarSceneResponse",
-    "StudioRenderFailure",
+    "StudioErrorReport",
     "WorkspaceReplayTrial",
     "PenzaiBuilderListResponse",
     "PenzaiInspectorResponse",
@@ -1369,11 +1369,22 @@ def generate() -> str:
         "function formatPath(path: Array<string | number>): string {\n"
         "  return path.length === 0 ? '<root>' : path.join('.');\n"
         "}\n\n"
-        "export function formatZodError(name: string, error: z.ZodError): string {\n"
-        "  return error.issues\n"
-        "    .slice(0, 5)\n"
-        "    .map((issue) => `${name}:${formatPath(issue.path)} ${issue.message}`)\n"
-        "    .join('; ');\n"
+        "/** Every issue of `error`, and of each alternative of a union none of which matched. */\n"
+        "function zodIssues(error: z.ZodError): z.ZodIssue[] {\n"
+        "  return error.issues.flatMap((issue) =>\n"
+        "    issue.code === 'invalid_union' ? [issue, ...issue.unionErrors.flatMap(zodIssues)] : [issue]);\n"
+        "}\n\n"
+        "/** A value that does not satisfy its contract, with every issue the check found. */\n"
+        "export class ContractViolation extends Error {\n"
+        "  readonly contract: ContractName;\n"
+        "  readonly issues: readonly string[];\n\n"
+        "  constructor(contract: ContractName, error: z.ZodError) {\n"
+        "    const issues = [...new Set(zodIssues(error).map((issue) => `${formatPath(issue.path)} ${issue.message}`))];\n"
+        "    super(`${contract}: ${issues.slice(0, 5).join('; ')}`);\n"
+        "    this.name = 'ContractViolation';\n"
+        "    this.contract = contract;\n"
+        "    this.issues = issues;\n"
+        "  }\n"
         "}\n\n"
         "export function parseContract<K extends ContractName>(\n"
         "  name: K,\n"
@@ -1381,7 +1392,7 @@ def generate() -> str:
         "): ContractTypeMap[K] {\n"
         "  const result = contractSchemas[name].safeParse(value);\n"
         "  if (!result.success) {\n"
-        "    throw new Error(formatZodError(name, result.error));\n"
+        "    throw new ContractViolation(name, result.error);\n"
         "  }\n"
         "  return result.data as ContractTypeMap[K];\n"
         "}\n"

@@ -16,6 +16,7 @@ from feedbax.contracts.model_document import (
 from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import AxisValueId, ProjectName, RowKey
+from feedbax.contracts.request_refs import Name
 from feedbax.contracts.studio_project import StudioProjectSnapshot
 from feedbax.contracts.studio_project import StudioProjectFilePatch
 
@@ -285,7 +286,7 @@ class ModelEditRequest(StrictModel):
     chosen_steps: list[ProjectName] = Field(default_factory=list)
     variant: ProjectName | None = None
     rows: list[RowKey] = Field(default_factory=list)
-    axes: dict[ProjectName, list[AxisValueId]] = Field(default_factory=dict)
+    axes: dict[ProjectName, list[Name]] = Field(default_factory=dict)
     files: list[StudioProjectFilePatch] = Field(default_factory=list)
 
     @model_validator(mode="after")
