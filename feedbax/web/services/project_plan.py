@@ -64,7 +64,7 @@ from feedbax.contracts.studio_project import AuthoredFileAddress
 from feedbax.contracts.studio_subset import StudioSubsetToRowsEdit, StudioSubsetToRowsRequest
 from feedbax.contracts.project_io import project_declaration_name
 from feedbax.contracts.project_plan import (
-    ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedInput, PlannedRow, PlannedRun, RunKey, authored_request_change,
+    BlockedRow, ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedInput, PlannedRow, PlannedRun, RunKey, authored_request_change,
 )
 from feedbax.contracts.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
@@ -297,7 +297,7 @@ class ProjectPlanRead:
         ]
         edge_keys.extend(
             (producer, row.key)
-            for row in plan.rows if isinstance(row, PlannedAnalyzeRun)
+            for row in plan.rows if isinstance(row, (PlannedAnalyzeRun, BlockedRow))
             for members in row.inputs.values()
             for binding in members
             for producer in binding.sources

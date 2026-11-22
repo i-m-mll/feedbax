@@ -548,6 +548,8 @@ def test_an_evaluate_task_choice_in_a_variant_is_its_row_s_task_reference(tmp_pa
         "schema": "feedbax.spec.python_task", "payload": {"type": REACHING_TASK, "params": {"n_steps": 12, "x": 0.31}},
     }
     raw["sweep"] = {"rows": {"control": {}, "treated": {}}}
+    raw["documents"]["reach-model"]["payload"] = _model_payload()
+    raw["documents"]["objective"]["payload"]["terms"] = [{"id": "command", "measure": {"kind": "literal", "value": 1}}]
     folders = ProjectFolderService(tmp_path)
     _save_project(folders, "variants", Project.model_validate(raw))
     before = folders.read_plan("variants", revision=None)
