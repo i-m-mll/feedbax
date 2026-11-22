@@ -923,8 +923,13 @@ export interface UngroupComposite {
   address: ModelAddress;
 }
 
+export interface ResetDifference {
+  op: "reset_difference";
+  address: ModelAddress;
+}
+
 export interface ModelEditCommand {
-  operation: AddComponent | MoveCards | FlipComponent | CollapseGraph | RouteWire | DeleteElements | ConnectSignal | ConnectTaskSignal | ConnectPhysical | AddPort | RemovePort | RenameElement | MovePort | SetField | SetModelAttachment | MoveWireAttachment | InsertComponentOnWire | BringSignalIn | CopyComponents | CutComponents | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite;
+  operation: AddComponent | MoveCards | FlipComponent | CollapseGraph | RouteWire | DeleteElements | ConnectSignal | ConnectTaskSignal | ConnectPhysical | AddPort | RemovePort | RenameElement | MovePort | SetField | SetModelAttachment | MoveWireAttachment | InsertComponentOnWire | BringSignalIn | CopyComponents | CutComponents | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite | ResetDifference;
 }
 
 export interface ModelEditProblem {
@@ -1002,18 +1007,42 @@ export interface ModelPortProjection {
   type: SignalType;
 }
 
+export interface ModelAddedElement {
+  change: "added";
+  address: ModelAddress;
+}
+
+export interface ModelRemovedElement {
+  change: "removed";
+  address: ModelAddress;
+  definition: LeafComponent | CompositeComponent | ModelWire | ModelPhysicalConnection | DelayAttachment | InterventionAttachment | ProbeAttachment;
+  position?: ModelPosition | null;
+  wires?: Record<string, ModelWire>;
+  connections?: Record<string, ModelPhysicalConnection>;
+}
+
+export interface ModelRewiredElement {
+  change: "rewired";
+  address: ModelAddress;
+  previous: ModelWire | ModelPhysicalConnection;
+}
+
 export interface ModelProjection {
   ports?: ModelPortProjection[];
   task_signals?: ModelTaskSignal[];
   task_inputs?: ModelAddress[];
   objective_ports?: ModelAddress[];
   resolved_model?: ModelDocument | null;
+  base_differences?: Array<ModelAddedElement | ModelRemovedElement | ModelRewiredElement>;
+  value_differences?: Array<ModelAddedElement | ModelRemovedElement | ModelRewiredElement>;
 }
 
 export interface ModelProjectionRequest {
   revision: string;
   run: StudioSavedTrainKey;
   document: string;
+  rows?: string[];
+  axes?: Record<string, string[]>;
 }
 
 export interface ModelTaskSignal {
@@ -1095,6 +1124,7 @@ export interface StudioSweepSampler {
 export interface StudioFieldView {
   label: string;
   text: string;
+  structure?: StudioValueStructure | null;
   effective?: string | null;
   mixed?: boolean;
   unit?: string | null;
@@ -1111,6 +1141,7 @@ export interface StudioFieldView {
 export interface ModelFieldView {
   label: string;
   text: string;
+  structure?: StudioValueStructure | null;
   effective?: string | null;
   mixed?: boolean;
   unit?: string | null;
@@ -1129,6 +1160,7 @@ export interface ModelFieldView {
 export interface TrainFieldView {
   label: string;
   text: string;
+  structure?: StudioValueStructure | null;
   effective?: string | null;
   mixed?: boolean;
   unit?: string | null;
@@ -2004,11 +2036,20 @@ export interface DomainRegistryPayload {
   domains: DomainMeta[];
 }
 
-export interface StudioRenderFailure {
-  region: string;
-  error_type: string;
-  detail: string;
-  component_stack: string;
+export interface StudioErrorReport {
+  ref: string;
+  kind: "network" | "http" | "request" | "response" | "render" | "error";
+  message: string;
+  path?: string | null;
+  method?: string | null;
+  status?: number | null;
+  contract?: string | null;
+  issues?: string[];
+  sent?: JsonValue;
+  detail?: JsonValue;
+  region?: string | null;
+  stack?: string;
+  component_stack?: string;
 }
 
 export interface DomainCompileReport {
@@ -2938,6 +2979,8 @@ export type FunctionClass = "math" | "shape" | "draw" | "penalty" | "sweep_rule"
 export type FunctionInfo = {
   "id": string;
   "signature": string;
+  "label"?: string | null;
+  "parameters"?: Array<FunctionParameter>;
   "display_class": FunctionClass;
   "min_args": number;
   "max_args": number | null;
@@ -2948,6 +2991,11 @@ export type FunctionInfo = {
   "random"?: boolean;
   "stateful"?: boolean;
   "reset"?: StateReset;
+};
+
+export type FunctionParameter = {
+  "name": string;
+  "label": string;
 };
 
 export type GroupCombination = {
@@ -3736,6 +3784,12 @@ export type StudioDefinitionChange = {
   "place": StudioModelPlace | StudioTaskPlace | StudioObjectivePlace | StudioTrainingPlace | StudioMethodPlace | StudioAnalysisPlace | StudioInputPlace | StudioStepPlace;
 };
 
+export type StudioDensity = {
+  "low": number;
+  "high": number;
+  "values": Array<number>;
+};
+
 export type StudioEvaluateStep = {
   "kind": "evaluate";
   "label"?: string | null;
@@ -3931,6 +3985,12 @@ export type StudioProjectWindowMapInput = {
   "checkpoint_axis"?: string | null;
 };
 
+export type StudioProjectWindowMapInputAxis = {
+  "value_id": string;
+  "label": string | null;
+  "carries": Array<string>;
+};
+
 export type StudioProjectWindowMapProblem = {
   "code": string;
   "path": string;
@@ -3943,6 +4003,7 @@ export type StudioProjectWindowMapProblem = {
   "address"?: string | null;
   "layer"?: string | null;
   "authored_path"?: string | null;
+  "blocked_by"?: StudioSavedTrainKey | null;
 };
 
 export type StudioProjectWindowMapRequest = {
@@ -3959,12 +4020,15 @@ export type StudioProjectWindowMapRow = {
   "key": StudioSavedTrainKey;
   "label": string;
   "coordinates": Record<string, StudioProjectWindowMapCoordinate>;
+  "input_axes"?: Record<string, StudioProjectWindowMapInputAxis>;
   "member_key"?: string | null;
   "status": JobStatus;
   "reason"?: string | null;
   "opening_step"?: "acquiring" | "connecting" | "copying" | "installing" | "starting_host" | null;
   "collection_progress"?: StoreTransferProgress | null;
   "evaluation_conditions"?: Array<string> | null;
+  "origin"?: number | null;
+  "target_total"?: number | null;
   "light"?: StudioSavedLightHistory | null;
 };
 
@@ -4223,6 +4287,7 @@ export type StudioTrialField = {
   "path": string;
   "projection": SiteProjection;
   "text"?: string | null;
+  "structure"?: StudioValueStructure | null;
 };
 
 export type StudioTrialInput = {
@@ -4255,6 +4320,12 @@ export type StudioTrialSelectDocument = {
 export type StudioTrialStepScope = {
   "kind": "step";
   "chosen_steps"?: Array<string>;
+};
+
+export type StudioValueStructure = {
+  "value": FieldValue;
+  "arguments"?: Array<string>;
+  "density"?: StudioDensity | null;
 };
 
 export type SubsetTerms = {
@@ -5854,7 +5925,7 @@ export const AxisValueRunsSchema: z.ZodType<AxisValueRuns> = z.lazy(() =>
     .object({
       "kind": z.literal("axis_value"),
       "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-      "value": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "value": z.string().min(1),
     })
     .strict()
 ) as unknown as z.ZodType<AxisValueRuns>;
@@ -6089,10 +6160,19 @@ export const UngroupCompositeSchema: z.ZodType<UngroupComposite> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<UngroupComposite>;
 
+export const ResetDifferenceSchema: z.ZodType<ResetDifference> = z.lazy(() =>
+  z
+    .object({
+      "op": z.literal("reset_difference"),
+      "address": ModelAddressSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<ResetDifference>;
+
 export const ModelEditCommandSchema: z.ZodType<ModelEditCommand> = z.lazy(() =>
   z
     .object({
-      "operation": z.union([AddComponentSchema, MoveCardsSchema, FlipComponentSchema, CollapseGraphSchema, RouteWireSchema, DeleteElementsSchema, ConnectSignalSchema, ConnectTaskSignalSchema, ConnectPhysicalSchema, AddPortSchema, RemovePortSchema, RenameElementSchema, MovePortSchema, SetFieldSchema, SetModelAttachmentSchema, MoveWireAttachmentSchema, InsertComponentOnWireSchema, BringSignalInSchema, CopyComponentsSchema, CutComponentsSchema, DuplicateComponentsSchema, PasteComponentsSchema, GroupComponentsSchema, UngroupCompositeSchema]),
+      "operation": z.union([AddComponentSchema, MoveCardsSchema, FlipComponentSchema, CollapseGraphSchema, RouteWireSchema, DeleteElementsSchema, ConnectSignalSchema, ConnectTaskSignalSchema, ConnectPhysicalSchema, AddPortSchema, RemovePortSchema, RenameElementSchema, MovePortSchema, SetFieldSchema, SetModelAttachmentSchema, MoveWireAttachmentSchema, InsertComponentOnWireSchema, BringSignalInSchema, CopyComponentsSchema, CutComponentsSchema, DuplicateComponentsSchema, PasteComponentsSchema, GroupComponentsSchema, UngroupCompositeSchema, ResetDifferenceSchema]),
     })
     .strict()
 ) as unknown as z.ZodType<ModelEditCommand>;
@@ -6229,6 +6309,38 @@ export const ModelPortProjectionSchema: z.ZodType<ModelPortProjection> = z.lazy(
     .strict()
 ) as unknown as z.ZodType<ModelPortProjection>;
 
+export const ModelAddedElementSchema: z.ZodType<ModelAddedElement> = z.lazy(() =>
+  z
+    .object({
+      "change": z.literal("added"),
+      "address": ModelAddressSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<ModelAddedElement>;
+
+export const ModelRemovedElementSchema: z.ZodType<ModelRemovedElement> = z.lazy(() =>
+  z
+    .object({
+      "change": z.literal("removed"),
+      "address": ModelAddressSchema,
+      "definition": z.union([LeafComponentSchema, CompositeComponentSchema, ModelWireSchema, ModelPhysicalConnectionSchema, z.union([DelayAttachmentSchema, InterventionAttachmentSchema, ProbeAttachmentSchema])]),
+      "position": ModelPositionSchema.nullable().optional(),
+      "wires": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), ModelWireSchema).optional(),
+      "connections": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")), ModelPhysicalConnectionSchema).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelRemovedElement>;
+
+export const ModelRewiredElementSchema: z.ZodType<ModelRewiredElement> = z.lazy(() =>
+  z
+    .object({
+      "change": z.literal("rewired"),
+      "address": ModelAddressSchema,
+      "previous": z.union([ModelWireSchema, ModelPhysicalConnectionSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelRewiredElement>;
+
 export const ModelProjectionSchema: z.ZodType<ModelProjection> = z.lazy(() =>
   z
     .object({
@@ -6237,6 +6349,8 @@ export const ModelProjectionSchema: z.ZodType<ModelProjection> = z.lazy(() =>
       "task_inputs": z.array(ModelAddressSchema).optional(),
       "objective_ports": z.array(ModelAddressSchema).optional(),
       "resolved_model": ModelDocumentSchema.nullable().optional(),
+      "base_differences": z.array(z.union([ModelAddedElementSchema, ModelRemovedElementSchema, ModelRewiredElementSchema])).optional(),
+      "value_differences": z.array(z.union([ModelAddedElementSchema, ModelRemovedElementSchema, ModelRewiredElementSchema])).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelProjection>;
@@ -6247,6 +6361,8 @@ export const ModelProjectionRequestSchema: z.ZodType<ModelProjectionRequest> = z
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
       "run": StudioSavedTrainKeySchema,
       "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).optional(),
+      "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1))).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelProjectionRequest>;
@@ -6376,6 +6492,7 @@ export const StudioFieldViewSchema: z.ZodType<StudioFieldView> = z.lazy(() =>
     .object({
       "label": z.string(),
       "text": z.string(),
+      "structure": StudioValueStructureSchema.nullable().optional(),
       "effective": z.string().nullable().optional(),
       "mixed": z.boolean().optional(),
       "unit": z.string().nullable().optional(),
@@ -6396,6 +6513,7 @@ export const ModelFieldViewSchema: z.ZodType<ModelFieldView> = z.lazy(() =>
     .object({
       "label": z.string(),
       "text": z.string(),
+      "structure": StudioValueStructureSchema.nullable().optional(),
       "effective": z.string().nullable().optional(),
       "mixed": z.boolean().optional(),
       "unit": z.string().nullable().optional(),
@@ -6418,6 +6536,7 @@ export const TrainFieldViewSchema: z.ZodType<TrainFieldView> = z.lazy(() =>
     .object({
       "label": z.string(),
       "text": z.string(),
+      "structure": StudioValueStructureSchema.nullable().optional(),
       "effective": z.string().nullable().optional(),
       "mixed": z.boolean().optional(),
       "unit": z.string().nullable().optional(),
@@ -8065,16 +8184,25 @@ export const DomainRegistryPayloadSchema: z.ZodType<DomainRegistryPayload> = z.l
     .strict()
 ) as unknown as z.ZodType<DomainRegistryPayload>;
 
-export const StudioRenderFailureSchema: z.ZodType<StudioRenderFailure> = z.lazy(() =>
+export const StudioErrorReportSchema: z.ZodType<StudioErrorReport> = z.lazy(() =>
   z
     .object({
-      "region": z.string().min(1).max(80),
-      "error_type": z.string().min(1).max(80),
-      "detail": z.string().max(2048),
-      "component_stack": z.string().max(4096),
+      "ref": z.string().regex(new RegExp("^[0-9a-f]{8}$")),
+      "kind": z.union([z.literal("network"), z.literal("http"), z.literal("request"), z.literal("response"), z.literal("render"), z.literal("error")]),
+      "message": z.string().max(4096),
+      "path": z.string().max(2048).nullable().optional(),
+      "method": z.string().max(16).nullable().optional(),
+      "status": z.number().int().safe().nullable().optional(),
+      "contract": z.string().max(120).nullable().optional(),
+      "issues": z.array(z.string()).max(200).optional(),
+      "sent": jsonValueSchema.optional(),
+      "detail": jsonValueSchema.optional(),
+      "region": z.string().max(80).nullable().optional(),
+      "stack": z.string().max(16384).optional(),
+      "component_stack": z.string().max(8192).optional(),
     })
     .strict()
-) as unknown as z.ZodType<StudioRenderFailure>;
+) as unknown as z.ZodType<StudioErrorReport>;
 
 export const DomainCompileReportSchema: z.ZodType<DomainCompileReport> = z.lazy(() =>
   z
@@ -9466,6 +9594,8 @@ export const FunctionInfoSchema: z.ZodType<FunctionInfo> = z.lazy(() =>
   z.object({
     "id": z.string(),
     "signature": z.string(),
+    "label": z.union([z.string(), z.null()]).optional(),
+    "parameters": z.array(FunctionParameterSchema).optional(),
     "display_class": FunctionClassSchema,
     "min_args": z.number().int().safe(),
     "max_args": z.union([z.number().int().safe(), z.null()]),
@@ -9478,6 +9608,13 @@ export const FunctionInfoSchema: z.ZodType<FunctionInfo> = z.lazy(() =>
     "reset": StateResetSchema.optional(),
   }).strict()
 ) as unknown as z.ZodType<FunctionInfo>;
+
+export const FunctionParameterSchema: z.ZodType<FunctionParameter> = z.lazy(() =>
+  z.object({
+    "name": z.string(),
+    "label": z.string(),
+  }).strict()
+) as unknown as z.ZodType<FunctionParameter>;
 
 export const GroupCombinationSchema: z.ZodType<GroupCombination> = z.lazy(() =>
   z.object({
@@ -10547,6 +10684,14 @@ export const StudioDefinitionChangeSchema: z.ZodType<StudioDefinitionChange> = z
   }).strict()
 ) as unknown as z.ZodType<StudioDefinitionChange>;
 
+export const StudioDensitySchema: z.ZodType<StudioDensity> = z.lazy(() =>
+  z.object({
+    "low": z.number().finite(),
+    "high": z.number().finite(),
+    "values": z.array(z.number().finite()),
+  }).strict()
+) as unknown as z.ZodType<StudioDensity>;
+
 export const StudioEvaluateStepSchema: z.ZodType<StudioEvaluateStep> = z.lazy(() =>
   z.object({
     "kind": z.literal("evaluate"),
@@ -10798,6 +10943,14 @@ export const StudioProjectWindowMapInputSchema: z.ZodType<StudioProjectWindowMap
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapInput>;
 
+export const StudioProjectWindowMapInputAxisSchema: z.ZodType<StudioProjectWindowMapInputAxis> = z.lazy(() =>
+  z.object({
+    "value_id": z.string(),
+    "label": z.union([z.string(), z.null()]),
+    "carries": z.array(z.string()),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMapInputAxis>;
+
 export const StudioProjectWindowMapProblemSchema: z.ZodType<StudioProjectWindowMapProblem> = z.lazy(() =>
   z.object({
     "code": z.string(),
@@ -10811,6 +10964,7 @@ export const StudioProjectWindowMapProblemSchema: z.ZodType<StudioProjectWindowM
     "address": z.union([z.string(), z.null()]).optional(),
     "layer": z.union([z.string(), z.null()]).optional(),
     "authored_path": z.union([z.string(), z.null()]).optional(),
+    "blocked_by": z.union([StudioSavedTrainKeySchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapProblem>;
 
@@ -10831,12 +10985,15 @@ export const StudioProjectWindowMapRowSchema: z.ZodType<StudioProjectWindowMapRo
     "key": StudioSavedTrainKeySchema,
     "label": z.string(),
     "coordinates": z.record(z.string(), StudioProjectWindowMapCoordinateSchema),
+    "input_axes": z.record(z.string(), StudioProjectWindowMapInputAxisSchema).optional(),
     "member_key": z.union([z.string(), z.null()]).optional(),
     "status": JobStatusSchema,
     "reason": z.union([z.string(), z.null()]).optional(),
     "opening_step": z.union([z.union([z.literal("acquiring"), z.literal("connecting"), z.literal("copying"), z.literal("installing"), z.literal("starting_host")]), z.null()]).optional(),
     "collection_progress": z.union([StoreTransferProgressSchema, z.null()]).optional(),
     "evaluation_conditions": z.union([z.array(z.string()), z.null()]).optional(),
+    "origin": z.union([z.number().int().safe(), z.null()]).optional(),
+    "target_total": z.union([z.number().int().safe(), z.null()]).optional(),
     "light": z.union([StudioSavedLightHistorySchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapRow>;
@@ -11163,6 +11320,7 @@ export const StudioTrialFieldSchema: z.ZodType<StudioTrialField> = z.lazy(() =>
     "path": z.string(),
     "projection": SiteProjectionSchema,
     "text": z.union([z.string(), z.null()]).optional(),
+    "structure": z.union([StudioValueStructureSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialField>;
 
@@ -11207,6 +11365,14 @@ export const StudioTrialStepScopeSchema: z.ZodType<StudioTrialStepScope> = z.laz
     "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialStepScope>;
+
+export const StudioValueStructureSchema: z.ZodType<StudioValueStructure> = z.lazy(() =>
+  z.object({
+    "value": FieldValueSchema,
+    "arguments": z.array(z.string()).optional(),
+    "density": z.union([StudioDensitySchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioValueStructure>;
 
 export const SubsetTermsSchema: z.ZodType<SubsetTerms> = z.lazy(() =>
   z.object({
@@ -11566,7 +11732,7 @@ export const contractSchemas = {
   DomainCompileReport: DomainCompileReportSchema,
   StudioPlanarSceneRequest: StudioPlanarSceneRequestSchema,
   StudioPlanarSceneResponse: StudioPlanarSceneResponseSchema,
-  StudioRenderFailure: StudioRenderFailureSchema,
+  StudioErrorReport: StudioErrorReportSchema,
   WorkspaceReplayTrial: WorkspaceReplayTrialSchema,
   PenzaiBuilderListResponse: PenzaiBuilderListResponseSchema,
   PenzaiInspectorResponse: PenzaiInspectorResponseSchema,
@@ -11727,7 +11893,7 @@ export interface ContractTypeMap {
   DomainCompileReport: DomainCompileReport;
   StudioPlanarSceneRequest: StudioPlanarSceneRequest;
   StudioPlanarSceneResponse: StudioPlanarSceneResponse;
-  StudioRenderFailure: StudioRenderFailure;
+  StudioErrorReport: StudioErrorReport;
   WorkspaceReplayTrial: WorkspaceReplayTrial;
   PenzaiBuilderListResponse: PenzaiBuilderListResponse;
   PenzaiInspectorResponse: PenzaiInspectorResponse;
@@ -11755,11 +11921,24 @@ function formatPath(path: Array<string | number>): string {
   return path.length === 0 ? '<root>' : path.join('.');
 }
 
-export function formatZodError(name: string, error: z.ZodError): string {
-  return error.issues
-    .slice(0, 5)
-    .map((issue) => `${name}:${formatPath(issue.path)} ${issue.message}`)
-    .join('; ');
+/** Every issue of `error`, and of each alternative of a union none of which matched. */
+function zodIssues(error: z.ZodError): z.ZodIssue[] {
+  return error.issues.flatMap((issue) =>
+    issue.code === 'invalid_union' ? [issue, ...issue.unionErrors.flatMap(zodIssues)] : [issue]);
+}
+
+/** A value that does not satisfy its contract, with every issue the check found. */
+export class ContractViolation extends Error {
+  readonly contract: ContractName;
+  readonly issues: readonly string[];
+
+  constructor(contract: ContractName, error: z.ZodError) {
+    const issues = [...new Set(zodIssues(error).map((issue) => `${formatPath(issue.path)} ${issue.message}`))];
+    super(`${contract}: ${issues.slice(0, 5).join('; ')}`);
+    this.name = 'ContractViolation';
+    this.contract = contract;
+    this.issues = issues;
+  }
 }
 
 export function parseContract<K extends ContractName>(
@@ -11768,7 +11947,7 @@ export function parseContract<K extends ContractName>(
 ): ContractTypeMap[K] {
   const result = contractSchemas[name].safeParse(value);
   if (!result.success) {
-    throw new Error(formatZodError(name, result.error));
+    throw new ContractViolation(name, result.error);
   }
   return result.data as ContractTypeMap[K];
 }

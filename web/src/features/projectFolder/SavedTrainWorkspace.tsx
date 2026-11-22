@@ -2,11 +2,12 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExtern
 import { useStore } from 'zustand';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { approveSavedRun, fetchExecutionTargets, fetchSavedTrainRuns, quoteSavedRun, runSavedTrain } from '@/api/jobs';
-import { apiErrorMessage, isRefusal, isServiceFailure, isUnanswered, landsOnGesture } from '@/api/request';
+import { isRefusal, isServiceFailure, isUnanswered, landsOnGesture } from '@/api/request';
+import { isStudioDefect, shownError } from '@/api/shownErrors';
 import { prepareCheckpointRuleEdit, prepareSubsetToRows } from '@/api/studioAuthoring';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import {
-  studioAccessibleName, studioCountOf, studioEvaluateValueSource, studioFormat, studioName, studioPlaceName, studioProblemDetail, studioReason, studioRunReason, type StudioPlace,
+  studioAccessibleName, studioCountOf, studioEvaluateValueSource, studioFormat, studioName, studioPlaceName, studioProblemDetail, studioReason, studioRunReason, studioRunStatus, type StudioPlace,
 } from '@/components/activity/studioVocabulary';
 import { HeaderActivity } from '@/components/layout/HeaderActivity';
 import {
@@ -39,7 +40,8 @@ import {
 } from '@/features/pipeline/selection';
 import { ProjectWindow } from '@/features/projectWindow/ProjectWindow';
 import { useHeldGestures } from '@/features/projectWindow/heldGestures';
-import { ProblemRow, StudioProblems } from '@/features/projectWindow/StudioProblems';
+import { StatusMark } from '@/components/ui/StatusMark';
+import { ProblemRow, StudioProblems, problemEntries, type ProblemEntry } from '@/features/projectWindow/StudioProblems';
 import { holds } from './model/modelGraph';
 import { bindStudioCommand, commandAttributes, jobAllowsCommand, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import {
@@ -65,7 +67,7 @@ import { createCheckpointTrain } from './createCheckpointTrain';
 import { analyzeInput, createAnalyze, createReport, isReportFigureSource, type ReportFigureSource } from './createManagedStep';
 import { createTrain } from './createTrain';
 import { trainingDocumentId } from './trainingDocument';
-import { checkpointLabel, createEvaluation, editableCheckpointRule, exactCheckpoint, managedTrialDomain, ordinaryEvaluation, type EditableCheckpointRule, type StoppedEvaluationSubject } from './evaluateAuthoring';
+import { authoredTrialDomain, checkpointLabel, createEvaluation, editableCheckpointRule, exactCheckpoint, managedTrialDomain, ordinaryEvaluation, selectionCheckpoints, type CheckpointRange, type EditableCheckpointRule, type SelectionCheckpoint, type StoppedEvaluationSubject } from './evaluateAuthoring';
 import { bindProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
 import { bestRankGroups, projectWindowPlan, planVariants, savedRunId, stepSourceRows, unvalued } from './projectWindowPlan';
@@ -73,7 +75,7 @@ import { placeField, placeMember, placeView, removeGraphVariation, type Reveal }
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
 import { planWithRefusal, problemKey, type GestureFailures, type Refusal } from './refusals';
 import { CheckpointEditor, EvaluateSubjectFields, SubjectSubset, TrialsEditor, type EvaluateField } from './StudioEvaluateAuthoring';
-import { connection, selectionProblem } from './selectionEdits';
+import { connection, stepSelections } from './selectionEdits';
 import { StudioEvaluationAttemptDetails } from './StudioEvaluationResults';
 import { focusedResult, SavedResults } from './SavedResults';
 import { filesRemoval, RunRemovalContext, useRunRemovalDialog } from './runRemoval';
@@ -174,7 +176,7 @@ export default function StudioProjectWorkspace({
       setLoad({ session });
       return session.close;
     } catch (cause) {
-      setLoad({ error: apiErrorMessage(cause) });
+      setLoad({ error: shownError(cause) });
     }
   }, [document, retry]);
 
@@ -222,13 +224,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const selectedElements = useStore(elements, (current) => current.selection);
   const mapViewport = useRef<CanvasViewport>(null);
   const selection = useProjectWindowSelection(Object.keys(saved.project.steps ?? {})[0] ?? null);
-  const [commandError, setCommandError] = useState<string>();
+  /** The failure of the last gesture that has no object of its own to land on. */
+  const [commandError, setCommandError] = useState<unknown>();
   /** The last refused gesture, shown on the object it acted on. */
   const [refusal, setRefusal] = useState<Refusal>();
   /** The refusal of the selected Train step's authoring read, which is drawn on the step while it holds. */
   const [readRefusal, setReadRefusal] = useState<Refusal & { kind: 'step' }>();
   const commandFailed = (error: unknown) => {
-    if (!isUnanswered(error)) setCommandError(apiErrorMessage(error));
+    if (!isUnanswered(error)) setCommandError(error);
   };
   const [machines, setMachines] = useState<Readonly<Record<string, string>>>({});
   const [machineQuote, setMachineQuote] = useState<StudioMachineQuote>();
@@ -542,23 +545,52 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const subjectIds = subject && rankGroups.length
     ? new Set(rankedSubjects.map((bound) => savedRunId({ ...bound, step: subject.source_step_id })))
     : subjectSubset?.members && new Set(subjectSubset.members.map(savedRunId));
-  const evaluationEditor = evaluationAuthoring && evaluationSources && evaluationSources.length === evaluationAuthoring.subjects.length &&
-    evaluationSources.every(({ source }) => authoredMap?.rows.some(({ key, evaluation_conditions }) =>
-      key.step === source.id && key.variant === variant && evaluation_conditions != null))
+  const evaluationEditor = evaluationAuthoring && evaluationSources && evaluationSources.length === evaluationAuthoring.subjects.length
     ? {
       authored: evaluationAuthoring, subjects: evaluationSources,
       domain: managedTrialDomain(projection.data, evaluationSources.length === 1
         ? subjectIds ? evaluationSources[0].source.runs.filter(({ id }) => subjectIds.has(id))
           : evaluationSources[0].reference.where == null ? evaluationSources[0].source.runs : []
-        : evaluationSources.flatMap(({ source }) => source.runs)),
+        : evaluationSources.flatMap(({ source }) => source.runs)) ?? authoredTrialDomain(evaluationAuthoring.trialSet),
     } : undefined;
   const checkpointVariant = variant && saved.project.sweep?.rows?.[variant] ? variant : undefined;
-  const localSubject = StepReferenceSchema.safeParse(authored?.inputs?.subject);
-  const stepCheckpointRule = data && singleStep && (wholeStep && !saved.project.sweep || checkpointVariant)
-    && authored?.kind === 'evaluate' && !authored.deltas?.length
+  const evaluated = authored?.kind === 'evaluate' && !authored.deltas?.length ? authored : undefined;
+  const subjectReferences = stepSelections(evaluated?.inputs?.subject);
+  const listedSubject = Array.isArray(evaluated?.inputs?.subject);
+  const localSubject = StepReferenceSchema.safeParse(evaluated?.inputs?.subject);
+  /** A checkpoint axis or a variant's patch says the rule the plan read; otherwise the authored reference does. */
+  const stepCheckpointRule = singleStep && (wholeStep && !saved.project.sweep || checkpointVariant)
     && localSubject.success && (localSubject.data.checkpoint != null || subject?.checkpoint_axis)
-    ? editableCheckpointRule(subject?.checkpoint)
+    ? editableCheckpointRule(subject?.checkpoint_axis || checkpointVariant ? data && subject?.checkpoint : localSubject.data.checkpoint)
     : undefined;
+  const listedCheckpoints = wholeStep && !saved.project.sweep && listedSubject && subjectReferences &&
+    !Object.values(evaluated?.sweep?.axes ?? {}).some((axis) => axis && 'checkpoint_rule' in axis)
+    ? selectionCheckpoints(subjectReferences) : undefined;
+  const stepLabel = (id: string) => plan.steps.find((item) => item.id === id)?.label ?? id;
+  /** The rows of its Train step that selection `index` of the subject reads. */
+  function selectionRows(index: number) {
+    const reference = subjectReferences?.[index];
+    if (!reference) return [];
+    const members = mapInputs?.find(({ id }) => id === (listedSubject ? `subject.${index}` : 'subject'))?.subset?.members;
+    const read = members && new Set(members.map(savedRunId));
+    return projection.data?.window_map?.rows.filter(({ key }) =>
+      key.step === reference.step && key.variant === variant && (!read || read.has(savedRunId(key)))) ?? [];
+  }
+  /** The updates every run that `selections` read has, among the runs whose extent the plan knows. */
+  function checkpointRange(selections: readonly number[]): CheckpointRange | undefined {
+    let range: CheckpointRange | undefined;
+    for (const index of selections) {
+      for (const { key, origin, target_total } of selectionRows(index)) {
+        if (origin == null || target_total == null) continue;
+        const step = stepLabel(key.step);
+        range = {
+          after: !range || origin > range.after.update ? { step, update: origin } : range.after,
+          through: !range || target_total < range.through.update ? { step, update: target_total } : range.through,
+        };
+      }
+    }
+    return range;
+  }
   const exactSources = selectedEvaluation?.result?.checkpoint_sources;
   const exactSource = subjectCheckpoint !== undefined && exactSources?.length === 1 ? exactSources[0] : undefined;
   const evaluationReplay = useSavedEvaluationScene(saved.project_id, saved.revision, selectedEvaluation,
@@ -632,7 +664,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const selectedRules = new Map(sceneRows.map((item) => [JSON.stringify(item.checkpoint_rule), item.checkpoint_rule]));
   const scopedRule = checkpointScope && selectedRules.size === 1
     ? editableCheckpointRule(selectedRules.values().next().value) : undefined;
-  const evaluationCheckpointRule = stepCheckpointRule || scopedRule;
+  const unlisted = stepCheckpointRule || (!listedSubject ? scopedRule : undefined);
+  const checkpointEditors: readonly SelectionCheckpoint[] | undefined = listedCheckpoints ??
+    (unlisted ? [{ rule: unlisted, selections: [0] }] : undefined);
   const canSweepCheckpoint = Boolean(namedRun && stepCheckpointRule && !checkpointVariant && !subject?.checkpoint_axis &&
     stepCheckpointRule !== 'last' && (Array.isArray(stepCheckpointRule) || 'every' in stepCheckpointRule));
   function saveElementPosition(document: string, node: string, position: PresentationPosition) {
@@ -726,7 +760,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     setRefusal(undefined);
   }
   function failed(cause: unknown, refuse?: (reason: string) => Refusal | undefined) {
-    const refused = landsOnGesture(cause) && refuse?.(apiErrorMessage(cause));
+    const refused = landsOnGesture(cause) && refuse?.(shownError(cause));
     if (refused) setRefusal(refused);
     else commandFailed(cause);
   }
@@ -737,7 +771,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     return {
       clear: settled,
       fail: (cause, land) => {
-        if (land && landsOnGesture(cause)) land(apiErrorMessage(cause));
+        if (land && landsOnGesture(cause)) land(shownError(cause));
         else failed(cause, refuseStep(stepId));
       },
     };
@@ -808,6 +842,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     problem.step === problemScope.step &&
     (problem.variant === null || problem.variant === problemScope.variant) &&
     (!problemScope.element || holdsMember(problemScope.element, problem))) : problems;
+  const problemCount = problemEntries(problems).length;
   function openProjectProblems(opener: HTMLElement | null = null) {
     setPanel({ kind: 'problems', scope: null, opener });
   }
@@ -922,7 +957,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   }
 
   const projectFailure = snapshot.error ?? stoppedPlan.error;
-  const failure = commandError ?? (projectFailure && !isUnanswered(projectFailure) ? apiErrorMessage(projectFailure) : null);
+  const failureCause = commandError ?? (projectFailure && !isUnanswered(projectFailure) ? projectFailure : undefined);
+  const failure = failureCause === undefined ? null : shownError(failureCause);
   const retryPlan = () => {
     void projection.refetch();
   };
@@ -1037,6 +1073,20 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     </>;
   }
 
+  /** A selection none of whose runs can run: the Cannot Run mark, and a link to the step it reads. */
+  function blockedSelectionMark(index: number) {
+    const rows = selectionRows(index);
+    if (!rows.length || rows.some(({ status }) => status !== 'cannot_run')) return undefined;
+    const source = rows[0].key.step;
+    return <span className="inline-flex items-center gap-1.5">
+      <StatusMark status="cannot_run" label={studioRunStatus('cannot_run')} />
+      <Button variant="bare" size="content" className="underline-offset-2 hover:underline"
+        onClick={() => selection.select(selectStep(state, source))}>
+        {rows.length === 1 ? studioFormat('blockedRun', { step: stepLabel(source), run: rows[0].label }) : stepLabel(source)}
+      </Button>
+    </span>;
+  }
+
   const refusedAt = (field: EvaluateField) =>
     refusal?.kind === 'field' && refusal.step === step?.id && refusal.field === field ? refusal.reason : undefined;
 
@@ -1137,9 +1187,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     }, refuseField(`subset.${index}`));
   }
 
-  function editEvaluationCheckpoint(rule: EditableCheckpointRule) {
-    if (!step || !subject || !evaluationCheckpointRule || !applies) return;
-    if (checkpointScope) {
+  function editEvaluationCheckpoint(rule: EditableCheckpointRule, selections: readonly number[]) {
+    if (!step || !subjectReferences || !checkpointEditors || !applies) return;
+    if (checkpointScope && !listedSubject) {
       void applyCheckpointSweepEdit({ kind: 'set', scope: { ...checkpointScope,
         ...('rows' in checkpointScope && { rows: [...checkpointScope.rows ?? []] }),
       }, rule });
@@ -1147,22 +1197,25 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     }
     const name = 'Set Evaluate checkpoints';
     const stepId = step.id;
-    const source = subject.source_step_id;
+    const sources = [...new Set(selections.map((index) => subjectReferences[index].step))];
+    const listed = listedSubject;
     void perform(async (current) => {
-      const dependencies = [{ kind: 'step' as const, id: source }];
+      const dependencies = sources.map((id) => ({ kind: 'step' as const, id }));
       let address: { kind: 'step' | 'variant'; id: string } = { kind: 'step', id: stepId };
-      let patch: ProjectValueEdit = { op: 'replace', path: '/inputs/subject/checkpoint', value: rule };
-      if (checkpointVariant) {
+      let patches: ProjectValueEdit[] = listed
+        ? selections.map((index) => ({ op: 'replace', path: `/inputs/subject/${index}/checkpoint`, value: rule }))
+        : [{ op: 'replace', path: '/inputs/subject/checkpoint', value: rule }];
+      if (checkpointVariant && !listed) {
         const row = current.project.sweep?.rows?.[checkpointVariant];
         if (!row) return;
         const key = `steps.${stepId}.inputs.subject.checkpoint`;
         address = { kind: 'variant', id: checkpointVariant };
         dependencies.push({ kind: 'step', id: stepId });
-        patch = row.patches
+        patches = [row.patches
           ? { op: key in row.patches ? 'replace' : 'add', path: authoredPointer(['patches', key]), value: { value: rule } }
-          : { op: 'add', path: '/patches', value: { [key]: { value: rule } } };
+          : { op: 'add', path: '/patches', value: { [key]: { value: rule } } }];
       }
-      const files = [{ address, patches: [patch] }];
+      const files = [{ address, patches }];
       if (!await runRemoval.confirm(filesRemoval(current.project_id, current.revision, files, editor.signal))) return;
       editor.editFiles(name, files, { reviewedRevision: current.revision, dependencies });
       await editor.flush();
@@ -1443,7 +1496,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       subject: snapshot.redoName === studioName('outsideChange') ? snapshot.redoName : undefined,
     }),
     bindStudioCommand('clearFocus', () => selection.select({ ...state, focus: null }), { enabled: !!state.focus }),
-    activity, problemCommand, failure && retryCommand,
+    activity, problemCommand, failure && !isStudioDefect(failureCause) && retryCommand,
   ].filter((command): command is StudioCommand => !!command);
 
   return (
@@ -1514,9 +1567,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         clock={evaluationReplay.clock}
         failure={failure && <div role="alert" className="flex min-w-0 items-center gap-1">
           <span className="min-w-0 break-words">{failure}</span>
-          <Button {...commandAttributes(retryCommand)} onClick={retryCommand.invoke}>{studioName('retry')}</Button>
+          {!isStudioDefect(failureCause) &&
+            <Button {...commandAttributes(retryCommand)} onClick={retryCommand.invoke}>{studioName('retry')}</Button>}
         </div>}
-        problems={<StudioProblems command={problemCommand} count={problems.length} open={!!problemPanel}
+        problems={<StudioProblems command={problemCommand} count={problemCount} open={!!problemPanel}
           opener={problemPanel?.opener ?? null} onClose={() => setPanel(null)}
           onOpen={(opener) => {
             if (problemPanel && !problemPanel.scope) {
@@ -1526,7 +1580,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               openProjectProblems(opener);
             }
           }}>
-          <ProblemList problems={shownProblems} refusal={refusal?.kind === 'problem' ? refusal : undefined} canReveal={(problem) => !!addressedStep(problem)}
+          <ProblemList entries={problemEntries(shownProblems)} refusal={refusal?.kind === 'problem' ? refusal : undefined} canReveal={(problem) => !!addressedStep(problem)}
             onChoose={revealProblem} showVariant={variants.length > 1 && !problemPanel?.scope} />
         </StudioProblems>}
         activity={<HeaderActivity placement="above" open={panel?.kind === 'activity'} command={activity}
@@ -1633,7 +1687,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                 detail={selectedEvaluation?.checkpoint_series
                   ? <StudioEvaluationAttemptDetails evaluation={selectedEvaluation}
                     onShowStep={(stepId) => selection.select(selectStep(state, stepId))} /> : undefined}
-                fields={(authoring || evaluateInputs || evaluationCheckpointRule || evaluationEditor) &&
+                fields={(authoring || evaluateInputs || checkpointEditors || evaluationEditor) &&
                   <FocusedFields request={slot === focusSlot && fieldFocus?.step === step.id ? fieldFocus : undefined}
                     onFocused={() => setFieldFocus(undefined)}>
                     {authoring && <StudioTrainAuthoringForm {...authoring} run={namedRun} runPending={!data && !projection.isError}
@@ -1647,10 +1701,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                         const subset = evaluationEditor?.subjects[index];
                         const attempts = freezeAttempts(inputId);
                         return {
-                          problem: listed ? selectionProblem(authoredMap?.problems ?? [], step.id, variant, 'subject', index) : undefined,
+                          mark: blockedSelectionMark(index),
                           detail: <>
                             {input && inputDetail(input)}
-                            {subset?.terms && projection.data && variant && reference.checkpoint === 'last' && <SubjectSubset
+                            {subset?.terms && projection.data && variant && <SubjectSubset
                               key={JSON.stringify([step.id, index, subset.source.id])}
                               terms={subset.terms} where={subset.where} hasWhere={reference.where !== undefined}
                               source={subset.source} sourceRows={stepSourceRows(projection.data, subset.source.id, variant)}
@@ -1662,14 +1716,15 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                         };
                       }}
                       onEdit={applies && wholeStep ? editEvaluateSubject : undefined} />}
-                    {evaluationCheckpointRule &&
-                      <CheckpointEditor key={JSON.stringify(['checkpoint', step.id, variant, checkpointScope])}
-                        initial={evaluationCheckpointRule}
+                    {checkpointEditors?.map(({ rule, selections }) =>
+                      <CheckpointEditor key={JSON.stringify(['checkpoint', step.id, variant, checkpointScope, selections])}
+                        initial={rule} range={checkpointRange(selections)}
+                        step={checkpointEditors.length > 1 ? stepLabel(subjectReferences![selections[0]].step) : undefined}
                         disabled={!applies} readOnly={Boolean(stepCheckpointRule && subject?.checkpoint_axis)}
                         refusal={refusedAt('checkpoint')}
-                        onSave={editEvaluationCheckpoint}
-                        onToSweep={canSweepCheckpoint ? () => { void applyCheckpointSweepEdit({ kind: 'to_sweep' }); } : undefined} />}
-                    {evaluationEditor?.domain && <TrialsEditor key={step.id} initial={evaluationEditor.authored.trialSet}
+                        onSave={(next) => editEvaluationCheckpoint(next, selections)}
+                        onToSweep={canSweepCheckpoint ? () => { void applyCheckpointSweepEdit({ kind: 'to_sweep' }); } : undefined} />)}
+                    {evaluationEditor && <TrialsEditor key={step.id} initial={evaluationEditor.authored.trialSet}
                       domain={evaluationEditor.domain} disabled={!applies} refusal={refusedAt('trials')}
                       onSave={(rule) => editEvaluation('trials', studioName('trials'),
                         { op: 'replace', path: '/base/inline/params/trial_set', value: rule })} />}
@@ -1763,30 +1818,31 @@ function namedByHolder(problem: StudioProjectWindowMapProblem, holder: string | 
   return !!place && 'document' in place && place.document === holder && !(place.part === 'task' && place.parameter);
 }
 
-function ProblemList({ problems, refusal, onChoose, canReveal, showVariant }: {
-  problems: readonly StudioProjectWindowMapProblem[];
+function ProblemList({ entries: listed, refusal, onChoose, canReveal, showVariant }: {
+  entries: readonly ProblemEntry[];
   /** The problem whose repair was refused, and why. */
   refusal?: { problem: string; reason: string };
   onChoose(problem: StudioProjectWindowMapProblem): void;
   canReveal(problem: StudioProjectWindowMapProblem): boolean;
   showVariant: boolean;
 }) {
-  const groups = new Map<string | null, StudioProjectWindowMapProblem[]>();
-  for (const problem of problems) {
-    const name = problemHolder(problem);
+  const groups = new Map<string | null, ProblemEntry[]>();
+  for (const entry of listed) {
+    const name = problemHolder(entry.problem);
     if (!groups.has(name)) groups.set(name, []);
-    groups.get(name)!.push(problem);
+    groups.get(name)!.push(entry);
   }
   return <div className="space-y-2">{[...groups].map(([name, entries]) => {
-    const first = entries.find(canReveal);
+    const first = entries.find(({ problem }) => canReveal(problem))?.problem;
     return <section key={name ?? ''}>
       {name && <h2 className="font-medium">{first
         ? <Button variant="ghost" size="content" className="rounded-control px-control-inline text-left font-medium"
           onClick={() => onChoose(first)}>{name}</Button>
         : name}</h2>}
-      <ul>{entries.map((problem, index) => <li key={index} className="break-words">
+      <ul>{entries.map(({ problem, runs }, index) => <li key={index} className="break-words">
         <ProblemRow problem={problem} refusal={refusal?.problem === problemKey(problem) ? refusal.reason : undefined}
-          context={[problem.step !== name ? problem.step : null, showVariant ? problem.variant : null].flatMap((part) => part ? [part] : [])}
+          context={[problem.step !== name ? problem.step : null, showVariant ? problem.variant : null,
+            runs > 1 ? studioFormat('runCount', { count: runs }) : null].flatMap((part) => part ? [part] : [])}
           placeShown={!namedByHolder(problem, name)}
           onReveal={canReveal(problem) ? () => onChoose(problem) : undefined} />
       </li>)}</ul>

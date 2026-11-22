@@ -3,6 +3,7 @@ import type { Step } from '@/generated/studioContracts';
 import { applyAuthoredEdits, type ProjectEditContent } from './authoredEdits';
 import {
   checkpointDraft, checkpointDraftRule, conditionLabels, editableCheckpointRule, evaluateSubject, evaluateSubjectEdits,
+  selectionCheckpoints,
   type EvaluateSubject,
 } from './evaluateAuthoring';
 
@@ -63,4 +64,24 @@ it('names each condition by the variables that vary across its cohort', () => {
   expect([...conditionLabels([a, b]).values()]).toEqual(['goal=[1,0]', 'goal=[0,1]']);
   expect(conditionLabels(['{"goal":[1,0]}']).get('{"goal":[1,0]}')).toBe('goal=[1,0]');
   expect(conditionLabels(['left']).get('left')).toBe('left');
+});
+
+// Catches a listed subject drawing no Checkpoint editor, or one editor hiding selections whose rules differ.
+it('reads one checkpoint rule for selections that share it and one per selection otherwise', () => {
+  expect(selectionCheckpoints([{ step: 'a', checkpoint: { at: 5 } }, { step: 'b', checkpoint: { at: 5 } }]))
+    .toEqual([{ rule: { at: 5 }, selections: [0, 1] }]);
+  expect(selectionCheckpoints([{ step: 'a', checkpoint: 'last' }, { step: 'b', checkpoint: { at: 5 } }]))
+    .toEqual([{ rule: 'last', selections: [0] }, { rule: { at: 5 }, selections: [1] }]);
+});
+
+// Catches a checkpoint outside a subject's training, before its origin or past its end, reaching a job.
+it('refuses an update outside the range every run read has, on its field, naming the step that bounds it', () => {
+  const range = { after: { step: 'train', update: 100 }, through: { step: 'train-2', update: 8000 } };
+  expect(checkpointDraftRule({ kind: 'at', at: 8000 }, range)).toEqual({ rule: { at: 8000 } });
+  expect(checkpointDraftRule({ kind: 'at', at: 101 }, range)).toEqual({ rule: { at: 101 } });
+  const late = checkpointDraftRule({ kind: 'at', at: 9000 }, range);
+  expect(late).toMatchObject({ field: 'at', reason: expect.stringMatching(/^train-2 · .*101\b.*8000/) });
+  const early = checkpointDraftRule({ kind: 'list', updates: '100, 200' }, range);
+  expect(early).toMatchObject({ field: 'updates', reason: expect.stringMatching(/^train · .*101\b.*8000/) });
+  expect(checkpointDraftRule({ kind: 'last' }, range)).toEqual({ rule: 'last' });
 });

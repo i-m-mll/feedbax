@@ -556,6 +556,9 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
   expect(evaluation.map(({ trials }) => trials.length)).toEqual([2, 3, 2, 3]);
 
   const pivot = primary(page).getByRole('table', { name: 'Pivot', exact: true });
+  // The subject is told apart by the learning-rate its runs carry, and the one seed they share tells nothing apart.
+  await expect(pivot.getByRole('columnheader')).toHaveText(['learning-rate', 'Short Task', 'Long Task']);
+  await expect(primary(page).getByRole('combobox', { name: 'Columns', exact: true })).toHaveText('task');
   await pick(primary(page).getByRole('combobox', { name: 'Rows', exact: true }), 'learning-rate');
   await pick(primary(page).getByRole('combobox', { name: 'Columns', exact: true }), 'task');
   const cell = (model: string, task: string, status: string) => pivot.getByRole('button', {

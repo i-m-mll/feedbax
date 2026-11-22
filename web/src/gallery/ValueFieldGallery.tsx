@@ -38,6 +38,50 @@ function useProjected(label: string, initial: string, kinds: SiteProjection['kin
   return { field, commit };
 }
 
+const drawSite: SiteProjection = {
+  site: { expected: { base: 'real', dimensions: { time: 1 } }, finest: 1, names: [] },
+  kinds: ['value', 'sweep', 'draw', 'formula'],
+  functions: [
+    { id: 'uniform', signature: 'uniform(low, high)', label: 'Uniform', display_class: 'draw', min_args: 2, max_args: 2,
+      parameters: [{ name: 'low', label: 'Low' }, { name: 'high', label: 'High' }] },
+    { id: 'normal', signature: 'normal(mean, sd)', label: 'Normal', display_class: 'draw', min_args: 2, max_args: 2,
+      parameters: [{ name: 'mean', label: 'Mean' }, { name: 'sd', label: 'SD' }] },
+  ],
+};
+
+/** A stand-in for the server's reading of a draw of numbers, `family(a, b)` with an optional `per=run`. */
+function useDrawn(label: string, initial: string) {
+  const read = (text: string): StudioFieldView | string => {
+    const match = /^\s*(\w+)\((.*)\)\s*$/.exec(text);
+    const family = match && ({ U: 'uniform', N: 'normal' } as Record<string, string>)[match[1]] || match?.[1];
+    if (!match || !drawSite.functions.some(({ id }) => id === family)) {
+      return Number.isFinite(Number(text)) ? { label, text: text.trim(), site: drawSite, structure: {
+        value: { kind: 'literal', value: Number(text) } } } : `${label} takes Value, Sweep, Draw, Formula`;
+    }
+    const parts = match[2].split(',').map((part) => part.trim());
+    const per = parts.at(-1) === 'per=run' ? 'run' : 'trial';
+    const args = parts.filter((part) => part !== 'per=run');
+    if (args.length !== 2 || args.some((arg) => !Number.isFinite(Number(arg)))) return `${label} takes two numbers`;
+    const [a, b] = args.map(Number);
+    const density = family === 'uniform'
+      ? { low: a, high: b, values: Array(24).fill(1) }
+      : { low: a - 3 * b, high: a + 3 * b, values: Array.from({ length: 24 }, (_, i) => Math.exp(-0.5 * ((i / 23) * 6 - 3) ** 2)) };
+    return {
+      label, site: drawSite, text: `${family === 'uniform' ? 'U' : 'N'}(${args.join(', ')}${per === 'run' ? ', per=run' : ''})`,
+      structure: { value: { kind: 'draw', family: family!, per, args: [a, b].map((value) => ({ kind: 'literal', value })) },
+        arguments: args, density },
+    };
+  };
+  const [field, setField] = useState(() => read(initial) as StudioFieldView);
+  const commit = async (edit: ProjectedEdit) => {
+    if (edit.kind !== 'text') return;
+    const next = read(edit.text);
+    if (typeof next === 'string') return next;
+    setField(next);
+  };
+  return { field, commit, kind: field.structure?.value.kind === 'draw' ? 'draw' as const : 'value' as const };
+}
+
 function list(values: readonly string[]): StudioFieldView['sweep'] {
   return { kind: 'list', id: 'axis', editable: true, values: values.map((value, index) => ({ id: `v${index}`, label: null, value: Number(value) })) };
 }
@@ -121,6 +165,9 @@ export function ValueFieldGallery() {
   const rate = useProjected('Learning rate', '0.001', ['value', 'sweep', 'formula']);
   const step = useProjected('Step', '0.01', ['value']);
   const decay = useProjected('Decay', 'learning_rate / 10', ['value', 'sweep', 'formula']);
+  const delay = useDrawn('Delay', 'U(0.3, 1)');
+  const jitter = useDrawn('Jitter', '0.1');
+  const drawn = (view: ReturnType<typeof useDrawn>) => fromFieldView(view.field, { id: view.field.label, commit: view.commit, kind: view.kind });
   const raw = useRaw(Object.fromEntries(params.map(({ name, default: value }) => [name, value as JsonValue])));
   const settings = useHistory({
     optimizer: { type: 'adam', learning_rate: { type: 'constant', value: 0.003 }, b1: 0.9, b2: 0.999 },
@@ -142,6 +189,8 @@ export function ValueFieldGallery() {
           <ValueField model={project(rate)} />
           <ValueField model={project(step)} />
           <ValueField model={project(decay, { kind: 'formula' })} />
+          <ValueField model={drawn(delay)} />
+          <ValueField model={drawn(jitter)} />
           <ValueField model={fromFieldView(rangeField, { id: 'clip', commit: async () => undefined })} />
           <ValueField model={fromFieldView({ ...hidden.field, label: 'Selected', effective: '96' },
             { id: 'selected', commit: hidden.commit, rowSelection: true })} />
@@ -162,6 +211,7 @@ export function ValueFieldGallery() {
         <div className="flex items-start gap-2">
           <div className="w-[90px]"><ValueField form="cell" model={project(hidden)} /></div>
           <div className="w-[90px]"><ValueField form="cell" model={project(step)} /></div>
+          <div className="w-[90px]"><ValueField form="cell" model={drawn(delay)} /></div>
           <div className="w-[90px]"><ValueField form="cell" model={fromParamSchema(params[2], raw.values.hidden_size, raw.change('hidden_size'))} /></div>
         </div>
       </div>

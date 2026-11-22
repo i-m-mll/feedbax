@@ -9,6 +9,7 @@ import {
   selectionButton,
   selectedRuns,
   selectRun,
+  selectStep,
   type PipelineSelectionState,
   type RunSetsByStep,
 } from "@/features/pipeline/selection";
@@ -32,28 +33,9 @@ export interface RunSelectionProps {
   onSelectionChange: (state: PipelineSelectionState) => void;
 }
 
-/**
- * The sweeps drawn as columns: those whose values differ between the shown rows, the fields that tell those runs
- * apart. An axis over an input's runs is left out when the columns those runs carry spell each of its values.
- */
+/** The step's drawn axes whose values differ between the shown rows, the fields that tell those runs apart. */
 export function runColumns(step: PlanStepView, rows: readonly PlanRunView[]) {
-  return step.sweeps.filter((sweep) => new Set(rows.map(({ values }) => values[sweep.id])).size > 1 &&
-    !spelled(sweep, step.sweeps, rows));
-}
-
-/** Whether every row has a value of each axis `sweep`'s runs carry, and those values determine its value. */
-function spelled(sweep: PlanSweepView, sweeps: readonly PlanSweepView[], rows: readonly PlanRunView[]) {
-  const carried = sweeps.filter(({ id }) => id !== sweep.id && sweep.carried?.has(id));
-  if (!carried.length) return false;
-  const named = new Map<string, string | undefined>();
-  for (const { values } of rows) {
-    const cells = carried.map(({ id }) => values[id] as string | undefined);
-    if (cells.includes(undefined)) return false;
-    const key = JSON.stringify(cells);
-    if ((named.get(key) ?? values[sweep.id]) !== values[sweep.id]) return false;
-    named.set(key, values[sweep.id]);
-  }
-  return true;
+  return step.sweeps.filter((sweep) => new Set(rows.map(({ values }) => values[sweep.id])).size > 1);
 }
 
 /** Whether the shown columns leave two rows with the same cells, so the runs' own names must be drawn. */
@@ -230,7 +212,11 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
                   </TableCell>
                 ))}
                 <TableCell tabIndex={-1} className={cellFocus} aria-description={studioRunReason({ ...run, reason })}>
-                  <StudioRunStatus status={run.state} {...appTip(studioRunReason({ ...run, reason }))} />
+                  <span className="inline-flex items-center gap-1.5">
+                    <StudioRunStatus status={run.state} {...appTip(studioRunReason({ ...run, reason }))} />
+                    {run.blockedBy && <Button variant="bare" size="content" className="underline-offset-2 hover:underline"
+                      onClick={() => onSelectionChange(selectStep(state, run.blockedBy!.stepId))}>{run.blockedBy.label}</Button>}
+                  </span>
                 </TableCell>
                 <TableCell tabIndex={-1} className={cellFocus}>
                   {(run.status === "running" || run.status === "stopped") && run.progress &&

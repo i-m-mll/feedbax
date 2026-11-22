@@ -175,10 +175,10 @@ export function placePipelineMap(
 
 /**
  * The card's sweeps in label order: the first runs down, the second across, the rest are folded. Unless arranged, the
- * longer of the first two runs across. An input axis with one value is not drawn; a sweep authored on the step always is.
+ * longer of the first two runs across.
  */
 export function orderedMapSweeps(step: PlanStepView, presentation: PipelineCardPresentation) {
-  const byId = new Map(step.sweeps.filter((sweep) => !sweep.input || sweep.values.length > 1).map((sweep) => [sweep.id, sweep]));
+  const byId = new Map(step.sweeps.map((sweep) => [sweep.id, sweep]));
   const order = new Set([...(presentation.sweepOrder ?? []), ...byId.keys()]);
   const sweeps = [...order].flatMap((id) => {
     const sweep = byId.get(id);

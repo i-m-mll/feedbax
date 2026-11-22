@@ -7,7 +7,9 @@ from dataclasses import dataclass, field, replace
 from hashlib import sha256
 
 from feedbax.compiler.trial_execution import TrialPair, pair_trial_source
-from feedbax.contracts.expression_values import Level, Problem, ProblemCode, ScopedValue, Site, SweepList, SweepRange, SweepSample
+from feedbax.contracts.expression_values import (
+    Level, Problem, ProblemCode, ScopedValue, Site, SweepList, SweepRange, SweepSample, ValueBase, ValueType,
+)
 from feedbax.tasks.registry import resolve_python_task_instance
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_address import ModelAddress
@@ -38,7 +40,8 @@ from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.training import TrialDocuments
 from feedbax.expression_check import references
 from feedbax.expression_site import project_site, read_field
-from feedbax.expression_text import ParsedField, print_field
+from feedbax.expression_text import ParsedField, parse, print_field
+from feedbax.studio.value_structure import value_structure
 from feedbax.objectives.document import ObjectiveExecutor, ObjectiveUse, compile_objective
 from feedbax.plugins.application import ApplicationRegistryBundle
 from feedbax.web.services.evaluate_sources import evaluate_subject, evaluate_value_source
@@ -104,6 +107,8 @@ def _project(
                 paired, task_sites = replace(partial, problems=(*paired, *partial.problems)), partial_sites
     fields.update({("task", *path): site for path, site in task_sites.items()})
     if isinstance(paired, tuple):
+        if show_objective:
+            fields.update(_unpaired_objective_sites(documents, signals))
         return _Projection(None, variables, signals, epochs, fields, paired)
     source = paired.task
     variables, signals = source.interface.variables, source.interface.signals
@@ -120,6 +125,44 @@ def _project(
         problems += tuple(problem.model_copy(update={"path": ("objective", *problem.path)})
                           for problem in objective)
     return _Projection(paired, variables, signals, epochs, fields, problems)
+
+
+def _unpaired_objective_sites(documents, signals) -> dict[tuple[str | int, ...], Site]:
+    """Each term's Measure and Weight over the names the documents declare, for a Model and Task that do not pair.
+
+    A commit through one of these sites is parsed, not checked: the declared names have no resolved types."""
+    def declared(value_type) -> ValueType:
+        shape = value_type.shape if value_type is not None and value_type.shape else ()
+        return ValueType(
+            base=ValueBase.REAL, shape=tuple(size for size in shape if type(size) is int and size > 0),
+        )
+
+    names = (
+        *(ScopedValue(id=_output_address(port.id).to_text(), name=port.name, type=declared(port.type), level=Level.STEP)
+          for port in documents.model.ports.outputs),
+        *((ScopedValue(id="time", name="time", type=ValueType(base=ValueBase.REAL), level=Level.STEP),)
+          if isinstance(documents.task_source, TaskDocument) else ()),
+        *(ScopedValue(id=variable.id, name=variable.name, type=variable.type, level=Level.STEP)
+          for variable in (documents.task.variables if documents.task is not None else ())),
+        *signals,
+    )
+    weight_names = (*names, *(
+        ScopedValue(id=name, name=name, type=ValueType(base=ValueBase.REAL), level=Level.STEP)
+        for name in ("t", "T", "u")
+    ))
+    sites: dict[tuple[str | int, ...], Site] = {}
+    for term in documents.objective.terms:
+        path = ("objective", "terms", term.id)
+        sites[(*path, "measure")] = Site(expected=term.measure_type, names=names, finest=Level.STEP)
+        sites[(*path, "weight")] = Site(expected=ValueType(base=ValueBase.REAL), names=weight_names, finest=Level.STEP)
+    return sites
+
+
+def _output_address(port: str) -> ModelAddress:
+    return ModelAddress.model_validate({
+        "composites": [],
+        "element": {"kind": "port", "end": {"owner": "outputs", "port": port}},
+    })
 
 
 def _input_address(port: str) -> ModelAddress:
@@ -166,7 +209,10 @@ def _expression_edit(change, documents, projection, bundle):
     index = next((i for i, term in enumerate(documents.objective.terms) if term.id == change.term), None)
     if site is None or index is None:
         raise ProjectFolderInvalid("The selected objective field is unavailable.")
-    parsed = read_field(change.text, site, bundle.expression_functions)
+    parsed = (
+        read_field(change.text, site, bundle.expression_functions) if projection.pair is not None
+        else parse(change.text, site, bundle.expression_functions)
+    )
     if not isinstance(parsed, ParsedField):
         return parsed
     if isinstance(parsed.value, SweepList | SweepRange | SweepSample):
@@ -701,10 +747,14 @@ def _objective_names(plan, key):
     objective = pairing.get("objective") if isinstance(pairing, dict) else None
     terms = objective.get("terms", []) if isinstance(objective, dict) else []
     return {term.get("id"): term.get("name") for term in terms if isinstance(term, dict) and term.get("name")}
-def _field_text(expression, site: Site) -> str | None:
-    if references(expression) <= {item.id for item in site.names}:
-        return print_field(expression, site)
-    return None
+def _trial_field(path, site: Site, expression, functions) -> StudioTrialField:
+    """A field with its text and structure, where its value names only what is in scope."""
+    shown = expression is not None and references(expression) <= {item.id for item in site.names}
+    return StudioTrialField(
+        path=pointer(tuple(map(str, path))), projection=project_site(site, functions),
+        text=print_field(expression, site) if shown else None,
+        structure=value_structure(expression, site, functions) if shown else None,
+    )
 
 
 def trial_authoring(
@@ -791,9 +841,7 @@ def trial_authoring(
         resets=[StudioTrialReset(address=field.address, type=field.type, finest=field.finest,
                                 variable=links.get(field.address.to_text()))
                 for field in paired.model.reset.fields] if paired else [],
-        fields=[StudioTrialField(path=pointer(tuple(map(str, path))),
-                                 projection=project_site(site, bundle.expression_functions),
-                                 text=_field_text(expressions[path], site) if path in expressions else None)
+        fields=[_trial_field(path, site, expressions.get(path), bundle.expression_functions)
                 for path, site in projected.fields.items()],
         problems=[*projected.problems, *refused], files=stored.files, created=list(stored.created), refusal=refusal,
     )

@@ -15,6 +15,7 @@ from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.project import Pointer, ProjectValueEdit, Sha256
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_authoring import StudioSweptParameterMissing
+from feedbax.contracts.studio_field import StudioValueStructure
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
 from feedbax.contracts.task_document import Epoch, PythonTaskSelection, TaskDocument
 from feedbax.expression_site import SiteProjection
@@ -24,6 +25,7 @@ class StudioTrialField(StrictModel):
     path: str
     projection: SiteProjection
     text: str | None = None
+    structure: StudioValueStructure | None = None
 
 
 class StudioTaskType(StrictModel):
