@@ -35,7 +35,7 @@ def authored_best():
         for name, value in (("a", 0.003), ("b", 0.002), ("c", 0.001))
     }}}}
     subject = raw["steps"]["baseline"]["inputs"]["subject"]
-    subject["where"] = {"best": {"by": "train_loss", "k": 2, "order": "min"}}
+    subject["where"] = {"rule": "lowest 2 train_loss"}
     raw["steps"]["baseline"]["sweep"] = {"axes": {"subject": {"input": "subject"}}}
     return raw
 
@@ -56,12 +56,12 @@ def test_best_plan_identity_changes_with_candidates_and_refuses_unsupported_rule
     new = {row.key: row.request_id for row in after.runs}
     assert all((old[run.key] == new[run.key]) == (run.kind == "train") for run in before.runs)
     subject = raw["steps"]["baseline"]["inputs"]["subject"]
-    subject["where"]["best"]["per"] = ["missing"]
+    subject["where"]["rule"] += " per missing"
     refused = compile_project(Project.model_validate(raw))
-    assert [item.path for item in refused.diagnostics] == ["inputs.subject.where.best.per"]
-    subject["where"] = {"when": {"metric": "train_loss", "op": "lt", "value": 1}}
-    refused = compile_project(Project.model_validate(raw))
-    assert [item.path for item in refused.diagnostics] == ["inputs.subject.where.when"]
+    assert [item.path for item in refused.diagnostics] == ["inputs.subject.where.rule"]
+    subject["where"] = {"rule": "train_loss<1"}
+    [refused] = compile_project(Project.model_validate(raw)).diagnostics
+    assert refused.path == "inputs.subject.where.rule" and "train_loss<1" in refused.detail
 
 
 def test_saved_best_binds_and_freezes_ordered_ranks(host, tmp_path, monkeypatch):

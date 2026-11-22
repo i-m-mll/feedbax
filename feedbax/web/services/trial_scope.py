@@ -1,6 +1,6 @@
 """Store an edit of a step's definition by the scope of the runs it is made for."""
 
-from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from functools import partial
@@ -22,16 +22,17 @@ from feedbax.contracts.project import (
     document_edit_value, json_pointer_parts, same_json,
 )
 from feedbax.contracts.project_inputs import SweepExceptionTerms
-from feedbax.contracts.project_plan import RunKey, compile_project
+from feedbax.contracts.project_plan import PlannedRow, RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.project_resolution import (
     ProjectDiagnostic, StepTemplate, compose_document, compose_step, document_write_target,
 )
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_sweep import (
-    AxisCondition, NamedAxis, SetAxis, SetValue, RemoveValue, _compose_writes, axis_values,
+    AxisCondition, NamedAxis, SetAxis, SetValue, RemoveValue, SweepCoordinate, _compose_writes, axis_coordinates,
 )
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
+from feedbax.contracts.run_rule import value_text
 from feedbax.contracts.studio_project import AuthoredFileAddress, CreateNamedDocument, StudioProjectFilePatch
 from feedbax.project_members import generated_name
 from feedbax.project_folder import _free_member_name, document_file
@@ -48,6 +49,8 @@ class SweepValuesRuns:
     """Runs selected as values of the step's sweeps, other than one named value of one sweep."""
 
     axes: dict[str, tuple[str, ...]]
+    rule: str
+    """The run rule that chooses those values' runs."""
 
 
 type RunScope = (
@@ -71,12 +74,21 @@ def selection_scope(project, plan, key, rows=(), axes=None) -> RunScope:
         return StepRuns(kind="step")
     if key.variant != plan.variants[0]:
         raise ProjectFolderInvalid("A selection of runs is stored in the primary variant only.")
+    return runs_scope(project, plan, key, rows, axes)
+
+
+def runs_scope(project, plan, key, rows, axes) -> RunScope:
+    """What ``rows`` of ``key``'s step and variant are: one named value, values per sweep, or listed rows."""
     available = {row.key.row: row for row in plan.rows if (row.key.variant, row.key.step) == (key.variant, key.step)}
     if not set(rows) <= available.keys() or len(set(rows)) != len(rows):
         raise ProjectFolderInvalid("The selected rows no longer belong to this step.")
     covered = {
         row_id for row_id, row in available.items()
-        if all(axis_values(row.coordinates, row.input_axes).get(axis) in values for axis, values in axes.items())
+        if all(
+            (coordinate := axis_coordinates(row.coordinates, row.input_axes).get(axis)) is not None
+            and coordinate.value_id in values
+            for axis, values in axes.items()
+        )
     }
     if not axes or set(rows) != covered:
         return ListedRuns(kind="rows", rows=tuple(rows))
@@ -86,7 +98,21 @@ def selection_scope(project, plan, key, rows=(), axes=None) -> RunScope:
         named = sweep.axes.get(axis) if sweep else None
         if len(values) == 1 and isinstance(named, NamedAxis) and named.values.get(values[0]) is not None:
             return AxisValueRuns(kind="axis_value", axis=axis, value=values[0])
-    return SweepValuesRuns({axis: tuple(values) for axis, values in axes.items()})
+    return SweepValuesRuns(
+        {axis: tuple(values) for axis, values in axes.items()}, values_rule(available.values(), axes),
+    )
+
+
+def values_rule(rows: Iterable[PlannedRow], axes: Mapping[str, Iterable[str]]) -> str:
+    """The run rule naming, for each axis, the values whose IDs are ``axes[axis]``."""
+    coordinates: dict[tuple[str, str], SweepCoordinate] = {}
+    for row in rows:
+        for axis, coordinate in axis_coordinates(row.coordinates, row.input_axes).items():
+            coordinates.setdefault((axis, coordinate.value_id), coordinate)
+    return " ".join(
+        f"{axis}=" + ",".join(value_text(coordinates[axis, value]) for value in sorted(set(values)))
+        for axis, values in sorted(axes.items())
+    )
 
 
 def file_value(address, raw, parts, value):
@@ -154,8 +180,8 @@ def row_exception_file(address, raw, rows, writes):
     return _exception_file(address, raw, {"rows": sorted(set(rows))}, writes)
 
 
-def values_exception_file(address, raw, axes, writes):
-    return _exception_file(address, raw, {"axes": {axis: sorted(set(values)) for axis, values in sorted(axes.items())}}, writes)
+def values_exception_file(address, raw, rule, writes):
+    return _exception_file(address, raw, {"rule": rule}, writes)
 
 
 def _canonical_where(where) -> bytes | None:
@@ -166,8 +192,6 @@ def _canonical_where(where) -> bytes | None:
     selector = terms.model_dump(mode="json", exclude_defaults=True)
     if "rows" in selector:
         selector["rows"] = sorted(set(selector["rows"]))
-    if "axes" in selector:
-        selector["axes"] = {axis: sorted(set(values)) for axis, values in selector["axes"].items()}
     return canonical_json_v2_bytes(selector)
 
 
@@ -862,7 +886,7 @@ def _selection_file(address, raw, authored, scope, writes) -> StudioProjectFileP
             raise ProjectFolderInvalid("The group needs a named sweep value authored on this step.")
         return sweep_value_file(address, raw, scope.axis, scope.value, writes)
     if isinstance(scope, SweepValuesRuns):
-        return values_exception_file(address, raw, scope.axes, writes)
+        return values_exception_file(address, raw, scope.rule, writes)
     return row_exception_file(address, raw, scope.rows, writes)
 
 
@@ -952,9 +976,11 @@ def train_selection(
     scoped = not isinstance(scope, StepRuns)
     named = definitions.get(key)
     values = (
-        AxisCondition(axes={scope.axis: [scope.value]}) if isinstance(scope, AxisValueRuns)
-        else AxisCondition(axes={axis: sorted(set(ids)) for axis, ids in sorted(scope.axes.items())})
-        if isinstance(scope, SweepValuesRuns) else None
+        AxisCondition(rule=values_rule(
+            (row for row in plan.rows if row.key.variant == key.variant and row.key.step == step_id),
+            {scope.axis: [scope.value]},
+        )) if isinstance(scope, AxisValueRuns)
+        else AxisCondition(rule=scope.rule) if isinstance(scope, SweepValuesRuns) else None
     )
     return TrainSelection(
         payloads, next((row for row in plan.rows if row.key == key), None),

@@ -35,8 +35,8 @@ def test_an_authored_exception_over_the_same_runs_is_changed_under_its_own_name(
     assert list(raw["sweep"]["exceptions"]) == ["mine"]
     assert raw["sweep"]["exceptions"]["mine"]["patches"] == {_MASS: {"op": "replace", "value": 3}}
 
-    values = {"sweep": {"exceptions": {"slow": {"where": {"axes": {"rate": ["slow", "fast"], "seed": ["one"]}}}}}}
-    (patch,) = values_exception_file(_ADDRESS, values, {"seed": ["one"], "rate": ["fast", "slow"]}, [
+    values = {"sweep": {"exceptions": {"slow": {"where": {"rule": "rate=fast,slow seed=one"}}}}}
+    (patch,) = values_exception_file(_ADDRESS, values, "rate=fast,slow seed=one", [
         OverridePatch(path=_MASS, op="replace", value=3),
     ]).patches
     assert list(patch.value["exceptions"]) == ["slow"]

@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
-import type { StudioProjectSnapshot } from '../../src/generated/studioContracts';
-import { appendManagedFiles, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import { appendManagedFiles, enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 
@@ -59,4 +59,41 @@ test('a continuation started from its Model keeps its definition and continues a
   await expect(refusal.first()).toBeVisible();
   await expect(inspector.getByRole('combobox', { name: 'Start', exact: true })).toHaveCount(0);
   expect(based.project.steps!['row-based']).toBeDefined();
+});
+
+// Catches a Start that offers only another step's last checkpoint: Start is the one input editor, so At 500 is a rule
+// it takes, and the plan then reads update 500 of the train step's run.
+test('a Train step started at update 500 of another plans a continuation from that checkpoint', async ({ page, request }) => {
+  const files = await fixture('ordinary-files', '600');
+  const { snapshot, projectPath } = await seedManagedProject(request, files);
+  async function plan() {
+    const { revision } = await (await request.get(projectPath)).json() as StudioProjectSnapshot;
+    const response = await request.get(`${projectPath}/train-runs?window_map=true&revision=${revision}`);
+    expect(response.ok(), await response.text()).toBe(true);
+    return await response.json() as StudioSavedTrainRuns;
+  }
+  const requestOf = async () => (await plan()).rows.find(({ key }) => key.step === 'train-2')?.request_id;
+
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Runs', exact: true }).click();
+  await page.getByRole('button', { name: 'New Step train', exact: true }).click();
+  await chooseStepKind(page, 'Train');
+  await expect(mapStep(page, 'train-2')).toHaveAttribute('aria-pressed', 'true');
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  await expect(inspector.getByRole('combobox', { name: 'Start', exact: true })).toHaveText('train');
+  const last = await requestOf();
+
+  await pick(inspector.getByRole('combobox', { name: 'Checkpoint', exact: true }), 'At');
+  const saving = page.waitForResponse((response) => response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath);
+  await enter(inspector.getByRole('textbox', { name: 'Update', exact: true }), '500');
+  expect((await saving).ok()).toBe(true);
+  const saved = await (await request.get(projectPath)).json() as StudioProjectSnapshot;
+  expect(saved.project.steps!['train-2'].inputs!.checkpoint).toEqual({ step: 'train', checkpoint: { at: 500 } });
+  const planned = await plan();
+  expect(planned.window_map!.problems.filter(({ step }) => step === 'train-2')).toEqual([]);
+  expect(planned.window_map!.steps.find(({ step_id }) => step_id === 'train-2')!.inputs)
+    .toEqual([expect.objectContaining({ source_step_id: 'train', checkpoint: { at: 500 } })]);
+  expect(await requestOf()).not.toEqual(last);
+  await expect(inspector.getByRole('textbox', { name: 'Update', exact: true })).toHaveValue('500');
 });

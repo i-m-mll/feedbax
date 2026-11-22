@@ -40,11 +40,15 @@ export function bindingEdit(
   };
 }
 
-/** The plan's refusal of selection `index` of `role`: a problem of the step at or under `inputs.<role>.<index>`. */
+/**
+ * The plan's refusal of selection `index` of `role`: a problem of the step at or under `inputs.<role>.<index>`, or
+ * `inputs.<role>` when the role holds one reference rather than a list.
+ */
 export function selectionProblem(
   problems: readonly StudioProjectWindowMapProblem[], step: string, variant: string | null, role: string, index: number,
+  listed: boolean,
 ): string | undefined {
-  const path = `inputs.${role}.${index}`;
+  const path = listed ? `inputs.${role}.${index}` : `inputs.${role}`;
   return problems.find((problem) => problem.step === step && (problem.variant === null || problem.variant === variant) &&
     (problem.path === path || problem.path.startsWith(path + '.')))?.detail;
 }

@@ -22,10 +22,6 @@ export interface PlanSweepView {
   readonly id: string;
   readonly label: string;
   readonly values: readonly PlanSweepValueView[];
-  /** The axis ranges over what an input reads, as an Evaluate step's `subject` does, rather than over values authored on the step. */
-  readonly input?: boolean;
-  /** For an axis over an input's runs, the axes those runs carry from their steps and upstream. */
-  readonly carried?: ReadonlySet<string>;
 }
 
 /** A retained result of a run whose validity the backend reports. */
@@ -68,6 +64,8 @@ export interface PlanInputView {
     readonly terms: readonly string[];
     readonly count: number;
     readonly total: number;
+    /** Whether the members are a lowest or highest term's ranks. */
+    readonly ranked?: boolean;
     readonly memberGroups?: readonly {
       label?: string;
       members: readonly { id: string; label: string }[];
@@ -88,6 +86,10 @@ export interface PlanStepView {
   readonly documentIds?: Readonly<Record<string, string>>;
   readonly documentUses?: readonly string[];
   readonly statusCounts: Readonly<Partial<Record<StudioResultState, number>>>;
+  /** How a run rule reading the step writes each of its axes' values, by axis and value id. */
+  readonly ruleAxes?: Readonly<Record<string, Readonly<Record<string, string>>>>;
+  /** The result names of the step's finished runs, which a lowest or highest term ranks by. */
+  readonly ruleMetrics?: readonly string[];
   /** Why the last gesture on the step was refused; its problem mark carries it. */
   readonly refusal?: string;
 }

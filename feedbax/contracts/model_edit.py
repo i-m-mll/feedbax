@@ -15,7 +15,7 @@ from feedbax.contracts.model_document import (
 )
 from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.project import Sha256
-from feedbax.contracts.project_inputs import ProjectName, RowKey
+from feedbax.contracts.project_inputs import AxisValueId, ProjectName, RowKey
 from feedbax.contracts.request_refs import Name
 from feedbax.contracts.studio_project import StudioProjectSnapshot
 from feedbax.contracts.studio_project import StudioProjectFilePatch
@@ -31,6 +31,7 @@ class AddComponent(StrictModel):
     graph: ModelAddress
     component: LeafComponent | CompositeComponent
     position: ModelPosition
+    id: ModelElementId | None = None
     connect_from: SignalSource | None = None
     connect_to_port: ModelElementId | None = None
 
@@ -136,6 +137,7 @@ class InsertComponentOnWire(StrictModel):
     output_port: ModelElementId
     position: ModelPosition
     flipped: bool = False
+    id: ModelElementId | None = None
 
 
 class BringSignalIn(StrictModel):
@@ -370,7 +372,7 @@ class StepRuns(StrictModel):
 class AxisValueRuns(StrictModel):
     kind: Literal["axis_value"]
     axis: ProjectName
-    value: ProjectName
+    value: AxisValueId
 
 
 class ListedRuns(StrictModel):

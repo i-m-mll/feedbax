@@ -26,7 +26,7 @@ def _one_bad_train_row() -> dict:
     raw = document_project(authored_documents(), evaluation=True)
     _two_optimizer_rates(raw)
     raw["steps"]["train"]["sweep"]["exceptions"] = {"broken": {
-        "where": {"axes": {"rate": ["low"]}},
+        "where": {"rule": "rate=low"},
         "patches": {"trial_documents.model.interior.components.left": {"value": BAD_LINEAR, "op": "add"}},
     }}
     raw["steps"]["baseline"]["sweep"] = {"axes": {"model": {"input": "subject"}}}
@@ -146,7 +146,7 @@ def test_objective_expressions_stay_editable_when_the_model_does_not_pair(tmp_pa
         assert fields["/objective/terms/effort/measure"] == "sqnorm(command)"
         assert fields["/objective/terms/effort/weight"] == "1"
         edit = client.post("/api/projects/unpaired/authoring/trials", json=body | {
-            "change": {"kind": "expression", "term": "effort", "field": "weight", "text": "2"},
+            "change": {"kind": "expression", "term": "effort", "field": "weight", "edit": {"kind": "text", "text": "2"}},
         })
         assert edit.status_code == 200, edit.text
         assert edit.json()["files"], edit.text

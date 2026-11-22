@@ -18,7 +18,7 @@ from feedbax.checkpoint_coordinates import MAX_CHECKPOINT_COORDINATE
 from feedbax.contracts import request_identity
 from feedbax.contracts._request_codec import same_typed_value
 from feedbax.contracts.analysis_document import AnalyzeDatasetInput, AnalyzeInput, AnalyzeModelInput, AnalyzeTaskInput
-from feedbax.contracts.base import sha256_bytes
+from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.expression_values import Problem, ValueBase
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, FigureDocument, PlotlyFigurePort
@@ -38,6 +38,8 @@ from feedbax.contracts.project import (
     DifferenceNotApplied, Differences, Document, InlineBase, Payload, Project, RootDocument, Step, StepBase, StepKind,
     apply_differences, base_chain, diff, json_pointer_parts, nearest_shared_base,
 )
+from feedbax.contracts.run_rule import RuleRefusal
+from feedbax.expression_text import RuleBest
 from feedbax.contracts.project_inputs import (
     BarrierCheckpoint,
     BatchCheckpoint,
@@ -56,7 +58,6 @@ from feedbax.contracts.project_inputs import (
     RunReference,
     SelectedRow,
     StepReference,
-    SubsetSelectionError,
     SubsetTerms,
     TaskDocumentReference,
     producer_member_key,
@@ -91,10 +92,11 @@ from feedbax.contracts.project_sweep import (
     SetAxis,
     Sweep,
     SweepCoordinate,
+    SweepInputCoordinate,
     SweepExpansionCode,
     SweepExpansionError,
     SweepInputMember,
-    axis_values,
+    axis_coordinates,
     checkpoint_rule_write,
     coordinate_text,
     expand_sweep,
@@ -190,6 +192,8 @@ class PlannedSubset:
     document: str | None
     rank_groups: tuple[PlannedRankGroup, ...] = ()
     source: SubsetSource | None = None
+    best: RuleBest | None = None
+    """The rule's lowest or highest term, which ranks the members once they have run."""
 
     @property
     def ranks(self) -> tuple[str, ...]:
@@ -268,7 +272,7 @@ class PlannedInput:
     """The authored selection that chose this member."""
     named: Mapping[str, LabelName] = field(default_factory=dict)
     """What the member's step-valued labels name. The request identifies each by content (`_identified`)."""
-    best_path: str = field(default="inputs.subject.where.best", compare=False)
+    best_path: str = field(default="inputs.subject.where.rule", compare=False)
     """Where a ranked member's Best is authored: its role's, or its list item's."""
 
     @property
@@ -374,7 +378,7 @@ class PlannedRow:
     axis_keys: Mapping[str, str] = field(default_factory=dict, kw_only=True)
     """Each axis of the row's sweep and its value id there, or for an input axis the member key, which an address's
     selector matches."""
-    input_axes: Mapping[str, SweepCoordinate] = field(default_factory=dict, kw_only=True)
+    input_axes: Mapping[str, SweepInputCoordinate] = field(default_factory=dict, kw_only=True)
     """Each input axis's member on this row; ``axes`` terms select it by its key."""
     document_ids: Mapping[str, str] = field(default_factory=dict, kw_only=True)
     document_uses: frozenset[str] = field(default=frozenset(), kw_only=True)
@@ -668,6 +672,26 @@ class ProjectPlan:
         )
 
 
+class InputProducer(StrictModel):
+    """The step whose rows an input's selections read, and the product they read of each row."""
+
+    kind: StepKind
+    product: str
+    operation_outputs: bool
+    """Whether a selection may instead name an Analyze operation's dataset product, read from the card that holds it."""
+
+
+class InputRole(StrictModel):
+    """A step input as the planner resolves it: whether it is required, whether it takes a list of selections, the
+    producer its selections read, the documents it may read instead, and whether its checkpoint may be a finite set."""
+
+    required: bool
+    gathers: bool
+    producer: InputProducer | None
+    documents: list[Literal["model", "task"]]
+    checkpoint_sets: bool
+
+
 @dataclass(frozen=True)
 class _Role:
     name: str
@@ -678,13 +702,54 @@ class _Role:
     """Whether the role takes a list of selections."""
     operation_outputs: bool = False
     """Whether a selection may instead name an Analyze operation's dataset product, read from the card that holds it."""
+    documents: tuple[Literal["model", "task"], ...] = ()
+    """The documents the role may read instead of a step's rows."""
+    checkpoint_sets: bool = False
+    """Whether a selection's checkpoint may name a finite set of updates, each a row of the reading step."""
+
+    @property
+    def entry(self) -> InputRole:
+        return InputRole(
+            required=self.required, gathers=self.gathers,
+            producer=InputProducer(
+                kind=self.producer_kind, product=self.product_role, operation_outputs=self.operation_outputs,
+            ),
+            documents=list(self.documents), checkpoint_sets=self.checkpoint_sets,
+        )
 
 
 _ROLES = {
     "train": _Role("checkpoint", False, "train", "checkpoint"),
-    "evaluate": _Role("subject", True, "train", "checkpoint", gathers=True),
+    "evaluate": _Role("subject", True, "train", "checkpoint", gathers=True, documents=("model",), checkpoint_sets=True),
 }
+_ANALYZE_TASK_ROLE = InputRole(required=True, gathers=False, producer=None, documents=["task"], checkpoint_sets=False)
+
+
+def _analyze_role(name: str, declaration: AnalyzeInput) -> _Role | None:
+    """The role an Analyze document's input declares; a Task input reads only a Task document and has none."""
+    match declaration:
+        case AnalyzeModelInput():
+            return _Role(name, True, "train", "checkpoint", documents=("model",))
+        case AnalyzeDatasetInput():
+            return _Role(name, True, "evaluate", "states", gathers=True, operation_outputs=True)
+        case AnalyzeTaskInput():
+            return None
+
+
+def step_input_roles() -> dict[str, dict[str, InputRole]]:
+    """Each step kind's inputs by name, as the planner resolves them."""
+    return {kind: {role.name: role.entry} for kind, role in _ROLES.items()}
+
+
+def analyze_input_roles() -> dict[str, InputRole]:
+    """The input an Analyze document's declaration of each kind gives its step."""
+    roles = {}
+    for kind in ("model", "dataset", "task"):
+        role = _analyze_role(kind, _ANALYZE_INPUT.validate_python({"kind": kind}))
+        roles[kind] = role.entry if role is not None else _ANALYZE_TASK_ROLE
+    return roles
 _ANALYZE_INPUTS = TypeAdapter(dict[ProjectName, AnalyzeInput])
+_ANALYZE_INPUT: TypeAdapter[AnalyzeInput] = TypeAdapter(AnalyzeInput)
 DOCUMENTS: TypeAdapter[dict[str, Document]] = TypeAdapter(dict[str, Document])
 
 type _CompiledRun = PlannedRun | PlannedAnalyzeRun
@@ -2685,7 +2750,7 @@ class _Compiler:
         if kind == "analyze":
             return self.compile_analyze_step(variant, name, template, active)
         assert role is not None
-        initial = kind == "evaluate" and isinstance(template.inputs.get("subject"), InitialModelReference)
+        initial = "model" in role.documents and isinstance(template.inputs.get(role.name), InitialModelReference)
         roles = {"subject", "task", "objective"} if initial else {role.name}
         extra_roles = sorted(template.inputs.keys() - roles)
         if extra_roles:
@@ -3081,9 +3146,8 @@ class _Compiler:
                 ):
                     problem(f"{path}.checkpoint", "Select a positive completed Train update.")
                     return ()
-                role = _Role(name_of_role, True, "train", "checkpoint")
-            else:
-                role = _Role(name_of_role, True, "evaluate", "states", gathers=True, operation_outputs=True)
+            role = _analyze_role(name_of_role, declaration)
+            assert role is not None
             resolved = self.select_input(variant, name, template, role, active)
             if isinstance(resolved, ProjectDiagnostic):
                 self.diagnostics.append(replace(resolved, variant=variant))
@@ -3197,14 +3261,6 @@ class _Compiler:
         subset: PlannedSubset, reference: StepReference, at: str,
     ) -> tuple[_Members, dict[str, str], PlannedSubset] | ProjectDiagnostic:
         path = f"{at}.where"
-        terms = subset.terms
-        if terms.when is not None:
-            return ProjectDiagnostic(
-                ResolutionCode.BAD_REFERENCE, f"{path}.when",
-                "When requires a many-valued input and cannot supply an input axis.", name,
-            )
-        best = terms.best
-        assert best is not None
         if role.name != "subject":
             reason = "Best currently binds saved Evaluate subjects."
         elif reference.checkpoint not in (None, "last") or (
@@ -3212,15 +3268,16 @@ class _Compiler:
         ):
             reason = "Best requires the selected Train's last checkpoint."
         else:
-            return self.rank_groups(name, template, role, members, subset, reference, f"{path}.best")
-        return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, f"{path}.best", reason, name)
+            return self.rank_groups(name, template, role, members, subset, reference, f"{path}.rule")
+        return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, f"{path}.rule", reason, name)
 
     def rank_groups(
         self, name: str, template: StepComposition, role: _Role, members: _Members, subset: PlannedSubset,
         reference: StepReference, path: str,
     ) -> tuple[_Members, dict[str, str], PlannedSubset] | ProjectDiagnostic:
-        best = subset.terms.best
+        best = subset.best
         assert best is not None
+        written = subset.terms.rule[best.span.start:best.span.end]
         source = LabelName(reference.step, self.variants[members[0][1].key.variant].steps[reference.step].label) \
             if members else None
 
@@ -3229,7 +3286,7 @@ class _Compiler:
 
         axes = tuple(sorted(best.per))
         if len(set(axes)) != len(axes):
-            return refusal("Best group axes must be distinct.", f"{path}.per")
+            return refusal(f"{written}: per names an axis twice.")
         if not members:
             return refusal("Best requires at least one candidate.")
         groups: dict[tuple[str, ...], list[tuple[PlannedInput, PlannedRow]]] = {}
@@ -3237,33 +3294,29 @@ class _Compiler:
             assert producer is not None
             for axis in axes:
                 if axis not in producer.coordinates:
-                    return refusal(
-                        f"Best group axis {axis!r} is missing on {producer.key.variant}/{producer.key.row}.",
-                        f"{path}.per",
-                    )
+                    return refusal(f"{written}: {axis} is missing on {producer.key.variant}/{producer.key.row}.")
             group = tuple(producer.coordinates[axis].value_id for axis in axes)
             grouped = groups.setdefault(group, [])
             if grouped and any(
                 not same_typed_value(producer.coordinates[axis].value, grouped[0][1].coordinates[axis].value)
                 for axis in axes
             ):
-                return refusal(f"Best group {dict(zip(axes, group, strict=True))!r} has conflicting axis values.",
-                               f"{path}.per")
+                return refusal(f"{written}: group {dict(zip(axes, group, strict=True))!r} has conflicting axis values.")
             grouped.append((item, producer))
-        if best.k * len(groups) > 1 and not (
+        if best.count * len(groups) > 1 and not (
             template.sweep is not None and any(
                 isinstance(axis, InputAxis) and axis.input == role.name for axis in template.sweep.axes.values()
             )
         ):
-            return refusal("Best with more than one rank requires a subject input axis.")
+            return refusal(f"{written}: more than one rank requires a subject input axis.")
 
         ranked = []
         planned_groups = []
         for group, grouped in groups.items():
             coordinates = dict(zip(axes, group, strict=True))
-            if best.k > len(grouped):
+            if best.count > len(grouped):
                 target = f" in group {coordinates!r}" if coordinates else ""
-                return refusal(f"Best requests {best.k} ranks from {len(grouped)} candidates{target}.")
+                return refusal(f"{written}: asks for {best.count} of {len(grouped)} runs{target}.")
             candidates = []
             keys = []
             waiting = next((producer.key for _, producer in grouped if self.cannot_run(producer.key)), None)
@@ -3276,10 +3329,10 @@ class _Compiler:
                         reference=ProductRef(request_id=producer.request_id, role=role.product_role, select=LastMember()),
                     ))
             ranks = []
-            for position in range(1, best.k + 1):
+            for position in range(1, best.count + 1):
                 member: InputMember | PendingMember = (
                     InputMember(key=best_rank_key(position, coordinates), reference=BestRank(
-                        metric=best.by, order=best.order, count=best.k, rank=position, candidates=tuple(candidates),
+                        metric=best.metric, order=best.order, count=best.count, rank=position, candidates=tuple(candidates),
                         group=coordinates,
                     )) if waiting is None else PendingMember(
                         key=best_rank_key(position, coordinates),
@@ -3296,7 +3349,7 @@ class _Compiler:
         return tuple(ranked), {}, replace(subset, rank_groups=tuple(planned_groups))
 
     def subset_origin(
-        self, variant: str, step: str, at: str, document: str | None, term: Literal["best", "rows"],
+        self, variant: str, step: str, at: str, document: str | None, term: Literal["rule", "rows"],
     ) -> ValueSource:
         """Where the subset terms of the selection at ``at`` (``inputs.<role>`` or ``inputs.<role>.<i>``) are authored."""
         if document is not None:
@@ -3610,14 +3663,15 @@ class _Compiler:
                 )
             terms = SubsetTerms(rows=selected)
         try:
-            keyed_runs = select_step_rows(
+            keyed_runs, best = select_step_rows(
                 terms,
                 runs,
                 address=lambda run: (run.key.variant, run.key.row),
                 member_key=member_key,
-                coordinates=lambda run: axis_values(run.coordinates, run.input_axes),
+                coordinates=lambda run: axis_coordinates(run.coordinates, run.input_axes),
+                producer=self.variants[variants[0]].steps[reference.step].label or reference.step,
             )
-        except SubsetSelectionError as error:
+        except RuleRefusal as error:
             return ProjectDiagnostic(
                 ResolutionCode.BAD_REFERENCE, f"{path}.where.{error.path}", error.detail, name
             )
@@ -3633,7 +3687,7 @@ class _Compiler:
                 name,
             )
         rule = None if role.name == "subject" else reference.checkpoint
-        if isinstance(rule, (CheckpointBatches, CheckpointCadence, UpdateCadence, tuple)) and role.name != "subject":
+        if isinstance(rule, (CheckpointBatches, CheckpointCadence, UpdateCadence, tuple)) and not role.checkpoint_sets:
             return ProjectDiagnostic(
                 ResolutionCode.BAD_REFERENCE, f"{path}.checkpoint",
                 "finite checkpoint sets require an Evaluate subject", name,
@@ -3706,9 +3760,9 @@ class _Compiler:
                 ))
         source = None
         if terms is not None and role.name in {"subject", "states"}:
-            if terms.best is not None and role.name == "subject":
+            if best is not None and role.name == "subject":
                 source = SubsetSource(
-                    self.subset_origin(variant, name, path, subset_document, "best"), reference.step,
+                    self.subset_origin(variant, name, path, subset_document, "rule"), reference.step,
                 )
             elif reference.row is None and terms.rows is not None:
                 source = SubsetSource(
@@ -3720,11 +3774,12 @@ class _Compiler:
                 deepcopy(terms), candidate_count,
                 tuple(run.key for _, run in keyed_runs), subset_document,
                 source=source,
+                best=best,
             )
             if terms is not None
             else None
         )
-        if terms is not None and (terms.best is not None or terms.when is not None):
+        if subset is not None and best is not None:
             return self.rank_input(name, template, role, tuple(members), subset, reference, path)
         return tuple(members), {}, subset
 

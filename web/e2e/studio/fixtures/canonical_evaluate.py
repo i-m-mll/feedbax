@@ -164,7 +164,7 @@ def task_pivot_files():
     evaluate["base"]["inline"]["params"]["variation"] = {"task": {
         "op": "replace", "path": "task", "value": {"document": "short-task"},
     }}
-    evaluate["inputs"]["subject"]["where"] = {"axes": {"learning-rate": ["Slow", "Fast"], "seed": ["one"]}}
+    evaluate["inputs"]["subject"]["where"] = {"rule": "learning-rate=Slow,Fast seed=one"}
     evaluate["sweep"] = {"axes": {
         "subject": {"input": "subject"},
         "task": {"values": {

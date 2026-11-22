@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from feedbax.contracts.manifest import OverridePatch
-from feedbax.contracts.matrix_core import apply_override_patch_copy
+from feedbax.contracts.matrix_core import MirrorList, apply_override_patch_copy
 
 SourceKind = Literal["document", "step", "sweep_value", "exception", "variant", "upstream"]
 type Path = tuple[str, ...]
@@ -41,9 +41,11 @@ class SourceObject(dict[str, Any]):
         self.source = source
 
 
-class SourceList(list[Any]):
-    def __init__(self, source: ValueSource | None, children: Iterator[Any]):
-        super().__init__(children)
+class SourceList(MirrorList):
+    """The origins of a list's members; ``mirrored`` is the list, whose ids name them."""
+
+    def __init__(self, source: ValueSource | None, children: Iterator[Any], mirrored: list[Any]):
+        super().__init__(children, mirrored)
         self.source = source
 
 
@@ -70,6 +72,7 @@ def source_shape(value: Any, source: ValueSource | None, override: Any = None) -
                 )
                 for i, item in enumerate(value)
             ),
+            value,
         )
     return getattr(override, "source", None) or source
 
@@ -105,6 +108,7 @@ def changed_sources(before: Any, after: Any, shape: Any, source: ValueSource) ->
                 changed_sources(prior, value, source_at(shape, (str(index),)), source)
                 for index, (prior, value) in enumerate(zip(before, after, strict=True))
             ),
+            after,
         )
     return source_shape(after, source)
 

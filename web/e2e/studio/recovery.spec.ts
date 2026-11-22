@@ -69,6 +69,14 @@ test('a page loaded without the service shows its regions loading and the reason
   await expect(footer.getByRole('alert')).toHaveCount(0);
 });
 
+// Catches a test whose page carries the machine's live Mandible toolbar, or a test build stamped for a walkthrough.
+test('a test server serves its pages without the notes toolbar or source stamps', async ({ page, studio, request }) => {
+  expect(await (await request.get(studio.origin + '/')).text()).not.toContain('/embed/notes.js');
+  await page.goto(studio.origin + '/');
+  await expect(page.locator('#root > *').first()).toBeAttached();
+  await expect(page.locator('[data-source]')).toHaveCount(0);
+});
+
 test('an endpoint answering with an error fails its own region only', async ({ page, studio, request }) => {
   test.setTimeout(50_000);
   const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'), studio.origin);
@@ -116,16 +124,18 @@ test('a mounted Model render failure reports to the service and retries only its
   await expect(table).toBeVisible();
   await row.getByRole('button').click();
   await expect(inspector.getByRole('heading')).toBeVisible();
-  await runs.getByRole('button', { name: 'Split Details', exact: true }).click();
   await page.evaluate(() => { document.documentElement.dataset.failModelObserve = 'true'; });
-  const report = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/studio/render-failure'
-    && response.request().postDataJSON()?.detail === message);
+  const report = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/studio/errors'
+    && response.request().postDataJSON()?.message === message);
   void report.catch(() => {});
-  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  // Scene has nothing to show for this Model, so the split opens Model, the first other view with content.
+  await runs.getByRole('button', { name: 'Split Details', exact: true }).click();
   const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
   await expect(model.getByRole('alert')).toHaveText('Model failed to render');
   expect((await report).status()).toBe(204);
-  await expect.poll(studio.serviceLog).toContain(`Studio render failure region='model' type='Error' detail='${message}'`);
+  const ref = await model.getByRole('alert').getAttribute('data-note-ref');
+  expect(ref).toMatch(/^[0-9a-f]{8}$/);
+  await expect.poll(studio.serviceLog).toMatch(new RegExp(`Studio error ${ref} .*"kind":"render".*"region":"model"`));
   await page.evaluate(() => { delete document.documentElement.dataset.failModelObserve; });
 
   await runs.focus();
@@ -137,7 +147,7 @@ test('a mounted Model render failure reports to the service and retries only its
   await expect(activity.getByRole('list', { name: 'Runs', exact: true })).toBeVisible();
   await activity.getByRole('button', { name: 'Close', exact: true }).click();
 
-  const failedReports = () => studio.serviceLog().split(`detail='${message}'`).length - 1;
+  const failedReports = () => studio.serviceLog().split(`"message":"${message}"`).length - 1;
   expect(failedReports()).toBe(1);
   await model.getByRole('button', { name: 'Retry', exact: true }).press('Enter');
   await expect(model).toBeFocused();

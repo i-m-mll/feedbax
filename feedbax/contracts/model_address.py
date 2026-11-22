@@ -9,6 +9,7 @@ from pydantic import ConfigDict, Field, StrictStr, StringConstraints
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.strict_json import strict_model_validate_json
 
 ModelElementId = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_-]+$")]
 FieldIndex = Annotated[int, Field(strict=True, ge=0, le=2**53 - 1)]
@@ -183,7 +184,7 @@ class ModelAddress(StrictModel):
 
     @classmethod
     def from_text(cls, text: str) -> ModelAddress:
-        address = cls.model_validate_json(text)
+        address = strict_model_validate_json(cls, text)
         if address.to_text() != text:
             raise ValueError("Model address text must be canonical JSON")
         return address

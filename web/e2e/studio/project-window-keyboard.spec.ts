@@ -239,7 +239,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   expect(createdEvaluate.status(), await createdEvaluate.text()).toBe(201);
   const { snapshot: evaluated }: StudioProjectDocument = await createdEvaluate.json();
   expect(evaluated.project.steps!.evaluate.inputs?.subject).toEqual({
-    step: 'train', checkpoint: 'last', where: { axes: { 'learning-rate': [selected.coordinates['learning-rate'].value_id] } },
+    step: 'train', checkpoint: 'last', where: { rule: `learning-rate=${selected.coordinates['learning-rate'].value}` },
   });
   await expect(page.getByRole('complementary', { name: 'Inspector', exact: true })).toContainText('1 of 3');
   const projection = await plan(evaluated.revision);
@@ -609,9 +609,7 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   expect(selected.map(({ coordinates }) => coordinates['learning-rate'].value)).toEqual([0.001, 0.003]);
   expect(authored.project.steps?.[child]).toMatchObject({
     base: { step: 'train' },
-    inputs: { checkpoint: { step: 'train', checkpoint: 'last', where: {
-      axes: { 'learning-rate': selected.map(({ coordinates }) => coordinates['learning-rate'].value_id) },
-    } } },
+    inputs: { checkpoint: { step: 'train', checkpoint: 'last', where: { rule: 'learning-rate=0.001,0.003' } } },
   });
   expect(plan.rows.filter(({ key }) => key.step === child).map(({ key }) => key.row)).toEqual(sourceKeys.map(({ row }) => row));
 

@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import base64
-import json
 import re
 import zlib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.host import watchdog
 from feedbax.host.protocol import JsonObject
 from feedbax.orchestration import runpod_venue_cutoff as guard
@@ -88,6 +88,6 @@ class NativeRunPodCutoff:
         expected: JsonObject = {
             "version": 1, "pod_id": resource.id, "intent": launch.intent, "ends_at_ms": launch.ends_at_ms,
         }
-        if json.loads(raw) != expected:
+        if strict_json_loads(raw) != expected:
             raise SessionError("RunPod venue did not prove the exact pre-SSH cutoff.")
         return expected

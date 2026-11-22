@@ -3,7 +3,7 @@ import type {
   StudioPlanReviewSource,
 } from '@/generated/studioContracts';
 import { studioEvaluateValueSource, studioName, studioPlanValueSource, studioReason } from '@/components/activity/studioVocabulary';
-import { withReset, type ChangeMark, type FieldModel } from '../fieldModel';
+import { evaluateChange, withReset, type ChangeMark, type FieldModel } from '../fieldModel';
 
 export type ProjectedEdit = FieldTextEdit | FieldKindEdit | FieldNameEdit;
 
@@ -29,20 +29,19 @@ export interface FieldViewOptions {
   planSources?: readonly StudioPlanReviewSource[];
   exceptions?: ExceptionMentions;
   source?: StudioEvaluateValueSource;
-  /** The changed mark, when the value is a difference of the shown document. */
+  /** The changed mark, when the value is a difference of the shown document. The selected runs' other value takes its place. */
   changed?: ChangeMark;
 }
 
 function origin({ planSources, exceptions, source, changed }: FieldViewOptions) {
-  if (!planSources?.length) return { text: changed?.text ?? (source && studioEvaluateValueSource(source)) };
+  if (!planSources?.length) return { text: source?.kind === 'trained' && !changed ? studioEvaluateValueSource(source) : undefined };
   const mentions = planSources.map((item) => item.kind === 'exception' ? exceptions?.(item) : undefined);
   const named = new Map(planSources.flatMap((item, index) => {
     const mention = mentions[index];
     return mention ? [[JSON.stringify([item.step, item.variant, item.name]), mention] as const] : [];
   }));
   return {
-    text: [...new Set([...changed ? [changed.text] : [],
-      ...planSources.map((item, index) => studioPlanValueSource(item, mentions[index]?.runs))])].join(', '),
+    text: [...new Set(planSources.map((item, index) => studioPlanValueSource(item, mentions[index]?.runs)))].join(', '),
     reveal: named.size === 1 ? [...named.values()][0].reveal : undefined,
   };
 }
@@ -52,7 +51,6 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
   const { label, sweep, unit } = field;
   const { rowSelection = false, multipleRows = false } = options;
   const project = options.commit;
-  const reset = options.changed?.reset;
   const commit = withReset(project && ((edit) => edit.kind === 'add_member' || edit.kind === 'remove_member' || edit.kind === 'reset'
     ? Promise.resolve(undefined) : project(edit.kind === 'set' ? { kind: 'text', text: String(edit.value) } : edit)), options.changed);
   const readOnly = !commit;
@@ -99,12 +97,15 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
   /** The values the selected runs hold, outside a sweep of the field. */
   const held = !sweep && field.mixed ? field.members ?? [] : [];
   const source = origin(options);
+  const text = sweep ? authored : field.mixed || rowSelection && multipleRows ? null : rowSelection ? effective ?? authored : authored;
+  const change: ChangeMark | undefined = effective === undefined ? options.changed ?? evaluateChange(options.source)
+    : { from: rowSelection && !sweep ? { kind: 'value', text: authored } : { kind: 'selected', text: effective } };
   return {
     id: options.id,
     label,
     type: { kind: field.site.site.expected.base === 'integer' ? 'integer' : 'number' },
     unit: unit ?? undefined,
-    text: sweep ? authored : field.mixed || rowSelection && multipleRows ? null : rowSelection ? effective ?? authored : authored,
+    text,
     kind,
     kinds: field.site.kinds.map((value) => ({
       kind: value,
@@ -120,10 +121,11 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
     } : held.length ? { values: held.map(({ id, value }) => ({ id, text: String(value), selected: false })) } : undefined,
     parts,
     canList: !!sweep && sweep.kind !== 'list' && sweep.can_list && field.can_change_axis,
-    differs: effective ?? undefined,
     origin: [field.conversion, source.text].filter(Boolean).join(' · ') || undefined,
-    changed: !!reset,
+    change,
     revealOrigin: source.reveal,
+    structure: field.structure ?? undefined,
+    finest: field.site.site.finest,
     names: field.site.site.names ?? [],
     functions: field.site.functions,
     commit,

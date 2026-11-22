@@ -1,4 +1,4 @@
-import { asApiRequestError, requestJson } from '@/api/request';
+import { asApiRequestError, requestJson, sentBody } from '@/api/request';
 import {
   parseContract,
   type ContractTypeMap,
@@ -35,18 +35,7 @@ async function readFolder<K extends 'StudioProjectSnapshot' | 'StudioProjectDocu
     // Keep authored JSON as received. Zod's reconstructed records can discard own keys such as "__proto__".
     return response as ContractTypeMap[K];
   } catch (error) {
-    throw asApiRequestError(error, path, 'The project response did not match its contract');
-  }
-}
-
-function mutationBody<K extends 'StudioProjectPatch' | 'StudioProjectPatchBatch' | 'StudioPresentationWrite' | 'StudioProjectRename' | 'StudioProjectReplay' | 'StudioProjectCreateFile' | 'StudioMemberCommand' | ModelRequest>(
-  contract: K, body: ContractTypeMap[K], path: string,
-) {
-  try {
-    parseContract(contract, body);
-    return JSON.stringify(body);
-  } catch (error) {
-    throw asApiRequestError(error, path, 'The project write did not match its contract');
+    throw asApiRequestError(error, path);
   }
 }
 
@@ -65,14 +54,14 @@ export function readProjectFolder(id: string, signal?: AbortSignal) {
 export function renameProjectFolder(id: string, body: StudioProjectRename, signal?: AbortSignal) {
   const path = `${projectPath(id)}/rename`;
   return readFolder('StudioProjectDocument', id, path, {
-    method: 'POST', body: mutationBody('StudioProjectRename', body, path), signal,
+    method: 'POST', body: sentBody('StudioProjectRename', body, path), signal,
   });
 }
 
 export function createProjectFile(id: string, body: StudioProjectCreateFile, signal?: AbortSignal) {
   const path = `${projectPath(id)}/files`;
   return readFolder('StudioProjectDocument', id, path, {
-    method: 'POST', body: mutationBody('StudioProjectCreateFile', body, path), signal,
+    method: 'POST', body: sentBody('StudioProjectCreateFile', body, path), signal,
   });
 }
 
@@ -80,33 +69,33 @@ export async function commandProjectMember(id: string, body: StudioMemberCommand
   const path = `${projectPath(id)}/members/command`;
   try {
     const response = await requestJson(path, {
-      method: 'POST', body: mutationBody('StudioMemberCommand', body, path), signal, cache: 'no-store',
+      method: 'POST', body: sentBody('StudioMemberCommand', body, path), signal, cache: 'no-store',
     });
     const result = parseContract('StudioMemberCommandResult', response);
     if (result.snapshot.project_id !== id) throw new Error('Response project ID does not match the folder');
     // Keep authored JSON as received, as readFolder does.
     return response as typeof result;
   } catch (error) {
-    throw asApiRequestError(error, path, 'The member command response did not match its contract');
+    throw asApiRequestError(error, path);
   }
 }
 
 export async function patchProjectFolder(id: string, body: StudioProjectPatch | StudioProjectPatchBatch, signal?: AbortSignal) {
   const path = projectPath(id);
-  const payload = 'files' in body ? mutationBody('StudioProjectPatchBatch', body, path) : mutationBody('StudioProjectPatch', body, path);
+  const payload = 'files' in body ? sentBody('StudioProjectPatchBatch', body, path, 'PATCH') : sentBody('StudioProjectPatch', body, path, 'PATCH');
   return readFolder('StudioProjectSnapshot', id, path, { method: 'PATCH', body: payload, signal });
 }
 
 export function replayProjectHistory(id: string, body: StudioProjectReplay, signal?: AbortSignal) {
   const path = `${projectPath(id)}/history/replay`;
   return readFolder('StudioProjectSnapshot', id, path, {
-    method: 'POST', body: mutationBody('StudioProjectReplay', body, path), signal,
+    method: 'POST', body: sentBody('StudioProjectReplay', body, path), signal,
   });
 }
 
 export async function writeProjectPresentation(id: string, body: StudioPresentationWrite, signal?: AbortSignal) {
   const path = `${projectPath(id)}/presentation`;
-  return readFolder('StudioProjectSnapshot', id, path, { method: 'PUT', body: mutationBody('StudioPresentationWrite', body, path), signal });
+  return readFolder('StudioProjectSnapshot', id, path, { method: 'PUT', body: sentBody('StudioPresentationWrite', body, path, 'PUT'), signal });
 }
 
 type ModelRequest = 'ModelEditRequest' | 'ModelUndoRequest' | 'ModelConnectionReviewRequest' | 'ModelProjectionRequest' | 'ModelFieldRequest' | 'EvaluateModelRequest';
@@ -118,12 +107,12 @@ async function modelRequest<K extends ModelRequest, R extends ModelResponse>(
   const path = `${projectPath(id)}/model/${action}`;
   try {
     const raw = await requestJson(path, {
-      method: 'POST', body: mutationBody(request, body, path), signal, cache: 'no-store',
+      method: 'POST', body: sentBody(request, body, path), signal, cache: 'no-store',
     });
     parseContract(response, raw);
     return raw as ContractTypeMap[R];
   } catch (error) {
-    throw asApiRequestError(error, path, 'The Model response did not match its contract');
+    throw asApiRequestError(error, path);
   }
 }
 

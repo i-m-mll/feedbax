@@ -14,11 +14,15 @@ from pydantic import (
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.request_refs import CheckpointBatches, CheckpointCadence, Name, UpdateRule
+from feedbax.contracts.run_rule import RuleRefusal, SweepCoordinate, choose, parse
+from feedbax.expression_text import RuleBest
 from feedbax.contracts.selection import ManifestPredicate
 
 # These names serve as file stems and path segments in project-level patches.
 ProjectName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")]
 RowKey = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_][A-Za-z0-9_=-]*$")]
+AxisValueId = Name
+"""An axis value's ID: a value's name, or an input axis's member key (``seed=0``, ``variant/row``)."""
 NonemptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 type Pointer = Annotated[str, StringConstraints(pattern=r"^(?:/(?:[^~/]|~[01])*)*$")]
 
@@ -50,19 +54,6 @@ type DocumentInputReference = Annotated[
 ]
 
 
-class Best(StrictModel):
-    by: NonemptyText
-    k: int = Field(ge=1)
-    order: Literal["min", "max"] = "max"
-    per: list[ProjectName] = Field(default_factory=list)
-
-
-class When(StrictModel):
-    metric: NonemptyText
-    op: Literal["lt", "le", "eq", "ne", "ge", "gt"]
-    value: float
-
-
 class SelectedRow(StrictModel):
     """A saved input-member key and its exact producer address within a step."""
 
@@ -75,20 +66,16 @@ def producer_member_key(variant: str, row: str, *, gathers_variants: bool) -> st
     return f"{variant}/{row}" if gathers_variants else row
 
 
-class SelectionTerms(StrictModel):
-    axes: dict[ProjectName, list[Name]] = Field(default_factory=dict)
-    """Each axis's value IDs: a value's name, or an input axis's member key (``train/rank-1``)."""
-    best: Best | None = None
-    when: When | None = None
-
-
 def _require_row_list(rows: object) -> object:
     if rows is None:
         raise ValueError("rows must be a list when supplied")
     return rows
 
 
-class SubsetTerms(SelectionTerms):
+class SubsetTerms(StrictModel):
+    """Which runs of a step a selection reads: its run rule as written, and the runs To Rows pinned."""
+
+    rule: str = ""
     rows: list[SelectedRow] | None = Field(default=None, exclude_if=lambda rows: rows is None)
 
     _require_rows = field_validator(
@@ -103,7 +90,10 @@ class SubsetTerms(SelectionTerms):
         return rows
 
 
-class SweepExceptionTerms(SelectionTerms):
+class SweepExceptionTerms(StrictModel):
+    """Which rows of a sweep an exception applies to: a run rule on the step's axes, within ``rows`` when given."""
+
+    rule: str = ""
     rows: list[RowKey] | None = Field(default=None, exclude_if=lambda rows: rows is None)
 
     _require_rows = field_validator(
@@ -119,42 +109,35 @@ class NamedSubset(StrictModel):
     subset: ProjectName
 
 
-class SubsetSelectionError(ValueError):
-    """A refusal at a path relative to the subset terms."""
-
-    def __init__(self, path: str, detail: str) -> None:
-        self.path = path
-        self.detail = detail
-        super().__init__(f"{path}: {detail}" if path else detail)
-
-
 def select_step_rows[Row](
     terms: SubsetTerms | None,
     rows: Iterable[Row],
     *,
     address: Callable[[Row], tuple[str, str]],
     member_key: Callable[[Row], str],
-    coordinates: Callable[[Row], Mapping[str, str]],
-) -> tuple[tuple[str, Row], ...]:
-    """Select keyed addresses in saved order or select axis matches in Plan order."""
+    coordinates: Callable[[Row], Mapping[str, SweepCoordinate]],
+    producer: str,
+) -> tuple[tuple[tuple[str, Row], ...], RuleBest | None]:
+    """The keyed rows the rule chooses, in Plan order or in pinned order, and its Best term while it waits."""
     members = tuple(rows)
     if terms is None:
-        return tuple((member_key(row), row) for row in members)
+        return tuple((member_key(row), row) for row in members), None
     if isinstance(terms, StoreSubset):
-        raise SubsetSelectionError("query", "store queries cannot select static step rows")
-    matches = _axis_matches(terms.axes, members, coordinates=coordinates)
+        raise RuleRefusal("query", "store queries cannot select static step rows")
+    chosen = choose(terms.rule, members, coordinates=coordinates, producer=producer)
     if terms.rows is None:
-        return tuple((member_key(row), row) for row, match in zip(members, matches, strict=True) if match)
+        return tuple((member_key(row), row) for row in chosen.rows), chosen.best
+    picked = set(map(id, chosen.rows))
     indices = {address(row): index for index, row in enumerate(members)}
     selected = []
     for row in terms.rows:
         where = row.variant, row.row
         if where not in indices:
-            raise SubsetSelectionError("rows", f"unknown row address {row.variant}/{row.row}")
-        index = indices[where]
-        if matches[index]:
-            selected.append((row.key, members[index]))
-    return tuple(selected)
+            raise RuleRefusal("rows", f"unknown row address {row.variant}/{row.row}")
+        member = members[indices[where]]
+        if id(member) in picked:
+            selected.append((row.key, member))
+    return tuple(selected), None
 
 
 def select_sweep_exception_rows[Row](
@@ -162,63 +145,30 @@ def select_sweep_exception_rows[Row](
     rows: Iterable[Row],
     *,
     key: Callable[[Row], str],
-    coordinates: Callable[[Row], Mapping[str, str]],
+    coordinates: Callable[[Row], Mapping[str, SweepCoordinate]],
+    producer: str,
 ) -> tuple[Row, ...]:
-    """Intersect local row IDs and axis terms while retaining sweep order."""
-    for measure in ("best", "when"):
-        if getattr(terms, measure) is not None:
-            raise SubsetSelectionError(measure, "measure terms require bound results")
+    """The rows among ``rows`` (when given) that the rule's axis terms choose, in sweep order."""
     members = tuple(rows)
     keys = tuple(map(key, members))
     if terms.rows is not None:
         selected = set(terms.rows)
         missing = sorted(selected.difference(keys))
         if missing:
-            raise SubsetSelectionError("rows", f"unknown row IDs {missing!r}")
+            raise RuleRefusal("rows", f"unknown row IDs {missing!r}")
     else:
         selected = set(keys)
-    matches = _axis_matches(terms.axes, members, coordinates=coordinates)
-    return tuple(
-        row for row, row_id, match in zip(members, keys, matches, strict=True)
-        if match and row_id in selected
-    )
-
-
-def _axis_matches[Row](
-    axes: Mapping[str, list[str]],
-    members: tuple[Row, ...],
-    *,
-    coordinates: Callable[[Row], Mapping[str, str]],
-) -> tuple[bool, ...]:
-    if not axes:
-        return (True,) * len(members)
-    member_coordinates = tuple(map(coordinates, members))
-    allowed = {axis: set(values) for axis, values in axes.items()}
-    known: dict[str, set[str]] = {}
-    for coordinate in member_coordinates:
-        for axis, value in coordinate.items():
-            if axis in allowed:
-                known.setdefault(axis, set()).add(value)
-    for axis, values in allowed.items():
-        if axis not in known:
-            raise SubsetSelectionError(f"axes.{axis}", f"unknown axis ID {axis!r}")
-        missing = sorted(values - known[axis])
-        if missing:
-            raise SubsetSelectionError(f"axes.{axis}", f"unknown value IDs {missing!r}")
-
-    return tuple(
-        all(coordinate.get(axis) in values for axis, values in allowed.items())
-        for coordinate in member_coordinates
-    )
+    chosen = set(map(id, choose(terms.rule, members, coordinates=coordinates, producer=producer, ranked=False).rows))
+    return tuple(row for row, row_id in zip(members, keys, strict=True) if id(row) in chosen and row_id in selected)
 
 
 def subset_to_rows(terms: SubsetTerms, bound_rows: Iterable[SelectedRow]) -> SubsetTerms:
-    """Replace a measured step subset with its exact keyed rows."""
+    """Pin a measured step subset to its exact keyed rows beside its rule."""
     if isinstance(terms, StoreSubset):
-        raise SubsetSelectionError("query", "store subsets do not bind step row IDs")
-    if terms.best is None and terms.when is None:
-        raise SubsetSelectionError("", "To Rows requires a measure term")
-    return SubsetTerms(rows=list(bound_rows))
+        raise RuleRefusal("query", "store subsets do not bind step row IDs")
+    if not any(isinstance(term, RuleBest) for term in parse(terms.rule)):
+        raise RuleRefusal("rule", "To Rows requires a lowest or highest term")
+    return SubsetTerms(rule=terms.rule, rows=list(bound_rows))
 
 
 class BestCheckpoint(StrictModel):

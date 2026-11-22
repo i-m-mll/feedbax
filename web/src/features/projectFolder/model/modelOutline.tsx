@@ -21,6 +21,8 @@ export interface OutlineInput {
   registry: Registry;
   attachmentName: (item: Attachment, address: ModelAddress) => string;
   trailing: (address: ModelAddress) => ReactNode;
+  /** Whether the element is drawn only because it was removed: its row is struck through. */
+  removed: (address: ModelAddress) => boolean;
 }
 
 /** The Model's elements as a tree: a composite holds its interior, a wire or port holds its attachments. */
@@ -34,14 +36,15 @@ function endName(owner: GraphOwner, end: ModelWire['source'] | ModelWire['target
   return `${component?.name ?? end.component}.${port?.name ?? end.port}`;
 }
 
-export function modelOutline({ model, effective, registry, attachmentName, trailing }: OutlineInput): ModelOutline {
+export function modelOutline({ model, effective, registry, attachmentName, trailing, removed }: OutlineInput): ModelOutline {
   const addresses = new Map<string, ModelAddress>();
   const parents = new Set<string>();
   const row = (address: ModelAddress, name: string, glyph: ReactNode, children: TreeNode[] = [], renamable = false): TreeNode => {
     const id = addressKey(address);
     addresses.set(id, address);
     if (children.length) parents.add(id);
-    return { id, name, glyph, children: children.length ? children : undefined, renamable, trailing: trailing(address) };
+    const struck = removed(address);
+    return { id, name, glyph, children: children.length ? children : undefined, renamable: renamable && !struck, struck, trailing: trailing(address) };
   };
   const attached = (owner: ModelAddress, list: readonly Attachment[] | undefined) => (list ?? []).map((item) => {
     const address = attachmentAddress(owner, item.id);

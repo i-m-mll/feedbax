@@ -49,10 +49,8 @@ export function StudioEvaluationAttemptDetails({ evaluation, onShowStep }: {
   </>;
 }
 
-export function StudioEvaluationResults({ evaluation, replayable, onReplay }: {
+export function StudioEvaluationResults({ evaluation, onReplay }: {
   evaluation: StudioSavedEvaluationRow;
-  /** Whether a replay can start: it needs the evaluation of the current plan, so it waits while an earlier one is shown. */
-  replayable: boolean;
   onReplay(update: number): void;
 }) {
   const series = evaluation.checkpoint_series;
@@ -75,7 +73,7 @@ export function StudioEvaluationResults({ evaluation, replayable, onReplay }: {
         <TableRowHeader className="font-normal tabular-nums">{update}</TableRowHeader>
         <TableCell>
           {sources.has(update) ? <Button variant="ghost" className="-ml-control-inline"
-            aria-label={studioReplayLabel(update)} disabled={!replayable}
+            aria-label={studioReplayLabel(update)}
             onClick={() => onReplay(update)}>{studioName('replay')}</Button>
             : gaps.get(update) === 'checkpoint_unavailable' ? studioReason('unavailable', studioName('checkpoint'))
               : studioCheckpointStatus(points.get(update) ?? 'requested')}

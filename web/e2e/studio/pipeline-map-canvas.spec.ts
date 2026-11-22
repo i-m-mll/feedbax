@@ -15,7 +15,7 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', { 
     second: { label: '2', patches: { 'seed': { value: 2 } } },
     third: { label: '3', patches: { 'seed': { value: 3 } } },
   } } } };
-  successor.step.inputs.checkpoint.where = { axes: { seed: ['first', 'third'] } };
+  successor.step.inputs.checkpoint.where = { rule: 'seed=first,third' };
   const { snapshot, projectPath } = await seedManagedProject(request, [model, task, objective, train, successor, unrelated]);
   const region = page.locator('[data-studio-focus-region="map"]:visible');
   const canvas = page.locator('[data-map-canvas]');

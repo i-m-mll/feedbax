@@ -45,6 +45,7 @@ from feedbax.contracts.request_specs import (
     RequestSpec,
     TrialDocuments,
 )
+from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.task_document import PythonTaskSelection
 
 _IDENTITY = "feedbax.identity.request.v1"
@@ -150,7 +151,7 @@ class RequestDocumentMemo:
 @cache
 def _identity_contract() -> dict[str, Any]:
     data = files("feedbax.contracts").joinpath("request_identity_contract.json").read_bytes()
-    return json.loads(data)
+    return strict_json_loads(data)
 
 
 def identity_contract() -> dict[str, Any]:
@@ -272,7 +273,7 @@ def _encode_spec_with_trial_documents(spec: dict[str, Any], trial: _InlineTrialD
 
 def decode_python_task_selection(selection: bytes) -> PythonTaskSelection:
     """Rehydrate a Python Task subtree captured by the local request encoder."""
-    spec = decode(json.loads(selection), PythonTaskSelection, _identity_contract()["fields"])
+    spec = decode(strict_json_loads(selection), PythonTaskSelection, _identity_contract()["fields"])
     return PythonTaskSelection.model_validate_json(json.dumps(spec))
 
 
@@ -373,7 +374,7 @@ def encode_request(
 
 
 def _read_object(data: bytes, *, nullable: bool = False) -> dict | None:
-    value = json.loads(data)
+    value = strict_json_loads(data)
     if value is None and nullable and data == b"null":
         return None
     if not isinstance(value, dict) or canonical_json_v2_bytes(value) != data:

@@ -22,7 +22,7 @@ const evaluation: StudioSavedEvaluationRow = {
 };
 const shown = { revision: 'before', rows: [], window_map: { evaluations: [evaluation] } } as unknown as Parameters<typeof focusedResult>[0];
 
-it('keeps the Results of the plan on screen while the current plan is read, pending and with Replay waiting', () => {
+it('keeps the Results of the plan on screen while the current plan is read, pending and with Replay available', () => {
   const runIds = new Set([savedRunId(key)]);
   render(<SavedResults shown={shown} current={false} project="project" onReplay={vi.fn()}
     result={focusedResult(shown, 'validation', null, runIds, undefined)} />);
@@ -30,7 +30,7 @@ it('keeps the Results of the plan on screen while the current plan is read, pend
   const region = replay.closest('[aria-busy]');
   expect(region?.getAttribute('aria-busy')).toBe('true');
   expect(region?.hasAttribute('data-region-pending')).toBe(false);
-  expect(replay.hasAttribute('disabled')).toBe(true);
+  expect(replay.hasAttribute('disabled')).toBe(false);
   act(() => { vi.advanceTimersByTime(regionPendingMs); });
   expect(region?.hasAttribute('data-region-pending')).toBe(true);
 });

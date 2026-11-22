@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from copy import copy, deepcopy
 import json
 import math
@@ -683,7 +683,7 @@ def apply_override_patch_in_place(
 ) -> None:
     """Apply one validated patch to an owned payload, copying any inserted value."""
     apply_value_patch_in_place(
-        root, patch.path.split("."), patch.op, patch.value, path=patch.path, error_context=error_context,
+        root, patch.path.split("."), patch.op, patch.value, path=patch.path, error_context=error_context, by_id=True,
     )
 
 
@@ -692,9 +692,9 @@ def apply_override_patch_copy(root: dict[str, Any], patch: OverridePatch) -> dic
     parts = patch.path.split(".")
     result = copy(root)
     parent = _resolve_patch_parent(
-        result, parts, path=patch.path, error_context="override", copy_path=True
+        result, parts, path=patch.path, error_context="override", copy_path=True, by_id=True,
     )
-    _apply_patch_target(parent, parts[-1], patch.op, patch.value, patch.path, "override")
+    _apply_patch_target(parent, parts[-1], patch.op, patch.value, patch.path, "override", by_id=True)
     return result
 
 
@@ -706,10 +706,15 @@ def apply_value_patch_in_place(
     *,
     path: str,
     error_context: Literal["override", "delta"] = "override",
+    by_id: bool = False,
 ) -> None:
-    """Apply the common patch semantics to an already decoded path."""
-    parent = _resolve_patch_parent(root, parts, path=path, error_context=error_context)
-    _apply_patch_target(parent, parts[-1], op, value, path, error_context)
+    """Apply the common patch semantics to an already decoded path.
+
+    ``by_id`` says the path is a stored one, which names a member of a list of identified items by its id; a JSON
+    pointer against one revision of a document names it by its index.
+    """
+    parent = _resolve_patch_parent(root, parts, path=path, error_context=error_context, by_id=by_id)
+    _apply_patch_target(parent, parts[-1], op, value, path, error_context, by_id=by_id)
 
 
 def ensure_value_collection(
@@ -725,6 +730,69 @@ def ensure_value_collection(
         raise ValueError(f"collection at {path!r} has the wrong kind")
 
 
+class MirrorList(list[Any]):
+    """A list that mirrors another one member for member, and names its members by that list's ids."""
+
+    def __init__(self, children: Iterable[Any], mirrored: Sequence[Any]):
+        super().__init__(children)
+        self.ids = _carried_ids(mirrored)
+
+
+def _carried_ids(items: Sequence[Any]) -> tuple[str, ...] | None:
+    if isinstance(items, MirrorList):
+        return items.ids
+    if not items or not all(isinstance(item, dict) and isinstance(item.get("id"), str) for item in items):
+        return None
+    return tuple(item["id"] for item in items)
+
+
+def member_ids(items: Sequence[Any]) -> tuple[str, ...] | None:
+    """The ids of a list whose members each carry one, or ``None`` for a list addressed by index."""
+    ids = _carried_ids(items)
+    if ids is None:
+        return None
+    if len(set(ids)) != len(ids):
+        repeated = sorted({member for member in ids if ids.count(member) > 1})
+        raise ValueError(f"list members share an id: {', '.join(repeated)}")
+    return ids
+
+
+def resolve_segment(container: Any, segment: str, *, path: str, by_id: bool = True) -> str | int | None:
+    """The key or index ``segment`` names in ``container``, or ``None`` when it names no member.
+
+    In a stored path (``by_id``), a member of a list whose members carry ids is named by its id; an index or an
+    unknown id under such a list is refused, naming the ids it has. Any other list is addressed by index.
+    """
+    if isinstance(container, dict):
+        return segment if segment in container else None
+    if not isinstance(container, list):
+        return None
+    ids = member_ids(container) if by_id else None
+    if ids is not None:
+        if segment in ids:
+            return ids.index(segment)
+        reason = "is addressed by its id" if segment.isdigit() else "is not an id of this list"
+        raise ValueError(f"{segment!r} {reason}; the ids are {', '.join(ids)}: {path!r}")
+    if segment.isdigit() and int(segment) < len(container):
+        return int(segment)
+    return None
+
+
+def stored_parts(root: Any, parts: Sequence[str]) -> tuple[str, ...]:
+    """The segments of a JSON pointer's ``parts`` into ``root`` as a stored path names them: a member of a list of
+    identified items by its id rather than its index."""
+    named, current = [], root
+    for part in parts:
+        if isinstance(current, list) and (ids := member_ids(current)) is not None and part.isdigit() and int(part) < len(ids):
+            named.append(ids[int(part)])
+            current = current[int(part)]
+            continue
+        named.append(part)
+        key = resolve_segment(current, part, path="/".join(parts), by_id=False)
+        current = current[key] if key is not None else None
+    return tuple(named)
+
+
 def _apply_patch_target(
     parent: Any,
     leaf: str,
@@ -732,37 +800,37 @@ def _apply_patch_target(
     value: Any,
     path: str,
     error_context: Literal["override", "delta"],
+    *,
+    by_id: bool,
 ) -> None:
-    if op == "add" and isinstance(parent, list) and _is_list_append(parent, leaf):
+    if op == "add" and isinstance(parent, list) and (
+        leaf == "-" or (not by_id or member_ids(parent) is None) and leaf.isdigit() and int(leaf) == len(parent)
+    ):
         parent.append(deepcopy(value))
         return
-    exists = _patch_target_exists(parent, leaf)
+    key = resolve_segment(parent, leaf, path=path, by_id=by_id)
     if op == "add":
-        if isinstance(parent, list) and exists:
-            parent.insert(int(leaf), deepcopy(value))
+        if isinstance(parent, list) and key is not None:
+            parent.insert(key, deepcopy(value))
             return
-        if exists:
+        if key is not None:
             if error_context == "delta":
                 raise ValueError(f"add delta path already exists: {path!r}")
             raise ValueError(f"override add patch path already exists: {path!r}")
-        _set_patch_target(parent, leaf, deepcopy(value), path=path)
+        if not isinstance(parent, dict):
+            raise ValueError(f"patch path cannot set segment {leaf!r}: {path!r}")
+        parent[leaf] = deepcopy(value)
         return
-    if op == "replace":
-        if not exists:
-            if error_context == "delta":
-                raise ValueError(f"replace delta path is missing: {path!r}")
-            raise ValueError(f"override replace patch targets a missing key/index: {path!r}")
-        _set_patch_target(parent, leaf, deepcopy(value), path=path)
-        return
-    if not exists:
+    if key is None:
         if error_context == "delta":
-            raise ValueError(f"remove delta path is missing: {path!r}")
+            raise ValueError(f"{op} delta path is missing: {path!r}")
+        if op == "replace":
+            raise ValueError(f"override replace patch targets a missing key/index: {path!r}")
         raise ValueError(f"override remove patch targets a missing key/index: {path!r}")
-    _remove_patch_target(parent, leaf, path=path)
-
-
-def _is_list_append(parent: list[Any], leaf: str) -> bool:
-    return leaf == "-" or leaf.isdigit() and int(leaf) == len(parent)
+    if op == "replace":
+        parent[key] = deepcopy(value)
+    else:
+        del parent[key]
 
 
 def _resolve_patch_parent(
@@ -772,16 +840,14 @@ def _resolve_patch_parent(
     path: str,
     error_context: Literal["override", "delta"],
     copy_path: bool = False,
+    by_id: bool = False,
 ) -> Any:
     if not parts:
         raise ValueError(f"patch path must be non-empty: {path!r}")
     current = root
     for part in parts[:-1]:
-        if isinstance(current, dict) and part in current:
-            key = part
-        elif isinstance(current, list) and part.isdigit() and int(part) < len(current):
-            key = int(part)
-        else:
+        key = resolve_segment(current, part, path=path, by_id=by_id)
+        if key is None:
             prefix = "delta path" if error_context == "delta" else "patch path"
             raise ValueError(f"{prefix} cannot traverse missing segment {part!r}: {path!r}")
         child = current[key]
@@ -790,39 +856,6 @@ def _resolve_patch_parent(
             current[key] = child
         current = child
     return current
-
-
-def _patch_target_exists(parent: Any, key: str) -> bool:
-    if isinstance(parent, dict):
-        return key in parent
-    if isinstance(parent, list) and key.isdigit():
-        index = int(key)
-        return 0 <= index < len(parent)
-    return False
-
-
-def _set_patch_target(parent: Any, key: str, value: Any, *, path: str) -> None:
-    if isinstance(parent, dict):
-        parent[key] = value
-        return
-    if isinstance(parent, list) and key.isdigit():
-        index = int(key)
-        if 0 <= index < len(parent):
-            parent[index] = value
-            return
-    raise ValueError(f"patch path cannot set segment {key!r}: {path!r}")
-
-
-def _remove_patch_target(parent: Any, key: str, *, path: str) -> None:
-    if isinstance(parent, dict):
-        del parent[key]
-        return
-    if isinstance(parent, list) and key.isdigit():
-        index = int(key)
-        if 0 <= index < len(parent):
-            del parent[index]
-            return
-    raise ValueError(f"patch path cannot remove segment {key!r}: {path!r}")
 
 
 def _validate_dotted_path(path: str, field: str) -> None:

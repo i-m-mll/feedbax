@@ -277,7 +277,7 @@ def test_to_list_and_to_rows_preserve_coordinates_and_patches():
                     "draws": {"one": 13, "two": 21},
                 },
             },
-            "exceptions": {"skip": {"where": {"axes": {"sample": ["two"]}}, "exclude": True}},
+            "exceptions": {"skip": {"where": {"rule": "sample=two"}, "exclude": True}},
         }
     )
     loaded = Sweep.model_validate_json(rule.model_dump_json(exclude_unset=True))
@@ -327,7 +327,7 @@ def test_ordered_exceptions_intersect_rows_exclude_and_count_final_members():
             "exceptions": {
                 "fix": {
                     "where": {
-                        "axes": {"mode": ["a"]},
+                        "rule": "mode=a",
                         "rows": ["gain=low--mode=a", "gain=mid--mode=a", "gain=high--mode=b"],
                     },
                     "patches": {"setting": {"op": "add", "value": 7}},
@@ -337,7 +337,7 @@ def test_ordered_exceptions_intersect_rows_exclude_and_count_final_members():
                     "patches": {"setting": {"value": 9}},
                 },
                 "remove": {
-                    "where": {"axes": {"gain": ["high"]}, "rows": ["gain=high--mode=b"]},
+                    "where": {"rule": "gain=high", "rows": ["gain=high--mode=b"]},
                     "exclude": True,
                 },
                 "empty": {"where": {"rows": []}, "patches": {"setting": {"value": 99}}},
@@ -473,14 +473,15 @@ def test_inherited_patch_origins_follow_exact_authored_writes():
 @pytest.mark.parametrize(
     ("where", "code", "path"),
     [
-        ({"best": {"by": "loss", "k": 1}}, "invalid_exception", "sweep.exceptions.fix.where.best"),
+        ({"rule": "lowest 1 loss"}, "invalid_exception", "sweep.exceptions.fix.where.rule"),
+        ({"rule": "loss<0.1"}, "invalid_exception", "sweep.exceptions.fix.where.rule"),
         ({"rows": ["missing"]}, "invalid_exception", "sweep.exceptions.fix.where.rows"),
         (
-            {"axes": {"gain": ["wrong"]}},
+            {"rule": "gain=wrong"},
             "invalid_exception",
-            "sweep.exceptions.fix.where.axes.gain",
+            "sweep.exceptions.fix.where.rule",
         ),
-        ({"axes": {"gain": ["a"]}}, "patch_conflict", "sweep.exceptions.fix.patches.gain"),
+        ({"rule": "gain=a"}, "patch_conflict", "sweep.exceptions.fix.patches.gain"),
     ],
 )
 def test_exception_refuses_dynamic_selectors_unknown_ids_and_axis_patch_conflicts(
@@ -570,7 +571,7 @@ def test_sweep_editor_expansion_budget():
 ])
 def test_an_axis_conditioned_on_itself_is_refused_naming_the_axes(conditions):
     axes = {
-        name: {"path": f"x.{name}", "values": [1], **({"where": {"axes": {other: ["v"] for other in on}}} if on else {})}
+        name: {"path": f"x.{name}", "values": [1], **({"where": {"rule": " ".join(f"{other}=1" for other in on)}} if on else {})}
         for name, on in {"a": [], "b": [], "c": [], **conditions}.items()
     }
     with pytest.raises(SweepExpansionError) as refused:
@@ -581,7 +582,7 @@ def test_an_axis_conditioned_on_itself_is_refused_naming_the_axes(conditions):
 
 @pytest.mark.parametrize(("where", "expected"), [
     (None, ["rate=a", "rate=a--run=run-2", "rate=b", "rate=b--run=run-2"]),
-    ({"axes": {"rate": ["b"]}}, ["rate=a", "rate=b", "rate=b--run=run-2"]),
+    ({"rule": "rate=b"}, ["rate=a", "rate=b", "rate=b--run=run-2"]),
 ])
 def test_an_optional_axis_keeps_each_row_it_applies_to_and_adds_one_per_value(where, expected):
     from feedbax.contracts.project_sweep import Sweep, expand_sweep
