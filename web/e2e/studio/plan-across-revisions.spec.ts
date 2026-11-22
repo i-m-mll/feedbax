@@ -109,9 +109,9 @@ test('a new revision\'s plan, while read, changes no control and holds a gesture
   }
 
   await page.goto(`/?project=${snapshot.project_id}`);
-  await reveal(page, 'Inspector');
   await mapStep(page, 'evaluate').click();
   await page.getByRole('tablist', { name: 'Details' }).getByRole('tab', { name: 'Runs', exact: true }).click();
+  await reveal(page, 'Inspector');
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const every = inspector.getByRole('textbox', { name: 'Every', exact: true });
   await expect(every).toHaveValue('2');
