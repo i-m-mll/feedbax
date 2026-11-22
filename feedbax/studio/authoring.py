@@ -29,7 +29,7 @@ from feedbax.contracts.project import (
 )
 from feedbax.contracts.project_sweep import Sweep, SweepCoordinate
 from feedbax.contracts.project_inputs import StepReference, SubsetTerms
-from feedbax.contracts.project_plan import ProjectPlan, RunKey
+from feedbax.contracts.project_plan import ProjectPlan, RunKey, analyze_input_roles, step_input_roles
 from feedbax.contracts.project_resolution import (
     ProjectDiagnostic, ResolvedStep, StepTemplate, compose_document, compose_step, document_write_target,
 )
@@ -174,6 +174,8 @@ def authoring_surface(
             for kind in get_args(StepKind.__value__)
         },
         document_families=documents,
+        step_inputs=step_input_roles(),
+        analyze_inputs=analyze_input_roles(),
         registries={
             COMPONENTS.family: StudioAuthoringRegistry(
                 entries=sorted(bundle.components.list_all(), key=lambda definition: definition.name),
