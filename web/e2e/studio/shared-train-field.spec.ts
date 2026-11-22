@@ -74,12 +74,12 @@ test('the inspector edits the saved values for the step and its selected runs, a
   const selectValue = rate.getByRole('button', { name: 'Select Learning Rate 0.0025', exact: true });
   await selectValue.click();
   await expect(selectValue).toHaveAttribute('aria-pressed', 'true');
-  await expect(rate.getByLabel('Learning Rate selected value', { exact: true })).toBeVisible();
+  await expect(rate.getByLabel('Changed', { exact: true })).toHaveAccessibleDescription('Selected Value · 0.0025');
   const batchText = batches.getByRole('textbox', { name: 'Batches', exact: true });
   const initialBatches = await batchText.inputValue();
   const override = String(Number(initialBatches) + 1);
   await enter(batchText, override);
-  await expect(batches.getByLabel('Batches selected value', { exact: true })).toBeVisible();
+  await expect(batches.getByLabel('Changed', { exact: true })).toHaveAccessibleDescription(`Changed from ${initialBatches}`);
   await expect(batchText).toHaveValue(override);
   await expect(rateText).toBeVisible();
   // An edit for exactly one sweep value's runs is stored on that value, not as an exception.
@@ -148,13 +148,17 @@ test('two runs of a 4 × 2 sweep take a value as one exception, and removing it 
   await expect(page.locator('tbody tr[data-selected=true]')).toHaveCount(2);
   await enter(batchText, '20');
   await expect(batchText).toHaveValue('20');
-  await expect(batch.getByLabel('Batch Size selected value', { exact: true })).toBeVisible();
+  await expect(batch.getByLabel('Changed', { exact: true })).toHaveAccessibleDescription(`Changed from ${rule}`);
   const exceptions = page.getByRole('list').filter({ has: page.getByRole('button', { name: 'Remove Exception' }) });
-  await expect(exceptions.getByRole('listitem')).toHaveText(['Batch Size 20 · seed 2 · 2 runs']);
+  const exception = exceptions.getByRole('listitem');
+  await expect(exception).toHaveCount(1);
+  await expect(exception).toContainText('Batch Size 20');
+  await expect(exception.getByRole('combobox', { name: 'Runs', exact: true })).toHaveValue('seed=2');
+  await expect(exception).toContainText('2/8');
   await exceptions.getByRole('button', { name: 'Remove Exception', exact: true }).click();
   await expect(exceptions).toHaveCount(0);
   await expect(batchText).toHaveValue(rule);
-  await expect(batch.getByLabel('Batch Size selected value', { exact: true })).toHaveCount(0);
+  await expect(batch.getByLabel('Changed', { exact: true })).toHaveCount(0);
 });
 
 test('choosing an optimizer keeps the inspector still, and reveals only the parameters it brings in', async ({ page, request }) => {

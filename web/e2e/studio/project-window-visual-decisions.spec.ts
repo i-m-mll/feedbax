@@ -61,17 +61,22 @@ test('Studio visual decisions use shell roles and keep the narrow window usable'
   await expect(body).toHaveCSS('stroke', await scene.evaluate((node) => getComputedStyle(node).color));
   await captureStudioWindow(page, info, 'visual-scene-selection');
 
+  // The Evaluate reads no Model, so its Scene gives the slot back to Runs, which supplies no drawer.
   await mapStep(page, 'evaluate').press('Enter');
-  const runs = page.getByRole('tabpanel', { name: 'Runs', exact: true });
-  await scene.focus();
+  const primary = page.locator('[data-slot="primary"]').getByRole('tabpanel');
+  const secondary = page.locator('[data-slot="secondary"]').getByRole('tabpanel');
+  await expect(secondary).toHaveAccessibleName('Runs');
+  await secondary.focus();
+  await expect(page.getByRole('complementary', { name: 'Details Drawer', exact: true })).toBeHidden();
+  await page.getByRole('button', { name: 'Hide Inspector', exact: true }).click();
   await page.setViewportSize({ width: 620, height: 860 });
   await expect(page.getByRole('complementary', { name: 'Details Drawer', exact: true })).toBeHidden();
   await expect(page.getByRole('complementary', { name: 'Inspector', exact: true })).toBeHidden();
   await expect(page.locator('.studio-window-slot__strip')).toHaveCount(0);
-  await expect(runs).toBeVisible();
-  await expect(scene).toBeVisible();
+  await expect(primary).toBeVisible();
+  await expect(secondary).toBeVisible();
   await captureStudioWindow(page, info, 'visual-empty-sides-released');
   await page.setViewportSize({ width: 500, height: 860 });
   await expect(page.locator('.studio-window-slot__strip')).toBeVisible();
-  await expect(scene).toBeVisible();
+  await expect(secondary).toBeVisible();
 });
