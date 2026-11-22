@@ -391,6 +391,8 @@
     "link": "Link",
     "formula": "Formula",
     "draw": "Draw",
+    "family": "Family",
+    "trial": "Trial",
     "shape": "Shape",
     "selectedRuns": "Selected Runs",
     "selectedValue": "Selected Value",

@@ -39,6 +39,7 @@ from feedbax.contracts.training import TrialDocuments
 from feedbax.expression_check import references
 from feedbax.expression_site import project_site, read_field
 from feedbax.expression_text import ParsedField, print_field
+from feedbax.studio.value_structure import value_structure
 from feedbax.objectives.document import ObjectiveExecutor, ObjectiveUse, compile_objective
 from feedbax.plugins.application import ApplicationRegistryBundle
 from feedbax.web.services.evaluate_sources import evaluate_subject, evaluate_value_source
@@ -701,10 +702,14 @@ def _objective_names(plan, key):
     objective = pairing.get("objective") if isinstance(pairing, dict) else None
     terms = objective.get("terms", []) if isinstance(objective, dict) else []
     return {term.get("id"): term.get("name") for term in terms if isinstance(term, dict) and term.get("name")}
-def _field_text(expression, site: Site) -> str | None:
-    if references(expression) <= {item.id for item in site.names}:
-        return print_field(expression, site)
-    return None
+def _trial_field(path, site: Site, expression, functions) -> StudioTrialField:
+    """A field with its text and structure, where its value names only what is in scope."""
+    shown = expression is not None and references(expression) <= {item.id for item in site.names}
+    return StudioTrialField(
+        path=pointer(tuple(map(str, path))), projection=project_site(site, functions),
+        text=print_field(expression, site) if shown else None,
+        structure=value_structure(expression, site, functions) if shown else None,
+    )
 
 
 def trial_authoring(
@@ -791,9 +796,7 @@ def trial_authoring(
         resets=[StudioTrialReset(address=field.address, type=field.type, finest=field.finest,
                                 variable=links.get(field.address.to_text()))
                 for field in paired.model.reset.fields] if paired else [],
-        fields=[StudioTrialField(path=pointer(tuple(map(str, path))),
-                                 projection=project_site(site, bundle.expression_functions),
-                                 text=_field_text(expressions[path], site) if path in expressions else None)
+        fields=[_trial_field(path, site, expressions.get(path), bundle.expression_functions)
                 for path, site in projected.fields.items()],
         problems=[*projected.problems, *refused], files=stored.files, created=list(stored.created), refusal=refusal,
     )
