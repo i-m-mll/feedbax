@@ -397,11 +397,11 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
           }}>
           {boxRows && rows?.values.map((value, index) => chosenRows?.includes(value.id) && (
             <span key={`row:${value.id}`} aria-hidden="true" className="studio-map-group-box"
-              style={{ gridRow: index + 1, gridColumn: `1 / ${grid.columnCount + 1}` }} />
+              style={{ gridRow: `${index + 1} / span 1`, gridColumn: `1 / ${grid.columnCount + 1}` }} />
           ))}
           {boxColumns && columns?.values.map((value, index) => chosenColumns?.includes(value.id) && (
             <span key={`column:${value.id}`} aria-hidden="true" className="studio-map-group-box"
-              style={{ gridRow: `1 / ${grid.rowCount + 1}`, gridColumn: index + 1 }} />
+              style={{ gridRow: `1 / ${grid.rowCount + 1}`, gridColumn: `${index + 1} / span 1` }} />
           ))}
           {grid.byRow.map((cells, row) => (
             <div role="row" aria-rowindex={row + 1} key={row} className="contents">

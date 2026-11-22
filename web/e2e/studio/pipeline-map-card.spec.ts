@@ -88,3 +88,36 @@ test('the map drawer keeps New Step in view, aligned with its rows, while its li
   await expect(page.locator('[data-map-density="compact"] [id$="-status"]').first()).toBeVisible();
   await captureStudioWindow(page, info, 'drawer-compact');
 });
+
+test('choosing one value of a sweep selects and boxes only its row or column', async ({ page, request }) => {
+  const [model, task, objective, train, successor] = await fixture('managed-files');
+  const axis = (path: string, values: number[]) => ({ values: Object.fromEntries(values.map((value) => [
+    `v${value}`, { label: String(value), patches: { [path]: { value } } },
+  ])) });
+  train.step.sweep = { axes: {
+    'batch-size': axis('training_config.batch_size', [2, 4, 8]),
+    'n-batches': axis('training_config.n_batches', [10, 20, 30]),
+  } };
+  const { snapshot } = await seedManagedProject(request, [model, task, objective, train, successor]);
+  await page.goto(`/?project=${snapshot.project_id}`);
+  const card = page.locator('[data-map-step="train"]');
+  await mapStep(page, 'train').click();
+  const marks = card.locator('.studio-map-run-mark');
+  await expect(marks).toHaveCount(9);
+
+  const boxedAndPressed = async () => {
+    const frame = await box(card.locator('.studio-map-group-box'));
+    return Promise.all((await marks.all()).map(async (mark) => {
+      const bounds = await box(mark);
+      const [x, y] = [bounds.x + bounds.width / 2, bounds.y + bounds.height / 2];
+      const boxed = x > frame.x && x < frame.x + frame.width && y > frame.y && y < frame.y + frame.height;
+      return [boxed, await mark.getAttribute('aria-pressed') === 'true'];
+    }));
+  };
+  for (const [sweep, middle] of [['n-batches', '20'], ['batch-size', '4']]) {
+    await chooseSweepValue(card, sweep, middle);
+    const cells = await boxedAndPressed();
+    expect(cells.filter(([boxed]) => boxed)).toHaveLength(3);
+    for (const [boxed, pressed] of cells) expect(pressed).toBe(boxed);
+  }
+});
