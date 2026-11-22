@@ -285,10 +285,13 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
 
     steps = {
         "train": _train(definition["steps"]["train"], 6),
+        "short": _train(definition["steps"]["train"], 4),
         "last": evaluate("last"),
         "exact": evaluate({"at": 3}),
         "past": evaluate({"at": 1}),
         "future": evaluate({"at": 4}),
+        # Within the run's 4 batches, so the plan accepts it, but not a scheduled checkpoint (every 2 batches).
+        "missing": evaluate({"at": 3}, source="short"),
         "zero": evaluate({"at": 0}),
     }
 
@@ -401,6 +404,17 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
         assert dataset.data("checkpoint").tolist() == [3]
     trial = settled.evaluations[by_step["exact"].key].trials[0]
     assert result.replay_trial(trial, anchor_id="effector").identity.stable_id == trial
+
+    # Outside the finite gate, which would hold this Train at batch 3 too.
+    (short,) = launch("short", "short", service=JobService(host, registries))
+    terminal(short.job_id, "succeeded")
+    (missing,) = launch("missing", "missing")
+    unavailable = terminal(missing.job_id, "blocked")
+    assert unavailable["delivery"] == 0 and not unavailable["edges"][0]["satisfied"]
+    assert unavailable["outcome"]["error"] == {
+        "code": "input_unavailable", "path": "/inputs/subject/checkpoint",
+        "message": "Producer closed without checkpoint coordinates [3].",
+    }
 
     # Native Host continuations can branch even though Studio Resume offers a single child.
     (tmp_path / "resume-model-factor").write_text("1.25")
