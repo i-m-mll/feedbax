@@ -43,7 +43,7 @@ import { ProblemRow, StudioProblems } from '@/features/projectWindow/StudioProbl
 import { holds } from './model/modelGraph';
 import { bindStudioCommand, commandAttributes, jobAllowsCommand, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import {
-  projectWindowSlotView, showProjectWindowView, useProjectWindowState, type ProjectWindowSlot, type ProjectWindowView,
+  noViews, projectWindowSlotView, showProjectWindowView, useProjectWindowState, type ProjectWindowSlot, type ProjectWindowView,
 } from '@/features/projectWindow/projectWindowState';
 import {
   ModelAddressSchema, StepReferenceSchema, type PresentationDocument, type PresentationPosition, type ProjectValueEdit,
@@ -56,7 +56,8 @@ import { useConnection } from '@/api/connection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { authoredPointer, directTrainStep, modelDocumentId } from './authoredEdits';
 import { withBaseDescendants } from './baseDescendants';
-import { useManagedProjectDetails, useSavedEvaluationScene, type NamedDocumentScope } from './managedProjectDetails';
+import { useManagedProjectDetails, useSavedEvaluationScene, useStoredModel, type NamedDocumentScope } from './managedProjectDetails';
+import { viewOffer, viewsByKind } from './viewContent';
 import {
   choosePick, clearSelection, isModelAddress, selectElement, useElementSelectionStore, usePick, type PickTarget,
 } from '@/features/projectWindow/elementSelection';
@@ -85,7 +86,7 @@ import {
 } from './StudioTrialAuthoring';
 import { documentFamily, useProjectDocuments, type DocumentRole } from './useProjectDocuments';
 import { useManagedAnalyze } from './useManagedAnalyze';
-import { useManagedReport } from './useManagedReport';
+import { stepReport, useManagedReport } from './useManagedReport';
 import { ScrollFade } from '@/components/ui/ScrollFade';
 import type { AxisMenu } from '@/components/pipeline/PipelineRunMarks';
 import { OfferedSets, setAuthoring } from './setAuthoring';
@@ -161,14 +162,6 @@ async function checkpointNewStep(source: PipelineMapStepSource, scope: ProjectWi
   scope.selectCreatedStep(id);
 }
 
-const viewsByKind = {
-  train: ['runs', 'model', 'task', 'objective', 'training', 'scene', 'results'],
-  evaluate: ['runs', 'model', 'task', 'scene', 'results'],
-  analyze: ['runs', 'analysis', 'figures'],
-  report: ['runs', 'document'],
-} as const satisfies Record<string, readonly ProjectWindowView[]>;
-const emptyViews: readonly ProjectWindowView[] = [];
-const noView = <StudioRegion state={{ kind: 'empty' }} />;
 
 export default function StudioProjectWorkspace({
   document, onNewStep = checkpointNewStep,
@@ -365,8 +358,26 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const trainLabels = useTrainFieldLabels(editor, step?.kind === 'train' ? step.id : undefined);
   const trainingDocument = step?.kind === 'train' ? trainingDocumentId(step.documentIds) : undefined;
   const trainClasses = useTrainClassFields(editor, step?.kind === 'train' ? step.id : undefined);
-  const availableViews = !step ? emptyViews : trainingDocument ? viewsByKind[step.kind]
-    : viewsByKind[step.kind].filter((view) => view !== 'training');
+  const runTarget: PipelineSelection = state.selection ?? { kind: 'steps', stepIds: plan.steps.map(({ id }) => id) };
+  const runIds = new Set(plan.steps.flatMap((item) => selectedRuns(item, runTarget).map(({ id }) => id)));
+  const { row, attempt, scene: sceneRows, evaluation: selectedEvaluation } =
+    focusedResult(data, step?.id, state.focus?.runId, runIds, resultAttempt);
+  const shownResult = focusedResult(projection.data, step?.id, state.focus?.runId, runIds, resultAttempt);
+  const definitionRows = projection.data?.window_map?.rows.filter(({ key }) => key.step === step?.id && key.variant === variant) ?? [];
+  const selectedDefinitionRows = definitionRows.filter(({ key }) => runIds.has(savedRunId(key)));
+  const namedRun = selectedDefinitionRows.find(({ key }) => savedRunId(key) === state.focus?.runId)?.key ??
+    selectedDefinitionRows[0]?.key ?? definitionRows[0]?.key;
+  const modelSource = step?.kind === 'evaluate' ? modelDocumentId(plan.steps.find(({ id }) =>
+    id === step.inputs.find(({ id }) => id === 'subject')?.sourceStepId)?.documentIds) : undefined;
+  const stored = useStoredModel(editor, step, modelSource);
+  const views = !step ? noViews : viewOffer({
+    step, trainingForm: !!trainingDocument && !!authoring, planRead: !!projection.data, run: !!namedRun, model: stored?.value,
+    evaluation: shownResult.evaluation,
+    runProblems: (namedRun && step.runs.find(({ id }) => id === savedRunId(namedRun))?.problems) ?? [],
+    results: !!projection.error || !!shownResult.row || !!shownResult.evaluation?.checkpoint_series,
+    report: !!stepReport(snapshot, step?.id).report,
+  });
+  const availableViews = views.available;
   const primaryView = projectWindowSlotView(windowState, 'primary', availableViews);
   const secondaryView = projectWindowSlotView(windowState, 'secondary', availableViews);
   const focusSlot = secondaryView && windowState.focusedSlot === 'secondary' ? 'secondary' : 'primary';
@@ -444,11 +455,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     setProblemReveal(undefined);
     selection.select(selectStep(state, id, extend));
   }
-  const runTarget: PipelineSelection = state.selection ?? { kind: 'steps', stepIds: plan.steps.map(({ id }) => id) };
-  const runIds = new Set(plan.steps.flatMap((item) => selectedRuns(item, runTarget).map(({ id }) => id)));
-  const { row, attempt, scene: sceneRows, evaluation: selectedEvaluation } =
-    focusedResult(data, step?.id, state.focus?.runId, runIds, resultAttempt);
-  const shownResult = focusedResult(projection.data, step?.id, state.focus?.runId, runIds, resultAttempt);
   const ready = Boolean(data && !pending && !outside && connected && !projection.error);
   const canAuthorContinuation = ready && primaryVariant;
   /**
@@ -557,10 +563,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const exactSource = subjectCheckpoint !== undefined && exactSources?.length === 1 ? exactSources[0] : undefined;
   const evaluationReplay = useSavedEvaluationScene(saved.project_id, saved.revision, selectedEvaluation,
     windowState.mode !== 'map' && [primaryView, secondaryView].includes('scene'));
-  const definitionRows = projection.data?.window_map?.rows.filter(({ key }) => key.step === step?.id && key.variant === variant) ?? [];
-  const selectedDefinitionRows = definitionRows.filter(({ key }) => runIds.has(savedRunId(key)));
-  const namedRun = selectedDefinitionRows.find(({ key }) => savedRunId(key) === state.focus?.runId)?.key ??
-    selectedDefinitionRows[0]?.key ?? definitionRows[0]?.key;
   const trialStep = step?.kind === 'train' || step?.kind === 'evaluate';
   const trialVisible = windowState.mode !== 'map' &&
     [primaryView, secondaryView].some((view) => view === 'task' || view === 'objective');
@@ -575,8 +577,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     }
   }
   const trialSelection = trialStep && namedRun && state.selection;
-  const modelSource = step?.kind === 'evaluate' ? modelDocumentId(plan.steps.find(({ id }) =>
-    id === step.inputs.find(({ id }) => id === 'subject')?.sourceStepId)?.documentIds) : undefined;
   const modelProblems = data?.window_map?.problems.filter((problem) => placeMember(problem.place) &&
     (problem.step === step?.id || step?.kind === 'evaluate' && placeMember(problem.place)?.document === modelSource) &&
     (problem.variant === null || problem.variant === variant) &&
@@ -648,7 +648,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const detailInputs = {
     editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection,
     variantId: variant, evaluation: selectedEvaluation, evaluationReplay,
-    namedRun, documentScopes, planCurrent: !!data, elements, valueEditing: !!selectedValue, evaluateScope: evaluateScope || undefined, modelSource, modelProblems, selectedSweepValues, confirmRunRemoval: runRemoval.confirm,
+    namedRun, documentScopes, planCurrent: !!data, elements, valueEditing: !!selectedValue, evaluateScope: evaluateScope || undefined, stored, modelProblems, selectedSweepValues, confirmRunRemoval: runRemoval.confirm,
     drawerSections,
     openModelProblems: (element: ModelAddress, opener: HTMLElement) => {
       const owner = modelProblems?.find((problem) => {
@@ -657,8 +657,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       });
       if (owner?.step) setPanel({ kind: 'problems', scope: { step: owner.step, variant, element }, opener });
     },
-    runProblems: namedRun && step?.runs.find(({ id }) => id === savedRunId(namedRun))?.problems,
-    revealProblem,
     fieldRows: state.selection && state.selection.kind !== 'steps' ? selectedDefinitionRows.map(({ key }) => key.row) : undefined,
     fieldAxes: valueTerms && Object.fromEntries(valueTerms.map(({ sweepId, valueIds }) => [sweepId, [...valueIds]])),
     exceptions: exceptionMention,
@@ -1453,7 +1451,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       <ProjectWindow
         state={windowState} onStateChange={setWindowState} projectName={configuration.project}
         saveStatus={pending || snapshot.error ? studioName('edited') : undefined}
-        availableViews={availableViews}
+        views={views}
         commands={commands} mapCommands={canvasViewportCommands(() => mapViewport.current, !!data && plan.steps.length > 0)}
         focusRequest={focusRequest}
         onBack={selection.back} onForward={selection.forward}
@@ -1549,7 +1547,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             };
           }
           if ((view === 'task' || view === 'objective') && trialStep) {
-            if (!namedRun) return { body: noView };
+            if (!namedRun) return { body: <StudioRegion state={{ kind: 'loading' }} /> };
             if (trial.error || !trial.view) return { body: withProblem(
               <StudioRegion state={trial.error
                 ? { kind: 'failed', issue: studioRegionIssue(view, trial.error), retry: trial.retry }
@@ -1592,17 +1590,17 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               body: authoring ? withProblem(<StudioTrainAuthoringForm {...authoring} run={namedRun}
                 runPending={!data && !projection.isError} trainingDocument chosen={scope ? [...scope.lit] : undefined}
                 fieldRows={scope ? undefined : detailInputs.fieldRows} fieldAxes={scope ? undefined : detailInputs.fieldAxes} />)
-                : noView,
+                : null,
             };
           }
-          if (view === 'model' || view === 'task' || view === 'scene') {
+          if (view === 'model' || view === 'scene') {
             const scope = slot === focusSlot && view === focusView ? activeDocumentScope : undefined;
             const picker = pickDocument('model', details[view].documentId, scope);
             return { ...details[view], picker: picker && { ...picker, refusal: picker.refusal ?? details[view].refusal },
               header: details[view].path, body: withProblem(details[view].body) };
           }
-          if (!step) return { body: noView };
-          if (view === 'document') return { body: withProblem(report.body ?? noView),
+          if (!step) return { body: null };
+          if (view === 'document') return { body: withProblem(report.body),
             picker: authored?.kind === 'report' ? pickDocument('report', documentBase) : undefined };
           if (view === 'runs') {
             const runSelection = { step: shownPlan.steps.find(({ id }) => id === step.id) ?? step, state,
@@ -1699,10 +1697,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             };
           }
           const resultsFailure = planError('results');
-          if (view === 'results' && (resultsFailure || !projection.data || (!pending && !outside && connected))) return {
+          if (view === 'results') return {
             padded: true,
             body: <SavedResults shown={projection.data} current={!!data} failure={resultsFailure} result={shownResult}
-              project={saved.project_id} fallback={withProblem(noView)}
+              project={saved.project_id}
               stopped={stoppedSubject && stoppedNewStep && <section aria-labelledby={stoppedCheckpointId}
                 className="flex items-center gap-2">
                 <h3 id={stoppedCheckpointId} className="font-semibold">{checkpointLabel(stoppedSubject.at)}</h3>
@@ -1715,7 +1713,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                 requestSlotFocus((count) => count + 1);
               }} />,
           };
-          return { body: withProblem(noView) };
+          return { body: null };
         }}
       />
       {runRemoval.dialog}

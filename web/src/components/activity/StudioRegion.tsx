@@ -70,7 +70,7 @@ export function StudioRegion({
     case 'loading':
       return <RegionLoading>{skeleton ?? studioRegionSkeleton}</RegionLoading>;
     case 'empty':
-      return <>{empty === undefined ? studioRegionEmpty : empty}</>;
+      return <>{empty}</>;
     case 'failed':
       return <RegionFailure issue={state.issue} retry={state.retry} />;
     case 'result':
@@ -99,7 +99,6 @@ export function StudioRegion({
 }
 
 const studioRegionSkeleton = <div className="h-20 rounded bg-shell-subtle motion-safe:animate-pulse" />;
-const studioRegionEmpty = <p className="p-3 text-sm text-shell-muted" role="status">{studioName('unavailable')}</p>;
 
 function RegionLoading({ children }: { children: ReactNode }) {
   const [showSkeleton, setShowSkeleton] = useState(false);
