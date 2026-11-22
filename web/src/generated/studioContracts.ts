@@ -704,6 +704,7 @@ export interface AddComponent {
   graph: ModelAddress;
   component: LeafComponent | CompositeComponent;
   position: ModelPosition;
+  id?: string | null;
   connect_from?: ComponentPortEnd | InputBoundaryEnd | null;
   connect_to_port?: string | null;
 }
@@ -892,6 +893,7 @@ export interface InsertComponentOnWire {
   output_port: string;
   position: ModelPosition;
   flipped?: boolean;
+  id?: string | null;
 }
 
 export interface MoveWireAttachment {
@@ -5769,6 +5771,7 @@ export const AddComponentSchema: z.ZodType<AddComponent> = z.lazy(() =>
       "graph": ModelAddressSchema,
       "component": z.union([LeafComponentSchema, CompositeComponentSchema]),
       "position": ModelPositionSchema,
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable().optional(),
       "connect_from": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]).nullable().optional(),
       "connect_to_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable().optional(),
     })
@@ -6107,6 +6110,7 @@ export const InsertComponentOnWireSchema: z.ZodType<InsertComponentOnWire> = z.l
       "output_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
       "position": ModelPositionSchema,
       "flipped": z.boolean().optional(),
+      "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<InsertComponentOnWire>;

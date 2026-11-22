@@ -31,6 +31,7 @@ class AddComponent(StrictModel):
     graph: ModelAddress
     component: LeafComponent | CompositeComponent
     position: ModelPosition
+    id: ModelElementId | None = None
     connect_from: SignalSource | None = None
     connect_to_port: ModelElementId | None = None
 
@@ -136,6 +137,7 @@ class InsertComponentOnWire(StrictModel):
     output_port: ModelElementId
     position: ModelPosition
     flipped: bool = False
+    id: ModelElementId | None = None
 
 
 class BringSignalIn(StrictModel):
