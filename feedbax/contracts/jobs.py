@@ -278,6 +278,8 @@ class StudioProjectWindowMapRow(StrictModel):
     opening_step: OpeningStep | None = Field(default=None, exclude_if=lambda value: value is None)
     collection_progress: StoreTransferProgress | None = Field(default=None, exclude_if=lambda value: value is None)
     evaluation_conditions: list[str] | None = Field(default=None, exclude_if=lambda value: value is None)
+    origin: int | None = Field(default=None, exclude_if=lambda value: value is None)
+    """A Train row's completed-update count at its start (0 when fresh); its readers select updates after it."""
     target_total: int | None = Field(default=None, exclude_if=lambda value: value is None)
     """A Train row's completed-update count at its end, which bounds the checkpoints its readers select."""
     light: StudioSavedLightHistory | None = Field(default=None, exclude_if=lambda value: value is None)

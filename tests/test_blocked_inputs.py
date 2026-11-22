@@ -79,6 +79,7 @@ def test_window_keeps_conditions_and_batches_of_a_train_row_that_cannot_run(tmp_
     assert trains["rate=low"].evaluation_conditions
     assert trains["rate=low"].evaluation_conditions == trains["rate=high"].evaluation_conditions
     assert trains["rate=low"].target_total == trains["rate=high"].target_total == 2
+    assert trains["rate=low"].origin == trains["rate=high"].origin == 0
     (blocked,) = [problem for problem in window.problems if problem.code == ResolutionCode.BLOCKED_INPUT]
     assert blocked.blocked_by is not None and blocked.blocked_by.row == "rate=low"
     assert {(edge.from_key.row, edge.to_key.row) for edge in window.edges if edge.to_key.row == blocked.row} == {
