@@ -39,7 +39,7 @@ import {
 } from '@/features/pipeline/selection';
 import { ProjectWindow } from '@/features/projectWindow/ProjectWindow';
 import { useHeldGestures } from '@/features/projectWindow/heldGestures';
-import { ProblemRow, StudioProblems } from '@/features/projectWindow/StudioProblems';
+import { ProblemRow, StudioProblems, problemEntries, type ProblemEntry } from '@/features/projectWindow/StudioProblems';
 import { holds } from './model/modelGraph';
 import { bindStudioCommand, commandAttributes, jobAllowsCommand, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import {
@@ -833,6 +833,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     problem.step === problemScope.step &&
     (problem.variant === null || problem.variant === problemScope.variant) &&
     (!problemScope.element || holdsMember(problemScope.element, problem))) : problems;
+  const problemCount = problemEntries(problems).length;
   function openProjectProblems(opener: HTMLElement | null = null) {
     setPanel({ kind: 'problems', scope: null, opener });
   }
@@ -1544,7 +1545,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
           <span className="min-w-0 break-words">{failure}</span>
           <Button {...commandAttributes(retryCommand)} onClick={retryCommand.invoke}>{studioName('retry')}</Button>
         </div>}
-        problems={<StudioProblems command={problemCommand} count={problems.length} open={!!problemPanel}
+        problems={<StudioProblems command={problemCommand} count={problemCount} open={!!problemPanel}
           opener={problemPanel?.opener ?? null} onClose={() => setPanel(null)}
           onOpen={(opener) => {
             if (problemPanel && !problemPanel.scope) {
@@ -1554,7 +1555,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               openProjectProblems(opener);
             }
           }}>
-          <ProblemList problems={shownProblems} refusal={refusal?.kind === 'problem' ? refusal : undefined} canReveal={(problem) => !!addressedStep(problem)}
+          <ProblemList entries={problemEntries(shownProblems)} refusal={refusal?.kind === 'problem' ? refusal : undefined} canReveal={(problem) => !!addressedStep(problem)}
             onChoose={revealProblem} showVariant={variants.length > 1 && !problemPanel?.scope} />
         </StudioProblems>}
         activity={<HeaderActivity placement="above" open={panel?.kind === 'activity'} command={activity}
@@ -1792,30 +1793,31 @@ function namedByHolder(problem: StudioProjectWindowMapProblem, holder: string | 
   return !!place && 'document' in place && place.document === holder && !(place.part === 'task' && place.parameter);
 }
 
-function ProblemList({ problems, refusal, onChoose, canReveal, showVariant }: {
-  problems: readonly StudioProjectWindowMapProblem[];
+function ProblemList({ entries: listed, refusal, onChoose, canReveal, showVariant }: {
+  entries: readonly ProblemEntry[];
   /** The problem whose repair was refused, and why. */
   refusal?: { problem: string; reason: string };
   onChoose(problem: StudioProjectWindowMapProblem): void;
   canReveal(problem: StudioProjectWindowMapProblem): boolean;
   showVariant: boolean;
 }) {
-  const groups = new Map<string | null, StudioProjectWindowMapProblem[]>();
-  for (const problem of problems) {
-    const name = problemHolder(problem);
+  const groups = new Map<string | null, ProblemEntry[]>();
+  for (const entry of listed) {
+    const name = problemHolder(entry.problem);
     if (!groups.has(name)) groups.set(name, []);
-    groups.get(name)!.push(problem);
+    groups.get(name)!.push(entry);
   }
   return <div className="space-y-2">{[...groups].map(([name, entries]) => {
-    const first = entries.find(canReveal);
+    const first = entries.find(({ problem }) => canReveal(problem))?.problem;
     return <section key={name ?? ''}>
       {name && <h2 className="font-medium">{first
         ? <Button variant="ghost" size="content" className="rounded-control px-control-inline text-left font-medium"
           onClick={() => onChoose(first)}>{name}</Button>
         : name}</h2>}
-      <ul>{entries.map((problem, index) => <li key={index} className="break-words">
+      <ul>{entries.map(({ problem, runs }, index) => <li key={index} className="break-words">
         <ProblemRow problem={problem} refusal={refusal?.problem === problemKey(problem) ? refusal.reason : undefined}
-          context={[problem.step !== name ? problem.step : null, showVariant ? problem.variant : null].flatMap((part) => part ? [part] : [])}
+          context={[problem.step !== name ? problem.step : null, showVariant ? problem.variant : null,
+            runs > 1 ? studioFormat('runCount', { count: runs }) : null].flatMap((part) => part ? [part] : [])}
           placeShown={!namedByHolder(problem, name)}
           onReveal={canReveal(problem) ? () => onChoose(problem) : undefined} />
       </li>)}</ul>

@@ -534,6 +534,7 @@
     "metricStepSample": "{step} · Local updates {start}–{end}",
     "checkpointAtUpdate": "Checkpoint at update {update}",
     "subjectEnd": "{step} · {batches} batches",
+    "runCount": "{count} runs",
     "waitingForCheckpoint": "Waiting for {step} update {update}.",
     "waitingForCheckpoints": "Waiting for {step} to settle its checkpoints.",
     "waitingForTrainResume": "Waiting for {step} to resume.",
