@@ -19,7 +19,7 @@ from feedbax.contracts.expression_values import (
     ValueBase,
     ValueType,
 )
-from feedbax.expression_registry import (
+from feedbax.contracts.expression_registry import (
     Density,
     Evaluation,
     Function,
@@ -28,6 +28,7 @@ from feedbax.expression_registry import (
     FunctionParameter,
     FunctionRegistry,
     OperandHint,
+    POINT_INTERPOLATIONS,
     SignatureError,
     StateReset,
 )
@@ -498,9 +499,6 @@ def _points_type(mode, args, kwargs):
         shape=values.shape[1:],
         dimensions=values.dimensions,
     )
-
-
-POINT_INTERPOLATIONS = ("linear", "hold", "cubic")
 
 
 def _bind_points(function, node):

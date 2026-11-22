@@ -19,9 +19,9 @@ from feedbax.contracts.studio_authoring import (
     StudioAuthoringSweepChange, StudioNameSweepValue, StudioSetSweepValue, StudioSweepEdit, StudioToSweep,
 )
 from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioFieldView, StudioSweepValue
-from feedbax.expression_registry import FunctionRegistry
+from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.expression_site import FieldKind, field_kind, project_site, read_field
-from feedbax.expression_text import ParsedField, print_field
+from feedbax.contracts.expression_text import ParsedField, print_field
 from feedbax.studio.authoring_sweeps import FieldSweeps, drop_axis, named_axis
 from feedbax.studio.value_structure import value_structure
 

@@ -25,7 +25,7 @@ from feedbax._secure_fs import (
     DirectoryRecord, SecurePathRigor, close_directory_chain, directory_open_flags, open_directory_chain,
     open_existing_directory, open_existing_file, recheck_directory_chain, rename_no_replace,
 )
-from feedbax.expression_registry import FunctionRegistry
+from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.training.methods import TrainingMethodRegistry
 from feedbax.contracts.base import StrictModel, sha256_bytes

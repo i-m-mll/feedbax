@@ -41,7 +41,7 @@ if TYPE_CHECKING:
     from feedbax.contracts.model_edit import (
         ModelConnectionReview, ModelConnectionReviewRequest, ModelEditRequest, ModelEditResponse, ModelUndoRequest,
     )
-    from feedbax.expression_registry import FunctionRegistry
+    from feedbax.contracts.expression_registry import FunctionRegistry
     from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.training.methods import TrainingMethodRegistry
 

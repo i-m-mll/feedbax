@@ -22,8 +22,8 @@ from feedbax.contracts.expression_values import (
     ValueRecord,
 )
 from feedbax.expression_check import Checked, check
-from feedbax.expression_registry import FunctionClass, FunctionInfo, FunctionRegistry
-from feedbax.expression_text import ParsedField, parse
+from feedbax.contracts.expression_registry import FunctionClass, FunctionInfo, FunctionRegistry
+from feedbax.contracts.expression_text import ParsedField, parse
 
 
 class FieldKind(StrEnum):
