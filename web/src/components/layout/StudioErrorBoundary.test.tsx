@@ -4,7 +4,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 import { StudioRegionBoundary } from '@/components/activity/StudioRegion';
 
-vi.mock('@/api/studioDiagnostics', () => ({ reportStudioRenderFailure: vi.fn(async () => {}) }));
+vi.stubGlobal('fetch', vi.fn(async () => new Response(null, { status: 204 })));
 
 function Train({ broken }: { broken: boolean }) {
   if (broken) throw new Error('Train renderer failed');

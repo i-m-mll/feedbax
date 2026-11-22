@@ -4,7 +4,7 @@ import {
   type Edge, type EdgeProps, type Node, type NodeProps, type OnConnectStart,
 } from '@xyflow/react';
 import {
-  createContext, memo, useCallback, useContext, useEffect, useId, useImperativeHandle, useRef, useState,
+  createContext, memo, useCallback, useContext, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState,
   type MouseEvent as ReactMouseEvent, type ReactNode, type Ref,
 } from 'react';
 import { Lock, Plus, Unlock, ChevronsDownUp } from 'lucide-react';
@@ -312,7 +312,8 @@ function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdi
   const [initial] = useState(() => ({ nodes, edges }));
   const [boxSelecting, setBoxSelecting] = useState(false);
   const point = (event: { clientX: number; clientY: number }) => screenToFlowPosition({ x: event.clientX, y: event.clientY });
-  useEffect(() => {
+  /** The cards follow their props before the browser paints, so a card added by a gesture is drawn in the next frame. */
+  useLayoutEffect(() => {
     setNodes((prior) => {
       const current = new Map(prior.map((node) => [node.id, node]));
       return nodes.map((node) => {
@@ -326,7 +327,7 @@ function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdi
       });
     });
   }, [nodes, setNodes, getInternalNode]);
-  useEffect(() => { setEdges(edges); }, [edges, setEdges]);
+  useLayoutEffect(() => { setEdges(edges); }, [edges, setEdges]);
   return <CanvasStrip viewport={viewportCommands} tools={<>
     <IconButton label={collapse.label} icon={<ChevronsDownUp />} {...commandAttributes(collapse, 'right')} pressed={collapsed}
       disabled={!collapse.enabled} onClick={collapse.invoke} />

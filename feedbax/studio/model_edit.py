@@ -23,6 +23,7 @@ from feedbax.contracts.model_document import (
     SignalOutput,
     SignalType,
 )
+from feedbax.studio.model_differences import structural_differences
 
 type Record = dict[str, Any]
 type Direction = Literal["input", "output", "physical"]
@@ -320,6 +321,53 @@ class ModelEditDraft:
             raise _Refusal(address, "element does not exist or cannot be deleted")
         self.changed.append(address)
 
+    def reset_difference(self, address: ModelAddress, reference: edits.ModelEditState) -> None:
+        """Undo the structural difference at ``address`` from the Model ``reference``, with its layout."""
+        difference = next((
+            item for item in structural_differences(reference.document.model_dump(mode="json"), self.document, {})
+            if item.address == address
+        ), None)
+        if difference is None:
+            raise _Refusal(address, "This element is not changed")
+        if isinstance(difference, edits.ModelAddedElement):
+            self.remove(address)
+            return
+        _, graph = self.context(address)
+        element = address.element
+        if isinstance(difference, edits.ModelRewiredElement):
+            collection, ends = ("wires", ("source", "target")) if element.kind == "wire" else ("connections", ("a", "b"))
+            previous = difference.previous.model_dump(mode="json")
+            graph[collection][element.id] |= {end: previous[end] for end in ends}
+        elif element.kind == "attachment":
+            parent = element.parent.model_dump(mode="json")
+            earlier = ModelEditDraft(reference, self.leaf_ports, self.accepts_component).attachment_chain(address, parent)
+            index = next(index for index, item in enumerate(earlier) if item["id"] == element.id)
+            chain = self.attachment_chain(address, parent, create=True)
+            chain.insert(min(index, len(chain)), difference.definition.model_dump(mode="json"))
+        else:
+            collection = {"component": "components", "wire": "wires", "physical_connection": "connections"}[element.kind]
+            graph.setdefault(collection, {})[element.id] = difference.definition.model_dump(mode="json")
+            restored = {address.to_text()}
+            for edges, kind in ((difference.wires, "wires"), (difference.connections, "connections")):
+                for key, edge in edges.items():
+                    record = edge.model_dump(mode="json")
+                    if all(end["component"] in graph["components"] for end in record.values()
+                           if isinstance(end, dict) and end.get("owner") == "component"):
+                        graph.setdefault(kind, {})[key] = record
+                        restored.add(_address(
+                            address.composites, "wire" if kind == "wires" else "physical_connection", id=key,
+                        ).to_text())
+            inside = (*address.composites, element.id)
+            for name, entries in self.layout().items():
+                for key, value in getattr(reference, name).items():
+                    try:
+                        placed = ModelAddress.from_text(key)
+                    except ValueError:
+                        continue
+                    if key in restored or (element.kind == "component" and placed.composites[:len(inside)] == inside):
+                        entries[key] = value
+        self.changed.append(address)
+
     @staticmethod
     def remove_endpoints(graph: Record, matches: Callable[[Record], bool]) -> None:
         for collection, ends in (("wires", ("source", "target")), ("connections", ("a", "b"))):
@@ -452,7 +500,7 @@ class ModelEditDraft:
         wire = graph["wires"][element.id]
         graph_address = _address(address.composites, "graph")
         self.add_component(edits.AddComponent(
-            op="add_component", graph=graph_address, component=command.component, position=command.position,
+            op="add_component", graph=graph_address, component=command.component, position=command.position, id=command.id,
         ))
         created = self.changed[-1]
         assert created.element.kind == "component"
@@ -526,7 +574,10 @@ class ModelEditDraft:
         component = command.component.model_dump(mode="json")
         if not self.accepts_component(component, graph["physical_domain"]):
             raise _Refusal(command.graph, "the destination graph cannot hold this component")
-        key = _id(graph)
+        key = command.id or _id(graph)
+        for kind, members in (("component", "components"), ("wire", "wires"), ("physical_connection", "connections")):
+            if key in graph.get(members, {}):
+                raise _Refusal(_address(command.graph.composites, kind, id=key), "This id is already used in the graph")
         graph["components"][key] = component
         address = _address(command.graph.composites, "component", id=key)
         self.positions[address.to_text()] = command.position
@@ -979,8 +1030,12 @@ def apply_model_edit(
     functions=None,
     task_signal: Callable[[edits.ConnectTaskSignal], edits.ModelTaskSignal] | None = None,
     next_input: Callable[[Record], tuple[str, str, int] | None] | None = None,
+    reference: Callable[[], edits.ModelEditState | None] | None = None,
 ) -> edits.ModelEditResult | edits.ModelEditProblem:
-    """Apply one command to a private draft and return its complete transaction."""
+    """Apply one command to a private draft and return its complete transaction.
+
+    ``reference`` gives the Model a structural difference is reset to, when the shown one differs from another.
+    """
     operation = command.operation
     edit = ModelEditDraft(state, ports, accepts)
     clipboard = None
@@ -1091,6 +1146,11 @@ def apply_model_edit(
                 edit.group(operation)
             case edits.UngroupComposite(address=primary):
                 edit.ungroup(primary)
+            case edits.ResetDifference(address=primary):
+                restored = reference() if reference is not None else None
+                if restored is None:
+                    raise _Refusal(primary, "This Model is not changed from another")
+                edit.reset_difference(primary, restored)
         edit.prune_layout()
         result = ModelDocument.model_validate(edit.document)
         edit.validate(_address((), "graph"))

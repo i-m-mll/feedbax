@@ -191,6 +191,8 @@ def serve(home: Path, args: argparse.Namespace, scope: ExitStack, backend_app: s
         front = [*vite, "preview", "--outDir", str(args.preview_from.resolve())]
     if args.preview:
         dist = str(paths.cache / "dist")
+        # A walkthrough: its build stamps each element with where it is written, and its pages load the notes toolbar.
+        os.environ["FEEDBAX_WALKTHROUGH"] = "1"
         build = spawn(scope, [*vite, "build", "--outDir", dist, "--emptyOutDir"], cwd=WEB)
         build_code = build.wait()
         if build_code:
@@ -217,7 +219,8 @@ def main(*, backend_app: str = "feedbax.web.app:app") -> int:
     parser.add_argument("--port", type=int, help="frontend port (default: 3008 or 3009 with --preview)")
     parser.add_argument("--backend-port", type=int, help="backend port (default: the frontend port plus 5000)")
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--preview", action="store_true", help="build and serve the production frontend")
+    mode.add_argument("--preview", action="store_true",
+                      help="build and serve the production frontend for a walkthrough: source-stamped, with the notes toolbar")
     mode.add_argument("--preview-from", type=Path, help="serve the existing production frontend build")
     mode.add_argument("--backend-only", action="store_true", help="serve the backend for an existing frontend")
     parser.add_argument(

@@ -5,7 +5,7 @@ from typing import Annotated, Literal
 from pydantic import Field
 
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.expression_values import Problem
+from feedbax.contracts.expression_values import FieldValue, Problem
 from feedbax.contracts.jobs import StudioPlanReviewSource
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import SelectedRuns, ModelEditCommand
@@ -79,9 +79,26 @@ class StudioSweepSampler(StrictModel):
     can_list: bool
 
 
+class StudioDensity(StrictModel):
+    """A draw's density at evenly spaced points from ``low`` to ``high``, scaled to a largest value of 1."""
+
+    low: float
+    high: float
+    values: list[float]
+
+
+class StudioValueStructure(StrictModel):
+    """The value a field's text reads as, with the text of each positional argument of its root."""
+
+    value: FieldValue
+    arguments: list[str] = Field(default_factory=list)
+    density: StudioDensity | None = None
+
+
 class StudioFieldView(StrictModel):
     label: str
     text: str
+    structure: StudioValueStructure | None = None
     effective: str | None = None
     """The value the selected runs share where it differs from the document's."""
     mixed: bool = False

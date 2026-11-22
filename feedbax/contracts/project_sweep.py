@@ -471,6 +471,13 @@ class SweepCoordinate:
 
 
 @dataclass(frozen=True)
+class SweepInputCoordinate(SweepCoordinate):
+    """An input axis's value: a member, which carries its own coordinates into the row."""
+
+    carries: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class SweepInputMember:
     """A member whose slot and key are known at plan time."""
 
@@ -500,7 +507,7 @@ class ExpandedRow:
     patch_origins: Mapping[str, PatchOrigin] = field(default_factory=dict)
     patch_authors: Mapping[str, str] = field(default_factory=dict)
     axis_value_ids: Mapping[str, str] = field(default_factory=dict)
-    input_axes: Mapping[str, SweepCoordinate] = field(default_factory=dict)
+    input_axes: Mapping[str, SweepInputCoordinate] = field(default_factory=dict)
     """Each input axis's value on this row, its member, which ``coordinates`` holds only as the member's own
     coordinates."""
 
@@ -969,7 +976,9 @@ def _choices(
                 assert members is not None
                 choices = tuple(
                     _AxisChoice(
-                        member.key, SweepCoordinate(member.key, member.label), member=member
+                        member.key,
+                        SweepInputCoordinate(member.key, member.label, carries=tuple(member.coordinates)),
+                        member=member,
                     )
                     for member in members
                 )
@@ -1040,7 +1049,7 @@ def _expanded(axes: Mapping[str, Axis], selection: Mapping[str, _AxisChoice]) ->
     origins: dict[str, PatchOrigin] = {}
     authors: dict[str, str] = {}
     bindings: dict[str, str] = {}
-    input_axes: dict[str, SweepCoordinate] = {}
+    input_axes: dict[str, SweepInputCoordinate] = {}
     labels = []
     for name, axis in axes.items():
         if (choice := selection.get(name)) is None:
@@ -1050,6 +1059,7 @@ def _expanded(axes: Mapping[str, Axis], selection: Mapping[str, _AxisChoice]) ->
         if isinstance(axis, InputAxis):
             assert member is not None
             bindings[axis.input] = member.key
+            assert isinstance(choice.coordinate, SweepInputCoordinate)
             input_axes[name] = choice.coordinate
             carried = member.coordinates
         else:
