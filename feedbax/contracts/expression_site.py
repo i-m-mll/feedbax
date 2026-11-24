@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import StrEnum
+from types import MappingProxyType
 
 from pydantic import Field
 
@@ -14,6 +16,7 @@ from feedbax.contracts.expression_values import (
     Level,
     LiteralValue,
     NameValue,
+    NodePath,
     Problem,
     ProblemCode,
     Site,
@@ -22,11 +25,11 @@ from feedbax.contracts.expression_values import (
     SweepSample,
     ValueBase,
     ValueRecord,
+    walk,
 )
 from feedbax.contracts.expression_check import Checked, check
 from feedbax.contracts.expression_registry import FunctionClass, FunctionInfo, FunctionRegistry
 from feedbax.contracts.expression_text import ParsedField, parse
-from feedbax.contracts.model_address import ModelAddress
 
 
 class FieldKind(StrEnum):
@@ -51,10 +54,17 @@ class SiteProjection(ValueRecord):
     functions: tuple[FunctionInfo, ...]
     parts: tuple[ExpressionPartSite, ...]
     """The allowed function and name IDs at each expression path."""
-    name_paths: dict[str, ModelAddress] = Field(default_factory=dict)
+    name_paths: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+    """Display levels for scoped names that belong to a tree, indexed by opaque ID."""
 
 
-def project_site(site: Site, functions: FunctionRegistry) -> SiteProjection:
+def project_site(
+    site: Site,
+    functions: FunctionRegistry,
+    value: Expression | None = None,
+    *,
+    name_paths: Mapping[str, tuple[str, ...]] = MappingProxyType({}),
+) -> SiteProjection:
     """Derive the editor's menu and completion from the same declarations as check."""
     scope = {name.name for name in site.names}
     offered = tuple(
@@ -73,17 +83,84 @@ def project_site(site: Site, functions: FunctionRegistry) -> SiteProjection:
         kinds.append(FieldKind.SHAPE)
     if any(item.level <= site.finest and site.expected.accepts(item.type) for item in site.names):
         kinds.append(FieldKind.LINK)
-    return SiteProjection(
-        site=site,
-        kinds=tuple(kinds),
-        functions=offered,
-        parts=(
+    parts = (
+        _expression_parts(value, site, functions, offered)
+        if value is not None
+        else (
             ExpressionPartSite(
                 path=(),
                 functions=tuple(entry.id for entry in offered),
                 names=tuple(name.id for name in site.names if name.level <= site.finest),
             ),
-        ),
+        )
+    )
+    return SiteProjection(
+        site=site,
+        kinds=tuple(kinds),
+        functions=offered,
+        parts=parts,
+        name_paths={name.id: name_paths[name.id] for name in site.names if name.id in name_paths},
+    )
+
+
+def _replace_part(tree: Expression, path: NodePath, value: Expression) -> Expression:
+    match path:
+        case ():
+            return value
+        case ("args", int(index), *rest) if isinstance(tree, CallValue | DrawValue):
+            args = list(tree.args)
+            args[index] = _replace_part(args[index], tuple(rest), value)
+            return tree.model_copy(update={"args": tuple(args)})
+        case ("kwargs", str(name), *rest) if isinstance(tree, CallValue):
+            child = _replace_part(tree.kwargs[name], tuple(rest), value)
+            return tree.model_copy(update={"kwargs": tree.kwargs | {name: child}})
+    raise AssertionError(f"{path} is not a path in this expression.")
+
+
+def _with_function(node: Expression, info: FunctionInfo, finest: Level) -> Expression | None:
+    args = node.args if isinstance(node, CallValue | DrawValue) else (node,)
+    kwargs = node.kwargs if isinstance(node, CallValue) else {}
+    if len(args) < info.min_args or info.max_args is not None and len(args) > info.max_args:
+        return None
+    if kwargs.keys() - set(info.keywords) or info.display_class == FunctionClass.SWEEP_RULE:
+        return None
+    if info.display_class == FunctionClass.DRAW:
+        if kwargs:
+            return None
+        per = node.per if isinstance(node, DrawValue) else ("run" if finest == Level.RUN else "trial")
+        return DrawValue(family=info.id, args=args, per=per)
+    return CallValue(function=info.id, args=args, kwargs=kwargs)
+
+
+def _expression_parts(
+    tree: Expression, site: Site, functions: FunctionRegistry, offered: tuple[FunctionInfo, ...],
+) -> tuple[ExpressionPartSite, ...]:
+    """Check a replacement with its enclosing expression so sibling constraints still apply."""
+    original = check(tree, site, functions)
+    names = tuple(
+        (name.id, NameValue(reference=name.id)) for name in site.names if name.level <= site.finest
+    )
+
+    def fits(path: NodePath, replacement: Expression) -> bool:
+        candidate = check(_replace_part(tree, path, replacement), site, functions)
+        if isinstance(candidate, Checked):
+            return True
+        if isinstance(original, Checked):
+            return False
+        return all(problem in original and problem.path[:len(path)] != path for problem in candidate)
+
+    return tuple(
+        ExpressionPartSite(
+            path=path,
+            functions=tuple(
+                info.id
+                for info in offered
+                if (replacement := _with_function(node, info, site.finest)) is not None
+                and fits(path, replacement)
+            ),
+            names=tuple(key for key, replacement in names if fits(path, replacement)),
+        )
+        for path, node in walk(tree)
     )
 
 

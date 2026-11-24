@@ -250,11 +250,14 @@ def _norm_value(power: int, _context: CallContext, value, other=None):
     return squared if power == 2 else jnp.sqrt(squared)
 
 
-def _huber(_context: CallContext, value, delta):
+def _huber(context: CallContext, value, delta=1.0):
     import jax.numpy as jnp
 
+    valid = jnp.isfinite(delta) & (delta > 0)
+    delta = jnp.where(valid, delta, 1.0)
     absolute = jnp.abs(value)
-    return jnp.where(absolute <= delta, 0.5 * jnp.square(value), delta * (absolute - 0.5 * delta))
+    penalties = jnp.where(absolute <= delta, 0.5 * jnp.square(value), delta * (absolute - 0.5 * delta))
+    return Evaluation(jnp.sum(penalties), valid & _all_defined(context))
 
 
 def _hold(_context: CallContext, value):
@@ -659,10 +662,17 @@ def _filter_state(value: ValueType):
 def _huber_type(
     args: tuple[ValueType, ...], kwargs: Mapping[str, ValueType]
 ) -> ValueType | SignatureError:
-    result = _elementwise(args, kwargs, base=_REAL)
-    if isinstance(result, SignatureError):
-        return result
-    return result.model_copy(update={"dimensions": result.dimensions.raised(2)})
+    if len(args) == 2 and args[1].shape:
+        return _type("Huber delta must be scalar.")
+    return _norm(args, kwargs, power=2)
+
+
+def _bind_huber(function: Function, node: CallValue) -> tuple[Function, CallValue] | SignatureError:
+    if len(node.args) == 2:
+        delta = node.args[1]
+        if isinstance(delta, LiteralValue) and type(delta.value) is not bool and delta.value <= 0:
+            return SignatureError(ProblemCode.TYPE_MISMATCH, "Huber delta must be positive.", ("args", 1))
+    return function, node
 
 
 def _operand_context(
@@ -697,6 +707,17 @@ def _operand_context(
 def _arithmetic_context(expected: OperandHint, known, _keywords):
     left = expected.dimensions if all(unit is None for unit in known) else None
     return (OperandHint(left, expected.base), OperandHint(base=expected.base)), {}
+
+
+def _squared_context(expected: OperandHint, known, keywords):
+    dimensions = expected.dimensions
+    powers = dimensions.model_dump() if dimensions is not None else {}
+    operand = (
+        Dimensions(**{name: exponent // 2 for name, exponent in powers.items()})
+        if powers and all(exponent % 2 == 0 for exponent in powers.values())
+        else None
+    )
+    return _operand_context(OperandHint(operand, _REAL), known, keywords)
 
 
 def _known_result(known, *, start=0, stop=None, power=1):
@@ -875,13 +896,14 @@ def register_builtins(registry: FunctionRegistry) -> None:
         )
     add(
         "huber",
-        "x, delta",
-        2,
+        "x[, delta]",
+        (1, 2),
         _huber_type,
         _huber,
         display_class=_PENALTY,
-        argument_context=partial(_operand_context, base=_REAL),
+        argument_context=_squared_context,
         result_dimensions=partial(_known_result, power=2),
+        bind=_bind_huber,
     )
     for name in ("sigmoid", "softplus"):
 

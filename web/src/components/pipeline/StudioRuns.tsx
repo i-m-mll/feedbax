@@ -135,7 +135,7 @@ function StudioRunPivot({ step, state, onSelectionChange, rows, related, runMenu
         </label>
       </div>
         <Table aria-label={studioName("pivot")} held={1}
-          columns={[{ least: "8rem", fixed: true }, ...x.values.map(() => ({ least: "6rem" }))]}
+          columns={[{ least: "6rem", greatest: "16rem" }, ...x.values.map(() => ({ least: "6rem" }))]}
           box={{ axis: "both", className: "max-h-96 rounded-surface border border-shell-divider [--fade-inset-top:var(--row-height)]" }}>
           <thead><tr>
             <TableHeaderCell scope="col">{y.label}</TableHeaderCell>

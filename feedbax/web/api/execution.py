@@ -29,7 +29,7 @@ class TaskTrialSampleRequest(StrictModel):
     model: ModelDocument | None = None
     task: TaskDocument | None = None
     python_task: PythonTaskSelection | None = None
-    input_overrides: dict[str, str] = Field(default_factory=dict)
+    input_bindings: dict[str, str | None] = Field(default_factory=dict)
     objective: ObjectiveDocument | None = None
     evaluation_trials: list[str] | None = Field(default=None, min_length=1)
     """Evaluate trial IDs to preview with the same seed schedule as the run."""
@@ -94,7 +94,7 @@ async def sample_task_trials(
         ))
     preview = preview_trial_source(
         payload.model, selected, bundle.components, bundle.expression_functions,
-        python_tasks=bundle.python_tasks, input_overrides=payload.input_overrides, nominal=payload.nominal,
+        python_tasks=bundle.python_tasks, input_bindings=payload.input_bindings, nominal=payload.nominal,
     )
     if isinstance(preview, tuple):
         return unavailable(*preview)

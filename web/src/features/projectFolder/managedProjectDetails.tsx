@@ -120,9 +120,12 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
     },
     enabled: visible && !!trial && (!evaluation?.checkpoint_series || checkpoint !== undefined),
   });
+  const record = replay.data?.drawn.kind === 'trials' ? replay.data.drawn.trials[0] : undefined;
   const view: SceneView = replay.error
     ? { kind: 'failed', issue: studioRegionIssue('scene', replay.error), retry: () => { void replay.refetch(); } }
-    : replay.data ? { kind: 'replay', trial: replay.data, scene: emptyScene } : { kind: trial && (!evaluation?.checkpoint_series || checkpoint !== undefined) ? 'loading' : 'empty' };
+    : replay.data && record
+      ? { kind: 'replay', trial: record, stateTime: replay.data.state_time, position: replay.data.position, scene: emptyScene }
+      : { kind: replay.isFetching ? 'loading' : 'empty' };
   const timeScope = JSON.stringify(['recorded', jobId, trial, checkpoint]);
   const [time, setTime] = usePlayhead(playhead, timeScope);
   const [speed, setSpeed] = useState(1);

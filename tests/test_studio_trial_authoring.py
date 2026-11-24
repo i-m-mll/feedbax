@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from pydantic import AliasChoices, Field, StrictFloat, StrictInt
 
 from feedbax.execution.trial_resolution import evaluation_conditions
-from feedbax.contracts.expression_values import LENGTH, CallValue, LiteralValue, NameValue
+from feedbax.contracts.expression_values import LENGTH, CallValue, LiteralValue, NameValue, UnresolvedValue
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
 from feedbax.planner.project_plan import ProjectPlanMemo, RunKey, compile_project
@@ -155,11 +155,11 @@ def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_p
         assert view.objective.terms[0].name == "Control effort"
         assert any(field.path == "/objective/terms/effort/measure" for field in view.fields)
         assert not view.problems
-        refused = author(revision, {"kind": "objective", "edits": [
+        marked = author(revision, {"kind": "objective", "edits": [
             {"op": "replace", "path": "/terms/0/measure/args/0/reference", "value": "unknown"},
         ]})
-        assert not refused.files
-        assert any(problem.code == "unknown_name" for problem in refused.problems)
+        assert marked.files
+        assert any(problem.code == "unknown_name" for problem in marked.problems)
 
         def ids():
             return {item.key: item.request_id for item in folders.read_plan(project, revision=revision).plan.runs}
@@ -259,6 +259,78 @@ def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_p
         assert ids() == after
         with jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=evaluated).open_states() as dataset:
             assert int(dataset.data("objective/coverage/effort").item()) == 1
+
+
+def test_task_saves_unresolved_text_and_binds_it_when_a_variable_appears(tmp_path):
+    app = create_app(projects_dir=tmp_path / "projects")
+    raw = document_project(authored_documents())
+    task_file = raw["documents"]["task"]["payload"]
+    target = next(variable for variable in task_file["variables"] if variable["id"] == "target")
+    project = "held-expression"
+    folders = app.state.project_folders
+    _save_project(folders, project, Project.model_validate(raw))
+    revision = folders.read(project).revision
+    run = {"variant": "default", "step": "train", "row": "default"}
+    path = "/task/variables/target/value"
+
+    with TestClient(app) as client:
+        def author(change=None):
+            response = client.post(f"/api/projects/{project}/authoring/trials", json={
+                "revision": revision, "run": run, "change": change,
+            })
+            assert response.status_code == 200, response.text
+            return StudioTrialAuthoring.model_validate(response.json())
+
+        def save(view):
+            response = client.patch(f"/api/projects/{project}", json={
+                "revision": view.revision,
+                "files": [file.model_dump(mode="json") for file in view.files],
+            })
+            assert response.status_code == 200, response.text
+            return response.json()["revision"]
+
+        def target_field(view):
+            return next(field for field in view.fields if field.path == path)
+
+        assert not author().problems
+        edit = author({"kind": "expression", "path": path, "edit": {
+            "kind": "text", "text": "start + offset",
+        }})
+        assert edit.files
+        revision = save(edit)
+        reopened = author()
+        for view in (edit, reopened):
+            field = target_field(view)
+            problem, = field.problems
+            assert field.text == "start + offset"
+            assert problem.code == "unknown_name"
+            assert field.text[problem.span.start:problem.span.end] == "offset"
+        assert isinstance(
+            next(variable.value for variable in reopened.task.variables if variable.id == "target"), UnresolvedValue,
+        )
+        (unrunnable,) = folders.read_plan(project, revision=revision).plan.runs
+        assert unrunnable.admission_problem is not None
+        assert "offset" in unrunnable.admission_problem.detail
+
+        added = author({"kind": "task", "edits": [{"op": "add", "path": "/variables/-", "value": {
+            "id": "offset-id", "name": "offset", "type": target["type"],
+            "value": {"kind": "call", "function": "vector", "args": [
+                {"kind": "literal", "value": 0.1}, {"kind": "literal", "value": 0.2},
+            ]},
+        }}]})
+        assert not added.problems
+        revision = save(added)
+        resolved = next(variable.value for variable in author().task.variables if variable.id == "target")
+        assert isinstance(resolved, CallValue)
+        assert resolved.args[1] == NameValue(reference="offset-id")
+        rename = author({"kind": "structure", "changes": [{
+            "op": "rename", "member": "variable", "id": "offset-id", "name": "displacement",
+        }]})
+        revision = save(rename)
+        renamed = author()
+        assert not renamed.problems
+        assert target_field(renamed).text == "start + displacement"
+        assert next(variable.value for variable in renamed.task.variables if variable.id == "target") == resolved
 
 
 def test_python_task_integer_sweep_uses_registered_site():

@@ -165,13 +165,13 @@ class ObjectiveExecutor(eqx.Module):
         for name in self.names:
             if name.id in retained:
                 source = retained[name.id]
-            elif name.name in trial.variables:
-                source = trial.variables[name.name]
-                if trial.variable_defined is not None and name.name in trial.variable_defined:
-                    available[name.id] = trial.variable_defined[name.name]
-            elif name.name in trial.inputs:
-                source = trial.inputs[name.name]
-                available[name.id] = trial.present[name.name]
+            elif name.id in trial.variables:
+                source = trial.variables[name.id]
+                if trial.variable_defined is not None and name.id in trial.variable_defined:
+                    available[name.id] = trial.variable_defined[name.id]
+            elif name.id in trial.inputs:
+                source = trial.inputs[name.id]
+                available[name.id] = trial.present[name.id]
             else:
                 continue
             (traces if name.level == Level.STEP else fixed)[name.id] = source
@@ -377,7 +377,7 @@ def compile_objective(
         if not isinstance(weight, Compiled):
             problems.extend(weight)
             continue
-        used = (measure_refs | weight_refs) - {"t", "T", "u"}
+        used = (references(measure.checked.tree) | references(weight.checked.tree)) - {"t", "T", "u"}
         terms.append(
             _Term(
                 term.id,

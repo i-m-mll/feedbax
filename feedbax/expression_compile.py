@@ -88,6 +88,7 @@ def compile_expression(
     checked = check(tree, site, functions, path=path)
     if not isinstance(checked, Checked):
         return checked
+    tree = checked.tree
     if period_seconds is not None and (not isfinite(period_seconds) or period_seconds <= 0):
         return (
             Problem(

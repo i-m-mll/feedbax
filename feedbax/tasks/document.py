@@ -26,6 +26,7 @@ from feedbax.contracts.expression_values import (
     ProblemCode,
     ScopedValue,
     Site,
+    UnresolvedValue,
     ValueBase,
     ValueType,
     walk,
@@ -43,9 +44,11 @@ from feedbax.contracts.task_document import (
     Variable as Variable,
 )
 from feedbax.contracts.expression_check import dependency_order
+from feedbax.contracts.expression_text import resolve_expression
 from feedbax.expression_compile import Compiled, Inputs, compile_expression
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.contracts.rollout import trial_indices
+from feedbax.contracts.trial_bindings import selected_signal_id
 from feedbax.runtime._graph_key_schedule import map_trial_samples, validation_trial_keys
 from feedbax.runtime.epoch_windows import EpochRecord, in_epoch
 
@@ -146,7 +149,7 @@ class _Cell:
 
 @dataclass(frozen=True)
 class _Signal:
-    name: str
+    id: str
     absent: _Field
     cells: tuple[_Cell, ...]
 
@@ -329,34 +332,37 @@ def zero(base, shape) -> Expression:
 def bind_task_inputs(
     model: ResolvedModelInterface,
     signals: tuple[ScopedValue, ...],
-    input_overrides: Mapping[str, str] | None,
+    input_bindings: Mapping[str, str | None] | None,
 ) -> tuple[tuple[tuple[str, str], ...], tuple[Problem, ...]]:
-    """Resolve model input names to task signal names and describe refused bindings."""
+    """Resolve runtime input names to stable signal IDs and report invalid bindings."""
     problems = []
-
     bindings = []
-    signal_names = {value.name: value for value in signals}
-    overrides = input_overrides or {}
+    by_id = {value.id: value for value in signals}
+    by_name = {value.name: value.id for value in signals}
+    authored = input_bindings or {}
     for port in model.inputs:
-        signal_name = overrides.get(port.name, port.name)
-        signal = signal_names.get(signal_name)
+        signal_id = selected_signal_id(port.root_id, port.name, by_name, authored)
+        signal = by_id.get(signal_id) if signal_id is not None else None
         path = ("model", "inputs", port.id)
         if signal is None:
-            if port.required or port.name in overrides:
-                problems.append(Problem(
-                    code=ProblemCode.UNKNOWN_NAME,
-                    reason=f"Model input {port.name!r} reads signal {signal_name!r}, which the Task does not declare.",
-                    path=path, model_address=port.address,
-                ))
+            if signal_id is not None:
+                reason = f"Model input {port.name!r} reads undeclared signal ID {signal_id!r}."
+            elif port.required:
+                reason = f"Model input {port.name!r} needs a Task signal."
+            else:
+                continue
+            problems.append(Problem(
+                code=ProblemCode.UNKNOWN_NAME, reason=reason, path=path, model_address=port.address,
+            ))
         elif not port.type.accepts(signal.type):
             problems.append(Problem(
                 code=ProblemCode.TYPE_MISMATCH,
-                reason=f"Signal {signal_name!r} does not fit model input {port.name!r}.",
+                reason=f"Signal {signal.name!r} does not fit model input {port.name!r}.",
                 path=path, model_address=port.address,
             ))
         else:
-            bindings.append((port.name, signal.name))
-    for port in sorted(overrides.keys() - {item.name for item in model.inputs}):
+            bindings.append((port.name, signal.id))
+    for port in sorted(authored.keys() - {item.root_id for item in model.inputs}):
         problems.append(Problem(
             code=ProblemCode.UNKNOWN_NAME, reason=f"{port!r} is not an input of the Model.",
             path=("model", "inputs", port),
@@ -370,7 +376,7 @@ def compile_task(
     functions: FunctionRegistry,
     *,
     model: ResolvedModelInterface,
-    input_overrides: Mapping[str, str] | None = None,
+    input_bindings: Mapping[str, str | None] | None = None,
     sites: dict[tuple[str | int, ...], Site] | None = None,
     link_problems: list[Problem] | None = None,
     nominal: bool = False,
@@ -435,7 +441,7 @@ def compile_task(
                 reason=f"{variables[node.reference].name!r} has problems.",
                 path=(*address, *at),
             )
-            for at, node in walk(tree)
+            for at, node in walk(code.checked.tree if isinstance(code, Compiled) else tree)
             if isinstance(node, NameValue) and node.reference in broken
         ]
         problems.extend(marks if isinstance(code, Compiled) else (*code, *marks))
@@ -443,7 +449,19 @@ def compile_task(
 
     time_type = ValueType(base=ValueBase.REAL, dimensions=TIME)
     time = ScopedValue(id="time", name="time", type=time_type, level=Level.STEP)
-    order, cycles = dependency_order({key: item.value for key, item in variables.items()})
+    values = {key: item.value for key, item in variables.items()}
+    if any(isinstance(value, UnresolvedValue) for value in values.values()):
+        names = (*(
+            ScopedValue(id=key, name=item.name, type=item.type, level=Level.STEP)
+            for key, item in variables.items()
+        ), time)
+        for key, value in values.items():
+            if isinstance(value, UnresolvedValue):
+                site = Site(expected=variables[key].type, finest=Level.STEP, names=names)
+                parsed = resolve_expression(value, site, functions)
+                if not isinstance(parsed, tuple):
+                    values[key] = parsed.value
+    order, cycles = dependency_order(values)
     problems.extend(cycles)
     scope = {}
     for cycle in cycles:
@@ -466,6 +484,12 @@ def compile_task(
             broken.add(key)
         else:
             fields.append((scope[key], field))
+    if sites is not None:
+        for key, variable in variables.items():
+            sites[("variables", key, "value")] = Site(
+                expected=variable.type, finest=Level.STEP,
+                names=(*scope.values(), time),
+            )
 
     lengths = []
     unread = set()
@@ -485,7 +509,13 @@ def compile_task(
             bounds.append(0)
             counts.append(None)
             continue
-        discrete = isinstance(end.length, DrawValue) and end.length.family == "uniform"
+        length = end.length
+        if isinstance(length, UnresolvedValue):
+            site = Site(expected=time_type, finest=Level.TRIAL, names=tuple(scope.values()))
+            parsed = resolve_expression(length, site, functions)
+            if not isinstance(parsed, tuple):
+                length = parsed.value
+        discrete = isinstance(length, DrawValue) and length.family == "uniform"
         field = lower(end.length, time_type, Level.TRIAL, scope.values(), path, discrete=discrete)
         bound = end.max_steps
         if field is None:
@@ -495,7 +525,7 @@ def compile_task(
             counts.append(EpochSteps(least=0, nominal=bound or 0, greatest=bound or 0))
             continue
         count = None
-        if isinstance(end.length, LiteralValue) and field is not None:
+        if isinstance(length, LiteralValue):
             (seconds,) = field.code.parameters
             steps = round(float(seconds) / period)
             if seconds < 0 or (seconds > 0 and steps == 0):
@@ -511,8 +541,7 @@ def compile_task(
             count = EpochSteps(least=max(steps, 0), nominal=max(steps, 0), greatest=max(steps, 0))
         if (
             discrete
-            and field is not None
-            and all(isinstance(arg, LiteralValue) for arg in end.length.args)
+            and all(isinstance(arg, LiteralValue) for arg in length.args)
         ):
             low, high = (round(float(seconds) / period) for seconds in field.code.parameters)
             if not 0 <= low <= high:
@@ -590,13 +619,13 @@ def compile_task(
             if code is not None:
                 cells.append(_Cell(first, last, code))
         if absent is not None:
-            signals.append(_Signal(signal.name, absent, tuple(cells)))
+            signals.append(_Signal(signal.id, absent, tuple(cells)))
         if kept_signals.get(signal.id) is signal:
             declared_signals.append(
                 ScopedValue(id=signal.id, name=signal.name, type=signal.type, level=Level.STEP)
             )
 
-    bindings, input_problems = bind_task_inputs(model, tuple(declared_signals), input_overrides)
+    bindings, input_problems = bind_task_inputs(model, tuple(declared_signals), input_bindings)
     problems.extend(input_problems)
 
     writable = {field.address.to_text(): field for field in model.reset.fields}
