@@ -57,6 +57,7 @@ from feedbax.contracts.project_io import (
     require_text_declaration,
     text_file_stamp,
     text_project_fingerprint,
+    text_project_settings_edit,
 )
 from feedbax.planner.project_plan import ProjectPlan, ProjectPlanMemo, RunKey, compile_project, compiler_authority
 from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, compose_document
@@ -1526,7 +1527,11 @@ class ProjectFolder:
                         entry = _project_file_entry(payload, file.address)
                     _apply_file_edits(entry, file, model_operation=model_operation)
                 project = Project.model_validate(payload)
-                encoded = dump_text_project(project, ProjectConfiguration.model_validate(configuration))
+                encoded = dump_text_project(project, text.configuration)
+                if text.declaration in addresses:
+                    settings = ProjectConfiguration.model_validate(configuration).settings
+                    original[text.declaration] = text_project_settings_edit(text.manifest, text.configuration.settings)
+                    encoded[text.declaration] = text_project_settings_edit(text.manifest, settings)
                 if presentation is not None:
                     original[STUDIO_PRESENTATION_FILENAME] = _encode_presentation(_decode_presentation(presentation_data))
                     encoded[STUDIO_PRESENTATION_FILENAME] = _encode_presentation(PresentationDocument.model_validate(presentation))
