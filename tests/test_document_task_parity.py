@@ -37,7 +37,7 @@ from feedbax.objectives.document import (
     Reduction,
     compile_objective,
 )
-from feedbax.contracts.task_document import Length, Rest
+from feedbax.contracts.task_document import VALUE_TYPES, Length, Rest
 from feedbax.tasks.document import (
     Cell,
     DocumentTask,
@@ -750,3 +750,46 @@ def test_reach_and_stabilization_sample_distributions(kind, functions, reference
             )
     if kind == "stabilization":
         np.testing.assert_array_equal(after[0], after[1])
+
+
+def test_each_independent_problem_is_reported_and_a_bad_variable_marks_its_readers(functions):
+    """Catches a compile that stops at a bad variable, so problems in later fields stay hidden until it is mended, or
+    that marks fields which never read it; and catches a direction that cannot be an Angle variable."""
+    types = dict(VALUE_TYPES)
+    declared = (
+        ("start", "Point", "[0 m, 0 m]"),
+        ("reach", "Distance", "0.1 m"),
+        ("direction", "Angle", "45°"),
+        ("target", "Point", "start + polar(reach, direction)"),
+        ("bad", "Distance", "true"),
+        ("reads_bad", "Distance", "2 * bad"),
+    )
+    names = tuple(name(identifier, types[kind]) for identifier, kind, _ in declared)
+    variables = tuple(
+        Variable(id=identifier, name=identifier, type=types[kind], value=expression(text, names))
+        for identifier, kind, text in declared
+    )
+
+    def signal(identifier, kind, text):
+        cell = Cell(id="c", first_epoch="move", last_epoch="move", value=expression(text, names))
+        return Signal(id=identifier, name=identifier, type=types[kind], cells=(cell,))
+
+    document = TaskDocument(
+        id="task", variables=variables,
+        epochs=(Epoch(id="move", name="move", end=Length(length=expression("1 m"))),),
+        signals=(signal("goal", "Point", "target"), signal("far", "Distance", "bad"), signal("wrong", "Point", "true")),
+    )
+    problems = compile_task(document, functions, model=PORTLESS)
+    assert sorted(problem.path for problem in problems) == [
+        ("epochs", "move", "end", "length"),
+        ("signals", "far", "cells", "c", "value"),
+        ("signals", "wrong", "cells", "c", "value"),
+        ("variables", "bad", "value"),
+        ("variables", "reads_bad", "value", "args", 1),
+    ]
+    mended = document.model_copy(update={
+        "variables": tuple(item for item in variables if item.id not in ("bad", "reads_bad")),
+        "epochs": (Epoch(id="move", name="move", end=Length(length=expression("10 st"))),),
+        "signals": document.signals[:1],
+    })
+    assert isinstance(compile_task(mended, functions, model=PORTLESS), DocumentTask)

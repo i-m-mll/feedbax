@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from enum import IntEnum, StrEnum
 from typing import Annotated, Literal
 
@@ -215,3 +216,10 @@ def children(node: Expression) -> tuple[tuple[NodePath, Expression], ...]:
     if isinstance(node, DrawValue):
         return tuple((("args", i), child) for i, child in enumerate(node.args))
     return ()
+
+
+def walk(tree: Expression, at: NodePath = ()) -> Iterator[tuple[NodePath, Expression]]:
+    """Every node of ``tree`` with its path, the root first."""
+    yield at, tree
+    for step, child in children(tree):
+        yield from walk(child, (*at, *step))
