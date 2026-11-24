@@ -4,7 +4,7 @@ import { Check, ChevronDown, Crosshair } from 'lucide-react';
 import { useEffect, useId, useMemo, useRef, type ReactNode } from 'react';
 import { studioAccessibleName } from '@/components/activity/studioVocabulary';
 import { IconButton } from '@/components/ui/Button';
-import { FieldProblem } from '@/components/ui/FieldProblem';
+import { FieldProblem, FieldProblemReason } from '@/components/ui/FieldProblem';
 import { usePopupLayer } from '@/components/ui/popupLayer';
 import { disabledLook, fieldFrame, fieldInput, focusRing, glyph, leadingSlot, popupItem, popupSurface } from '@/components/ui/styles';
 import {
@@ -71,7 +71,7 @@ export function ReferenceField({ label, groups, value, onChoose, picking, proble
             focusRing, glyph, disabledLook)}>
           {value?.glyph && <span aria-hidden="true" className={leadingSlot}>{value.glyph}</span>}
           <span className="min-w-0 flex-1 truncate text-left">{value?.label ?? '—'}</span>
-          {problem && <FieldProblem reason={problem} id={problemId} />}
+          {problem && <FieldProblem reason={problem} />}
           <ChevronDown aria-hidden="true" className="text-shell-muted" />
         </Combobox.Trigger>
       <Combobox.Portal container={usePopupLayer()}>
@@ -101,6 +101,7 @@ export function ReferenceField({ label, groups, value, onChoose, picking, proble
         </Combobox.Positioner>
       </Combobox.Portal>
     </Combobox.Root>
+    {problem && <FieldProblemReason reason={problem} id={problemId} />}
     {picking && pickable.size > 0 && <IconButton size="control" icon={<Crosshair />}
       label={studioAccessibleName('pick', label)}
       pressed={armed.on} disabled={disabled} onClick={armed.toggle} />}

@@ -123,6 +123,7 @@ def missing_run_files():
     train["sweep"] = {"axes": {"seed": {"path": "seed", "values": [0, 1, 2, 3]}}}
     evaluate = _evaluation_step()
     evaluate["inputs"]["subject"]["where"] = {"rule": "seed=7"}
+    evaluate["sweep"] = {"axes": {"subject": {"input": "subject"}}}
     return [*files, {"kind": "step", "id": "evaluate", "step": evaluate}]
 
 
