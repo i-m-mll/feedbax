@@ -5,7 +5,7 @@ import { studioAccessibleName, studioName } from '@/components/activity/studioVo
 import { IconButton } from '@/components/ui/Button';
 import { InlineEdit } from '@/components/ui/InlineEdit';
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '@/components/ui/Menu';
-import { Table, TableHeaderCell, TableRowHeader } from '@/components/ui/Table';
+import { Table, TableAddColumn, TableHeaderCell, TableRowHeader } from '@/components/ui/Table';
 import { ValueField } from '@/components/values/ValueField';
 import { withAttention } from './attention';
 import { sameSelection, type TaskCell, type TaskEpoch, type TaskRepeat, type TaskSelection, type TaskSignal } from './taskModel';
@@ -21,20 +21,12 @@ export interface GridEdits {
   repeat?(first: string, last: string): void;
 }
 
-const cellBase = 'h-row border-b border-l border-shell-divider p-0 align-top';
+const cellBase = 'studio-table-field-cell h-row border-b border-l border-shell-divider p-0 align-middle';
 
 /** An absent cell is its own state: hatched, with no value, and named Absent where 0 would be read as a value. */
 function AbsentCell() {
   return <span role="img" aria-label={studioName('absent')}
     className="block h-row bg-[repeating-linear-gradient(135deg,var(--studio-control-border)_0_1px,transparent_1px_5px)]" />;
-}
-
-/** A spanning cell's edges, which a drag moves across adjacent columns. */
-function SpanEdges() {
-  return <>
-    <span aria-hidden="true" className={clsx('absolute inset-y-1 left-0 w-1 cursor-ew-resize rounded-sm bg-shell-control', withAttention)} />
-    <span aria-hidden="true" className={clsx('absolute inset-y-1 right-0 w-1 cursor-ew-resize rounded-sm bg-shell-control', withAttention)} />
-  </>;
 }
 
 function Selectable({ selection, selected, select, className, colSpan, children }: {
@@ -43,7 +35,7 @@ function Selectable({ selection, selected, select, className, colSpan, children 
 }) {
   const chosen = sameSelection(selection, selected);
   return <td colSpan={colSpan} data-selected={chosen || undefined}
-    className={clsx(cellBase, 'group/owner relative', chosen && 'bg-shell-row-selected outline outline-1 -outline-offset-1 outline-shell-foreground', className)}
+    className={clsx(cellBase, 'group/owner relative', className)}
     onPointerDown={() => { if (!chosen) select(selection); }} onFocusCapture={() => { if (!chosen) select(selection); }}>
     {children}
   </td>;
@@ -58,10 +50,11 @@ function EpochHeader({ epoch, selected, select, edits }: {
   return <TableHeaderCell scope="col" data-selected={chosen || undefined}
     className={clsx('group/owner relative border-l px-0', chosen && 'bg-shell-row-selected text-shell-foreground')}
     onPointerDown={() => { if (!chosen) select(selection); }}>
-    <span className="flex h-row min-w-0 items-center gap-0.5 px-1" onDoubleClick={() => edits.renameEpoch && setRenaming(true)}>
+    <span className="flex h-row min-w-0 items-center gap-0.5 pl-1 pr-1">
       <GripHorizontal aria-label={studioAccessibleName('moveLater', epoch.name)}
         className={clsx('size-[1em] shrink-0 cursor-grab text-shell-muted', withAttention)} />
-      <InlineEdit value={epoch.name} editing={renaming} onEditingChange={setRenaming} className="min-w-0 truncate font-mono"
+      <InlineEdit form="cell" value={epoch.name} editing={renaming} onEditingChange={setRenaming}
+        className="min-w-0 flex-1 px-1 font-mono text-shell-foreground"
         aria-label={studioAccessibleName('rename', epoch.name)} onCommit={(name) => edits.renameEpoch?.(epoch.id, name)} />
       {edits.removeEpoch && <Menu>
         <MenuTrigger render={<IconButton variant="ghost" size="mark" className={clsx('ml-auto', withAttention)}
@@ -104,7 +97,7 @@ function RepeatLane({ epochs, repeats, selected, select }: {
     </th>);
     index = last + 1;
   }
-  return <tr><th aria-hidden="true" />{cells}<th aria-hidden="true" /></tr>;
+  return <tr><th aria-hidden="true" />{cells}</tr>;
 }
 
 function SignalCell({ signal, cell, epochs, selected, select }: {
@@ -114,8 +107,7 @@ function SignalCell({ signal, cell, epochs, selected, select }: {
   const last = epochs.findIndex(({ id }) => id === cell.last);
   const span = last - first + 1;
   return <Selectable selection={{ kind: 'cell', signal: signal.id, id: cell.id }} selected={selected} select={select} colSpan={span}>
-    {cell.kind === 'absent' ? <AbsentCell /> : <div className="px-1.5 py-0.5"><ValueField form="cell" model={cell.value} /></div>}
-    {span > 1 && <SpanEdges />}
+    {cell.kind === 'absent' ? <AbsentCell /> : <ValueField form="cell" model={cell.value} />}
   </Selectable>;
 }
 
@@ -127,32 +119,30 @@ export function TaskGrid({ epochs, repeats, signals, selected, select, edits }: 
   epochs: readonly TaskEpoch[]; repeats: readonly TaskRepeat[]; signals: readonly TaskSignal[];
   selected?: TaskSelection; select(selection: TaskSelection): void; edits: GridEdits;
 }) {
-  return <Table aria-label={studioName('epochs')} className="table-fixed">
-    <colgroup><col className="w-40" />{epochs.map(({ id }) => <col key={id} />)}<col className="w-8" /></colgroup>
+  return <Table aria-label={studioName('epochs')} held={1}
+    columns={[{ least: '10rem', fixed: true }, ...epochs.map(() => ({ least: '8rem' }))]}
+    addColumn={edits.addEpoch && { label: studioName('addEpoch'), onAdd: () => edits.addEpoch!() }}
+    addRow={edits.addSignal && { label: studioName('addSignal'), onAdd: edits.addSignal }}>
     <thead>
       {repeats.length > 0 && <RepeatLane epochs={epochs} repeats={repeats} selected={selected} select={select} />}
       <tr>
         <TableHeaderCell aria-hidden="true" />
         {epochs.map((epoch) => <EpochHeader key={epoch.id} epoch={epoch} selected={selected} select={select} edits={edits} />)}
-        <TableHeaderCell className="border-l px-0 text-center">
-          {edits.addEpoch && <IconButton variant="ghost" size="mark" label={studioName('addEpoch')} icon={<Plus aria-hidden="true" />}
-            onClick={() => edits.addEpoch!()} />}
-        </TableHeaderCell>
+        {edits.addEpoch && <TableAddColumn />}
       </tr>
     </thead>
     <tbody>
       <tr>
         <TableRowHeader className="text-shell-muted">{studioName('end')}</TableRowHeader>
         {epochs.map((epoch) => <Selectable key={epoch.id} selection={{ kind: 'end', id: epoch.id }} selected={selected} select={select}>
-          <div className="px-1.5 py-0.5"><ValueField form="cell" model={epoch.end} /></div>
+          <ValueField form="cell" model={epoch.end} />
         </Selectable>)}
-        <td className={cellBase} />
       </tr>
       {signals.map((signal) => {
         const selection = { kind: 'signal', id: signal.id } as const;
         const chosen = sameSelection(selection, selected);
         return <tr key={signal.id} className="group/owner" data-selected={chosen || undefined}>
-          <TableRowHeader className={clsx('cursor-default', chosen && 'bg-shell-row-selected font-medium')}
+          <TableRowHeader selected={chosen} className={clsx('cursor-default', chosen && 'font-medium')}
             onPointerDown={() => { if (!chosen) select(selection); }}>
             <span className="flex min-w-0 items-baseline gap-1.5">
               <span className="truncate font-mono">{signal.name}</span>
@@ -160,13 +150,8 @@ export function TaskGrid({ epochs, repeats, signals, selected, select, edits }: 
             </span>
           </TableRowHeader>
           {signal.cells.map((cell) => <SignalCell key={cell.id} signal={signal} cell={cell} epochs={epochs} selected={selected} select={select} />)}
-          <td className={cellBase} />
         </tr>;
       })}
-      {edits.addSignal && <tr>
-        <td className="px-1"><IconButton variant="ghost" size="mark" label={studioName('addSignal')} icon={<Plus aria-hidden="true" />}
-          onClick={edits.addSignal} /></td>
-      </tr>}
     </tbody>
   </Table>;
 }

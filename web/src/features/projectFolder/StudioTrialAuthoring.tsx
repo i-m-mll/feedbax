@@ -13,7 +13,7 @@ import { StatusMark } from '@/components/ui/StatusMark';
 import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
 import { evaluateChange, type ChangeMark, type ChangeSource, type FieldModel } from '@/components/values/fieldModel';
 import { Drawer, DrawerSection, type DrawerSections } from '@/features/projectWindow/DrawerForms';
-import { Table, TableCell, TableHeaderCell } from '@/components/ui/Table';
+import { Table, TableFieldCell, TableHeaderCell, type TableColumn } from '@/components/ui/Table';
 import { CatalogPicker } from '@/components/ui/CatalogPicker';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { SettingsForm } from '@/components/values/SettingsForm';
@@ -29,7 +29,6 @@ import { authoredPointer } from './authoredEdits';
 import { baseOf } from './documentPayload';
 import type { ProjectEditController } from './projectEditController';
 import { filesRemoval, type ConfirmRunRemoval } from './runRemoval';
-import { ScrollFade } from '@/components/ui/ScrollFade';
 import { SweepTargetItem, type SweepTarget } from './StudioTrainAuthoringForm';
 
 type Change = NonNullable<StudioTrialAuthoringRequest['change']>;
@@ -214,6 +213,10 @@ export function TrialTaskInspector({ view, commit, selected }: { view: TrialView
 type TermField = 'name' | 'enabled' | 'measure' | 'window' | 'weight' | 'reduction';
 const columns = ['name', 'measure', 'window', 'weight', 'enabled'] as const satisfies readonly TermField[];
 const columnNames = { name: 'term', enabled: 'enabled', measure: 'measure', window: 'window', weight: 'weight' } as const;
+const columnWidths: Record<(typeof columns)[number], TableColumn> = {
+  name: { least: '9rem', fixed: true }, measure: { least: '10rem' }, window: { least: '8rem' }, weight: { least: '7rem' },
+  enabled: { least: '4.5rem', fixed: true },
+};
 
 /** The anchor of a term's Weight, which Add Sweep puts the keyboard on. */
 export const weightAnchor = (term: string) => `objective:${term}:weight`;
@@ -322,29 +325,27 @@ export function TrialObjectiveTable({ view, commit, selected, select, runs }: {
   view: TrialView; commit?: Commit; selected?: TermSelection; select(term: string, field?: string): void; runs?: TrialRuns;
 }) {
   const terms = view.objective?.terms ?? [];
-  return <ScrollFade axis="both" className="h-full min-h-0 [--fade-inset-top:var(--row-height)]">
-    <Table aria-label={studioName('objectiveTerms')}>
-      <thead className="sticky top-0 z-10"><tr>{columns.map((id) =>
-        <TableHeaderCell scope="col" key={id} className={clsx(id === 'enabled' && 'w-0 text-center')}>
-          {studioName(columnNames[id])}
-        </TableHeaderCell>)}
-      </tr></thead>
-      <tbody>{terms.map((term, index) => {
-        const fields = termFields(view, term, index, commit, runs);
-        return <tr key={term.id} className="align-top">
-          {columns.map((field) => {
-            const chosenCell = selected?.term === term.id && selected.field === field;
-            return <TableCell key={field} data-selected={chosenCell || undefined}
-              className={clsx('overflow-visible py-1', field === 'measure' && 'min-w-40', chosenCell && 'bg-shell-row-selected')}
-              onFocusCapture={() => { if (!chosenCell) select(term.id, field); }}
-              onPointerDown={() => { if (!chosenCell) select(term.id, field); }}>
-              <ValueField model={fields[field]} form="cell" />
-            </TableCell>;
-          })}
-        </tr>;
-      })}</tbody>
-    </Table>
-  </ScrollFade>;
+  return <Table aria-label={studioName('objectiveTerms')} held={1} columns={columns.map((id) => columnWidths[id])}
+    box={{ axis: 'both', className: 'h-full min-h-0 [--fade-inset-top:var(--row-height)]' }}>
+    <thead className="sticky top-0 z-10"><tr>{columns.map((id) =>
+      <TableHeaderCell scope="col" key={id} className={clsx(id === 'enabled' && 'text-center')}>
+        {studioName(columnNames[id])}
+      </TableHeaderCell>)}
+    </tr></thead>
+    <tbody>{terms.map((term, index) => {
+      const fields = termFields(view, term, index, commit, runs);
+      return <tr key={term.id}>
+        {columns.map((field) => {
+          const chosenCell = selected?.term === term.id && selected.field === field;
+          return <TableFieldCell key={field} selected={chosenCell}
+            onFocusCapture={() => { if (!chosenCell) select(term.id, field); }}
+            onPointerDown={() => { if (!chosenCell) select(term.id, field); }}>
+            <ValueField model={fields[field]} form="cell" />
+          </TableFieldCell>;
+        })}
+      </tr>;
+    })}</tbody>
+  </Table>;
 }
 
 export function TrialObjectiveOutline({ sections, view, commit, selected, select }: {

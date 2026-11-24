@@ -134,8 +134,9 @@ function StudioRunPivot({ step, state, onSelectionChange, rows, related, runMenu
             items={step.sweeps.filter(({ id }) => id !== y.id).map(({ id, label }) => ({ value: id, label }))} />
         </label>
       </div>
-      <ScrollFade axis="both" className="max-h-96 rounded-surface border border-shell-divider [--fade-inset-top:var(--row-height)]">
-        <Table aria-label={studioName("pivot")}>
+        <Table aria-label={studioName("pivot")} held={1}
+          columns={[{ least: "8rem", fixed: true }, ...x.values.map(() => ({ least: "6rem" }))]}
+          box={{ axis: "both", className: "max-h-96 rounded-surface border border-shell-divider [--fade-inset-top:var(--row-height)]" }}>
           <thead><tr>
             <TableHeaderCell scope="col">{y.label}</TableHeaderCell>
             {x.values.map((value) => <TableHeaderCell key={value.id} scope="col">{value.label}</TableHeaderCell>)}
@@ -178,7 +179,6 @@ function StudioRunPivot({ step, state, onSelectionChange, rows, related, runMenu
             ))}
           </tbody>
         </Table>
-      </ScrollFade>
       {pivot.unplaced.length > 0 && (
         <StudioRunTable step={step} state={state} onSelectionChange={onSelectionChange} rows={pivot.unplaced} related={related}
           runMenu={runMenu} />

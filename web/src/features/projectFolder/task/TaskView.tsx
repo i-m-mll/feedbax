@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { studioName, type StudioNameId } from '@/components/activity/studioVocabulary';
-import { Table, TableCell, TableHeaderCell, TableRow } from '@/components/ui/Table';
+import { Table, TableCell, TableHeaderCell, TableRow, TableRowHeader } from '@/components/ui/Table';
 import { EpochTimeline, type TimelineContent } from '@/components/timeline/EpochTimeline';
 import { ValueField } from '@/components/values/ValueField';
 import { TaskGrid, type GridEdits } from './TaskGrid';
@@ -72,13 +72,13 @@ export function TaskPythonBody({ view, selected, select }: {
       <div className="grid max-w-md gap-1">{view.parameters.map((field) => <ValueField key={field.id} model={field} />)}</div>
     </TaskSection>
     <TaskSection name="signals">
-      <Table aria-label={studioName('signals')} className="table-fixed">
+      <Table aria-label={studioName('signals')} held={1} columns={[{ least: '10rem', fixed: true }, { least: '8rem' }]}>
         <thead><tr>
           <TableHeaderCell scope="col">{studioName('name')}</TableHeaderCell>
           <TableHeaderCell scope="col">{studioName('type')}</TableHeaderCell>
         </tr></thead>
         <tbody>{view.signals.map((signal) => <TableRow key={signal.id}>
-          <TableCell className="font-mono">{signal.name}</TableCell>
+          <TableRowHeader className="font-mono">{signal.name}</TableRowHeader>
           <TableCell className="text-shell-muted">{signal.type}</TableCell>
         </TableRow>)}</tbody>
       </Table>
