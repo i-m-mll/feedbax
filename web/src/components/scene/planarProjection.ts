@@ -1,4 +1,4 @@
-import type { ResolvedScene } from '@/features/scenario/projections';
+import { sceneElements, type Scene, type SceneShape } from './sceneView';
 
 export const WORKSPACE_SVG_WIDTH = 860;
 export const WORKSPACE_SVG_HEIGHT = 520;
@@ -16,23 +16,20 @@ export function includePoint(bounds: SceneBounds, point: ScenePoint) {
   bounds.max = [Math.max(bounds.max[0], point[0]), Math.max(bounds.max[1], point[1])];
 }
 
-export function sceneBounds(scene: ResolvedScene): SceneBounds {
+export function shapePoints(shape: SceneShape): readonly ScenePoint[] {
+  return shape.kind === 'point' ? [shape.point] : shape.points;
+}
+
+/** The Scene's extent, with `also` (points drawn beside its elements), padded. */
+export function sceneBounds(scene: Scene, also: readonly ScenePoint[] = []): SceneBounds {
   const bounds: SceneBounds = {
     min: [Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY],
     max: [Number.NEGATIVE_INFINITY, Number.NEGATIVE_INFINITY],
   };
-
-  for (const anchor of scene.anchors) {
-    if (anchor.position) includePoint(bounds, anchor.position);
+  for (const { shape } of sceneElements(scene)) {
+    if (shape) shapePoints(shape).forEach((point) => includePoint(bounds, point));
   }
-  for (const element of scene.elements) {
-    if (element.geometry.kind === 'polyline' || element.geometry.kind === 'points' || element.geometry.kind === 'link') {
-      for (const point of element.geometry.points) includePoint(bounds, point);
-    } else if (element.geometry.kind === 'bounds') {
-      includePoint(bounds, element.geometry.min);
-      includePoint(bounds, element.geometry.max);
-    }
-  }
+  also.forEach((point) => includePoint(bounds, point));
 
   if (!Number.isFinite(bounds.min[0]) || !Number.isFinite(bounds.min[1])) {
     return { min: [-1, -1], max: [1, 1] };

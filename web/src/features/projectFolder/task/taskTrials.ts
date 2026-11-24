@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { sampleTaskTrials } from '@/api/studioAuthoring';
-import type { ModelDocument, SampledTaskTrial, StudioTrialAuthoring, TaskDocument, TaskTrialAggregate, TaskTrialSampleResponse } from '@/generated/studioContracts';
+import type { ModelDocument, TrialRecord, StudioTrialAuthoring, TaskDocument, TrialAggregate, TaskTrialSampleResponse } from '@/generated/studioContracts';
 import type { EpochBounds } from './taskModel';
 import type { ShelfTask } from './shelfRows';
 import type { Percentiles, SampledTrial, SignalSteps, TrialBatch } from './trialSample';
@@ -44,7 +44,7 @@ function drawnText(value: unknown): string {
 }
 
 /** A trial the route drew, as the shelf, the Variables table and the Inspector read it; values are keyed by name. */
-export function sampledTrial(view: StudioTrialAuthoring, task: TaskDocument, trial: SampledTaskTrial): SampledTrial {
+export function sampledTrial(view: StudioTrialAuthoring, task: TaskDocument, trial: TrialRecord): SampledTrial {
   const period = view.period_seconds;
   return {
     intervals: trial.timeline.map(({ epoch, label, start, end }) => ({ id: epoch, name: label, start: start * period, end: end * period })),
@@ -67,7 +67,7 @@ function rangeText(least: unknown, greatest: unknown): string {
 }
 
 /** A batch's aggregate, as the shelf, the Variables table and the Inspector read it; values are keyed by id. */
-export function trialBatch(task: TaskDocument, count: number, aggregate: TaskTrialAggregate): TrialBatch {
+export function trialBatch(task: TaskDocument, count: number, aggregate: TrialAggregate): TrialBatch {
   return {
     count,
     epochs: aggregate.epochs.map(({ epoch, label, share }) => ({ id: epoch, name: label, share })),
@@ -88,6 +88,7 @@ export function trialBatch(task: TaskDocument, count: number, aggregate: TaskTri
 type Drawn = TaskTrialSampleResponse['drawn'];
 
 function drawnAs<Kind extends Drawn['kind']>(drawn: Drawn, kind: Kind): Extract<Drawn, { kind: Kind }> {
+  if (drawn.kind === 'problems') throw new Error(drawn.problems.map(({ reason }) => reason).join('\n'));
   if (drawn.kind !== kind) throw new Error(`The sampling route answered ${drawn.kind} where ${kind} was asked for.`);
   return drawn as Extract<Drawn, { kind: Kind }>;
 }

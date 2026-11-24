@@ -77,7 +77,7 @@ function refusalOf(change: Change, problems: readonly Problem[]): FieldRefusal {
 /** The kind a stored expression reads as, which its field's mark shows. */
 export function expressionKind(value: JsonValue | undefined): FieldKind {
   const kind = isRecord(value) ? value.kind : undefined;
-  return kind === 'name' ? 'link' : kind === 'call' ? 'formula' : kind === 'draw' ? 'draw' : 'value';
+  return kind === 'name' ? 'link' : kind === 'call' || kind === 'unresolved' ? 'formula' : kind === 'draw' ? 'draw' : 'value';
 }
 
 export function useTrialAuthoring(

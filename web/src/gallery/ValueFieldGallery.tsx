@@ -18,6 +18,7 @@ const site = (kinds: SiteProjection['kinds']): SiteProjection => ({
     ],
   },
   kinds,
+  parts: [{ path: [], functions: ['linspace', 'geomspace', 'sample'], names: ['hidden', 'tau'] }],
   functions: [
     { id: 'linspace', signature: 'linspace(first, last, count)', display_class: 'sweep_rule', min_args: 3, max_args: 3 },
     { id: 'geomspace', signature: 'geomspace(first, last, count)', display_class: 'sweep_rule', min_args: 3, max_args: 3 },
@@ -43,6 +44,7 @@ function useProjected(label: string, initial: string, kinds: SiteProjection['kin
 const drawSite: SiteProjection = {
   site: { expected: { base: 'real', dimensions: { time: 1 } }, finest: 1, names: [] },
   kinds: ['value', 'sweep', 'draw', 'formula'],
+  parts: [{ path: [], functions: ['uniform', 'normal'], names: [] }],
   functions: [
     { id: 'uniform', signature: 'uniform(low, high)', label: 'Uniform', display_class: 'draw', min_args: 2, max_args: 2,
       parameters: [{ name: 'low', label: 'Low' }, { name: 'high', label: 'High' }] },

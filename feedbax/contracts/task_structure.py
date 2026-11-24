@@ -5,7 +5,7 @@ from typing import Annotated, Literal
 from pydantic import Field
 
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.expression_values import ValueType
+from feedbax.contracts.expression_values import Expression, LiteralValue, ValueType
 
 type Member = Literal["variable", "epoch", "signal"]
 
@@ -75,6 +75,7 @@ class MakePresent(StrictModel):
     op: Literal["present"]
     signal: str
     epoch: str
+    text: str | None = None
 
 
 class SetLink(StrictModel):
@@ -85,7 +86,32 @@ class SetLink(StrictModel):
     variable: str | None
 
 
+class RepeatEpochs(StrictModel):
+    op: Literal["repeat"]
+    first_epoch: str
+    last_epoch: str
+    count: Expression = LiteralValue(value=2)
+
+
+class SetRepeatCount(StrictModel):
+    op: Literal["set_repeat_count"]
+    id: str
+    count: Expression
+
+
+class RemoveRepeat(StrictModel):
+    op: Literal["remove_repeat"]
+    id: str
+
+
+class SetVariableCount(StrictModel):
+    op: Literal["set_variable_count"]
+    id: str
+    count: Expression | None
+
+
 type TaskStructureChange = Annotated[
-    AddMember | RemoveMember | RenameMember | MoveMember | SetType | SetSpan | MakeAbsent | MakePresent | SetLink,
+    AddMember | RemoveMember | RenameMember | MoveMember | SetType | SetSpan | MakeAbsent | MakePresent | SetLink
+    | RepeatEpochs | SetRepeatCount | RemoveRepeat | SetVariableCount,
     Field(discriminator="op"),
 ]
