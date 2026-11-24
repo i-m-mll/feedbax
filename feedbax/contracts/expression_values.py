@@ -78,6 +78,7 @@ class ScopedValue(ValueRecord):
     name: Annotated[str, Field(min_length=1)]
     type: ValueType
     level: Level
+    list_count: Annotated[StrictInt, Field(gt=0)] | None = None
 
 
 class Site(ValueRecord):
@@ -85,6 +86,8 @@ class Site(ValueRecord):
     finest: Level
     names: tuple[ScopedValue, ...] = ()
     structural: bool = False
+    list_count: Annotated[StrictInt, Field(gt=0)] | None = None
+    repeat_count: Annotated[StrictInt, Field(gt=0)] | None = None
 
 
 class TextSpan(ValueRecord):
@@ -151,8 +154,13 @@ class DrawValue(ValueRecord):
     per: Literal["run", "trial"] = "trial"
 
 
+class UnresolvedValue(ValueRecord):
+    kind: Literal["unresolved"] = "unresolved"
+    text: str
+
+
 type Expression = Annotated[
-    LiteralValue | NameValue | CallValue | DrawValue, Field(discriminator="kind")
+    LiteralValue | NameValue | CallValue | DrawValue | UnresolvedValue, Field(discriminator="kind")
 ]
 
 

@@ -2185,19 +2185,37 @@ export interface TaskTimelineCue {
   outcome: number;
 }
 
-export interface SampledTaskTrial {
+export interface TrialRecord {
   id: string;
-  inits: Record<string, unknown>;
-  inputs: Record<string, unknown>;
-  present: Record<string, unknown>;
-  variables: Record<string, unknown>;
-  variable_defined: Record<string, unknown>;
+  inits: Record<string, JsonValue>;
+  inputs: Record<string, JsonValue>;
+  present: Record<string, JsonValue>;
+  variables: Record<string, JsonValue>;
+  variable_defined: Record<string, JsonValue>;
   timeline: TaskTimelineCue[];
+  terms?: Record<string, TrialTerm>;
+  states?: Record<string, JsonValue>;
 }
 
-export interface SampledTaskTrials {
+export interface TrialRecords {
   kind: "trials";
-  trials: SampledTaskTrial[];
+  trials: TrialRecord[];
+}
+
+export interface TrialTerm {
+  steps: boolean[];
+  covered: boolean;
+  values?: number[] | null;
+}
+
+export interface TrialTermAggregate {
+  steps: number[];
+  covered: number;
+}
+
+export interface TrialUnavailable {
+  kind: "problems";
+  problems: Problem[];
 }
 
 export interface TaskEpochShare {
@@ -2212,15 +2230,16 @@ export interface TaskSignalAggregate {
 }
 
 export interface TaskVariableRange {
-  least: unknown;
-  greatest: unknown;
+  least: JsonValue;
+  greatest: JsonValue;
 }
 
-export interface TaskTrialAggregate {
+export interface TrialAggregate {
   kind: "aggregate";
   epochs: TaskEpochShare[];
   signals: Record<string, TaskSignalAggregate>;
   variables: Record<string, TaskVariableRange>;
+  terms?: Record<string, TrialTermAggregate>;
 }
 
 export interface TaskTrialSampleRequest {
@@ -2228,6 +2247,8 @@ export interface TaskTrialSampleRequest {
   task?: TaskDocument | null;
   python_task?: PythonTaskSelection | null;
   input_overrides?: Record<string, string>;
+  objective?: ObjectiveDocument | null;
+  evaluation_trials?: string[] | null;
   seed?: number;
   count?: number;
   aggregate?: boolean;
@@ -2238,8 +2259,8 @@ export interface TaskTrialSampleResponse {
   task: string;
   seed: number;
   count: number;
-  n_steps: number;
-  drawn: SampledTaskTrials | TaskTrialAggregate;
+  n_steps: number | null;
+  drawn: TrialRecords | TrialAggregate | TrialUnavailable;
 }
 
 export interface ParentRef {
@@ -2880,7 +2901,13 @@ export type EpochSteps = {
   "greatest": number;
 };
 
-export type Expression = LiteralValue | NameValue | CallValue | DrawValue;
+export type Expression = LiteralValue | NameValue | CallValue | DrawValue | UnresolvedValue;
+
+export type ExpressionPartSite = {
+  "path": Array<string | number>;
+  "functions": Array<string>;
+  "names": Array<string>;
+};
 
 export type ExternalBase = {
   "path": string;
@@ -3121,6 +3148,7 @@ export type MakePresent = {
   "op": "present";
   "signal": string;
   "epoch": string;
+  "text"?: string | null;
 };
 
 export type ManualCombination = {
@@ -3373,8 +3401,27 @@ export type RemoveProjectValue = {
   "path": DifferencePointer;
 };
 
+export type RemoveRepeat = {
+  "op": "remove_repeat";
+  "id": string;
+};
+
 export type RemoveValue = {
   "op": "remove";
+};
+
+export type Repeat = {
+  "id": string;
+  "first_epoch": string;
+  "last_epoch": string;
+  "count": Expression;
+};
+
+export type RepeatEpochs = {
+  "op": "repeat";
+  "first_epoch": string;
+  "last_epoch": string;
+  "count"?: Expression;
 };
 
 export type ReplayDeclarationAddress = {
@@ -3454,6 +3501,7 @@ export type ScopedValue = {
   "name": string;
   "type": ValueType;
   "level": Level;
+  "list_count"?: number | null;
 };
 
 export type SelectedRow = {
@@ -3484,6 +3532,12 @@ export type SetProjectValue = {
   "value": JsonValue;
 };
 
+export type SetRepeatCount = {
+  "op": "set_repeat_count";
+  "id": string;
+  "count": Expression;
+};
+
 export type SetSpan = {
   "op": "set_span";
   "signal": string;
@@ -3504,6 +3558,12 @@ export type SetValue = {
   "op"?: "add" | "replace";
 };
 
+export type SetVariableCount = {
+  "op": "set_variable_count";
+  "id": string;
+  "count": Expression | null;
+};
+
 export type Sha256 = string;
 
 export type Signal = {
@@ -3519,12 +3579,16 @@ export type Site = {
   "finest": Level;
   "names"?: Array<ScopedValue>;
   "structural"?: boolean;
+  "list_count"?: number | null;
+  "repeat_count"?: number | null;
 };
 
 export type SiteProjection = {
   "site": Site;
   "kinds": Array<FieldKind>;
   "functions": Array<FunctionInfo>;
+  "parts": Array<ExpressionPartSite>;
+  "name_paths"?: Record<string, ModelAddress>;
 };
 
 export type SourceDifference = {
@@ -4363,6 +4427,8 @@ export type StudioTrialAuthoring = {
   "task_changed"?: Array<Pointer>;
   "objective_changed"?: Array<Pointer>;
   "objective": ObjectiveDocument | null;
+  "objective_source"?: StudioTrialObjectiveSource | null;
+  "input_overrides"?: Record<string, string>;
   "task_types": Array<StudioTaskType>;
   "tasks": Array<StudioTaskChoice>;
   "variables": Array<ScopedValue>;
@@ -4444,6 +4510,11 @@ export type StudioTrialInput = {
   "required": boolean;
   "signal": string | null;
   "explicit": boolean;
+};
+
+export type StudioTrialObjectiveSource = {
+  "kind": "train" | "own";
+  "step": string;
 };
 
 export type StudioTrialOutput = {
@@ -4533,6 +4604,7 @@ export type TaskDocument = {
   "variables": Array<Variable>;
   "epochs": Array<Epoch>;
   "signals": Array<Signal>;
+  "repeats"?: Array<Repeat>;
   "links"?: Array<Link>;
   "fixed_steps"?: number | null;
   "validation_trials"?: Array<ValidationTrial>;
@@ -4548,7 +4620,7 @@ export type TaskPort = {
   "task_key"?: string | null;
 };
 
-export type TaskStructureChange = AddMember | RemoveMember | feedbax__contracts__task_structure__RenameMember | MoveMember | SetType | SetSpan | MakeAbsent | MakePresent | SetLink;
+export type TaskStructureChange = AddMember | RemoveMember | feedbax__contracts__task_structure__RenameMember | MoveMember | SetType | SetSpan | MakeAbsent | MakePresent | SetLink | RepeatEpochs | SetRepeatCount | RemoveRepeat | SetVariableCount;
 
 export type TextSpan = {
   "start": number;
@@ -4567,6 +4639,11 @@ export type TrialDocuments = {
   "objective": ObjectiveDocument;
   "input_overrides"?: Record<string, string>;
   "python_task"?: PythonTaskSelection | null;
+};
+
+export type UnresolvedValue = {
+  "kind"?: "unresolved";
+  "text": string;
 };
 
 export type UpdateCadence = {
@@ -4624,6 +4701,7 @@ export type Variable = {
   "name": string;
   "type": ValueType;
   "value": Expression;
+  "count"?: Expression | null;
 };
 
 export type VariableBinding = {
@@ -9116,28 +9194,58 @@ export const TaskTimelineCueSchema: z.ZodType<TaskTimelineCue> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<TaskTimelineCue>;
 
-export const SampledTaskTrialSchema: z.ZodType<SampledTaskTrial> = z.lazy(() =>
+export const TrialRecordSchema: z.ZodType<TrialRecord> = z.lazy(() =>
   z
     .object({
       "id": z.string(),
-      "inits": z.record(z.string(), z.unknown()),
-      "inputs": z.record(z.string(), z.unknown()),
-      "present": z.record(z.string(), z.unknown()),
-      "variables": z.record(z.string(), z.unknown()),
-      "variable_defined": z.record(z.string(), z.unknown()),
+      "inits": z.record(z.string(), jsonValueSchema),
+      "inputs": z.record(z.string(), jsonValueSchema),
+      "present": z.record(z.string(), jsonValueSchema),
+      "variables": z.record(z.string(), jsonValueSchema),
+      "variable_defined": z.record(z.string(), jsonValueSchema),
       "timeline": z.array(TaskTimelineCueSchema),
+      "terms": z.record(z.string(), TrialTermSchema).optional(),
+      "states": z.record(z.string(), jsonValueSchema).optional(),
     })
     .strict()
-) as unknown as z.ZodType<SampledTaskTrial>;
+) as unknown as z.ZodType<TrialRecord>;
 
-export const SampledTaskTrialsSchema: z.ZodType<SampledTaskTrials> = z.lazy(() =>
+export const TrialRecordsSchema: z.ZodType<TrialRecords> = z.lazy(() =>
   z
     .object({
       "kind": z.literal("trials"),
-      "trials": z.array(SampledTaskTrialSchema),
+      "trials": z.array(TrialRecordSchema),
     })
     .strict()
-) as unknown as z.ZodType<SampledTaskTrials>;
+) as unknown as z.ZodType<TrialRecords>;
+
+export const TrialTermSchema: z.ZodType<TrialTerm> = z.lazy(() =>
+  z
+    .object({
+      "steps": z.array(z.boolean()),
+      "covered": z.boolean(),
+      "values": z.array(z.number().finite()).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialTerm>;
+
+export const TrialTermAggregateSchema: z.ZodType<TrialTermAggregate> = z.lazy(() =>
+  z
+    .object({
+      "steps": z.array(z.number().finite()),
+      "covered": z.number().finite(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialTermAggregate>;
+
+export const TrialUnavailableSchema: z.ZodType<TrialUnavailable> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("problems"),
+      "problems": z.array(ProblemSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialUnavailable>;
 
 export const TaskEpochShareSchema: z.ZodType<TaskEpochShare> = z.lazy(() =>
   z
@@ -9161,22 +9269,23 @@ export const TaskSignalAggregateSchema: z.ZodType<TaskSignalAggregate> = z.lazy(
 export const TaskVariableRangeSchema: z.ZodType<TaskVariableRange> = z.lazy(() =>
   z
     .object({
-      "least": z.unknown(),
-      "greatest": z.unknown(),
+      "least": jsonValueSchema,
+      "greatest": jsonValueSchema,
     })
     .strict()
 ) as unknown as z.ZodType<TaskVariableRange>;
 
-export const TaskTrialAggregateSchema: z.ZodType<TaskTrialAggregate> = z.lazy(() =>
+export const TrialAggregateSchema: z.ZodType<TrialAggregate> = z.lazy(() =>
   z
     .object({
       "kind": z.literal("aggregate"),
       "epochs": z.array(TaskEpochShareSchema),
       "signals": z.record(z.string(), TaskSignalAggregateSchema),
       "variables": z.record(z.string(), TaskVariableRangeSchema),
+      "terms": z.record(z.string(), TrialTermAggregateSchema).optional(),
     })
     .strict()
-) as unknown as z.ZodType<TaskTrialAggregate>;
+) as unknown as z.ZodType<TrialAggregate>;
 
 export const TaskTrialSampleRequestSchema: z.ZodType<TaskTrialSampleRequest> = z.lazy(() =>
   z
@@ -9185,6 +9294,8 @@ export const TaskTrialSampleRequestSchema: z.ZodType<TaskTrialSampleRequest> = z
       "task": TaskDocumentSchema.nullable().optional(),
       "python_task": PythonTaskSelectionSchema.nullable().optional(),
       "input_overrides": z.record(z.string(), z.string()).optional(),
+      "objective": ObjectiveDocumentSchema.nullable().optional(),
+      "evaluation_trials": z.array(z.string()).min(1).nullable().optional(),
       "seed": z.number().int().safe().optional(),
       "count": z.number().int().safe().gte(1).optional(),
       "aggregate": z.boolean().optional(),
@@ -9208,8 +9319,8 @@ export const TaskTrialSampleResponseSchema: z.ZodType<TaskTrialSampleResponse> =
       "task": z.string(),
       "seed": z.number().int().safe(),
       "count": z.number().int().safe(),
-      "n_steps": z.number().int().safe(),
-      "drawn": z.union([SampledTaskTrialsSchema, TaskTrialAggregateSchema]),
+      "n_steps": z.number().int().safe().nullable(),
+      "drawn": z.union([TrialRecordsSchema, TrialAggregateSchema, TrialUnavailableSchema]),
     })
     .strict()
 ) as unknown as z.ZodType<TaskTrialSampleResponse>;
@@ -10148,8 +10259,16 @@ export const EpochStepsSchema: z.ZodType<EpochSteps> = z.lazy(() =>
 ) as unknown as z.ZodType<EpochSteps>;
 
 export const ExpressionSchema: z.ZodType<Expression> = z.lazy(() =>
-  z.union([LiteralValueSchema, NameValueSchema, CallValueSchema, DrawValueSchema])
+  z.union([LiteralValueSchema, NameValueSchema, CallValueSchema, DrawValueSchema, UnresolvedValueSchema])
 ) as unknown as z.ZodType<Expression>;
+
+export const ExpressionPartSiteSchema: z.ZodType<ExpressionPartSite> = z.lazy(() =>
+  z.object({
+    "path": z.array(z.union([z.string(), z.number().int().safe()])),
+    "functions": z.array(z.string()),
+    "names": z.array(z.string()),
+  }).strict()
+) as unknown as z.ZodType<ExpressionPartSite>;
 
 export const ExternalBaseSchema: z.ZodType<ExternalBase> = z.lazy(() =>
   z.object({
@@ -10467,6 +10586,7 @@ export const MakePresentSchema: z.ZodType<MakePresent> = z.lazy(() =>
     "op": z.literal("present"),
     "signal": z.string(),
     "epoch": z.string(),
+    "text": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<MakePresent>;
 
@@ -10816,11 +10936,36 @@ export const RemoveProjectValueSchema: z.ZodType<RemoveProjectValue> = z.lazy(()
   }).strict()
 ) as unknown as z.ZodType<RemoveProjectValue>;
 
+export const RemoveRepeatSchema: z.ZodType<RemoveRepeat> = z.lazy(() =>
+  z.object({
+    "op": z.literal("remove_repeat"),
+    "id": z.string(),
+  }).strict()
+) as unknown as z.ZodType<RemoveRepeat>;
+
 export const RemoveValueSchema: z.ZodType<RemoveValue> = z.lazy(() =>
   z.object({
     "op": z.literal("remove"),
   }).strict()
 ) as unknown as z.ZodType<RemoveValue>;
+
+export const RepeatSchema: z.ZodType<Repeat> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "first_epoch": z.string(),
+    "last_epoch": z.string(),
+    "count": ExpressionSchema,
+  }).strict()
+) as unknown as z.ZodType<Repeat>;
+
+export const RepeatEpochsSchema: z.ZodType<RepeatEpochs> = z.lazy(() =>
+  z.object({
+    "op": z.literal("repeat"),
+    "first_epoch": z.string(),
+    "last_epoch": z.string(),
+    "count": ExpressionSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<RepeatEpochs>;
 
 export const ReplayDeclarationAddressSchema: z.ZodType<ReplayDeclarationAddress> = z.lazy(() =>
   z.object({
@@ -10928,6 +11073,7 @@ export const ScopedValueSchema: z.ZodType<ScopedValue> = z.lazy(() =>
     "name": z.string().min(1),
     "type": ValueTypeSchema,
     "level": LevelSchema,
+    "list_count": z.union([z.number().int().safe().gt(0), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<ScopedValue>;
 
@@ -10969,6 +11115,14 @@ export const SetProjectValueSchema: z.ZodType<SetProjectValue> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<SetProjectValue>;
 
+export const SetRepeatCountSchema: z.ZodType<SetRepeatCount> = z.lazy(() =>
+  z.object({
+    "op": z.literal("set_repeat_count"),
+    "id": z.string(),
+    "count": ExpressionSchema,
+  }).strict()
+) as unknown as z.ZodType<SetRepeatCount>;
+
 export const SetSpanSchema: z.ZodType<SetSpan> = z.lazy(() =>
   z.object({
     "op": z.literal("set_span"),
@@ -10995,6 +11149,14 @@ export const SetValueSchema: z.ZodType<SetValue> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<SetValue>;
 
+export const SetVariableCountSchema: z.ZodType<SetVariableCount> = z.lazy(() =>
+  z.object({
+    "op": z.literal("set_variable_count"),
+    "id": z.string(),
+    "count": z.union([ExpressionSchema, z.null()]),
+  }).strict()
+) as unknown as z.ZodType<SetVariableCount>;
+
 export const Sha256Schema: z.ZodType<Sha256> = z.lazy(() =>
   z.string().regex(new RegExp("^[a-f0-9]{64}$"))
 ) as unknown as z.ZodType<Sha256>;
@@ -11015,6 +11177,8 @@ export const SiteSchema: z.ZodType<Site> = z.lazy(() =>
     "finest": LevelSchema,
     "names": z.array(ScopedValueSchema).optional(),
     "structural": z.boolean().optional(),
+    "list_count": z.union([z.number().int().safe().gt(0), z.null()]).optional(),
+    "repeat_count": z.union([z.number().int().safe().gt(0), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<Site>;
 
@@ -11023,6 +11187,8 @@ export const SiteProjectionSchema: z.ZodType<SiteProjection> = z.lazy(() =>
     "site": SiteSchema,
     "kinds": z.array(FieldKindSchema),
     "functions": z.array(FunctionInfoSchema),
+    "parts": z.array(ExpressionPartSiteSchema),
+    "name_paths": z.record(z.string(), ModelAddressSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<SiteProjection>;
 
@@ -12107,6 +12273,8 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "task_changed": z.array(PointerSchema).optional(),
     "objective_changed": z.array(PointerSchema).optional(),
     "objective": z.union([ObjectiveDocumentSchema, z.null()]),
+    "objective_source": z.union([StudioTrialObjectiveSourceSchema, z.null()]).optional(),
+    "input_overrides": z.record(z.string(), z.string()).optional(),
     "task_types": z.array(StudioTaskTypeSchema),
     "tasks": z.array(StudioTaskChoiceSchema),
     "variables": z.array(ScopedValueSchema),
@@ -12206,6 +12374,13 @@ export const StudioTrialInputSchema: z.ZodType<StudioTrialInput> = z.lazy(() =>
     "explicit": z.boolean(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialInput>;
+
+export const StudioTrialObjectiveSourceSchema: z.ZodType<StudioTrialObjectiveSource> = z.lazy(() =>
+  z.object({
+    "kind": z.union([z.literal("train"), z.literal("own")]),
+    "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialObjectiveSource>;
 
 export const StudioTrialOutputSchema: z.ZodType<StudioTrialOutput> = z.lazy(() =>
   z.object({
@@ -12325,6 +12500,7 @@ export const TaskDocumentSchema: z.ZodType<TaskDocument> = z.lazy(() =>
     "variables": z.array(VariableSchema),
     "epochs": z.array(EpochSchema).min(1),
     "signals": z.array(SignalSchema),
+    "repeats": z.array(RepeatSchema).optional(),
     "links": z.array(LinkSchema).optional(),
     "fixed_steps": z.union([z.number().int().safe().min(0), z.null()]).optional(),
     "validation_trials": z.array(ValidationTrialSchema).min(1).optional(),
@@ -12346,7 +12522,7 @@ export const TaskPortSchema: z.ZodType<TaskPort> = z.lazy(() =>
 ) as unknown as z.ZodType<TaskPort>;
 
 export const TaskStructureChangeSchema: z.ZodType<TaskStructureChange> = z.lazy(() =>
-  z.union([AddMemberSchema, RemoveMemberSchema, feedbax__contracts__task_structure__RenameMemberSchema, MoveMemberSchema, SetTypeSchema, SetSpanSchema, MakeAbsentSchema, MakePresentSchema, SetLinkSchema])
+  z.union([AddMemberSchema, RemoveMemberSchema, feedbax__contracts__task_structure__RenameMemberSchema, MoveMemberSchema, SetTypeSchema, SetSpanSchema, MakeAbsentSchema, MakePresentSchema, SetLinkSchema, RepeatEpochsSchema, SetRepeatCountSchema, RemoveRepeatSchema, SetVariableCountSchema])
 ) as unknown as z.ZodType<TaskStructureChange>;
 
 export const TextSpanSchema: z.ZodType<TextSpan> = z.lazy(() =>
@@ -12373,6 +12549,13 @@ export const TrialDocumentsSchema: z.ZodType<TrialDocuments> = z.lazy(() =>
     "python_task": z.union([PythonTaskSelectionSchema, z.null()]).optional(),
   }).strict().superRefine((value, ctx) => { if ((value.task == null) === (value.python_task == null)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Select one Task document or registered Python task." }); })
 ) as unknown as z.ZodType<TrialDocuments>;
+
+export const UnresolvedValueSchema: z.ZodType<UnresolvedValue> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("unresolved").optional(),
+    "text": z.string(),
+  }).strict()
+) as unknown as z.ZodType<UnresolvedValue>;
 
 export const UpdateCadenceSchema: z.ZodType<UpdateCadence> = z.lazy(() =>
   z.object({
@@ -12452,6 +12635,7 @@ export const VariableSchema: z.ZodType<Variable> = z.lazy(() =>
     "name": z.string(),
     "type": ValueTypeSchema,
     "value": ExpressionSchema,
+    "count": z.union([ExpressionSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<Variable>;
 

@@ -22,6 +22,7 @@ from feedbax.contracts.expression_values import (
     ProblemCode,
     Site,
     TextSpan,
+    UnresolvedValue,
     ValueBase,
     ValueType,
     walk,
@@ -171,6 +172,9 @@ def check(
         dimension: Dimensions | None = None,
         requested: ValueBase | None = None,
     ) -> TypedNode | None:
+        if isinstance(node, UnresolvedValue):
+            problem(node, ProblemCode.PARSE, "The expression text has not resolved.", at)
+            return None
         if isinstance(node, LiteralValue):
             base = {
                 bool: ValueBase.BOOLEAN,
