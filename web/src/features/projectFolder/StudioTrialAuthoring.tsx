@@ -36,7 +36,7 @@ import { epochBoundaries, signalAggregate, signalSteps, type TrialShown } from '
 import { baseOf } from './documentPayload';
 import type { ProjectEditController } from './projectEditController';
 import { filesRemoval, type ConfirmRunRemoval } from './runRemoval';
-import type { AskStore } from './storeChoice';
+import { sendWithStore, type AskStore } from './storeChoice';
 import { SweepTargetItem, type SweepTarget } from './StudioTrainAuthoringForm';
 import { TaskOutline, type OutlineGroup } from './task/TaskOutline';
 
@@ -112,14 +112,11 @@ export function useTrialAuthoring(
     const committedFrom = document.activeElement;
     return editor.command(async (saved) => {
       const request = { revision: saved.revision, run, change, scope: scope(change) };
-      let result = await readStudioTrialAuthoring(saved.project_id, request, editor.signal);
-      if (result.store_choices) {
-        // The edit reaches beyond the selection: it waits here, holding later commands, until a store is chosen.
-        const choice = await askStore(editedElement(committedFrom), result.store_choices);
-        if (!choice) return undefined;
-        result = await readStudioTrialAuthoring(saved.project_id, { ...request, store_choice: choice }, editor.signal);
-        if (result.store_choices) throw new Error('The chosen store was offered again.');
-      }
+      // An edit that reaches beyond the selection waits here, holding later commands, until a store is chosen.
+      const result = await sendWithStore(askStore, () => editedElement(committedFrom), () => editor.flush(),
+        (store_choice) => readStudioTrialAuthoring(saved.project_id, { ...request, store_choice }, editor.signal),
+        (answer) => answer.store_choices);
+      if (!result) return undefined;
       if (result.files.length || result.created?.length) {
         if (removes && !await confirmRemoval(filesRemoval(saved.project_id, saved.revision, result.files, editor.signal))) return;
         const documents = [result.model, result.task_document, result.objective_document];

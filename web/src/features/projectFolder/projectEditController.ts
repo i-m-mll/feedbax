@@ -475,7 +475,7 @@ export class ProjectEditController {
   /** Applies a Model command for `scope`'s steps (every reader when absent), with step files written alongside it. */
   editModel(
     name: string, document: string, command: ModelEditCommand, reviewed: StudioProjectRevision,
-    scope?: Pick<ModelEditRequest, 'step' | 'chosen_steps' | 'variant' | 'rows' | 'axes' | 'files'>,
+    scope?: Pick<ModelEditRequest, 'step' | 'chosen_steps' | 'variant' | 'rows' | 'axes' | 'files' | 'store_choice'>,
   ) {
     return this.exclusiveTransaction(async (before) => {
       const edit = this.transport.editModel;

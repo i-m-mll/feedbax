@@ -29,7 +29,7 @@ import { useDrawerSections, useFieldFocus, type FieldFocusRequest } from '@/feat
 import { FieldIntent } from '@/components/values/fieldIntent';
 import { X } from 'lucide-react';
 import { Button, IconButton } from '@/components/ui/Button';
-import { ChoiceMenuContext, useChoiceMenu } from '@/components/ui/ChoiceMenu';
+import { editedElement, useChoiceMenu } from '@/components/ui/ChoiceMenu';
 import { Dialog } from '@/components/ui/Dialog';
 import { Select } from '@/components/ui/Select';
 import { TextField } from '@/components/ui/TextField';
@@ -92,7 +92,7 @@ import { documentsOfRole } from './useProjectDocuments';
 import { StudioEvaluationAttemptDetails } from './StudioEvaluationResults';
 import { focusedResult, SavedResults } from './SavedResults';
 import { filesRemoval, RunRemovalContext, useRunRemovalDialog } from './runRemoval';
-import { askStoreWith } from './storeChoice';
+import { AskStoreContext, askStoreWith, sendWithStore } from './storeChoice';
 import {
   jsonPointerPath, StudioStepField, StudioTrainAuthoringForm, SweepFieldItems, useTrainClassFields, useTrainFieldLabels,
 } from './StudioTrainAuthoringForm';
@@ -316,6 +316,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const sets = setAuthoring({
     editor, project: saved.project, applies: !outside && reachable && variantApplies,
     perform, state: () => latestState.current, select: (next) => selection.select(next),
+    ask: (anchor, choices) => askStore(anchor, choices),
   });
   const axisMenu: AxisMenu = (stepId, axis) => ({
     picker: sets.axisPicker(stepId, axis), commands: sets.axisCommands(stepId, axis),
@@ -623,12 +624,13 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const documentEditable = !outside;
   const trialEditable = documentEditable && Boolean(trialScope);
   const trialChangeScope: TrialChangeScope = () => trialEditScope;
+  const askStore = askStoreWith(choiceMenu.ask, {
+    step: stepLabel,
+    run: (key) => shown?.window_map?.rows.find((row) => savedRunId(row.key) === savedRunId(key))?.label ?? key.row,
+  });
   // A run whose own definition is refused has no Task or Objective to read; its views are dimmed by its problems.
   const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, trialStep && namedRow?.resolved !== false,
-    trialEditable, trialChangeScope, runRemoval.confirm, askStoreWith(choiceMenu.ask, {
-      step: stepLabel,
-      run: (key) => shown?.window_map?.rows.find((row) => savedRunId(row.key) === savedRunId(key))?.label ?? key.row,
-    }));
+    trialEditable, trialChangeScope, runRemoval.confirm, askStore);
   const trialClock = useTrialClock({
     windowState, setWindowState, projectId: saved.project_id, revision: saved.revision, view: trial.view,
     taskDocument: trial.view && (trial.view.task_document ?? step?.id), stored, evaluation: selectedEvaluation,
@@ -677,7 +679,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const detailInputs = {
     editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection,
     variantId: variant, evaluation: selectedEvaluation, evaluationReplay,
-    namedRun, documentScopes, planCurrent: plans.current, elements, valueEditing: !!selectedValue, evaluateScope: evaluateScope || undefined, stored, modelProblems, selectedSweepValues, confirmRunRemoval: runRemoval.confirm,
+    namedRun, documentScopes, planCurrent: plans.current, elements, valueEditing: !!selectedValue, evaluateScope: evaluateScope || undefined, stored, modelProblems, selectedSweepValues, confirmRunRemoval: runRemoval.confirm, askStore,
     drawerSections,
     openModelProblems: (element: ModelAddress, opener: HTMLElement) => {
       const owner = modelProblems?.find((problem) => {
@@ -1363,10 +1365,13 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
 
   async function applyCheckpointSweepEdit(edit: StudioCheckpointRuleRequest['edit']) {
     if (!step || !subject || !namedRun || !applies) return;
+    const from = document.activeElement;
     await perform(async (current) => {
-      const reviewed = await prepareCheckpointRuleEdit(current.project_id, {
-        revision: current.revision, run: namedRun, edit,
-      }, editor.signal);
+      const reviewed = await sendWithStore(askStore, () => editedElement(from, from), () => editor.flush(),
+        (store_choice) => prepareCheckpointRuleEdit(current.project_id, {
+          revision: current.revision, run: namedRun, edit, store_choice,
+        }, editor.signal), (answer) => answer.store_choices);
+      if (!reviewed) return;
       if (!await runRemoval.confirm(filesRemoval(saved.project_id, reviewed.revision, reviewed.files, editor.signal))) return;
       editor.editFiles(edit.kind === 'to_sweep' ? 'Sweep Evaluate checkpoints' : 'Set Evaluate checkpoints',
         reviewed.files, { reviewedRevision: reviewed.revision,
@@ -1670,7 +1675,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     change={(name, setting, value) => editor.edit(declarationAddress, name, [{ op: 'add', path: `/settings/${setting}`, value }])} />;
 
   return (
-    <RunRemovalContext.Provider value={runRemoval.confirm}><ChoiceMenuContext.Provider value={choiceMenu.ask}>
+    <RunRemovalContext.Provider value={runRemoval.confirm}><AskStoreContext.Provider value={askStore}>
       <ProjectWindow
         projectSettings={projectSettings}
         state={windowState} onStateChange={setWindowState} projectName={configuration.project}
@@ -1948,7 +1953,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       />
       {runRemoval.dialog}
       {choiceMenu.menu}
-    </ChoiceMenuContext.Provider></RunRemovalContext.Provider>
+    </AskStoreContext.Provider></RunRemovalContext.Provider>
   );
 }
 
