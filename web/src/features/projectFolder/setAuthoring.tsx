@@ -89,13 +89,14 @@ export function setAuthoring({ editor, project, applies, perform, state, select,
 
   /**
    * Save Set and Inline Set on a step's authored axis, which convert between its values and the Model differences of a
-   * Set and so apply only while the step reads a Model document (`model`), and Add Entry on an axis whose Set has no
-   * entries (`empty`), which Duplicate Run cannot copy one of.
+   * Set and so apply only while the step reads a Model document (`model`); Add Entry on an axis whose Set has no
+   * entries (`empty`), which Duplicate Run cannot copy one of; and To Field on a Train's Set axis, which moves the Set
+   * into the run's trials.
    */
   function axisCommands(step: string, axis: string, { model, empty }: { model: boolean; empty: boolean }): StudioCommand[] {
     const read = authoredAxis(project, step, axis);
     if (!read) return [];
-    const command = (id: 'saveSet' | 'inlineSet' | 'addEntry', edit: SetCommand, enabled = applies) => bindStudioCommand(id, () => {
+    const command = (id: 'saveSet' | 'inlineSet' | 'addEntry' | 'toField', edit: SetCommand, enabled = applies) => bindStudioCommand(id, () => {
       void perform(async () => {
         const stored = await store(studioAccessibleName(id, axis), edit);
         if (stored?.selected) select(selectSweepValue(state(), step, stored.selected.axis, stored.selected.value));
@@ -106,7 +107,17 @@ export function setAuthoring({ editor, project, applies, perform, state, select,
     return [
       ...empty ? [command('addEntry', { kind: 'add_set_entry', step, axis })] : [],
       command('inlineSet', { kind: 'inline_set', step, axis }, applies && model),
+      ...project.steps?.[step]?.kind === 'train' ? [command('toField', { kind: 'set_to_field', step, axis })] : [],
     ];
+  }
+
+  /** Moves a Set the step's trials apply back to the sweep axis `axis`, whose runs it was moved out of. */
+  function toSweep(step: string, axis: string): StudioCommand {
+    return bindStudioCommand('toSweep', () => {
+      void perform(async () => {
+        await store(studioAccessibleName('toSweep', axis), { kind: 'set_to_sweep', step, axis });
+      }, refuseStep(step));
+    }, { subject: axis, instance: JSON.stringify([step, axis]), enabled: applies });
   }
 
   /**
@@ -216,7 +227,7 @@ export function setAuthoring({ editor, project, applies, perform, state, select,
     };
   }
 
-  return { duplicateRun, axisCommands, removeValue, axisPicker, applySet, combination };
+  return { duplicateRun, axisCommands, toSweep, removeValue, axisPicker, applySet, combination };
 }
 
 export type SetAuthoring = ReturnType<typeof setAuthoring>;
