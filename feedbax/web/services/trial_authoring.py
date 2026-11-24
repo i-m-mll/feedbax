@@ -35,7 +35,8 @@ from feedbax.studio.authoring import training_document_choice
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.contracts.studio_trials import (
     StudioTaskChoice, StudioTaskType, StudioTrialAuthoring, StudioTrialAuthoringRequest, StudioTrialBindingEdit,
-    StudioTrialDocumentEdit, StudioTrialDocumentReset, StudioTrialEpoch, StudioTrialExpressionEdit, StudioTrialField,
+    StudioTrialDocumentEdit, StudioTrialDocumentReset, StudioTrialEpoch, StudioTrialEpochInstance,
+    StudioTrialExpressionEdit, StudioTrialField,
     StudioTrialInput, StudioTrialObjectiveSource,
     StudioTrialOutput, StudioTrialReset, StudioTrialSelectDocument, StudioTrialStepScope, StudioTrialStructureEdit,
 )
@@ -91,6 +92,7 @@ class _Projection:
     task_origins: dict[tuple[str, ...], str] = field(default_factory=dict)
     resets: tuple[ModelResetField, ...] = ()
     partial_task: TrialSource | None = None
+    epoch_instances: tuple[StudioTrialEpochInstance, ...] = ()
 
 
 def _project(
@@ -147,9 +149,13 @@ def _project(
     outputs = paired.model.outputs if paired is not None else partial.outputs
     variables, signals = source.interface.variables, source.interface.signals
     names = {epoch.id: epoch.name for epoch in epochs}
+    epoch_instances = tuple(
+        StudioTrialEpochInstance(id=epoch, name=names.get(epoch, epoch), steps=steps, occurrence=occurrence)
+        for occurrence, (epoch, steps) in enumerate(zip(source.epochs, source.step_counts, strict=True))
+    )
     epochs = tuple(
-        StudioTrialEpoch(id=epoch, name=names.get(epoch, epoch), steps=steps)
-        for epoch, steps in dict(zip(source.epochs, source.step_counts, strict=True)).items()
+        StudioTrialEpoch(id=instance.id, name=instance.name, steps=instance.steps)
+        for instance in {item.id: item for item in epoch_instances}.values()
     )
     if documents.objective is not None:
         objective_sites = {} if show_objective else None
@@ -164,7 +170,7 @@ def _project(
                               for problem in objective)
     return _Projection(
         paired, variables, signals, epochs, fields, problems, resets=tuple(resets),
-        partial_task=source if paired is None else None,
+        partial_task=source if paired is None else None, epoch_instances=epoch_instances,
     )
 
 
@@ -1234,6 +1240,7 @@ def trial_authoring(
         task_types=[StudioTaskType(type=key, label=entry.label, parameter_schema=entry.parameters.model_json_schema())
                     for key in bundle.python_tasks.keys() if (entry := bundle.python_tasks.resolve(key))],
         variables=list(projected.variables), signals=list(projected.signals), epochs=list(projected.epochs),
+        epoch_instances=list(projected.epoch_instances),
         period_seconds=documents.model.step_seconds if isinstance(documents.model.step_seconds, float) else None,
         n_steps=compiled.n_steps if compiled else None,
         batch_size=_batch_size(step.kind, definition.payload),

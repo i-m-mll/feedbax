@@ -11,7 +11,7 @@ import unicodedata
 
 from pydantic import JsonValue
 
-from feedbax.contracts.project import BasedDocument, Document, Project, diff, json_pointer_parts
+from feedbax.contracts.project import Document, Project, diff, json_pointer_parts
 from feedbax.contracts.project_inputs import DocumentReference, NamedSubset, StepReference
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.contracts.project_sources import pointer
@@ -459,14 +459,6 @@ def duplicate_step(
     if old in shown.get("steps", {}):
         shown["steps"] = {**shown["steps"], new: shown["steps"][old]}
     return copied, shown
-
-
-def detach_refusals(documents: Mapping[str, Document]) -> frozenset[str]:
-    """A based document needs a composed payload before it can be detached."""
-    return frozenset(
-        name for name, document in documents.items()
-        if isinstance(document, BasedDocument) and isinstance(compose_document(documents.get, name), ProjectDiagnostic)
-    )
 
 
 def regroup_refusal(project: dict[str, JsonValue], step: str) -> str | None:

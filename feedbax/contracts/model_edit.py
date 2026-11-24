@@ -27,10 +27,15 @@ class ModelPosition(StrictModel):
     y: Annotated[float, Field(allow_inf_nan=False)]
 
 
+class RegisteredComponent(StrictModel):
+    kind: Literal["definition"]
+    definition: Name
+
+
 class AddComponent(StrictModel):
     op: Literal["add_component"]
     graph: ModelAddress
-    component: LeafComponent | CompositeComponent
+    component: LeafComponent | CompositeComponent | RegisteredComponent
     position: ModelPosition
     id: ModelElementId | None = None
     connect_from: SignalSource | None = None
@@ -220,6 +225,11 @@ class ModelGraphProblem(StrictModel):
     reason: str
 
 
+class ModelUngroupEligibility(StrictModel):
+    address: ModelAddress
+    reason: str | None
+
+
 class TaskSignalSource(StrictModel):
     owner: Literal["task"]
     run: StudioSavedTrainKey
@@ -326,6 +336,7 @@ class ModelProjection(StrictModel):
     base_differences: tuple[ModelStructuralDifference, ...] = ()
     value_differences: tuple[ModelStructuralDifference, ...] = ()
     problems: tuple[ModelGraphProblem, ...] = ()
+    ungroup: tuple[ModelUngroupEligibility, ...] = ()
 
 
 class ModelEditState(ModelLayout):

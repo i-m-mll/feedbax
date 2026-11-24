@@ -480,7 +480,6 @@ class ProjectPlanRead:
                 for row in plan.rows if includes(row.key.variant) and isinstance(row, PlannedAnalyzeRun)
                 for name, figure in row.figures.items()
             ],
-            detach_refused=sorted(self.settled.detach_refused),
             regroup_refused=sorted(self.settled.regroup_refused),
         )
 

@@ -42,6 +42,19 @@ type LeafPorts = Callable[[Record, Direction, str], Port | None]
 type AcceptComponent = Callable[[Record, str | None], bool]
 
 
+@dataclass(frozen=True)
+class _UngroupRoute:
+    source: Record | None
+    inner: bool
+    attachments: list[Record]
+
+
+@dataclass(frozen=True)
+class _UngroupWiring:
+    parent: dict[str, _UngroupRoute]
+    child: dict[str, _UngroupRoute]
+
+
 class _Refusal(ValueError):
     def __init__(self, address: ModelAddress, detail: str):
         super().__init__(detail)
@@ -878,7 +891,7 @@ class ModelEditDraft:
         self.changed.extend(command.selection)
         self.changed.append(_address(scope, "component", id=group_id))
 
-    def ungroup(self, address: ModelAddress) -> None:
+    def _ungroup_wiring(self, address: ModelAddress) -> _UngroupWiring:
         graph, component = self.component(address)
         element = address.element
         assert element.kind == "component"
@@ -900,11 +913,6 @@ class ModelEditDraft:
                             "Ungroup would remove a port that has attachments",
                         )
         parent_wires, child_wires = graph["wires"], inner["wires"]
-        attachment_owners = {
-            id(item): _address(location, "attachment", parent={"kind": "wire", "id": wire_id}, id=item["id"])
-            for location, wires in ((scope, parent_wires), (inner_scope, child_wires))
-            for wire_id, wire in wires.items() for item in wire["attachments"]
-        }
 
         def boundary_wires(wires, selects, location):
             found = {}
@@ -941,7 +949,7 @@ class ModelEditDraft:
 
         consumed: dict[tuple[tuple[str, ...], str], int] = {}
 
-        def trace(end: Record, local_scope: tuple[str, ...], seen: frozenset) -> tuple[Record | None, list[Record]]:
+        def trace(end: Record, local_scope: tuple[str, ...], seen: frozenset = frozenset()) -> _UngroupRoute:
             if local_scope == scope and end.get("component") == key:
                 feed = inside_outputs.get(end["port"])
                 feed_scope = inner_scope
@@ -949,22 +957,63 @@ class ModelEditDraft:
                 feed = outside_inputs.get(end["port"])
                 feed_scope = scope
             else:
-                return (end if local_scope == scope else _copy_endpoint(end, ids)), []
+                return _UngroupRoute(end, local_scope == inner_scope, [])
             if feed is None:
-                return None, []
+                return _UngroupRoute(None, False, [])
             id_, feeder = feed
             path = (feed_scope, id_)
             if path in seen:
                 raise _Refusal(_address(feed_scope, "wire", id=id_), "boundary feeds itself")
-            source, chain = trace(feeder["source"], feed_scope, seen | {path})
-            if feeder["attachments"] and source is not None:
+            route = trace(feeder["source"], feed_scope, seen | {path})
+            if feeder["attachments"] and route.source is not None:
                 consumed[path] = consumed.get(path, 0) + 1
                 if consumed[path] > 1:
                     raise _Refusal(
                         _address(feed_scope, "wire", id=id_),
                         "Ungroup would copy an attachment onto multiple wires",
                     )
-            return source, [*chain, *feeder["attachments"]]
+            return _UngroupRoute(route.source, route.inner, [*route.attachments, *feeder["attachments"]])
+
+        return _UngroupWiring(
+            parent={
+                id_: trace(wire["source"], scope)
+                for id_, wire in parent_wires.items()
+                if wire["source"].get("component") == key and wire["target"].get("component") != key
+            },
+            child={
+                id_: trace(wire["source"], inner_scope)
+                for id_, wire in child_wires.items()
+                if wire["target"]["owner"] != "outputs"
+            },
+        )
+
+    def ungroup_eligibility(self) -> Iterator[edits.ModelUngroupEligibility]:
+        def candidates(owner: Record, scope: tuple[str, ...]) -> Iterator[edits.ModelUngroupEligibility]:
+            for key, component in owner["interior"]["components"].items():
+                if component["kind"] != "composite":
+                    continue
+                address = _address(scope, "component", id=key)
+                reason = None
+                try:
+                    self._ungroup_wiring(address)
+                except _Refusal as error:
+                    reason = str(error)
+                yield edits.ModelUngroupEligibility(address=address, reason=reason)
+                yield from candidates(component, (*scope, key))
+        return candidates(self.document, ())
+
+    def ungroup(self, address: ModelAddress) -> None:
+        wiring = self._ungroup_wiring(address)
+        graph, component = self.component(address)
+        key, scope = address.element.id, address.composites
+        inner_scope = (*scope, key)
+        inner = component["interior"]
+        parent_wires, child_wires = graph["wires"], inner["wires"]
+        attachment_owners = {
+            id(item): _address(location, "attachment", parent={"kind": "wire", "id": wire_id}, id=item["id"])
+            for location, wires in ((scope, parent_wires), (inner_scope, child_wires))
+            for wire_id, wire in wires.items() for item in wire["attachments"]
+        }
 
         ids: dict[str, str] = {}
         del graph["components"][key]
@@ -979,22 +1028,23 @@ class ModelEditDraft:
                 continue
             if wire["source"].get("component") != key:
                 continue
-            source, chain = trace(wire["source"], scope, frozenset())
-            if source is None:
+            route = wiring.parent[id_]
+            if route.source is None:
                 del parent_wires[id_]
             else:
-                wire["source"] = source
-                wire["attachments"] = [*wire["attachments"], *chain]
+                wire["source"] = _copy_endpoint(route.source, ids) if route.inner else route.source
+                wire["attachments"] = [*wire["attachments"], *route.attachments]
         moved_wires = {}
         for id_, wire in child_wires.items():
             if wire["target"]["owner"] == "outputs":
                 continue
-            source, chain = trace(wire["source"], inner_scope, frozenset())
-            if source is None:
+            route = wiring.child[id_]
+            if route.source is None:
                 continue
+            source = _copy_endpoint(route.source, ids) if route.inner else route.source
             assigned = id_ if id_ not in (graph["components"].keys() | parent_wires.keys() | graph.get("connections", {}).keys()) else _id(graph, reserved)
             parent_wires[assigned] = _signal(
-                source, _copy_endpoint(wire["target"], ids), [*chain, *wire["attachments"]],
+                source, _copy_endpoint(wire["target"], ids), [*route.attachments, *wire["attachments"]],
             )
             moved_wires[id_] = assigned
         self.relocate_layout(inner_scope, scope, ids, moved_wires)
