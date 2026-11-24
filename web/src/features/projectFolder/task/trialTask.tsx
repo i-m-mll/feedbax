@@ -42,7 +42,7 @@ function missingStart(id: string): ModelStart {
   const { element } = ModelAddressSchema.parse(JSON.parse(id));
   if (element.kind !== 'field' || element.parent.kind !== 'component') return { id, name: id };
   const [kind, ...members] = element.path;
-  const label = kind === 'state' ? String(members[0]).replaceAll('/', ' ') : members.join(' ');
+  const label = kind === 'state' ? String(members[0]).split('/').join(' ') : members.join(' ');
   return { id, name: `${element.parent.id} · ${label}` };
 }
 
