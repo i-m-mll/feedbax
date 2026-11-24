@@ -2880,7 +2880,7 @@ export type EpochSteps = {
   "greatest": number;
 };
 
-export type Expression = LiteralValue | NameValue | CallValue | DrawValue;
+export type Expression = LiteralValue | NameValue | CallValue | DrawValue | UnresolvedValue;
 
 export type ExpressionPartSite = {
   "path": Array<string | number>;
@@ -4575,6 +4575,11 @@ export type TrialDocuments = {
   "objective": ObjectiveDocument;
   "input_overrides"?: Record<string, string>;
   "python_task"?: PythonTaskSelection | null;
+};
+
+export type UnresolvedValue = {
+  "kind"?: "unresolved";
+  "text": string;
 };
 
 export type UpdateCadence = {
@@ -10155,7 +10160,7 @@ export const EpochStepsSchema: z.ZodType<EpochSteps> = z.lazy(() =>
 ) as unknown as z.ZodType<EpochSteps>;
 
 export const ExpressionSchema: z.ZodType<Expression> = z.lazy(() =>
-  z.union([LiteralValueSchema, NameValueSchema, CallValueSchema, DrawValueSchema])
+  z.union([LiteralValueSchema, NameValueSchema, CallValueSchema, DrawValueSchema, UnresolvedValueSchema])
 ) as unknown as z.ZodType<Expression>;
 
 export const ExpressionPartSiteSchema: z.ZodType<ExpressionPartSite> = z.lazy(() =>
@@ -12390,6 +12395,13 @@ export const TrialDocumentsSchema: z.ZodType<TrialDocuments> = z.lazy(() =>
     "python_task": z.union([PythonTaskSelectionSchema, z.null()]).optional(),
   }).strict().superRefine((value, ctx) => { if ((value.task == null) === (value.python_task == null)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Select one Task document or registered Python task." }); })
 ) as unknown as z.ZodType<TrialDocuments>;
+
+export const UnresolvedValueSchema: z.ZodType<UnresolvedValue> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("unresolved").optional(),
+    "text": z.string(),
+  }).strict()
+) as unknown as z.ZodType<UnresolvedValue>;
 
 export const UpdateCadenceSchema: z.ZodType<UpdateCadence> = z.lazy(() =>
   z.object({

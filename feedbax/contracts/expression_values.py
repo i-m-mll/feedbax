@@ -151,8 +151,13 @@ class DrawValue(ValueRecord):
     per: Literal["run", "trial"] = "trial"
 
 
+class UnresolvedValue(ValueRecord):
+    kind: Literal["unresolved"] = "unresolved"
+    text: str
+
+
 type Expression = Annotated[
-    LiteralValue | NameValue | CallValue | DrawValue, Field(discriminator="kind")
+    LiteralValue | NameValue | CallValue | DrawValue | UnresolvedValue, Field(discriminator="kind")
 ]
 
 
