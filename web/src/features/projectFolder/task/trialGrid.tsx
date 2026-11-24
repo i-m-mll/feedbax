@@ -151,5 +151,5 @@ export function TrialGridInspector({ view, commit, runs, selected, shown: drawn 
     duration: (view.n_steps ?? 0) * view.period_seconds, stepSeconds: view.period_seconds,
   };
   return <TaskInspector view={document} selected={selectionOf(selected)}
-    shown={drawn ?? { kind: 'definition' }} />;
+    shown={drawn} />;
 }

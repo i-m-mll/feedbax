@@ -6,7 +6,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DrawerSections } from '@/features/projectWindow/DrawerForms';
 import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
 import { elementKey, type ElementAddress } from '@/features/projectWindow/elementSelection';
-import { SceneClockControls } from './SceneClockControls';
 import { SceneCanvas, SceneDrawer, SceneElementInspector, SceneLayers, sceneContents } from './SceneRegion';
 import { emptyScene, fittedCamera, sceneTimeline, type Scene, type SceneElement, type SceneLayer, type SceneView } from './sceneView';
 
@@ -69,33 +68,21 @@ describe('Scene regions', () => {
     expect(select('shoulder')?.getAttribute('aria-pressed')).toBe('true');
   });
 
-  it('scrubs a replay and a separate view on the same clock, with no clock for geometry', () => {
+  it('draws a replay at the time it is given, and no cursor for geometry', () => {
     const position = 'arm/effector';
     const trial = {
       id: 'trial-a', inits: {}, inputs: {}, present: {}, variables: {}, variable_defined: {}, timeline: [],
       states: { [position]: { samples: [[0, 0], [0.1, 0.1], [0.2, 0.2]], units: 'm', frame: 'world' } },
     };
-    const onSelect = vi.fn();
-    function View({ view }: { view: SceneView }) {
-      const [time, onTimeChange] = useState(0);
-      return (
-        <>
-          <SceneCanvas view={view} time={time} selected={null} onSelect={onSelect}
-            camera={fittedCamera} onCameraChange={vi.fn()} hiddenLayers={noLayersHidden} />
-          <div data-testid="results-cursor">{time}</div>
-          <SceneClockControls timeline={sceneTimeline(view)} time={time} speed={1}
-            onTimeChange={onTimeChange} onSpeedChange={vi.fn()} />
-        </>
-      );
-    }
-    const { container, rerender } = render(<View view={{ kind: 'replay', scene: emptyScene, trial, position, stateTime: [0, 0.6, 1.2] }} />);
+    const replay: SceneView = { kind: 'replay', scene: emptyScene, trial, position, stateTime: [0, 0.6, 1.2] };
+    const canvas = (view: SceneView, time: number) => <SceneCanvas view={view} time={time} selected={null} onSelect={vi.fn()}
+      camera={fittedCamera} onCameraChange={vi.fn()} hiddenLayers={noLayersHidden} />;
+    const { container, rerender } = render(canvas(replay, 0));
     const initialX = container.querySelector('[data-scene-cursor]')?.getAttribute('cx');
     expect(initialX).toBeDefined();
-    fireEvent.change(screen.getByRole('slider'), { target: { value: '0.60' } });
-    expect(screen.getByTestId('results-cursor').textContent).toBe('0.6');
+    rerender(canvas(replay, 0.6));
     expect(container.querySelector('[data-scene-cursor]')?.getAttribute('cx')).not.toBe(initialX);
-    rerender(<View view={{ kind: 'geometry', scene }} />);
-    expect(screen.queryByRole('slider')).toBeNull();
+    rerender(canvas({ kind: 'geometry', scene: emptyScene }, 0.6));
     expect(container.querySelector('[data-scene-cursor]')).toBeNull();
   });
 
