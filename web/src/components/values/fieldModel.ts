@@ -1,6 +1,6 @@
 import type {
   FieldKind, FieldKindEdit, FieldNameEdit, FieldTextEdit, FunctionInfo, JsonValue, Level, ScopedValue, StudioEvaluateValueSource,
-  StudioAddClassMember, StudioRemoveClassMember, StudioValueStructure, ValueType,
+  StudioAddClassMember, StudioRemoveClassMember, StudioValueStructure, TextSpan, ValueType,
 } from '@/generated/studioContracts';
 
 /**
@@ -23,7 +23,10 @@ export interface FieldOption {
  */
 export type FieldEdit = FieldTextEdit | FieldKindEdit | FieldNameEdit | StudioAddClassMember | StudioRemoveClassMember |
   { readonly kind: 'set'; readonly value: JsonValue } | { readonly kind: 'reset' };
-export type FieldCommit = (edit: FieldEdit) => Promise<string | undefined>;
+export type FieldCommit = (edit: FieldEdit) => Promise<FieldRefusal | undefined>;
+
+/** Why a source refused an edit: a reason, or a reason about the term of the edit's text at `span`. */
+export type FieldRefusal = string | { readonly reason: string; readonly span?: TextSpan };
 
 /**
  * What a changed value differs from: the base of the document whose difference sets it, the document's value where the
@@ -111,6 +114,8 @@ export interface FieldModel {
   /** Shows the object the origin names, where it names one. */
   readonly revealOrigin?: () => void;
   readonly reason?: string;
+  /** The term of `text` that `reason` is about, when it is about one term rather than the whole value. */
+  readonly span?: TextSpan;
   /** What the text reads as, where the source sends it: the value's tree, its root's arguments' texts, a draw's density. */
   readonly structure?: StudioValueStructure;
   /** How often the site's consumer reads the value again. */
