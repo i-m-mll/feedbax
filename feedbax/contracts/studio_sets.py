@@ -45,6 +45,18 @@ class ApplySet(StrictModel):
     set: ProjectName
 
 
+class SetToField(StrictModel):
+    kind: Literal["set_to_field"]
+    step: ProjectName
+    axis: ProjectName
+
+
+class SetToSweep(StrictModel):
+    kind: Literal["set_to_sweep"]
+    step: ProjectName
+    axis: ProjectName
+
+
 class RemoveAxisValue(StrictModel):
     """Remove a value of a named axis or an entry of the set it reads; an inline axis left with one value that makes
     no difference is removed."""
@@ -58,7 +70,8 @@ class RemoveAxisValue(StrictModel):
 class StudioSetEditRequest(StrictModel):
     revision: Sha256
     command: Annotated[
-        DuplicateRun | SaveSet | InlineSet | ApplySet | RemoveAxisValue, Field(discriminator="kind"),
+        DuplicateRun | SaveSet | InlineSet | ApplySet | SetToField | SetToSweep | RemoveAxisValue,
+        Field(discriminator="kind"),
     ]
 
 

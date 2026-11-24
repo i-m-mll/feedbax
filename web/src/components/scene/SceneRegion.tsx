@@ -89,15 +89,12 @@ function SceneDrawingCanvas({
   const viewportWidth = fitToSlot && width > 0 ? width : WORKSPACE_SVG_WIDTH;
   const viewportHeight = fitToSlot && height > 0 ? height : WORKSPACE_SVG_HEIGHT;
   const pan = useRef<{ start: ScenePoint; camera: SceneCamera; ratio: number; moved: boolean } | null>(null);
-  const trial = view.kind === 'replay' ? view.trial : null;
-  const track = trial && primaryWorkspaceReplayTrack(trial);
+  const replay = view.kind === 'replay' ? view : null;
+  const track = replay && primaryWorkspaceReplayTrack(replay.trial, replay.position);
   const path = useMemo(() => workspaceReplayPolyline(track), [track]);
-  const frameIndex = trial ? workspaceReplayFrameIndex(trial, time) : null;
+  const frameIndex = replay ? workspaceReplayFrameIndex(replay.stateTime, time) : null;
   const cursor = frameIndex === null ? undefined : workspaceReplaySampleAt(track, frameIndex);
-  const goalTrack = trial?.tracks?.find((item) => item.selector.role === 'target');
-  const goal = goalTrack && workspaceReplaySampleAt(goalTrack, frameIndex ?? goalTrack.samples.length - 1);
-  const bounds = useMemo(() => sceneBounds(view.scene, [...path, ...workspaceReplayPolyline(goalTrack)]),
-    [view.scene, path, goalTrack]);
+  const bounds = useMemo(() => sceneBounds(view.scene, path), [view.scene, path]);
   const fit = fitScale(bounds, viewportWidth, viewportHeight);
   const autoFit = !fitToSlot || camera === fittedCamera;
   const navigatedFit = useRef<number>();
@@ -178,7 +175,6 @@ function SceneDrawingCanvas({
           <polyline points={path.map((point) => project(point).join(',')).join(' ')} fill="none"
             stroke="var(--text-primary)" strokeWidth={2.5} vectorEffect="non-scaling-stroke" />
         )}
-        {goal && <circle cx={project(goal)[0]} cy={project(goal)[1]} r={8} fill="none" stroke="var(--studio-scene-feature)" strokeWidth={2} />}
         {cursor && <circle data-scene-cursor cx={project(cursor)[0]} cy={project(cursor)[1]} r={6} fill="var(--text-primary)" stroke="var(--surface-main)" strokeWidth={2} />}
       </g>
       <g transform={`translate(28 ${viewportHeight - 32})`} pointerEvents="none" aria-hidden="true">
@@ -217,7 +213,7 @@ export function sceneContents(view: SceneView): { navigable: boolean; layers: re
   if (view.kind !== 'geometry' && view.kind !== 'replay') return { navigable: false, layers: [] };
   const placed = sceneElements(view.scene).filter((element) => element.shape);
   const present = new Set(placed.map((element) => element.layer));
-  const track = view.kind === 'replay' ? primaryWorkspaceReplayTrack(view.trial) : null;
+  const track = view.kind === 'replay' ? primaryWorkspaceReplayTrack(view.trial, view.position) : null;
   return { navigable: placed.length > 0 || !!track?.samples.length, layers: sceneLayers.filter((layer) => present.has(layer)) };
 }
 

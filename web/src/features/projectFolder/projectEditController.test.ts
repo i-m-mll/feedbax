@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { ApiRequestError } from '@/api/request';
 import type { AuthoredFileAddress, ProjectValueEdit, StudioProjectDocument, StudioProjectFilePatch, StudioProjectSnapshot, StudioSavedTrainRuns } from '@/generated/studioContracts';
-import { addressKey, applyAuthoredEdits, presentationAddress } from './authoredEdits';
+import { addressKey, applyAuthoredEdits, declarationAddress, presentationAddress } from './authoredEdits';
 import { ProjectEditConflictError, ProjectEditController, type ProjectEditTransport } from './projectEditController';
 import { createCheckpointTrain } from './createCheckpointTrain';
 import { createTrain } from './createTrain';
@@ -44,6 +44,11 @@ function fixture(settleMs = 400, start = initial) {
   }
   const document = () => ({ configuration: { project: name, store: 'results' }, snapshot: current });
   const external = (address: AuthoredFileAddress, edits: readonly ProjectValueEdit[], indent?: number) => {
+    if (address.kind === 'declaration') {
+      const { project } = applyAuthoredEdits({ ...current.project, settings: current.settings }, address, edits);
+      current = { ...current, settings: project.settings, revision: hex(sequence++) };
+      return current;
+    }
     if (address.kind === 'presentation') {
       const { project } = applyAuthoredEdits({ ...current.project, presentation: current.presentation }, address, edits);
       current = { ...current, presentation: project.presentation ?? null, presentation_revision: hex(sequence++) };
@@ -130,6 +135,27 @@ function fixture(settleMs = 400, start = initial) {
 }
 
 afterEach(() => vi.useRealTimers());
+
+it('writes project settings and Undo through the authored PATCH queue', async () => {
+  const { editor, write, replay } = fixture();
+  const change = editor.edit(declarationAddress, 'Keep superseded runs', [
+    { op: 'add', path: '/settings/keep_superseded', value: 7 },
+  ]);
+  expect(editor.getSnapshot().configuration.settings).toEqual({ keep_superseded: 7 });
+  await editor.flush();
+  await expect(change).resolves.toEqual({ status: 'saved' });
+  expect(editor.getSnapshot().configuration.settings).toEqual({ keep_superseded: 7 });
+
+  editor.undo();
+  await editor.flush();
+  expect(editor.getSnapshot().configuration.settings).toEqual({});
+  expect(write).toHaveBeenCalledTimes(2);
+  expect(write.mock.calls[1][1]).toMatchObject({
+    address: declarationAddress, patches: [{ op: 'remove', path: '/settings/keep_superseded' }],
+  });
+  expect(replay).not.toHaveBeenCalled();
+  editor.dispose();
+});
 
 it('binds the first compatible documents by name, scaffolds only the missing types and names the Train freely', async () => {
   const { editor } = fixture(400, {

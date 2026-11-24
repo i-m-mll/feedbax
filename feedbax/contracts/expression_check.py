@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 
 from feedbax.contracts.expression_units import UNITS
+from feedbax.contracts.expression_text import resolve_expression
 from feedbax.contracts.expression_values import (
     DIMENSIONLESS,
     RESERVED_NAMES,
@@ -46,6 +47,7 @@ class TypedNode:
 
 @dataclass(frozen=True)
 class Checked:
+    tree: Expression
     root: TypedNode
     nodes: Mapping[NodePath, TypedNode]
     calls: Mapping[NodePath, tuple[Function, CallValue]]
@@ -150,6 +152,11 @@ def check(
     """Return path-addressed Problems for bad authored values."""
     if problems := scope_problems(site, path):
         return problems
+    if isinstance(tree, UnresolvedValue):
+        resolved = resolve_expression(tree, site, functions)
+        if isinstance(resolved, tuple):
+            return tuple(problem.model_copy(update={"path": (*path, *problem.path)}) for problem in resolved)
+        tree, spans = resolved.value, resolved.spans
     scope = {value.id: TypedNode(value.type, value.level) for value in site.names}
     by_name = {value.name: value for value in site.names}
     problems: list[Problem] = []
@@ -344,7 +351,7 @@ def check(
     if problems:
         return tuple(problems)
     assert root is not None
-    return Checked(root, MappingProxyType(checked), MappingProxyType(calls))
+    return Checked(tree, root, MappingProxyType(checked), MappingProxyType(calls))
 
 
 def _reference_label(reference: str) -> str:
