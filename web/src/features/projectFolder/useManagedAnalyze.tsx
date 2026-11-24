@@ -4,7 +4,7 @@ import { ChartLine, Database, Sigma } from 'lucide-react';
 import { useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import { readStudioAnalyze } from '@/api/studioAnalyze';
-import { studioAccessibleName, studioChangeDetail, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
 import { CanvasStrip } from '@/components/canvas/CanvasStrip';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { Button } from '@/components/ui/Button';
@@ -42,7 +42,7 @@ import { ProjectEditConflictError, type ProjectEditController } from './projectE
 import type { ChangeMark } from '@/components/values/fieldModel';
 import { savedRunId, stepSourceRows } from './projectWindowPlan';
 import { placeElement, type Reveal } from './projectWindowProblems';
-import { MentionRow, ProblemRow } from '@/features/projectWindow/StudioProblems';
+import { ChangeRow, ProblemRow } from '@/features/projectWindow/StudioProblems';
 import { SavedFigureResult } from './SavedLightProducts';
 import { ElementRequests, requestMember } from './ElementRequests';
 import { generatedName } from './generatedName';
@@ -416,7 +416,7 @@ export function useManagedAnalyze({
     </p>}
     {mapped && selected && <ElementRequests requests={selectedElement.requests} selected={chosenMember}
       onSelect={(member) => setChosenRequest(member === undefined ? undefined : { scope, element: selected, member })} />}
-    {selectedPlan?.changed && <MentionRow place={selectedPlan.changed.place} detail={studioChangeDetail(selectedPlan.changed)} />}
+    {selectedPlan?.changed && <ChangeRow change={selectedPlan.changed} />}
     {operation && definition && key && <div className="grid gap-1">
       <SettingsForm key={selected} schema={definition.parameter_json_schema} value={operation.params ?? {}}
         projected={(path) => {

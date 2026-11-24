@@ -81,11 +81,11 @@ test('the clock picks the nominal trial or a sample of a task document, and the 
   const variables = primary.getByRole('table', { name: 'Variables', exact: true });
   await expect(variables.getByRole('columnheader', { name: 'Drawn', exact: true })).toBeVisible();
   await expect(variables.getByRole('row').filter({ has: page.getByRole('textbox', { name: 'Rename catch', exact: true }) })
-    .getByRole('cell').last()).toHaveText(String(drawn));
+    .getByRole('cell').nth(-2)).toHaveText(String(drawn));
 
   await target.getByRole('button', { name: 'target_pos', exact: true }).click();
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
-  await expect(drawer.getByRole('treeitem', { name: 'Target Pos', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(drawer.getByRole('tree', { name: 'Signals', exact: true }).getByRole('treeitem', { name: 'target_pos', exact: true })).toHaveAttribute('aria-selected', 'true');
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   await expect(inspector.getByRole('img', { name: 'Plot target_pos', exact: true })).toBeVisible();
 

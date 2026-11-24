@@ -108,9 +108,12 @@ function AddRow({ add }: { add: TableAdd }) {
 /** A cell centres its content between the row's lines: inline content sits in no line box, so no strut lowers it. */
 const centred = 'align-middle leading-[0] [&>*]:leading-normal';
 
-export function TableHeaderCell({ className, ...props }: ThHTMLAttributes<HTMLTableCellElement>) {
+export const TableHeaderCell = forwardRef<HTMLTableCellElement, ThHTMLAttributes<HTMLTableCellElement>>(function TableHeaderCell(
+  { className, ...props }, ref,
+) {
   return (
     <th
+      ref={ref}
       className={clsx(
         'sticky top-0 h-row truncate border-b border-shell-divider bg-shell-header px-row-inline text-left text-sm font-medium text-shell-muted',
         centred,
@@ -119,7 +122,7 @@ export function TableHeaderCell({ className, ...props }: ThHTMLAttributes<HTMLTa
       {...props}
     />
   );
-}
+});
 
 export interface TableRowProps extends HTMLAttributes<HTMLTableRowElement> {
   selected?: boolean;
@@ -154,20 +157,24 @@ export interface TableCellProps extends TdHTMLAttributes<HTMLTableCellElement> {
 const cell = (selected?: boolean) => clsx('h-row truncate border-b border-shell-divider px-row-inline', centred,
   selected && 'bg-shell-row-selected [--cell-fill:var(--row-selected-fill)]');
 
-export function TableCell({ selected, className, ...props }: TableCellProps) {
-  return <td data-selected={selected || undefined} className={clsx(cell(selected), className)} {...props} />;
-}
+export const TableCell = forwardRef<HTMLTableCellElement, TableCellProps>(function TableCell({ selected, className, ...props }, ref) {
+  return <td ref={ref} data-selected={selected || undefined} className={clsx(cell(selected), className)} {...props} />;
+});
 
-export function TableRowHeader({ selected, className, ...props }: ThHTMLAttributes<HTMLTableCellElement> & { selected?: boolean }) {
-  return <th scope="row" data-selected={selected || undefined} className={clsx(cell(selected), 'text-left font-normal', className)}
-    {...props} />;
-}
+export const TableRowHeader = forwardRef<HTMLTableCellElement, ThHTMLAttributes<HTMLTableCellElement> & { selected?: boolean }>(
+  function TableRowHeader({ selected, className, ...props }, ref) {
+    return <th ref={ref} scope="row" data-selected={selected || undefined}
+      className={clsx(cell(selected), 'text-left font-normal', className)} {...props} />;
+  },
+);
 
 /**
  * A cell holding a field or a name's input, which is the cell (P35): the field fills it, and the cell's lines are its
  * border. A `header` cell is its row's name.
  */
-export function TableFieldCell({ header, className, ...props }: TableCellProps & { header?: boolean }) {
+export const TableFieldCell = forwardRef<HTMLTableCellElement, TableCellProps & { header?: boolean }>(function TableFieldCell(
+  { header, className, ...props }, ref,
+) {
   const classes = clsx('studio-table-field-cell overflow-visible', className);
-  return header ? <TableRowHeader className={classes} {...props} /> : <TableCell className={classes} {...props} />;
-}
+  return header ? <TableRowHeader ref={ref} className={classes} {...props} /> : <TableCell ref={ref} className={classes} {...props} />;
+});

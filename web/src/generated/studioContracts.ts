@@ -2539,6 +2539,7 @@ export type AddMember = {
   "name": string;
   "index"?: number | null;
   "type"?: ValueType | null;
+  "initializes"?: Array<string>;
 };
 
 export type AnalysisDocument = {
@@ -4444,9 +4445,10 @@ export type StudioTrialOutput = {
 
 export type StudioTrialReset = {
   "address": ModelAddress;
+  "name": string;
   "type": ValueType;
   "finest": Level;
-  "variable": string | null;
+  "required": boolean;
 };
 
 export type StudioTrialSelectDocument = {
@@ -4462,7 +4464,7 @@ export type StudioTrialStepScope = {
 
 export type StudioTrialStructureEdit = {
   "kind": "structure";
-  "change": TaskStructureChange;
+  "changes": Array<TaskStructureChange>;
 };
 
 export type StudioValueStructure = {
@@ -9668,6 +9670,7 @@ export const AddMemberSchema: z.ZodType<AddMember> = z.lazy(() =>
     "name": z.string().min(1),
     "index": z.union([z.number().int().safe().min(0), z.null()]).optional(),
     "type": z.union([ValueTypeSchema, z.null()]).optional(),
+    "initializes": z.array(z.string()).optional(),
   }).strict()
 ) as unknown as z.ZodType<AddMember>;
 
@@ -12195,9 +12198,10 @@ export const StudioTrialOutputSchema: z.ZodType<StudioTrialOutput> = z.lazy(() =
 export const StudioTrialResetSchema: z.ZodType<StudioTrialReset> = z.lazy(() =>
   z.object({
     "address": ModelAddressSchema,
+    "name": z.string(),
     "type": ValueTypeSchema,
     "finest": LevelSchema,
-    "variable": z.union([z.string(), z.null()]),
+    "required": z.boolean(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialReset>;
 
@@ -12219,7 +12223,7 @@ export const StudioTrialStepScopeSchema: z.ZodType<StudioTrialStepScope> = z.laz
 export const StudioTrialStructureEditSchema: z.ZodType<StudioTrialStructureEdit> = z.lazy(() =>
   z.object({
     "kind": z.literal("structure"),
-    "change": TaskStructureChangeSchema,
+    "changes": z.array(TaskStructureChangeSchema).min(1),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialStructureEdit>;
 

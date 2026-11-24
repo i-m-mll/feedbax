@@ -50,10 +50,14 @@ class StudioTrialOutput(StrictModel):
 
 
 class StudioTrialReset(StrictModel):
+    """A value of the paired Model that a variable of the Task may initialize at the start of each trial."""
+
     address: ModelAddress
+    name: str
+    """The component's name and the field's path."""
     type: ValueType
     finest: Level
-    variable: str | None
+    required: bool
 
 
 class StudioTrialDocumentEdit(StrictModel):
@@ -90,10 +94,11 @@ class StudioTrialExpressionEdit(StrictModel):
 
 
 class StudioTrialStructureEdit(StrictModel):
-    """A change to the structure of the step's task document."""
+    """Changes to the structure of the step's task document, made in order as one edit: all of them, or none when one
+    is refused."""
 
     kind: Literal["structure"]
-    change: TaskStructureChange
+    changes: list[TaskStructureChange] = Field(min_length=1)
 
 
 class StudioTrialStepScope(StrictModel):

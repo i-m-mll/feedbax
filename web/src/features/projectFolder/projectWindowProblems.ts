@@ -90,6 +90,8 @@ export function placeField(place: StudioPlace | null): { target?: string } | nul
 /** A place revealed in a step's view, with what the reason that named it says. */
 export interface Reveal {
   readonly step: string;
+  /** The name of what the reason is about. */
+  readonly name: string;
   readonly place: StudioPlace | null;
   readonly view: RevealView;
   readonly reason: string;

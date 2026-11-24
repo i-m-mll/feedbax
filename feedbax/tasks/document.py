@@ -473,6 +473,9 @@ def compile_task(
         path = ("epochs", epoch.id, "end", "length")
         end = epoch.end
         if not isinstance(end, Length):
+            if sites is not None:
+                # A Rest End is still the site of the length it can be given instead.
+                sites[path] = Site(expected=time_type, finest=Level.TRIAL, names=tuple(scope.values()))
             rest.append(epoch.id)
             lengths.append(None)
             bounds.append(0)
@@ -610,6 +613,9 @@ def compile_task(
             problem(ProblemCode.STRUCTURE, f"{link.variable} links a Model field that is already linked.", path)
         else:
             links[link.model_field] = link.variable
+    for address, field in writable.items():
+        if field.required and all(link.model_field != address for link in document.links):
+            problem(ProblemCode.STRUCTURE, "The Model needs this value at the start of each trial.", ("links", address))
     rows = []
     first = document.validation_trials[0]
     for index, row in enumerate(document.validation_trials):

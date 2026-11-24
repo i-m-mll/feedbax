@@ -19,6 +19,7 @@ from feedbax.compiler.graph import (
 from feedbax.compiler.model_document import (
     LoweredModelDocument, ModelCompilationProblem, ResolvedModelInterface, lower_model_document,
 )
+from feedbax.compiler.model_reset import ModelResetField
 from feedbax.compiler.resolution import ParameterResolutionError, ParameterResolutionErrors
 from feedbax.contracts.graph import GraphSpec
 from feedbax.component_registry import ComponentRegistry
@@ -129,7 +130,10 @@ def pair_trial_source(
     input_overrides: Mapping[str, str] | None = None,
     graph_override: GraphSpec | None = None,
     task_sites: dict[tuple[str | int, ...], Site] | None = None,
+    reset_fields: list[ModelResetField] | None = None,
 ) -> TrialPair | tuple[Problem, ...]:
+    """The Model and Task paired for execution, or the Problems that refuse them. ``task_sites`` receives the Task's
+    field sites, and ``reset_fields`` the Model fields a trial starts from, once the Model resolves."""
     overrides = input_overrides or {}
     if isinstance(task, PythonTaskSelection):
         resolved = resolve_python_task_instance(task, python_tasks)
@@ -172,6 +176,8 @@ def pair_trial_source(
         return tuple(_parameter_problem(lowered, item) for item in (
             error.errors if isinstance(error, ParameterResolutionErrors) else (error,)
         ))
+    if reset_fields is not None:
+        reset_fields.extend(interface.reset.fields)
     if isinstance(task, TaskDocument):
         compiled = compile_task(task, functions, model=replace(interface, inputs=()), sites=task_sites)
     else:

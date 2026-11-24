@@ -9,14 +9,16 @@ from feedbax.contracts.expression_values import (
     Level, Problem, ProblemCode, ScopedValue, Site, SweepList, SweepRange, SweepSample,
     ValueBase, ValueType,
 )
+from feedbax.tasks.document import zero
 from feedbax.tasks.registry import resolve_python_task_instance
 from feedbax.tasks.structure import restructure
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.matrix_core import stored_parts
+from feedbax.compiler.model_reset import ModelResetField
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import VariantRuns
 from feedbax.contracts.project import (
-    SetProjectValue, apply_document_edits, based_on, json_pointer_parts,
+    RemoveProjectValue, SetProjectValue, apply_document_edits, based_on, json_pointer_parts,
 )
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.planner.project_plan import EVALUATION_TASK, RunKey, compile_project, own_task_variation
@@ -34,7 +36,7 @@ from feedbax.contracts.studio_trials import (
     StudioTrialOutput, StudioTrialReset, StudioTrialSelectDocument, StudioTrialStepScope, StudioTrialStructureEdit,
 )
 from feedbax.contracts.task_document import (
-    PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, TaskDocument,
+    PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, Rest, TaskDocument,
 )
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument, ObjectiveTerm
@@ -68,6 +70,7 @@ class _Projection:
     fields: dict[tuple[str | int, ...], Site]
     problems: tuple[Problem, ...]
     task_origins: dict[tuple[str, ...], str] = field(default_factory=dict)
+    resets: tuple[ModelResetField, ...] = ()
 
 
 def _project(
@@ -93,12 +96,15 @@ def _project(
                         for signal in task.signals)
         variables = ()
         epochs = tuple(StudioTrialEpoch(id=epoch.id, name=epoch.name, steps=None) for epoch in task.epochs)
+    resets = []
+
     def pair(task):
         sites = {}
+        resets.clear()
         paired = pair_trial_source(
             documents.model, task, bundle.components, bundle.expression_functions,
             python_tasks=bundle.python_tasks, input_overrides=documents.input_overrides,
-            task_sites=sites, graph_override=graph_override,
+            task_sites=sites, graph_override=graph_override, reset_fields=resets,
         )
         return paired, sites
 
@@ -115,7 +121,7 @@ def _project(
     if isinstance(paired, tuple):
         if show_objective:
             fields.update(_unpaired_objective_sites(documents, signals))
-        return _Projection(None, variables, signals, epochs, fields, paired)
+        return _Projection(None, variables, signals, epochs, fields, paired, resets=tuple(resets))
     source = paired.task
     variables, signals = source.interface.variables, source.interface.signals
     names = {epoch.id: epoch.name for epoch in epochs}
@@ -133,7 +139,7 @@ def _project(
     if not isinstance(objective, ObjectiveExecutor):
         problems += tuple(problem.model_copy(update={"path": ("objective", *problem.path)})
                           for problem in objective)
-    return _Projection(paired, variables, signals, epochs, fields, problems)
+    return _Projection(paired, variables, signals, epochs, fields, problems, resets=tuple(resets))
 
 
 def _unpaired_objective_sites(documents, signals) -> dict[tuple[str | int, ...], Site]:
@@ -230,6 +236,10 @@ def _expression_edit(change, documents, projection, bundle):
     if change.edit.kind != "text" or change.edit.value_id is not None:
         return one
     text = change.edit.text
+    end = _end_of(document, role, rest)
+    raw = document.model_dump(mode="json", exclude_unset=True)
+    if end is not None and text.strip() == "rest":
+        return StudioTrialDocumentEdit(kind=role, edits=_end_edits(raw, end, "rest", {}))
     parsed = (
         read_field(text, site, bundle.expression_functions) if projection.pair is not None
         else parse(text, site, bundle.expression_functions)
@@ -238,12 +248,46 @@ def _expression_edit(change, documents, projection, bundle):
         return tuple(problem.model_copy(update={"path": (role, *rest)}) for problem in parsed)
     if isinstance(parsed.value, SweepList | SweepRange | SweepSample):
         return one
-    raw = document.model_dump(mode="json", exclude_unset=True)
+    if end is not None and isinstance(at(document, tuple(rest[:-1])), Rest):
+        return StudioTrialDocumentEdit(kind=role, edits=_end_edits(
+            raw, end, "length", {"length": parsed.value.model_dump(mode="json")},
+        ))
     stored = index_pointer(raw, tuple(rest))
     path = stored or index_pointer(raw, tuple(rest[:-1])) + pointer(tuple(rest[-1:]))
     return StudioTrialDocumentEdit(kind=role, edits=[SetProjectValue(
         op="replace" if stored else "add", path=path, value=parsed.value.model_dump(mode="json"),
     )])
+
+
+def _reset_name(model, address: ModelAddress) -> str:
+    """A Model field a trial starts from, by its components' names and its path below the reset or field slot."""
+    names, interior = [], model.interior
+    for id in (*address.composites, address.element.parent.id):
+        component = interior.components.get(id)
+        names.append(component.name if component is not None else id)
+        interior = getattr(component, "interior", interior)
+    return " · ".join((*names, " ".join(map(str, address.element.path[1:]))))
+
+
+def _end_of(document, role, rest) -> str | None:
+    """The pointer of the End whose length ``rest`` addresses in the task document, which ``rest`` makes Rest and a length
+    makes a length again; None for any other field."""
+    if role != "task" or len(rest) != 4 or rest[0] != "epochs" or tuple(rest[2:]) != ("end", "length"):
+        return None
+    return index_pointer(document.model_dump(mode="json"), tuple(rest[:-1]))
+
+
+def _end_edits(raw, end: str, kind: str, fields: dict) -> list:
+    """The edits that make the End at ``end`` of ``kind`` with ``fields``, each under the End so that it stays the
+    field's edit: its kind, then each field it gains or loses."""
+    held = raw
+    for part in json_pointer_parts(end):
+        held = held[int(part)] if isinstance(held, list) else held[part]
+    edits = [SetProjectValue(op="replace" if "kind" in held else "add", path=f"{end}/kind", value=kind)]
+    edits += [SetProjectValue(op="replace" if key in held else "add", path=f"{end}/{key}", value=value)
+              for key, value in fields.items()]
+    edits += [RemoveProjectValue(op="remove", path=f"{end}/{key}") for key in held if key != "kind" and key not in fields]
+    return edits
 
 
 def _field_label(path) -> str:
@@ -617,13 +661,16 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
 
 
 def _structure_edit(change, documents, definition) -> StudioTrialDocumentEdit | tuple[Problem, ...]:
-    """The task document edit that makes a structural change: each top-level field it changes, written whole."""
+    """The task document edit that makes structural changes in order: each top-level field they change, written whole.
+    One refused change refuses them all."""
     task = documents.task_source
     if not isinstance(task, TaskDocument):
         raise ProjectFolderInvalid("A Python task has no structure to change.")
-    changed = restructure(task, change.change)
-    if isinstance(changed, Problem):
-        return (changed,)
+    changed = task
+    for each in change.changes:
+        changed = restructure(changed, each)
+        if isinstance(changed, Problem):
+            return (changed,)
     _, raw = _changed_value(documents, definition, "task")
     before, after = task.model_dump(mode="json"), changed.model_dump(mode="json")
     edits = [
@@ -958,12 +1005,17 @@ def trial_authoring(
                     task_source = source
                 else:
                     task_field_sources[target[-1]] = source
-    links = dict(paired.task.interface.links) if paired else {}
     row = next((item for item in plan.rows if item.key == key), None)
 
     def expression(path):
         document = _field_document(documents, path[0])
-        return site_expression(document, tuple(map(str, path[1:]))) if document is not None else None
+        if document is None:
+            return None
+        found = site_expression(document, tuple(map(str, path[1:])))
+        if found is None and path[0] == "task" and path[1] == "signals" and path[3:] == ("absent",):
+            signal = next(item for item in document.signals if item.id == path[2])
+            return zero(signal.type.base, signal.type.shape)
+        return found
 
     def sweep(path, site, label):
         if paired is None:
@@ -998,9 +1050,9 @@ def trial_authoring(
         inputs=_input_rows(documents, projected),
         outputs=[StudioTrialOutput(address=ModelAddress.from_text(value.id), value=value)
                  for value in paired.model.outputs] if paired else [],
-        resets=[StudioTrialReset(address=field.address, type=field.type, finest=field.finest,
-                                variable=links.get(field.address.to_text()))
-                for field in paired.model.reset.fields] if paired else [],
+        resets=[StudioTrialReset(address=field.address, name=_reset_name(documents.model, field.address),
+                                 type=field.type, finest=field.finest, required=field.required)
+                for field in projected.resets],
         fields=[
             field for path, site in projected.fields.items() if path[1:2] != ("validation_trials",)
             for field in _trial_fields(

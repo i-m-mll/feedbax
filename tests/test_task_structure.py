@@ -1,5 +1,6 @@
 """A task document's structure is changed by the service, and the document it leaves compiles."""
 
+from feedbax.contracts.expression_values import ValueType
 from feedbax.contracts.studio_trials import StudioTrialAuthoring
 from feedbax.contracts.expression_values import LiteralValue
 from feedbax.contracts.task_document import BLANK_TASK, TaskDocument
@@ -30,7 +31,7 @@ def _change(project, change, *, body=None) -> StudioTrialAuthoring:
     response = project.client.post(f"{_URL}/authoring/trials", json={
         "revision": project.snapshot()["revision"],
         "run": {"variant": row.key.variant, "step": row.key.step, "row": row.key.row},
-        "change": body if change is None else {"kind": "structure", "change": change},
+        "change": body if change is None else {"kind": "structure", "changes": change if isinstance(change, list) else [change]},
     })
     assert response.status_code == 200, response.text
     return StudioTrialAuthoring.model_validate(response.json())
@@ -77,6 +78,17 @@ def test_each_structural_change_leaves_a_document_that_compiles(tmp_path):
         assert task["links"] == [{"model_field": LINKED, "variable": "target"}]
 
 
+def test_a_variable_added_for_a_model_start_initializes_it_in_the_same_edit(tmp_path):
+    """Catches naming a Model start that writes the variable without its link, or leaves the start linked twice."""
+    project = _project(tmp_path)
+    with project.client:
+        change = {"op": "add", "member": "variable", "name": "origin", "type": POINT, "initializes": [LINKED]}
+        assert _made(project, change) == []
+        task = project.composed(TASK)
+        assert ValueType.model_validate(task["variables"][-1]["type"]) == ValueType.model_validate(POINT)
+        assert task["links"] == [{"model_field": LINKED, "variable": "origin"}]
+
+
 def test_a_value_is_stored_in_a_task_that_already_has_problems(tmp_path):
     """Catches a value refused for the problems compiling reaches once it is mended: a new task's first variables are
     typed before their values, and its signals do not yet feed the model."""
@@ -103,6 +115,42 @@ def test_removing_an_epoch_shortens_the_cells_that_span_it(tmp_path):
         }
         assert spans["goal"] == [("hold", "hold"), ("move", "move")]
         assert spans["target_pos"] == [("move", "move")]
+
+
+def test_a_list_of_changes_is_one_edit_and_a_refused_one_refuses_the_list(tmp_path):
+    """Catches a batch (Absent over several cells) that writes only its first change, or stores the changes before a
+    refused one."""
+    project = _project(tmp_path)
+    with project.client:
+        refused = _change(project, [
+            {"op": "absent", "signal": "goal", "cell": "hold-cue"},
+            {"op": "absent", "signal": "goal", "cell": "nowhere"},
+        ])
+        assert refused.problems and not refused.files
+        assert _made(project, [
+            {"op": "absent", "signal": "goal", "cell": "hold-cue"},
+            {"op": "absent", "signal": "goal", "cell": "move"},
+        ]) == []
+        goal = next(signal for signal in project.composed(TASK)["signals"] if signal["id"] == "goal")
+        assert goal["cells"] == []
+
+
+def test_an_end_s_text_makes_a_rest_epoch_a_length_and_rest_makes_it_rest_again(tmp_path):
+    """Catches a Rest End that a length's text cannot reach in one edit, or that `rest` does not give back."""
+    project = _project(tmp_path)
+    with project.client:
+        end = lambda text: {"kind": "expression", "path": "/task/epochs/move/end/length",
+                            "edit": {"kind": "text", "text": text}}
+        move = lambda: next(epoch for epoch in project.composed(TASK)["epochs"] if epoch["id"] == "move")["end"]
+        assert move() == {"kind": "rest"}
+        view = _change(project, None, body=end("0.2 s"))
+        assert view.files, view.problems
+        _save(project, view)
+        assert move() == {"kind": "length", "length": {"kind": "literal", "value": 0.2, "unit": "s"}}
+        view = _change(project, None, body=end("rest"))
+        assert view.files, view.problems
+        _save(project, view)
+        assert move() == {"kind": "rest"}
 
 
 def test_removing_a_variable_that_is_read_leaves_a_problem_where_it_is_read(tmp_path):

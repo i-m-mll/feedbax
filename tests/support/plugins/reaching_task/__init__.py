@@ -1,7 +1,9 @@
-"""A Python reaching task with an authored point and a fixed trial horizon, which tests install as a plugin."""
+"""A Python reaching task with an authored point and a fixed trial horizon, and a point mass a task must start, which
+tests install as a plugin."""
 
 
 from dataclasses import replace
+from dataclasses import replace as dataclass_replace
 
 from pydantic import Field, FiniteFloat
 
@@ -9,6 +11,7 @@ from feedbax.contracts.expression_values import (
     LENGTH, CallValue, Level, LiteralValue, NameValue, Site, ValueBase, ValueRecord, ValueType,
 )
 from feedbax.contracts.task_document import Cell, Epoch, Rest, Signal, TaskDocument, Variable
+from feedbax.builtins.mechanics.direct_force_components import PointMass
 from feedbax.tasks.registry import PythonTask, PythonTaskTemplate
 
 
@@ -66,3 +69,16 @@ class Reaching(PythonTask[ReachingParameters]):
 
 
 REACHING_TASK = "reaching_task.Reaching"
+
+
+class AnchoredPointMass(PointMass):
+    """A point mass with no start of its own: a task must initialize its effector's position."""
+
+    model_facts = dataclass_replace(PointMass.model_facts, states=tuple(
+        dataclass_replace(state, reset=dataclass_replace(state.reset, required=True))
+        if state.symbol == "effector/position" else state
+        for state in PointMass.model_facts.states
+    ))
+
+
+ANCHORED_POINT_MASS = "reaching_task.AnchoredPointMass"
