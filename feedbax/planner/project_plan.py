@@ -1421,14 +1421,15 @@ def _encode_row(
             if checkpoint_problem is None and checkpoint_source is not None:
                 assert components is not None
                 checkpoint_problem = _checkpoint_fit_problem(checkpoint_source, preparation, spec, components)
-        problem = pairing_problem or (
-            RunProblem("/trial_documents/model/interior/components", "Model has no components.")
-            if isinstance(spec, DocumentTrainingRequestSpec) and not spec.trial_documents.model.interior.components else
-            RunProblem("/trial_documents/objective/terms", "Objective has no enabled terms.")
-            if isinstance(spec, DocumentTrainingRequestSpec) and not any(
-                term.enabled for term in spec.trial_documents.objective.terms
-            ) else checkpoint_problem
-        )
+        documents = spec.trial_documents if isinstance(spec, DocumentTrainingRequestSpec) else None
+        if pairing_problem is not None:
+            problem = pairing_problem
+        elif documents is not None and not documents.model.interior.components:
+            problem = RunProblem("/trial_documents/model/interior/components", "Model has no components.")
+        elif documents is not None and not any(term.enabled for term in documents.objective.terms):
+            problem = RunProblem("/trial_documents/objective/terms", "Objective has no enabled terms.")
+        else:
+            problem = checkpoint_problem
         return _LoweredRow(
             encoded, pairing_diagnostics, lowering_stamp, admission_problem=problem,
             model_source=model_source, encoded_spec=encoded_spec,

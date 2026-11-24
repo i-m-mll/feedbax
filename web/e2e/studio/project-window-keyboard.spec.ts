@@ -91,13 +91,16 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   const [run] = plan.rows;
   expect(run).toMatchObject({ key: { step: 'train', row: 'default' }, status: 'cannot_run', attempts: [] });
   expect(plan.window_map?.rows.map(({ key }) => key)).toEqual([run.key]);
-  expect(plan.window_map?.problems).toMatchObject([{ path: '/trial_documents/model/interior/components' }]);
+  expect(plan.window_map?.problems).toMatchObject([
+    { code: 'invalid_payload', place: { document: 'task' } },
+    { code: 'cannot_run', path: expect.stringMatching(/^\/trial_documents\/task\/links\//) },
+  ]);
   const refused = await request.post(`${projectPath}/train-runs`, {
     data: { revision: saved.revision, run_keys: [run.key], token: crypto.randomUUID() },
   });
   expect(refused.status(), await refused.text()).toBe(202);
   expect((await refused.json() as StudioJobSubmission).items).toMatchObject([
-    { disposition: 'rejected', reason: '/trial_documents/model/interior/components: Model has no components.' },
+    { disposition: 'rejected', reason: expect.stringMatching(/task\.links\..*: start is linked to a field the Model does not have\.$/) },
   ]);
 
   const tab = (name: string) => page.getByRole('tab', { name, exact: true });
@@ -117,7 +120,10 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   expect(persisted).toMatchObject({ project_id: snapshot.project_id, revision: current.revision, project: current.project });
   const reopened = await readPlan(persisted.revision);
   expect(reopened.rows).toMatchObject([{ key: run.key, status: 'cannot_run', attempts: [] }]);
-  expect(reopened.window_map?.problems).toMatchObject([{ path: '/trial_documents/model/interior/components' }]);
+  expect(reopened.window_map?.problems).toMatchObject([
+    { code: 'invalid_payload', place: { document: 'task' } },
+    { code: 'cannot_run', path: expect.stringMatching(/^\/trial_documents\/task\/links\//) },
+  ]);
 });
 
 test('authors, checkpoint-resumes and evaluates a subset from one fresh managed project', { tag: '@round' }, async ({ page, request, studio }, info) => {
@@ -230,7 +236,9 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   expect(evaluated.project.steps!.evaluate.inputs?.subject).toEqual({
     step: 'train', checkpoint: 'last', where: { rule: `learning-rate=${selected.coordinates['learning-rate'].value}` },
   });
-  await expect(page.getByRole('complementary', { name: 'Inspector', exact: true })).toContainText('1 of 3');
+  const subject = page.getByRole('complementary', { name: 'Inspector', exact: true }).getByRole('list', { name: 'Subject', exact: true });
+  await expect(subject.getByRole('combobox', { name: 'Runs', exact: true })).toHaveValue('learning-rate=0.001');
+  await expect(subject).toContainText('1/3');
   const projection = await plan(evaluated.revision);
   const [pending] = projection.window_map!.evaluations!;
   expect(projection.window_map?.evaluations).toHaveLength(1);
@@ -245,7 +253,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   });
   const [trial] = result.trials;
   expect(trial).toBeTruthy();
-  expect(result.trials).toHaveLength(1);
+  expect(result.trials).toHaveLength((rootPayload(firstTrainTask) as { validation_trials: unknown[] }).validation_trials.length);
 
   await page.reload();
   await activate(page, mapStep(page, 'evaluate'));

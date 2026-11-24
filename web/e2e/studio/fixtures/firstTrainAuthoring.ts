@@ -180,6 +180,15 @@ export async function authorFirstTrain(
   await author({ kind: 'structure', change: { op: 'link', model_field: shippedLink, variable: null } });
   await author({ kind: 'structure', change: { op: 'link', model_field: plantLink, variable: 'start' } });
   expect((await author(null)).problems).toEqual([]);
+  // A comparison of forces reads one reach: simple reaches' others point every way, and their mean along the reach is
+  // flat. The Task view does not edit validation trials yet.
+  const [reach] = shipped.validation_trials!;
+  if (forceComparison) {
+    const narrowed = await request.patch(projectPath, { data: { revision: (await savedProject()).revision, files: [
+      { address: { kind: 'document', id: 'task' }, patches: [{ op: 'replace', path: '/payload/validation_trials', value: [reach] }] },
+    ] } });
+    expect(narrowed.ok(), await narrowed.text()).toBe(true);
+  }
 
   const saved = await savedProject();
   expect(saved.project_id).toBe(snapshot.project_id);
@@ -219,7 +228,10 @@ export async function authorFirstTrain(
     }),
     expect.objectContaining({ source: linearOutput, target: { owner: 'outputs', port: commandPort!.id } }),
   ]));
-  expect(rootPayload(saved.project.documents?.task)).toEqual({ ...shipped, links: [{ model_field: plantLink, variable: 'start' }] });
+  expect(rootPayload(saved.project.documents?.task)).toEqual({
+    ...shipped, links: [{ model_field: plantLink, variable: 'start' }],
+    ...(forceComparison && { validation_trials: [reach] }),
+  });
   const [term] = terms(saved.project);
   expect(terms(saved.project)).toHaveLength(1);
   expect(term).toMatchObject({
@@ -251,5 +263,5 @@ export async function authorFirstTrain(
   await page.keyboard.press('Meta+1');
   await expect(nBatches).toHaveValue(String(totalUpdates));
   await expect(batchSize).toHaveValue('4');
-  return { saved, projectPath, savedProject, plan, plantId: plantId! };
+  return { saved, projectPath, savedProject, plan, plantId: plantId!, task: rootPayload(saved.project.documents?.task) as unknown as TaskDocument, reach };
 }

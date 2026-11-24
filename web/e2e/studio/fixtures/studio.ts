@@ -83,7 +83,7 @@ function processesIn(home: string) {
  * Starts one Studio (frontend, backend and lazily its job host) in a private home that is
  * removed after its jobs settle on close.
  */
-export async function launchStudio(backend: StudioBackend, frontend: StudioFrontend) {
+export async function launchStudio(backend: StudioBackend, frontend: StudioFrontend, plugins: readonly string[] = []) {
   const [webPort, backendPort] = await loopbackPorts(2);
   const origin = `http://127.0.0.1:${webPort}`;
   const home = join(tmpdir(), `feedbax-studio-test-${randomUUID()}`);
@@ -99,10 +99,9 @@ export async function launchStudio(backend: StudioBackend, frontend: StudioFront
       '--home', home, '--backend-port', String(backendPort), ...args,
     ], {
       cwd: repo,
-      // Every Studio has the test Python task installed, as a package registers one.
       env: {
         ...process.env, FEEDBAX_OWNER_PID: String(process.pid), FEEDBAX_STUDIO_TEST_HOME: home,
-        PYTHONPATH: [`${repo}tests/support/plugins`, process.env.PYTHONPATH].filter(Boolean).join(':'),
+        PYTHONPATH: [...plugins.map((folder) => repo + folder), process.env.PYTHONPATH].filter(Boolean).join(':'),
       },
       stdio: ['ignore', logFd, logFd],
     });
@@ -198,14 +197,20 @@ const traced = base.extend<{ namedTrace: void; cpuThrottle: void }, { fixtureRun
   }, { auto: true }],
 });
 
-type WorkerFixtures = { studioBackend: StudioBackend; studioFrontend: StudioFrontend; studio: Studio };
+type WorkerFixtures = {
+  studioBackend: StudioBackend; studioFrontend: StudioFrontend;
+  /** Folders of installed distributions, relative to the repository, on the Studio's path. */
+  studioPlugins: readonly string[];
+  studio: Studio;
+};
 
 /** Each worker owns one Studio; tests in the worker share its home and job host. */
 export const test = traced.extend<{}, WorkerFixtures>({
   studioBackend: ['app', { scope: 'worker', option: true }],
   studioFrontend: ['preview', { scope: 'worker', option: true }],
-  studio: [async ({ studioBackend, studioFrontend }, use) => {
-    const { studio, close } = await launchStudio(studioBackend, studioFrontend);
+  studioPlugins: [[], { scope: 'worker', option: true }],
+  studio: [async ({ studioBackend, studioFrontend, studioPlugins }, use) => {
+    const { studio, close } = await launchStudio(studioBackend, studioFrontend, studioPlugins);
     try {
       await use(studio);
     } finally {
