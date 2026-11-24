@@ -158,22 +158,31 @@ class ProjectFolderService(ProjectFolder):
     ) -> ModelEditResponse:
         from feedbax.contracts.model_edit import ModelEditApplied, ModelEditProblem, ModelEditRefused, ModelEditResponse
 
+        from feedbax.web.services.trial_bindings import input_names, preserve_renamed_bindings
         from feedbax.web.services.trial_scope import model_document_store, row_model, scoped_model_store
 
         project_id = self.project_id(project_id)
+
+        source = None
         if body.rows:
             if body.files:
                 raise ProjectFolderInvalid("A Model edit for selected runs writes no step files alongside it.")
             row = row_model(self, project_id, self.read(project_id, revision=body.revision).project, body)
-            result = self.apply_model_command(
-                project_id, body, components, lambda project, body, before, after: scoped_model_store(
-                    project, body, row, after,
-                ), source=row.content,
-            )
+            source = row.content
+
+            def store(project, body, before, after):
+                return scoped_model_store(project, body, row, after)
         else:
-            result = self.apply_model_command(
-                project_id, body, components, partial(model_document_store, self, project_id),
-            )
+            store = partial(model_document_store, self, project_id)
+
+        def with_bindings(project, body, before, after):
+            stored = store(project, body, before, after)
+            old_names, new_names = input_names(before), input_names(after)
+            if any(old_names[id_] != new_names[id_] for id_ in old_names.keys() & new_names.keys()):
+                return preserve_renamed_bindings(self, project_id, body.revision, project, stored)
+            return stored
+
+        result = self.apply_model_command(project_id, body, components, with_bindings, source=source)
         if isinstance(result, ModelEditProblem):
             return ModelEditResponse(result=ModelEditRefused(status="refused", problem=result))
         change = result.change

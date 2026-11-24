@@ -596,7 +596,7 @@ export interface InputDefault {
 export interface DelayAttachment {
   kind: "delay";
   id: string;
-  delay: ModelTime;
+  delay: ModelTime | UnresolvedValue;
   initial?: JsonValue;
 }
 
@@ -670,7 +670,7 @@ export interface CompositeComponent {
   name: string;
   ports: ModelPorts;
   interior: GraphInterior | PhysicalInterior;
-  substeps?: number;
+  substeps?: number | UnresolvedValue;
   attachments?: ModelPortAttachments;
 }
 
@@ -695,7 +695,7 @@ export interface ModelWorld {
 
 export interface ModelDocument {
   schema_version?: "feedbax.spec.model.v1";
-  step_seconds: number;
+  step_seconds: number | UnresolvedValue;
   ports: ModelPorts;
   interior: GraphInterior;
   world?: ModelWorld | null;
@@ -830,6 +830,7 @@ export interface EvaluateModelState {
   source?: StudioEvaluateValueSource | null;
   field_sources?: Record<string, StudioEvaluateValueSource>;
   changed_from?: string | null;
+  problems?: StudioProjectWindowMapProblem[];
 }
 
 export interface StudioEvaluateValueSource {
@@ -1177,6 +1178,7 @@ export interface ModelFieldView {
   members?: StudioSweepValue[];
   changed?: boolean;
   address: ModelAddress;
+  problems?: Problem[];
   sources?: StudioPlanReviewSource[];
 }
 
@@ -2213,12 +2215,13 @@ export interface TrialAggregate {
 }
 
 export interface TaskTrialSampleRequest {
-  model: ModelDocument;
+  model?: ModelDocument | null;
   task?: TaskDocument | null;
   python_task?: PythonTaskSelection | null;
   input_bindings?: Record<string, string | null>;
   objective?: ObjectiveDocument | null;
   evaluation_trials?: string[] | null;
+  nominal?: boolean;
   seed?: number;
   count?: number;
   aggregate?: boolean;
@@ -2553,6 +2556,12 @@ export type AddMember = {
   "initializes"?: Array<string>;
 };
 
+export type AddSetEntry = {
+  "kind": "add_set_entry";
+  "step": string;
+  "axis": string;
+};
+
 export type AnalysisDocument = {
   "schema_version"?: "feedbax.analysis_document.v1";
   "inputs"?: Record<string, AnalyzeDatasetInput | AnalyzeModelInput | AnalyzeTaskInput>;
@@ -2800,6 +2809,7 @@ export type Document = RootDocument | BasedDocument;
 
 export type DocumentBase = {
   "document": string;
+  "unresolved"?: true | null;
 };
 
 export type DocumentEdit = SetProjectValue | RemoveProjectValue | EnsureDocumentCollection;
@@ -2817,6 +2827,7 @@ export type DocumentPresentation = {
 export type DocumentReference = {
   "document": string;
   "pointer"?: Pointer | null;
+  "unresolved"?: true | null;
 };
 
 export type DrawValue = {
@@ -3207,6 +3218,7 @@ export type NamedFileCreation = CreateNamedDocument | CreateNamedStep;
 
 export type NamedSubset = {
   "subset": string;
+  "unresolved"?: true | null;
 };
 
 export type NodePath = Array<string | number>;
@@ -3239,6 +3251,7 @@ export type OmittedReference = {
 export type OperationDataset = {
   "element": string;
   "product": string;
+  "unresolved"?: true | null;
 };
 
 export type OperationDefinition = {
@@ -3660,6 +3673,7 @@ export type Step = {
 export type StepBase = {
   "step": string;
   "row"?: string | null;
+  "unresolved"?: true | null;
 };
 
 export type StepCountChanged = {
@@ -3693,6 +3707,7 @@ export type StepReference = {
   "checkpoint"?: CheckpointRule | null;
   "element"?: string | null;
   "product"?: string | null;
+  "unresolved"?: true | null;
 };
 
 export type StoreKind = "all_readers" | "selected_readers" | "sweep_value" | "set_entry" | "row_exception" | "variant" | "other_runs" | "whole_step";
@@ -3723,6 +3738,7 @@ export type StudioAnalyzeAuthoring = {
   "changed"?: Array<Pointer>;
   "files"?: Array<StudioProjectFilePatch>;
   "created"?: Array<CreateNamedDocument>;
+  "problems"?: Array<StudioProjectWindowMapProblem>;
 };
 
 export type StudioAnalyzeChange = StudioAnalyzeWire | StudioAnalyzeEdit | StudioAnalyzeRemove | StudioAnalyzeReset;
@@ -4005,6 +4021,7 @@ export type StudioMemberCommand = {
 export type StudioMemberCommandResult = {
   "member": string;
   "snapshot": StudioProjectSnapshot;
+  "problems"?: Array<StudioProjectWindowMapProblem>;
 };
 
 export type StudioMethodPlace = {
@@ -4098,6 +4115,7 @@ export type StudioProjectSnapshot = {
   "declaration"?: StudioAuthoredDeclaration | null;
   "settings"?: Record<string, JsonValue>;
   "composed"?: Record<string, JsonValue>;
+  "problems"?: Array<StudioProjectWindowMapProblem>;
 };
 
 export type StudioProjectWindowMap = {
@@ -4327,11 +4345,12 @@ export type StudioSetEdit = {
   "files": Array<StudioProjectFilePatch>;
   "created"?: Array<CreateNamedDocument>;
   "selected"?: StudioAxisValue | null;
+  "problems"?: Array<StudioProjectWindowMapProblem>;
 };
 
 export type StudioSetEditRequest = {
   "revision": string;
-  "command": DuplicateRun | SaveSet | InlineSet | ApplySet | SetToField | SetToSweep | RemoveAxisValue;
+  "command": DuplicateRun | SaveSet | InlineSet | ApplySet | SetToField | SetToSweep | RemoveAxisValue | AddSetEntry;
 };
 
 export type StudioSetField = {
@@ -4428,6 +4447,7 @@ export type StudioTrainAuthoring = {
   "created"?: Array<CreateNamedDocument>;
   "documents": Array<string>;
   "refusal"?: StudioSweptParameterMissing | null;
+  "sweep_problems"?: Array<StudioProjectWindowMapProblem>;
   "classes"?: Array<StudioClassField>;
   "removed_values"?: Record<string, Array<string>>;
   "changed"?: Array<string>;
@@ -4447,6 +4467,7 @@ export type StudioTrainAuthoringRequest = {
 export type StudioTrainStartEdit = {
   "revision": Sha256;
   "files": Array<StudioProjectFilePatch>;
+  "problems"?: Array<StudioProjectWindowMapProblem>;
 };
 
 export type StudioTrainStartRequest = {
@@ -6424,7 +6445,7 @@ export const DelayAttachmentSchema: z.ZodType<DelayAttachment> = z.lazy(() =>
     .object({
       "kind": z.literal("delay"),
       "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
-      "delay": ModelTimeSchema,
+      "delay": z.union([ModelTimeSchema, UnresolvedValueSchema]),
       "initial": jsonValueSchema.optional(),
     })
     .strict()
@@ -6554,7 +6575,7 @@ export const CompositeComponentSchema: z.ZodType<CompositeComponent> = z.lazy(()
       "name": z.string().min(1),
       "ports": ModelPortsSchema,
       "interior": z.union([GraphInteriorSchema, PhysicalInteriorSchema]),
-      "substeps": z.number().int().safe().gte(1).optional(),
+      "substeps": z.union([z.number().int().safe().gte(1), UnresolvedValueSchema]).optional(),
       "attachments": ModelPortAttachmentsSchema.optional(),
     })
     .strict()
@@ -6630,7 +6651,7 @@ export const ModelDocumentSchema: z.ZodType<ModelDocument> = z.lazy(() =>
   z
     .object({
       "schema_version": z.literal("feedbax.spec.model.v1").optional(),
-      "step_seconds": z.number().finite().gt(0),
+      "step_seconds": z.union([z.number().finite().gt(0), UnresolvedValueSchema]),
       "ports": ModelPortsSchema,
       "interior": GraphInteriorSchema,
       "world": ModelWorldSchema.nullable().optional(),
@@ -6854,6 +6875,7 @@ export const EvaluateModelStateSchema: z.ZodType<EvaluateModelState> = z.lazy(()
       "source": StudioEvaluateValueSourceSchema.nullable().optional(),
       "field_sources": z.record(z.string(), StudioEvaluateValueSourceSchema).optional(),
       "changed_from": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
+      "problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<EvaluateModelState>;
@@ -7444,6 +7466,7 @@ export const ModelFieldViewSchema: z.ZodType<ModelFieldView> = z.lazy(() =>
       "members": z.array(StudioSweepValueSchema).optional(),
       "changed": z.boolean().optional(),
       "address": ModelAddressSchema,
+      "problems": z.array(ProblemSchema).optional(),
       "sources": z.array(StudioPlanReviewSourceSchema).optional(),
     })
     .strict()
@@ -9279,19 +9302,20 @@ export const TrialAggregateSchema: z.ZodType<TrialAggregate> = z.lazy(() =>
 export const TaskTrialSampleRequestSchema: z.ZodType<TaskTrialSampleRequest> = z.lazy(() =>
   z
     .object({
-      "model": ModelDocumentSchema,
+      "model": ModelDocumentSchema.nullable().optional(),
       "task": TaskDocumentSchema.nullable().optional(),
       "python_task": PythonTaskSelectionSchema.nullable().optional(),
       "input_bindings": z.record(z.string(), z.string().nullable()).optional(),
       "objective": ObjectiveDocumentSchema.nullable().optional(),
       "evaluation_trials": z.array(z.string()).min(1).nullable().optional(),
+      "nominal": z.boolean().optional(),
       "seed": z.number().int().safe().optional(),
       "count": z.number().int().safe().gte(1).optional(),
       "aggregate": z.boolean().optional(),
     })
     .strict()
     .superRefine((input, ctx) => {
-      const value = { ...{"input_bindings": {}, "seed": 0, "count": 8, "aggregate": false}, ...input };
+      const value = { ...{"input_bindings": {}, "nominal": false, "seed": 0, "count": 8, "aggregate": false}, ...input };
       if ((value.task == null) === (value.python_task == null)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -9829,6 +9853,14 @@ export const AddMemberSchema: z.ZodType<AddMember> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<AddMember>;
 
+export const AddSetEntrySchema: z.ZodType<AddSetEntry> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("add_set_entry"),
+    "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<AddSetEntry>;
+
 export const AnalysisDocumentSchema: z.ZodType<AnalysisDocument> = z.lazy(() =>
   z.object({
     "schema_version": z.literal("feedbax.analysis_document.v1").optional(),
@@ -10169,6 +10201,7 @@ export const DocumentSchema: z.ZodType<Document> = z.lazy(() =>
 export const DocumentBaseSchema: z.ZodType<DocumentBase> = z.lazy(() =>
   z.object({
     "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "unresolved": z.union([z.literal(true), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<DocumentBase>;
 
@@ -10194,6 +10227,7 @@ export const DocumentReferenceSchema: z.ZodType<DocumentReference> = z.lazy(() =
   z.object({
     "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "pointer": z.union([PointerSchema, z.null()]).optional(),
+    "unresolved": z.union([z.literal(true), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<DocumentReference>;
 
@@ -10720,6 +10754,7 @@ export const NamedFileCreationSchema: z.ZodType<NamedFileCreation> = z.lazy(() =
 export const NamedSubsetSchema: z.ZodType<NamedSubset> = z.lazy(() =>
   z.object({
     "subset": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "unresolved": z.union([z.literal(true), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<NamedSubset>;
 
@@ -10764,6 +10799,7 @@ export const OperationDatasetSchema: z.ZodType<OperationDataset> = z.lazy(() =>
   z.object({
     "element": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "product": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "unresolved": z.union([z.literal(true), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<OperationDataset>;
 
@@ -11333,6 +11369,7 @@ export const StepBaseSchema: z.ZodType<StepBase> = z.lazy(() =>
   z.object({
     "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "row": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$")), z.null()]).optional(),
+    "unresolved": z.union([z.literal(true), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StepBase>;
 
@@ -11378,6 +11415,7 @@ export const StepReferenceSchema: z.ZodType<StepReference> = z.lazy(() =>
     "checkpoint": z.union([CheckpointRuleSchema, z.null()]).optional(),
     "element": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
     "product": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+    "unresolved": z.union([z.literal(true), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StepReference>;
 
@@ -11418,6 +11456,7 @@ export const StudioAnalyzeAuthoringSchema: z.ZodType<StudioAnalyzeAuthoring> = z
     "changed": z.array(PointerSchema).optional(),
     "files": z.array(StudioProjectFilePatchSchema).optional(),
     "created": z.array(CreateNamedDocumentSchema).optional(),
+    "problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioAnalyzeAuthoring>;
 
@@ -11788,6 +11827,7 @@ export const StudioMemberCommandResultSchema: z.ZodType<StudioMemberCommandResul
   z.object({
     "member": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "snapshot": StudioProjectSnapshotSchema,
+    "problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioMemberCommandResult>;
 
@@ -11911,6 +11951,7 @@ export const StudioProjectSnapshotSchema: z.ZodType<StudioProjectSnapshot> = z.l
     "declaration": z.union([StudioAuthoredDeclarationSchema, z.null()]).optional(),
     "settings": z.record(z.string(), jsonValueSchema).optional(),
     "composed": z.record(z.string(), jsonValueSchema).optional(),
+    "problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectSnapshot>;
 
@@ -12196,13 +12237,14 @@ export const StudioSetEditSchema: z.ZodType<StudioSetEdit> = z.lazy(() =>
     "files": z.array(StudioProjectFilePatchSchema),
     "created": z.array(CreateNamedDocumentSchema).optional(),
     "selected": z.union([StudioAxisValueSchema, z.null()]).optional(),
+    "problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioSetEdit>;
 
 export const StudioSetEditRequestSchema: z.ZodType<StudioSetEditRequest> = z.lazy(() =>
   z.object({
     "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
-    "command": z.union([DuplicateRunSchema, SaveSetSchema, InlineSetSchema, ApplySetSchema, SetToFieldSchema, SetToSweepSchema, RemoveAxisValueSchema]),
+    "command": z.union([DuplicateRunSchema, SaveSetSchema, InlineSetSchema, ApplySetSchema, SetToFieldSchema, SetToSweepSchema, RemoveAxisValueSchema, AddSetEntrySchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioSetEditRequest>;
 
@@ -12329,6 +12371,7 @@ export const StudioTrainAuthoringSchema: z.ZodType<StudioTrainAuthoring> = z.laz
     "created": z.array(CreateNamedDocumentSchema).optional(),
     "documents": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))),
     "refusal": z.union([StudioSweptParameterMissingSchema, z.null()]).optional(),
+    "sweep_problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
     "classes": z.array(StudioClassFieldSchema).optional(),
     "removed_values": z.record(z.string(), z.array(z.string())).optional(),
     "changed": z.array(z.string()).optional(),
@@ -12352,6 +12395,7 @@ export const StudioTrainStartEditSchema: z.ZodType<StudioTrainStartEdit> = z.laz
   z.object({
     "revision": Sha256Schema,
     "files": z.array(StudioProjectFilePatchSchema),
+    "problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrainStartEdit>;
 

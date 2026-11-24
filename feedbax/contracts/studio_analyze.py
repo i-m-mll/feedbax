@@ -7,7 +7,7 @@ from pydantic import Field
 from feedbax.contracts.analysis_document import DatasetSource
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.figure_document import FigureDocument
-from feedbax.contracts.jobs import StudioSavedTrainKey
+from feedbax.contracts.jobs import StudioProjectWindowMapProblem, StudioSavedTrainKey
 from feedbax.contracts.operation import DatasetPort, OperationDefinition
 from feedbax.contracts.project import DocumentEdit, Pointer, Sha256
 from feedbax.contracts.project_inputs import ProjectName
@@ -72,3 +72,4 @@ class StudioAnalyzeAuthoring(StrictModel):
     """The pointers at which the document's composed content differs from its base's."""
     files: list[StudioProjectFilePatch] = Field(default_factory=list)
     created: list[CreateNamedDocument] = Field(default_factory=list)
+    problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
