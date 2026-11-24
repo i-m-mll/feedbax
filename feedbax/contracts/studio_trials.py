@@ -36,11 +36,12 @@ class StudioTaskType(StrictModel):
 
 
 class StudioTrialInput(StrictModel):
+    id: str
     address: ModelAddress
     name: str
     type: ValueType | None
     required: bool
-    signal: str | None
+    signal_id: str | None
     explicit: bool
 
 
@@ -81,8 +82,8 @@ class StudioTrialSelectDocument(StrictModel):
 
 class StudioTrialBindingEdit(StrictModel):
     kind: Literal["binding"]
-    input: ModelAddress
-    signal: str | None
+    input_id: str
+    signal_id: str | None
 
 
 class StudioTrialExpressionEdit(StrictModel):
@@ -159,6 +160,7 @@ class StudioTrialAuthoring(StrictModel):
     the clock samples; null for an Evaluate of a fixed cohort's conditions."""
     reads_model: bool
     """Whether the paired task reads the model's outputs, so that no trial can be drawn from it without a model."""
+    input_bindings: dict[str, str | None]
     inputs: list[StudioTrialInput]
     outputs: list[StudioTrialOutput]
     resets: list[StudioTrialReset]

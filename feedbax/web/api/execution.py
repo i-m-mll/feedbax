@@ -24,7 +24,7 @@ class TaskTrialSampleRequest(StrictModel):
     model: ModelDocument
     task: TaskDocument | None = None
     python_task: PythonTaskSelection | None = None
-    input_overrides: dict[str, str] = Field(default_factory=dict)
+    input_bindings: dict[str, str | None] = Field(default_factory=dict)
     seed: int = 0
     count: int = Field(default=8, ge=1)
     """How many trials to draw; Studio offers up to the step's batch size."""
@@ -150,7 +150,7 @@ async def sample_task_trials(
         bundle.components,
         bundle.expression_functions,
         python_tasks=bundle.python_tasks,
-        input_overrides=payload.input_overrides,
+        input_bindings=payload.input_bindings,
     )
     if not isinstance(paired, PreparedTrialExecution):
         raise HTTPException(
