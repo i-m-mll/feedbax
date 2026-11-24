@@ -4093,6 +4093,16 @@ export type StudioProjectFilePatch = {
   "patches": Array<ProjectValueEdit>;
 };
 
+export type StudioProjectList = {
+  "projects": Array<StudioProjectListEntry>;
+};
+
+export type StudioProjectListEntry = {
+  "project_id": string;
+  "name": string;
+  "modified": string;
+};
+
 export type StudioProjectPatch = {
   "address": AuthoredFileAddress;
   "patches": Array<ProjectValueEdit>;
@@ -11956,6 +11966,20 @@ export const StudioProjectFilePatchSchema: z.ZodType<StudioProjectFilePatch> = z
   }).strict()
 ) as unknown as z.ZodType<StudioProjectFilePatch>;
 
+export const StudioProjectListSchema: z.ZodType<StudioProjectList> = z.lazy(() =>
+  z.object({
+    "projects": z.array(StudioProjectListEntrySchema),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectList>;
+
+export const StudioProjectListEntrySchema: z.ZodType<StudioProjectListEntry> = z.lazy(() =>
+  z.object({
+    "project_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "name": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "modified": z.string().datetime({ offset: true }),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectListEntry>;
+
 export const StudioProjectPatchSchema: z.ZodType<StudioProjectPatch> = z.lazy(() =>
   z.object({
     "address": AuthoredFileAddressSchema,
@@ -13063,6 +13087,7 @@ export const contractSchemas = {
   StudioProjectCreateFile: StudioProjectCreateFileSchema,
   StudioProjectCreateFiles: StudioProjectCreateFilesSchema,
   StudioProjectDocument: StudioProjectDocumentSchema,
+  StudioProjectList: StudioProjectListSchema,
   StudioProjectWindowMap: StudioProjectWindowMapSchema,
   StudioProjectPatch: StudioProjectPatchSchema,
   StudioProjectPatchBatch: StudioProjectPatchBatchSchema,
@@ -13228,6 +13253,7 @@ export interface ContractTypeMap {
   StudioProjectCreateFile: StudioProjectCreateFile;
   StudioProjectCreateFiles: StudioProjectCreateFiles;
   StudioProjectDocument: StudioProjectDocument;
+  StudioProjectList: StudioProjectList;
   StudioProjectWindowMap: StudioProjectWindowMap;
   StudioProjectPatch: StudioProjectPatch;
   StudioProjectPatchBatch: StudioProjectPatchBatch;
