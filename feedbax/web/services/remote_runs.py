@@ -28,7 +28,9 @@ from feedbax.jobs import JobConflict, JobNotFound, JobService
 from feedbax.orchestration.session import (
     ProviderMachineObservation, ProviderUnreachable, SessionAuthorization, SessionDriver, SessionError, SessionRecord, SessionRequest,
 )
-from feedbax.orchestration.session_jobs import ApprovedRowStatus, ApprovedRunClosed, ApprovedRunVisibility, ApprovedSessionRuns, SessionJobs
+from feedbax.orchestration.session_jobs import (
+    ApprovedRowStatus, ApprovedRunClosed, ApprovedRunVisibility, ApprovedSessionRuns, SessionJobs, queue_session_stops,
+)
 from feedbax.orchestration.targets import TargetRegistry
 from feedbax.orchestration.venue_history import VenueHistory
 from feedbax.project_folder import ProjectFolder, ProjectFolderInvalid, SettledProjectPlan
@@ -586,24 +588,25 @@ class StudioRemoteRuns:
     def stop(
         self, local: JobService, job_ids: Sequence[str], mode: StopMode,
     ) -> list[StudioJobStopItem]:
+        ids = tuple(dict.fromkeys(job_ids))
         results: dict[str, StudioJobStopItem] = {}
         local_ids = []
-        for job_id in dict.fromkeys(job_ids):
+        pending: dict[tuple[str, UUID], list[str]] = {}
+        for job_id in ids:
             found = self._find_job(job_id)
             if found is None or found[0].record.phase != "open":
                 local_ids.append(job_id)
                 continue
             observation, job = found
-            session = self._session(observation)
-            if not observation.reachable and mode in job.allowed_actions:
-                session.queue_stop(job_id, mode)
-                results[job_id] = StudioJobStopItem(job_id=job_id, job=job)
-            else:
-                service = JobService(session.host, local.registries)
-                (results[job_id],) = service.stop((job_id,), mode)
+            request = observation.record.launch.request
+            if "force" in job.allowed_actions:
+                pending.setdefault((request.target, request.id), []).append(job_id)
+            results[job_id] = StudioJobStopItem(job_id=job_id, job=job)
+        for (target, session_id), jobs in pending.items():
+            queue_session_stops(self._venues[target].driver, session_id, jobs, mode)
         if local_ids:
             results.update((item.job_id, item) for item in local.stop(local_ids, mode))
-        return [results[job] for job in dict.fromkeys(job_ids)]
+        return [results[job] for job in ids]
 
     def resume(self, local: JobService, job_id: str, token: str) -> StudioActivityJob:
         found = self._find_job(job_id)
