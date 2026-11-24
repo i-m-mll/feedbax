@@ -13,10 +13,9 @@ from pydantic import BaseModel, JsonValue
 
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project import SetProjectValue
-from feedbax.contracts.project_sweep import AxisValue, NamedAxis, RemoveValue, SetValue
+from feedbax.contracts.project_sweep import AxisValue, NamedAxis, RemoveValue, SetValue, _paths_overlap
 from feedbax.contracts.studio_authoring import (
     StudioAuthoringOption, StudioClassField, StudioClassMember, StudioClassSweep, StudioClassSweepChange,
-    StudioSweptParameterMissing,
 )
 from feedbax.contracts.studio_project import StudioProjectFilePatch
 from feedbax.studio.authoring_sweeps import FieldSweeps, drop_axis, patch_writes, sweep_paths
@@ -92,11 +91,10 @@ def edit_class_sweep(
     stored: dict[str, JsonValue],
     *,
     scoped: bool,
-    parameter_label: Callable[[_Path], str],
     store: Callable[[list[OverridePatch]], StoredEdit],
     step_file: Callable[[list[SetProjectValue]], StudioProjectFilePatch],
-) -> ClassSweepEdit | StudioSweptParameterMissing:
-    """The files that make ``change`` to the sweep over ``field``, or the parameter a new member's class lacks.
+) -> ClassSweepEdit:
+    """The files that make ``change`` to the sweep over ``field``.
 
     ``stored`` is the step's record of the field. ``store`` stores writes at paths in the Train definition on the step;
     ``step_file`` writes the step's own file.
@@ -135,11 +133,12 @@ def edit_class_sweep(
     key = edit.key
     if key not in field.classes or any(entry.value == key for entry in values.values()):
         raise ValueError(f"{field.label} has no class {key!r} to add.")
-    missing = _swept_parameter_missing(field, key, sweep_paths(sweeps.step.sweep, besides=name), parameter_label)
-    if missing is not None:
-        return missing
     keeps = field.parameters(key)
-    moved = [parameter for parameter in stored if parameter != field.tag and parameter not in keeps]
+    other_targets = sweep_paths(sweeps.step.sweep, besides=name)
+    moved = [
+        parameter for parameter in stored if parameter != field.tag and parameter not in keeps
+        and not any(_paths_overlap(target, ".".join((*field.site, parameter))) for target in other_targets)
+    ]
     moved_values = {
         value_id: _with_moved(field, entry, {parameter: stored[parameter] for parameter in moved})
         for value_id, entry in values.items()
@@ -148,17 +147,6 @@ def edit_class_sweep(
     after = NamedAxis(values=moved_values | {added: sweeps.target.entry(key, field.title(key))})
     removals = [OverridePatch(op="remove", path=".".join((*field.site, parameter))) for parameter in moved]
     return ClassSweepEdit((store(removals) if removals else StoredEdit([])).then([step_file(sweeps.write_axis(after))]))
-
-
-def _swept_parameter_missing(
-    field: ClassField, key: str, swept: set[str], parameter_label: Callable[[_Path], str],
-) -> StudioSweptParameterMissing | None:
-    for path in sorted(swept):
-        parts = tuple(path.split("."))
-        depth = len(field.site)
-        if len(parts) > depth and parts[:depth] == field.site and parts[depth] not in field.parameters(key):
-            return StudioSweptParameterMissing(class_label=field.title(key), parameter_label=parameter_label(parts))
-    return None
 
 
 def _with_moved(field: ClassField, entry: AxisValue, moved: dict[str, JsonValue]) -> AxisValue:

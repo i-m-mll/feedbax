@@ -113,9 +113,10 @@ export function useTrialClock({
 }: TrialClockInputs) {
   const clock = windowState.clock ?? defaultTrialClock;
   const recorded = recordedTrials(evaluation);
+  const period = view?.period_seconds;
   const task = view && taskDocumentOf(view);
   const offer: TrialOffer = {
-    nominal: !!task, samples: task && stored && !view.reads_model ? view.batch_size ?? 0 : 0, recorded: recorded.ids.length,
+    nominal: !!task && period != null, samples: task && period != null && stored && !view.reads_model ? view.batch_size ?? 0 : 0, recorded: recorded.ids.length,
   };
   const pick = shownPick(clock, offer);
   const index = pick?.showing.kind === 'one' ? pick.showing.index : undefined;
@@ -124,8 +125,7 @@ export function useTrialClock({
   const recordedTrial = replay.view.kind === 'replay' ? replay.view.trial : undefined;
   const { shown, query } = useShown(pick, clock, offer, view, stored, recordedTrial);
   const drawn = view && taskDocument ? shelfTask(view, taskDocument) : undefined;
-  const period = view?.period_seconds ?? 0;
-  const rows = pick?.trials === 'nominal' && drawn ? nominalRows(drawn) : pick && shown && (drawn ? rowsOf(drawn, pick, shown, period) : []);
+  const rows = pick?.trials === 'nominal' && drawn ? nominalRows(drawn) : pick && shown && (drawn && period != null ? rowsOf(drawn, pick, shown, period) : []);
   const [taskTime, setTaskTime] = usePlayhead(playhead, JSON.stringify(['task', taskDocument, pick, clock.seed]));
   const [time, setTime] = pick?.trials === 'recorded' ? [replay.time, replay.setTime] : [taskTime, setTaskTime];
   const replayTimeline = pick?.trials === 'recorded' ? sceneTimeline(replay.view) : null;
@@ -134,7 +134,7 @@ export function useTrialClock({
     ? { duration: replayTimeline.duration, frameTimes: replayTimeline.frameTimes, bands: [] }
     : {
       duration: drawn?.duration ?? 0,
-      frameTimes: view?.n_steps ? frames(view.n_steps, period) : [],
+      frameTimes: view?.n_steps && period != null ? frames(view.n_steps, period) : [],
       bands: epochs?.kind === 'segments' ? epochs.segments : [],
     };
   const selected = useStore(elements, (current) => current.selection);
@@ -160,7 +160,7 @@ export function useTrialClock({
       timeline={timeline} time={time} onTimeChange={setTime} axis={axis} shelfOpen={open}
       onShelfChange={(next) => shelfView && change({ ...clock, shelf: { ...clock.shelf, [shelfView]: next } })} />,
     shelf: pick && open && timeline.duration > 0 && (rows
-      ? <Shelf rows={rows} duration={timeline.duration} stepSeconds={replayTimeline ? undefined : period} time={time}
+      ? <Shelf rows={rows} duration={timeline.duration} stepSeconds={replayTimeline ? undefined : period ?? undefined} time={time}
         onTimeChange={setTime} axis={axis} selected={selected} onSelect={(address) => selectElement(elements, address)}
         unavailable={unavailable || undefined}
         trailing={offer.samples > 0 && <SegmentedControl aria-label={studioName('trials')} value={showing}
