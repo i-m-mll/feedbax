@@ -1,11 +1,13 @@
 """Resolve revision-bound authored stores for prepared and direct edits."""
 
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
+from itertools import chain
 
 from pydantic import JsonValue
 
-from feedbax.contracts.project import Project
+from feedbax.contracts.project import Project, base_chain
 from feedbax.contracts.project_resolution import RunKey
+from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.studio_authoring import StudioRunSelection
 from feedbax.contracts.studio_scope import StoreKind, StudioStoreChoice
 from feedbax.planner.project_plan import ProjectPlan, compile_project
@@ -63,6 +65,40 @@ def selected_edit_runs(plan: ProjectPlan, step: str, scope: StudioRunSelection |
     return frozenset(row.key for row in plan.rows if row.key.variant == variant and row.key.step in steps)
 
 
+def _changed_names[T](before: Mapping[str, T], after: Mapping[str, T]) -> set[str]:
+    return {name for name in before.keys() | after.keys() if before.get(name) != after.get(name)}
+
+
+def edited_authored_rows(before: ProjectPlan, after: ProjectPlan) -> frozenset[RunKey]:
+    """The rows whose authored step or directly read documents are touched, across effective variants."""
+    from feedbax.web.services.trial_scope import reached_steps, set_readers
+
+    empty = Project()
+    sources: dict[str, tuple[frozenset[str], set[str]]] = {}
+    for variant in before.variant_projects.keys() | after.variant_projects.keys():
+        old = before.variant_projects.get(variant, empty)
+        new = after.variant_projects.get(variant, empty)
+        steps = _changed_names(old.steps, new.steps)
+        documents = _changed_names(old.documents, new.documents)
+        reached = reached_steps(old, steps) | reached_steps(new, steps)
+        if documents:
+            documents = documents | {
+                name for view in (old, new) for name in view.documents
+                if documents.intersection(base_chain(view.documents, name))
+            }
+            for view in (old, new):
+                for name in documents:
+                    if (entry := view.documents.get(name)) is not None and entry.schema_id == SET_DOCUMENT_SCHEMA_ID:
+                        reached |= set_readers(view, name)
+        sources[variant] = reached, documents
+    rows = set()
+    for row in chain(before.rows, after.rows):
+        steps, documents = sources[row.key.variant]
+        if row.key.step in steps or documents.intersection(row.document_uses - row.followed_documents):
+            rows.add(row.key)
+    return frozenset(rows)
+
+
 def prepared_reach(
     folders: ProjectFolderService, settled: SettledProjectPlan, project: Project,
     stored: StoredEdit, observed: frozenset[RunKey], before: ProjectPlan,
@@ -85,7 +121,7 @@ def prepared_reach(
         return row.label, row.coordinates, row.problems, row.resolved, definition.payload if definition else None
 
     return frozenset(
-        key for key in observed
+        key for key in observed & edited_authored_rows(before, candidate)
         if (key.variant, key.step) in introduced and (
             (key.variant, key.step) not in scoped or key in restricted
         )
