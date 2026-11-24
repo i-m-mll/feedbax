@@ -3,13 +3,13 @@ import { Activity } from 'lucide-react';
 import { useState } from 'react';
 import { studioAccessibleName, studioName, studioValueType } from '@/components/activity/studioVocabulary';
 import { ChangeMark } from '@/components/ui/ChangeMark';
-import { Combobox } from '@/components/ui/Combobox';
 import { FieldProblem } from '@/components/ui/FieldProblem';
 import { InlineEdit } from '@/components/ui/InlineEdit';
-import { MenuItem } from '@/components/ui/Menu';
+import { MenuCheckboxItem, MenuItem } from '@/components/ui/Menu';
 import {
   Table, TableCell, TableFieldCell, TableHeaderCell, TableHeaderRow, TableRow, type TableColumn,
 } from '@/components/ui/Table';
+import { TreeChoice } from '@/components/ui/TreeChoice';
 import { changeTip, ValueField } from '@/components/values/ValueField';
 import type { TaskSelection, TaskVariable, UninitializedStart, VariableInitializes } from './taskModel';
 
@@ -23,11 +23,13 @@ export interface VariableEdits {
   remove?(id: string): Made;
   /** Moves the variable to `index` among the variables. */
   move?(id: string, index: number): Made;
+  /** Makes the variable a list, or a single value again. */
+  list?(id: string, list: boolean): Made;
 }
 
 /** A variable's type, with a list's count beside it. */
 export function variableType({ type, count }: Pick<TaskVariable, 'type' | 'count'>) {
-  return count === undefined ? type : `${type} × ${count}`;
+  return count === undefined ? type : `${type} × ${count.text ?? ''}`;
 }
 
 /** The mark of a variable read every step, because it reads `time` or the model. */
@@ -41,15 +43,15 @@ const columns: readonly TableColumn[] = [{ least: '5rem', greatest: '16rem' }, {
 const drawnColumn: TableColumn = { least: '5rem' };
 const initializesColumn: TableColumn = { least: '8rem' };
 
-/** The Model values a variable initializes, as a choice with type-ahead of those its type fits. */
+/** The Model values a variable initializes, as a choice over the Model's tree of those its type fits. */
 function Initializes({ variable, initializes }: { variable: string; initializes?: VariableInitializes }) {
   const [refusal, setRefusal] = useState<string>();
   if (!initializes) return null;
   const { anchor, chosen, options, reason, changed, toggle } = initializes;
   const items = [...options, ...chosen.filter(({ id }) => !options.some((option) => option.id === id))];
   const shown = refusal ?? reason;
-  return <div data-field={anchor} className="contents"><Combobox className="w-full" aria-label={studioAccessibleName('initializes', variable)}
-    items={items.map(({ id, name }) => ({ value: id, label: name }))}
+  return <div data-field={anchor} className="contents"><TreeChoice className="w-full" aria-label={studioAccessibleName('initializes', variable)}
+    options={items.map(({ id, path }) => ({ value: id, path }))}
     checked={chosen.map(({ id }) => id)} text={chosen.map(({ name }) => name).join(', ')}
     disabled={!toggle} invalid={!!shown}
     trailing={(shown || changed) && <>
@@ -107,6 +109,8 @@ export function TaskVariables({ variables, starts = [], selected, select, edits,
           <MenuItem disabled={index === 0 || !move} onClick={() => move?.(variable.id, index - 1)}>{studioName('moveEarlier')}</MenuItem>
           <MenuItem disabled={index === variables.length - 1 || !move}
             onClick={() => move?.(variable.id, index + 1)}>{studioName('moveLater')}</MenuItem>
+          <MenuCheckboxItem checked={!!variable.count} disabled={!edits.list}
+            onCheckedChange={(list) => settle(variable.id, edits.list?.(variable.id, list))}>{studioName('list')}</MenuCheckboxItem>
           <MenuItem onClick={() => settle(variable.id, edits.remove?.(variable.id))}>{studioName('remove')}</MenuItem>
         </> }}>
         <TableFieldCell header>
@@ -120,7 +124,11 @@ export function TaskVariables({ variables, starts = [], selected, select, edits,
           </span>
         </TableFieldCell>
         <TableFieldCell {...appTip(studioValueType(variable.valueType))}>
-          <ValueField form="cell" model={variable.typeChoice} />
+          {variable.count ? <span className="flex min-w-0 items-center gap-1">
+            <span className="min-w-0 flex-1"><ValueField form="cell" model={variable.typeChoice} /></span>
+            <span aria-hidden="true" className="text-shell-muted">×</span>
+            <span className="w-12 shrink-0"><ValueField form="cell" model={variable.count} /></span>
+          </span> : <ValueField form="cell" model={variable.typeChoice} />}
         </TableFieldCell>
         <TableFieldCell><ValueField form="cell" model={variable.value} /></TableFieldCell>
         {drawn && <TableCell className="font-mono tabular-nums text-shell-muted">{drawn[variable.id]}</TableCell>}

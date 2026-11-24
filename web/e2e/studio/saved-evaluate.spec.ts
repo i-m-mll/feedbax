@@ -2,7 +2,7 @@ import { expect, test } from './fixtures/studio';
 import { type APIRequestContext, type Page, type TestInfo } from '@playwright/test';
 import type {
   StudioEvaluationObjectiveSeries, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedEvaluationRow,
-  StudioSavedTrainRuns, StudioTrialReplayResponse,
+  StudioSavedTrainRuns, StudioTrialReplayResponse, TrialRecords,
 } from '../../src/generated/studioContracts';
 import { savedRunId } from '../../src/features/projectFolder/projectWindowPlan';
 import { authorEvaluateConditions } from './fixtures/authorEvaluateConditions';
@@ -193,6 +193,23 @@ async function showTrial(page: Page, path: string, row: StudioSavedEvaluationRow
   await scrubber.press('End');
   await expect.poll(coordinates).not.toEqual(reset);
   await expect(scrubber).toHaveValue(String(replay.state_time.at(-1)));
+  // Catches a recorded trial whose shelf draws no epochs, or epochs other than those the run recorded.
+  const [record] = (replay.drawn as TrialRecords).trials;
+  const period = replay.state_time[1];
+  const recorded = record.timeline.filter(({ start, end }) => end > start);
+  expect(recorded.length).toBeGreaterThan(0);
+  const shelfSwitch = clock.getByRole('button', { name: 'Shelf', exact: true });
+  await shelfSwitch.click();
+  const segments = page.getByRole('region', { name: 'Shelf', exact: true })
+    .getByRole('group', { name: 'Epochs', exact: true }).locator('[data-shelf-mark]');
+  await expect(segments).toHaveCount(recorded.length);
+  for (const [index, { label, start, end }] of recorded.entries()) {
+    const segment = segments.nth(index);
+    await expect(segment).toHaveAccessibleName(label);
+    expect(Number(await segment.getAttribute('data-start'))).toBeCloseTo(start * period, 9);
+    expect(Number(await segment.getAttribute('data-end'))).toBeCloseTo(end * period, 9);
+  }
+  await shelfSwitch.click();
   return replay;
 }
 
@@ -536,8 +553,11 @@ test('authors checkpoint rules and replays covered updates from Results', { tag:
   await expect(kind).toHaveText('Every');
   await expect(every).toHaveValue('2');
   await pick(kind, 'List');
-  await updates.fill('2, 2');
-  await updates.press('Enter');
+  const held = await saved(async () => {
+    await updates.fill('2, 2');
+    await updates.press('Enter');
+  });
+  expect(held.project.steps!.evaluate.inputs?.subject).toMatchObject({ checkpoint: { kind: 'unresolved', text: '2, 2' } });
   await expect(updates).toHaveAttribute('aria-invalid', 'true');
   await expect(updates).toHaveAccessibleDescription(/\S/);
   await expect(checkpoint.getByRole('img', { name: 'Problem', exact: true })).toBeVisible();

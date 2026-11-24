@@ -33,16 +33,16 @@ const typeName = (type: ValueType, types: readonly StudioNamedValueType[]) =>
 function startOf(reset: StudioTrialReset): ModelStart {
   const components = (reset.address.composites?.length ?? 0) + 1;
   const name = [...reset.path.slice(0, components), reset.path.slice(components).join(' ')].join(' · ');
-  return { id: addressKey(reset.address), name };
+  return { id: addressKey(reset.address), name, path: reset.path };
 }
 
 /** A linked Model field the paired Model does not have: its component's id and its path. */
 function missingStart(id: string): ModelStart {
   const { element } = ModelAddressSchema.parse(JSON.parse(id));
-  if (element.kind !== 'field' || element.parent.kind !== 'component') return { id, name: id };
+  if (element.kind !== 'field' || element.parent.kind !== 'component') return { id, name: id, path: [id] };
   const [kind, ...members] = element.path;
-  const label = kind === 'state' ? String(members[0]).split('/').join(' ') : members.join(' ');
-  return { id, name: `${element.parent.id} · ${label}` };
+  const segments = kind === 'state' ? String(members[0]).split('/') : members.map(String);
+  return { id, name: `${element.parent.id} · ${segments.join(' ')}`, path: [element.parent.id, ...segments] };
 }
 
 /** The Model values `variable` initializes, the choice of those its type fits, and its links' problem and change. */
@@ -113,8 +113,15 @@ function variables(view: TrialView, task: TaskDocument, types: readonly StudioNa
       }),
       anchor: variableAnchor(variable.id),
     } : rawField({ id: `value:${variable.id}`, label: studioName('value'), value: '', type: { kind: 'readOnly' } });
+    const countPath = authoredPointer(['task', 'variables', variable.id, 'count']);
+    const countProjection = variable.count ? view.fields.find((field) => field.path === countPath) : undefined;
+    const count = variable.count ? countProjection ? trialField(countProjection, studioName('count'), runs, {
+      id: `count:${variable.id}`, kind: expressionKind(variable.count),
+      changed: changedAt(view, 'task', `/variables/${index}/count`, commit),
+      commit: commit && ((edit) => commit(studioAccessibleName('set', studioName('count')), { kind: 'expression', path: countPath, edit })),
+    }) : rawField({ id: `count:${variable.id}`, label: studioName('count'), value: '', type: { kind: 'readOnly' } }) : undefined;
     return {
-      id: variable.id, name: variable.name, type: name, valueType: variable.type, typeChoice, value,
+      id: variable.id, name: variable.name, type: name, valueType: variable.type, typeChoice, value, count,
       level: levels.get(variable.id) === 2 ? 'step' : 'trial', initializes: initializes(view, task, variable, commit),
     };
   });
@@ -135,6 +142,8 @@ function variableEdits(task: TaskDocument, commit?: Commit): VariableEdits {
       { kind: 'structure', changes: [{ op: 'remove', member: 'variable', id }] }, true),
     move: (id, index) => structure(studioAccessibleName('move', named(id)),
       { kind: 'structure', changes: [{ op: 'move', member: 'variable', id, index }] }),
+    list: (id, list) => structure(studioAccessibleName('set', studioName('list')), { kind: 'structure', changes: [
+      { op: 'set_variable_count', id, count: list ? { kind: 'literal', value: 2 } : null }] }),
   };
 }
 

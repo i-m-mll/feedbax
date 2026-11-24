@@ -79,13 +79,13 @@ import {
 } from './evaluateAuthoring';
 import { bindProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
-import { bestRankGroups, projectWindowPlan, planVariants, savedRunId, stepSourceRows, unvalued } from './projectWindowPlan';
+import { axisProblems, bestRankGroups, projectWindowPlan, planVariants, savedRunId, stepSourceRows, unvalued } from './projectWindowPlan';
 import { placeField, placeMember, placeView, removeGraphVariation, type Reveal } from './projectWindowProblems';
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
 import { planWithRefusal, problemKey, type GestureFailures, type Refusal } from './refusals';
 import { SubjectDocuments, TrialsEditor, type StepField } from './StudioEvaluateAuthoring';
 import { SelectionRule } from './SelectionRule';
-import { bindingEdit, connection, selectionProblems, stepSelections, subjectAxisEdits } from './selectionEdits';
+import { bindingEdit, connection, exceptionRuleProblem, selectionProblems, stepSelections, subjectAxisEdits } from './selectionEdits';
 import { InputEditor, type InputGesture } from './InputEditor';
 import { documentChoice } from './referenceChoices';
 import { documentsOfRole } from './useProjectDocuments';
@@ -315,12 +315,22 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const choiceMenu = useChoiceMenu();
   const sets = setAuthoring({
     editor, project: saved.project, applies: !outside && reachable && variantApplies,
-    perform, state: () => latestState.current, select: (next) => selection.select(next),
+    perform, state: () => latestState.current, select: (next) => selection.select(next), confirmRemoval: runRemoval.confirm,
   });
-  const axisMenu: AxisMenu = (stepId, axis) => ({
-    picker: sets.axisPicker(stepId, axis), commands: sets.axisCommands(stepId, axis),
-    refusal: refusal?.kind === 'axis' && refusal.step === stepId && refusal.axis === axis ? refusal.reason : undefined,
-  });
+  const axisMenu: AxisMenu = (stepId, axis) => {
+    const planned = plan.steps.find(({ id }) => id === stepId);
+    const values = planned?.sweeps.find(({ id }) => id === axis)?.values ?? [];
+    const subject = planned?.kind === 'evaluate' ? planned.inputs.find(({ id }) => id === 'subject')?.sourceStepId : undefined;
+    const model = modelDocumentId(planned?.documentIds) ??
+      (subject ? modelDocumentId(plan.steps.find(({ id }) => id === subject)?.documentIds) : undefined);
+    const [problem] = axisProblems(shown?.window_map, stepId, axis, variant);
+    return {
+      picker: sets.axisPicker(stepId, axis),
+      commands: sets.axisCommands(stepId, axis, { model: !!model, empty: !values.some(({ id }) => id !== unvalued) }),
+      removeValue: (value, label) => sets.removeValue(stepId, axis, value, label),
+      refusal: refusal?.kind === 'axis' && refusal.step === stepId && refusal.axis === axis ? refusal.reason : problem?.detail,
+    };
+  };
   const step = plan.steps.find(({ id }) => id === selection.stepId);
   const state = shown ? settledWindowSelection(plan, selection.pipeline) : selection.pipeline;
   const latestState = useRef(state);
@@ -663,8 +673,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const unlisted = stepCheckpointRule || (!listedSubject ? scopedRule : undefined);
   const checkpointEditors: readonly SelectionCheckpoint[] | undefined = listedCheckpoints ??
     (unlisted ? [{ rule: unlisted, selections: [0] }] : undefined);
-  const canSweepCheckpoint = Boolean(namedRun && stepCheckpointRule && !checkpointVariant && !subject?.checkpoint_axis &&
-    stepCheckpointRule !== 'last' && (Array.isArray(stepCheckpointRule) || 'every' in stepCheckpointRule));
+  const canSweepCheckpoint = Boolean(namedRun && subject?.can_sweep_checkpoint);
   function saveElementPosition(document: string, node: string, position: PresentationPosition) {
     const { outside, saved } = editor.getSnapshot();
     const current = (outside ?? saved).presentation ?? {};
@@ -1079,7 +1088,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   /** Selection `index` of input `role` as its rule field edits it: its terms, unless a named subset holds them. */
   function selectionRuns(role: string, index: number, reference: StepReference, onCommit: (terms: SubsetTerms) => void,
     onToRows?: () => void) {
-    const problem = refusedAt(`subset.${index}`) ?? inputProblems(role, index)?.rule;
+    const refused = refusedAt(`subset.${index}`);
+    const problem = refused !== undefined ? { reason: refused } : inputProblems(role, index)?.rule;
     const source = plan.steps.find(({ id }) => id === reference.step);
     const where = reference.where ?? {};
     if (!source || !shown || !variant || 'subset' in where) return undefined;
@@ -1665,7 +1675,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     activity, problemCommand, failure && !isStudioDefect(failureCause) && retryCommand,
   ].filter((command): command is StudioCommand => !!command);
 
-  const projectSettings = <ProjectSettingRows settings={configuration.settings ?? {}}
+  const projectSettings = <ProjectSettingRows settings={configuration.settings ?? {}} defaultDays={saved.default_keep_superseded_days}
     steps={Object.entries(saved.project.steps ?? {}).map(([id, step]) => ({ id, label: shownName(id, step) }))}
     change={(name, setting, value) => editor.edit(declarationAddress, name, [{ op: 'add', path: `/settings/${setting}`, value }])} />;
 
@@ -1863,6 +1873,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               ].join(' · '), rule: editable && <SelectionRule scope={{ project: saved.project_id, revision: shown.revision, variant }}
                 source={step} rule={where?.rule ?? ''} ranked={false} picking={elements}
                 planned={{ count: exception.count, total: step.runs.length }}
+                problem={exceptionRuleProblem(shown.window_map?.problems ?? [], step.id, variant, exception.id)}
                 disabled={!applies || !!saved.project.sweep}
                 onCommit={(rule) => onCurrentPlan('editExceptionRule')(exception.id, rule)} /> };
             });

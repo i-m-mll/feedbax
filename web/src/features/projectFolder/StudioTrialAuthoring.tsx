@@ -30,6 +30,7 @@ import type {
   StudioTrialField,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
+import { addressKey } from './model/modelGraph';
 import { BatchTrace, TrialTrace } from './task/SignalTrace';
 import { epochBoundaries, signalAggregate, signalSteps, type TrialShown } from './task/trialSample';
 import { baseOf } from './documentPayload';
@@ -216,7 +217,11 @@ export function TrialTaskOutline({ sections, view, selected, select }: {
     variables: task && entries('variables', task.variables),
     epochs: task && entries('epochs', task.epochs),
     signals: task ? entries('signals', task.signals) : view.signals.map(({ id, name }) => ({ id, name: humanizeLabel(name) })),
-    modelInputs: view.inputs.map(({ id, name, signal_id }) => ({ id, name, muted: !signal_id })),
+    modelInputs: view.inputs.map(({ id, name, address, signal_id }) => {
+      const signal = view.signals.find((item) => item.id === signal_id)?.name;
+      const reason = view.problems.find(({ model_address }) => model_address && addressKey(model_address) === addressKey(address))?.reason;
+      return { id, name, muted: !signal_id, reason, detail: signal === name ? undefined : signal };
+    }),
   };
   const [kind, ...rest] = selected?.split(':') ?? [];
   const group = (Object.keys(outlineKinds) as OutlineGroup[]).find((key) => outlineKinds[key] === kind);
