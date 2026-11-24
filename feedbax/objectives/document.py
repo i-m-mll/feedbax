@@ -328,7 +328,7 @@ def compile_objective(
         if not isinstance(weight, Compiled):
             problems.extend(weight)
             continue
-        used = (measure_refs | weight_refs) - {"t", "T", "u"}
+        used = (references(measure.checked.tree) | references(weight.checked.tree)) - {"t", "T", "u"}
         terms.append(
             _Term(
                 term.id,
