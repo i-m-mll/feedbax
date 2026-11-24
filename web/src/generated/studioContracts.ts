@@ -4252,6 +4252,12 @@ export type StudioTaskPlace = {
   "document": string | null;
   "parameter"?: string | null;
   "initializes"?: string | null;
+  "start"?: StudioTaskStart | null;
+};
+
+export type StudioTaskStart = {
+  "address": ModelAddress;
+  "name": string;
 };
 
 export type StudioTaskType = {
@@ -11920,8 +11926,16 @@ export const StudioTaskPlaceSchema: z.ZodType<StudioTaskPlace> = z.lazy(() =>
     "document": z.union([z.string(), z.null()]),
     "parameter": z.union([z.string(), z.null()]).optional(),
     "initializes": z.union([z.string(), z.null()]).optional(),
+    "start": z.union([StudioTaskStartSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTaskPlace>;
+
+export const StudioTaskStartSchema: z.ZodType<StudioTaskStart> = z.lazy(() =>
+  z.object({
+    "address": ModelAddressSchema,
+    "name": z.string(),
+  }).strict()
+) as unknown as z.ZodType<StudioTaskStart>;
 
 export const StudioTaskTypeSchema: z.ZodType<StudioTaskType> = z.lazy(() =>
   z.object({

@@ -8,7 +8,7 @@ import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import { authoredPointer } from '../authoredEdits';
 import { addressKey } from '../model/modelGraph';
 import {
-  changedAt, expressionKind, initializesAnchor, variableAnchor, type Commit, type TrialRuns, type TrialView,
+  changedAt, expressionKind, initializesAnchor, startAnchor, variableAnchor, type Commit, type TrialRuns, type TrialView,
 } from '../StudioTrialAuthoring';
 import { VariableInspector } from './TaskInspector';
 import { TrialTaskGrid } from './trialGrid';
@@ -67,7 +67,9 @@ function initializes(view: TrialView, task: TaskDocument, variable: TaskDocument
 function uninitialized(view: TrialView, task: TaskDocument, types: readonly StudioNamedValueType[]): UninitializedStart[] {
   const linked = new Set((task.links ?? []).map(({ model_field }) => model_field));
   return view.resets.filter((reset) => !linked.has(addressKey(reset.address)))
-    .map((reset) => ({ ...startOf(reset), type: typeName(reset.type, types), valueType: reset.type }));
+    .map((reset) => ({
+      ...startOf(reset), anchor: startAnchor(addressKey(reset.address)), type: typeName(reset.type, types), valueType: reset.type,
+    }));
 }
 
 /** The variables of the task document the step reads, each with its Type and Value fields. */

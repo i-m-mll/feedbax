@@ -45,6 +45,14 @@ test('Initializes chooses the Model values a variable starts, and a start the Mo
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Task', exact: true }).click();
   await expect(start(positionName).locator('[data-field-problem]')).toHaveAttribute('data-app-tip', /start of each trial/);
+  // The run's problem is named by the value its row shows, and revealing it puts the keyboard in that row's name.
+  await page.getByRole('button', { name: /^Problems \d+$/ }).click();
+  await page.getByRole('dialog', { name: 'Problems', exact: true })
+    .getByRole('button', { name: new RegExp(`^${positionName} · The Model needs this value`) }).click();
+  await expect(start(positionName).getByRole('textbox', { name: `Name ${positionName}`, exact: true })).toBeFocused();
+  await page.keyboard.press('Escape');
+  // The reveal selected the run; the step is chosen again so that the Task's edits are the step's.
+  await mapStep(page, 'train').click();
   await expect(start('Point mass · effector velocity')).toBeVisible();
   await expect(start('Point mass · effector velocity').locator('[data-field-problem]')).toHaveCount(0);
   expect(await unset()).toEqual([expect.objectContaining({ path: ['links', position] })]);

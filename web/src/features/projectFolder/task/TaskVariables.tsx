@@ -203,7 +203,7 @@ function StartRow({ start, add, drawn }: { start: UninitializedStart; add?: Vari
   return <TableRow>
     <TableCell />
     <TableFieldCell header>
-      <span className="flex h-full min-w-0 items-center">
+      <span data-field={start.anchor} className="flex h-full min-w-0 items-center">
         <InlineEdit form="cell" value="" editing={editing} className="min-w-0 flex-1 font-mono"
           aria-label={studioAccessibleName('name', start.name)} onEditingChange={setEditing}
           onCommit={(name) => {

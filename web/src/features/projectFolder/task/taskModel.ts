@@ -32,6 +32,8 @@ export interface VariableInitializes {
 
 /** A Model value no variable initializes, at the foot of Variables with its type fixed and its name empty. */
 export interface UninitializedStart extends ModelStart {
+  /** The `data-field` a revealed problem of the value focuses. */
+  readonly anchor: string;
   /** The type's name. */
   readonly type: string;
   readonly valueType: ValueType;
