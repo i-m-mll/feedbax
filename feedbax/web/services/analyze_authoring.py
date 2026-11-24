@@ -5,6 +5,7 @@ from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySe
 from feedbax.contracts.analysis_document import AnalysisDocument, DatasetSource, StepInput
 from feedbax.contracts.dataset import FieldDescriptor
 from feedbax.contracts.figure_document import validate_figure_bindings
+from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.operation import (
     DatasetInputPort,
     DatasetPort,
@@ -14,9 +15,10 @@ from feedbax.contracts.operation import (
     require_dataset_port,
 )
 from feedbax.contracts.project import DocumentReference, DocumentEdit, Project, RemoveProjectValue, SetProjectValue
+from feedbax.contracts.project_io import project_declaration_name
 from feedbax.contracts.project_inputs import StepReference
 from feedbax.planner.project_plan import PlannedAnalyzeRun, RunKey, compile_project
-from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, compose_document
+from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, ResolutionCode, compose_document
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.studio_analyze import (
     StudioAnalyzeAuthoring,
@@ -206,31 +208,24 @@ def _common_fields(
 
 
 def _states_port(
-    service: ProjectPlanService, project_id: str, revision: str, key: RunKey, bound: bool,
-) -> tuple[DatasetPort | None, ProjectPlanRead]:
+    service: ProjectPlanService, view: ProjectPlanRead, row: PlannedAnalyzeRun | None, key: RunKey, bound: bool,
+) -> DatasetPort | None:
     """The dataset port common to the saved states of every Evaluate run the ``states`` input of ``key`` stacks, or
     none when the step has no ``states`` input."""
-    view = service.read(project_id, revision=revision)
-    plan = view.settled.plan
-    if plan.variants[:1] != (key.variant,):
-        raise ValueError(f"The Analyze step is shared by all variants and is edited in {plan.variants[0]!r}, not {key.variant!r}")
-    row = next((row for row in plan.rows if row.key == key and isinstance(row, PlannedAnalyzeRun)), None)
-    if row is None:
-        raise ValueError(f"Run {key.row!r} no longer belongs to step {key.step!r}.")
-    if not bound:
-        return None, view
+    if not bound or row is None:
+        return None
     members = [binding.producer for binding in row.inputs.get("states", ())]
     if not members or any(member is None or member.variant != key.variant for member in members):
-        raise ValueError(f"The Analyze input of variant {key.variant!r} holds no saved Evaluate runs of this variant")
+        return None
     states = None
     for member in dict.fromkeys(members):
-        row = view.evaluations.get(member)
-        if row is None or row.result is None:
-            raise ValueError("A selected Evaluate run has no saved states.")
+        evaluation = view.evaluations.get(member)
+        if evaluation is None or evaluation.result is None:
+            return None
         result = service.jobs.read_evaluation_result(
-            project=view.settled.project_id, store=view.settled.store_path, job_id=row.result.job_id,
+            project=view.settled.project_id, store=view.settled.store_path, job_id=evaluation.result.job_id,
         )
-        if result.receipt != row.result.receipt:
+        if result.receipt != evaluation.result.receipt:
             raise ValueError("A selected Evaluate receipt changed.")
         with result.open_states() as dataset:
             descriptor = dataset.descriptor
@@ -250,7 +245,7 @@ def _states_port(
                 coordinates=_common_fields(states.coordinates, descriptor.coords),
             )
     assert states is not None
-    return states, view
+    return states
 
 
 def analyze_authoring(
@@ -268,25 +263,41 @@ def analyze_authoring(
         or step.deltas
     ):
         raise ProjectFolderInvalid(f"Analyze step {key.step!r} has no named analysis document")
-    document = project.documents.get(step.base.document)
-    if document is None or document.schema_id != "feedbax.analysis_document.v1":
+    document = None if step.base.unresolved else project.documents.get(step.base.document)
+    if body.change and (document is None or document.schema_id != "feedbax.analysis_document.v1"):
         raise ProjectFolderInvalid("The selected step has no saved analysis document.")
     bound = step.inputs.get("states")
     references = bound if isinstance(bound, list) else [] if bound is None else [bound]
-    if bound is not None and not references or not all(
-        isinstance(reference, StepReference) and not reference.variants for reference in references
-    ):
-        raise ProjectFolderInvalid(f"The states input of Analyze step {key.step!r} reads no Evaluate step of this variant")
+    states_available = bool(references) and all(
+        isinstance(reference, StepReference) and not reference.variants and not reference.unresolved
+        for reference in references
+    )
     try:
-        states, view = _states_port(service, project_id, body.revision, key, bound is not None)
+        view = service.read(project_id, revision=body.revision)
         plan = view.settled.plan
+        if plan.variants and plan.variants[0] != key.variant:
+            raise ValueError(f"The Analyze step is shared by all variants and is edited in {plan.variants[0]!r}, not {key.variant!r}")
+        problems = [
+            problem for problem in plan.diagnostics
+            if problem.step == key.step and problem.variant in (None, key.variant) and problem.row in (None, key.row)
+        ]
+        row = next((row for row in plan.rows if row.key == key and isinstance(row, PlannedAnalyzeRun)), None)
+        if row is None and not problems:
+            raise ValueError(f"Run {key.row!r} no longer belongs to step {key.step!r}.")
+        if bound is not None and not states_available and not any(
+            problem.path.startswith("inputs.states") for problem in problems
+        ):
+            problems.append(ProjectDiagnostic(
+                ResolutionCode.BAD_REFERENCE, "inputs.states", "Select Evaluate runs of this variant.", key.step,
+                variant=key.variant, row=key.row,
+            ))
+        states = _states_port(service, view, row, key, states_available)
         registry = service.jobs.registries.operations
         definitions = list(registry.definitions())
         dimensions = sorted({
             label
-            for row in plan.rows if row.key == key and isinstance(row, PlannedAnalyzeRun)
             for bindings in row.inputs.values() for binding in bindings for label in binding.member.labels
-        })
+        }) if row is not None else []
         stored = analyze_edit(
             project, plan, key, step.base.document, body.change, frozenset(body.chosen_steps), registry, states,
             readers=view.settled.readers, figure_templates=service.jobs.registries.figure_templates,
@@ -305,4 +316,9 @@ def analyze_authoring(
         changed=changed_from_base(project, step.base.document),
         files=stored.files,
         created=list(stored.created),
+        problems=[
+            StudioProjectWindowMapProblem.from_diagnostic(
+                problem, declaration=project_declaration_name(view.settled.configuration.project),
+            ) for problem in problems
+        ],
     )

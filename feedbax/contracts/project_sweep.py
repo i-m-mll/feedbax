@@ -33,7 +33,7 @@ from feedbax.contracts.project_inputs import (
 )
 from feedbax.contracts.run_rule import RuleRefusal, rule_names
 type PatchPath = Annotated[str, Field(pattern=r"^[^.]+(?:\.[^.]+)*$")]
-type SweepTarget = Annotated[str, Field(pattern=r"^(?:(?:(?:steps|documents)\.[A-Za-z0-9_][A-Za-z0-9_-]*\.)?\{[\s\S]+\}|[^.]+(?:\.[^.]+)*)$")]
+type SweepTarget = Annotated[str, Field(pattern=r"^(?:(?:(?:steps|documents)\.\??[A-Za-z0-9_][A-Za-z0-9_-]*\.)?\{[\s\S]+\}|[^.]+(?:\.[^.]+)*)$")]
 type IntegerSite = Callable[[str], bool]
 
 
@@ -80,6 +80,8 @@ class ModelFieldTarget:
 def model_field_target(path: str) -> ModelFieldTarget | None:
     if path == CHECKPOINT_RULE_TARGET:
         return None
+    if path.startswith(("steps.?", "documents.?")):
+        return None
     scope = None
     if path.startswith(("steps.", "documents.")) and ".{" in path:
         prefix, _, path = path.partition(".{")
@@ -124,6 +126,8 @@ def _paths_overlap(left: str, right: str) -> bool:
 
 
 def sweep_patch(path: str, patch: PatchValue) -> OverridePatch | SetField:
+    if path.startswith(("steps.?", "documents.?")):
+        raise ValueError(f"Unresolved target {path.replace('.?', '.', 1)!r}.")
     if path == CHECKPOINT_RULE_TARGET:
         raise ValueError("Checkpoint rule writes require a step-level Evaluate subject")
     target = model_field_target(path)

@@ -859,8 +859,10 @@ def _paired_checkpoint_step(step: Step, reference: InputBinding | None) -> str |
     if (
         step.kind == "train"
         and isinstance(step.base, StepBase)
+        and not step.base.unresolved
         and step.base.row is None
         and isinstance(reference, StepReference)
+        and not reference.unresolved
         and reference.step == step.base.step
         and reference.row is None
         and reference.variants is None
@@ -3253,9 +3255,8 @@ class _Compiler:
         except ValueError as error:
             problem("payload.inputs", str(error))
             return ()
-        if unknown := template.inputs.keys() - declarations.keys():
-            problem(f"inputs.{min(unknown)}", "The Analyze document does not declare this role.")
-            return ()
+        for unknown in sorted(template.inputs.keys() - declarations.keys()):
+            problem(f"inputs.{unknown}", "The Analyze document does not declare this role.")
         selected = {}
         document_refs = {}
         for name_of_role, declaration in declarations.items():
@@ -3267,29 +3268,29 @@ class _Compiler:
                 expected = AnalyzeModelInput if isinstance(reference, InitialModelReference) else AnalyzeTaskInput
                 if not isinstance(declaration, expected):
                     problem(path, f"A document reference cannot supply a {declaration.kind} role of this kind.")
-                    return ()
+                    continue
                 document_refs[name_of_role] = reference
                 continue
             if isinstance(declaration, AnalyzeTaskInput):
                 problem(path, "A Task role requires a Task document reference.")
-                return ()
+                continue
             if isinstance(declaration, AnalyzeModelInput):
                 if not isinstance(reference, StepReference) or (
                     reference.checkpoint not in (None, "last") and not isinstance(reference.checkpoint, BatchCheckpoint)
                 ):
                     problem(path, "Select an initial Model document or a Train row's terminal or exact-update checkpoint.")
-                    return ()
+                    continue
                 if isinstance(reference.checkpoint, BatchCheckpoint) and not (
                     0 < reference.checkpoint.at <= MAX_CHECKPOINT_COORDINATE
                 ):
                     problem(f"{path}.checkpoint", "Select a positive completed Train update.")
-                    return ()
+                    continue
             role = _analyze_role(name_of_role, declaration)
             assert role is not None
             resolved = self.select_input(variant, name, template, role, active)
             if isinstance(resolved, ProjectDiagnostic):
                 self.diagnostics.append(replace(resolved, variant=variant))
-                return ()
+                continue
             members, _, subsets = resolved
             if isinstance(declaration, AnalyzeModelInput) and reference.checkpoint is None:
                 members = tuple((replace(binding, member=binding.member.model_copy(update={
@@ -3321,26 +3322,25 @@ class _Compiler:
                 else:
                     candidates = ", ".join(binding.member.key for binding, _ in members)
                     problem(f"inputs.{role}", f"Select one member from {candidates}.", row.id)
-                    break
-            else:
-                if self.block_row(key, template, row, inputs):
+            if self.block_row(key, template, row, inputs):
+                continue
+            definition = self.select_definition(template, key, row, inputs)
+            resolved = definition if definition is not None else self.resolve_row(template, key, row, None)
+            if isinstance(resolved, ProjectDiagnostic):
+                self.diagnostics.append(replace(resolved, variant=variant))
+                continue
+            for role, reference in document_refs.items():
+                if role not in resolved.input_documents:
                     continue
-                definition = self.select_definition(template, key, row, inputs)
-                resolved = definition if definition is not None else self.resolve_row(template, key, row, None)
-                if isinstance(resolved, ProjectDiagnostic):
-                    self.diagnostics.append(replace(resolved, variant=variant))
+                try:
+                    binding = plan_document_input(
+                        reference, resolved.input_documents[role], self.documents, python_tasks=self.python_tasks,
+                    )
+                except ValueError as error:
+                    problem(f"inputs.{role}", str(error), row.id)
                     continue
-                for role, reference in document_refs.items():
-                    try:
-                        binding = plan_document_input(
-                            reference, resolved.input_documents[role], self.documents, python_tasks=self.python_tasks,
-                        )
-                    except (KeyError, ValueError) as error:
-                        problem(f"inputs.{role}", str(error), row.id)
-                        break
-                    inputs[role] = (binding,)
-                else:
-                    runs.append(self.lower_analyze_row(template, key, inputs, resolved))
+                inputs[role] = (binding,)
+            runs.append(self.lower_analyze_row(template, key, inputs, resolved))
         return tuple(runs)
 
     def lower_analyze_row(
@@ -3702,6 +3702,9 @@ class _Compiler:
                 "a same-project step or row reference is required",
                 name,
             )
+        if reference.unresolved:
+            target = reference.element or reference.step
+            return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, f"Unresolved target {target!r}.", name)
         if role.operation_outputs and reference.element is not None and reference.product is not None:
             role = replace(role, producer_kind="analyze", product_role=reference.product)
         element_input = role.producer_kind == "analyze"
@@ -3730,6 +3733,10 @@ class _Compiler:
         subset_document = None
         if isinstance(terms, NamedSubset):
             subset_document = terms.subset
+            if terms.unresolved:
+                return ProjectDiagnostic(
+                    ResolutionCode.MISSING_DOCUMENT, f"{path}.where", subset_document, name, document=subset_document,
+                )
             document = compose_document(self.variants[variant].documents.get, subset_document)
             if isinstance(document, ProjectDiagnostic):
                 return replace(document, path=f"{path}.where", step=name)

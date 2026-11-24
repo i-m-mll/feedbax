@@ -233,7 +233,7 @@ def base_chain(documents: Mapping[str, Document], name: str) -> tuple[str, ...]:
     current: str | None = name
     while current is not None and current not in chain and (document := documents.get(current)) is not None:
         chain.append(current)
-        current = document.base.document if isinstance(document, BasedDocument) else None
+        current = document.base.document if isinstance(document, BasedDocument) and not document.base.unresolved else None
     return tuple(chain)
 
 
@@ -241,7 +241,7 @@ def based_on(documents: Mapping[str, Document], name: str) -> tuple[str, ...]:
     """The documents whose base is ``name``, by name."""
     return tuple(sorted(
         other for other, document in documents.items()
-        if isinstance(document, BasedDocument) and document.base.document == name
+        if isinstance(document, BasedDocument) and not document.base.unresolved and document.base.document == name
     ))
 
 
