@@ -128,8 +128,10 @@ test('a mounted Model render failure reports to the service and retries only its
   const report = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/studio/errors'
     && response.request().postDataJSON()?.message === message);
   void report.catch(() => {});
-  // Scene has nothing to show for this Model, so the split opens Model, the first other view with content.
+  // The split opens Scene, which shows this point-mass Model; the new slot then shows Model.
   await runs.getByRole('button', { name: 'Split Details', exact: true }).click();
+  await expect(page.locator('[data-slot="secondary"]').getByRole('tabpanel', { name: 'Scene', exact: true })).toBeVisible();
+  await page.getByRole('tablist', { name: 'Details' }).getByRole('tab', { name: 'Model', exact: true }).click();
   const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
   await expect(model.getByRole('alert')).toHaveText('Model failed to render');
   expect((await report).status()).toBe(204);
