@@ -12,6 +12,7 @@ import type {
   Document, StudioProjectFilePatch, StudioSavedTrainKey, StudioTrialAuthoringRequest,
 } from '@/generated/studioContracts';
 import type { ProjectEditController } from './projectEditController';
+import { baseOf, documentPayload } from './documentPayload';
 import { generatedName, holds, keyOfLabel } from './generatedName';
 
 export type DocumentRole = 'model' | 'task' | 'objective' | 'training' | 'analysis' | 'report';
@@ -66,8 +67,6 @@ export interface ProjectDocumentInputs {
   /** The roles in which the step may point at another document, as opposed to editing the one it has. */
   readonly selectable: ReadonlySet<DocumentRole>;
   readonly editable: boolean;
-  /** The based documents whose Detach would leave an Evaluate step's Model document unrelated to its subject's. */
-  readonly detachRefused?: readonly string[];
   readonly onError: (error: unknown) => void;
 }
 
@@ -98,12 +97,13 @@ export function documentsOfRole(project: { documents?: Readonly<Record<string, D
 
 /** `name` and the documents based on it, to any depth. */
 export function documentFamily(project: { documents?: Readonly<Record<string, Document>> | null }, name: string) {
-  const all = Object.entries(project.documents ?? {});
+  const all = Object.keys(project.documents ?? {});
   const family = new Set([name]);
   for (let grew = true; grew;) {
     grew = false;
-    for (const [id, document] of all) {
-      if (!family.has(id) && 'base' in document && family.has(document.base.document)) {
+    for (const id of all) {
+      const base = baseOf(project.documents, id);
+      if (!family.has(id) && base !== undefined && family.has(base)) {
         family.add(id);
         grew = true;
       }
@@ -121,20 +121,20 @@ export function documentTree(project: { documents?: Readonly<Record<string, Docu
 export function documentTreeOf(project: { documents?: Readonly<Record<string, Document>> | null }, schemas: readonly string[]) {
   const all = project.documents ?? {};
   const names = Object.keys(all).filter((id) => schemas.includes(all[id].schema)).sort();
-  const baseOf = (name: string) => {
-    const document = all[name];
-    return 'base' in document && names.includes(document.base.document) ? document.base.document : undefined;
+  const parent = (name: string) => {
+    const base = baseOf(all, name);
+    return base !== undefined && names.includes(base) ? base : undefined;
   };
   const tree: { key: string; name: string; depth: number; python?: boolean }[] = [];
   const visit = (name: string, depth: number) => {
     tree.push({ key: name, name: shownName(name, all[name]), depth, python: all[name].schema === pythonTask || undefined });
-    for (const child of names) if (baseOf(child) === name) visit(child, depth + 1);
+    for (const child of names) if (parent(child) === name) visit(child, depth + 1);
   };
-  for (const name of names) if (baseOf(name) === undefined) visit(name, 0);
+  for (const name of names) if (parent(name) === undefined) visit(name, 0);
   return tree;
 }
 
-export function useProjectDocuments({ editor, stepId, run, scope, selectable, editable, detachRefused = [], onError }: ProjectDocumentInputs) {
+export function useProjectDocuments({ editor, stepId, run, scope, selectable, editable, onError }: ProjectDocumentInputs) {
   const { saved } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const projectId = saved.project_id;
   const catalog = useAuthoringCatalog().data;
@@ -191,6 +191,8 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
     const count = sharing && { lit: sharing.lit.size, users: sharing.users.size };
     const documents = documentTree(saved.project, role);
     const based = 'base' in (saved.project.documents?.[document] ?? {});
+    /** Duplicate and Detach write the document's composed content, which a base chain that does not compose lacks. */
+    const composes = documentPayload(saved.project.documents, saved.composed, document) !== undefined;
     const kind = studioName(role);
     const repoint = editable && !!stepId && selectable.has(role);
     return {
@@ -206,7 +208,7 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
           saved.revision, (snapshot) => use(role, id, snapshot.revision));
         return id;
       }) : undefined,
-      duplicate: repoint ? () => attempt(role, async () => {
+      duplicate: repoint && composes ? () => attempt(role, async () => {
         const result = await editor.memberCommand(studioAccessibleName('duplicate', kind),
           { kind: 'duplicate', family: 'documents', member: document }, editor.getSnapshot().saved,
           (result) => use(role, result.member, result.snapshot.revision));
@@ -216,11 +218,14 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
         void attempt(role, () => editor.memberCommand(studioAccessibleName('rename', kind),
           { kind: 'rename', family: 'documents', member: document, label }, editor.getSnapshot().saved));
       } : undefined,
-      changeKey: editable ? (key) => {
-        void attempt(role, () => editor.memberCommand(studioAccessibleName('changeKey', kind),
-          { kind: 'change_key', family: 'documents', member: document, key }, editor.getSnapshot().saved));
+      changeKey: editable ? {
+        commit: (key) => {
+          void attempt(role, () => editor.memberCommand(studioAccessibleName('changeKey', kind),
+            { kind: 'change_key', family: 'documents', member: document, key }, editor.getSnapshot().saved));
+        },
+        held: new Set(Object.keys(saved.project.documents ?? {})),
       } : undefined,
-      detach: editable && based && !detachRefused.includes(document) ? () => {
+      detach: editable && based && composes ? () => {
         void attempt(role, () => editor.memberCommand(studioAccessibleName('detach', kind),
           { kind: 'detach', member: document }, editor.getSnapshot().saved));
       } : undefined,

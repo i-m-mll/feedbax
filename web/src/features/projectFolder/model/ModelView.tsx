@@ -8,7 +8,7 @@ import { ApiRequestError, isRefusal } from '@/api/request';
 import { shownError } from '@/api/shownErrors';
 import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
 import { studioAccessibleName, studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
-import { baseChain, documentPayload } from '../documentPayload';
+import { baseChain, baseOf, documentPayload } from '../documentPayload';
 import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import { Box, Crosshair, House, Search, TriangleAlert, X } from 'lucide-react';
 import clsx from 'clsx';
@@ -277,8 +277,12 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   }, [projection.data, hasValue]);
   const removed = useMemo(() => [...marked.values()].flatMap(({ difference }) =>
     difference.change === 'removed' ? [difference] : []), [marked]);
-  /** Why the service refuses an evaluation's read: it lands on the Model picker, and the view shows the read document. */
-  const refused = evaluate && isRefusal(attachments.error) ? shownError(attachments.error) : undefined;
+  /**
+   * Why an evaluation's Model cannot be drawn: the service refused the read, or the Problem that leaves it no Model.
+   * It lands on the Model picker, and the view shows the read document.
+   */
+  const refused = evaluate && isRefusal(attachments.error) ? shownError(attachments.error)
+    : evaluate && attachments.data && !attachments.data.resolved_model ? attachments.data.problems?.[0]?.detail : undefined;
   /** A selected value's Model is the one its runs read; what it removes from the document is drawn as a ghost. */
   const shownModel = evaluate && !refused ? effectiveModel : valueRuns && projection.data?.resolved_model || model?.value;
   const drawnModel = useMemo(() => shownModel && withRemoved(shownModel, removed), [shownModel, removed]);
@@ -819,7 +823,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
    */
   const shownDocument = model && saved.project.documents?.[model.id];
   const comparedName = evaluate ? attachments.data?.changed_from ?? undefined
-    : shownDocument && 'base' in shownDocument ? shownDocument.base.document : undefined;
+    : baseOf(saved.project.documents, model?.id);
   const compared = (() => {
     const parsed = comparedName && ModelDocumentSchema.safeParse(documentPayload(saved.project.documents, saved.composed, comparedName));
     if (!parsed || !parsed.success) return undefined;

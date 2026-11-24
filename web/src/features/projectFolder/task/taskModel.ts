@@ -57,6 +57,15 @@ export interface TaskVariable {
   readonly initializes?: VariableInitializes;
 }
 
+/** A Set the step's trials apply: a variable whose values are the Set's entries, each with its weight in parts. */
+export interface TaskSetVariable {
+  /** The sweep axis the Set was moved out of, which names the variable. */
+  readonly axis: string;
+  readonly set: string;
+  /** Each entry, then None where a trial may receive no entry, with its weight in parts when the trials are drawn. */
+  readonly entries: readonly { readonly id: string | null; readonly label: string; readonly parts?: string }[];
+}
+
 /**
  * An epoch as a definition fixes it, in seconds: its least, nominal and greatest length. A drawn length spans least
  * to greatest around its nominal; a condition ends it somewhere between its least and its limit; Rest is what remains

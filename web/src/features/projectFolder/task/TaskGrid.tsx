@@ -213,7 +213,7 @@ export function TaskGrid({ epochs, repeats, signals, selected, select, edits }: 
       items: <>
         <MenuItem disabled={!merge} onClick={merge}>{studioName('merge')}</MenuItem>
         <MenuItem disabled={!split} onClick={split}>{studioName('split')}</MenuItem>
-        <MenuCheckboxItem checked={allAbsent} disabled={!toggle} onCheckedChange={() => toggle?.()}>{studioName('absent')}</MenuCheckboxItem>
+        <MenuCheckboxItem checked={allAbsent} disabled={!toggle} closes onCheckedChange={() => toggle?.()}>{studioName('absent')}</MenuCheckboxItem>
       </>,
     };
   };
