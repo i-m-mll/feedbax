@@ -58,6 +58,7 @@ import { useConnection } from '@/api/connection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { authoredPointer, ownDefinition, modelDocumentId } from './authoredEdits';
 import { withBaseDescendants } from './baseDescendants';
+import { stepDocument } from './documentPayload';
 import { useManagedProjectDetails, useStoredModel, type NamedDocumentScope } from './managedProjectDetails';
 import { useTrialClock } from './useTrialClock';
 import { usePlayheadStore } from '@/components/timeline/trialClock';
@@ -640,7 +641,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     sceneVisible: windowState.mode !== 'map' && [primaryView, secondaryView].includes('scene'), elements, playhead,
   });
   const evaluationReplay = trialClock.replay;
-  const documentBase = authored && 'document' in authored.base && !authored.base.pointer ? authored.base.document : undefined;
+  const documentBase = authored && stepDocument(authored.base);
   const pickDocument = useProjectDocuments({
     editor, stepId: step?.id, run: namedRun, scope: trialEditScope,
     editable: documentEditable,

@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { baseChain, baseOf, documentPayload } from './documentPayload';
+import { baseChain, baseOf, documentPayload, stepDocument } from './documentPayload';
 import { ChartLine, Database, Sigma } from 'lucide-react';
 import { useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
@@ -78,7 +78,7 @@ export function useManagedAnalyze({
   const { saved, draft, outside } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const step = key ? draft.steps?.[key.step] : undefined;
   const base = step?.kind === 'analyze' && step.base;
-  const document = base && 'document' in base && !base.pointer ? base.document : undefined;
+  const document = stepDocument(base);
   const authored = document ? documentPayload(draft.documents, saved.composed, document) : undefined;
   const parsed = document ? AnalysisDocumentSchema.safeParse(authored) : undefined;
   const analysis = parsed?.success ? parsed.data : undefined;
@@ -148,7 +148,7 @@ export function useManagedAnalyze({
   /** The Analysis document a card reads, when it reads one of its own. */
   function cardAnalysis(card: string) {
     const read = draft.steps?.[card];
-    const source = read?.kind === 'analyze' && 'document' in read.base && !read.base.pointer ? read.base.document : undefined;
+    const source = read?.kind === 'analyze' ? stepDocument(read.base) : undefined;
     const parsed = source ? AnalysisDocumentSchema.safeParse(documentPayload(draft.documents, saved.composed, source)) : undefined;
     return parsed?.success ? parsed.data : undefined;
   }

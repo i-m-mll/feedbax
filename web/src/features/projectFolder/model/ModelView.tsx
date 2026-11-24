@@ -8,7 +8,7 @@ import { ApiRequestError, isRefusal } from '@/api/request';
 import { shownError } from '@/api/shownErrors';
 import { StudioRegion, studioReadState } from '@/components/activity/StudioRegion';
 import { studioAccessibleName, studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
-import { baseChain, documentPayload } from '../documentPayload';
+import { baseChain, baseOf, documentPayload } from '../documentPayload';
 import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import { Box, Crosshair, House, Search, TriangleAlert, X } from 'lucide-react';
 import clsx from 'clsx';
@@ -756,7 +756,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
    */
   const shownDocument = model && saved.project.documents?.[model.id];
   const comparedName = evaluate ? attachments.data?.changed_from ?? undefined
-    : shownDocument && 'base' in shownDocument ? shownDocument.base.document : undefined;
+    : baseOf(saved.project.documents, model?.id);
   const compared = (() => {
     const parsed = comparedName && ModelDocumentSchema.safeParse(documentPayload(saved.project.documents, saved.composed, comparedName));
     if (!parsed || !parsed.success) return undefined;

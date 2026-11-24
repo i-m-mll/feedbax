@@ -12,6 +12,7 @@ import type {
   Document, StudioProjectFilePatch, StudioSavedTrainKey, StudioTrialAuthoringRequest,
 } from '@/generated/studioContracts';
 import type { ProjectEditController } from './projectEditController';
+import { baseOf } from './documentPayload';
 import { generatedName, holds } from './generatedName';
 
 export type DocumentRole = 'model' | 'task' | 'objective' | 'training' | 'analysis' | 'report';
@@ -77,12 +78,13 @@ export function documentsOfRole(project: { documents?: Readonly<Record<string, D
 
 /** `name` and the documents based on it, to any depth. */
 export function documentFamily(project: { documents?: Readonly<Record<string, Document>> | null }, name: string) {
-  const all = Object.entries(project.documents ?? {});
+  const all = Object.keys(project.documents ?? {});
   const family = new Set([name]);
   for (let grew = true; grew;) {
     grew = false;
-    for (const [id, document] of all) {
-      if (!family.has(id) && 'base' in document && family.has(document.base.document)) {
+    for (const id of all) {
+      const base = baseOf(project.documents, id);
+      if (!family.has(id) && base !== undefined && family.has(base)) {
         family.add(id);
         grew = true;
       }
@@ -100,16 +102,16 @@ export function documentTree(project: { documents?: Readonly<Record<string, Docu
 export function documentTreeOf(project: { documents?: Readonly<Record<string, Document>> | null }, schemas: readonly string[]) {
   const all = project.documents ?? {};
   const names = Object.keys(all).filter((id) => schemas.includes(all[id].schema)).sort();
-  const baseOf = (name: string) => {
-    const document = all[name];
-    return 'base' in document && names.includes(document.base.document) ? document.base.document : undefined;
+  const parent = (name: string) => {
+    const base = baseOf(all, name);
+    return base !== undefined && names.includes(base) ? base : undefined;
   };
   const tree: { key: string; name: string; depth: number; python?: boolean }[] = [];
   const visit = (name: string, depth: number) => {
     tree.push({ key: name, name: shownName(name, all[name]), depth, python: all[name].schema === pythonTask || undefined });
-    for (const child of names) if (baseOf(child) === name) visit(child, depth + 1);
+    for (const child of names) if (parent(child) === name) visit(child, depth + 1);
   };
-  for (const name of names) if (baseOf(name) === undefined) visit(name, 0);
+  for (const name of names) if (parent(name) === undefined) visit(name, 0);
   return tree;
 }
 
