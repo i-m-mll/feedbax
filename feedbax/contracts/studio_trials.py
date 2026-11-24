@@ -15,7 +15,6 @@ from feedbax.contracts.model_edit import (
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.project import Pointer, ProjectValueEdit, Sha256
 from feedbax.contracts.project_inputs import ProjectName
-from feedbax.contracts.studio_authoring import StudioSweptParameterMissing
 from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioFieldView
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
 from feedbax.contracts.studio_scope import StudioStoreChoice
@@ -176,7 +175,7 @@ class StudioTrialAuthoring(StrictModel):
     variables: list[ScopedValue]
     signals: list[ScopedValue]
     epochs: list[StudioTrialEpoch]
-    period_seconds: float
+    period_seconds: float | None
     n_steps: int | None
     batch_size: int | None
     """How many trials the step runs at once (a Train's batch size, an Evaluate's sampled Trials), which bounds how many
@@ -196,5 +195,3 @@ class StudioTrialAuthoring(StrictModel):
         default=None, min_length=1, exclude_if=lambda value: value is None,
     )
     """An unanswered edit. No files or documents are proposed until the caller chooses a store."""
-    refusal: StudioSweptParameterMissing | None = None
-    """Why the chosen document was not taken: it lacks a parameter the step sweeps."""

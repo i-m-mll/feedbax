@@ -30,7 +30,6 @@ from feedbax.contracts.request_specs import DocumentTrainingConfig, DocumentTrai
 from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings
 from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
-from feedbax.contracts.studio_authoring import StudioSweptParameterMissing
 from feedbax.contracts.studio_place import task_start_path
 from feedbax.studio.authoring import training_document_choice
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
@@ -671,8 +670,6 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
                 raise ProjectFolderInvalid("Evaluate authoring edits the task variation.")
         elif isinstance(change, StudioTrialSelectDocument) and change.role == "training":
             writes = training_document_choice(project, step_id, bundle.training_methods, change.document)
-            if isinstance(writes, StudioSweptParameterMissing):
-                return writes
         else:
             writes = _train_writes(change, project, definition, documents, projected)
         return scoped_file(
@@ -697,8 +694,6 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
         ]
     else:
         stored = store_for(stored_scope, chosen)
-        if isinstance(stored, StudioSweptParameterMissing):
-            return StoredEdit([]), stored, None
         kind, label = (
             ("sweep_value", "Sweep Value") if isinstance(scope, AxisValueRuns)
             else ("row_exception", "Selected Runs") if isinstance(scope, ListedRuns)
@@ -1131,7 +1126,6 @@ def trial_authoring(
         project = snapshot.project
         documents, projected, graph = _pairing(plan, key, bundle)
         stored, refused = StoredEdit([]), ()
-        refusal = None
         store_choices = None
         if body.store_choice is not None and body.change is None:
             raise ProjectFolderInvalid("A store choice requires the edit it was offered for.")
@@ -1141,8 +1135,6 @@ def trial_authoring(
             )
             if isinstance(refused, list):
                 store_choices, refused = refused, ()
-            if isinstance(refused, StudioSweptParameterMissing):
-                refusal, refused = refused, ()
             if preview is not None:
                 project, plan = preview
                 if changed := plan.selected_definitions.get(key):
@@ -1235,7 +1227,7 @@ def trial_authoring(
         task_types=[StudioTaskType(type=key, label=entry.label, parameter_schema=entry.parameters.model_json_schema())
                     for key in bundle.python_tasks.keys() if (entry := bundle.python_tasks.resolve(key))],
         variables=list(projected.variables), signals=list(projected.signals), epochs=list(projected.epochs),
-        period_seconds=documents.model.step_seconds,
+        period_seconds=documents.model.step_seconds if isinstance(documents.model.step_seconds, float) else None,
         n_steps=compiled.n_steps if compiled else None,
         batch_size=_batch_size(step.kind, definition.payload),
         reads_model=compiled.reads_model if compiled else False,
@@ -1256,5 +1248,5 @@ def trial_authoring(
                 for field in projected.resets],
         fields=fields, problems=[*projected.problems, *field_problems, *refused],
         files=stored.files, created=list(stored.created),
-        refusal=refusal, store_choices=store_choices,
+        store_choices=store_choices,
     )

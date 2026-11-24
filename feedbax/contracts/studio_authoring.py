@@ -254,13 +254,6 @@ class StudioTrainStartEdit(StrictModel):
     problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
 
 
-class StudioSweptParameterMissing(StrictModel):
-    """A class that lacks a parameter the step sweeps, so the step cannot take it; both named by their titles."""
-
-    class_label: NonemptyText
-    parameter_label: NonemptyText
-
-
 class StudioClassMember(StrictModel):
     id: ProjectName
     label: str
@@ -304,7 +297,6 @@ class StudioTrainAuthoring(StrictModel):
     """Documents the edit creates, written before ``files``, which may name them."""
     documents: list[ProjectName]
     store_choices: list[StudioStoreChoice] | None = None
-    refusal: StudioSweptParameterMissing | None = None
     sweep_problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
     classes: list[StudioClassField] = Field(default_factory=list)
     removed_values: dict[str, list[str]] = Field(default_factory=dict)
