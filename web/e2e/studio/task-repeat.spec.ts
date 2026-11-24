@@ -63,7 +63,7 @@ test('Repeat brackets the selected columns, its count repeats them on the shelf,
   await target.hover();
   await target.getByRole('button', { name: 'Variable target', exact: true }).click();
   await page.getByRole('menuitemcheckbox', { name: 'List', exact: true }).click();
-  await page.keyboard.press('Escape');
+  await expect(page.getByRole('menu', { name: 'Variable target', exact: true })).toHaveCount(0);
   await expect.poll(async () => (await task()).variables.find(({ id }) => id === 'target')?.count).toMatchObject({ kind: 'literal', value: 2 });
 
   const goal = grid.getByRole('row').filter({ has: page.getByRole('textbox', { name: 'Rename goal', exact: true }) })
