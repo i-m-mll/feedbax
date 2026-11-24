@@ -161,6 +161,10 @@ test('the slot header switches, creates, duplicates, renames and re-keys a step\
   await page.keyboard.press('Enter');
   await expect(rename).toBeFocused();
   await expect(rename).toHaveValue('point-mass');
+  await page.keyboard.type((await uses('train'))!.task.document);
+  await expect(rename).toHaveAttribute('aria-invalid', 'true');
+  await page.keyboard.press('Enter');
+  await expect(rename).toBeFocused();
   await page.keyboard.type('arm-model');
   await page.keyboard.press('Enter');
   await expect(picker('Model')).toHaveText('arm');

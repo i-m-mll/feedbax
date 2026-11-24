@@ -1,4 +1,5 @@
 import { Input } from '@base-ui/react/input';
+import { appTip } from '@window-shell/browser/tooltip';
 import clsx from 'clsx';
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 
@@ -8,6 +9,8 @@ export interface InlineEditProps {
   onEditingChange: (editing: boolean) => void;
   /** Return false to refuse the text and stay in editing; on blur a refused text is dropped. */
   onCommit: (value: string) => boolean | void;
+  /** Why a changed text cannot be committed: it is marked as typed, with the reason as its tip, and Enter keeps it. */
+  unavailable?: (value: string) => string | undefined;
   children?: ReactNode;
   'aria-label': string;
   className?: string;
@@ -18,7 +21,9 @@ export interface InlineEditProps {
   form?: 'cell';
 }
 
-export function InlineEdit({ value, editing, onEditingChange, onCommit, children, className, form, ...aria }: InlineEditProps) {
+export function InlineEdit({
+  value, editing, onEditingChange, onCommit, unavailable, children, className, form, ...aria
+}: InlineEditProps) {
   const [draft, setDraft] = useState(value);
   const input = useRef<HTMLInputElement>(null);
   const settled = useRef(false);
@@ -38,10 +43,12 @@ export function InlineEdit({ value, editing, onEditingChange, onCommit, children
 
   if (!editing && !cell) return <span className={clsx('min-w-0 truncate', className)}>{children ?? value}</span>;
 
+  const typed = draft.trim();
+  const reason = typed && typed !== value ? unavailable?.(typed) : undefined;
   const commit = () => {
     const next = draft.trim();
     if (next === value) return finish(true);
-    if (!next || onCommit(next) === false) return input.current?.select();
+    if (!next || reason || onCommit(next) === false) return input.current?.select();
     finish();
   };
   const finish = (revert = false) => {
@@ -58,7 +65,8 @@ export function InlineEdit({ value, editing, onEditingChange, onCommit, children
       ref={input}
       value={draft}
       onValueChange={setDraft}
-      aria-invalid={!draft.trim() || undefined}
+      aria-invalid={!typed || !!reason || undefined}
+      {...appTip(reason)}
       className={clsx(
         'w-full min-w-0 text-[length:inherit] font-[inherit] text-shell-foreground outline-none',
         cell ? 'studio-cell-input block h-[calc(var(--row-height)-1px)] truncate text-left bg-transparent px-row-inline aria-[invalid]:text-shell-status-failure'
@@ -83,7 +91,7 @@ export function InlineEdit({ value, editing, onEditingChange, onCommit, children
       onBlur={() => {
         if (settled.current) return;
         const next = draft.trim();
-        finish(!(next && next !== value && onCommit(next) !== false));
+        finish(!(next && next !== value && !reason && onCommit(next) !== false));
       }}
       onClick={(event) => event.stopPropagation()}
       onDoubleClick={(event) => event.stopPropagation()}

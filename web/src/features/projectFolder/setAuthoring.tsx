@@ -131,11 +131,14 @@ export function setAuthoring({ editor, project, applies, perform, state, select 
             { kind: 'rename', family: 'documents', member: document, label }, editor.getSnapshot().saved);
         }, refuseStep(step));
       } : undefined,
-      changeKey: applies ? (key) => {
-        void perform(async () => {
-          await editor.memberCommand(studioAccessibleName('changeKey', kind),
-            { kind: 'change_key', family: 'documents', member: document, key }, editor.getSnapshot().saved);
-        }, refuseStep(step));
+      changeKey: applies ? {
+        commit: (key) => {
+          void perform(async () => {
+            await editor.memberCommand(studioAccessibleName('changeKey', kind),
+              { kind: 'change_key', family: 'documents', member: document, key }, editor.getSnapshot().saved);
+          }, refuseStep(step));
+        },
+        held: new Set(Object.keys(project.documents ?? {})),
       } : undefined,
       detach: applies && 'base' in (project.documents?.[document] ?? {}) ? () => {
         void perform(async () => {

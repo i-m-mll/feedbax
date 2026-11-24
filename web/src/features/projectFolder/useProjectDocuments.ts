@@ -66,8 +66,6 @@ export interface ProjectDocumentInputs {
   /** The roles in which the step may point at another document, as opposed to editing the one it has. */
   readonly selectable: ReadonlySet<DocumentRole>;
   readonly editable: boolean;
-  /** The based documents whose Detach would leave an Evaluate step's Model document unrelated to its subject's. */
-  readonly detachRefused?: readonly string[];
   readonly onError: (error: unknown) => void;
 }
 
@@ -115,7 +113,7 @@ export function documentTreeOf(project: { documents?: Readonly<Record<string, Do
   return tree;
 }
 
-export function useProjectDocuments({ editor, stepId, run, scope, selectable, editable, detachRefused = [], onError }: ProjectDocumentInputs) {
+export function useProjectDocuments({ editor, stepId, run, scope, selectable, editable, onError }: ProjectDocumentInputs) {
   const { saved } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const projectId = saved.project_id;
   const catalog = useAuthoringCatalog().data;
@@ -198,11 +196,14 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
         void attempt(role, () => editor.memberCommand(studioAccessibleName('rename', kind),
           { kind: 'rename', family: 'documents', member: document, label }, editor.getSnapshot().saved));
       } : undefined,
-      changeKey: editable ? (key) => {
-        void attempt(role, () => editor.memberCommand(studioAccessibleName('changeKey', kind),
-          { kind: 'change_key', family: 'documents', member: document, key }, editor.getSnapshot().saved));
+      changeKey: editable ? {
+        commit: (key) => {
+          void attempt(role, () => editor.memberCommand(studioAccessibleName('changeKey', kind),
+            { kind: 'change_key', family: 'documents', member: document, key }, editor.getSnapshot().saved));
+        },
+        held: new Set(Object.keys(saved.project.documents ?? {})),
       } : undefined,
-      detach: editable && based && !detachRefused.includes(document) ? () => {
+      detach: editable && based ? () => {
         void attempt(role, () => editor.memberCommand(studioAccessibleName('detach', kind),
           { kind: 'detach', member: document }, editor.getSnapshot().saved));
       } : undefined,

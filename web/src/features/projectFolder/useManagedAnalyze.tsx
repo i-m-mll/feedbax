@@ -31,7 +31,7 @@ import {
 } from '@/features/projectWindow/elementSelection';
 import { shownName, type PlanStepView } from '@/features/pipeline/planView';
 import { heldElementKeys } from './analysisElements';
-import { isMemberName } from './projectMemberName';
+import { keyUnavailable } from './projectMemberName';
 import { AnalyzeElementInputs } from './AnalyzeReferences';
 import { SelectionRule } from './SelectionRule';
 import { changedSelections, stepSelections } from './selectionEdits';
@@ -291,7 +291,7 @@ export function useManagedAnalyze({
     }, canName);
   }
   function changeElementKey(name: string, key: string) {
-    if (!document || !isMemberName(key)) return false;
+    if (!document) return false;
     void perform(async () => {
       await editor.memberCommand(studioAccessibleName('changeKey', shown(name)),
         { kind: 'change_key', family: 'elements', document, member: name, key }, editor.getSnapshot().saved);
@@ -373,6 +373,7 @@ export function useManagedAnalyze({
       editing={namingNow?.field === 'key' && namingNow.element === selected}
       onEditingChange={(editing) => setNaming(editing ? { scope, element: selected, field: 'key' } : undefined)}
       onCommit={(key) => changeElementKey(selected, key)}
+      unavailable={(key) => keyUnavailable(key, (key) => heldElementKeys(draft.documents, saved.composed).has(key))}
       refusal={landed && typeof landed.at === 'object' && 'key' in landed.at && landed.at.key === selected ? landed.reason : undefined} />}
     {selected && selectedInput && key && inputRole && <InputEditor label={humanizeLabel(selected)} role={inputRole}
       binding={step?.inputs?.[selected]} self={key.step} project={saved.project} steps={steps} picking={selection}

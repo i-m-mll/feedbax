@@ -13,7 +13,7 @@ import { HeaderActivity } from '@/components/layout/HeaderActivity';
 import {
   StudioPipelineMap, StudioPipelineMapDrawer, type MapStepRename, type PipelineMapStepSource,
 } from '@/components/pipeline/StudioPipelineMap';
-import { isMemberName } from './projectMemberName';
+import { keyUnavailable } from './projectMemberName';
 import { KeyField } from '@/components/ui/KeyField';
 import { stepElementName } from './analysisElements';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
@@ -644,7 +644,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const pickDocument = useProjectDocuments({
     editor, stepId: step?.id, run: namedRun, scope: trialEditScope,
     editable: documentEditable,
-    detachRefused: shown?.window_map?.detach_refused,
     selectable: new Set<DocumentRole>([
       ...!trialEditable ? [] : step?.kind === 'train' ? ['model', 'task', 'objective', 'training'] as const : ['model', 'task'] as const,
       ...documentEditable && wholeStep ? ['analysis', 'report'] as const : [],
@@ -1517,7 +1516,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     focused: () => setStepFocus(null),
   } : undefined;
   const changeStepKey = documentEditable ? (from: string, key: string) => {
-    if (!isMemberName(key)) return false;
     void perform(async () => {
       await editor.memberCommand(studioAccessibleName('changeKey', from),
         { kind: 'change_key', family: 'steps', member: from, key }, editor.getSnapshot().saved);
@@ -1883,6 +1881,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                 stepKey={<KeyField value={step.id} name={step.label} editing={keyingStep === step.id}
                   onEditingChange={(editing) => setKeyingStep(editing ? step.id : undefined)}
                   onCommit={(key) => changeStepKey?.(step.id, key)}
+                  unavailable={(key) => keyUnavailable(key, (key) => key in (saved.project.steps ?? {}))}
                   refusal={refusal?.kind === 'key' && refusal.step === step.id ? refusal.reason : undefined} />}
                 onChooseStep={(stepId) => selection.select(selectStep(state, stepId))}
                 revealed={fieldReveal?.view === 'runs'
