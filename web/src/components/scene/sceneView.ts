@@ -1,9 +1,7 @@
 import type { LiveTrainingFrame } from '@/features/scenario/liveTraining';
 import type { ResolvedScene, ResolvedSceneEntity } from '@/features/scenario/projections';
 import {
-  workspaceReplayEventTicks,
   workspaceReplayFrameTimes,
-  workspaceReplayTimelineBands,
   workspaceReplayTrialRef,
 } from '@/features/scenario/workspaceReplay';
 import type { WorkspaceReplayTrial } from '@/generated/studioContracts';
@@ -53,8 +51,6 @@ export function sceneTimeline(view: SceneView) {
     id: workspaceReplayTrialRef(trial),
     frameTimes,
     duration,
-    bands: workspaceReplayTimelineBands(trial),
-    eventTicks: workspaceReplayEventTicks(trial),
     units: trial.time.units,
   };
 }

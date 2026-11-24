@@ -39,6 +39,7 @@ export function LevelMark({ variable }: { variable: Pick<TaskVariable, 'level'> 
 const columns: readonly TableColumn[] = [
   { least: '2rem', fixed: true }, { least: '9rem', fixed: true }, { least: '9rem', fixed: true }, { least: '10rem' },
 ];
+const drawnColumn: TableColumn = { least: '7rem' };
 
 const dragType = 'application/x-feedbax-task-variable';
 
@@ -52,11 +53,13 @@ function dropIndex(event: DragEvent<HTMLTableRowElement>, index: number) {
  * Variables as a table of Name, Type and Value. A name is edited by clicking into it; a variable is added at the foot
  * of the Name column once it has a name, removed by its row's menu, and moved by dragging its grip.
  */
-export function TaskVariables({ variables, selected, select, edits }: {
+export function TaskVariables({ variables, selected, select, edits, drawn }: {
   variables: readonly TaskVariable[];
   selected?: TaskSelection;
   select(selection: TaskSelection): void;
   edits: VariableEdits;
+  /** Each variable's value in the trial the clock shows, by id, drawn in a last column. */
+  drawn?: Readonly<Record<string, string>>;
 }) {
   const [renaming, setRenaming] = useState<string>();
   const [adding, setAdding] = useState(false);
@@ -65,13 +68,14 @@ export function TaskVariables({ variables, selected, select, edits }: {
   const refuse = (id: string) => (reason: string | undefined) =>
     setRefusals((current) => ({ ...current, [id]: reason ?? '' }));
   const settle = (id: string, made: Made) => { void Promise.resolve(made).then((reason) => refuse(id)(reason || undefined)); };
-  return <Table aria-label={studioName('variables')} columns={columns} held={2}
+  return <Table aria-label={studioName('variables')} columns={drawn ? [...columns, drawnColumn] : columns} held={2}
     addRow={edits.add && { label: studioName('addVariable'), onAdd: () => setAdding(true), disabled: adding }}>
     <thead><tr>
       <TableHeaderCell aria-hidden="true" />
       <TableHeaderCell scope="col">{studioName('name')}</TableHeaderCell>
       <TableHeaderCell scope="col">{studioName('type')}</TableHeaderCell>
       <TableHeaderCell scope="col">{studioName('value')}</TableHeaderCell>
+      {drawn && <TableHeaderCell scope="col">{studioName('drawn')}</TableHeaderCell>}
     </tr></thead>
     <tbody>{variables.map((variable, index) => {
       const chosen = selected?.kind === 'variable' && selected.id === variable.id;
@@ -132,15 +136,16 @@ export function TaskVariables({ variables, selected, select, edits }: {
           <ValueField form="cell" model={variable.typeChoice} />
         </TableFieldCell>
         <TableFieldCell><ValueField form="cell" model={variable.value} /></TableFieldCell>
+        {drawn && <TableCell className="font-mono tabular-nums text-shell-muted">{drawn[variable.id]}</TableCell>}
       </TableRow>;
     })}
-    {adding && edits.add && <NewVariable add={edits.add} done={() => setAdding(false)} />}
+    {adding && edits.add && <NewVariable add={edits.add} done={() => setAdding(false)} drawn={!!drawn} />}
     </tbody>
   </Table>;
 }
 
 /** A variable being added: its name, which writes the variable when it is given. */
-function NewVariable({ add, done }: { add(name: string): Made; done(): void }) {
+function NewVariable({ add, done, drawn }: { add(name: string): Made; done(): void; drawn: boolean }) {
   const [refusal, setRefusal] = useState<string>();
   return <TableRow>
     <TableCell />
@@ -155,6 +160,6 @@ function NewVariable({ add, done }: { add(name: string): Made; done(): void }) {
         {refusal && <FieldProblem reason={refusal} />}
       </span>
     </TableFieldCell>
-    <TableCell /><TableCell />
+    <TableCell /><TableCell />{drawn && <TableCell />}
   </TableRow>;
 }

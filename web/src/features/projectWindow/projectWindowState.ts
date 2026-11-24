@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { shellHost } from '@window-shell/browser/titlebar';
 import type { RunAddress } from '@/features/pipeline/planView';
+import { trialClockOf, type TrialClock } from '@/components/timeline/trialClock';
 import { leaveJobStream, rejoinJobStream } from '@/jobs/studioJobStream';
 
 export const projectWindowViews = [
@@ -36,6 +37,8 @@ export interface ProjectWindowState {
   sections?: Partial<Record<ProjectWindowSection, boolean>>;
   /** The run in focus, which the Results show. */
   focus?: RunAddress;
+  /** The clock's picked trial, the seed and count it samples with, and whether its shelf is open. */
+  clock?: TrialClock;
 }
 
 /** A drawer section, named by its view. */
@@ -133,6 +136,7 @@ function windowArrangement(value: unknown): ProjectWindowState {
   }
   const focus = prefs.focus && typeof prefs.focus.stepId === 'string' && typeof prefs.focus.runId === 'string'
     ? { stepId: prefs.focus.stepId, runId: prefs.focus.runId } : undefined;
+  const clock = trialClockOf(prefs.clock);
   return {
     mode: prefs.mode === 'map' || prefs.mode === 'details' ? prefs.mode : 'both',
     primaryView: isView(prefs.primaryView) ? prefs.primaryView : defaultProjectWindowState.primaryView,
@@ -149,6 +153,7 @@ function windowArrangement(value: unknown): ProjectWindowState {
     modelPaths,
     sections,
     ...(focus && { focus }),
+    ...(clock && { clock }),
   };
 }
 

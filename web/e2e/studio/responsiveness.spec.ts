@@ -3,7 +3,7 @@ import { type APIRequestContext, type CDPSession, type Locator, type Page } from
 import { blankTask, type ModelDocument, type ModelEditResponse, type ModelFieldResponse, type StudioJobSubmission, type StudioProjectSnapshot, type StudioSavedTrainRuns, type WorkspaceReplayTrial } from '../../src/generated/studioContracts';
 import { summarizeStudioTrace } from './fixtures/studioTrace';
 import { fixture, mapStep, runName, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
-import { pick } from './fixtures/controls';
+import { pickRecordedTrial } from './fixtures/controls';
 import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
@@ -358,13 +358,10 @@ async function measureReplay(page: Page, request: APIRequestContext, context: CD
   await tabs.getByRole('tab', { name: 'Scene', exact: true }).click();
   const scene = page.getByRole('tabpanel', { name: 'Scene', exact: true });
   const cursor = scene.locator('[data-scene-cursor]');
-  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
-  if (!await drawer.isVisible()) await footer.getByRole('button', { name: 'Show Drawer' }).click();
-  const trials = drawer.getByRole('combobox', { name: 'Trials', exact: true });
   const responded = page.waitForResponse((response) => response.request().method() === 'POST' &&
     new URL(response.url()).pathname === path + '/evaluate-replay' && response.request().postDataJSON().trial === trial);
   void responded.catch(() => {});
-  await pick(trials, trial);
+  await pickRecordedTrial(page, 1);
   const loaded = await responded;
   expect(loaded.ok(), await loaded.text()).toBe(true);
   expect(loaded.request().postDataJSON()).toMatchObject({ key: row.key, job_id: evaluation.job_id, trial });
