@@ -1,6 +1,6 @@
 import { expect, firstJobTimeout, test } from './fixtures/studio';
 import { type APIRequestContext, type Locator, type Page } from '@playwright/test';
-import type { ModelDocument, ModelEditResponse, ModelFieldResponse, StudioActivityJob, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainKey, StudioSavedTrainRuns, WorkspaceReplayTrial } from '../../src/generated/studioContracts';
+import { firstTrainTask, type ModelDocument, type ModelEditResponse, type ModelFieldResponse, type StudioActivityJob, type StudioJobSubmission, type StudioProjectDocument, type StudioProjectSnapshot, type StudioSavedTrainKey, type StudioSavedTrainRuns, type WorkspaceReplayTrial } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, runName, runProjectFixture, seedManagedProject, sweepLabel } from './fixtures/canonicalTrain';
 import { runPythonProcess } from './fixtures/python';
 import { authorFirstTrain } from './fixtures/firstTrainAuthoring';
@@ -47,13 +47,13 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   expect(Object.keys(saved.project.steps ?? {})).toEqual(['train']);
   expect(saved.project.steps?.train).toMatchObject({
     kind: 'train', base: { inline: { trial_documents: {
-      model: { document: 'model' }, python_task: { document: 'task' },
+      model: { document: 'model' }, task: { document: 'task' },
       objective: { document: 'objective' },
     } } },
   });
   expect(saved.project.documents).toMatchObject({
     model: { schema: 'feedbax.spec.model', payload: { ports: {}, interior: {} } },
-    task: { schema: 'feedbax.spec.task_document', payload: { epochs: [{ id: 'epoch' }] } },
+    task: firstTrainTask,
     objective: { schema: 'feedbax.spec.objective_document', payload: { terms: [] } },
   });
 
@@ -104,16 +104,7 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   await tab('Runs').click();
   await expect(page.getByRole('complementary', { name: 'Inspector', exact: true })
     .getByRole('textbox', { name: 'Batches', exact: true })).toBeEnabled();
-  await tab('Task').click();
-  const task = page.getByRole('tabpanel', { name: 'Task', exact: true });
-  const reach = task.getByRole('textbox', { name: 'Target x (m)', exact: true });
-  await expect(reach).toHaveValue('0.15');
-  await expect(task.getByRole('alert')).toHaveCount(0);
-  await enter(reach, '0.6');
-  await expect.poll(async () => rootPayload((await readSaved(request, projectPath)).project.documents?.task))
-    .toMatchObject({ params: { x: 0.6 } });
   const current = await readSaved(request, projectPath);
-  expect(current.revision).not.toBe(saved.revision);
 
   await page.reload();
   await expect(page).toHaveURL(new RegExp(`[?&]project=${snapshot.project_id}(?:&|$)`));
@@ -122,8 +113,6 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   await expect(model.locator('.react-flow')).toBeVisible();
   await expect(model.getByRole('button', { name: 'Model Document model', exact: true })).toBeVisible();
   await expect(card.locator('[data-status-mark="cannot_run"]')).toBeVisible();
-  await tab('Task').click();
-  await expect(reach).toHaveValue('0.6');
   const persisted = await readSaved(request, projectPath);
   expect(persisted).toMatchObject({ project_id: snapshot.project_id, revision: current.revision, project: current.project });
   const reopened = await readPlan(persisted.revision);

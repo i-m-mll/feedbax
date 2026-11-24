@@ -26,7 +26,7 @@ from tests.test_document_task_parity import _model_payload
 from tests.test_document_train_pair import authored_documents, document_project
 from tests.support.host import job_row, token, wait_until
 from tests.support.python_task import reaching_python_task  # noqa: F401
-from tests.support.reaching_task import REACHING_TASK, ReachingParameters, reaching_document
+from tests.support.plugins.reaching_task import REACHING_TASK, ReachingParameters, reaching_document
 
 pytestmark = pytest.mark.usefixtures("reaching_python_task")
 

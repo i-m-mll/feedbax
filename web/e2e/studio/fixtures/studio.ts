@@ -99,7 +99,11 @@ export async function launchStudio(backend: StudioBackend, frontend: StudioFront
       '--home', home, '--backend-port', String(backendPort), ...args,
     ], {
       cwd: repo,
-      env: { ...process.env, FEEDBAX_OWNER_PID: String(process.pid), FEEDBAX_STUDIO_TEST_HOME: home },
+      // Every Studio has the test Python task installed, as a package registers one.
+      env: {
+        ...process.env, FEEDBAX_OWNER_PID: String(process.pid), FEEDBAX_STUDIO_TEST_HOME: home,
+        PYTHONPATH: [`${repo}tests/support/plugins`, process.env.PYTHONPATH].filter(Boolean).join(':'),
+      },
       stdio: ['ignore', logFd, logFd],
     });
     launchers.push(child);

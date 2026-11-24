@@ -9,8 +9,8 @@ import type { Studio } from './studio';
 export async function authorAndRecoverTrain(page: Page, request: APIRequestContext, info: TestInfo, studio: Studio) {
   const totalUpdates = 6000;
   const { home } = studio;
-  // Softmax keeps the total force at one along the diagonal reach, regardless of training.
-  const authored = await authorFirstTrain(page, request, totalUpdates, { targetY: 0.22, activation: 'softmax' });
+  // Softmax keeps the total force at one, regardless of training.
+  const authored = await authorFirstTrain(page, request, totalUpdates, { activation: 'softmax' });
   const { saved, projectPath, plan, savedProject, plantId } = authored;
   const project = saved.project_id;
   const observe = async (action: string, ...args: string[]) =>
