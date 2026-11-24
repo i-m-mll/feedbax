@@ -709,11 +709,16 @@ export interface ModelPosition {
 export interface AddComponent {
   op: "add_component";
   graph: ModelAddress;
-  component: LeafComponent | CompositeComponent;
+  component: LeafComponent | CompositeComponent | RegisteredComponent;
   position: ModelPosition;
   id?: string | null;
   connect_from?: ComponentPortEnd | InputBoundaryEnd | null;
   connect_to_port?: string | null;
+}
+
+export interface RegisteredComponent {
+  kind: "definition";
+  definition: string;
 }
 
 export interface DeleteElements {
@@ -6707,7 +6712,7 @@ export const AddComponentSchema: z.ZodType<AddComponent> = z.lazy(() =>
     .object({
       "op": z.literal("add_component"),
       "graph": ModelAddressSchema,
-      "component": z.union([LeafComponentSchema, CompositeComponentSchema]),
+      "component": z.union([LeafComponentSchema, CompositeComponentSchema, RegisteredComponentSchema]),
       "position": ModelPositionSchema,
       "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable().optional(),
       "connect_from": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]).nullable().optional(),
@@ -6715,6 +6720,15 @@ export const AddComponentSchema: z.ZodType<AddComponent> = z.lazy(() =>
     })
     .strict()
 ) as unknown as z.ZodType<AddComponent>;
+
+export const RegisteredComponentSchema: z.ZodType<RegisteredComponent> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("definition"),
+      "definition": z.string().min(1),
+    })
+    .strict()
+) as unknown as z.ZodType<RegisteredComponent>;
 
 export const DeleteElementsSchema: z.ZodType<DeleteElements> = z.lazy(() =>
   z

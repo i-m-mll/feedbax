@@ -257,6 +257,7 @@ from feedbax.contracts.model_document import (
 from feedbax.contracts.model_attachment import AddModelAttachment, ChangeModelAttachment, RemoveModelAttachment
 from feedbax.contracts.model_edit import (
     AddComponent,
+    RegisteredComponent,
     AddPort,
     BringSignalIn,
     ConnectPhysical,
@@ -560,6 +561,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     ModelDocument,
     ModelPosition,
     AddComponent,
+    RegisteredComponent,
     DeleteElements,
     ConnectSignal,
     ConnectTaskSignal,
