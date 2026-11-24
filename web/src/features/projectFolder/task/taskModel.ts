@@ -13,8 +13,6 @@ export interface ModelStart {
   readonly id: string;
   /** Its components' names and its path. */
   readonly name: string;
-  /** The Model has no start of its own for it, so a variable must initialize it. */
-  readonly required: boolean;
 }
 
 /** The Model values a variable initializes, and those its type fits. */
@@ -34,6 +32,8 @@ export interface VariableInitializes {
 export interface UninitializedStart extends ModelStart {
   /** The `data-field` a revealed problem of the value focuses. */
   readonly anchor: string;
+  /** Why the Task cannot start the value as it stands: the Model needs it, or a link names no variable. */
+  readonly reason?: string;
   /** The type's name. */
   readonly type: string;
   readonly valueType: ValueType;

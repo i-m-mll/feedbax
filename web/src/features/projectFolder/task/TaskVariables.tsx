@@ -2,7 +2,7 @@ import { appTip } from '@window-shell/browser/tooltip';
 import clsx from 'clsx';
 import { Activity, GripVertical, MoreHorizontal } from 'lucide-react';
 import { useState, type DragEvent } from 'react';
-import { studioAccessibleName, studioName, studioReason, studioValueType } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioName, studioValueType } from '@/components/activity/studioVocabulary';
 import { IconButton } from '@/components/ui/Button';
 import { ChangeMark } from '@/components/ui/ChangeMark';
 import { Combobox } from '@/components/ui/Combobox';
@@ -199,7 +199,7 @@ function NewVariable({ add, done, drawn }: { add(name: string): Made; done(): vo
 function StartRow({ start, add, drawn }: { start: UninitializedStart; add?: VariableEdits['add']; drawn: boolean }) {
   const [editing, setEditing] = useState(false);
   const [refusal, setRefusal] = useState<string>();
-  const reason = refusal ?? (start.required ? studioReason('neededAtStart', start.name) : undefined);
+  const reason = refusal ?? start.reason;
   return <TableRow>
     <TableCell />
     <TableFieldCell header>

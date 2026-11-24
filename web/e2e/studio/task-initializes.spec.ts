@@ -51,7 +51,7 @@ test('Initializes chooses the Model values a variable starts, and a start the Mo
     .getByRole('button', { name: new RegExp(`^${positionName} · The Model needs this value`) }).click();
   await expect(start(positionName).getByRole('textbox', { name: `Name ${positionName}`, exact: true })).toBeFocused();
   await page.keyboard.press('Escape');
-  // The reveal selected the run; the step is chosen again so that the Task's edits are the step's.
+  // The reveal selected the run, which would make the next Task edit that run's exception; the step is chosen again.
   await mapStep(page, 'train').click();
   await expect(start('Point mass · effector velocity')).toBeVisible();
   await expect(start('Point mass · effector velocity').locator('[data-field-problem]')).toHaveCount(0);
@@ -89,4 +89,26 @@ test('a link to a field the Model lacks is named and revealed at its variable\'s
   await expect(task.locator('[data-field="task:start:initializes"] [data-field-problem]'))
     .toHaveAttribute('data-app-tip', /start is linked to a field the Model does not have/);
   await expect(task.getByText(reason, { exact: true })).toHaveCount(0);
+});
+
+// Catches a link naming no variable that leaves its Model value with no row, or names its problem by the Task's links.
+test('a link to a variable the Task lacks is marked and named at the Model value it leaves unstarted', async ({ page, request }) => {
+  const files = await fixture('ordinary-files', '2') as { kind: string; id: string; document?: { payload: Record<string, any> } }[];
+  for (const file of files) {
+    const payload = file.document?.payload;
+    if (payload?.interior) payload.interior.components.plant.type = 'reaching_task.AnchoredPointMass';
+    if (payload?.variables) payload.links = [{ model_field: position, variable: 'ghost' }];
+  }
+  const { snapshot } = await seedManagedProject(request, files);
+  const positionName = 'Point mass · effector position';
+  const reason = 'ghost is not a variable of the Task.';
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Task', exact: true }).click();
+  const row = page.getByRole('tabpanel', { name: 'Task', exact: true }).getByRole('table', { name: 'Variables', exact: true })
+    .getByRole('row').filter({ has: page.getByRole('textbox', { name: `Name ${positionName}`, exact: true }) });
+  await expect(row.locator('[data-field-problem]')).toHaveAttribute('data-app-tip', reason);
+  await page.getByRole('button', { name: /^Problems \d+$/ }).click();
+  await expect(page.getByRole('dialog', { name: 'Problems', exact: true })
+    .getByRole('button', { name: new RegExp(`^${positionName} · ${reason.replace('.', '\\.')}`) })).toBeVisible();
 });

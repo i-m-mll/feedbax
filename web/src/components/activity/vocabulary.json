@@ -515,7 +515,6 @@
     }
   },
   "reason": {
-    "neededAtStart": "The Model needs {value} at the start of each trial",
     "observed": "{value}",
     "unavailable": "{value} unavailable",
     "unreachable": "{value} unreachable",
