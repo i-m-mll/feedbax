@@ -54,8 +54,10 @@ function endField(view: TrialView, task: TaskDocument, index: number, commit?: C
         if (edit.kind !== 'text' || edit.text.trim() === 'rest') return undefined;
         const made = await write({ kind: 'length', length: { kind: 'literal', value: 0, unit: 's' } });
         if (made) return made;
-        return commit(name, { kind: 'expression', path: authoredPointer(['task', 'epochs', epoch.id, 'end', 'length']),
+        const refused = await commit(name, { kind: 'expression', path: authoredPointer(['task', 'epochs', epoch.id, 'end', 'length']),
           edit: { kind: 'text', text: edit.text } });
+        if (refused) await write({ kind: 'rest' });
+        return refused;
       }),
     };
   }

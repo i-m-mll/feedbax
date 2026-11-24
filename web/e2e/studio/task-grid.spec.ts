@@ -57,9 +57,7 @@ test('the epochs grid merges cells, draws an absent cell apart from a zero, reor
 
   // target_pos is absent in hold and one cell over cue and move: its cells under all three columns merge into one.
   await cells('target_pos').nth(0).click();
-  console.log('DEBUG1', await row('target_pos').locator('td').evaluateAll((n) => n.map((e) => e.getAttribute('data-selected'))));
   await cells('target_pos').nth(1).click({ modifiers: ['Shift'], position: { x: 4, y: 4 } });
-  console.log('DEBUG2', await row('target_pos').locator('td').evaluateAll((n) => n.map((e) => e.getAttribute('data-selected'))));
   await page.getByRole('button', { name: 'Cells target_pos', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Merge', exact: true }).click();
   await expect.poll(async () => (await task())?.signals.find(({ id }) => id === 'target_pos')?.cells
@@ -81,10 +79,13 @@ test('the epochs grid merges cells, draws an absent cell apart from a zero, reor
   }
   await expect.poll(async () => (await task())?.epochs.length).toBe(5);
 
+  // Moving cue out of the merged cell leaves it over hold and move, the cell still stored once.
   await page.reload();
   await openTask();
-  await expect(cells('target_pos')).toHaveCount(1);
-  await expect(cells('target_pos')).toHaveAttribute('colspan', '3');
+  await expect(cells('target_pos').locator('xpath=self::*[@colspan="2"]')).toHaveCount(1);
+  await expect(cells('target_pos').getByRole('textbox')).toHaveCount(1);
+  expect((await task())?.signals.find(({ id }) => id === 'target_pos')?.cells
+    .map(({ first_epoch, last_epoch }) => [first_epoch, last_epoch])).toEqual([['hold', 'move']]);
   await expect(grid.locator('th[data-epoch]')).toHaveCount(5);
 
   await page.setViewportSize({ width: 900, height: 900 });

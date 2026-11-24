@@ -106,6 +106,13 @@ function AbsentCell({ text }: { text: string }) {
 
 const stop = (event: SyntheticEvent) => event.stopPropagation();
 
+/**
+ * A press on one of a cell's own buttons (its menu, the insert control) acts on that control, not on the selection;
+ * nor does an event React carries to the cell from a menu it opened, which is outside the cell's own elements.
+ */
+const onControl = (event: SyntheticEvent<Element>) => !(event.target instanceof Element) ||
+  !event.currentTarget.contains(event.target) || !!event.target.closest('button');
+
 /** The commands on what is selected, as the items of its menu and its context menu. */
 interface Commands {
   /** What the commands are on: a kind, and the name of the thing of that kind. */
@@ -314,7 +321,7 @@ export function TaskGrid({ epochs, repeats, signals, selected, select, edits }: 
               <TableFieldCell colSpan={index(cell.last) - index(cell.first) + 1 + extra} selected={inSpan}
                 data-cell={cell.id} className="group/owner relative border-l"
                 onPointerDown={(event) => {
-                  if (event.button !== 0) return;
+                  if (event.button !== 0 || onControl(event)) return;
                   pressed.current = true;
                   choose(event.shiftKey);
                   setDragging(true);
@@ -322,7 +329,8 @@ export function TaskGrid({ epochs, repeats, signals, selected, select, edits }: 
                 onPointerEnter={() => {
                   if (dragging && shown?.kind === 'cells' && shown.signal === signal.id) chooseCell(signal, cell, true);
                 }}
-                onFocusCapture={() => {
+                onFocusCapture={(event) => {
+                  if (onControl(event)) return;
                   if (!pressed.current && !inSpan) choose(false);
                   pressed.current = false;
                 }}>
@@ -353,7 +361,7 @@ function EpochHeader({ epoch, column, ids, chosen, menu, commands, refusal, choo
     <TableHeaderCell scope="col" data-selected={chosen || undefined} data-epoch={epoch.id}
       className={clsx('studio-table-field-cell group/owner relative border-l px-0 overflow-visible',
         chosen && 'bg-shell-row-selected text-shell-foreground')}
-      onPointerDown={(event) => { if (event.button === 0) choose(event.shiftKey); }}
+      onPointerDown={(event) => { if (event.button === 0 && !onControl(event)) choose(event.shiftKey); }}
       {...dropTarget(epochDrag, ids, column, 'x', move)}>
       <span className="flex h-row min-w-0 items-center gap-0.5 pl-1 pr-1">
         {move && <Grip type={epochDrag} id={epoch.id} axis="x" name={epoch.name} />}
