@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from base64 import b64decode, b64encode
-from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
@@ -33,6 +32,7 @@ from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_
 from feedbax.contracts.matrix_core import apply_value_patch_in_place
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.project import (
     BasedDocument, Document, Project, RootDocument, Sha256, diff, json_pointer_parts, same_json,
 )
@@ -64,9 +64,10 @@ from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic,
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_target
 from feedbax.contracts.result_address import ANALYSIS_SCHEMA, payload_elements
 from feedbax.persistence.project_subject import terminal_train_reader
+from feedbax.persistence.reachability import DEFAULT_SUPERSEDED_DAYS
 from feedbax.project_members import (
-    change_member_key, detach_refusals, duplicate_step, fresh_element_keys, generated_name, label_member, merge_cards,
-    references_member, regroup_refused, split_card,
+    change_member_key, detach_refusals, duplicate_document_name, duplicate_step, fresh_element_keys, generated_name,
+    label_member, merge_cards, preserve_dangling_member, regroup_refused, split_card,
 )
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.studio.selection import StoredEdit
@@ -360,7 +361,7 @@ class SettledProjectPlan:
         return cls(
             location.project_id, text.revision, project_semantic_root(text.project),
             text.configuration, text.store_path if store is None else store, plan, readers, text.root,
-            detach_refusals(plan, text.project.documents), regroup_refused(text.project),
+            detach_refusals(text.project.documents), regroup_refused(text.project),
         )
 
 
@@ -452,7 +453,7 @@ def compile_saved_project(
         )
         settled = SettledProjectPlan(
             project_id, text.revision, semantic_root, text.configuration, store, plan, readers, text.root,
-            detach_refusals(plan, text.project.documents), regroup_refused(text.project),
+            detach_refusals(text.project.documents), regroup_refused(text.project),
         )
         if reusable:
             memo.saved = _SavedCompilation(stamp, settled, observations)
@@ -644,18 +645,12 @@ def _publish_patch(folder: _LockedProjectFolder, files: list[_PendingFile], guar
         _finish_patch_at(folder.path, folder.descriptor)
 
 
-def _diagnostic_counts(diagnostics: Iterable[ProjectDiagnostic]) -> Counter:
-    return Counter((item.code, item.step, item.variant, item.row, item.element) for item in diagnostics)
-
-
 def _free_member_name(project: dict, family: MemberFamily, member: str) -> str:
-    """The name of a copy: a document's stem numbered, a step's kind (`train-2`), whichever is free of members and references."""
+    """The name of a copy: a document's stem numbered, or a step's kind, whichever key is unused."""
     if family == "documents":
         stem = re.sub(r"-[0-9]+$", "", member)
-        return generated_name(stem, lambda name: name == stem or name in project["documents"]
-                              or references_member(project, "documents", name))
-    return generated_name(project["steps"][member]["kind"], lambda name: name in project["steps"]
-                          or references_member(project, "steps", name))
+        return generated_name(stem, lambda name: name == stem or name in project["documents"])
+    return generated_name(project["steps"][member]["kind"], project["steps"].__contains__)
 
 
 def _check_file_spellings(root: Path, files: Iterable[str]) -> None:
@@ -949,13 +944,22 @@ class ProjectFolder:
             presentation = None
             presentation_error = "unreadable_presentation"
         documents = text.project.documents
-        composed = {
-            name: entry.payload for name, document in documents.items() if isinstance(document, BasedDocument)
-            if isinstance(entry := compose_document(documents.get, name), RootDocument)
-        }
+        composed = {}
+        problems = []
+        for name, document in documents.items():
+            if isinstance(document, BasedDocument):
+                entry = compose_document(documents.get, name)
+                if isinstance(entry, ProjectDiagnostic):
+                    problems.append(StudioProjectWindowMapProblem.from_diagnostic(
+                        replace(entry, authored_file=f"documents/{entry.document or name}.json"),
+                        declaration=text.declaration,
+                    ))
+                else:
+                    composed[name] = entry.payload
         return StudioProjectSnapshot(
             project_id=location.project_id,
             composed=composed,
+            problems=problems,
             revision=text.revision,
             project=text.project,
             semantic_root=project_semantic_root(text.project),
@@ -977,6 +981,7 @@ class ProjectFolder:
                 data=b64encode(text.files[text.declaration]).decode("ascii"),
             ),
             settings=text.configuration.settings,
+            default_keep_superseded_days=DEFAULT_SUPERSEDED_DAYS,
         )
 
     def _document(self, location: ProjectFolderLocation, text: TextProject) -> StudioProjectDocument:
@@ -1207,8 +1212,8 @@ class ProjectFolder:
         """Label a member, change its key, duplicate or detach it, or split or merge
         Analyze cards, in one write.
 
-        A key change, a split and a merge rewrite the references and presentation they move; a label changes no
-        reference. A key change, a split or a merge that would leave a reference unplannable is refused.
+        A key change, a split and a merge rewrite the references and presentation they move. The saved result
+        carries any remaining authored Problems.
         """
         command = body.command
         with self._locked_folder(project_id) as folder:
@@ -1233,7 +1238,8 @@ class ProjectFolder:
             def element_keys() -> set[str]:
                 return {
                     key for name, document in text.project.documents.items() if document.schema_id == ANALYSIS_SCHEMA
-                    for key in payload_elements(composed(name)["payload"])
+                    if isinstance(entry := compose_document(text.project.documents.get, name), RootDocument)
+                    for key in payload_elements(entry.payload)
                 }
 
             if command.kind in ("split", "merge"):
@@ -1257,6 +1263,8 @@ class ProjectFolder:
                 name = _free_member_name(source, "steps", member)
                 document = _free_member_name(source, "documents", source["steps"][member]["base"].get("document", member))
                 try:
+                    source = preserve_dangling_member(source, "steps", name)
+                    source = preserve_dangling_member(source, "documents", document)
                     project, shown = split_card(source, shown, member, set(command.elements), document, name)
                 except ValueError as error:
                     raise ProjectFolderInvalid(str(error)) from error
@@ -1270,10 +1278,6 @@ class ProjectFolder:
                 name = member
                 if not isinstance(text.project.documents[member], BasedDocument):
                     raise ProjectFolderInvalid(f"{member} has no base.")
-                if member in self._compile(folder.location, text).detach_refused:
-                    raise ProjectFolderInvalid(
-                        f"Detaching {member} would leave an Evaluate step's Model document sharing no document with its subject's.",
-                    )
                 project = {**source, "documents": {**source["documents"], member: composed(member)}}
             elif command.kind == "rename":
                 name = member
@@ -1288,44 +1292,34 @@ class ProjectFolder:
             else:
                 family = command.family
                 members = getattr(text.project, family)
-                name = (command.key if command.kind == "change_key" else command.name) or _free_member_name(
-                    source, family, member,
-                )
+                copy_label = None
+                if command.kind == "change_key":
+                    name = command.key
+                elif family == "documents":
+                    name, copy_label = duplicate_document_name(text.project.documents, member, command.name)
+                else:
+                    name = command.name or _free_member_name(source, family, member)
                 if name in members:
                     raise ProjectFileExists(f"{family}/{name}.json")
-                if references_member(source, family, name):
-                    raise ProjectFolderInvalid(f"A reference already names {name}.")
                 if command.kind == "change_key":
                     project, shown = change_member_key(source, shown, family, member, name)
-                elif family == "steps":
-                    project, shown = duplicate_step(source, shown, member, name)
                 else:
-                    copy = composed(member)
-                    if copy["schema"] == ANALYSIS_SCHEMA:
-                        copy["payload"] = fresh_element_keys(copy["payload"], element_keys())
-                    project = {**source, "documents": {**source["documents"], name: copy}}
-                    if member in shown.get("documents", {}):
-                        shown["documents"] = {**shown["documents"], name: shown["documents"][member]}
+                    source = preserve_dangling_member(source, family, name)
+                    if family == "steps":
+                        project, shown = duplicate_step(source, shown, member, name)
+                    else:
+                        copy = composed(member)
+                        copy["label"] = copy_label
+                        if copy["schema"] == ANALYSIS_SCHEMA:
+                            copy["payload"] = fresh_element_keys(copy["payload"], element_keys())
+                        project = {**source, "documents": {**source["documents"], name: copy}}
+                        if member in shown.get("documents", {}):
+                            shown["documents"] = {**shown["documents"], name: shown["documents"][member]}
             try:
                 validated = Project.model_validate(project)
                 presentation = PresentationDocument.model_validate(shown)
             except ValueError as error:
                 raise ProjectFolderInvalid(str(error)) from error
-            if command.kind in ("change_key", "split", "merge"):
-                plan = compile_project(
-                    validated, readers=self._base_readers(folder.location, text), operations=self.operations,
-                    components=self.components, functions=self.functions, python_tasks=self.python_tasks,
-                    figure_templates=self.figure_templates, training_methods=self.training_methods,
-                )
-                introduced = _diagnostic_counts(plan.diagnostics) - _diagnostic_counts(
-                    self._compile(folder.location, text).plan.diagnostics,
-                )
-                if introduced:
-                    raise ProjectFolderInvalid(
-                        f"Changing the key of {member} leaves a reference this change does not rewrite."
-                        if command.kind == "change_key" else
-                        f"This {command.kind} leaves {member}'s operations or figures unplannable.",
-                    )
             original = dump_text_project(text.project, text.configuration)
             encoded = dump_text_project(validated, text.configuration)
             if command.kind == "duplicate":
@@ -1359,7 +1353,14 @@ class ProjectFolder:
                 check_revision("presentation", presentation_revision, _read_presentation(root)[1])
 
             _publish_patch(folder, pending, guard)
-            return StudioMemberCommandResult(member=name, snapshot=self._snapshot(folder.location, self._load(root)))
+            saved = self._load(root)
+            problems = [
+                StudioProjectWindowMapProblem.from_diagnostic(item, declaration=saved.declaration)
+                for item in self._compile(folder.location, saved).plan.diagnostics
+            ] if command.kind != "rename" else []
+            return StudioMemberCommandResult(
+                member=name, snapshot=self._snapshot(folder.location, saved), problems=problems,
+            )
 
     def apply_model_command(
         self, project_id: str, body: ModelEditRequest, components: ComponentRegistry, store: ModelStore,
@@ -1449,8 +1450,9 @@ class ProjectFolder:
             before = snapshot
             if files or stored.created:
                 snapshot = self._patch(snapshot.project_id, StudioProjectPatchBatch(
-                    revision=snapshot.revision, presentation_revision=snapshot.presentation_revision, files=files,
-                ), model_operation=True, created=stored.created)
+                    revision=snapshot.revision, presentation_revision=snapshot.presentation_revision,
+                    files=files, created=list(stored.created),
+                ), model_operation=True)
             if alone:
                 change = ModelEditChange(before, (payload, layout), model_edit_source(snapshot, body.document))
         return AppliedModelEdit(snapshot, result.changed, result.clipboard, change, created, result.problems)
@@ -1479,14 +1481,13 @@ class ProjectFolder:
 
     def _patch(
         self, project_id: str, body: StudioProjectPatch | StudioProjectPatchBatch, *, model_operation: bool,
-        created: Sequence[CreateNamedDocument] = (),
     ) -> StudioProjectSnapshot:
         """Apply ``body``'s file patches, after creating the ``created`` documents, in one write."""
         with self._locked_folder(project_id) as folder:
             root = folder.path
             text = self._load(root)
             check_revision("project", body.revision, text.revision)
-            files = body.files if isinstance(body, StudioProjectPatchBatch) else [body]
+            files, created = (body.files, body.created) if isinstance(body, StudioProjectPatchBatch) else ([body], [])
             original = dump_text_project(text.project, text.configuration)
             payload = text.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
             configuration = text.configuration.model_dump(mode="json")

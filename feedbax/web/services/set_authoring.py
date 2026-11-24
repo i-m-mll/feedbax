@@ -5,18 +5,22 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from feedbax.contracts.project import Project, RootDocument
+from feedbax.contracts.project import Project, RootDocument, RunBase, StepBase
 from feedbax.planner.project_plan import RunKey
-from feedbax.contracts.project_sweep import DEFAULT_SWEEP_ROW, ManualCombination, NamedAxis, SetAxis
+from feedbax.contracts.project_sweep import (
+    DEFAULT_SWEEP_ROW, CooccurringSetTrials, ListedSetTrials, ManualCombination, NamedAxis, SetAxis,
+    SetEntryParts, TrialSetField, WeightedSetTrials,
+)
 from feedbax.contracts.set_document import (
     SET_DOCUMENT_SCHEMA_ID, axis_from_set, read_set, set_from_axis, sets_offered, step_model,
 )
 from feedbax.contracts.studio_project import AuthoredFileAddress, CreateNamedDocument, StudioProjectFilePatch
 from feedbax.contracts.studio_sets import (
-    ApplySet, DuplicateRun, InlineSet, RemoveAxisValue, SaveSet, StudioAxisValue, StudioSetEdit, StudioSetEditRequest,
+    ApplySet, DuplicateRun, InlineSet, RemoveAxisValue, SaveSet, SetToField, SetToSweep, StudioAxisValue, StudioSetEdit, StudioSetEditRequest,
     StudioSetsOffered, StudioSetsOfferedRequest,
 )
 from feedbax.contracts.model_edit import ListedRuns
+from feedbax.contracts.studio_trials import StudioSetField, StudioSetFieldEntry
 from feedbax.project_members import generated_name
 from feedbax.web.services.axis_values import axis_values
 from feedbax.web.services.project_folder import ProjectFolderInvalid
@@ -24,6 +28,29 @@ from feedbax.web.services.trial_scope import (
     StoredEdit, SweepValuesRuns, _composed, content_edits, file_value, selected_value, selection_scope,
     set_document_write, set_readers,
 )
+
+
+def trial_set_fields(project: Project, step: str) -> list[StudioSetField]:
+    fields = []
+    for axis, field in project.steps[step].set_fields.items():
+        try:
+            entries = read_set(project.documents.get, field.axis.set).entries
+        except ValueError:
+            continue
+        sampling = field.sampling
+        rows = []
+        if isinstance(sampling, WeightedSetTrials):
+            rows.append(StudioSetFieldEntry(entry=None, weight=sampling.none))
+        for id, entry in entries.items():
+            if isinstance(sampling, ListedSetTrials):
+                weight = None
+            elif isinstance(sampling, CooccurringSetTrials):
+                weight = sampling.weights.get(id, SetEntryParts())
+            else:
+                weight = sampling.weights.get(id, 1.0)
+            rows.append(StudioSetFieldEntry(entry=id, label=entry.label, weight=weight))
+        fields.append(StudioSetField(axis=axis, set=field.axis.set, sampling=sampling, entries=rows))
+    return fields
 
 
 def sets_offered_to(folders, project_id: str, body: StudioSetsOfferedRequest) -> StudioSetsOffered:
@@ -48,6 +75,8 @@ def set_edit(folders, project_id: str, body: StudioSetEditRequest) -> StudioSetE
         stored = _inline_set(project, command)
     elif isinstance(command, ApplySet):
         stored = _apply_set(project, command)
+    elif isinstance(command, SetToField | SetToSweep):
+        stored = _move_set(project, command)
     else:
         stored = _remove_value(project, command)
     return StudioSetEdit(
@@ -274,6 +303,47 @@ def _apply_set(project: Project, command: ApplySet) -> StoredEdit:
     axes = (raw.get("sweep") or {}).get("axes", {})
     name = generated_name(command.set, axes.__contains__)
     return StoredEdit([_with_axes(address, raw, axes | {name: {"set": command.set}})])
+
+
+def _move_set(project: Project, command: SetToField | SetToSweep) -> StoredEdit:
+    step = project.steps[command.step]
+    address, raw = _step_raw(project, command.step)
+    field_sets = dict(raw.get("set_fields", {}))
+    axes = dict((raw.get("sweep") or {}).get("axes", {}))
+    if isinstance(command, SetToField):
+        axis = _authored_axis(project, command.step, command.axis)
+        if step.kind != "train" or not isinstance(axis, SetAxis):
+            raise ProjectFolderInvalid("To Field needs a Train's Set axis.")
+        if command.axis in field_sets:
+            raise ProjectFolderInvalid(f"{command.axis} already has a Set field.")
+        sweep = step.sweep
+        assert sweep is not None
+        if axis.where is not None or sweep.combination not in (None, "cross") or any(sweep.rows.values()):
+            raise ProjectFolderInvalid("The Set axis is used by a row selection or grouped sweep.")
+        coordinates = (f"{command.axis}=",)
+        if any(
+            exception is not None and (
+                any(part.startswith(coordinates) for part in key.split("--"))
+                or exception.where is not None
+            )
+            for key, exception in sweep.exceptions.items()
+        ):
+            raise ProjectFolderInvalid("The Set axis has run exceptions that cannot move into trials.")
+        field = TrialSetField(axis=axis, sampling=WeightedSetTrials(kind="weighted"))
+        field_sets[command.axis] = field.model_dump(mode="json", exclude_unset=True)
+        if isinstance(step.base, StepBase | RunBase):
+            axes[command.axis] = None
+        else:
+            axes.pop(command.axis)
+    else:
+        if command.axis not in field_sets:
+            raise ProjectFolderInvalid(f"{command.axis} is not a Set field of {command.step}.")
+        if axes.get(command.axis) is not None:
+            raise ProjectFolderInvalid(f"{command.axis} already names a sweep axis.")
+        axes[command.axis] = field_sets.pop(command.axis)["axis"]
+    fields = file_value(address, raw, ("set_fields",), field_sets)
+    sweep_file = _with_axes(address, raw, axes)
+    return StoredEdit([fields.model_copy(update={"patches": [*fields.patches, *sweep_file.patches]})])
 
 
 def _remove_value(project: Project, command: RemoveAxisValue) -> StoredEdit:

@@ -3,7 +3,9 @@
 from fastapi.testclient import TestClient
 import pytest
 
+from feedbax.contracts.project_inputs import StepReference
 from feedbax.web.app import create_app
+from feedbax.web.services.project_plan import ProjectPlanRead
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_project_report_plan import _report_project
 
@@ -77,3 +79,36 @@ def test_split_and_merge_are_refused_for_a_shared_document(studio):
     assert "shared" in refused["detail"]
     _command(client, {"kind": "merge", "member": "analyze", "others": ["again"]}, status=422)
     assert _snapshot(client)["project"] == before
+
+
+def test_split_and_merge_keep_a_broken_analyze_input_and_the_readable_operations(studio, monkeypatch):
+    client, folders = studio
+    monkeypatch.setattr(client.app.state.project_plan, "read", lambda project, *, revision: (
+        ProjectPlanRead.without_history(folders.read_plan(project, revision=revision))
+    ))
+    project = _report_project()
+    analysis = project.documents["velocity-analysis"]
+    analysis.payload["views"]["profile"]["inputs"]["summary"] = {"input": "missing_role"}
+    references = [StepReference(step="missing_evaluate", row="draw")]
+    project.steps["analyze"].inputs["missing_role"] = references
+    _save_project(folders, PROJECT, project)
+
+    moved = _command(client, {"kind": "split", "member": "analyze", "elements": ["profile"]})
+    card = moved["member"]
+    assert moved["snapshot"]["project"]["steps"][card]["inputs"]["missing_role"] == [
+        {"step": "missing_evaluate", "row": "draw"},
+    ]
+    assert any(item["step"] == card and item["path"] == "inputs.missing_role" for item in moved["problems"])
+    merged = _command(client, {"kind": "merge", "member": "analyze", "others": [card]})
+    assert merged["snapshot"]["project"]["steps"]["analyze"]["inputs"]["missing_role"] == [
+        {"step": "missing_evaluate", "row": "draw"},
+    ]
+    response = client.post(f"{URL}/authoring/analyze", json={
+        "revision": merged["snapshot"]["revision"],
+        "key": {"variant": "default", "step": "analyze", "row": "default"},
+    })
+    assert response.status_code == 200, response.text
+    assert response.json()["operations"]
+    assert any(item["path"] == "inputs.missing_role" for item in response.json()["problems"])
+    plan = folders.read_plan(PROJECT, revision=None).plan
+    assert {key.name for key in plan.elements} == {"align", "summarize"}

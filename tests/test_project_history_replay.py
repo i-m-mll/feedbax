@@ -13,6 +13,7 @@ from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project_io import STUDIO_PATCH_JOURNAL_FILENAME, load_text_project
 from feedbax.contracts.studio_project import StudioProjectReplay
 from feedbax.host import HostError
+from feedbax.persistence.reachability import DEFAULT_SUPERSEDED_DAYS
 from feedbax.web.api import jobs
 from feedbax.web.app import create_app
 
@@ -85,6 +86,18 @@ def _replay(client, current, desired, *addresses):
     assert response.status_code == 200, response.text
     assert response.headers["Cache-Control"] == "no-store"
     return response.json()
+
+
+def test_snapshot_reports_retention_default_separately_from_authored_null(study):
+    root, client = study
+    before = _snapshot(client)
+    assert "keep_superseded" not in before["settings"]
+    assert before["default_keep_superseded_days"] == DEFAULT_SUPERSEDED_DAYS
+
+    _write(root, DECLARATION_FILE, MANIFEST | {"settings": {"keep_superseded": None}})
+    after = _snapshot(client)
+    assert after["settings"]["keep_superseded"] is None
+    assert after["default_keep_superseded_days"] == before["default_keep_superseded_days"]
 
 
 def test_settings_patch_and_inverse_write_the_declaration_without_changing_its_sweep(study):
