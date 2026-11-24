@@ -204,7 +204,7 @@ def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_p
             "input_overrides": {"reach_input": "reach_target"}, "count": 1,
         })
         assert sample.status_code == 200, sample.text
-        np.testing.assert_allclose(sample.json()["trials"][0]["inputs"]["reach_target"], [[0.22, 0]] * 12)
+        np.testing.assert_allclose(sample.json()["drawn"]["trials"][0]["inputs"]["reach_target"], [[0.22, 0]] * 12)
 
         def submit(selected, name):
             response = client.post(f"/api/projects/{project}/train-runs", json={

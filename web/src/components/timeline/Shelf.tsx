@@ -18,10 +18,14 @@ export interface ShelfSegment {
   readonly dashedFrom?: number;
 }
 
-/** An unnamed span of a row, in seconds: where a signal is present, or where a term applies. */
+/**
+ * An unnamed span of a row, in seconds: where a signal is present, or where a term applies. Over a batch of trials,
+ * `some` marks a span where only some of the trials have it, drawn light.
+ */
 export interface ShelfBar {
   readonly start: number;
   readonly end: number;
+  readonly some?: boolean;
 }
 
 /** A row of the shelf: its name at the left, then its segments or its bars on the shelf's time axis. */
@@ -44,6 +48,8 @@ export interface ShelfProps {
   readonly onTimeChange: (time: number) => void;
   readonly selected: readonly ElementAddress[];
   readonly onSelect: (address: ElementAddress) => void;
+  /** Controls drawn at the shelf's trailing end. */
+  readonly trailing?: ReactNode;
 }
 
 const percent = (value: number, total: number) => `${(100 * value / total).toFixed(3)}%`;
@@ -104,7 +110,7 @@ function Segment({ segment, duration, chosen }: { segment: ShelfSegment; duratio
  * segments or bars. A row, or a segment, selects what it stands for; dragging along the axis moves the playhead,
  * which runs through every row. The shelf knows what its rows select, not what they are.
  */
-export function Shelf({ rows, duration, stepSeconds, time, onTimeChange, selected, onSelect }: ShelfProps) {
+export function Shelf({ rows, duration, stepSeconds, time, onTimeChange, selected, onSelect, trailing }: ShelfProps) {
   const chosen = new Set(selected.map(elementKey));
   const isChosen = (address?: ElementAddress) => !!address && chosen.has(elementKey(address));
   const selects = new Map(rows.flatMap((row) => row.kind === 'segments'
@@ -141,30 +147,34 @@ export function Shelf({ rows, duration, stepSeconds, time, onTimeChange, selecte
     onPointerCancel: () => { drag.current = undefined; },
   });
   const head = Math.min(duration, Math.max(0, time));
-  return <section aria-label={studioName('shelf')} className="grid min-w-0 grid-cols-[7rem_minmax(0,1fr)] gap-x-2 gap-y-1 px-3 py-2">
-    {rows.map((row) => {
-      const rowChosen = row.kind === 'bars' && isChosen(row.selects);
-      const name = <>{row.glyph}<span className="truncate font-mono">{row.name}</span></>;
-      return <div key={row.key} role="group" aria-label={row.name} className="col-span-2 grid grid-cols-subgrid items-center">
-        {row.kind === 'bars' && row.selects
-          ? <Button variant="bare" size="content" align="start" pressed={rowChosen} onClick={() => onSelect(row.selects!)}
-            className={clsx('flex h-5 min-w-0 items-center gap-1 text-left text-xs', rowChosen ? 'text-shell-foreground' : 'text-shell-muted')}>
-            {name}
-          </Button>
-          : <span className="flex h-5 min-w-0 items-center gap-1 text-xs text-shell-muted">{name}</span>}
-        <div className="relative h-5 touch-none" {...axis(row)}>
-          {row.kind === 'segments'
-            ? row.segments.map((segment) => <Segment key={segment.key} segment={segment} duration={duration}
-              chosen={isChosen(segment.selects)} />)
-            : row.bars.map((bar) => <span key={bar.start} data-start={bar.start} data-end={bar.end}
-              className={clsx('absolute inset-y-1 rounded-sm bg-shell-foreground', rowChosen ? 'opacity-70' : 'opacity-40')}
-              style={{ left: percent(bar.start, duration), width: percent(bar.end - bar.start, duration) }} />)}
-          <span aria-hidden="true" className="pointer-events-none absolute -inset-y-0.5 w-px bg-shell-accent"
-            style={{ left: percent(head, duration) }} />
-        </div>
-      </div>;
-    })}
-    <span />
-    <Ticks duration={duration} stepSeconds={stepSeconds} />
+  return <section aria-label={studioName('shelf')} className="flex min-w-0 items-start gap-3 px-3 py-2">
+    <div className="grid min-w-0 flex-1 grid-cols-[7rem_minmax(0,1fr)] gap-x-2 gap-y-1">
+      {rows.map((row) => {
+        const rowChosen = row.kind === 'bars' && isChosen(row.selects);
+        const name = <>{row.glyph}<span className="truncate font-mono">{row.name}</span></>;
+        return <div key={row.key} role="group" aria-label={row.name} className="col-span-2 grid grid-cols-subgrid items-center">
+          {row.kind === 'bars' && row.selects
+            ? <Button variant="bare" size="content" align="start" pressed={rowChosen} onClick={() => onSelect(row.selects!)}
+              className={clsx('flex h-5 min-w-0 items-center gap-1 text-left text-xs', rowChosen ? 'text-shell-foreground' : 'text-shell-muted')}>
+              {name}
+            </Button>
+            : <span className="flex h-5 min-w-0 items-center gap-1 text-xs text-shell-muted">{name}</span>}
+          <div className="relative h-5 touch-none" {...axis(row)}>
+            {row.kind === 'segments'
+              ? row.segments.map((segment) => <Segment key={segment.key} segment={segment} duration={duration}
+                chosen={isChosen(segment.selects)} />)
+              : row.bars.map((bar) => <span key={bar.start} data-start={bar.start} data-end={bar.end} data-share={bar.some ? 'some' : 'all'}
+                className={clsx('absolute inset-y-1 rounded-sm bg-shell-foreground',
+                  bar.some ? rowChosen ? 'opacity-30' : 'opacity-[0.15]' : rowChosen ? 'opacity-70' : 'opacity-40')}
+                style={{ left: percent(bar.start, duration), width: percent(bar.end - bar.start, duration) }} />)}
+            <span aria-hidden="true" className="pointer-events-none absolute -inset-y-0.5 w-px bg-shell-accent"
+              style={{ left: percent(head, duration) }} />
+          </div>
+        </div>;
+      })}
+      <span />
+      <Ticks duration={duration} stepSeconds={stepSeconds} />
+    </div>
+    {trailing}
   </section>;
 }

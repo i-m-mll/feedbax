@@ -1,14 +1,14 @@
 import clsx from 'clsx';
 import { Check, ChevronDown } from 'lucide-react';
 import { useState } from 'react';
-import { studioName } from '@/components/activity/studioVocabulary';
+import { studioFormat, studioName } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { NumberField } from '@/components/ui/NumberField';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover';
 import { popupItem, primaryText, secondaryText } from '@/components/ui/styles';
 import {
-  entryText, maxSampleCount, offeredEntries, sameEntry, type TrialClock, type TrialEntry, type TrialOffer,
+  entryText, offeredEntries, sameEntry, sampleCount, showsAll, type TrialClock, type TrialEntry, type TrialOffer,
 } from './trialClock';
 
 export interface TrialPickerProps {
@@ -36,19 +36,22 @@ function WholeField({ label, value, least, most, onCommit }: {
 }
 
 /**
- * The one statement of which trial is shown. Its text is the shown entry; its list holds every entry that exists for
- * the selection, in groups, with the seed and the count the samples are drawn with at its foot.
+ * The one statement of which trial is shown. Its text is the shown entry, or the count when all the samples are shown;
+ * its list holds every entry that exists for the selection, in groups, with the seed and the count the samples are
+ * drawn with at its foot. Picking an entry shows that trial alone.
  */
 export function TrialPicker({ offer, clock, shown, recordedLabels, onChange }: TrialPickerProps) {
   const [open, setOpen] = useState(false);
-  const text = (entry: TrialEntry) => entryText(entry, clock.count, offer.recorded);
-  const entries = offeredEntries(offer, clock.count);
+  const count = sampleCount(clock, offer);
+  const text = (entry: TrialEntry) => entryText(entry, count, offer.recorded);
+  const shownText = showsAll(clock, offer) ? studioFormat('trialCount', { count }) : text(shown);
+  const entries = offeredEntries(offer, count);
   const groups = (['nominal', 'sample', 'recorded'] as const)
     .map((kind) => entries.filter((entry) => entry.kind === kind)).filter((group) => group.length);
   return <Popover open={open} onOpenChange={setOpen}>
     <PopoverTrigger render={<Button variant="ghost" className="min-w-0 gap-1 px-1 tabular-nums" />}
-      aria-label={`${studioName('trial')} ${text(shown)}`}>
-      <span className="truncate">{text(shown)}</span>
+      aria-label={`${studioName('trial')} ${shownText}`}>
+      <span className="truncate">{shownText}</span>
       <ChevronDown aria-hidden="true" />
     </PopoverTrigger>
     <PopoverContent side="top" aria-label={studioName('trial')} className="grid w-56 gap-1 !p-1">
@@ -56,10 +59,10 @@ export function TrialPicker({ offer, clock, shown, recordedLabels, onChange }: T
         {groups.map((group, index) => <div key={group[0].kind} role="presentation"
           className={clsx('grid', index > 0 && 'mt-1 border-t border-shell-divider pt-1')}>
           {group.map((entry) => {
-            const checked = sameEntry(entry, shown);
+            const checked = !showsAll(clock, offer) && sameEntry(entry, shown);
             return <Button key={text(entry)} variant="bare" size="content" align="start" role="radio" aria-checked={checked}
               className={clsx(popupItem, 'w-full text-left tabular-nums hover:bg-shell-hover')}
-              onClick={() => { onChange({ ...clock, picked: entry }); setOpen(false); }}>
+              onClick={() => { onChange({ ...clock, picked: entry, all: false }); setOpen(false); }}>
               <span className="flex size-[1em] shrink-0 items-center justify-center">{checked && <Check aria-hidden="true" />}</span>
               <span className={primaryText}>{text(entry)}</span>
               {entry.kind === 'recorded' && recordedLabels?.[entry.index] &&
@@ -68,10 +71,10 @@ export function TrialPicker({ offer, clock, shown, recordedLabels, onChange }: T
           })}
         </div>)}
       </div>
-      {offer.samples && <div className="grid gap-1 border-t border-shell-divider px-1 pt-1">
+      {offer.samples > 0 && <div className="grid gap-1 border-t border-shell-divider px-1 pt-1">
         <WholeField label={studioName('seed')} value={clock.seed} least={Number.MIN_SAFE_INTEGER} most={Number.MAX_SAFE_INTEGER}
           onCommit={(seed) => onChange({ ...clock, seed })} />
-        <WholeField label={studioName('count')} value={clock.count} least={1} most={maxSampleCount}
+        <WholeField label={studioName('count')} value={count} least={1} most={offer.samples}
           onCommit={(count) => onChange({ ...clock, count })} />
       </div>}
     </PopoverContent>

@@ -7,20 +7,27 @@ test.use({ viewport: { width: 1440, height: 900 } });
 
 type Documents = NonNullable<StudioProjectSnapshot['project']['documents']>;
 
+/** The fixture's Train batch size, which bounds the count the clock samples. */
+const batchSize = 4;
+
 /** The trials the sampling route draws from the project's task under `seed`: the runtime's own trials. */
 async function routeTrials(request: APIRequestContext, documents: Documents, seed: number) {
   const payload = (name: string) => (documents[name] as unknown as { payload: unknown }).payload;
   const response = await request.post('/api/execution/task-trials/sample', {
-    data: { model: payload('point-mass'), task: payload('delayed-reaches-task'), seed, count: 8 },
+    data: { model: payload('point-mass'), task: payload('delayed-reaches-task'), seed, count: batchSize },
   });
   expect(response.ok(), await response.text()).toBe(true);
-  return (await response.json() as TaskTrialSampleResponse).trials;
+  const { drawn } = await response.json() as TaskTrialSampleResponse;
+  if (drawn.kind !== 'trials') throw new Error('The route answered an aggregate.');
+  return drawn.trials;
 }
 
 // Catches a picker that does not start at the nominal trial, a nominal epochs row without the whisker of a drawn
 // length, a shelf that does not shorten the slots, a sample drawn with other boundaries than the runtime's under the
 // same seed, a signal bar before its first cell, a seed that does not reach the sampler or is lost on reload, a shelf
-// row that does not select its signal, and a timeline left in the Task view.
+// row that does not select its signal, a count beyond the step's batch size, and a timeline left in the Task view. In
+// All, catches a shelf that keeps one epochs row, an epoch drawn as present in every trial (or none) where only some
+// trials are in it, and a Drawn column that shows one trial's value instead of the range.
 test('the clock picks the nominal trial or a sample of a task document, and the shelf draws that trial', async ({ page, request }) => {
   test.setTimeout(60_000);
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('delayed-reaches-files'));
@@ -65,7 +72,7 @@ test('the clock picks the nominal trial or a sample of a task document, and the 
   expect(Number(await whisker.getAttribute('data-least'))).toBeCloseTo(5 * period, 9);
   expect(Number(await whisker.getAttribute('data-greatest'))).toBeCloseTo(14 * period, 9);
 
-  await pick('sample 2 of 8');
+  await pick('sample 2 of 4');
   await expect(hold).toHaveAttribute('data-end', String(holdEnd(seeded, 1)));
   await expect(epochs.getByRole('img', { name: /^hold / })).toHaveCount(0);
   const target = shelf.getByRole('group', { name: 'target_pos', exact: true });
@@ -82,7 +89,7 @@ test('the clock picks the nominal trial or a sample of a task document, and the 
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   await expect(inspector.getByRole('img', { name: 'Plot target_pos', exact: true })).toBeVisible();
 
-  await pick('sample 1 of 8');
+  await pick('sample 1 of 4');
   await expect(hold).toHaveAttribute('data-end', String(holdEnd(seeded, 0)));
   await picker.click();
   const seedField = page.getByRole('textbox', { name: 'Seed', exact: true });
@@ -92,6 +99,18 @@ test('the clock picks the nominal trial or a sample of a task document, and the 
   await expect(hold).toHaveAttribute('data-end', String(holdEnd(reseeded, 0)));
 
   await open();
-  await expect(picker).toHaveText('sample 1 of 8');
+  await expect(picker).toHaveText('sample 1 of 4');
   await expect(hold).toHaveAttribute('data-end', String(holdEnd(reseeded, 0)));
+
+  await shelf.getByRole('button', { name: 'All', exact: true }).click();
+  await expect(picker).toHaveText(`${batchSize} trials`);
+  await expect(epochs).toHaveCount(0);
+  for (const name of ['hold', 'cue', 'move']) await expect(shelf.getByRole('group', { name, exact: true })).toHaveCount(1);
+  const ends = reseeded.map((_, index) => holdEnd(reseeded, index));
+  const bands = shelf.getByRole('group', { name: 'hold', exact: true });
+  await expect(bands.locator('[data-share="all"]')).toHaveAttribute('data-end', String(Math.min(...ends)));
+  await expect(bands.locator('[data-share="some"]')).toHaveAttribute('data-end', String(Math.max(...ends)));
+  const catches = [...new Set(reseeded.map(({ variables }) => variables.catch as boolean))].sort();
+  await expect(variables.getByRole('row').filter({ has: page.getByRole('textbox', { name: 'Rename catch', exact: true }) })
+    .getByRole('cell').last()).toHaveText(catches.map(String).join(', '));
 });

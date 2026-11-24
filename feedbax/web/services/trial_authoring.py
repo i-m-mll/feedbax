@@ -21,7 +21,7 @@ from feedbax.contracts.project import (
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.planner.project_plan import EVALUATION_TASK, RunKey, compile_project, own_task_variation
 from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec
+from feedbax.contracts.request_specs import DocumentTrainingConfig, DocumentTrainingRequestSpec, EvaluationRequestSpec
 from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.studio_authoring import StudioSweptParameterMissing
@@ -895,6 +895,21 @@ def _trial_fields(path, site: Site, expression, functions, sweep, row, problems)
     ), *fields]
 
 
+def _batch_size(kind: str, payload) -> int | None:
+    """How many trials the step runs at once: a Train's batch size, an Evaluate's sampled Trials; nothing for a value
+    that is not one, which its own field reports."""
+    if kind == "train":
+        config = payload.get("training_config")
+        count = (config if isinstance(config, dict) else {}).get(
+            "batch_size", DocumentTrainingConfig.model_fields["batch_size"].default,
+        )
+    else:
+        params = payload.get("params")
+        rule = params.get("trial_set") if isinstance(params, dict) else None
+        count = rule.get("count") if isinstance(rule, dict) and rule.get("kind") == "sample" else None
+    return count if isinstance(count, int) and count >= 1 else None
+
+
 def trial_authoring(
     folders: ProjectFolderService, project_id: str, body: StudioTrialAuthoringRequest,
     bundle: ApplicationRegistryBundle,
@@ -970,6 +985,7 @@ def trial_authoring(
         variables=list(projected.variables), signals=list(projected.signals), epochs=list(projected.epochs),
         period_seconds=documents.model.step_seconds,
         n_steps=paired.task.n_steps if paired else None,
+        batch_size=_batch_size(step.kind, definition.payload),
         reads_model=paired.task.reads_model if paired else False,
         tasks=[
             StudioTaskChoice(document=name, problems=list(_project(
