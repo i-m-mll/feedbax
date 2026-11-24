@@ -7,7 +7,8 @@
           "feedbax.contracts.expression_values.CallValue",
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
-          "feedbax.contracts.expression_values.NameValue"
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       },
       "function": {},
@@ -23,7 +24,8 @@
           "feedbax.contracts.expression_values.CallValue",
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
-          "feedbax.contracts.expression_values.NameValue"
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       }
     },
@@ -59,7 +61,8 @@
           "feedbax.contracts.expression_values.CallValue",
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
-          "feedbax.contracts.expression_values.NameValue"
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       },
       "family": {},
@@ -97,6 +100,15 @@
         ]
       },
       "reference": {}
+    },
+    "feedbax.contracts.expression_values.UnresolvedValue": {
+      "kind": {
+        "absent": "unresolved",
+        "values": [
+          "unresolved"
+        ]
+      },
+      "text": {}
     },
     "feedbax.contracts.expression_values.ValueType": {
       "base": {
@@ -678,7 +690,8 @@
           "feedbax.contracts.expression_values.CallValue",
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
-          "feedbax.contracts.expression_values.NameValue"
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       },
       "measure_type": {
@@ -704,7 +717,8 @@
           "feedbax.contracts.expression_values.CallValue",
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
-          "feedbax.contracts.expression_values.NameValue"
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       }
     },
@@ -1021,7 +1035,8 @@
           "feedbax.contracts.expression_values.CallValue",
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
-          "feedbax.contracts.expression_values.NameValue"
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       }
     },
@@ -1047,7 +1062,8 @@
           "feedbax.contracts.expression_values.CallValue",
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
-          "feedbax.contracts.expression_values.NameValue"
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       },
       "max_steps": {
@@ -1079,7 +1095,8 @@
           "feedbax.contracts.expression_values.CallValue",
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
-          "feedbax.contracts.expression_values.NameValue"
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       },
       "cells": {},
@@ -1121,7 +1138,8 @@
           "feedbax.contracts.expression_values.CallValue",
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
-          "feedbax.contracts.expression_values.NameValue"
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       }
     },

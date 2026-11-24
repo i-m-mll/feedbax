@@ -26,6 +26,7 @@ from feedbax.contracts.expression_values import (
     ProblemCode,
     ScopedValue,
     Site,
+    UnresolvedValue,
     ValueBase,
     ValueType,
     walk,
@@ -43,6 +44,7 @@ from feedbax.contracts.task_document import (
     Variable as Variable,
 )
 from feedbax.contracts.expression_check import dependency_order
+from feedbax.contracts.expression_text import resolve_expression
 from feedbax.expression_compile import Compiled, Inputs, compile_expression
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.contracts.rollout import trial_indices
@@ -431,7 +433,7 @@ def compile_task(
                 reason=f"{variables[node.reference].name!r} has problems.",
                 path=(*address, *at),
             )
-            for at, node in walk(tree)
+            for at, node in walk(code.checked.tree if isinstance(code, Compiled) else tree)
             if isinstance(node, NameValue) and node.reference in broken
         ]
         problems.extend(marks if isinstance(code, Compiled) else (*code, *marks))
@@ -439,7 +441,19 @@ def compile_task(
 
     time_type = ValueType(base=ValueBase.REAL, dimensions=TIME)
     time = ScopedValue(id="time", name="time", type=time_type, level=Level.STEP)
-    order, cycles = dependency_order({key: item.value for key, item in variables.items()})
+    values = {key: item.value for key, item in variables.items()}
+    if any(isinstance(value, UnresolvedValue) for value in values.values()):
+        names = (*(
+            ScopedValue(id=key, name=item.name, type=item.type, level=Level.STEP)
+            for key, item in variables.items()
+        ), time)
+        for key, value in values.items():
+            if isinstance(value, UnresolvedValue):
+                site = Site(expected=variables[key].type, finest=Level.STEP, names=names)
+                parsed = resolve_expression(value, site, functions)
+                if not isinstance(parsed, tuple):
+                    values[key] = parsed.value
+    order, cycles = dependency_order(values)
     problems.extend(cycles)
     scope = {}
     for cycle in cycles:
@@ -462,6 +476,12 @@ def compile_task(
             broken.add(key)
         else:
             fields.append((scope[key], field))
+    if sites is not None:
+        for key, variable in variables.items():
+            sites[("variables", key, "value")] = Site(
+                expected=variable.type, finest=Level.STEP,
+                names=(*scope.values(), time),
+            )
 
     lengths = []
     unread = set()
@@ -481,7 +501,13 @@ def compile_task(
             bounds.append(0)
             counts.append(None)
             continue
-        discrete = isinstance(end.length, DrawValue) and end.length.family == "uniform"
+        length = end.length
+        if isinstance(length, UnresolvedValue):
+            site = Site(expected=time_type, finest=Level.TRIAL, names=tuple(scope.values()))
+            parsed = resolve_expression(length, site, functions)
+            if not isinstance(parsed, tuple):
+                length = parsed.value
+        discrete = isinstance(length, DrawValue) and length.family == "uniform"
         field = lower(end.length, time_type, Level.TRIAL, scope.values(), path, discrete=discrete)
         bound = end.max_steps
         if field is None:
@@ -491,7 +517,7 @@ def compile_task(
             counts.append(EpochSteps(least=0, nominal=bound or 0, greatest=bound or 0))
             continue
         count = None
-        if isinstance(end.length, LiteralValue) and field is not None:
+        if isinstance(length, LiteralValue):
             (seconds,) = field.code.parameters
             steps = round(float(seconds) / period)
             if seconds < 0 or (seconds > 0 and steps == 0):
@@ -507,8 +533,7 @@ def compile_task(
             count = EpochSteps(least=max(steps, 0), nominal=max(steps, 0), greatest=max(steps, 0))
         if (
             discrete
-            and field is not None
-            and all(isinstance(arg, LiteralValue) for arg in end.length.args)
+            and all(isinstance(arg, LiteralValue) for arg in length.args)
         ):
             low, high = (round(float(seconds) / period) for seconds in field.code.parameters)
             if not 0 <= low <= high:
