@@ -998,6 +998,19 @@ def _use_initial_evaluation(raw):
     evaluation["base"]["inline"]["params"]["input_bindings"] = dict(trial["input_bindings"])
 
 
+def test_plan_reports_all_authored_graph_problems_for_train_and_initial_evaluate():
+    """Catch a dangling wire in an invalid Model masking an independently repairable wire."""
+    raw = _model_project()
+    _use_initial_evaluation(raw)
+    wires = raw["documents"]["reach-model"]["payload"]["interior"]["wires"]
+    for key in ("dangling-first", "dangling-second"):
+        wires[key] = _wire({"owner": "inputs", "port": key}, {"owner": "outputs", "port": key})
+    plan = compile_project(Project.model_validate(raw))
+    for step in ("train", "baseline"):
+        row, = (row for row in plan.rows if row.key.step == step)
+        assert {item.model_address.element.id for item in row.problems} == {"dangling-first", "dangling-second"}
+
+
 def test_unresolved_relative_link_is_reported_at_the_task():
     from tests.test_document_train_pair import authored_documents, document_project
 

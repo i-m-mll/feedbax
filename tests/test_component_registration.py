@@ -326,6 +326,15 @@ def test_cde_standard_template_matches_recurrent_cde_first_step() -> None:
     assert jnp.allclose(graph_outputs["action"], net_outputs["output"])
 
 
+def test_model_card_headline_uses_the_registered_type_and_field() -> None:
+    registry = ComponentRegistry()
+    definitions = {item.name: item for item in registry.list_all()}
+    for name, field in (("GRU", "hidden_size"), ("Linear", "output_size"), ("Gain", None)):
+        definition = definitions[f"feedbax.{name}"]
+        assert definition.headline.model_dump() == {"name": name, "field": field}
+        assert field is None or field in {parameter.name for parameter in definition.param_schema}
+
+
 def test_component_registry_round_trips_representation_contract() -> None:
     class RepresentedGain(Gain):
         def __init__(self, gain: float = 1.0):

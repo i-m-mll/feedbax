@@ -131,6 +131,14 @@ class StudioTrialEpoch(StrictModel):
     steps: EpochSteps | None
 
 
+class StudioTrialEpochInstance(StudioTrialEpoch):
+    """One compiled occurrence of an authored epoch in trial order."""
+
+    occurrence: int = Field(ge=0)
+    """Zero-based slot in the trial, unique within this list."""
+    steps: EpochSteps
+
+
 class StudioTaskChoice(StrictModel):
     document: ProjectName
     problems: list[Problem]
@@ -175,6 +183,9 @@ class StudioTrialAuthoring(StrictModel):
     variables: list[ScopedValue]
     signals: list[ScopedValue]
     epochs: list[StudioTrialEpoch]
+    """Authored epochs in editor column order."""
+    epoch_instances: list[StudioTrialEpochInstance] = Field(default_factory=list)
+    """Compiled epoch occurrences in trial order, with each repeat already expanded."""
     period_seconds: float | None
     n_steps: int | None
     batch_size: int | None

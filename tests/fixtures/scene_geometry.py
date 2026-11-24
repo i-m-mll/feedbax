@@ -1,20 +1,16 @@
-"""Authored folders and native kinematics used by the Scene witnesses."""
+"""Authored project folders used by the Scene witnesses."""
 
 import json
 from pathlib import Path
 import sys
 
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
+from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import Project
-from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
+from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 
 
 _LINKS = ("upper", "forearm", "hand")
 _JOINTS = ("shoulder", "elbow", "wrist")
-_POSES = {
-    1: [[0.32], [-0.61]],
-    3: [[0.43, -0.67, 0.26], [-0.31, 0.58, -0.48], [0.64, 0.15, -0.72]],
-}
 
 
 def _model(count: int) -> dict:
@@ -107,53 +103,6 @@ def seed_scene_project(root: Path, files: list[dict] | None = None) -> None:
         path.write_bytes(content)
 
 
-def native_scene_samples(root: Path, document: str):
-    import mujoco
-
-    from feedbax.compiler.model_document import lower_planar_scene_interior
-    from feedbax.component_registry import ComponentRegistry
-    from feedbax.mechanics.authored_model import compile_planar_model
-
-    saved = load_text_project(root)
-    document_model = ModelDocument.model_validate(saved.project.documents[document].payload)
-    interior = lower_planar_scene_interior(document_model, ("mechanics",), ComponentRegistry())
-    compiled = compile_planar_model(interior)
-    model = compiled.model
-    samples = []
-    for qpos in _POSES[model.nq]:
-        data = mujoco.MjData(model)
-        data.qpos[:] = qpos
-        mujoco.mj_kinematics(model, data)
-        bodies = {}
-        for name in _LINKS[: len(qpos)]:
-            body = model.body(name).id
-            origin = data.xpos[body, :2]
-            rotation = data.xmat[body].reshape(3, 3)[:2, :2]
-            tip = origin + rotation[:, 0] * interior.nodes[name].params["length"]
-            bodies[name] = {
-                "start": origin.tolist(),
-                "end": tip.tolist(),
-                "rotation": rotation.flatten().tolist(),
-            }
-        samples.append(
-            {
-                "qpos": qpos,
-                "bodies": bodies,
-                "joints": {
-                    name: data.xanchor[model.joint(name).id, :2].tolist()
-                    for name in _JOINTS[: len(qpos)]
-                },
-                "muscles": {
-                    path.name: [
-                        data.site_xpos[model.site(site).id, :2].tolist() for site in path.sites
-                    ]
-                    for path in compiled.paths
-                },
-            }
-        )
-    return {"revision": saved.revision, "identity": compiled.identity, "samples": samples}
-
-
 if __name__ == "__main__":
     action, *paths = sys.argv[1:]
     if action == "files":
@@ -161,12 +110,5 @@ if __name__ == "__main__":
     elif action == "seed":
         [path] = paths
         seed_scene_project(Path(path))
-    elif action == "read":
-        path, output, *documents = paths
-        Path(output).write_text(
-            json.dumps(
-                {document: native_scene_samples(Path(path), document) for document in documents}
-            )
-        )
     else:
         raise ValueError(f"Unknown Scene fixture action {action!r}")

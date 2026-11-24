@@ -13,6 +13,7 @@ import type {
   StudioMemberCommandResult,
   ProjectValueEdit,
   StudioProjectCreateFile,
+  StudioProjectCreateFiles,
   StudioProjectDocument,
   StudioProjectFilePatch,
   StudioProjectPatch,
@@ -35,7 +36,7 @@ export interface ProjectEditTransport {
   write: (id: string, body: StudioProjectPatch | StudioProjectPatchBatch, signal?: AbortSignal) => Promise<StudioProjectSnapshot>;
   replay: (id: string, body: StudioProjectReplay, signal?: AbortSignal) => Promise<StudioProjectSnapshot>;
   rename: (id: string, body: StudioProjectRename, signal?: AbortSignal) => Promise<StudioProjectDocument>;
-  create: (id: string, body: StudioProjectCreateFile, signal?: AbortSignal) => Promise<StudioProjectDocument>;
+  create: (id: string, body: StudioProjectCreateFile | StudioProjectCreateFiles, signal?: AbortSignal) => Promise<StudioProjectDocument>;
   memberCommand?: (id: string, body: StudioMemberCommand, signal?: AbortSignal) => Promise<StudioMemberCommandResult>;
   editModel?: (id: string, body: ModelEditRequest, signal?: AbortSignal) => Promise<ModelEditResponse>;
   undoModel?: (id: string, body: ModelUndoRequest, signal?: AbortSignal) => Promise<ModelEditResponse>;
@@ -329,17 +330,18 @@ export function containsCreatedFile(project: AuthoredProject, file: NamedFileCre
 
 function isAcknowledgedAddition(
   before: StudioProjectSnapshot, after: StudioProjectSnapshot,
-  unchanged: ReadonlySet<string>, file: NamedFileCreation,
+  unchanged: ReadonlySet<string>, files: readonly NamedFileCreation[],
 ) {
-  const key = addressKey(file);
   const count = unchangedAuthoredCount(unchanged);
   return count === before.file_revisions.length &&
     unchanged.has(declarationKey) &&
-    after.file_revisions.length === count + 1 &&
-    !unchanged.has(key) &&
-    after.file_revisions.some(({ address }) => addressKey(address) === key) &&
+    after.file_revisions.length === count + files.length &&
     JSON.stringify(before.project.sweep) === JSON.stringify(after.project.sweep) &&
-    containsCreatedFile(after.project, file);
+    files.every((file) => {
+      const key = addressKey(file);
+      return !unchanged.has(key) && after.file_revisions.some(({ address }) => addressKey(address) === key) &&
+        containsCreatedFile(after.project, file);
+    });
 }
 
 export class ProjectEditController {
@@ -597,20 +599,27 @@ export class ProjectEditController {
   createFiles(
     name: string, files: readonly NamedFileCreation[], reviewedRevision: string, use?: FollowingEdits,
   ): Promise<StudioProjectSnapshot> {
-    const targets = files.map((file): ReplayContent => {
-      const value = file.kind === 'document' ? file.document : file.step;
-      const bytes = new TextEncoder().encode(JSON.stringify(value, null, 2) + '\n');
-      return {
-        address: { kind: file.kind, id: file.id },
-        data: btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join('')),
-      };
-    });
+    const intended = structuredClone([...files]);
     return this.exclusiveTransaction(async (before) => {
       if (before.revision !== reviewedRevision) throw new ProjectEditConflictError();
-      const absent = targets.map(({ address }) => ({ address, data: null, revision: null }));
-      const latest = await this.publishReplay(before, replayFiles(absent, targets, before), targets);
-      if (!replayObserved(before, targets, latest.snapshot)) throw new ProjectEditConflictError();
-      return this.recordWithFollowing(name, before, latest.snapshot, use);
+      const acknowledged = (after: StudioProjectSnapshot) => {
+        const unchanged = unchangedFiles(before, after);
+        return unchanged.has(presentationKey) && isAcknowledgedAddition(before, after, unchanged, intended);
+      };
+      let latest: StudioProjectSnapshot;
+      try {
+        latest = (await this.transport.create(before.project_id, {
+          revision: before.revision, files: intended,
+        }, this.signal)).snapshot;
+      } catch (error) {
+        if (!isServiceFailure(error)) throw error;
+        const observed = (await this.read().catch(() => undefined))?.snapshot;
+        if (!observed || !acknowledged(observed)) throw error;
+        latest = observed;
+      }
+      this.signal.throwIfAborted();
+      if (!acknowledged(latest)) throw new ProjectEditConflictError();
+      return this.recordWithFollowing(name, before, latest, use);
     });
   }
 
@@ -919,7 +928,7 @@ export class ProjectEditController {
   private receive(document: StudioProjectDocument, created?: NamedFileCreation, authored = false) {
     const { snapshot: latest } = document;
     const unchanged = unchangedFiles(this.saved, latest);
-    const added = created && isAcknowledgedAddition(this.saved, latest, unchanged, created);
+    const added = created && isAcknowledgedAddition(this.saved, latest, unchanged, [created]);
     if (authored || added) this.outsideBurst = undefined;
     if (added && this.queued.length) {
       let draft = editContent(latest);

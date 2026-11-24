@@ -71,7 +71,7 @@ test('authors a Model with the pointer and trains it @round', async ({ page, req
 
   // The empty model is its two boundary cards; the task's signals are hollow ports on `inputs`.
   await expect(model.locator('.react-flow__node')).toHaveCount(2);
-  await expect(inputs.locator('.studio-model-port[data-hollow="true"]')).not.toHaveCount(0);
+  await expect(inputs.locator('[data-handleid^="output:@task:"]')).not.toHaveCount(0);
 
   // The search at the cursor, by its key, places the component there, selected.
   const box = (await canvas.boundingBox())!;
@@ -136,21 +136,19 @@ test('authors a Model with the pointer and trains it @round', async ({ page, req
   expect(target).toBeDefined();
   await expect(inputs.getByRole('img', { name: 'Task', exact: true })).toHaveCount(1);
 
-  // A port added to `outputs` is wired, and an Objective term on it marks it.
-  await outputs.getByRole('button', { name: 'Add Port', exact: true }).click();
-  const portDialog = page.getByRole('dialog', { name: 'Add Port', exact: true });
-  await enter(portDialog.getByRole('textbox', { name: 'Name', exact: true }), 'Command');
-  await expect(portDialog).toBeHidden();
-  const commandHandle = outputs.locator('[aria-label="Port Command"].react-flow__handle');
+  // Wiring to the empty handle of `outputs` adds a port named after the wire's source, and an Objective term on it marks it.
   joining = edit();
-  await drag(page, handle(readout, 'output:output'), commandHandle);
+  await drag(page, handle(readout, 'output:output'), outputs.locator('[data-handleid="input:__new_port__"]'));
   stored = await applied(joining);
-  const command = stored.ports.outputs?.find(({ name }) => name === 'Command');
+  const command = stored.ports.outputs?.find(({ name }) => name === 'output');
   expect(command).toBeDefined();
+  expect(Object.values(stored.interior.wires ?? {})).toContainEqual(expect.objectContaining({
+    source: readoutOutput, target: { owner: 'outputs', port: command!.id },
+  }));
   await tab('Objective').click();
   await objective.getByRole('button', { name: 'Add Term', exact: true }).click();
-  await page.getByRole('menu', { name: 'Add Term', exact: true }).getByRole('menuitem', { name: 'Command', exact: true }).click();
-  await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(Command)');
+  await page.getByRole('menu', { name: 'Add Term', exact: true }).getByRole('menuitem', { name: 'Output', exact: true }).click();
+  await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(output)');
   await tab('Model').click();
   await expect(outputs.getByRole('img', { name: 'Objective', exact: true })).toHaveCount(1);
 

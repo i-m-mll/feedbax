@@ -17,6 +17,8 @@ class TaskTimelineCue(BaseModel):
 
 
 class TrialTerm(BaseModel):
+    problems: list[Problem] = Field(default_factory=list)
+    """Problems with this term in the Objective used to draw the trial."""
     steps: list[bool]
     """Whether the term applies at each step."""
     weights: list[float | None] | None = None
@@ -77,6 +79,8 @@ class TaskVariableRange(BaseModel):
 
 
 class TrialTermAggregate(BaseModel):
+    problems: list[Problem] = Field(default_factory=list)
+    """Problems with this term in the Objective used to draw the trials."""
     steps: list[float]
     """At each step, the share of trials on which the term applies."""
     covered: float
