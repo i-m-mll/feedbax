@@ -36,7 +36,8 @@ const firstMember: Record<CheckpointKind, CheckpointDraftField | undefined> = {
 
 /**
  * Which updates of the subject's training the Evaluate tests: the kind of rule as the group's control, its updates
- * beneath. A kind with updates saves once they say a rule; Escape restores the saved one.
+ * beneath. A kind with updates saves once they are written, a list that says no rule as its text; Escape restores the
+ * saved one.
  */
 export function CheckpointEditor({ initial, step, kinds = checkpointKinds, range, disabled, readOnly, problem, onSave, onToSweep }: {
   initial: EditableCheckpointRule;
@@ -59,17 +60,18 @@ export function CheckpointEditor({ initial, step, kinds = checkpointKinds, range
   const held = checkpointDraftRule(draft, range);
   const name = studioName('checkpoint');
   const fixed = disabled || readOnly;
-  const reason = (field: CheckpointDraftField) => !('rule' in held) && held.field === field ? held.reason
+  /** The draft's own problem while it is written; once saved, the plan's problem on the saved rule. */
+  const reason = (field: CheckpointDraftField) => held.problem?.field === field ? held.problem.reason
     : field === firstMember[draft.kind] ? problem : undefined;
   /** The rule last saved from this editor, and the rule it replaced: until the saved rule changes, it is not saved again. */
   const sent = useRef<{ initial: EditableCheckpointRule; rule: EditableCheckpointRule }>();
   function commit(next: CheckpointDraft) {
     setDraft(next);
-    const result = checkpointDraftRule(next, range);
-    if (fixed || !('rule' in result) || same(result.rule, initial)) return;
-    if (sent.current && same(sent.current.initial, initial) && same(sent.current.rule, result.rule)) return;
-    sent.current = { initial, rule: result.rule };
-    onSave(result.rule);
+    const { rule } = checkpointDraftRule(next, range);
+    if (fixed || rule === undefined || same(rule, initial)) return;
+    if (sent.current && same(sent.current.initial, initial) && same(sent.current.rule, rule)) return;
+    sent.current = { initial, rule };
+    onSave(rule);
   }
   function number(field: 'at' | 'every' | 'from' | 'through', value: number | null, next: (value: number | null) => CheckpointDraft) {
     const why = reason(field);

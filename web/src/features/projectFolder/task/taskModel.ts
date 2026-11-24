@@ -13,6 +13,8 @@ export interface ModelStart {
   readonly id: string;
   /** Its components' names and its path. */
   readonly name: string;
+  /** Its composites' and component's names, then the segments of its path: the levels Initializes descends. */
+  readonly path: readonly string[];
 }
 
 /** The Model values a variable initializes, and those its type fits. */
