@@ -271,8 +271,6 @@ test('a Train step keeps a new Model with its Problems and a duplicated Model wi
   }
 
   await page.getByRole('tab', { name: 'Objective', exact: true }).click();
-  // `sibling` shares the Objective, so the edit is made for both readers and is stored without asking.
-  await mapStep(page, 'sibling').click({ modifiers: ['Shift'] });
   const base = (await saved()).project.steps?.train?.base;
   const objective = base && 'inline' in base
     ? (base.inline as { trial_documents: { objective: { document: string } } }).trial_documents.objective.document : undefined;
@@ -281,6 +279,8 @@ test('a Train step keeps a new Model with its Problems and a duplicated Model wi
   await primary.getByRole('textbox', { name: 'Measure', exact: true }).first().click();
   await measure.fill('sqnorm(absent)');
   await measure.press('Enter');
+  // `sibling` shares the Objective, so the edit asks where it applies.
+  await page.getByRole('menuitem', { name: 'All 2 Steps', exact: true }).click();
   // A measure that names no signal is stored as typed, and its Problem keeps the step from running.
   await expect.poll(async () => (rootPayload((await saved()).project.documents?.[objective!]) as {
     terms: { measure: unknown }[];
