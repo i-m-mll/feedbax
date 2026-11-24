@@ -4084,6 +4084,7 @@ export type StudioProjectPatchBatch = {
   "revision": Sha256;
   "presentation_revision"?: Sha256 | null;
   "files": Array<StudioProjectFilePatch>;
+  "created"?: Array<CreateNamedDocument>;
 };
 
 export type StudioProjectRename = {
@@ -11918,6 +11919,7 @@ export const StudioProjectPatchBatchSchema: z.ZodType<StudioProjectPatchBatch> =
     "revision": Sha256Schema,
     "presentation_revision": z.union([Sha256Schema, z.null()]).optional(),
     "files": z.array(StudioProjectFilePatchSchema).min(1),
+    "created": z.array(CreateNamedDocumentSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectPatchBatch>;
 

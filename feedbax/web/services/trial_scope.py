@@ -22,6 +22,8 @@ from feedbax.contracts.project import (
     document_edit_value, json_pointer_parts, same_json,
 )
 from feedbax.contracts.project_inputs import SweepExceptionTerms
+from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID
 from feedbax.planner.project_plan import RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.project_resolution import (
@@ -406,7 +408,8 @@ def _document_stores(
             variant = _document_name(project, name, taken)
             taken.add(variant)
             stores.created.append(CreateNamedDocument(kind="document", id=variant, document=BasedDocument(
-                schema=document.schema_id, base=DocumentBase(document=name), differences=diff(old(name), content),
+                schema=document.schema_id, label=_copy_label(documents, stores.created, name),
+                base=DocumentBase(document=name), differences=diff(old(name), content),
             )))
             for step in direct:
                 stores.pointing.setdefault(step, {})[name] = variant
@@ -415,6 +418,20 @@ def _document_stores(
 
     visit(shown, ())
     return stores
+
+
+def _copy_label(documents: Mapping[str, Document], created: Sequence[CreateNamedDocument], name: str) -> str:
+    document = documents[name]
+    task_schemas = {TASK_DOCUMENT_SCHEMA_ID, PYTHON_TASK_SCHEMA_ID}
+    schemas = task_schemas if document.schema_id in task_schemas else {document.schema_id}
+    default = {
+        TASK_DOCUMENT_SCHEMA_ID: "Task",
+        PYTHON_TASK_SCHEMA_ID: "Task",
+        OBJECTIVE_DOCUMENT_SCHEMA_ID: "Objective",
+    }.get(document.schema_id, name)
+    labels = {item.label or key for key, item in documents.items() if item.schema_id in schemas}
+    labels.update(label for item in created if item.document.schema_id in schemas and (label := item.document.label))
+    return generated_name(document.label or default, labels.__contains__, separator=" ")
 
 
 def _document_name(project: Project, name: str, taken: Collection[str]) -> str:

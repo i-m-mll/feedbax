@@ -675,6 +675,7 @@ def test_shared_objective_rename_asks_before_writing_and_can_copy_for_one_reader
     raw["documents"]["reach-model"]["payload"] = _model_payload()
     raw["steps"].pop("baseline")
     raw["steps"]["other"] = {"kind": "train", "base": {"step": "train"}}
+    raw["documents"]["objective"]["label"] = "Simple reaches Objective"
     raw["documents"]["objective"]["payload"]["terms"] = [
         {"id": "base", "name": "Before", "measure": {"kind": "literal", "value": 1}},
     ]
@@ -714,11 +715,16 @@ def test_shared_objective_rename_asks_before_writing_and_can_copy_for_one_reader
         assert response.status_code == 200, response.text
         (created,) = response.json()["created"]
         assert created["document"]["base"] == {"document": "objective"}
-        made = client.post(f"{route}/files", json={"revision": revision, "file": created})
-        assert made.status_code == 201, made.text
-        saved = client.patch(route, json={
-            "revision": folders.read(project).revision, "files": response.json()["files"],
-        })
+        assert created["document"]["label"] == "Simple reaches Objective 2"
+        batch = {"revision": revision, "created": [created], "files": response.json()["files"]}
+        bad_file = batch["files"][0] | {
+            "patches": [{"op": "replace", "path": "/missing", "value": "bad"}],
+        }
+        failed = client.patch(route, json=batch | {"files": [bad_file]})
+        assert failed.status_code == 422, failed.text
+        assert folders.read(project).revision == revision
+        assert created["id"] not in folders.read(project).project.documents
+        saved = client.patch(route, json=batch)
         assert saved.status_code == 200, saved.text
         assert client.post(f"{route}/authoring/trials", json=replay).status_code == 409
         after = folders.read_plan(project, revision=saved.json()["revision"])
