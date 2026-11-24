@@ -12,8 +12,8 @@ from feedbax.tasks.registry import PythonTaskRegistry
 from tests.support.plugins.reaching_task import REACHING_TASK as REACHING_TASK
 
 PLUGINS = Path(__file__).parent / "plugins"
-"""A folder of installed distributions: the reaching task's package beside its metadata. The e2e Studio puts it on
-its path too."""
+"""A folder of installed distributions: the reaching task's package beside its metadata. The e2e Python processes
+put it on their path too."""
 
 
 @pytest.fixture

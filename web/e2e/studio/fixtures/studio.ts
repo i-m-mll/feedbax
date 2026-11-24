@@ -12,6 +12,11 @@ import { startFixtureRunner } from './python';
 
 export const repo = fileURLToPath(new URL('../../../../', import.meta.url));
 
+/** The e2e Python environment: the test Python task is installed, as a package registers one. */
+export const pythonEnvironment = {
+  ...process.env, PYTHONPATH: [`${repo}tests/support/plugins`, process.env.PYTHONPATH].filter(Boolean).join(':'),
+};
+
 /** The Python application each Studio instance serves. */
 export type StudioBackend = 'app' | 'remote';
 /** `preview` serves the memoized production build; `dev` serves source modules through Vite. */
@@ -99,11 +104,7 @@ export async function launchStudio(backend: StudioBackend, frontend: StudioFront
       '--home', home, '--backend-port', String(backendPort), ...args,
     ], {
       cwd: repo,
-      // Every Studio has the test Python task installed, as a package registers one.
-      env: {
-        ...process.env, FEEDBAX_OWNER_PID: String(process.pid), FEEDBAX_STUDIO_TEST_HOME: home,
-        PYTHONPATH: [`${repo}tests/support/plugins`, process.env.PYTHONPATH].filter(Boolean).join(':'),
-      },
+      env: { ...pythonEnvironment, FEEDBAX_OWNER_PID: String(process.pid), FEEDBAX_STUDIO_TEST_HOME: home },
       stdio: ['ignore', logFd, logFd],
     });
     launchers.push(child);
