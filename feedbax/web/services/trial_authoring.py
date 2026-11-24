@@ -18,7 +18,7 @@ from feedbax.compiler.model_reset import ModelResetField
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import VariantRuns
 from feedbax.contracts.project import (
-    SetProjectValue, apply_document_edits, based_on, json_pointer_parts,
+    RemoveProjectValue, SetProjectValue, apply_document_edits, based_on, json_pointer_parts,
 )
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.planner.project_plan import EVALUATION_TASK, RunKey, compile_project, own_task_variation
@@ -36,7 +36,7 @@ from feedbax.contracts.studio_trials import (
     StudioTrialOutput, StudioTrialReset, StudioTrialSelectDocument, StudioTrialStepScope, StudioTrialStructureEdit,
 )
 from feedbax.contracts.task_document import (
-    PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, TaskDocument,
+    PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, Rest, TaskDocument,
 )
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument, ObjectiveTerm
@@ -236,6 +236,10 @@ def _expression_edit(change, documents, projection, bundle):
     if change.edit.kind != "text" or change.edit.value_id is not None:
         return one
     text = change.edit.text
+    end = _end_of(document, role, rest)
+    raw = document.model_dump(mode="json", exclude_unset=True)
+    if end is not None and text.strip() == "rest":
+        return StudioTrialDocumentEdit(kind=role, edits=_end_edits(raw, end, "rest", {}))
     parsed = (
         read_field(text, site, bundle.expression_functions) if projection.pair is not None
         else parse(text, site, bundle.expression_functions)
@@ -244,7 +248,10 @@ def _expression_edit(change, documents, projection, bundle):
         return tuple(problem.model_copy(update={"path": (role, *rest)}) for problem in parsed)
     if isinstance(parsed.value, SweepList | SweepRange | SweepSample):
         return one
-    raw = document.model_dump(mode="json", exclude_unset=True)
+    if end is not None and isinstance(at(document, tuple(rest[:-1])), Rest):
+        return StudioTrialDocumentEdit(kind=role, edits=_end_edits(
+            raw, end, "length", {"length": parsed.value.model_dump(mode="json")},
+        ))
     stored = index_pointer(raw, tuple(rest))
     path = stored or index_pointer(raw, tuple(rest[:-1])) + pointer(tuple(rest[-1:]))
     return StudioTrialDocumentEdit(kind=role, edits=[SetProjectValue(
@@ -260,6 +267,27 @@ def _reset_name(model, address: ModelAddress) -> str:
         names.append(component.name if component is not None else id)
         interior = getattr(component, "interior", interior)
     return " · ".join((*names, " ".join(map(str, address.element.path[1:]))))
+
+
+def _end_of(document, role, rest) -> str | None:
+    """The pointer of the End whose length ``rest`` addresses in the task document, which ``rest`` makes Rest and a length
+    makes a length again; None for any other field."""
+    if role != "task" or len(rest) != 4 or rest[0] != "epochs" or tuple(rest[2:]) != ("end", "length"):
+        return None
+    return index_pointer(document.model_dump(mode="json"), tuple(rest[:-1]))
+
+
+def _end_edits(raw, end: str, kind: str, fields: dict) -> list:
+    """The edits that make the End at ``end`` of ``kind`` with ``fields``, each under the End so that it stays the
+    field's edit: its kind, then each field it gains or loses."""
+    held = raw
+    for part in json_pointer_parts(end):
+        held = held[int(part)] if isinstance(held, list) else held[part]
+    edits = [SetProjectValue(op="replace" if "kind" in held else "add", path=f"{end}/kind", value=kind)]
+    edits += [SetProjectValue(op="replace" if key in held else "add", path=f"{end}/{key}", value=value)
+              for key, value in fields.items()]
+    edits += [RemoveProjectValue(op="remove", path=f"{end}/{key}") for key in held if key != "kind" and key not in fields]
+    return edits
 
 
 def _field_label(path) -> str:
@@ -633,13 +661,16 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
 
 
 def _structure_edit(change, documents, definition) -> StudioTrialDocumentEdit | tuple[Problem, ...]:
-    """The task document edit that makes a structural change: each top-level field it changes, written whole."""
+    """The task document edit that makes structural changes in order: each top-level field they change, written whole.
+    One refused change refuses them all."""
     task = documents.task_source
     if not isinstance(task, TaskDocument):
         raise ProjectFolderInvalid("A Python task has no structure to change.")
-    changed = restructure(task, change.change)
-    if isinstance(changed, Problem):
-        return (changed,)
+    changed = task
+    for each in change.changes:
+        changed = restructure(changed, each)
+        if isinstance(changed, Problem):
+            return (changed,)
     _, raw = _changed_value(documents, definition, "task")
     before, after = task.model_dump(mode="json"), changed.model_dump(mode="json")
     edits = [
