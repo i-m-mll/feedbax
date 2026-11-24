@@ -8,6 +8,9 @@ import { pick } from './controls';
 import { activate, activateMenuItem, number, palette, post, readSaved } from './studioKeyboard';
 import { rootPayload } from './rootPayload';
 
+/** The Task document a first Train creates: simple reaches, named by its label. */
+const taskDocument = 'simple-reaches';
+
 export async function authorFirstTrain(
   page: Page, request: APIRequestContext, totalUpdates: number,
   forceComparison?: { activation: 'softmax' },
@@ -95,12 +98,6 @@ export async function authorFirstTrain(
   const plantId = await plant.getAttribute('data-id');
   expect(plantId).toBeTruthy();
   const output = model.locator('[data-id="@outputs"]');
-  await page.keyboard.press('Meta+2');
-  await expect(model).toBeFocused();
-  await activate(page, output.getByRole('button', { name: 'Add Port', exact: true }));
-  const portDialog = page.getByRole('dialog', { name: 'Add Port', exact: true });
-  await number(page, portDialog.getByRole('textbox', { name: 'Name', exact: true }), 'Command');
-  await expect(portDialog).toBeHidden();
 
   async function connect(source: Locator, target: Locator) {
     const { revision } = await savedProject();
@@ -136,12 +133,12 @@ export async function authorFirstTrain(
   const source = linear.locator('[data-handleid="output:output"]');
   await connect(model.locator('[data-handleid="output:@task:target_pos"]'), linear.locator('[data-handleid="input:input"]'));
   await connect(source, plant.locator('[data-handleid="input:force"]'));
-  await connect(source, output.locator('[aria-label="Port Command"].react-flow__handle'));
+  await connect(source, output.locator('[data-handleid="input:__new_port__"]'));
 
   await page.keyboard.press('Meta+4');
   await activate(page, objective.getByRole('button', { name: 'Add Term', exact: true }));
-  await activateMenuItem(page, page.getByRole('menu', { name: 'Add Term', exact: true }).getByRole('menuitem', { name: 'Command', exact: true }));
-  await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(Command)');
+  await activateMenuItem(page, page.getByRole('menu', { name: 'Add Term', exact: true }).getByRole('menuitem', { name: 'Output', exact: true }));
+  await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(output)');
   await setNumber(weight, 2, (project) => {
     const authored = terms(project)[0]?.weight;
     return authored && 'value' in authored ? authored.value : undefined;
@@ -167,19 +164,19 @@ export async function authorFirstTrain(
     expect(response.ok(), await response.text()).toBe(true);
     return (await response.json() as StudioTrialAuthoring).problems;
   };
-  const links = async () => (rootPayload((await savedProject()).project.documents?.task) as unknown as TaskDocument).links;
+  const links = async () => (rootPayload((await savedProject()).project.documents?.[taskDocument]) as unknown as TaskDocument).links;
   expect(await problems()).toEqual([expect.objectContaining({ path: ['links', shippedLink] })]);
   await page.keyboard.press('Meta+3');
   const initializes = task.getByRole('combobox', { name: 'Initializes start', exact: true });
-  const toggle = async (option: Locator) => {
+  const toggle = async (component: string) => {
     await initializes.click();
-    await option.click();
+    await page.keyboard.type('effector position');
+    await page.getByRole('option', { name: `${component} · effector · position`, exact: true }).click();
     await page.keyboard.press('Escape');
   };
-  const effector = page.getByRole('option').filter({ hasText: /effector position$/ });
-  await toggle(effector.filter({ hasNotText: /^plant · / }));
+  await toggle('PointMass');
   await expect.poll(links).toEqual([{ model_field: shippedLink, variable: 'start' }, { model_field: plantLink, variable: 'start' }]);
-  await toggle(page.getByRole('option', { name: 'plant · effector position', exact: true }));
+  await toggle('plant');
   await expect.poll(links).toEqual([{ model_field: plantLink, variable: 'start' }]);
   expect(await problems()).toEqual([]);
   await page.keyboard.press('Meta+1');
@@ -188,7 +185,7 @@ export async function authorFirstTrain(
   const [reach] = shipped.validation_trials!;
   if (forceComparison) {
     const narrowed = await request.patch(projectPath, { data: { revision: (await savedProject()).revision, files: [
-      { address: { kind: 'document', id: 'task' }, patches: [{ op: 'replace', path: '/payload/validation_trials', value: [reach] }] },
+      { address: { kind: 'document', id: taskDocument }, patches: [{ op: 'replace', path: '/payload/validation_trials', value: [reach] }] },
     ] } });
     expect(narrowed.ok(), await narrowed.text()).toBe(true);
   }
@@ -197,7 +194,7 @@ export async function authorFirstTrain(
   expect(saved.project_id).toBe(snapshot.project_id);
   expect(saved.revision).not.toBe(snapshot.revision);
   expect(saved.project.steps?.train?.base).toMatchObject({ inline: {
-    trial_documents: { model: { document: 'model' }, task: { document: 'task' }, objective: { document: 'objective' } },
+    trial_documents: { model: { document: 'model' }, task: { document: taskDocument }, objective: { document: 'objective' } },
     method: { document: 'training', pointer: '/method' },
     settings: { document: 'training', pointer: '/settings' },
     training_config: { document: 'training', pointer: '/training_config' },
@@ -215,7 +212,7 @@ export async function authorFirstTrain(
     [plantId!]: { kind: 'leaf', type: 'feedbax.PointMass' },
   });
   const reachPort = savedModel.ports.inputs?.find(({ name }) => name === 'target_pos');
-  const commandPort = savedModel.ports.outputs?.find(({ name }) => name === 'Command');
+  const commandPort = savedModel.ports.outputs?.find(({ name }) => name === 'output');
   expect(reachPort?.id).toBeTruthy();
   expect(commandPort?.id).toBeTruthy();
   const linearOutput = { owner: 'component', component: linearId, port: 'output' };
@@ -231,7 +228,7 @@ export async function authorFirstTrain(
     }),
     expect.objectContaining({ source: linearOutput, target: { owner: 'outputs', port: commandPort!.id } }),
   ]));
-  expect(rootPayload(saved.project.documents?.task)).toEqual({
+  expect(rootPayload(saved.project.documents?.[taskDocument])).toEqual({
     ...shipped, links: [{ model_field: plantLink, variable: 'start' }],
     ...(forceComparison && { validation_trials: [reach] }),
   });
@@ -261,10 +258,10 @@ export async function authorFirstTrain(
   expect(await savedProject()).toMatchObject({ project_id: saved.project_id, revision: saved.revision, project: saved.project });
   expect((await plan(saved.revision)).rows).toEqual(before.rows);
   await page.keyboard.press('Meta+4');
-  await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(Command)');
+  await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(output)');
   await expect(weight).toHaveValue('2');
   await page.keyboard.press('Meta+1');
   await expect(nBatches).toHaveValue(String(totalUpdates));
   await expect(batchSize).toHaveValue('4');
-  return { saved, projectPath, savedProject, plan, plantId: plantId!, task: rootPayload(saved.project.documents?.task) as unknown as TaskDocument, reach };
+  return { saved, projectPath, savedProject, plan, plantId: plantId!, task: rootPayload(saved.project.documents?.[taskDocument]) as unknown as TaskDocument, reach };
 }

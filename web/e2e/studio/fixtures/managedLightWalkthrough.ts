@@ -4,8 +4,8 @@ import type {
   StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../../src/generated/studioContracts';
 import { authorLearningRateSweep, mapStep, runName } from './canonicalTrain';
-import { activate, chooseOption, chooseOutlineRow, chooseStepKind, number, openView, palette, tabTo } from './studioKeyboard';
-import { outlineRow, pick } from './controls';
+import { activate, activateMenuItem, chooseOption, chooseOutlineRow, chooseStepKind, number, openView, palette, tabTo } from './studioKeyboard';
+import { applyTo, outlineRow, pick } from './controls';
 
 type Walkthrough = {
   page: Page;
@@ -58,7 +58,7 @@ export async function authorWalkthroughSweep(context: Walkthrough) {
   const { page } = context;
   await expect(variant(page)).toHaveText('base');
   await openRuns(page, 'train');
-  await authorLearningRateSweep(stepInspector(page).getByRole('region', { name: 'Learning Rate field', exact: true }));
+  await authorLearningRateSweep(stepInspector(page).getByRole('region', { name: 'Learning Rate field', exact: true }), 'Whole Step');
   const sweepRows = (value: StudioSavedTrainRuns) =>
     value.window_map!.rows.filter(({ key }) => key.variant === 'base' && key.step === 'train');
   await expect.poll(async () => sweepRows(await plan(context)).map(({ coordinates }) => coordinates['learning-rate']?.value))
@@ -222,7 +222,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   expect(continued.project.steps?.[child]?.kind).toBe('train');
   const carryover = stepInspector(page).getByRole('combobox', { name: 'Checkpoint carryover', exact: true });
   const carry = mutation(context, 'PATCH');
-  await chooseOption(page, carryover, 'Carry training state');
+  await chooseOption(page, carryover, 'Carry training state', 'Whole Step');
   const carried = await carry;
   expect(carried.ok(), await carried.text()).toBe(true);
   expect(carried.request().postDataJSON().address).toEqual({ kind: 'step', id: child });
@@ -238,6 +238,7 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   await expect(batchCount).toBeEditable();
   const batches = mutation(context, 'PATCH');
   await number(page, batchCount, String(additionalUpdates));
+  await activateMenuItem(page, applyTo(page).getByRole('menuitem', { name: 'Whole Step', exact: true }));
   const changed = await batches;
   expect(changed.ok(), await changed.text()).toBe(true);
   // The child reads its parent's training document, so its own Batches is a document based on that one.

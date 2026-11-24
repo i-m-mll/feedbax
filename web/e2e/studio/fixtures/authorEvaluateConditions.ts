@@ -3,6 +3,7 @@ import type {
   StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../../src/generated/studioContracts';
 import { mapStep } from './canonicalTrain';
+import { applyTo } from './controls';
 import { activate, activateMenuItem, chooseStepKind, number, openView } from './studioKeyboard';
 
 /** Create a shared Evaluate from the current Train selection and author its numeric condition axis. */
@@ -63,7 +64,11 @@ export async function authorEvaluateConditions({
   await activateMenuItem(page, page.getByRole('menuitemradio', { name: 'Sweep', exact: true }));
   await expect(control.getByRole('button', { name: field + ' kind: Sweep', exact: true })).toBeVisible();
   await expect(value).toBeEditable();
-  const authored = await edit(() => number(page, value, conditions.join(', ')));
+  // The project's other variant reads this Evaluate too, so the sweep's reach is asked at the field.
+  const authored = await edit(async () => {
+    await number(page, value, conditions.join(', '));
+    await activateMenuItem(page, applyTo(page).getByRole('menuitem', { name: 'Whole Step', exact: true }));
+  });
 
   const projection = (await plan(authored.revision)).window_map!;
   const rows = projection.rows.filter(({ key }) => key.step === stepId && key.variant === train.variant);
