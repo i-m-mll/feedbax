@@ -1,8 +1,8 @@
 import { Popover } from '@base-ui/react/popover';
 import clsx from 'clsx';
-import { Command } from 'cmdk';
+import { Command, useCommandState } from 'cmdk';
 import { Check, ChevronDown, ChevronLeft, ChevronRight } from 'lucide-react';
-import { useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { useId, useRef, useState, type InputHTMLAttributes, type KeyboardEvent, type ReactNode } from 'react';
 import { usePopupLayer } from './popupLayer';
 import { fieldBox, fieldInput, glyph, popupItem, popupSurface, primaryText, secondaryText } from './styles';
 
@@ -52,6 +52,16 @@ function rows<Value extends string>(options: readonly TreeOption<Value>[], at: r
 }
 
 /**
+ * The box's type-ahead. cmdk's own input names its list and active row even while the list is closed and unmounted,
+ * so this input names them only while the list is open.
+ */
+function TreeInput({ open, list, ...props }: InputHTMLAttributes<HTMLInputElement> & { open: boolean; list: string }) {
+  const active = useCommandState((state) => state.selectedItemId);
+  return <input {...props} type="text" role="combobox" autoComplete="off" spellCheck={false} aria-autocomplete="list"
+    aria-expanded={open} aria-controls={open ? list : undefined} aria-activedescendant={open ? active : undefined} />;
+}
+
+/**
  * A choice among options that have paths (P44): the list opens on the top level and descends a level at a time;
  * typing filters across every level and shows each match with its path. A level with no option under it is not drawn.
  */
@@ -59,6 +69,7 @@ export function TreeChoice<Value extends string>(props: TreeChoiceProps<Value>) 
   const { options, disabled, invalid, className, trailing } = props;
   const label = props['aria-label'];
   const box = useRef<HTMLDivElement>(null);
+  const list = useId();
   const [open, setOpen] = useState(false);
   const [at, setAt] = useState<readonly string[]>([]);
   const [query, setQuery] = useState('');
@@ -93,9 +104,9 @@ export function TreeChoice<Value extends string>(props: TreeChoiceProps<Value>) 
 
   return <Command shouldFilter={false} loop value={active} onValueChange={setHighlighted} label={label} onKeyDown={key}
     ref={box} data-field-box="" className={clsx(fieldBox, 'overflow-hidden', className)}>
-    <Command.Input value={query} disabled={disabled} placeholder={text} aria-label={label} aria-invalid={invalid || undefined}
-      aria-expanded={open} className={clsx(fieldInput, 'text-ellipsis placeholder:text-shell-foreground')}
-      onValueChange={(next) => { setQuery(next); show(true); }} onClick={() => show(true)} onBlur={(event) => {
+    <TreeInput value={query} disabled={disabled} placeholder={text} aria-label={label} aria-invalid={invalid || undefined}
+      open={open && shown.length > 0} list={list} className={clsx(fieldInput, 'text-ellipsis placeholder:text-shell-foreground')}
+      onChange={(event) => { setQuery(event.target.value); show(true); }} onClick={() => show(true)} onBlur={(event) => {
         if (!event.relatedTarget || !box.current?.contains(event.relatedTarget)) show(false);
       }} />
     {trailing ? <span className="flex shrink-0" onMouseDown={(event) => event.stopPropagation()}>{trailing}</span> : null}
@@ -108,7 +119,7 @@ export function TreeChoice<Value extends string>(props: TreeChoiceProps<Value>) 
       onOpenChange={(next, { event }) => { if (!next && !box.current?.contains(event?.target as Node | null)) show(false); }}>
       <Popover.Portal container={usePopupLayer()}>
         <Popover.Positioner className="z-50 outline-none" anchor={box} side="bottom" align="start" sideOffset={4}>
-          <Popover.Popup initialFocus={false} finalFocus={false}
+          <Popover.Popup id={list} initialFocus={false} finalFocus={false}
             className={clsx(popupSurface, 'w-max min-w-[var(--anchor-width)] max-w-[var(--available-width)]')}
             onMouseDown={(event) => event.preventDefault()}>
             <Command.List className="max-h-[min(22rem,var(--available-height))] overflow-y-auto">
