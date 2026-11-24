@@ -1,7 +1,7 @@
 import { appTip } from '@window-shell/browser/tooltip';
 import { Activity } from 'lucide-react';
-import { useState } from 'react';
-import { studioAccessibleName, studioName, studioValueType } from '@/components/activity/studioVocabulary';
+import { useEffect, useState } from 'react';
+import { studioAccessibleName, studioName, studioReason, studioValueType } from '@/components/activity/studioVocabulary';
 import { ChangeMark } from '@/components/ui/ChangeMark';
 import { FieldProblem } from '@/components/ui/FieldProblem';
 import { InlineEdit } from '@/components/ui/InlineEdit';
@@ -12,7 +12,9 @@ import {
 import { TreeChoice } from '@/components/ui/TreeChoice';
 import { changeTip, ValueField } from '@/components/values/ValueField';
 import type { StudioCommand } from '@/features/projectWindow/studioCommands';
-import type { TaskSelection, TaskSetVariable, TaskVariable, UninitializedStart, VariableInitializes } from './taskModel';
+import type {
+  TaskSelection, TaskSetVariable, TaskVariable, UninitializedStart, VariableInitializes, WeightEdit, WeightSide,
+} from './taskModel';
 
 /** A refusal of a variable's edit, or nothing once it is made. */
 type Made = Promise<string | undefined> | void;
@@ -147,22 +149,60 @@ export function TaskVariables({ variables, sets = [], starts = [], selected, sel
 
 /** A Set the trials apply, named as its sweep's label names it, with its entries and their weights in parts. */
 function SetRow({ set, drawn }: { set: TaskSetVariable & { readonly toSweep?: StudioCommand }; drawn: boolean }) {
-  const { toSweep } = set;
+  const { toSweep, weigh } = set;
   return <TableRow menu={toSweep && { label: studioAccessibleName('variable', set.set), items:
     <MenuItem disabled={!toSweep.enabled} onClick={() => toSweep.invoke()}>{toSweep.title}</MenuItem> }}>
     <TableRowHeader className="font-mono">{set.set}</TableRowHeader>
     <TableCell className="text-shell-muted">{studioName('set')}</TableCell>
     <TableCell>
-      <ul aria-label={studioAccessibleName('values', set.set)} className="flex min-w-0 flex-wrap gap-x-3">
-        {set.entries.map(({ id, label, parts }) => <li key={id ?? ''} className="flex items-baseline gap-1">
-          <span>{label}</span>
-          {parts && <span className="font-mono tabular-nums text-shell-muted">{parts}</span>}
-        </li>)}
+      <ul aria-label={studioAccessibleName('values', set.set)} className="flex h-full min-w-0 flex-wrap items-center gap-x-3">
+        {set.entries.map(({ id, label, weight }) => {
+          const part = (side?: WeightSide) => weigh && ((value: number) => weigh(id, side, value));
+          return <li key={id ?? ''} className="flex h-full items-center gap-1">
+            <span>{label}</span>
+            {typeof weight === 'number' && <WeightField weight={weight} entry={label} weigh={part()} />}
+            {typeof weight === 'object' && <>
+              <WeightField weight={weight.on} entry={label} side="on" weigh={part('on')} />
+              <span aria-hidden="true" className="text-shell-muted">:</span>
+              <WeightField weight={weight.off} entry={label} side="off" weigh={part('off')} />
+            </>}
+          </li>;
+        })}
       </ul>
     </TableCell>
     {drawn && <TableCell />}
     <TableCell />
   </TableRow>;
+}
+
+/** An entry's weight in parts, or its `side` where entries co-occur, edited where it is drawn; its refusal is marked beside it. */
+function WeightField({ weight, entry, side, weigh }: {
+  weight: number; entry: string; side?: WeightSide; weigh?: (weight: number) => Promise<WeightEdit>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [pending, setPending] = useState<{ readonly from: number; readonly to: number }>();
+  const [refusal, setRefusal] = useState<string>();
+  useEffect(() => setPending(undefined), [weight]);
+  const shown = pending?.from === weight ? pending.to : weight;
+  const label = side ? `${entry} ${studioName(side)}` : entry;
+  if (!weigh) return <span className="font-mono tabular-nums text-shell-muted">{weight}</span>;
+  return <span className="flex h-full items-center">
+    <InlineEdit form="cell" value={String(shown)} editing={editing} onEditingChange={setEditing} aria-label={studioAccessibleName('weight', label)}
+      className="w-12 px-1 font-mono tabular-nums"
+      unavailable={(text) => Number(text) >= 0 && Number.isFinite(Number(text)) ? undefined : studioReason('takesWeight', studioAccessibleName('weight', label))}
+      onCommit={(text) => {
+        const to = Number(text);
+        if (to === shown) return;
+        setPending({ from: weight, to });
+        setRefusal(undefined);
+        void weigh(to).then((edit) => {
+          if (edit.kind === 'stored') return;
+          setPending(undefined);
+          if (edit.kind === 'refused') setRefusal(edit.reason);
+        });
+      }} />
+    {refusal && <FieldProblem reason={refusal} />}
+  </span>;
 }
 
 /** A variable being added: its name, which writes the variable when it is given. */

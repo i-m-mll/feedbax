@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+import { shownError } from '@/api/shownErrors';
 import { prepareSetEdit, readSetsOffered } from '@/api/studioAuthoring';
 import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
 import type { BarControl } from '@/components/ui/CommandBar';
@@ -17,6 +18,7 @@ import type { Refusal } from './refusals';
 import { sendWithStore, type AskStore } from './storeChoice';
 import { editedElement } from '@/components/ui/ChoiceMenu';
 import { filesRemoval, type ConfirmRunRemoval } from './runRemoval';
+import type { TaskSetVariable, WeightEdit } from './task/taskModel';
 import { documentTreeOf } from './useProjectDocuments';
 
 export const setSchema = 'feedbax.set_document.v1';
@@ -130,6 +132,20 @@ export function setAuthoring({ editor, project, applies, perform, state, select,
   }
 
   /**
+   * Sets one weight of the Set the step's trials apply from the sweep axis `axis`: of an entry, or of None with a null
+   * entry, and of its `side` where entries co-occur. Its refusal lands on the weight.
+   */
+  function fieldWeight(step: string, axis: string): TaskSetVariable['weigh'] {
+    if (!applies) return undefined;
+    return (entry, side, weight) => editor.command(async (): Promise<WeightEdit> => {
+      const stored = await store(studioAccessibleName('weight', axis), {
+        kind: 'set_field_weight', step, axis, entry, weight, ...side ? { part: side } : {},
+      });
+      return { kind: stored ? 'stored' : 'kept' };
+    }).catch((error: unknown) => ({ kind: 'refused', reason: shownError(error) }));
+  }
+
+  /**
    * Removes `value` from a step's authored axis of named values, or its entry from the Set the axis reads. The last
    * entry of a required Set is removed too, leaving the Set empty with its Problem. None removes the runs an optional
    * axis keeps, or a value of another kind of axis.
@@ -240,7 +256,7 @@ export function setAuthoring({ editor, project, applies, perform, state, select,
     };
   }
 
-  return { duplicateRun, axisCommands, toSweep, removeValue, axisPicker, applySet, combination };
+  return { duplicateRun, axisCommands, toSweep, fieldWeight, removeValue, axisPicker, applySet, combination };
 }
 
 export type SetAuthoring = ReturnType<typeof setAuthoring>;

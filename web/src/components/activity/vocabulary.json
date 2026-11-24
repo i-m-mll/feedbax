@@ -95,6 +95,7 @@
     "atExpiry": "At expiry",
     "undownloadedResultsDestroyed": "Results lost",
     "on": "On",
+    "off": "Off",
     "noIdleTimeout": "Until expiry",
     "madeFrom": "Made From",
     "members": "Members",
@@ -564,6 +565,7 @@
     "takesInteger": "{value} takes a whole number",
     "takesDuration": "{value} takes a duration in s or st",
     "takesPositive": "{value} takes a positive number",
+    "takesWeight": "{value} takes zero or a positive number",
     "takesText": "{value} takes text"
   },
   "format": {
