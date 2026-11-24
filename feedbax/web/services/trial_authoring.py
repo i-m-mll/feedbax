@@ -878,7 +878,7 @@ def _field_problems(path, site: Site, text: str, functions, problems) -> list[Pr
     ]
 
 
-def _trial_fields(path, site: Site, expression, functions, sweep, row, problems) -> list[StudioTrialField]:
+def _trial_fields(path, site: Site, expression, functions, sweep, row, problems, name_paths) -> list[StudioTrialField]:
     """The field at ``path`` with its text, its structure where its value names only what is in scope, its problems,
     and each number in it the step can sweep: ``sweep`` gives the sweep of the number at a path, if the step can sweep it.
 
@@ -887,7 +887,7 @@ def _trial_fields(path, site: Site, expression, functions, sweep, row, problems)
     """
     missing = references(expression) - {item.id for item in site.names} if expression is not None else set()
     shown = expression is not None and not missing
-    projection = project_site(site, functions)
+    projection = project_site(site, functions, expression, name_paths=name_paths)
     fields = []
     for inner, label in numeric_nodes(expression, functions) if shown else ():
         swept = sweep((*path, *inner), site, label or _field_label(path))
@@ -980,6 +980,8 @@ def trial_authoring(
                 else:
                     task_field_sources[target[-1]] = source
     row = next((item for item in plan.rows if item.key == key), None)
+    output_paths = {_output_address(port.id).to_text(): (port.name,)
+                    for port in documents.model.ports.outputs}
 
     def expression(path):
         document = _field_document(documents, path[0])
@@ -1030,7 +1032,7 @@ def trial_authoring(
         fields=[
             field for path, site in projected.fields.items() if path[1:2] != ("validation_trials",)
             for field in _trial_fields(
-                path, site, expression(path), bundle.expression_functions, sweep, row, projected.problems,
+                path, site, expression(path), bundle.expression_functions, sweep, row, projected.problems, output_paths,
             )
         ],
         problems=[*projected.problems, *refused], files=stored.files, created=list(stored.created), refusal=refusal,

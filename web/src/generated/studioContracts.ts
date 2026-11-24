@@ -3635,7 +3635,7 @@ export type SiteProjection = {
   "kinds": Array<FieldKind>;
   "functions": Array<FunctionInfo>;
   "parts": Array<ExpressionPartSite>;
-  "name_paths"?: Record<string, ModelAddress>;
+  "name_paths"?: Record<string, Array<string>>;
 };
 
 export type SourceDifference = {
@@ -11311,7 +11311,7 @@ export const SiteProjectionSchema: z.ZodType<SiteProjection> = z.lazy(() =>
     "kinds": z.array(FieldKindSchema),
     "functions": z.array(FunctionInfoSchema),
     "parts": z.array(ExpressionPartSiteSchema),
-    "name_paths": z.record(z.string(), ModelAddressSchema).optional(),
+    "name_paths": z.record(z.string(), z.array(z.string())).optional(),
   }).strict()
 ) as unknown as z.ZodType<SiteProjection>;
 
