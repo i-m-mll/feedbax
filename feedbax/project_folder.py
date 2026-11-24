@@ -65,8 +65,8 @@ from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, mod
 from feedbax.contracts.result_address import ANALYSIS_SCHEMA, payload_elements
 from feedbax.persistence.project_subject import terminal_train_reader
 from feedbax.project_members import (
-    change_member_key, detach_refusals, duplicate_step, fresh_element_keys, generated_name, label_member, merge_cards,
-    preserve_dangling_member, regroup_refused, split_card,
+    change_member_key, detach_refusals, duplicate_document_name, duplicate_step, fresh_element_keys, generated_name,
+    label_member, merge_cards, preserve_dangling_member, regroup_refused, split_card,
 )
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.studio.selection import StoredEdit
@@ -1289,9 +1289,13 @@ class ProjectFolder:
             else:
                 family = command.family
                 members = getattr(text.project, family)
-                name = (command.key if command.kind == "change_key" else command.name) or _free_member_name(
-                    source, family, member,
-                )
+                copy_label = None
+                if command.kind == "change_key":
+                    name = command.key
+                elif family == "documents":
+                    name, copy_label = duplicate_document_name(text.project.documents, member, command.name)
+                else:
+                    name = command.name or _free_member_name(source, family, member)
                 if name in members:
                     raise ProjectFileExists(f"{family}/{name}.json")
                 if command.kind == "change_key":
@@ -1302,6 +1306,7 @@ class ProjectFolder:
                         project, shown = duplicate_step(source, shown, member, name)
                     else:
                         copy = composed(member)
+                        copy["label"] = copy_label
                         if copy["schema"] == ANALYSIS_SCHEMA:
                             copy["payload"] = fresh_element_keys(copy["payload"], element_keys())
                         project = {**source, "documents": {**source["documents"], name: copy}}

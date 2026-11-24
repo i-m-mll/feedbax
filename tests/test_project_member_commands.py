@@ -180,7 +180,9 @@ def test_a_step_using_a_duplicate_diverges_alone(studio):
     result = _command(client, snapshot, {"kind": "duplicate", "family": "documents", "member": "task"})
     copy = result["member"]
     assert copy == "task-2"
-    assert result["snapshot"]["project"]["documents"][copy] == snapshot["project"]["documents"]["task"]
+    assert result["snapshot"]["project"]["documents"][copy] == {
+        **snapshot["project"]["documents"]["task"], "label": "Task 2",
+    }
 
     response = client.post(f"{URL}/authoring/trials", json={
         "revision": result["snapshot"]["revision"], "run": {"variant": "default", "step": "train", "row": "default"},
@@ -426,7 +428,8 @@ def test_duplicate_of_a_based_document_is_a_root_with_its_content(based):
     requests = _requests(folders, before["revision"])
     result = _command(client, before, {"kind": "duplicate", "family": "documents", "member": "model-2"})
     assert result["member"] == "model-3"
-    assert "base" not in result["snapshot"]["project"]["documents"]["model-3"]
+    copied = result["snapshot"]["project"]["documents"]["model-3"]
+    assert "base" not in copied and copied["label"] == "Model 3"
     pointed = _point(client, result["snapshot"], "train-b", "model-3")
     assert _requests(folders, pointed["revision"]) == requests
     # The copy is unrelated to `reach-model`, whose later changes do not reach it.

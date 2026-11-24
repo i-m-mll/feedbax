@@ -5,7 +5,9 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 import json
+import re
 from typing import Any, Literal
+import unicodedata
 
 from pydantic import JsonValue
 
@@ -14,23 +16,48 @@ from feedbax.contracts.project_inputs import DocumentReference, NamedSubset, Ste
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.result_address import (
-    ANALYSIS_SCHEMA, ELEMENT_FAMILIES, family_documents, payload_elements, project_holders,
+    ANALYSIS_SCHEMA, ELEMENT_FAMILIES, ElementHolders, family_documents, payload_elements, project_holders,
 )
 from feedbax.contracts.studio_project import KeyedFamily, MemberFamily
+from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID
 
 type _Json = Any
 type _Rename = Callable[[str], str]
 
 
-def generated_name(base: str, taken: Callable[[str], bool]) -> str:
+def generated_name(base: str, taken: Callable[[str], bool], separator: str = "-") -> str:
     """The name Studio gives a member it creates: ``base`` while it is free, then the first free ``base-2``, ``base-3``.
 
     The rule of the interface's ``generatedName`` (``web/src/features/projectFolder/generatedName.ts``).
     """
     name, number = base, 2
     while taken(name):
-        name, number = f"{base}-{number}", number + 1
+        name, number = f"{base}{separator}{number}", number + 1
     return name
+
+
+def duplicate_document_name(documents: Mapping[str, Document], member: str, key: str | None) -> tuple[str, str]:
+    """Number the source's display name and derive the new key as Studio does for a named document."""
+    source = documents[member]
+
+    def display(name: str) -> str:
+        return re.sub(r"[-_]+", " ", name).capitalize()
+
+    stem = re.sub(r"-[0-9]+$", "", member)
+    base = source.label or display(stem)
+    task_schemas = {TASK_DOCUMENT_SCHEMA_ID, PYTHON_TASK_SCHEMA_ID}
+    family = task_schemas if source.schema_id in task_schemas else {source.schema_id}
+    shown = {
+        document.label or display(name)
+        for name, document in documents.items() if document.schema_id in family
+    }
+    label = generated_name(base, lambda name: name == base or name in shown, " ")
+    normalized = "".join(
+        symbol for symbol in unicodedata.normalize("NFKD", label)
+        if not unicodedata.category(symbol).startswith("M")
+    )
+    normalized = re.sub(r"[^a-z0-9_]+", "-", normalized.lower()).strip("-")
+    return key or generated_name(normalized or stem, documents.__contains__), label
 
 
 def _renamed_prefix(family: str, old: str, new: str) -> _Rename:
@@ -97,28 +124,38 @@ def _renamed_sweeps(project: dict[str, JsonValue], rename: _Rename) -> dict[str,
     return project
 
 
-def _member_reference(value: _Json, family: MemberFamily, old: str, new: str | None) -> _Json:
-    """Rewrite named references, or hold the spelling when an unused key would capture them."""
-    if isinstance(value, dict):
-        references = (
-            (("document", DocumentReference), ("subset", NamedSubset))
-            if family == "documents" else (("step", StepReference),)
-        )
-        if not value.get("unresolved"):
-            for field, reference in references:
-                if value.get(field) == old and value.keys() <= reference.model_fields.keys():
-                    return value | ({field: new} if new is not None else {"unresolved": True})
-        return {key: _member_reference(item, family, old, new) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_member_reference(item, family, old, new) for item in value]
-    return value
-
-
 def _member_references(
     project: dict[str, JsonValue], family: MemberFamily, old: str, new: str | None,
 ) -> dict[str, JsonValue]:
+    """Rewrite named references, or hold the spelling when an unused key would capture them."""
+    holders: ElementHolders | None = None
+    references = (
+        (("document", DocumentReference), ("subset", NamedSubset))
+        if family == "documents" else (("step", StepReference),)
+    )
+
+    def rewrite(value: _Json) -> _Json:
+        nonlocal holders
+        if isinstance(value, dict):
+            if not value.get("unresolved"):
+                for field, reference in references:
+                    if value.get(field) != old or not value.keys() <= reference.model_fields.keys():
+                        continue
+                    if field == "step" and (element := value.get("element")) is not None:
+                        if holders is None:
+                            holders = project_holders(Project.model_validate(project))
+                        resolved = holders.card_of(old, element)
+                        if isinstance(resolved, str):
+                            return value | {field: new if resolved == old and new is not None else resolved}
+                        return value | {"unresolved": True}
+                    return value | ({field: new} if new is not None else {"unresolved": True})
+            return {key: rewrite(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [rewrite(item) for item in value]
+        return value
+
     return _renamed_sweeps(
-        _member_reference(project, family, old, new),
+        rewrite(project),
         _renamed_prefix(family, old, f"?{old}" if new is None else new),
     )
 
@@ -199,9 +236,16 @@ def _analysis_value_renamed(parts: tuple[str, ...], value: _Json, old: str, new:
         }
     if len(parts) == 1 and isinstance(value, dict):
         return {
-            new if key == old else key: _wires_renamed(_wires_renamed(item, new, None), old, new)
+            new if key == old else key: _analysis_value_renamed((*parts, key), item, old, new)
             for key, item in value.items()
         }
+    if len(parts) == 2 and isinstance(value, dict):
+        return {
+            key: _analysis_value_renamed((*parts, key), item, old, new) if key == "inputs" else item
+            for key, item in value.items()
+        }
+    if parts[2:3] != ("inputs",):
+        return value
     if len(parts) >= 4 and parts[2] == "inputs" and parts[-1] == "element" and value == old:
         return new
     return _wires_renamed(_wires_renamed(value, new, None), old, new)
