@@ -89,7 +89,13 @@ def _edit_member(
             return document.model_copy(update={field: (*members[:index], item.model_copy(update={"name": change.name}),
                                                        *members[index + 1:])})
         case SetType():
-            return document.model_copy(update={field: (*members[:index], item.model_copy(update={"type": change.type}),
+            empty = zero(change.type.base, change.type.shape)
+            update = (
+                {"type": change.type, "value": empty} if change.member == "variable" else
+                {"type": change.type, "absent": None,
+                 "cells": tuple(cell.model_copy(update={"value": empty}) for cell in item.cells)}
+            )
+            return document.model_copy(update={field: (*members[:index], item.model_copy(update=update),
                                                        *members[index + 1:])})
         case MoveMember():
             moved = (*rest[:change.index], item, *rest[change.index:])

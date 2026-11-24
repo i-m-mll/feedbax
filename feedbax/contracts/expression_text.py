@@ -463,27 +463,61 @@ def parse_rule(text: str) -> tuple[RuleTerm, ...] | Problem:
         return Problem(code=ProblemCode.PARSE, reason="Rule exceeds the supported structure.")
 
 
-def _print(node: Expression, names: Mapping[str, str]) -> str:
+_RELATION = 4
+_INFIX = {
+    **{function: (5, symbol) for function, symbol in (("add", "+"), ("sub", "-"))},
+    **{function: (6, symbol) for function, symbol in (("mul", "*"), ("div", "/"), ("mod", "%"))},
+    **{
+        function: (_RELATION, symbol)
+        for function, symbol in (("eq", "=="), ("ne", "!="), ("lt", "<"), ("le", "<="), ("gt", ">"), ("ge", ">="))
+    },
+    "and": (2, "and"),
+    "or": (1, "or"),
+}
+"""Each binary operator's precedence in the grammar, loosest first, and its spelling; a relation's operands are sums."""
+_PREFIX = {"not": (3, "not "), "neg": (7, "-"), "pos": (7, "+")}
+_UNARY, _INDEXED, _ATOM = 7, 8, 9
+
+
+def _print(node: Expression, names: Mapping[str, str], least: int = 0) -> str:
+    """The text of ``node`` as an operand that binds at least as tightly as ``least``, parenthesized only if it must be."""
+    text, precedence = _printed(node, names)
+    return f"({text})" if precedence < least else text
+
+
+def _printed(node: Expression, names: Mapping[str, str]) -> tuple[str, int]:
     match node:
         case LiteralValue(value=value, unit=unit):
-            text = str(value).lower()
-            return text + ("°" if unit == "°" else f" {unit}" if unit else "")
+            text = str(value).lower() + ("°" if unit == "°" else f" {unit}" if unit else "")
+            return text, _UNARY if text.startswith("-") else _ATOM
         case NameValue(reference=reference):
             name = names[reference]
             return (
                 name
                 if _IDENTIFIER.fullmatch(name) and name not in _KEYWORDS
                 else json.dumps(name, ensure_ascii=False)
-            )
+            ), _ATOM
         case DrawValue(family=family, args=args, per=per):
             parts = [_print(arg, names) for arg in args]
             if per == "run" or family not in _DRAW_SPELLINGS:
                 parts.append(f"per={per}")
-            return f"{_DRAW_SPELLINGS.get(family, family)}({', '.join(parts)})"
+            return f"{_DRAW_SPELLINGS.get(family, family)}({', '.join(parts)})", _ATOM
+        case CallValue(function=function, args=(left, right), kwargs=kwargs) if function in _INFIX and not kwargs:
+            precedence, symbol = _INFIX[function]
+            first = precedence + 1 if precedence == _RELATION else precedence
+            return f"{_print(left, names, first)} {symbol} {_print(right, names, precedence + 1)}", precedence
+        case CallValue(function=function, args=(operand,), kwargs=kwargs) if (
+            function in _PREFIX and not kwargs and (function == "not" or not isinstance(operand, LiteralValue))
+        ):
+            # A sign written before a number reads back as part of the number, so a signed literal stays a call.
+            precedence, symbol = _PREFIX[function]
+            return f"{symbol}{_print(operand, names, precedence)}", precedence
+        case CallValue(function="index", args=(base, index), kwargs=kwargs) if not kwargs:
+            return f"{_print(base, names, _INDEXED)}[{_print(index, names)}]", _INDEXED
         case CallValue(function=function, args=args, kwargs=kwargs):
             parts = [_print(arg, names) for arg in args]
             if function == "vector" and args and not kwargs:
-                return "[" + ", ".join(parts) + "]"
+                return "[" + ", ".join(parts) + "]", _ATOM
             for key, child in sorted(kwargs.items()):
                 if (
                     function == "points"
@@ -496,7 +530,7 @@ def _print(node: Expression, names: Mapping[str, str]) -> str:
                     parts.append(f"{key}={child.function}")
                 else:
                     parts.append(f"{key}={_print(child, names)}")
-            return f"{function}({', '.join(parts)})"
+            return f"{function}({', '.join(parts)})", _ATOM
 
 
 def print_field(value: FieldValue, site: Site) -> str:

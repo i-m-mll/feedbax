@@ -24,7 +24,7 @@ from feedbax.contracts.expression_values import (
     TextSpan,
     ValueBase,
     ValueType,
-    children,
+    walk,
     scope_problems,
 )
 from feedbax.contracts.model_address import ModelAddress
@@ -51,46 +51,62 @@ class Checked:
 
 
 def references(tree: Expression) -> frozenset[str]:
-    pending = [tree]
-    names = set()
-    while pending:
-        node = pending.pop()
-        if isinstance(node, NameValue):
-            names.add(node.reference)
-        pending.extend(child for _, child in children(node))
-    return frozenset(names)
+    return frozenset(node.reference for _, node in walk(tree) if isinstance(node, NameValue))
 
 
-def dependency_order(values: Mapping[str, Expression]) -> tuple[str, ...] | tuple[Problem, ...]:
-    """Return definitions in dependency order or a problem on the closing edge."""
+def dependency_order(values: Mapping[str, Expression]) -> tuple[tuple[str, ...], tuple[Problem, ...]]:
+    """The definitions in dependency order, and a Problem on each definition in a cycle, which the order leaves out."""
     dependencies = {key: references(value) & values.keys() for key, value in values.items()}
-    result = []
-    active = []
-    done = set()
+    index: dict[str, int] = {}
+    low: dict[str, int] = {}
+    stack: list[str] = []
+    components: list[list[str]] = []
 
-    def visit(key: str) -> Problem | None:
-        if key in done:
-            return None
-        if key in active:
-            cycle = (*active[active.index(key) :], key)
-            return Problem(
-                code=ProblemCode.CYCLE,
-                reason=" → ".join(cycle),
-                path=("variables", active[-1], "value"),
-            )
-        active.append(key)
+    def connect(key: str) -> None:
+        index[key] = low[key] = len(index)
+        stack.append(key)
         for dependency in sorted(dependencies[key]):
-            if problem := visit(dependency):
-                return problem
-        active.pop()
-        done.add(key)
-        result.append(key)
-        return None
+            if dependency not in index:
+                connect(dependency)
+                low[key] = min(low[key], low[dependency])
+            elif dependency in stack:
+                low[key] = min(low[key], index[dependency])
+        if low[key] == index[key]:
+            split = stack.index(key)
+            components.append(stack[split:])
+            del stack[split:]
 
     for key in values:
-        if problem := visit(key):
-            return (problem,)
-    return tuple(result)
+        if key not in index:
+            connect(key)
+
+    def loop(start: str, members: frozenset[str]) -> tuple[str, ...]:
+        paths = {start: (start,)}
+        pending = [start]
+        for key in pending:
+            for dependency in sorted(dependencies[key] & members):
+                if dependency == start:
+                    return (*paths[key], start)
+                if dependency not in paths:
+                    paths[dependency] = (*paths[key], dependency)
+                    pending.append(dependency)
+        raise AssertionError(f"{start!r} is in no cycle of its component")
+
+    order = []
+    problems = []
+    for component in components:
+        (key, *others) = component
+        if not others and key not in dependencies[key]:
+            order.append(key)
+            continue
+        members = frozenset(component)
+        problems.extend(
+            Problem(
+                code=ProblemCode.CYCLE, reason=" → ".join(loop(member, members)), path=("variables", member, "value"),
+            )
+            for member in sorted(members, key=list(values).index)
+        )
+    return tuple(order), tuple(problems)
 
 
 def _known_dimension(
