@@ -9,6 +9,7 @@ from pydantic import Field
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.project_sources import pointer
 
 
 class StudioModelPlace(StrictModel):
@@ -137,6 +138,18 @@ def definition_place(
         model = document("payload.trial_documents.model") or document("payload.graph")
         return StudioModelPlace(part="model", document=model, member=member)
     return StudioStepPlace(part="step", field=field)
+
+
+def document_path(parts: Sequence[str], place: StudioPlace) -> str | None:
+    """The JSON pointer, inside the document ``place`` names, of a trial document's member at ``parts``."""
+    if not isinstance(place, StudioModelPlace | StudioTaskPlace | StudioObjectivePlace) or place.document is None:
+        return None
+    parts = tuple(parts)
+    if parts[:1] == ("payload",):
+        parts = parts[1:]
+    if parts[:1] not in (("inputs",), ("trial_documents",)) or len(parts) < 2:
+        return None
+    return pointer(parts[2:])
 
 
 def variation_targets(params: object) -> Callable[[str], str | None]:

@@ -246,11 +246,12 @@ def test_saved_task_field_preserves_each_selected_train_task(host, tmp_path, mon
     _save_project(folders, project, _selected_task_variants())
     plan = folders.read_plan(project, revision=None)
     producers = {run.key: run for run in plan.plan.runs if run.kind == "train"}
-    selected = [run for run in plan.plan.runs if run.kind == "evaluate"]
+    selected = [run for run in plan.plan.runs if run.key.step == "baseline"]
     assert len(producers) == len(selected) == 2
-    assert len(plan.plan.diagnostics) == 2
-    assert all(problem.step == "refused" and problem.path == "/params/variation/bad-length"
-               for problem in plan.plan.diagnostics)
+    assert not plan.plan.diagnostics
+    assert [
+        [problem.path for problem in run.problems] for run in plan.plan.runs if run.key.step == "refused"
+    ] == [["/params/variation/bad-length"]] * 2
     jobs = JobService(host, new_application_registry_bundle())
     refused = jobs.admit_plan(
         folders, plan, run_keys=tuple(row.key for row in plan.plan.rows if row.key.step == "refused"),
@@ -312,8 +313,9 @@ def test_saved_task_replacement_and_scale_use_one_exact_trained_checkpoint(host,
     project = "compatibility"
     _save_project(folders, project, _saved_variants())
     reviewed = folders.read_plan(project, revision=None)
-    (problem,) = reviewed.plan.diagnostics
-    assert (problem.step, problem.path) == ("incompatible", "/params/variation/0")
+    assert not reviewed.plan.diagnostics
+    ((step, (problem,)),) = [(run.key.step, run.problems) for run in reviewed.plan.runs if run.problems]
+    assert (step, problem.path) == ("incompatible", "/params/variation/0")
     assert "target_pos" in problem.detail
     planned = {run.key.step: run for run in reviewed.plan.runs}
     cases = ["baseline", "replacement", "perturbed", "different-dtype"]

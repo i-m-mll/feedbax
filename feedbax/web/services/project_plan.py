@@ -60,7 +60,9 @@ from feedbax.contracts.jobs import (
 from feedbax.contracts.project_inputs import (
     BatchCheckpoint, InputBinding, SelectedRow, StepReference, producer_member_key, subset_to_rows,
 )
-from feedbax.contracts.studio_place import StudioStepPlace, definition_place, path_parts, variation_targets
+from feedbax.contracts.studio_place import (
+    StudioStepPlace, definition_place, document_path, path_parts, variation_targets,
+)
 from feedbax.contracts.studio_project import AuthoredFileAddress
 from feedbax.contracts.studio_subset import (
     StudioRunRuleCheck, StudioRunRuleChosen, StudioRunRuleRefused, StudioRunRuleRequest, StudioSubsetToRowsEdit,
@@ -68,7 +70,8 @@ from feedbax.contracts.studio_subset import (
 )
 from feedbax.contracts.project_io import project_declaration_name
 from feedbax.planner.project_plan import (
-    BlockedRow, ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedInput, PlannedRow, PlannedRun, RunKey, authored_request_change,
+    BlockedRow, ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedInput, PlannedRow, PlannedRun, RunKey, RunProblem,
+    authored_request_change,
 )
 from feedbax.planner.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
@@ -202,9 +205,9 @@ class ProjectPlanRead:
                 yield _analysis_status(row.key, label, problems[row.key], states)
                 yield from states
             elif isinstance(row, PlannedRun):
-                yield _planned_status(row.key, label, row_problems)
+                yield _planned_status(row.key, label, [*row_problems, *row.problems])
             else:
-                reason = None if row_problems else "No request could be planned."
+                reason = None if row_problems or row.problems else "No request could be planned."
                 yield PlanStatusRow(row.key, label, JobStatus.CANNOT_RUN, reason)
 
     @classmethod
@@ -429,10 +432,13 @@ class ProjectPlanRead:
                   for problem in plan.diagnostics if includes(problem.variant)),
                 *(StudioProjectWindowMapProblem(
                     code="cannot_run", path=problem.path, detail=problem.detail,
-                    variant=run.key.variant, step=run.key.step, row=run.key.row,
-                    place=definition_place(path_parts(problem.path), run.document_ids.get, member=problem.model_address),
-                ) for run in plan.runs
-                  if includes(run.key.variant) and (problem := run.admission_problem) is not None),
+                    variant=row.key.variant, step=row.key.step, row=row.key.row,
+                    place=(place := definition_place(
+                        path_parts(problem.path), row.document_ids.get, member=problem.model_address,
+                        variation=lambda _name, target=problem.variation_target: target,
+                    )),
+                    document_path=document_path(path_parts(problem.path), place),
+                ) for row in plan.rows if includes(row.key.variant) for problem in row.problems),
                 *(problem for problem in self.evaluation_problems if includes(problem.variant)),
             ],
             requests=[
@@ -510,7 +516,7 @@ def _step_references(
 
 
 def _planned_status(
-    key: RunKey | ElementKey, label: str, problems: list[ProjectDiagnostic],
+    key: RunKey | ElementKey, label: str, problems: Sequence[ProjectDiagnostic | RunProblem],
 ) -> PlanStatusRow:
     status = JobStatus.CANNOT_RUN if problems else JobStatus.NOT_RUN
     return PlanStatusRow(key, label, status, None)
