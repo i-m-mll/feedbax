@@ -137,6 +137,28 @@ class SelectState(StateSelection, Component):
         return _extract_state_selector_params(self, self.config.model_construct())
 
 
+def _freeze_layout(value):
+    if isinstance(value, tuple) and type(value) is tuple:
+        return ("tuple", tuple(_freeze_layout(child) for child in value))
+    if isinstance(value, list) and type(value) is list:
+        return ("list", tuple(_freeze_layout(child) for child in value))
+    if isinstance(value, dict) and type(value) is dict and all(isinstance(key, str) for key in value):
+        return ("dict", tuple((name, _freeze_layout(child)) for name, child in value.items()))
+    if type(value) is int and value == 0:
+        return None
+    raise ValueError("Portable feedback layouts support tuple, list, and string-keyed dict")
+
+
+def _thaw_layout(node):
+    if node is None:
+        return 0
+    kind, children = node
+    if kind == "dict":
+        return {name: _thaw_layout(child) for name, child in children}
+    thawed = [_thaw_layout(child) for child in children]
+    return tuple(thawed) if kind == "tuple" else thawed
+
+
 class _AssembleFeedbackConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -169,10 +191,14 @@ class AssembleFeedback(Component):
 
     config_bindings: ClassVar = (ConfigBinding("structure.num_leaves", name="n_inputs"),)
 
-    structure: Any = eqx.field(static=True)
+    layout: Any = eqx.field(static=True)
 
     def __init__(self, structure):
-        self.structure = structure
+        self.layout = _freeze_layout(structure.unflatten([0] * structure.num_leaves))
+
+    @property
+    def structure(self):
+        return jt.structure(_thaw_layout(self.layout))
 
     def assemble(self, inputs: Mapping[str, PyTree]) -> PyTree:
         return self.structure.unflatten([inputs[port] for port in self.input_ports])
@@ -201,22 +227,15 @@ class AssembleFeedback(Component):
         return cls(jt.structure(decode(layout)))
 
     def to_layout(self):
-        def encode(value):
-            if isinstance(value, tuple) and type(value) is tuple:
-                return {"tuple": [encode(child) for child in value]}
-            if isinstance(value, list) and type(value) is list:
-                return {"list": [encode(child) for child in value]}
-            if (
-                isinstance(value, dict)
-                and type(value) is dict
-                and all(isinstance(key, str) for key in value)
-            ):
-                return {"dict": {name: encode(child) for name, child in value.items()}}
-            if type(value) is int and value == 0:
+        def encode(node):
+            if node is None:
                 return None
-            raise ValueError("Portable feedback layouts support tuple, list, and string-keyed dict")
+            kind, children = node
+            if kind == "dict":
+                return {"dict": {name: encode(child) for name, child in children}}
+            return {kind: [encode(child) for child in children]}
 
-        return encode(self.structure.unflatten([0] * self.structure.num_leaves))
+        return encode(self.layout)
 
     @classmethod
     def from_config(cls, config, **context):

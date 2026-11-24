@@ -14,7 +14,7 @@ from feedbax.contracts.set_document import read_set
 from feedbax.contracts.studio_scope import StoreKind
 from feedbax.planner.project_plan import ProjectPlan
 from feedbax.studio.selection import StoredEdit
-from feedbax.web.services.authored_scope import choose_authored_store, preview_plan
+from feedbax.web.services.authored_scope import choose_authored_store, edited_authored_rows, preview_plan
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, ProjectRevisionConflict
 from feedbax.web.services.store_choice import EditStore, all_readers_store
 from feedbax.web.services.trial_scope import (
@@ -132,9 +132,10 @@ def model_edit_store(
             return frozenset()
         candidate = preview_stored(project, stored)
         projection = preview_plan(folders, settled, candidate, source_runs=observed)
+        authored = edited_authored_rows(tracked, projection)
         return frozenset(
             key for key, value in values.items()
-            if value != _observed_model(projection, candidate, key, body.document)
+            if key in authored and value != _observed_model(projection, candidate, key, body.document)
         )
 
     def only_readers(steps: Collection[str]) -> ModelEditRequest:
