@@ -48,10 +48,10 @@ const initializesColumn: TableColumn = { least: '12rem' };
 function Initializes({ variable, initializes }: { variable: string; initializes?: VariableInitializes }) {
   const [refusal, setRefusal] = useState<string>();
   if (!initializes) return null;
-  const { chosen, options, reason, changed, toggle } = initializes;
+  const { anchor, chosen, options, reason, changed, toggle } = initializes;
   const items = [...options, ...chosen.filter(({ id }) => !options.some((option) => option.id === id))];
   const shown = refusal ?? reason;
-  return <Combobox className="w-full" aria-label={studioAccessibleName('initializes', variable)}
+  return <div data-field={anchor} className="contents"><Combobox className="w-full" aria-label={studioAccessibleName('initializes', variable)}
     items={items.map(({ id, name }) => ({ value: id, label: name }))}
     checked={chosen.map(({ id }) => id)} text={chosen.map(({ name }) => name).join(', ')}
     disabled={!toggle} invalid={!!shown}
@@ -61,7 +61,7 @@ function Initializes({ variable, initializes }: { variable: string; initializes?
     </>}
     onToggle={(id) => {
       void Promise.resolve(toggle?.(id)).then((made) => setRefusal(made || undefined));
-    }} />;
+    }} /></div>;
 }
 
 const dragType = 'application/x-feedbax-task-variable';

@@ -259,7 +259,8 @@ export type StudioPlace = NonNullable<StudioProjectWindowMapProblem['place']>;
 export function studioPlaceName(place: StudioPlace | null) {
   switch (place?.part) {
     case 'model': return studioName('model');
-    case 'task': return place.parameter ? humanizeLabel(place.parameter) : studioName('task');
+    case 'task': return place.initializes ? studioName('initializes')
+      : place.parameter ? humanizeLabel(place.parameter) : studioName('task');
     case 'objective': return studioName('objective');
     case 'training': return place.setting ? humanizeLabel(place.setting) : studioName('training');
     case 'method': return place.setting ? humanizeLabel(place.setting.split('.').at(-1)!) : studioName('trainingMethod');
@@ -280,12 +281,19 @@ export function studioMentionReason(name: string, detail: string) {
   return `${name} · ${detail}`;
 }
 
+/** Whether a place is a document as a whole, rather than a field or member of it that Studio names. */
+export function studioPlaceIsDocument(place: StudioPlace | null): boolean {
+  return place?.part === 'model' || place?.part === 'objective' ||
+    place?.part === 'task' && !place.parameter && !place.initializes;
+}
+
 /**
- * The name of what a problem is about: the deepest field of its document it points into, labelled as Studio labels a
- * field, or else its place. A pointer's index or encoded entry key is not a field.
+ * The name of what a problem is about: its place when that names a field, else the deepest field of its document it
+ * points into, labelled as Studio labels a field. A pointer's index or encoded entry key is not a field.
  */
 export function studioProblemName({ place, document_path }: StudioProjectWindowMapProblem) {
-  const field = document_path?.split('/').slice(1).filter((part) => /^[A-Za-z_]\w*$/.test(part)).at(-1);
+  const field = studioPlaceIsDocument(place)
+    ? document_path?.split('/').slice(1).filter((part) => /^[A-Za-z_]\w*$/.test(part)).at(-1) : undefined;
   return field ? humanizeLabel(field) : studioPlaceName(place);
 }
 

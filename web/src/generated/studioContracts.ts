@@ -3250,6 +3250,7 @@ export type Problem = {
   "path"?: Array<string | number>;
   "span"?: TextSpan | null;
   "model_address"?: ModelAddress | null;
+  "variable"?: string | null;
 };
 
 export type ProblemCode = "parse" | "unknown_name" | "duplicate_name" | "unknown_function" | "plugin_missing" | "arity" | "type_mismatch" | "unit_mismatch" | "level_too_fine" | "out_of_scope" | "cycle" | "unbounded_length" | "length_budget" | "missing_limit" | "list_count" | "structure";
@@ -4250,6 +4251,7 @@ export type StudioTaskPlace = {
   "part": "task";
   "document": string | null;
   "parameter"?: string | null;
+  "initializes"?: string | null;
 };
 
 export type StudioTaskType = {
@@ -10598,6 +10600,7 @@ export const ProblemSchema: z.ZodType<Problem> = z.lazy(() =>
     "path": z.array(z.union([z.string(), z.number().int().safe()])).optional(),
     "span": z.union([TextSpanSchema, z.null()]).optional(),
     "model_address": z.union([ModelAddressSchema, z.null()]).optional(),
+    "variable": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<Problem>;
 
@@ -11916,6 +11919,7 @@ export const StudioTaskPlaceSchema: z.ZodType<StudioTaskPlace> = z.lazy(() =>
     "part": z.literal("task"),
     "document": z.union([z.string(), z.null()]),
     "parameter": z.union([z.string(), z.null()]).optional(),
+    "initializes": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTaskPlace>;
 
