@@ -1,5 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import { EpochTimeline, type TimelineContent } from '@/components/timeline/EpochTimeline';
+import { Shelf, type ShelfRow } from '@/components/timeline/Shelf';
+import { nominalRows, trialRows, type ShelfTask } from '@/features/projectFolder/task/shelfRows';
 import { ProjectWindow, ProjectWindowPalette } from '@/features/projectWindow/ProjectWindow';
 import { useDrawerSections } from '@/features/projectWindow/DrawerForms';
 import { defaultProjectWindowState, type ProjectWindowState } from '@/features/projectWindow/projectWindowState';
@@ -49,15 +50,20 @@ function useSample(key: string, spec: DocumentSpec | PythonSpec, seed: number) {
 /** Which sampled trial is shown: none (the definition), the batch as one aggregate, or one trial by its index. */
 type TrialChoice = 'definition' | 'all' | number;
 
-/** What the strip draws: the definition, the shown trial's boundaries, or the batch's shares. */
-function timelineContent(view: TaskDocumentView, shown: TrialShown): TimelineContent {
-  if (shown.kind === 'trial') return { kind: 'trial', intervals: shown.trial.intervals };
-  if (shown.kind === 'batch') return { kind: 'batch', epochs: shown.batch.epochs };
+/** The fixture task as the shelf draws it: its epochs' bounds and the epochs each signal holds a value over. */
+function shelfTask(view: TaskDocumentView): ShelfTask {
   return {
-    kind: 'definition',
-    epochs: view.epochs.map(({ bounds }) => bounds),
-    repeats: view.repeats.map(({ first, last, count }) => ({ first, last, count: Number(count.text) || 1 })),
+    document: 'gallery', duration: view.duration, epochs: view.epochs.map(({ bounds }) => bounds),
+    signals: view.signals.map(({ id, name, cells }) => ({
+      id, name, cells: cells.flatMap((cell) => cell.kind === 'value' ? [{ first: cell.first, last: cell.last }] : []),
+    })),
   };
+}
+
+/** The shelf's rows for the nominal trial or one sampled trial. */
+function shelfRows(view: TaskDocumentView, shown: TrialShown): ShelfRow[] {
+  return shown.kind === 'trial' ? trialRows(shelfTask(view), shown.trial, view.stepSeconds ?? view.duration / 100)
+    : nominalRows(shelfTask(view));
 }
 
 function shownOf(choice: TrialChoice, sample: ReturnType<typeof useSample>): TrialShown {
@@ -159,7 +165,7 @@ function Frame({ name, children, className }: { name: string; children: ReactNod
   </figure>;
 }
 
-/** One task's states side by side: the strip in each mode, and the Inspector for an End, a cell, a variable and a signal's traces. */
+/** One task's states side by side: the shelf for the nominal trial and a sample, and the Inspector for an End, a cell, a variable and a signal's traces. */
 function TaskStates({ fixtureKey, end, cell, variable, signal }: {
   fixtureKey: string; end: string; cell: { signal: string; id: string }; variable: string; signal: string;
 }) {
@@ -170,17 +176,17 @@ function TaskStates({ fixtureKey, end, cell, variable, signal }: {
   const definition: TrialShown = { kind: 'definition' };
   const trial = shownOf(0, sample);
   const batch = shownOf('all', sample);
-  const strip = (shown: TrialShown) => <EpochTimeline content={timelineContent(view, shown)} duration={view.duration}
-    stepSeconds={view.stepSeconds} />;
+  const [time, setTime] = useState(0);
+  const strip = (shown: TrialShown) => <Shelf rows={shelfRows(view, shown)} duration={view.duration}
+    stepSeconds={view.stepSeconds} time={time} onTimeChange={setTime} selected={[]} onSelect={() => undefined} />;
   const inspector = (selected: TaskSelection, shown: TrialShown = definition) =>
     <TaskInspector view={view} selected={selected} shown={shown} />;
   const box = 'w-[244px] rounded-control border border-shell-divider bg-shell-sidebar';
   return <section className="grid gap-3" aria-label={fixtures.find(({ key }) => key === fixtureKey)!.name}>
     <h2 className="text-sm font-medium">{fixtures.find(({ key }) => key === fixtureKey)!.name}</h2>
     <div className="grid max-w-4xl gap-3">
-      <Frame name="Definition">{strip(definition)}</Frame>
-      <Frame name="Trial 1 of 8">{strip(trial)}</Frame>
-      <Frame name={`All ${batchSize}`}>{strip(batch)}</Frame>
+      <Frame name="nominal">{strip(definition)}</Frame>
+      <Frame name="sample 1 of 8">{strip(trial)}</Frame>
     </div>
     <div className="flex flex-wrap items-start gap-3">
       <Frame name="End" className={box}>{inspector({ kind: 'end', id: end })}</Frame>

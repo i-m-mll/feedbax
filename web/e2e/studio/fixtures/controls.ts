@@ -42,3 +42,17 @@ export function outlineRow(page: Page, name: string) {
   return detailsDrawer(page).getByRole('tree', { name: 'Outline', exact: true })
     .getByRole('treeitem', { name: new RegExp(`^${escaped}( Problems \\d+)?$`) });
 }
+
+/** The bottom bar's trial picker, whose name gives the trial it shows. */
+export function trialPicker(page: Page) {
+  return page.locator('[data-studio-focus-region="bottom"]').getByRole('group', { name: 'Clock', exact: true })
+    .getByRole('button', { name: /^Trial / });
+}
+
+/** Picks the `index`-th trial the selected run recorded (from 0) from the clock's trial picker. */
+export async function pickRecordedTrial(page: Page, index: number) {
+  const picker = trialPicker(page);
+  await picker.click();
+  await page.getByRole('radio', { name: new RegExp(`^trial ${index + 1} of \\d+`) }).click();
+  await expect(picker).toHaveText(new RegExp(`^trial ${index + 1} of \\d+$`));
+}

@@ -1,6 +1,6 @@
 import { Pause, Play, Repeat, RotateCcw, StepBack, StepForward, type LucideIcon } from 'lucide-react';
 import { studioName, studioUnit, type StudioNameId } from '@/components/activity/studioVocabulary';
-import { SPEED_OPTIONS, timelineOffset, usePlaybackTransport } from '@/components/viewer/usePlaybackTransport';
+import { SPEED_OPTIONS, usePlaybackTransport } from '@/components/viewer/usePlaybackTransport';
 import { IconButton } from '@/components/ui/Button';
 import { Select } from '@/components/ui/Select';
 import { Slider } from '@/components/ui/Slider';
@@ -28,10 +28,10 @@ function ClockButton({ name, icon: Icon, onClick, pressed }: {
 }
 
 function SceneClock({ timeline, time, speed, onTimeChange, onSpeedChange }: SceneClockProps) {
-  const { duration, frameTimes, units, bands, eventTicks } = timeline;
+  const { duration, frameTimes, units } = timeline;
   const transport = usePlaybackTransport({ position: time, duration, speed, frameTimes, onPositionChange: onTimeChange });
   return (
-    <div role="group" aria-label={studioName('clock')} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+    <div className="flex min-w-0 grow flex-wrap items-center gap-x-2 gap-y-1">
       <div className="flex items-center">
         <ClockButton name="restart" icon={RotateCcw} onClick={() => transport.seek(0)} />
         <ClockButton name="previousFrame" icon={StepBack} onClick={() => transport.step(-1)} />
@@ -40,17 +40,6 @@ function SceneClock({ timeline, time, speed, onTimeChange, onSpeedChange }: Scen
         <ClockButton name="loop" icon={Repeat} onClick={transport.toggleLoop} pressed={transport.looping} />
       </div>
       <div className="min-w-16 grow">
-        {(bands.length > 0 || eventTicks.length > 0) && (
-          <div className="relative h-1.5 overflow-hidden rounded-sm bg-shell-subtle" aria-hidden="true">
-            {bands.map((band) => (
-              <span key={band.id} className={band.kind === 'loss_window' ? 'absolute h-full bg-shell-scene-guide' : 'absolute h-full bg-shell-scene-feature'}
-                style={{ left: timelineOffset(band.start, duration), right: timelineOffset(duration - band.end, duration) }} />
-            ))}
-            {eventTicks.map((tick) => (
-              <span key={tick.id} className="absolute h-full w-px bg-shell-foreground" style={{ left: timelineOffset(tick.time, duration) }} />
-            ))}
-          </div>
-        )}
         <Slider min={0} max={duration} step={duration / 1000 || 1} value={transport.bounded}
           aria-label={studioName('playbackPosition')} onValueChange={transport.seek} />
       </div>

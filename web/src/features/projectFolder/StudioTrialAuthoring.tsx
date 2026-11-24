@@ -28,6 +28,8 @@ import type {
   FieldKind, JsonValue, ObjectiveTerm, Problem, ProjectValueEdit, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
 } from '@/generated/studioContracts';
 import { authoredPointer, authoredPointerParts } from './authoredEdits';
+import { TrialTrace } from './task/SignalTrace';
+import type { SampledTrial } from './task/trialSample';
 import { baseOf } from './documentPayload';
 import type { ProjectEditController } from './projectEditController';
 import { filesRemoval, type ConfirmRunRemoval } from './runRemoval';
@@ -198,13 +200,25 @@ export function TrialTaskOutline({ sections, view, selected, select }: {
   </Drawer>;
 }
 
-export function TrialTaskInspector({ view, commit, selected }: { view: TrialView; commit?: Commit; selected?: string }) {
+/**
+ * The Inspector of a Task element the drawer or the shelf selects; a signal, with a trial drawn, shows its plot over
+ * that trial.
+ */
+export function TrialTaskInspector({ view, commit, selected, trial }: {
+  view: TrialView; commit?: Commit; selected?: string; trial?: SampledTrial;
+}) {
   if (!selected) return null;
   const [kind, ...rest] = selected.split(':');
   const key = rest.join(':');
   if (kind === 'variable' || kind === 'signal') {
     const value = (kind === 'variable' ? view.variables : view.signals).find(({ id }) => id === key);
-    return value ? <Inspector name={humanizeLabel(value.name)} type={value.type.shape?.join(' × ') || value.type.base} /> : null;
+    const steps = kind === 'signal' ? trial?.signals[key] : undefined;
+    return value ? <Inspector name={humanizeLabel(value.name)} type={value.type.shape?.join(' × ') || value.type.base}>
+      {trial && steps && <section aria-label={studioName('plot')} className="grid gap-1">
+        <TrialTrace label={value.name} steps={steps} duration={steps.length * view.period_seconds}
+          boundaries={trial.intervals.slice(1).map(({ start }) => Math.round(start / view.period_seconds))} />
+      </section>}
+    </Inspector> : null;
   }
   if (kind === 'epoch') {
     const epoch = view.epochs.find(({ id }) => id === key);

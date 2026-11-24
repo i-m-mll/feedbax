@@ -4,13 +4,12 @@
  * variable, `targets[i]` cells), the stabilization document (which leaves the model's input unfed), and a Python task.
  */
 import type { FunctionInfo, ScopedValue, TextSpan, ValueType } from '@/generated/studioContracts';
-import type { TimelineEpoch, TimelineInterval } from '@/components/timeline/EpochTimeline';
 import type { ChangeMark, FieldModel, ValueKind } from '@/components/values/fieldModel';
 import { rawField } from '@/components/values/adapters/raw';
 import type {
-  TaskCell, TaskDocumentView, TaskEpoch, TaskPythonView, TaskSignal, TaskVariable, VariableLevel,
+  EpochBounds, TaskCell, TaskDocumentView, TaskEpoch, TaskPythonView, TaskSignal, TaskVariable, VariableLevel,
 } from '@/features/projectFolder/task/taskModel';
-import type { Percentiles, SampledTrial, SignalAggregate, SignalSteps, TrialBatch } from '@/features/projectFolder/task/trialSample';
+import type { EpochInterval, Percentiles, SampledTrial, SignalAggregate, SignalSteps, TrialBatch } from '@/features/projectFolder/task/trialSample';
 
 export interface VariableSpec {
   id: string; name: string; type: string; count?: number; level?: VariableLevel; text: string;
@@ -91,7 +90,7 @@ function seconds(text: string, step: number) {
 }
 
 /** An epoch's bounds, from its End's text, before Rest takes what remains. */
-function boundsOf(epoch: EpochSpec, step: number): TimelineEpoch {
+function boundsOf(epoch: EpochSpec, step: number): EpochBounds {
   const text = epoch.end.trim();
   const base = { id: epoch.id, name: epoch.name };
   if (text === 'rest') return { ...base, ends: 'rest', least: 0, nominal: 0, greatest: 0 };
@@ -110,7 +109,7 @@ function boundsOf(epoch: EpochSpec, step: number): TimelineEpoch {
 }
 
 /** Each epoch's bounds; Rest's are what the others leave of the trial, a repeated epoch counted at each repetition. */
-export function epochBounds(spec: DocumentSpec): TimelineEpoch[] {
+export function epochBounds(spec: DocumentSpec): EpochBounds[] {
   const bounds = spec.epochs.map((epoch) => boundsOf(epoch, spec.stepSeconds));
   const times = (index: number) => {
     const repeat = spec.repeats.find(({ first, last }) => {
@@ -259,8 +258,8 @@ function random(seed: number) {
 const point = (value: readonly number[]) => `(${value.map((part) => part.toFixed(3)).join(', ')})`;
 
 /** Steps of `count` with each epoch interval's value, absent outside the intervals `present` covers. */
-function fill(steps: number, step: number, intervals: readonly TimelineInterval[],
-  value: (interval: TimelineInterval, index: number) => readonly number[] | null): SignalSteps {
+function fill(steps: number, step: number, intervals: readonly EpochInterval[],
+  value: (interval: EpochInterval, index: number) => readonly number[] | null): SignalSteps {
   const out: (readonly number[] | null)[] = Array(steps).fill(null);
   intervals.forEach((interval, index) => {
     for (let at = Math.round(interval.start / step); at < Math.round(interval.end / step); at += 1) out[at] = value(interval, index);
@@ -282,8 +281,8 @@ function delayedTrials(seed: number, count: number): SampledTrial[] {
       { id: 'cue', name: 'cue', start: hold * step, end: (hold + cue) * step },
       { id: 'move', name: 'move', start: (hold + cue) * step, end: 0.8 },
     ];
-    const at = (id: string) => (interval: TimelineInterval) => interval.id === id;
-    const pick = (interval: TimelineInterval, early: readonly number[], late: readonly number[]) => interval.id === 'move' ? late : early;
+    const at = (id: string) => (interval: EpochInterval) => interval.id === id;
+    const pick = (interval: EpochInterval, early: readonly number[], late: readonly number[]) => interval.id === 'move' ? late : early;
     return {
       intervals,
       variables: { start: point(start), target: point(target), catch: String(catchTrial) },
@@ -307,7 +306,7 @@ function threeReachTrials(seed: number, count: number): SampledTrial[] {
     const start = [radius * Math.cos(theta), radius * Math.sin(theta)];
     const angles = [next(), next(), next()].map((value) => value * 360);
     const targets = angles.map((angle) => [start[0] + 0.15 * Math.cos(angle * Math.PI / 180), start[1] + 0.15 * Math.sin(angle * Math.PI / 180)]);
-    const intervals: TimelineInterval[] = [{ id: 'fixate', name: 'fixate', start: 0, end: 0.3 }];
+    const intervals: EpochInterval[] = [{ id: 'fixate', name: 'fixate', start: 0, end: 0.3 }];
     let time = 0.3;
     for (let reach = 0; reach < 3; reach += 1) {
       const move = Math.round((0.35 + next() * 0.45) / step) * step;

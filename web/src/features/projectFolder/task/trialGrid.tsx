@@ -8,6 +8,7 @@ import { authoredPointer } from '../authoredEdits';
 import { changedAt, expressionKind, type Commit, type TrialRuns, type TrialView } from '../StudioTrialAuthoring';
 import { TaskGrid, type GridEdits } from './TaskGrid';
 import { TaskInspector } from './TaskInspector';
+import type { SampledTrial } from './trialSample';
 import { selectionKey, selectionOf, type TaskCell, type TaskDocumentView, type TaskEpoch, type TaskSignal } from './taskModel';
 
 type Structure = Extract<Parameters<Commit>[1], { kind: 'structure' }>['change'];
@@ -174,8 +175,8 @@ export const inGrid = (selected: string | undefined) => {
 };
 
 /** The Inspector of what is selected in the grid: an epoch with its End, or a signal with its absent value and cell. */
-export function TrialGridInspector({ view, commit, runs, selected }: {
-  view: TrialView; commit?: Commit; runs?: TrialRuns; selected: string;
+export function TrialGridInspector({ view, commit, runs, selected, trial }: {
+  view: TrialView; commit?: Commit; runs?: TrialRuns; selected: string; trial?: SampledTrial;
 }) {
   const shown = useGrid(view, commit, runs);
   if (!shown) return null;
@@ -183,5 +184,6 @@ export function TrialGridInspector({ view, commit, runs, selected }: {
     kind: 'document', variables: [], epochs: shown.epochs, repeats: [], signals: shown.signals,
     duration: (view.n_steps ?? 0) * view.period_seconds, stepSeconds: view.period_seconds,
   };
-  return <TaskInspector view={document} selected={selectionOf(selected)} shown={{ kind: 'definition' }} />;
+  return <TaskInspector view={document} selected={selectionOf(selected)}
+    shown={trial ? { kind: 'trial', index: 0, count: 1, trial } : { kind: 'definition' }} />;
 }
