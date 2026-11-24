@@ -27,6 +27,10 @@ test('renaming a term two Trains read asks at its cell where the name applies, a
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Objective', exact: true }).click();
   await expect(name).toBeEditable();
+  await mapStep(page, 'sibling').click({ modifiers: ['Shift'] });
+  await expect(primary.locator('.studio-window-slot__header').getByRole('button', { name: /^Objective Document / }))
+    .toHaveText(/1 of 2$/);
+  await expect(name).toBeEditable();
   const before = await name.inputValue();
   const stored = await names();
 
