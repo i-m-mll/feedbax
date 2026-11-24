@@ -100,3 +100,19 @@ test('Ungroup is dimmed with its reason while a composite port has an attachment
   await edited(page, () => ungroup.click());
   await expect(group).toHaveCount(0);
 });
+
+/** A template in the Library's Templates group places one composite card, which can be entered. */
+test('a Library template places one composite', async ({ page }) => {
+  const model = await newModel(page);
+  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+  await drawer.getByRole('textbox', { name: 'Search Library', exact: true }).fill('CDEStandard');
+  const cards = model.locator('.react-flow__node.draggable');
+  const before = await cards.count();
+  await edited(page, () => drawer.getByRole('listbox', { name: 'Templates', exact: true })
+    .getByRole('option', { name: 'CDEStandard', exact: true }).dblclick());
+  await expect(cards).toHaveCount(before + 1);
+  const placed = cards.filter({ has: page.locator('.studio-model-card[data-stacked="true"]') });
+  await expect(placed).toHaveCount(1);
+  await placed.locator('header').dblclick();
+  await expect(model.getByRole('navigation', { name: 'Model Path' })).toBeVisible();
+});
