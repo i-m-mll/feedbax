@@ -202,7 +202,8 @@ function LeafChoices({ definitions, query, choose, disabled }: {
   return <>{[...groups].map(([category, items], index) => <section key={category} aria-labelledby={`${categoryId}-${index}`} className="space-y-0.5">
     <h3 id={`${categoryId}-${index}`} className="px-2 pt-1 text-xs text-shell-muted">{category}</h3>
     {items.map((definition) => <Button key={definition.name} variant="ghost" align="start" className="w-full"
-      aria-label={studioAccessibleName('add', shortName(definition.name))} disabled={disabled}
+      aria-label={studioAccessibleName('add', shortName(definition.name))} disabled={disabled || !!definition.placement_reason}
+      aria-description={definition.placement_reason ?? undefined}
       onClick={() => choose(definition)}>{shortName(definition.name)}</Button>)}
   </section>)}</>;
 }
@@ -485,6 +486,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const definitions = useMemo(() => (registryQuery.data ?? []).filter((definition) => accepts(definition, physical)), [registryQuery.data, physical]);
   const libraryItems = useMemo(() => definitions.map((definition): LibraryItem => ({
     id: definition.name, name: shortName(definition.name), group: libraryGroup(definition), glyph: <Box />,
+    refusal: definition.placement_reason ?? undefined,
     about: {
       description: definition.description, inputs: definition.input_ports ?? [], outputs: definition.output_ports ?? [],
       parameters: (definition.param_schema ?? []).map(({ name }) => name),
