@@ -412,6 +412,8 @@
     "previousTrial": "Previous Trial",
     "nextTrial": "Next Trial",
     "repeat": "Repeat",
+    "item": "Item",
+    "eachRepeat": "Each Repeat",
     "perStep": "Per Step",
     "plot": "Plot",
     "presence": "Presence",

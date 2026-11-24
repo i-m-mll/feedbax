@@ -108,8 +108,15 @@ function variables(view: TrialView, task: TaskDocument, types: readonly StudioNa
       }),
       anchor: variableAnchor(variable.id),
     } : rawField({ id: `value:${variable.id}`, label: studioName('value'), value: '', type: { kind: 'readOnly' } });
+    const countPath = authoredPointer(['task', 'variables', variable.id, 'count']);
+    const countProjection = variable.count ? view.fields.find((field) => field.path === countPath) : undefined;
+    const count = variable.count ? countProjection ? trialField(countProjection, studioName('count'), runs, {
+      id: `count:${variable.id}`, kind: expressionKind(variable.count),
+      changed: changedAt(view, 'task', `/variables/${index}/count`, commit),
+      commit: commit && ((edit) => commit(studioAccessibleName('set', studioName('count')), { kind: 'expression', path: countPath, edit })),
+    }) : rawField({ id: `count:${variable.id}`, label: studioName('count'), value: '', type: { kind: 'readOnly' } }) : undefined;
     return {
-      id: variable.id, name: variable.name, type: name, valueType: variable.type, typeChoice, value,
+      id: variable.id, name: variable.name, type: name, valueType: variable.type, typeChoice, value, count,
       level: levels.get(variable.id) === 2 ? 'step' : 'trial', initializes: initializes(view, task, variable, commit),
     };
   });
@@ -130,6 +137,8 @@ function variableEdits(task: TaskDocument, commit?: Commit): VariableEdits {
       { kind: 'structure', changes: [{ op: 'remove', member: 'variable', id }] }, true),
     move: (id, index) => structure(studioAccessibleName('move', named(id)),
       { kind: 'structure', changes: [{ op: 'move', member: 'variable', id, index }] }),
+    list: (id, list) => structure(studioAccessibleName('set', studioName('list')), { kind: 'structure', changes: [
+      { op: 'set_variable_count', id, count: list ? { kind: 'literal', value: 2 } : null }] }),
   };
 }
 

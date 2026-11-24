@@ -4,7 +4,10 @@ import type { NamedElementAddress } from '@/features/projectWindow/elementSelect
 import type { EpochBounds } from './taskModel';
 import type { SampledTrial, SignalSteps, TrialBatch } from './trialSample';
 
-/** What the shelf draws of a task document: its epochs' bounds in order, and the epochs each signal's cells cover. */
+/**
+ * What the shelf draws of a task document: its epochs' bounds in the order of one trial, a repeated epoch once per
+ * repetition, and the epochs over which each signal has a cell.
+ */
 export interface ShelfTask {
   /** The task document, whose elements the rows select. */
   readonly document: string;
@@ -12,7 +15,8 @@ export interface ShelfTask {
   readonly signals: readonly {
     readonly id: string;
     readonly name: string;
-    readonly cells: readonly { readonly first: string; readonly last: string }[];
+    /** The ids of the epochs its cells span. */
+    readonly covers: readonly string[];
   }[];
   /** The trial's length, in seconds. */
   readonly duration: number;
@@ -45,23 +49,19 @@ export function nominalRows(task: ShelfTask): ShelfRow[] {
     const end = epoch.ends === 'rest' || last ? Math.max(start, task.duration) : Math.min(task.duration, start + length);
     cursor = end;
     return {
-      key: epoch.id, name: epoch.name, start, end, selects: named(task.document, `epoch:${epoch.id}`),
+      key: `${epoch.id}:${index}`, name: epoch.name, start, end, selects: named(task.document, `epoch:${epoch.id}`),
       ...epoch.ends === 'drawn' && epoch.greatest > epoch.least && {
         spread: { least: start + epoch.least, greatest: Math.min(task.duration, start + epoch.greatest) },
       },
       ...epoch.ends === 'condition' && { dashedFrom: start + epoch.least },
     };
   });
-  const at = new Map(segments.map((segment) => [segment.key, segment]));
   return [
     { kind: 'segments', key: 'epochs', name: studioName('epochs'), segments },
     ...task.signals.map((signal): ShelfRow => ({
       kind: 'bars', key: `signal:${signal.id}`, name: signal.name, selects: named(task.document, `signal:${signal.id}`),
-      bars: joined(signal.cells.flatMap(({ first, last }) => {
-        const from = at.get(first);
-        const to = at.get(last);
-        return from && to && to.end > from.start ? [{ start: from.start, end: to.end }] : [];
-      })),
+      bars: joined(segments.flatMap(({ start, end }, index) =>
+        signal.covers.includes(task.epochs[index].id) && end > start ? [{ start, end }] : [])),
     })),
   ];
 }

@@ -48,8 +48,8 @@ export interface TaskVariable {
   readonly valueType: ValueType;
   /** The type as a choice of the catalogue's types. */
   readonly typeChoice: FieldModel;
-  /** A list's length. */
-  readonly count?: number;
+  /** A list's count, as a field; none where the variable is not a list. */
+  readonly count?: FieldModel;
   readonly level: VariableLevel;
   readonly value: FieldModel;
   readonly initializes?: VariableInitializes;
@@ -84,6 +84,8 @@ export interface TaskRepeat {
   readonly first: string;
   readonly last: string;
   readonly count: FieldModel;
+  /** The repeat's own problem, about its span rather than its count. */
+  readonly reason?: string;
 }
 
 /**
