@@ -1155,6 +1155,11 @@ def _attachment_problem(chain: list[Record]) -> str | None:
     return None
 
 
+def model_ungroup_eligibility(document: ModelDocument) -> tuple[edits.ModelUngroupEligibility, ...]:
+    draft = ModelEditDraft(edits.ModelEditState(document=document), lambda *_: None, lambda *_: True)
+    return tuple(draft.ungroup_eligibility())
+
+
 def model_graph_problems(
     document: ModelDocument, *, ports: LeafPorts, accepts: AcceptComponent = lambda *_: True,
 ) -> Iterator[edits.ModelGraphProblem]:
@@ -1289,12 +1294,15 @@ def apply_model_edit(
     primary = _address((), "graph")
     try:
         match operation:
-            case edits.AddComponent(graph=primary, component=component):
-                if isinstance(component, edits.RegisteredComponent):
+            case edits.AddComponent(graph=primary) | edits.InsertComponentOnWire(address=primary):
+                if isinstance(component := operation.component, edits.RegisteredComponent):
                     if instantiate_template is None:
                         raise _Refusal(primary, "Component templates need a registered definition")
                     operation = operation.model_copy(update={"component": instantiate_template(component.definition)})
-                edit.add_component(operation)
+                if isinstance(operation, edits.AddComponent):
+                    edit.add_component(operation)
+                else:
+                    edit.insert_component(operation)
             case edits.MoveCards(placements=placements):
                 primary = placements[0].address
                 for placement in placements:
@@ -1402,8 +1410,6 @@ def apply_model_edit(
                 edit.set_attachment(difference)
             case edits.MoveWireAttachment(address=primary):
                 edit.move_wire_attachment(operation)
-            case edits.InsertComponentOnWire(address=primary):
-                edit.insert_component(operation)
             case edits.BringSignalIn(destination=primary):
                 edit.bring_in(operation)
             case edits.CopyComponents(selection=selection):

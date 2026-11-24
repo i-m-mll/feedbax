@@ -3,7 +3,7 @@ import {
   ArrowLeft, ArrowRight, Command, Grid2x2, OctagonX, PanelLeft, PanelRight, Play, Square, SquareArrowOutUpRight, StepForward,
   type LucideIcon,
 } from 'lucide-react';
-import { studioAccessibleName, studioName, type StudioNameId } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioName, studioReasonedName, type StudioNameId } from '@/components/activity/studioVocabulary';
 import type { AppearanceCommandId } from '@/appearance/appearance';
 import { bindGesture, invokeGesture } from './heldGestures';
 import { projectWindowViews, type ProjectWindowView } from './projectWindowState';
@@ -125,6 +125,8 @@ export interface StudioCommand {
   readonly glyph?: LucideIcon;
   /** Whether the command applies to what is selected; the workspace being unsettled disables nothing. */
   readonly enabled: boolean;
+  /** Why the command does not apply to what is selected, when it is shown dimmed; its tip gives it after its name. */
+  readonly reason?: string;
   readonly selectionScoped: boolean;
   readonly shortcut?: Shortcut;
   /** Runs the command, or holds it until the workspace settles and runs it then if it still applies. */
@@ -133,6 +135,8 @@ export interface StudioCommand {
 
 interface BindingOptions {
   enabled?: boolean;
+  /** Why the command does not apply; a command with a reason is not enabled. */
+  reason?: string;
   name?: StudioNameId;
   subject?: string;
   keyboard?: boolean;
@@ -147,11 +151,12 @@ interface BindingOptions {
 function studioCommand<Id extends StudioCommandId>(
   id: Id, perform: () => void, options: BindingOptions, bound: boolean,
 ): StudioCommand & { readonly id: Id } {
-  const { enabled = true, name = id, subject, keyboard = true, glyph = glyphs[id], instance = '' } = options;
+  const { name = id, subject, keyboard = true, glyph = glyphs[id], instance = '', reason } = options;
+  const enabled = reason === undefined && (options.enabled ?? true);
   const shortcut = commandShortcut(id);
   const label = studioAccessibleName(name, subject);
   const command: StudioCommand & { readonly id: Id } = {
-    id, name, enabled, selectionScoped: selectionCommands.has(id), shortcut: keyboard ? shortcut : undefined,
+    id, name, enabled, reason, selectionScoped: selectionCommands.has(id), shortcut: keyboard ? shortcut : undefined,
     title: studioName(name), label, glyph,
     invoke: () => invokeGesture(command),
   };
@@ -190,11 +195,12 @@ function ariaShortcut(shortcut: Shortcut) {
 }
 
 export function commandAttributes(command: StudioCommand, placement?: 'bottom' | 'right') {
-  const label = studioName(command.name);
+  const label = command.reason === undefined ? studioName(command.name) : studioReasonedName(command.name, command.reason);
   return {
     'data-command-id': command.id,
     'aria-label': command.label,
     'aria-keyshortcuts': command.shortcut && ariaShortcut(command.shortcut),
+    'aria-description': command.reason,
     ...appTip(command.shortcut ? `${label} · ${shortcutLabel(command.shortcut)}` : label, placement),
   };
 }

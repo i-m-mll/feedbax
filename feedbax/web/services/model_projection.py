@@ -1,6 +1,7 @@
 """Project the selected run's compiler and task facts onto stored Model addresses."""
 
 from feedbax.compiler.model_document import lower_model_document
+from feedbax.compiler.model_edit import model_ungroup_eligibility
 from feedbax.compiler.model_ports import ModelRegistryPorts
 from feedbax.compiler.resolution import resolve_graph_parameters
 from feedbax.contracts.model_address import ComponentPortAddress, ModelAddress, PortElement
@@ -98,7 +99,6 @@ def model_projection(folders, project_id, body, components):
     )
     supplied = {port.name for port in bound}
     authority = ModelRegistryPorts(components)
-    problems = tuple(authority.problems(model))
     ports = {port.address.to_text(): port for port in _declared_ports(authority, model)}
     task_inputs = tuple(
         ModelAddress.model_validate({
@@ -108,10 +108,8 @@ def model_projection(folders, project_id, body, components):
     )
     known = dict(
         task_signals=task_signals, task_inputs=task_inputs, resolved_model=model,
-        problems=problems, ungroup=tuple(authority.ungroup_eligibility(model)), **differences,
+        ungroup=model_ungroup_eligibility(model), **differences,
     )
-    if problems:
-        return ModelProjection(ports=tuple(ports.values()), **known)
     try:
         lowered = lower_model_document(
             model, components, supplied_inputs=frozenset(supplied),

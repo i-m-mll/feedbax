@@ -11,24 +11,25 @@ from tests.support.managed_train_fixture import managed_evaluation_step, managed
 
 # Read at 76a6c51d, where the same changes were stored on the Evaluate step itself, and a Task choice was a
 # `params.variation` entry with path `task`; the swept and nearest-shared ids at a9b3bb7d; all of them again when the
-# task document's epochs gained an End and its cells ids.
-FEE = "train:a66f8e5deda46b7e39743c6f432241db1cf5540f70fca9a4154332fbf8777bbc"
-DEFAULT = "evaluate:573be6e6d6403ee05b099a82e03bdc3bf3450bbbd08eb03badcbec7198ad28b3"
-FIELD_CHANGED = "evaluate:7a0caadb7125dc74b77a3ae4f1851933fb347b2b528b5adca781a68539866a48"
-ATTACHMENT_ADDED = "evaluate:05904aba2aafa7957e2a81ff7dcbe9200bdb294053ea74b954d5af7288827828"
-FEWER_CONDITIONS = "evaluate:95e5b886852780c1a1f4e8e625e6fa1ab3b5890f9f4756b980b67e4891ef03ab"
+# task document's epochs gained an End and its cells ids. The shipped Task now uses its declared state link
+# (4aa12e47), which changes the fixture's Train identity and the Evaluates that depend on it.
+FEE = "train:77d3d32985f4a889c4c155706869c9a8c7c27087ea2a2e0ba20b3759ce92c24c"
+DEFAULT = "evaluate:889490b54139d828277505b7792c64b15791abe282bf26906ff47a7970faa154"
+FIELD_CHANGED = "evaluate:6266ade57880f6800c93133aad0561bc3422bb143088206779b997fb17a074a0"
+ATTACHMENT_ADDED = "evaluate:81832318ae28b094b6806984e96144f1d3787980ee58a6e25e4a917c31699d2e"
+FEWER_CONDITIONS = "evaluate:19207c7d5fae57bb894e6c88cc6eb7cd0fc9665d7229cc493e63e0176a8617d8"
 SWEPT_PUSHED = (
     ("trained==347a995705cde9b16ee3a665dede47e6594d0c1158f3809255731f622a8fbe30",
-     "evaluate:2c85eafbc42baea2daccac32317a9003d1487a3866880625ad921825b78c59af"),
+     "evaluate:b9a40914fb7768d20540dc175bbc3097e1acef0c5a5aed278ea71f98a75eac32"),
     ("trained==abb0ffe5124ac74b8d431462660c668b987dd969c5bf76fc07a20894a2b46eea",
-     "evaluate:1cf6fad2f517f08f97ba563f111b8d22409847832a500fe8f84c9dacae51f699"),
+     "evaluate:ab6e62652adf49683a76d96e59702e8a58e7893b3521ced556a1cf78e6bec538"),
 )
 NEAREST_SHARED = {
-    "fee": "train:81c199bb6a6d78545a9524cf9e3b400de6151e6b1b4054995c1556003464e938",
+    "fee": "train:ff7a9a38f596092185d9e4f8a8d11a2f911b6c2f728c6b35cf56c4ce6ea0d8ac",
     "other": FEE,
-    "check": "evaluate:d6de4c760bdeb680c19b499035e5e9667c98161157c24a3828ad4abdb711b533",
+    "check": "evaluate:d0003d1e985f088225ee748df1e6b7916ed3c133e15ab4854df94312aff84937",
 }
-UNPAIRED_TASK = "Model input 'target_pos' reads signal 'target_pos', which the Task does not declare."
+UNPAIRED_TASK = "Model input 'target_pos' needs a Task signal."
 
 TASK = "simple-reaches-task"
 MASS = {"composites": [], "element": {"kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"]}}
@@ -136,6 +137,49 @@ def test_an_evaluation_keeps_its_subjects_swept_value_under_its_documents_change
         spec = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
         assert run.inputs["subject"].member.reference.request_id in trained
         assert all("mass" not in edit["path"] for edit in spec.params["variation"])
+
+
+def test_evaluate_ungroup_eligibility_reads_the_selected_axis_model(tmp_path):
+    """Catch a selected Model value inheriting the trained Model's Ungroup verdict."""
+    from fastapi.testclient import TestClient
+
+    from feedbax.web.app import create_app
+    from feedbax.web.services.project_folder import ProjectFolderService
+    from tests.test_canonical_evaluate_admission import _save_project
+
+    data = _data()
+    wrapper = "idle-wrapper"
+    data["documents"]["model"]["payload"]["interior"]["components"][wrapper] = {
+        "kind": "composite", "name": "Idle wrapper",
+        "ports": {"inputs": [{"id": "in", "name": "In", "type": {}}]}, "interior": {},
+    }
+    _reads(data, "check", "model", "model")
+    default = f"trial_documents.model.interior.components.{wrapper}.ports.inputs.in.default"
+    data["steps"]["check"]["sweep"] = {"axes": {"model-choice": {"values": {
+        "open": {},
+        "blocked": {"patches": {default: {"op": "add", "value": {"value": 1.0}}}},
+    }}}}
+    folders = ProjectFolderService(tmp_path)
+    project = "ungroup-axis-value"
+    _save_project(folders, project, Project.model_validate(data))
+    snapshot = folders.read(project)
+    address = {"composites": [], "element": {"kind": "component", "id": wrapper}}
+
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        def reason(value):
+            response = client.post(f"/api/projects/{project}/model/evaluate-model", json={
+                "revision": snapshot.revision,
+                "run": {"variant": "default", "step": "check", "row": f"model-choice={value}"},
+                "scope": {"kind": "axis_value", "axis": "model-choice", "value": value},
+            })
+            assert response.status_code == 200, response.text
+            state = response.json()
+            assert state["resolved_model"] is not None, state["problems"]
+            assert wrapper in state["resolved_model"]["interior"]["components"]
+            return next(item["reason"] for item in state["ungroup"] if item["address"] == address)
+
+        assert reason("open") is None
+        assert reason("blocked") == "Ungroup would remove an unconnected defaulted input"
 
 
 def test_a_model_document_that_shares_none_with_the_subjects_is_the_evaluations_problem():

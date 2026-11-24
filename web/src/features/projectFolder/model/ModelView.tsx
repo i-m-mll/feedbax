@@ -445,9 +445,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const fieldScope = JSON.stringify([saved.project_id, model?.id, fieldRows, fieldOwners.map(addressKey)]);
   const ownNames = projectedLists.map((list) => new Set(list.map(({ id }) => id.split('.').at(-1)!)));
   const projectedNames = new Set([...ownNames[0] ?? []].filter((name) => ownNames.every((names) => names.has(name))));
-  /** The project's Problems in the shown Model, and the graph's own, such as a wire whose signal types differ. */
-  const modelProblems = [...new Map([...problems ?? [], ...evaluate ? [] : projection.data?.problems ?? []]
-    .map((item) => [JSON.stringify([addressKey(item.address), item.reason]), item])).values()];
+  /** The project's Problems in the shown Model, the graph's own among them: the list Problems shows. */
+  const modelProblems = problems ?? [];
   const addressedProblems = new Map<string, string>();
   for (const item of issue?.address ? [...modelProblems, { address: issue.address, reason: issue.reason }] : modelProblems) {
     let address = item.address;
@@ -1204,6 +1203,9 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   }
 
   const componentsOnly = selectedHere.length > 0 && selectedHere.every((item) => item.element.kind === 'component');
+  /** Why the selected composite cannot be ungrouped, null when it can; undefined when nothing it reads says. */
+  const ungrouping = component?.kind === 'composite' && selection
+    ? projection.data?.ungroup?.find(({ address }) => addressKey(address) === addressKey(selection))?.reason : undefined;
   const viewportCommands = canvasViewportCommands(() => viewport.current, !!model);
   const isCollapsed = !!collapsed?.[graphId];
   const collapse = bindStudioCommand('collapseAll', () => {
@@ -1261,7 +1263,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     bindStudioCommand('modelGroup', () => void apply(studioName('modelGroup'), { op: 'group', selection: [...selectedHere], name: studioName('modelGroup') }),
       { enabled: editTopology && componentsOnly && !physical }),
     bindStudioCommand('modelUngroup', () => { if (selection) void apply(studioName('modelUngroup'), { op: 'ungroup', address: selection }); },
-      { enabled: editTopology && component?.kind === 'composite' && !component.interior.physical_domain }),
+      { enabled: editTopology && ungrouping === null, reason: editTopology && ungrouping ? ungrouping : undefined }),
     bindStudioCommand('modelCopy', () => void apply(studioName('modelCopy'), { op: 'copy', selection: [...selectedHere] }, false),
       { enabled: editTopology && componentsOnly }),
     bindStudioCommand('modelCut', () => void apply(studioName('modelCut'), { op: 'cut', selection: [...selectedHere] }),
@@ -1481,7 +1483,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     ...commands.filter((command) => command.id.startsWith('model')).map((command) => command.id === 'modelRename'
       ? { ...command, invoke: () => outlineTree.current?.rename(addressKey(address)) } : command),
     ...topologyCommands(address), ...attachmentCommands(address),
-  ].filter((command) => command.enabled);
+  ].filter((command) => command.enabled || command.reason !== undefined);
 
   return {
     documentId: model?.id,
@@ -1591,7 +1593,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           menu={(node) => {
             const address = outline.addresses.get(node.id);
             return address && outlineCommands(address).map((command) =>
-              <MenuItem key={command.id} {...commandAttributes(command)} onClick={command.invoke}>{command.label}</MenuItem>);
+              <MenuItem key={command.id} {...commandAttributes(command)} disabled={!command.enabled} onClick={command.invoke}>{command.label}</MenuItem>);
           }} />}
       </DrawerSection>
     </Drawer>,
@@ -1621,8 +1623,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       }}>
         {[...commands.filter((command) => command.id.startsWith('model')),
           ...topologyCommands(menu.address, menu.point), ...attachmentCommands(menu.address)]
-          .filter((command) => command.enabled).map((command) =>
-          <MenuItem key={command.id} {...commandAttributes(command)}
+          .filter((command) => command.enabled || command.reason !== undefined).map((command) =>
+          <MenuItem key={command.id} {...commandAttributes(command)} disabled={!command.enabled}
             onClick={() => { setMenu(undefined); command.invoke(); }}>{command.label}</MenuItem>)}
       </MenuContent>
     </Menu>,

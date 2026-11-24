@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from feedbax.compiler.model_document import lower_model_document
 from feedbax.component_registry import ComponentRegistry
+from feedbax.component_registry.declarations import DeclaredComponent
 from feedbax.contracts.graph import GraphSpec, WireSpec
 from feedbax.contracts.model_address import ComponentPortEnd, InputBoundaryEnd, OutputBoundaryEnd
 from feedbax.contracts.model_document import (
@@ -16,9 +17,28 @@ def instantiate_model_template(name: str, registry: ComponentRegistry, period: f
     declaration = registry.get(name)
     if declaration is None:
         raise ValueError(f"Unknown component definition {name!r}")
+    return _template_component(declaration, registry, period)
+
+
+def template_placement_reason(declaration: DeclaredComponent, registry: ComponentRegistry) -> str | None:
+    """An intrinsic reason a template cannot be placed, independent of the receiving Model."""
+    if not isinstance(declaration.template_graph, GraphSpec) and declaration.name != "feedbax.AcausalSystem":
+        return None
+    try:
+        _template_component(declaration, registry, None)
+    except ValueError as error:
+        return str(error)
+    return None
+
+
+def _template_component(
+    declaration: DeclaredComponent, registry: ComponentRegistry, period: float | None,
+) -> CompositeComponent:
     graph = declaration.template_graph
     if not isinstance(graph, GraphSpec):
-        raise ValueError(f"{name} does not declare a causal graph template")
+        if declaration.name == "feedbax.AcausalSystem":
+            raise ValueError("Equations templates require an authored physical domain")
+        raise ValueError(f"{declaration.name} does not declare a causal graph template")
     return _composite(declaration.name.rsplit(".", 1)[-1], graph, registry, period)
 
 
@@ -26,8 +46,8 @@ def _component_end(node: str, port: str) -> ComponentPortEnd:
     return ComponentPortEnd(owner="component", component=node, port=port)
 
 
-def _composite(name: str, graph: GraphSpec, registry: ComponentRegistry, period: float) -> CompositeComponent:
-    if graph.step_seconds not in (None, period):
+def _composite(name: str, graph: GraphSpec, registry: ComponentRegistry, period: float | None) -> CompositeComponent:
+    if period is not None and graph.step_seconds not in (None, period):
         raise ValueError(f"The template {name} requires its own step length")
     unsupported = [
         field for field in (
@@ -54,8 +74,10 @@ def _composite(name: str, graph: GraphSpec, registry: ComponentRegistry, period:
             continue
         fields = node.model_dump(mode="json")["params"]
         for key in ("dt", "control_dt"):
-            if key in fields and fields.pop(key) != period:
-                raise ValueError(f"The template {name} component {node_id} requires its own step length")
+            if key in fields:
+                step_length = fields.pop(key)
+                if period is not None and step_length != period:
+                    raise ValueError(f"The template {name} component {node_id} requires its own step length")
         components[node_id] = LeafComponent(
             kind="leaf", name=node_id, type=node.type, revision=node.revision, fields=fields,
         )
@@ -68,9 +90,10 @@ def _composite(name: str, graph: GraphSpec, registry: ComponentRegistry, period:
         if wire.temporality == "recurrent":
             reset = wire.recurrent_initializer or {}
             shape = reset.get("shape")
+            if reset.get("seed_channel_history"):
+                raise ValueError(f"The template {name} initializes channel history from state, which Model Delay cannot store")
             if (
                 reset.get("kind") != "zeros" or reset.get("dtype", "float32") != "float32"
-                or reset.get("seed_channel_history")
                 or not isinstance(shape, (list, tuple)) or any(type(size) is not int or size <= 0 for size in shape)
             ):
                 raise ValueError(f"The template {name} has a recurrent reset that Model Delay cannot store")
@@ -99,7 +122,9 @@ def _composite(name: str, graph: GraphSpec, registry: ComponentRegistry, period:
     )
 
     if recurrent_shapes:
-        model = ModelDocument(step_seconds=period, ports=component.ports, interior=component.interior)
+        # Shape qualification uses a delay in whole steps, independent of the receiving Model's period.
+        validation_period = period if period is not None else graph.step_seconds or 1.0
+        model = ModelDocument(step_seconds=validation_period, ports=component.ports, interior=component.interior)
         lowered = lower_model_document(model, registry).graph
         resolved = {
             wire.id: tuple(wire.recurrent_initializer["shape"])

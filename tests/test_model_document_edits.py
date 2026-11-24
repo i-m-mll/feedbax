@@ -486,3 +486,62 @@ def test_template_zero_carry_preserves_a_recurrent_controller_rollout():
         return graph(inputs, graph.init_state(key=key), key=key, n_steps=5)[0]["output"]
 
     np.testing.assert_allclose(rollout(restored), rollout(original), rtol=1e-6, atol=1e-6)
+
+
+def test_library_previews_the_same_reason_as_an_unplaceable_template_edit(tmp_path):
+    """The Library must warn before offering a drop whose reset cannot be represented."""
+    data = _data()
+    data["steps"] = {}
+    project = _Project(tmp_path, data)
+    graph = {"composites": [], "element": {"kind": "graph"}}
+    with project.client:
+        before = project.snapshot()
+        response = project.client.get("/api/components")
+        assert response.status_code == 200, response.text
+        library = {entry["name"]: entry["placement_reason"] for entry in response.json()["data"]["components"]}
+        assert library["feedbax.CDEStandard"] is None
+        assert library["feedbax.RecurrentController"] is None
+        assert library["feedbax.PointMass"] is None
+        reason = library["feedbax.SimpleFeedbackLoop"]
+        assert reason
+        refused = project.model_edit({
+            "op": "add_component", "graph": graph, "position": {"x": 20, "y": 30},
+            "component": {"kind": "definition", "definition": "feedbax.SimpleFeedbackLoop"},
+        })
+        assert refused.status_code == 200, refused.text
+        result = refused.json()["result"]
+        assert result["status"] == "refused"
+        assert result["problem"] == {"address": graph, "detail": reason}
+        assert project.snapshot()["revision"] == before["revision"]
+
+
+def test_insert_registered_template_routes_the_wire_through_its_composite_ports(tmp_path):
+    """Inserting a template must splice its real input and output into the targeted wire."""
+    data = _data()
+    data["steps"] = {}
+    source = {"owner": "inputs", "port": "in"}
+    target = {"owner": "outputs", "port": "out"}
+    data["documents"]["model"]["payload"] = {
+        "step_seconds": 0.01,
+        "ports": {
+            "inputs": [{"id": "in", "name": "Input", "type": {}}],
+            "outputs": [{"id": "out", "name": "Output", "type": {}}],
+        },
+        "interior": {"wires": {"straight": {"source": source, "target": target}}},
+    }
+    project = _Project(tmp_path, data)
+    with project.client:
+        project.edit({
+            "op": "insert_component", "address": {"composites": [], "element": {"kind": "wire", "id": "straight"}},
+            "id": "controller", "component": {"kind": "definition", "definition": "feedbax.CDEDecay"},
+            "input_port": "obs", "output_port": "h_new", "position": {"x": 20, "y": 30},
+        })
+
+    interior = project.composed("model")["interior"]
+    component = interior["components"]["controller"]
+    assert component["kind"] == "composite" and "decay" in component["interior"]["components"]
+    assert interior["wires"]["straight"]["source"] == {"owner": "component", "component": "controller", "port": "h_new"}
+    assert interior["wires"]["straight"]["target"] == target
+    (incoming,) = [wire for key, wire in interior["wires"].items() if key != "straight"]
+    assert incoming["source"] == source
+    assert incoming["target"] == {"owner": "component", "component": "controller", "port": "obs"}

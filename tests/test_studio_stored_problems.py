@@ -97,8 +97,6 @@ def _incompatible_wire(studio):
     reopened = studio.reopen(edit["snapshot"], "document", "model")
     wire = reopened["project"]["documents"]["model"]["payload"]["interior"]["wires"][address["element"]["id"]]
     assert (wire["source"], wire["target"]) == (source, target)
-    projection = studio.post("/model/projection", revision=reopened["revision"], document="model")
-    assert any(problem["address"] == address for problem in projection["problems"])
 
 
 def _duplicate_ports(studio):
@@ -109,8 +107,7 @@ def _duplicate_ports(studio):
     reopened = studio.reopen(edit["snapshot"], "document", "model")
     ports = reopened["project"]["documents"]["model"]["payload"]["ports"]["inputs"]
     assert [(port["id"], port["name"]) for port in ports] == [("vector", "Vector"), ("scalar", "Vector")]
-    projection = studio.post("/model/projection", revision=reopened["revision"], document="model")
-    assert {problem["address"]["element"]["end"]["port"] for problem in projection["problems"]
+    assert {problem["address"]["element"]["end"]["port"] for problem in edit["problems"]
             if problem["address"]["element"]["kind"] == "port"} == {"vector", "scalar"}
 
 

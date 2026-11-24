@@ -32,10 +32,13 @@ class RegisteredComponent(StrictModel):
     definition: Name
 
 
+type ComponentToPlace = LeafComponent | CompositeComponent | RegisteredComponent
+
+
 class AddComponent(StrictModel):
     op: Literal["add_component"]
     graph: ModelAddress
-    component: LeafComponent | CompositeComponent | RegisteredComponent
+    component: ComponentToPlace
     position: ModelPosition
     id: ModelElementId | None = None
     connect_from: SignalSource | None = None
@@ -140,7 +143,7 @@ class MoveWireAttachment(StrictModel):
 class InsertComponentOnWire(StrictModel):
     op: Literal["insert_component"]
     address: ModelAddress
-    component: LeafComponent | CompositeComponent
+    component: ComponentToPlace
     input_port: ModelElementId
     output_port: ModelElementId
     position: ModelPosition
@@ -335,7 +338,6 @@ class ModelProjection(StrictModel):
     resolved_model: ModelDocument | None = None
     base_differences: tuple[ModelStructuralDifference, ...] = ()
     value_differences: tuple[ModelStructuralDifference, ...] = ()
-    problems: tuple[ModelGraphProblem, ...] = ()
     ungroup: tuple[ModelUngroupEligibility, ...] = ()
 
 
@@ -444,6 +446,7 @@ class EvaluateModelState(StrictModel):
     """The nearest document the read Model document shares with the subject's, when they differ: what the
     evaluation changes is the read document's differences from it."""
     problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
+    ungroup: tuple[ModelUngroupEligibility, ...] = ()
 
 
 class ModelEditApplied(StrictModel):

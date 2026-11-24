@@ -115,11 +115,12 @@ def _review_wire(
     if family == "views":
         row = next((row for row in plan.rows if row.key == key and isinstance(row, PlannedAnalyzeRun)), None)
         figure = row.figures.get(wire.element) if row is not None else None
+        label = member_name(analysis.views, wire.element)
         if figure is None:
             problem = next((problem for problem in problems if problem.element == wire.element), None)
-            raise ValueError(problem.detail if problem is not None else f"Cannot resolve figure {wire.element!r}.")
+            raise ValueError(problem.detail if problem is not None else f"Cannot resolve figure {label}.")
         if wire.role not in figure.data:
-            raise ValueError(f"Unknown figure input {wire.element}.{wire.role}.")
+            raise ValueError(f"{label} has no input {wire.role!r}.")
         inputs = analysis.views[wire.element].inputs | {wire.role: wire.source}
         validate_figure_bindings(
             figure, {role: _port(binding, analysis, registry, states) for role, binding in inputs.items()},
