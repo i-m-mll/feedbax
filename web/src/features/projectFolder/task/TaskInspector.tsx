@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { studioName, studioUnit } from '@/components/activity/studioVocabulary';
+import { studioName, studioUnit, studioValueType } from '@/components/activity/studioVocabulary';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { Inspector } from '@/components/ui/Inspector';
 import { ValueField } from '@/components/values/ValueField';
@@ -76,8 +76,9 @@ export function TaskInspector({ view, selected, shown }: { view: TaskDocumentVie
       const epochs = cell && view.epochs.filter((_, index) => index >= view.epochs.findIndex(({ id }) => id === cell.first) &&
         index <= view.epochs.findIndex(({ id }) => id === cell.last));
       return <Inspector name={<span className="font-mono">{signal.name}</span>}
-        type={epochs ? `${signal.type} · ${epochs.map(({ name }) => name).join(', ')}` : signal.type}>
-        {cell && (cell.kind === 'value' ? <ValueField model={cell.value} /> : <Fact label={studioName('value')}>{studioName('absent')}</Fact>)}
+        type={epochs ? `${signal.type} · ${epochs.map(({ name }) => name).join(', ')}` : studioValueType(signal.valueType, signal.type)}>
+        {cell?.kind === 'value' && <ValueField model={cell.value} />}
+        <ValueField model={signal.absent} />
         <Trace view={view} signal={signal.id} shown={shown} />
       </Inspector>;
     }

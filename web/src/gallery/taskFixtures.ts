@@ -205,7 +205,8 @@ export function documentView(spec: DocumentSpec, texts: Readonly<Record<string, 
       changed: changed(epoch.changed) }),
   }));
   const signals: TaskSignal[] = spec.signals.map((signal) => ({
-    id: signal.id, name: signal.name, type: signal.type,
+    id: signal.id, name: signal.name, type: signal.type, valueType: types[signal.type],
+    absent: textField({ id: `absent:${signal.id}`, label: 'Absent', text: text(`absent:${signal.id}`, '0'), kinds: valueKinds, write, scope, finest: 1 }),
     cells: signal.cells.map((cell, index): TaskCell => {
       const id = `${signal.id}:${index}`;
       return cell.text === null ? { id, first: cell.first, last: cell.last, kind: 'absent' } : {

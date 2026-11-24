@@ -9,6 +9,7 @@ import {
   changedAt, expressionKind, variableAnchor, type Commit, type TrialRuns, type TrialView,
 } from '../StudioTrialAuthoring';
 import { VariableInspector } from './TaskInspector';
+import { TrialTaskGrid } from './trialGrid';
 import { TaskVariables, type VariableEdits } from './TaskVariables';
 import { TaskDocumentBody } from './TaskView';
 import type { TaskSelection, TaskVariable } from './taskModel';
@@ -89,7 +90,8 @@ export function TrialTaskDocument({ view, commit, runs, selected, select, drawn 
   if (!shown) return null;
   return <TaskDocumentBody variables={<TaskVariables variables={shown.variables} selected={selectedVariable(selected)}
     select={(selection) => select(`${selection.kind}:${selection.id}`)} edits={variableEdits(shown.task, commit)}
-    drawn={drawn} />} />;
+    drawn={drawn} />}
+    grid={<TrialTaskGrid view={view} commit={commit} runs={runs} selected={selected} select={select} />} />;
 }
 
 /** The Inspector of a task document's variable: its value with the value's parts, and its type. */

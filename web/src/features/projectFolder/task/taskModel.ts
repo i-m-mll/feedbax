@@ -53,7 +53,10 @@ export interface TaskRepeat {
   readonly count: FieldModel;
 }
 
-/** A signal's value over adjacent epochs from `first` to `last`: a field, or absent (no value at all, not zero). */
+/**
+ * A signal's value over adjacent epochs from `first` to `last`: a field, or absent, where the model reads the signal's
+ * absent value and the trial records the signal as not present.
+ */
 export type TaskCell =
   | { readonly id: string; readonly first: string; readonly last: string; readonly kind: 'value'; readonly value: FieldModel }
   | { readonly id: string; readonly first: string; readonly last: string; readonly kind: 'absent' };
@@ -62,6 +65,10 @@ export interface TaskSignal {
   readonly id: string;
   readonly name: string;
   readonly type: string;
+  /** The type as its parts: its base, shape and unit's dimensions. */
+  readonly valueType: ValueType;
+  /** What the model reads where the signal has no cell: zero of its type unless the document sets another. */
+  readonly absent: FieldModel;
   /** Covers every epoch once, in order. */
   readonly cells: readonly TaskCell[];
 }
@@ -96,3 +103,21 @@ export type TaskSelection =
 
 export const sameSelection = (a: TaskSelection | undefined, b: TaskSelection | undefined) =>
   !!a && !!b && a.kind === b.kind && a.id === b.id && (a.kind !== 'cell' || b.kind === 'cell' && a.signal === b.signal);
+
+/** The selection as the window's selection of a task element names it: `<kind>:<id>`, a cell's id with its signal's. */
+export const selectionKey = (selection: TaskSelection) =>
+  `${selection.kind}:${selection.kind === 'cell' ? JSON.stringify([selection.signal, selection.id]) : selection.id}`;
+
+/** The selection a window's selection key names, or none where it names no element of the Task view. */
+export function selectionOf(key: string | undefined): TaskSelection | undefined {
+  const at = key?.indexOf(':') ?? -1;
+  if (!key || at < 0) return undefined;
+  const kind = key.slice(0, at);
+  const id = key.slice(at + 1);
+  if (kind === 'cell') {
+    const [signal, cell] = JSON.parse(id) as [string, string];
+    return { kind, signal, id: cell };
+  }
+  return kind === 'variable' || kind === 'epoch' || kind === 'end' || kind === 'signal' || kind === 'repeat'
+    ? { kind, id } : undefined;
+}

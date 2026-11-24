@@ -407,6 +407,7 @@
     "addSignal": "Add Signal",
     "insertEpoch": "Insert Epoch",
     "absent": "Absent",
+    "cells": "Cells",
     "allTrials": "All",
     "resample": "Resample",
     "previousTrial": "Previous Trial",
