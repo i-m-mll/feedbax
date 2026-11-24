@@ -71,7 +71,7 @@ export async function authorAndRecoverTrain(page: Page, request: APIRequestConte
   const previousLossCount = await line(initial).count();
   expect(previousLossCount).toBeGreaterThan(0);
 
-  const activityButton = page.getByRole('button', { name: 'Activity', exact: true });
+  const activityButton = page.getByRole('button', { name: /^Activity( \d+)?$/ });
   await activate(page, activityButton);
   const activity = page.getByRole('region', { name: 'Activity', exact: true });
   const resuming = post(page, `/api/jobs/${initial}/resume`);

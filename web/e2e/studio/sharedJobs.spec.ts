@@ -118,7 +118,7 @@ test('shares live Jobs across windows and observes the four-slot queue', { tag: 
 
     await page.reload();
     const activity = page.getByRole('region', { name: 'Activity', exact: true });
-    await page.getByRole('button', { name: 'Activity', exact: true }).click();
+    await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
     const selected = activity.getByRole('region', { name: configuration.project, exact: true })
       .getByRole('listitem').filter({ hasText: first.label });
     const stopping = post(page, '/api/jobs/stop');
@@ -126,7 +126,7 @@ test('shares live Jobs across windows and observes the four-slot queue', { tag: 
     expect((await stopping).ok()).toBe(true);
 
     const secondActivity = second.getByRole('region', { name: 'Activity', exact: true });
-    await second.getByRole('button', { name: 'Activity', exact: true }).click();
+    await second.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
     const secondAttempt = (label: string) => secondActivity.getByRole('region', { name: configuration.project, exact: true })
       .getByRole('listitem').filter({ hasText: label }).first();
     const resume = secondAttempt(first.label).getByRole('button', { name: 'Resume', exact: true });
@@ -189,7 +189,7 @@ raise TimeoutError("No isolated sibling published a checkpoint")
     await second.getByRole('tab', { name: 'Runs', exact: true }).click();
     await expect(row(second, sibling).getByText('Stopped', { exact: true })).toBeVisible();
     await expect(row(second, interrupted).getByText('Interrupted', { exact: true })).toBeVisible();
-    await second.getByRole('button', { name: 'Activity', exact: true }).click();
+    await second.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
     await expect(secondAttempt(interrupted.label).getByRole('button', { name: 'Resume', exact: true })).toBeEnabled();
     await expect.poll(async () => {
       const current = await jobs();
@@ -258,7 +258,7 @@ test('opens a ninth project window while one stream serves active projects', { t
     const ninth = await openWindow(projects[3]);
     console.log(`Ninth project window opened in ${Math.round(performance.now() - opening)} ms`);
     await expect.poll(subscriptions).toEqual([[...projects].sort()]);
-    await ninth.getByRole('button', { name: 'Activity', exact: true }).click();
+    await ninth.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
     const activity = ninth.getByRole('region', { name: 'Activity', exact: true });
     for (const project of runningProjects) {
       const run = activity.getByRole('listitem').filter({ hasText: project });
@@ -367,7 +367,7 @@ test('names an unreadable run only in its own project window', async ({
     await window.goto(baseURL + '/?project=' + projectId);
     await mapStep(window, 'train').click();
     await window.getByRole('tab', { name: 'Runs', exact: true }).click();
-    await window.getByRole('button', { name: 'Activity', exact: true }).click();
+    await window.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   };
   const alert = (window: Page) => window.getByRole('region', { name: 'Activity', exact: true })
     .getByRole('alert').filter({ hasText: 'Malformed result is unreadable' });
@@ -381,7 +381,7 @@ host.admit("malformed-result", [AdmissionItem(job.id, job)], record={})
 `, unreadable);
     await expect(alert(page)).toBeVisible({ timeout: 15_000 });
     await page.reload();
-    await page.getByRole('button', { name: 'Activity', exact: true }).click();
+    await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
     await expect(alert(page)).toBeVisible();
 
     await Promise.all(windows.map(async (window, index) => {
