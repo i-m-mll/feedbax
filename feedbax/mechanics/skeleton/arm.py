@@ -12,7 +12,6 @@ from equinox import field
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray, Scalar
-import numpy as np
 
 from feedbax.mechanics.geometry import corners_2d
 from feedbax.mechanics.skeleton import AbstractSkeleton, AbstractSkeletonState
@@ -147,25 +146,8 @@ class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
         Arguments:
             effector_state: The state of the end effector.
         """
-        pos = effector_state.pos
-        l = self.l
-        lsq = l**2
-        dsq = jnp.sum(pos**2)
-        # No solution exists if `dsq` is outside of:
-        #   `(l[0] - l[1], l[0] + l[1])`
-
-        alpha = jnp.arccos((lsq[0] - lsq[1] + dsq) / (2 * l[0] * jnp.sqrt(dsq)))
-        gamma = jnp.arctan2(pos[1], pos[0])
-        theta0 = gamma - alpha
-
-        beta = jnp.arccos((lsq[0] + lsq[1] - dsq) / (2 * l[0] * l[1]))
-        theta1 = np.pi - beta
-        # The "elbow up" or "lefty" solution is given by:
-        #   `theta0 = gamma + alpha`
-        #   `theta1 = beta - pi`
-
-        angle = jnp.stack([theta0, theta1], axis=-1)
-
+        angle, reachable = self.inverse_position(effector_state.pos)
+        angle = jnp.where(reachable, angle, jnp.nan)
         d_angle = jnp.linalg.inv(self.effector_jac(angle)) @ effector_state.vel
         force = effector_state.force
         return TwoLinkArmState(
@@ -174,6 +156,26 @@ class TwoLinkArm(AbstractSkeleton[TwoLinkArmState]):
             torque=jnp.zeros_like(angle),
             effector_force=jnp.zeros_like(angle) if force is None else force,
         )
+
+    def inverse_position(self, position: Array) -> tuple[Array, Array]:
+        """Return the elbow-down joint angles and whether they can realize the endpoint."""
+        proximal, distal = self.l
+        radius = jnp.linalg.norm(position)
+        inner = jnp.abs(proximal - distal)
+        outer = proximal + distal
+        tolerance = 8 * jnp.finfo(radius.dtype).eps * outer
+        reachable = (
+            jnp.isfinite(radius)
+            & (radius >= inner - tolerance)
+            & (radius <= outer + tolerance)
+        )
+        cosine = 1 + (radius - outer) * (radius + outer) / (2 * proximal * distal)
+        cosine = jnp.where(radius <= inner, -1, cosine)
+        elbow = jnp.arccos(jnp.clip(cosine, -1, 1))
+        shoulder = jnp.arctan2(position[1], position[0]) - jnp.arctan2(
+            distal * jnp.sin(elbow), proximal + distal * jnp.cos(elbow),
+        )
+        return jnp.stack((shoulder, elbow)), reachable
 
     def update_state_given_effector_force(
         self,
