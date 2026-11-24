@@ -9,10 +9,14 @@ import { studioFormat } from '@/components/activity/studioVocabulary';
  */
 export type TrialSet = 'nominal' | 'samples' | 'recorded';
 
-/** How the clock shows its trials: one of them by its index from 0, or all of them at once. */
-export type TrialShowing =
-  | { readonly kind: 'one'; readonly index: number }
-  | { readonly kind: 'all' };
+/**
+ * How the clock shows its trials: one of them, or all of them at once. `index`, from 0, is the trial picked: the one
+ * shown, or the one drawn heavier among all.
+ */
+export interface TrialShowing {
+  readonly kind: 'one' | 'all';
+  readonly index: number;
+}
 
 /** What the clock shows: which trials, and how. Every view that shows a trial draws this and keeps no pick of its own. */
 export interface TrialPick {
@@ -21,17 +25,18 @@ export interface TrialPick {
 }
 
 /**
- * The clock's window state: what was picked, the seed and count samples are drawn with, and, by view, whether the shelf
- * is open there.
+ * The clock's window state: what was picked, the seed and count samples are drawn with, by view whether the shelf is
+ * open there, and whether drawn paths end at the playhead.
  */
 export interface TrialClock {
   readonly picked?: TrialPick;
   readonly seed: number;
   readonly count: number;
   readonly shelf: Readonly<Record<string, boolean>>;
+  readonly trails: boolean;
 }
 
-export const defaultTrialClock: TrialClock = { seed: 0, count: 8, shelf: {} };
+export const defaultTrialClock: TrialClock = { seed: 0, count: 8, shelf: {}, trails: false };
 
 /** Whether the shelf is open in `view`: as the user left it there, else open in the Task view and closed elsewhere. */
 export const shelfOpen = (clock: TrialClock, view: string) => clock.shelf[view] ?? view === 'task';
@@ -54,7 +59,7 @@ export const setSize = (trials: TrialSet, clock: TrialClock, offer: TrialOffer) 
   trials === 'nominal' ? Number(offer.nominal) : trials === 'samples' ? sampleCount(clock, offer) : offer.recorded;
 
 /** Whether `trials` can be shown all at once: a set of more than one trial that has an aggregate. */
-export const aggregates = (trials: TrialSet) => trials === 'samples';
+export const aggregates = (trials: TrialSet) => trials !== 'nominal';
 
 const whole = (value: unknown, least: number) => typeof value === 'number' && Number.isInteger(value) && value >= least;
 
@@ -62,9 +67,9 @@ function pickOf(value: unknown): TrialPick | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const { trials, showing } = value as { trials?: unknown; showing?: { kind?: unknown; index?: unknown } };
   if (trials !== 'nominal' && trials !== 'samples' && trials !== 'recorded') return undefined;
-  if (showing?.kind === 'all') return { trials, showing: { kind: 'all' } };
-  if (showing?.kind === 'one' && whole(showing.index, 0)) return { trials, showing: { kind: 'one', index: showing.index as number } };
-  return undefined;
+  const kind = showing?.kind;
+  if ((kind !== 'one' && kind !== 'all') || !whole(showing?.index, 0)) return undefined;
+  return { trials, showing: { kind, index: showing!.index as number } };
 }
 
 /** The clock's state as stored with the window's arrangement, or nothing when the stored value is not one. */
@@ -80,6 +85,7 @@ export function trialClockOf(value: unknown): TrialClock | undefined {
     seed: whole(stored.seed, Number.MIN_SAFE_INTEGER) ? stored.seed as number : defaultTrialClock.seed,
     count: whole(stored.count, 1) ? stored.count as number : defaultTrialClock.count,
     shelf,
+    trails: stored.trails === true,
   };
 }
 
@@ -91,11 +97,7 @@ export function offeredPicks(offer: TrialOffer, count: number): TrialPick[] {
 }
 
 function offered({ trials, showing }: TrialPick, clock: TrialClock, offer: TrialOffer) {
-  const size = setSize(trials, clock, offer);
-  switch (showing.kind) {
-    case 'one': return showing.index < size;
-    case 'all': return aggregates(trials) && size > 0;
-  }
+  return showing.index < setSize(trials, clock, offer) && (showing.kind === 'one' || aggregates(trials));
 }
 
 /**
@@ -122,8 +124,7 @@ export function pickText({ trials, showing }: TrialPick, clock: TrialClock, offe
 }
 
 export const samePick = (a: TrialPick | undefined, b: TrialPick | undefined) =>
-  !!a && !!b && a.trials === b.trials && a.showing.kind === b.showing.kind &&
-  (a.showing.kind === 'all' || a.showing.index === (b.showing as { index: number }).index);
+  !!a && !!b && a.trials === b.trials && a.showing.kind === b.showing.kind && a.showing.index === b.showing.index;
 
 /** The frame of `frameTimes` nearest `time`, which views read a trial's values at. */
 export function frameAt(frameTimes: readonly number[], time: number): number {

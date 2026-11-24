@@ -47,7 +47,7 @@ it('moves an Evaluate subject between a checkpoint and an initial Model and back
   };
   const apply = (step: Step, next: EvaluateSubject) => {
     const project = { steps: { evaluate: step } } as unknown as ProjectEditContent;
-    return (applyAuthoredEdits(project, { kind: 'step', id: 'evaluate' }, evaluateSubjectEdits(step, next), true).project
+    return (applyAuthoredEdits(project, { kind: 'step', id: 'evaluate' }, evaluateSubjectEdits(step, next)).project
       .steps as Record<string, Step>).evaluate;
   };
   const initial = apply(evaluate, { kind: 'document', document: 'arm', task: 'reach', objective: 'loss' });

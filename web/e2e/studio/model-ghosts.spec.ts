@@ -2,7 +2,7 @@ import { expect, test } from './fixtures/studio';
 import type { Locator, Page } from '@playwright/test';
 import type { StudioProjectSnapshot } from '../../src/generated/studioContracts';
 import { chooseSweepValue, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
-import { pick } from './fixtures/controls';
+import { modelEdit, pick } from './fixtures/controls';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -51,10 +51,8 @@ test('a component a selected set entry removes is drawn in place as a ghost, and
 
   await chooseSweepValue(card, 'arms', 'drop');
   await removedMark.click();
-  const [edited] = await Promise.all([
-    page.waitForResponse((response) => new URL(response.url()).pathname === `${projectPath}/model/edit`),
-    page.getByRole('menuitem', { name: 'Reset', exact: true }).click(),
-  ]);
+  const edited = await modelEdit(page, projectPath,
+    () => page.getByRole('menuitem', { name: 'Reset', exact: true }).click(), 'Set Entry');
   expect(edited.request().postDataJSON()).toMatchObject({
     command: { operation: { op: 'reset_difference' } }, axes: { arm: ['drop'] },
   });

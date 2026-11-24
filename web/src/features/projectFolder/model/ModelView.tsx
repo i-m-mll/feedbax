@@ -31,10 +31,12 @@ import type {
   AddModelAttachment, ChangeModelAttachment, ComponentDefinition, EvaluateModelRequest, JsonValue,
   RemoveModelAttachment, SetField,
   ModelAddress, ModelClipboard, ModelConnectionReview, ModelConnectionVerdict, ModelDocument, ModelEditCommand, ModelFieldRequest, ModelPosition, ModelProjection,
-  ModelRemovedElement, StudioProjectSnapshot, StudioSavedTrainKey,
+  ModelRemovedElement, StudioProjectRevision, StudioProjectSnapshot, StudioSavedTrainKey,
 } from '@/generated/studioContracts';
 import { ModelAddressSchema, ModelDocumentSchema, ModelEditProblemSchema } from '@/generated/studioContracts';
 import type { ProjectEditController } from '../projectEditController';
+import { sendWithStore, type AskStore } from '../storeChoice';
+import { editedElement } from '@/components/ui/ChoiceMenu';
 import { ModelCanvas, type ModelCard, type ModelEdge } from './ModelCanvas';
 import { attachmentFields, componentFields, delayText, initialField, modelFields, sharedFields, type Attachment, type FieldChange } from './ModelInspector';
 import {
@@ -72,6 +74,8 @@ type Props = {
   fieldAxes?: Record<string, string[]>;
   selectedSweepValues?: ReadonlyMap<string, ReadonlySet<string>>;
   confirmRunRemoval: ConfirmRunRemoval;
+  /** Asks where an edit that reaches beyond the selection is written. */
+  askStore: AskStore;
   evaluate?: Omit<EvaluateModelRequest, 'revision'>;
   problem?: { address: ModelAddress; reason: string };
   problems?: readonly { address: ModelAddress; reason: string }[];
@@ -194,7 +198,7 @@ function LeafChoices({ definitions, query, choose, disabled }: {
   </section>)}</>;
 }
 
-export function useStoredModelView({ model, saved, editor, elements: state, active, topologyApplies, fieldEditable, fieldChosenSteps, planCurrent, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, evaluate, problem, problems, projectionRun, path, setPath, sections, openProblems, exceptions }: Props) {
+export function useStoredModelView({ model, saved, editor, elements: state, active, topologyApplies, fieldEditable, fieldChosenSteps, planCurrent, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, askStore, evaluate, problem, problems, projectionRun, path, setPath, sections, openProblems, exceptions }: Props) {
   const selected = useModelSelection(state, model?.id);
   const pick = useStore(state, (current) => current.pick);
   const reveal = useStore(state, (current) => current.reveal);
@@ -205,6 +209,16 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const pendingReview = useRef<PendingReview>();
   const libraryReview = useRef<Promise<ModelConnectionReview>>();
   const [run] = useState(commandQueue);
+  const canvasArea = useRef<HTMLDivElement>(null);
+  /** Where a command made from `from` asks where it is written: its field or canvas element, else the selected one. */
+  const editedAt = (from: Element | null) => () => editedElement(from,
+    canvasArea.current?.querySelector('.react-flow__node.selected, .react-flow__edge.selected') ?? canvasArea.current);
+  /** Applies a Model command, asking at the edited element where it is written when the service asks. */
+  const editModel = (from: Element | null, name: string, document: string, command: ModelEditCommand,
+    reviewed: StudioProjectRevision, scope?: Parameters<ProjectEditController['editModel']>[4]) =>
+    sendWithStore(askStore, editedAt(from), () => editor.flush(),
+      (store_choice) => editor.editModel(name, document, command, reviewed, { ...scope, store_choice }),
+      (result) => result.status === 'asked' ? result.store_choices : undefined);
   const [plan] = useState(() => awaitedValue<{ revision: string; chosenSteps: ReadonlySet<string> }>());
   useEffect(() => {
     plan.set(planCurrent ? { revision: saved.revision, chosenSteps: fieldChosenSteps ?? new Set() } : undefined);
@@ -349,26 +363,30 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
    */
   async function editField(fieldBody: FieldBody, address: ModelAddress, edit: NonNullable<ModelFieldRequest['edit']>) {
     if (!canEditField) return studioReason('unavailable', studioName('field'));
+    const from = document.activeElement;
     return run(async () => {
       const { chosenSteps } = await plan.next(({ revision }) => revision === editor.getSnapshot().saved.revision);
       const current = editor.getSnapshot().saved;
       try {
-        const result = await projectModelFields(saved.project_id, {
-          ...fieldBody, revision: current.revision, address, edit, chosen_steps: [...chosenSteps],
-        }, editor.signal);
-        if (!result.command && !result.files?.length) return result.problems?.[0]?.reason;
+        const result = await sendWithStore(askStore, editedAt(from), () => editor.flush(),
+          (store_choice) => projectModelFields(saved.project_id, {
+            ...fieldBody, revision: current.revision, address, edit, chosen_steps: [...chosenSteps], store_choice,
+          }, editor.signal), (answer) => answer.store_choices);
+        if (!result) return undefined;
+        if (!result.command && !result.files?.length && !result.created?.length) return result.problems?.[0]?.reason;
         if (result.command) {
           if (result.files?.length && !await confirmRunRemoval(sweepValueRuns(result.removed_values))) return undefined;
-          const applied = await editor.editModel('Set Value', fieldBody.document, result.command, current, fieldBody.run && {
+          const applied = await editModel(from, 'Set Value', fieldBody.document, result.command, current, fieldBody.run && {
             step: fieldBody.run.step, chosen_steps: [...chosenSteps], files: result.files ?? [],
             ...(fieldBody.evaluate_scope ? evaluateEditRuns(fieldBody.evaluate_scope, fieldBody.run, fieldRows)
               : fieldBody.rows?.length && fieldBody.axes ? { rows: fieldBody.rows, axes: fieldBody.axes } : {}),
           });
+          if (!applied) return undefined;
           follow(applied);
           return applied.status === 'refused' ? applied.problem.detail : undefined;
         }
-        if (result.files?.length && await confirmRunRemoval(sweepValueRuns(result.removed_values))) {
-          const variant = result.files.find(({ address }) => address.kind === 'variant')?.address.id;
+        if (await confirmRunRemoval(sweepValueRuns(result.removed_values))) {
+          const variant = result.files?.find(({ address }) => address.kind === 'variant')?.address.id;
           const dependencies = variant ? current.file_revisions.map(({ address: file }) => file).filter((file) =>
             (file.kind === 'document' && file.id === fieldBody.document) ||
             (file.kind === 'step' && chosenSteps.has(file.id)) ||
@@ -376,7 +394,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
             : [{ kind: 'document' as const, id: fieldBody.document },
               ...(fieldBody.run ? [{ kind: 'step' as const, id: fieldBody.run.step }] : []),
               ...(attachments.data?.source ? [{ kind: 'step' as const, id: attachments.data.source.step }] : [])];
-          const settled = await editor.editFiles('Set Field', result.files, { reviewedRevision: current.revision, dependencies });
+          const settled = await editor.storeEdit('Set Field', { files: result.files ?? [], created: result.created },
+            { reviewedRevision: current.revision, dependencies });
           if (settled.status === 'refused') return shownError(settled.error);
         }
         return undefined;
@@ -505,6 +524,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
    */
   async function attempt(name: string, operation: Operation, choose = true, runs = selectedRuns): Promise<{ address?: ModelAddress; reason: string } | null> {
     if (!model || !editTopology) return { reason: studioReason('unavailable', name) };
+    const from = document.activeElement;
     return run(async () => {
         const subject = evaluate?.run ?? projectionRun;
         const scope = subject && { step: subject.step, chosen_steps: [...(await plan.next(({ revision }) =>
@@ -512,9 +532,10 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         const reviewed = editor.getSnapshot().saved;
         setIssue(undefined);
         try {
-          const result = await editor.editModel(name, model.id, { operation }, reviewed, scope);
+          const result = await editModel(from, name, model.id, { operation }, reviewed, scope);
+          if (!result) return null;
           if (result.status === 'refused') return { address: result.problem.address, reason: result.problem.detail };
-          if (result.status === 'asked') return { reason: 'Choose where to store this edit.' };
+          if (result.status === 'asked') throw new Error('The edit was asked again where it applies.');
           const shown = follow(result);
           if (result.clipboard) clipboard = result.clipboard;
           if (choose && result.changed.length) {
@@ -540,6 +561,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     if (!model || !readBody || !attachments.data) {
       return studioReason('unavailable', name);
     }
+    const from = document.activeElement;
     return run(async () => {
         setIssue(undefined);
         try {
@@ -547,13 +569,14 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           let shown = model.id;
           const { scope } = readBody;
           const { chosenSteps } = await plan.next(({ revision }) => revision === editor.getSnapshot().saved.revision);
-          const applied = await editor.editModel(name, model.id, {
+          const applied = await editModel(from, name, model.id, {
             operation: difference.op === 'set_field' ? difference : { op: 'set_attachment', difference },
           }, editor.getSnapshot().saved, {
             step: readBody.run.step, chosen_steps: [...chosenSteps], ...evaluateEditRuns(scope, readBody.run, fieldRows),
           });
+          if (!applied) return undefined;
           if (applied.status === 'refused') throw new Error(applied.problem.detail);
-          if (applied.status === 'asked') throw new Error('Choose where to store this edit.');
+          if (applied.status === 'asked') throw new Error('The edit was asked again where it applies.');
           shown = follow(applied) ?? shown;
           const [first] = applied.changed;
           if (!first) throw new Error('The edit changed nothing.');
@@ -688,8 +711,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     });
   }
   function add(definition: ComponentDefinition, point?: ModelPosition, from?: Port, to?: string) {
-    const occupied = [...objects.map(([id], index) => cardPosition(at(graph, { kind: 'component', id }), () => positionAt(index))),
-      ...placed.map((item) => item.position)];
+    const occupied = nodes.map((node) => node.position);
     let index = 0;
     let available = positionAt(index);
     while (occupied.some(({ x, y }) => Math.abs(x - available.x) < 196 && Math.abs(y - available.y) < 150)) {
@@ -909,7 +931,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         } }),
       },
       position: cardPosition(address, () => ghost && wasAt ? wasAt : definition ? positionAt(index)
-        : { x: id === inputCard ? 18 : 245 + 235 * Math.max(1, Math.min(objects.length, 4)), y: 38 }),
+        : { x: id === inputCard ? 18 : 245 + 235 * 4, y: 38 }),
       selected: !!definition && selectedIds.has(key),
       draggable: !ghost && editTopology && !locked && !pick,
       selectable: !!definition && !pick,
@@ -947,7 +969,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     .map(([id, component]) => makeCard(id, objects.length, component, true));
   const nodes = [makeCard(inputCard, 0), ...objects.map(([id, component], index) => makeCard(id, index, component)),
     ...ghostCards, ...placed.map(placingCard), makeCard(outputCard, 0)];
-  const selfLoops = new Map<string, number>();
+  /** How low each wire's ports sit on their cards, which orders the routes between the same cards. */
+  const depths = new Map<string, number>();
   const bundled = new Map<string, ModelEdge>();
   /** The wires the connection being drawn would replace at the target it is over. */
   const previewed = previewTarget ? review?.verdicts.get(previewTarget) : undefined;
@@ -970,8 +993,9 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       return [owner, port?.name ?? end.port].filter(Boolean).join('.');
     };
     const wireLabel = `${endpoint(from)} → ${endpoint(to)}`;
-    const self = !isPhysical && source === target ? selfLoops.get(source) ?? 0 : undefined;
-    if (self !== undefined) selfLoops.set(source, self + 1);
+    const row = (end: typeof from, direction: Port['direction']) => portMap.get(idFor(end))
+      ?.findIndex((candidate) => candidate.direction === direction && candidate.end.port === end.port) ?? 0;
+    depths.set(id, row(from, 'output') + row(to, 'input'));
     const ghost = ghostKeys.has(key);
     const displacedAttachments = displaced.get(key);
     const attached = (list: readonly Attachment[], removedHere: boolean) => list.map((item) => ({
@@ -994,7 +1018,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       selected: selectedIds.has(key),
       data: {
         address, selected: selectedIds.has(key), waypoints: waypoints?.[key], problem: ghost ? undefined : addressedProblems.get(key),
-        self, ghost: ghost || !!displacedAttachments, change: marked.get(key)?.difference.change === 'rewired' ? undefined : changeMark(address),
+        ghost: ghost || !!displacedAttachments, change: marked.get(key)?.difference.change === 'rewired' ? undefined : changeMark(address),
         moveWaypoint: !ghost && editTopology && !locked ? (index, point) => {
           route(address, (waypoints?.[key] ?? []).map((previous, offset) => offset === index ? point : previous), 'Move Waypoint');
         } : undefined,
@@ -1009,6 +1033,15 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     ...('connections' in (drawnInterior ?? {}) ? Object.entries((drawnInterior as { connections?: Record<string, { a: Parameters<typeof makeEdge>[1]; b: Parameters<typeof makeEdge>[2] }> }).connections ?? {})
       .map(([id, connection]) => makeEdge(id, connection.a, connection.b, 'physical')) : []),
   ];
+  const between = new Map<string, ModelEdge[]>();
+  for (const edge of connections) {
+    if (edge.type !== 'signal') continue;
+    const cards = [edge.source, edge.target].sort().join(' ');
+    between.set(cards, [...between.get(cards) ?? [], edge]);
+  }
+  for (const group of between.values()) {
+    group.sort((a, b) => depths.get(b.id)! - depths.get(a.id)!).forEach((edge, rank) => { edge.data!.rank = rank; });
+  }
   const edges = connections.flatMap((edge) => {
     if (!collapsed?.[graphId] || edge.source === edge.target || edge.source.startsWith('@') || edge.target.startsWith('@')) return [edge];
     const endpoints = edge.type === 'physical' ? [edge.source, edge.target].sort() : [edge.source, edge.target];
@@ -1394,7 +1427,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       {!evaluate && projection.error && <StudioRegion state={studioReadState(
         'model', projection.data, projection.error, () => { void projection.refetch(); },
       )} />}
-      <div className="min-h-0 flex-1">
+      <div ref={canvasArea} className="min-h-0 flex-1">
         <ModelCanvas key={mountKey} nodes={nodes} edges={edges} physical={!!physical} locked={locked} canEdit={editTopology}
           collapsed={isCollapsed} viewportRef={viewport} collapse={collapse} lock={lock} viewportCommands={viewportCommands}
           onCanvasPoint={(point) => { cursor.current = point; }}
