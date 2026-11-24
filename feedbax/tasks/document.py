@@ -611,7 +611,7 @@ def compile_task(
         else:
             links[link.model_field] = link.variable
     for address, field in writable.items():
-        if field.required and address not in links and all(link.model_field != address for link in document.links):
+        if field.required and all(link.model_field != address for link in document.links):
             problem(ProblemCode.STRUCTURE, "The Model needs this value at the start of each trial.", ("links", address))
     rows = []
     first = document.validation_trials[0]
