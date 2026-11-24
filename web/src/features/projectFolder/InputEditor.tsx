@@ -60,7 +60,7 @@ function BlockedMark({ blockedBy, steps, onReveal }: {
   const source = steps.find(({ id }) => id === first.step);
   const step = source?.label ?? first.step;
   const label = blockedBy.length === 1
-    ? studioFormat('blockedRun', { step, run: source?.runs.find(({ id }) => id === savedRunId(first))?.label ?? first.row })
+    ? studioFormat('stepRun', { step, run: source?.runs.find(({ id }) => id === savedRunId(first))?.label ?? first.row })
     : step;
   return <span className="inline-flex shrink-0 items-center gap-1.5">
     <StatusMark status="cannot_run" label={studioRunStatus('cannot_run')} />
