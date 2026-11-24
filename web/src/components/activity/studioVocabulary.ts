@@ -259,7 +259,7 @@ export type StudioPlace = NonNullable<StudioProjectWindowMapProblem['place']>;
 export function studioPlaceName(place: StudioPlace | null) {
   switch (place?.part) {
     case 'model': return studioName('model');
-    case 'task': return place.initializes ? studioName('initializes')
+    case 'task': return place.start ? place.start.name : place.initializes ? studioName('initializes')
       : place.parameter ? humanizeLabel(place.parameter) : studioName('task');
     case 'objective': return studioName('objective');
     case 'training': return place.setting ? humanizeLabel(place.setting) : studioName('training');
@@ -284,7 +284,7 @@ export function studioMentionReason(name: string, detail: string) {
 /** Whether a place is a document as a whole, rather than a field or member of it that Studio names. */
 export function studioPlaceIsDocument(place: StudioPlace | null): boolean {
   return place?.part === 'model' || place?.part === 'objective' ||
-    place?.part === 'task' && !place.parameter && !place.initializes;
+    place?.part === 'task' && !place.parameter && !place.initializes && !place.start;
 }
 
 /**

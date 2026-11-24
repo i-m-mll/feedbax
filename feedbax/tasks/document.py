@@ -383,8 +383,8 @@ def compile_task(
     if not isfinite(period) or period <= 0:
         return (Problem(code=ProblemCode.STRUCTURE, reason="The model period must be positive."),)
 
-    def problem(code, reason, path, variable=None):
-        problems.append(Problem(code=code, reason=reason, path=path, variable=variable))
+    def problem(code, reason, path, variable=None, model_address=None):
+        problems.append(Problem(code=code, reason=reason, path=path, variable=variable, model_address=model_address))
 
     def unique(items, section):
         result, names = {}, set()
@@ -621,7 +621,10 @@ def compile_task(
             links[link.model_field] = link.variable
     for address, field in writable.items():
         if field.required and all(link.model_field != address for link in document.links):
-            problem(ProblemCode.STRUCTURE, "The Model needs this value at the start of each trial.", ("links", address))
+            problem(
+                ProblemCode.STRUCTURE, "The Model needs this value at the start of each trial.", ("links", address),
+                model_address=field.address,
+            )
     rows = []
     first = document.validation_trials[0]
     for index, row in enumerate(document.validation_trials):

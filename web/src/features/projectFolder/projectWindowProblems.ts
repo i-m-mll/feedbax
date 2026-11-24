@@ -1,5 +1,6 @@
 import type { StudioPlace } from '@/components/activity/studioVocabulary';
-import { initializesAnchor } from './StudioTrialAuthoring';
+import { addressKey } from './model/modelGraph';
+import { initializesAnchor, startAnchor } from './StudioTrialAuthoring';
 import type { JsonValue, StudioProjectFilePatch, StudioProjectWindowMapProblem } from '@/generated/studioContracts';
 import {
   authoredMember, authoredPointer, authoredPointerParts, removeAuthoredMember, type AuthoredProject,
@@ -80,7 +81,8 @@ export function placeView(place: StudioPlace | null): RevealView {
  */
 export function placeField(place: StudioPlace | null): { target?: string } | null {
   switch (place?.part) {
-    case 'task': return place.initializes ? { target: initializesAnchor(place.initializes) } : null;
+    case 'task': return place.initializes ? { target: initializesAnchor(place.initializes) }
+      : place.start ? { target: startAnchor(addressKey(place.start.address)) } : null;
     case 'training': return place.setting ? { target: `/training_config/${place.setting}` } : {};
     // The inspector names each top-level setting's row; a nested setting is revealed at the row that holds it.
     case 'method': return { target: place.setting ? authoredPointer(['settings', place.setting.split('.')[0]]) : '/method' };

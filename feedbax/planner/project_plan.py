@@ -36,7 +36,7 @@ from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.model_values import model_owner_problem
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.studio_authoring import InputProducer, InputRole
-from feedbax.contracts.studio_place import path_parts, variation_targets
+from feedbax.contracts.studio_place import StudioTaskStart, path_parts, task_start, variation_targets
 from feedbax.contracts.project import (
     DifferenceNotApplied, Differences, Document, InlineBase, Payload, Project, RootDocument, Step, StepBase, StepKind,
     apply_differences, base_chain, diff, json_pointer_parts, nearest_shared_base,
@@ -412,6 +412,8 @@ class RunProblem:
     model_address: ModelAddress | None = None
     variable: str | None = None
     """The Task variable a link at ``path`` belongs to."""
+    start: StudioTaskStart | None = None
+    """The Model value a link at ``path`` is missing for."""
     variation_target: str | None = None
     """The dotted path the variation entry at ``path`` patches, which places the problem."""
 
@@ -1260,9 +1262,11 @@ def _trial_place(problem: Problem) -> tuple[str, tuple[str, ...]]:
     return str(role), tuple(map(str, parts))
 
 
-def _trial_problems(problems: Iterable[Problem], *, initial: bool = False) -> tuple[RunProblem, ...]:
-    """Each Problem pairing a row's trial documents, at its path in the request, or for an Evaluate of an initial Model
-    in its definition's ``inputs``."""
+def _trial_problems(
+    problems: Iterable[Problem], model: ModelDocument | None, *, initial: bool = False,
+) -> tuple[RunProblem, ...]:
+    """Each Problem pairing a row's trial documents with ``model``, at its path in the request, or for an Evaluate of an
+    initial Model in its definition's ``inputs``."""
     placed = []
     for problem in problems:
         role, parts = _trial_place(problem)
@@ -1270,7 +1274,14 @@ def _trial_problems(problems: Iterable[Problem], *, initial: bool = False) -> tu
             ("inputs", "subject" if role == "model" else "task" if role == "python_task" else role) if initial
             else ("trial_documents", role)
         )
-        placed.append(RunProblem(pointer((*slot, *parts)), problem.reason, problem.model_address, problem.variable))
+        start = (
+            task_start(model, problem.model_address)
+            if model is not None and problem.model_address is not None and role == "task" and parts[:1] == ("links",)
+            else None
+        )
+        placed.append(RunProblem(
+            pointer((*slot, *parts)), problem.reason, problem.model_address, problem.variable, start=start,
+        ))
     return tuple(placed)
 
 
@@ -1355,7 +1366,7 @@ def _encode_row(
         if isinstance(prepared, tuple):
             # The Python task does not resolve, or the Model, Task and Objective do not pair: the row is planned and
             # cannot run.
-            pairing_problems = _trial_problems(prepared)
+            pairing_problems = _trial_problems(prepared, authored.model)
             model_source = replace(model_source, unpaired=True)
         else:
             preparation = prepared
@@ -2549,7 +2560,7 @@ class _Compiler:
                 if isinstance(unresolved := resolve_python_task_instance(selection, tasks), tuple):
                     # The Task's conditions are unknown, so its trial rule does not lower to a request.
                     return _LoweredRow(
-                        None, (), problems=_trial_problems(unresolved, initial=True),
+                        None, (), problems=_trial_problems(unresolved, None, initial=True),
                         document_ids=resolved.document_ids, document_uses=resolved.document_uses,
                     ), {}
             task = authored_document_input(task_ref, resolved.input_documents["task"], python_tasks=tasks)
@@ -2574,7 +2585,7 @@ class _Compiler:
                 python_tasks=tasks, input_overrides=settings.input_overrides,
             )
             unpaired = paired if isinstance(paired, tuple) else paired.problems
-            refusals = _trial_problems(unpaired, initial=True)
+            refusals = _trial_problems(unpaired, source.document, initial=True)
             conditions = evaluation_conditions(task, tasks)
             if not unpaired:
                 assert not isinstance(paired, tuple)

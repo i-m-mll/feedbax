@@ -9,6 +9,7 @@ from pydantic import Field
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.project_sources import pointer
 
 
@@ -18,12 +19,31 @@ class StudioModelPlace(StrictModel):
     member: ModelAddress | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
+class StudioTaskStart(StrictModel):
+    """A Model value a trial starts, by its address and the name Studio draws it by."""
+
+    address: ModelAddress
+    name: str
+
+
+def task_start(model: ModelDocument, address: ModelAddress) -> StudioTaskStart:
+    """A Model value a trial starts, named by its components' names and its path below the reset or field slot."""
+    names, interior = [], model.interior
+    for id in (*address.composites, address.element.parent.id):
+        component = interior.components.get(id)
+        names.append(component.name if component is not None else id)
+        interior = getattr(component, "interior", interior)
+    return StudioTaskStart(address=address, name=" · ".join((*names, " ".join(map(str, address.element.path[1:])))))
+
+
 class StudioTaskPlace(StrictModel):
     part: Literal["task"]
     document: str | None
     parameter: str | None = Field(default=None, exclude_if=lambda value: value is None)
     initializes: str | None = Field(default=None, exclude_if=lambda value: value is None)
     """The id of the variable whose Initializes, the Model values its links start, the place names."""
+    start: StudioTaskStart | None = Field(default=None, exclude_if=lambda value: value is None)
+    """The Model value the place names that no variable initializes, drawn as a row at the foot of Variables."""
 
 
 class StudioObjectivePlace(StrictModel):
@@ -79,6 +99,7 @@ def path_parts(path: str | None) -> tuple[str, ...]:
 
 def _document_place(
     kind: str, document: str | None, rest: Sequence[str], member: ModelAddress | None, variable: str | None,
+    start: StudioTaskStart | None,
 ) -> StudioPlace:
     if kind == "model":
         return StudioModelPlace(part="model", document=document, member=member)
@@ -87,6 +108,7 @@ def _document_place(
             part="task", document=document,
             parameter=rest[1] if len(rest) > 1 and rest[0] == "params" else None,
             initializes=variable if rest[:1] == ("links",) else None,
+            start=start if rest[:1] == ("links",) else None,
         )
     return StudioObjectivePlace(part="objective", document=document)
 
@@ -98,13 +120,15 @@ def definition_place(
     element: str | None = None,
     member: ModelAddress | None = None,
     variable: str | None = None,
+    start: StudioTaskStart | None = None,
     variation: Callable[[str], str | None] = lambda _name: None,
 ) -> StudioPlace:
     """Name the part of a step's definition at ``parts``, a path from the step's root or its payload.
 
     ``document`` answers which project document supplies the definition at a slot such as
     ``payload.trial_documents.objective`` or ``payload.settings``, or ``None`` when the step holds it inline.
-    ``variable`` names the Task variable a link at ``parts`` belongs to, so the link is placed in its Initializes.
+    ``variable`` names the Task variable a link at ``parts`` belongs to, so the link is placed in its Initializes;
+    ``start`` names the Model value a link at ``parts`` is missing for, so it is placed at that value's row.
     ``variation`` answers the dotted path a named variation entry patches, so the entry is placed
     where its field lives.
     """
@@ -115,7 +139,7 @@ def definition_place(
         role, rest = parts[1], parts[2:]
         kind = _INPUT_DOCUMENTS.get(role)
         if kind is not None and (rest or member is not None):
-            return _document_place(kind, document(f"inputs.{role}"), rest, member, variable)
+            return _document_place(kind, document(f"inputs.{role}"), rest, member, variable, start)
         return StudioInputPlace(part="input", role=role)
     if parts[:1] == ("payload",):
         parts = parts[1:]
@@ -124,11 +148,11 @@ def definition_place(
         case "trial_documents" if rest:
             role = rest[0]
             kind = "model" if role == "model" else "task" if role in ("task", "python_task") else "objective"
-            return _document_place(kind, document(f"payload.trial_documents.{role}"), rest[1:], member, variable)
+            return _document_place(kind, document(f"payload.trial_documents.{role}"), rest[1:], member, variable, start)
         case "graph":
             return StudioModelPlace(part="model", document=document("payload.graph"), member=member)
         case "task" | "task_binding_spec":
-            return _document_place("task", document(f"payload.{field}"), rest, member, variable)
+            return _document_place("task", document(f"payload.{field}"), rest, member, variable, start)
         case "objective":
             return StudioObjectivePlace(part="objective", document=document("payload.objective"))
         case "training_config":
@@ -142,7 +166,7 @@ def definition_place(
         case "params" if rest[:1] == ("variation",):
             target = path_parts(variation(rest[1])) if len(rest) > 1 else ()
             if target[:1] == ("task",):
-                return _document_place("task", document("payload.task"), target[1:], member, variable)
+                return _document_place("task", document("payload.task"), target[1:], member, variable, start)
             return StudioModelPlace(part="model", document=None, member=member)
     if member is not None:
         model = document("payload.trial_documents.model") or document("payload.graph")

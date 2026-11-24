@@ -455,6 +455,9 @@ export const variableAnchor = (variable: string) => `task:${variable}:value`;
 /** The anchor of a task variable's Initializes, where a problem of its links is revealed. */
 export const initializesAnchor = (variable: string) => `task:${variable}:initializes`;
 
+/** The anchor of the row of a Model value no variable initializes, keyed by its address, which a problem reveals. */
+export const startAnchor = (address: string) => `task:start:${address}`;
+
 /**
  * The fields of the step's Task and Objective a sweep can start from, as Add Sweep items: the task's variables under
  * Task, and the terms' Weights under Objective. Choosing one goes to its field; the sweep is made by the text it commits.

@@ -27,6 +27,7 @@ from feedbax.contracts.request_specs import DocumentTrainingConfig, DocumentTrai
 from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.studio_authoring import StudioSweptParameterMissing
+from feedbax.contracts.studio_place import task_start
 from feedbax.studio.authoring import training_document_choice
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.contracts.studio_trials import (
@@ -257,16 +258,6 @@ def _expression_edit(change, documents, projection, bundle):
     return StudioTrialDocumentEdit(kind=role, edits=[SetProjectValue(
         op="replace" if stored else "add", path=path, value=parsed.value.model_dump(mode="json"),
     )])
-
-
-def _reset_name(model, address: ModelAddress) -> str:
-    """A Model field a trial starts from, by its components' names and its path below the reset or field slot."""
-    names, interior = [], model.interior
-    for id in (*address.composites, address.element.parent.id):
-        component = interior.components.get(id)
-        names.append(component.name if component is not None else id)
-        interior = getattr(component, "interior", interior)
-    return " · ".join((*names, " ".join(map(str, address.element.path[1:]))))
 
 
 def _end_of(document, role, rest) -> str | None:
@@ -1050,7 +1041,7 @@ def trial_authoring(
         inputs=_input_rows(documents, projected),
         outputs=[StudioTrialOutput(address=ModelAddress.from_text(value.id), value=value)
                  for value in paired.model.outputs] if paired else [],
-        resets=[StudioTrialReset(address=field.address, name=_reset_name(documents.model, field.address),
+        resets=[StudioTrialReset(address=field.address, name=task_start(documents.model, field.address).name,
                                  type=field.type, finest=field.finest, required=field.required)
                 for field in projected.resets],
         fields=[

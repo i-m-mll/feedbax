@@ -660,6 +660,8 @@ def test_a_start_the_model_requires_is_a_problem_until_a_variable_initializes_it
     overrides = {"reach_target": "target_pos"}
     unset = compile_task(doc.model_copy(update={"links": ()}), functions, model=required, input_overrides=overrides)
     assert [problem.path for problem in unset] == [("links", position)]
+    # Catches a missing start not tied to its Model value, which Studio could then name only by the Task's links.
+    assert unset[0].model_address == reset_position(interface)
     assert not isinstance(compile_task(doc, functions, model=required, input_overrides=overrides), tuple)
 
 
