@@ -61,7 +61,7 @@ test("a Measure's outer penalty is chosen in its parts, and a kind is left as it
   await table.getByRole('button', { name: 'Weight kind: Formula', exact: true }).click();
   await page.getByRole('menuitemradio', { name: 'Shape', exact: true }).click();
   await expect(weight).toHaveValue(`hold(${formula})`);
-  await expect(inspector.getByRole('combobox', { name: 'Function', exact: true })).toHaveText('hold');
+  await expect(inspector.getByRole('region', { name: 'Weight field', exact: true }).getByRole('combobox', { name: 'Function', exact: true })).toHaveText('hold');
   await expect(inspector.getByRole('img', { name: 'Weight curve', exact: true })).toBeVisible();
 });
 

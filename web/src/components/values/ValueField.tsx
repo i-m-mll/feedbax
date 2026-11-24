@@ -381,7 +381,11 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
     const shownDraw = held?.kind === 'draw' ? held.draw : drawOf(model);
     const centre = shownDraw && drawCentre(model, shownDraw);
     const present = centre ?? text;
-    if (kind !== 'until' && kind !== 'sweep') setPartDraft(model.id, undefined);
+    if (kind !== 'until' && kind !== 'sweep') {
+      setPartDraft(model.id, undefined);
+      setDraft(undefined);
+      setPending(undefined);
+    }
     switch (kind) {
       case 'sweep': case 'until': chosen.current = kind; return;
       case 'rest': void submit({ kind: 'text', text: 'rest' }); return;

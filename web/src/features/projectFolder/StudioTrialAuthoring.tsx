@@ -348,7 +348,7 @@ function TermWindow({ view, term, index, commit, labelId }: {
       const next = view.epochs.map(({ id }) => id)
         .filter((id) => id === epoch ? !epochs.includes(id) : epochs.includes(id));
       void commit?.(studioAccessibleName('set', studioName('window')),
-        { kind: 'objective', edits: [write(termPath(index) + '/epochs', next, has(term, 'epochs'))] });
+        { kind: 'objective', edits: [{ op: 'add', path: termPath(index) + '/epochs', value: next }] });
     }} />;
 }
 
