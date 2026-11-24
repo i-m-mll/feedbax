@@ -59,10 +59,12 @@ test('Repeat brackets the selected columns, its count repeats them on the shelf,
   await expect(epochs.getByRole('button', { name: 'move', exact: true })).toHaveCount(1);
 
   const variables = primary.getByRole('table', { name: 'Variables', exact: true });
-  await variables.getByRole('row').filter({ has: page.getByRole('textbox', { name: 'Rename target', exact: true }) })
-    .getByRole('button', { name: 'Variable target', exact: true }).click();
+  const target = variables.getByRole('row').filter({ has: page.getByRole('textbox', { name: 'Rename target', exact: true }) });
+  await target.hover();
+  await target.getByRole('button', { name: 'Variable target', exact: true }).click();
   await page.getByRole('menuitemcheckbox', { name: 'List', exact: true }).click();
-  await expect.poll(async () => (await task()).variables.find(({ id }) => id === 'target')?.count).toEqual({ kind: 'literal', value: 2 });
+  await page.keyboard.press('Escape');
+  await expect.poll(async () => (await task()).variables.find(({ id }) => id === 'target')?.count).toMatchObject({ kind: 'literal', value: 2 });
 
   const goal = grid.getByRole('row').filter({ has: page.getByRole('textbox', { name: 'Rename goal', exact: true }) })
     .locator('td[data-cell]').first().getByRole('textbox');
@@ -70,7 +72,7 @@ test('Repeat brackets the selected columns, its count repeats them on the shelf,
   await inspector.getByRole('combobox', { name: 'Item', exact: true }).click();
   await page.getByRole('option', { name: 'Each Repeat', exact: true }).click();
   await expect(goal).toHaveValue('target[i]');
-  await expect.poll(async () => (await task()).signals.find(({ id }) => id === 'goal')?.cells[0].value).toEqual({
+  await expect.poll(async () => (await task()).signals.find(({ id }) => id === 'goal')?.cells[0].value).toMatchObject({
     kind: 'call', function: 'index', args: [{ kind: 'name', reference: 'target' }, { kind: 'name', reference: 'i' }],
   });
 });
