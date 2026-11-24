@@ -249,6 +249,7 @@ class StudioTrainStartRequest(StrictModel):
 class StudioTrainStartEdit(StrictModel):
     revision: Sha256
     files: list[StudioProjectFilePatch]
+    problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
 
 
 class StudioSweptParameterMissing(StrictModel):
