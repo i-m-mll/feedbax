@@ -10,6 +10,7 @@ import type { DocumentPickerModel } from '@/features/projectWindow/DocumentPicke
 import { bindStudioCommand, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import type { Project, StudioSetEditRequest, StudioSetEdit } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
+import { documentPayload } from './documentPayload';
 import type { ProjectEditController } from './projectEditController';
 import { unvalued } from './projectWindowPlan';
 import type { Refusal } from './refusals';
@@ -98,6 +99,7 @@ export function setAuthoring({ editor, project, applies, perform, state, select 
     if (!read || !('set' in read)) return undefined;
     const document = read.set;
     const kind = studioName('setDocument');
+    const composes = documentPayload(project.documents, editor.getSnapshot().saved.composed, document) !== undefined;
     const point = (next: string) => editor.editFiles(studioAccessibleName('select', kind), [{
       address: { kind: 'step', id: step },
       patches: [{ op: 'replace', path: authoredPointer(['sweep', 'axes', axis, 'set']), value: next }],
@@ -112,7 +114,7 @@ export function setAuthoring({ editor, project, applies, perform, state, select 
           await editor.flush();
         }, refuseStep(step));
       } : undefined,
-      duplicate: applies ? async () => {
+      duplicate: applies && composes ? async () => {
         let copy: string | undefined;
         await perform(async () => {
           const result = await editor.memberCommand(studioAccessibleName('duplicate', kind),
@@ -140,7 +142,7 @@ export function setAuthoring({ editor, project, applies, perform, state, select 
         },
         held: new Set(Object.keys(project.documents ?? {})),
       } : undefined,
-      detach: applies && 'base' in (project.documents?.[document] ?? {}) ? () => {
+      detach: applies && composes && 'base' in (project.documents?.[document] ?? {}) ? () => {
         void perform(async () => {
           await editor.memberCommand(studioAccessibleName('detach', kind),
             { kind: 'detach', member: document }, editor.getSnapshot().saved);

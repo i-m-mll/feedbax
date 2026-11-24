@@ -253,8 +253,12 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   }, [projection.data, hasValue]);
   const removed = useMemo(() => [...marked.values()].flatMap(({ difference }) =>
     difference.change === 'removed' ? [difference] : []), [marked]);
-  /** Why the service refuses an evaluation's read: it lands on the Model picker, and the view shows the read document. */
-  const refused = evaluate && isRefusal(attachments.error) ? shownError(attachments.error) : undefined;
+  /**
+   * Why an evaluation's Model cannot be drawn: the service refused the read, or the Problem that leaves it no Model.
+   * It lands on the Model picker, and the view shows the read document.
+   */
+  const refused = evaluate && isRefusal(attachments.error) ? shownError(attachments.error)
+    : evaluate && attachments.data && !attachments.data.resolved_model ? attachments.data.problems?.[0]?.detail : undefined;
   /** A selected value's Model is the one its runs read; what it removes from the document is drawn as a ghost. */
   const shownModel = evaluate && !refused ? effectiveModel : valueRuns && projection.data?.resolved_model || model?.value;
   const drawnModel = useMemo(() => shownModel && withRemoved(shownModel, removed), [shownModel, removed]);

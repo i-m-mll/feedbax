@@ -175,7 +175,13 @@ export function useManagedAnalyze({
     accepts: (id: string) => armed.accepts({ kind: 'element', address: { document, element: { kind: 'named', id } } }),
     choose: (id: string) => { choosePick(selection, { kind: 'element', address: { document, element: { kind: 'named', id } } }); },
   } : null, [armed, document, selection]);
-  const diagnostics = (projection?.window_map?.problems ?? []).filter((problem) => id &&
+  /** The plan's Problems, with those the card's own read adds, such as a states input that reads no Evaluate runs. */
+  const cardProblems = useMemo(() => {
+    const planned = projection?.window_map?.problems ?? [];
+    const seen = new Set(planned.map((problem) => JSON.stringify(problem)));
+    return [...planned, ...(catalog?.problems ?? []).filter((problem) => !seen.has(JSON.stringify(problem)))];
+  }, [projection?.window_map?.problems, catalog?.problems]);
+  const diagnostics = cardProblems.filter((problem) => id &&
     problem.variant === key?.variant && problem.step === key?.step && problem.row === key?.row);
   const planned = new Map(projection?.window_map?.analysis_elements?.filter(({ key }) => savedRunId(key) === id)
     .map((item) => [item.name, item]));
@@ -384,7 +390,7 @@ export function useManagedAnalyze({
         const subset = steps.find(({ id }) => id === key.step)?.inputs.find(({ id }) => id === (listed ? `${selected}.${index}` : selected))?.subset;
         const source = steps.find(({ id }) => id === reference.step);
         const where = reference.where ?? {};
-        const problems = selectionProblems(projection?.window_map?.problems ?? [], key.step, key.variant, selected, index, listed);
+        const problems = selectionProblems(cardProblems, key.step, key.variant, selected, index, listed);
         const write = (terms: SubsetTerms) => {
           const next = { ...reference, where: terms };
           bind(selected, listed ? changedSelections(stepSelections(binding)!, { kind: 'replace', index, reference: next }) : next);

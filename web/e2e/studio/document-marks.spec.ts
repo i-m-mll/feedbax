@@ -89,7 +89,7 @@ test('a based document marks the value it changes, and Reset of its only one giv
 test('an edit in an Evaluate step\'s Model view makes a document for the evaluation alone', async ({ page, request }) => {
   test.setTimeout(60_000);
   const { snapshot, requests, documents } = await project(request, [evaluation('check', 'train')]);
-  const { picker, menu, mass, card, open, setMass } = modelView(page);
+  const { primary, picker, menu, mass, card, open, setMass } = modelView(page);
 
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await open('check');
@@ -110,7 +110,23 @@ test('an edit in an Evaluate step\'s Model view makes a document for the evaluat
 
   await picker.click();
   await expect(menu.getByRole('menuitemradio')).toHaveText(['Point mass', 'point-mass-2']);
-  await expect(menu.getByRole('menuitem', { name: 'Detach', exact: true })).toHaveCount(0);
+  // Detach is stored though the evaluation then shares no Model with its subject: the Problem lands on the Model
+  // picker, the view still draws the read document, and the step's Task stays readable.
+  await menu.getByRole('menuitem', { name: 'Detach', exact: true }).click();
+  await expect.poll(async () => (await documents())['point-mass-2']).not.toHaveProperty('base');
+  const header = primary.locator('.studio-window-slot__header');
+  await expect(header.getByRole('alert')).toHaveCount(1);
+  await expect(primary.locator('.react-flow__node').filter({ hasText: 'Point mass' })).toBeVisible();
+  await page.getByRole('tab', { name: 'Task', exact: true }).click();
+  await expect(header.getByRole('button', { name: /^Task Document / })).toBeEnabled();
+  await expect(header.getByRole('alert')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: /^Undo\b/ }).click();
+  await expect.poll(async () => (await documents())['point-mass-2']).toMatchObject({ base: { document: 'point-mass' } });
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  await expect(header.getByRole('alert')).toHaveCount(0);
+
+  await picker.click();
   await menu.getByRole('menuitem', { name: 'Duplicate', exact: true }).click();
   const rename = page.locator('[data-slot="primary"]').getByRole('tabpanel').locator('.studio-window-slot__header').getByRole('textbox');
   await expect(rename).toBeFocused();

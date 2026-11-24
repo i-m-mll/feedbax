@@ -12,7 +12,7 @@ import type {
   Document, StudioProjectFilePatch, StudioSavedTrainKey, StudioTrialAuthoringRequest,
 } from '@/generated/studioContracts';
 import type { ProjectEditController } from './projectEditController';
-import { baseOf } from './documentPayload';
+import { baseOf, documentPayload } from './documentPayload';
 import { generatedName, holds, keyOfLabel } from './generatedName';
 
 export type DocumentRole = 'model' | 'task' | 'objective' | 'training' | 'analysis' | 'report';
@@ -191,6 +191,8 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
     const count = sharing && { lit: sharing.lit.size, users: sharing.users.size };
     const documents = documentTree(saved.project, role);
     const based = 'base' in (saved.project.documents?.[document] ?? {});
+    /** Duplicate and Detach write the document's composed content, which a base chain that does not compose lacks. */
+    const composes = documentPayload(saved.project.documents, saved.composed, document) !== undefined;
     const kind = studioName(role);
     const repoint = editable && !!stepId && selectable.has(role);
     return {
@@ -206,7 +208,7 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
           saved.revision, (snapshot) => use(role, id, snapshot.revision));
         return id;
       }) : undefined,
-      duplicate: repoint ? () => attempt(role, async () => {
+      duplicate: repoint && composes ? () => attempt(role, async () => {
         const result = await editor.memberCommand(studioAccessibleName('duplicate', kind),
           { kind: 'duplicate', family: 'documents', member: document }, editor.getSnapshot().saved,
           (result) => use(role, result.member, result.snapshot.revision));
@@ -223,7 +225,7 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
         },
         held: new Set(Object.keys(saved.project.documents ?? {})),
       } : undefined,
-      detach: editable && based ? () => {
+      detach: editable && based && composes ? () => {
         void attempt(role, () => editor.memberCommand(studioAccessibleName('detach', kind),
           { kind: 'detach', member: document }, editor.getSnapshot().saved));
       } : undefined,
