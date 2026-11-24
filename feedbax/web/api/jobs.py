@@ -39,7 +39,7 @@ from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.receipt_validity import ReceiptValidity, ValidityAcceptance, ValidityAction
-from feedbax.contracts.workspace_replay import WorkspaceReplayTrial
+from feedbax.contracts.trial_record import StudioTrialReplayResponse
 from feedbax.host import HostError
 from feedbax.jobs import JobConflict, JobNotFound, JobService
 from feedbax.orchestration.session import SessionError
@@ -209,7 +209,7 @@ def approve_saved_run(
 @router.post("/projects/{project_id}/evaluate-replay")
 def saved_evaluation_replay(
     project_id: ProjectName, body: StudioSavedEvaluationReplayRequest, request: Request, response: Response,
-) -> WorkspaceReplayTrial:
+) -> StudioTrialReplayResponse:
     return _evaluation_response(
         response, lambda: request.app.state.project_plan.evaluation_replay(project_id, body),
     )

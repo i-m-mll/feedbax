@@ -1,11 +1,10 @@
 import { useAuthoringCatalog } from '@/api/studioAuthoring';
 import { studioAccessibleName, studioName, studioValueType } from '@/components/activity/studioVocabulary';
 import { reasonOf, type FieldModel } from '@/components/values/fieldModel';
-import { fromFieldView } from '@/components/values/adapters/fieldView';
 import { rawField } from '@/components/values/adapters/raw';
 import type { StudioNamedValueType, TaskDocument, ValueType } from '@/generated/studioContracts';
 import { authoredPointer } from '../authoredEdits';
-import { changedAt, expressionKind, type Commit, type TrialRuns, type TrialView } from '../StudioTrialAuthoring';
+import { changedAt, expressionKind, trialField, type Commit, type TrialRuns, type TrialView } from '../StudioTrialAuthoring';
 import { TaskGrid, type GridEdits } from './TaskGrid';
 import { TaskInspector } from './TaskInspector';
 import type { TrialShown } from './trialSample';
@@ -24,14 +23,10 @@ function projected(view: TrialView, parts: readonly string[], stored: string, op
   const projection = view.fields.find((field) => field.path === path);
   if (!projection) return rawField({ id: options.id, label: options.label, value: '', type: { kind: 'readOnly' } });
   const { commit, runs } = options;
-  const [problem] = projection.problems ?? [];
-  return {
-    ...fromFieldView({ ...projection, label: options.label, effective: runs?.selected ? projection.effective : null }, {
-      id: options.id, kind: expressionKind(options.value as never), changed: changedAt(view, 'task', stored, commit),
-      commit: commit && ((edit) => commit(studioAccessibleName('set', options.name), { kind: 'expression', path, edit })),
-    }),
-    reason: problem?.reason, span: problem?.span ?? undefined,
-  };
+  return trialField(projection, options.label, runs, {
+    id: options.id, kind: expressionKind(options.value as never), changed: changedAt(view, 'task', stored, commit),
+    commit: commit && ((edit) => commit(studioAccessibleName('set', options.name), { kind: 'expression', path, edit })),
+  });
 }
 
 /**
@@ -118,8 +113,8 @@ function gridEdits(task: TaskDocument, commit?: Commit): GridEdits {
       [{ op: 'set_span', signal: id, cell: cell.id, first_epoch: cell.first, last_epoch: cell.first }]),
     absent: (id, cells) => make(studioAccessibleName('absent', signal(id)),
       cells.map((cell) => ({ op: 'absent', signal: id, cell }))),
-    present: (id, epochs) => make(studioAccessibleName('set', signal(id)),
-      epochs.map((at) => ({ op: 'present', signal: id, epoch: at }))),
+    present: (id, epochs, text) => make(studioAccessibleName('set', signal(id)),
+      epochs.map((at) => ({ op: 'present', signal: id, epoch: at, ...text === undefined ? {} : { text } }))),
   };
 }
 

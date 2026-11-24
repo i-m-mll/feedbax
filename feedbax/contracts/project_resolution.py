@@ -14,6 +14,7 @@ from pydantic import JsonValue, ValidationError
 from pydantic_core import to_json, to_jsonable_python
 
 from feedbax.contracts.base import sha256_bytes
+from feedbax.contracts.expression_values import TextSpan
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.matrix_core import apply_override_patch_copy, resolve_segment
@@ -123,6 +124,7 @@ class ProjectDiagnostic:
     """The dotted path the variation entry at ``path`` patches, which places the problem."""
     blocked_by: RunKey | None = None
     """For ``blocked_input``, the producer row that cannot run."""
+    span: TextSpan | None = None
 
 
 @dataclass(frozen=True)

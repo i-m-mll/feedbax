@@ -9,6 +9,7 @@ from feedbax.contracts.model_edit import ModelPortProjection, ModelProjection
 from feedbax.contracts.expression_check import references
 from feedbax.compiler.graph_schema import _enumerate_graph_ports
 from feedbax.contracts.project import BasedDocument
+from feedbax.contracts.trial_bindings import selected_signal_id
 from feedbax.planner.project_plan import RunKey
 from feedbax.project_folder import model_edit_source
 from feedbax.project_model_selection import selected_model as selected_model, selected_model_and_task, task_signal
@@ -54,8 +55,12 @@ def model_projection(folders, project_id, body, components):
     differences = model_differences(folders, project_id, body)
     model, task, objective, overrides = selected_model_and_task(folders, project_id, body)
     task_signals = tuple(task_signal(item) for item in task.exposed_data if item.bindable)
-    names = {signal.id for signal in task_signals}
-    supplied = {port.name for port in model.ports.inputs if overrides.get(port.name, port.name) in names}
+    names = {signal.label: signal.id for signal in task_signals}
+    ids = set(names.values())
+    supplied = {
+        port.name for port in model.ports.inputs
+        if selected_signal_id(port.id, port.name, names, overrides) in ids
+    }
     try:
         lowered = lower_model_document(
             model, components, supplied_inputs=frozenset(supplied),
