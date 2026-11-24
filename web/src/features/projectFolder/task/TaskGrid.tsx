@@ -39,6 +39,10 @@ export interface GridEdits {
   absent?(signal: string, cells: readonly string[]): Made;
   /** A cell over each of `epochs`, which no cell of the signal spans, holding `text` or else the absent value. */
   present?(signal: string, epochs: readonly string[], text?: string): Made;
+  /** Repeats the adjacent epochs from `first` through `last`. */
+  repeat?(first: string, last: string): Made;
+  /** Removes the repeat; its epochs stay. */
+  removeRepeat?(id: string): Made;
 }
 
 /**
@@ -218,6 +222,8 @@ export function TaskGrid({ epochs, repeats, signals, selected, select, edits }: 
       ? ids.slice(columns.first, columns.last + 1) : [epoch.id];
     const remove = edits.removeEpochs && chosen.length < epochs.length
       ? () => settle(chosen[0], edits.removeEpochs!(chosen)) : undefined;
+    const bracketed = repeats.some(({ first, last }) => index(first) <= index(chosen.at(-1)!) && index(last) >= index(chosen[0]));
+    const repeat = edits.repeat && !bracketed ? () => settle(chosen[0], edits.repeat!(chosen[0], chosen.at(-1)!)) : undefined;
     return {
       on: 'epoch', of: epoch.name,
       items: <>
@@ -225,10 +231,17 @@ export function TaskGrid({ epochs, repeats, signals, selected, select, edits }: 
         <MenuItem disabled={!edits.addEpoch} onClick={() => setAdding({ kind: 'epoch', at: index(epoch.id) })}>
           {studioName('insertEpoch')}
         </MenuItem>
+        <MenuItem disabled={!repeat} onClick={repeat}>{studioName('repeat')}</MenuItem>
         <MenuItem disabled={!remove} onClick={remove}>{studioName('remove')}</MenuItem>
       </>,
     };
   };
+  const repeatCommands = (repeat: TaskRepeat): Commands => ({
+    on: 'repeat', of: `${epochs[index(repeat.first)]?.name}–${epochs[index(repeat.last)]?.name}`,
+    items: <MenuItem disabled={!edits.removeRepeat} onClick={() => settle(repeat.id, edits.removeRepeat?.(repeat.id))}>
+      {studioName('remove')}
+    </MenuItem>,
+  });
   const signalCommands = (signal: TaskSignal, row: number, rename: () => void): Commands => ({
     on: 'signal', of: signal.name,
     items: <>
@@ -266,7 +279,8 @@ export function TaskGrid({ epochs, repeats, signals, selected, select, edits }: 
       disabled: !!adding }}
     addRow={edits.addSignal && { label: studioName('addSignal'), onAdd: () => setAdding({ kind: 'signal' }), disabled: !!adding }}>
     <thead>
-      {repeats.length > 0 && <RepeatLane epochs={epochs} repeats={repeats} selected={selected} select={select} />}
+      {repeats.length > 0 && <RepeatLane epochs={epochs} repeats={repeats} selected={selected} select={select}
+        commands={repeatCommands} refusal={refusal} />}
       <TableHeaderRow>
         <TableHeaderCell aria-hidden="true" />
         {epochs.flatMap((epoch, column) => [
@@ -408,29 +422,39 @@ function NewMember({ name, add, done, header }: { name: StudioNameId; add(name: 
     : <TableFieldCell header>{input}</TableFieldCell>;
 }
 
-/** The repeats over the columns, as a lane above them: a bracket over each, its count a field at its end. */
-function RepeatLane({ epochs, repeats, selected, select }: {
+/**
+ * The repeats over the columns, as a lane above them: a bracket over each, its count a field at its end. A bracket is
+ * selected by a click and removed from its menu, which keeps its epochs.
+ */
+function RepeatLane({ epochs, repeats, selected, select, commands, refusal }: {
   epochs: readonly TaskEpoch[]; repeats: readonly TaskRepeat[]; selected?: TaskSelection; select(selection: TaskSelection): void;
+  commands(repeat: TaskRepeat): Commands; refusal?: { readonly at: string; readonly reason: string };
 }) {
   const cells: ReactNode[] = [];
   for (let index = 0; index < epochs.length;) {
     const repeat = repeats.find(({ first }) => first === epochs[index].id);
-    if (!repeat) {
+    const last = repeat ? epochs.findIndex(({ id }) => id === repeat.last) : -1;
+    if (!repeat || last < index) {
       cells.push(<th key={epochs[index].id} aria-hidden="true" />);
       index += 1;
       continue;
     }
-    const last = epochs.findIndex(({ id }) => id === repeat.last);
     const span = last - index + 1;
     const selection = { kind: 'repeat', id: repeat.id } as const;
     const chosen = sameSelection(selection, selected);
-    cells.push(<th key={repeat.id} colSpan={span} scope="colgroup" aria-label={studioName('repeat')}
-      className="px-1 pb-0.5 pt-1 font-normal" onPointerDown={() => { if (!chosen) select(selection); }}>
-      <span className={clsx('flex items-end gap-1', chosen && 'text-shell-foreground')}>
-        <span aria-hidden="true" className={clsx('h-2 grow border-x border-t', chosen ? 'border-shell-foreground' : 'border-shell-muted')} />
-        <span className="flex w-16 shrink-0 items-center gap-0.5 text-xs text-shell-muted">×<ValueField form="cell" model={repeat.count} /></span>
-      </span>
-    </th>);
+    const own = commands(repeat);
+    const reason = refusal?.at === repeat.id ? refusal.reason : repeat.reason;
+    cells.push(<WithContextMenu key={repeat.id} commands={own} onOpen={() => { if (!chosen) select(selection); }} trigger={
+      <th colSpan={span} scope="colgroup" aria-label={studioAccessibleName('repeat', own.of)} data-repeat={repeat.id}
+        className="group/owner relative px-1 pb-0.5 pt-1 font-normal"
+        onPointerDown={(event) => { if (!onControl(event) && !chosen) select(selection); }}>
+        <span className={clsx('flex items-end gap-1', chosen && 'text-shell-foreground')}>
+          <span aria-hidden="true" className={clsx('h-2 grow border-x border-t', chosen ? 'border-shell-foreground' : 'border-shell-muted')} />
+          {reason && <FieldProblem reason={reason} />}
+          <span className="flex w-16 shrink-0 items-center gap-0.5 text-xs text-shell-muted">×<ValueField form="cell" model={repeat.count} /></span>
+          {chosen && <SelectionMenu commands={own} />}
+        </span>
+      </th>} />);
     index = last + 1;
   }
   return <tr><TableMarginCell header /><th aria-hidden="true" />{cells}</tr>;

@@ -11,7 +11,8 @@ import { studioName } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { studioRegionIssue, StudioRegion } from '@/components/activity/StudioRegion';
-import { sceneTimeline } from '@/components/scene/sceneView';
+import type { SceneTrial } from '@/components/scene/trialScene';
+import { frameAt } from '@/components/timeline/trialClock';
 import type { Problem, StudioSavedEvaluationRow, TaskDocument, TrialRecord } from '@/generated/studioContracts';
 import { selectElement, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import { showProjectWindowView, type ProjectWindowState, type ProjectWindowView } from '@/features/projectWindow/projectWindowState';
@@ -32,6 +33,7 @@ interface TrialClockInputs {
   readonly taskDocument: string | undefined;
   readonly stored: StoredModel | undefined;
   readonly evaluation: StudioSavedEvaluationRow | undefined;
+  /** Whether a Scene is shown, which draws the samples a trial may be beside the one shown. */
   readonly sceneVisible: boolean;
   /** The view the shelf's open state is kept for: the main slot's. */
   readonly shelfView: ProjectWindowView | undefined;
@@ -55,11 +57,12 @@ function problemElement(task: TaskDocument, problem: Problem): string | undefine
  * recorded trial) or the samples' aggregate; the Problems that keep it from being drawn; or nothing while it is read.
  */
 function useShown(pick: TrialPick | undefined, clock: TrialClock, offer: TrialOffer, view: TrialView | undefined,
-  stored: StoredModel | undefined, recorded: TrialRecord | undefined) {
+  stored: StoredModel | undefined, recorded: TrialRecord | undefined, sceneVisible: boolean) {
   const count = sampleCount(clock, offer);
   const sampled = pick?.trials === 'samples';
   const nominal = useNominalTrial(view, stored?.value, pick?.trials === 'nominal');
-  const samples = useTaskSamples(view, stored?.value, clock.seed, count, sampled && pick.showing.kind === 'one');
+  const possibleShown = sceneVisible && count > 0 && (pick?.trials === 'nominal' || pick?.showing.kind === 'all');
+  const samples = useTaskSamples(view, stored?.value, clock.seed, count, sampled && pick.showing.kind === 'one' || possibleShown);
   const batch = useTaskBatch(view, stored?.value, clock.seed, count, sampled && pick.showing.kind === 'all');
   const one = (drawn: TrialRecord[] | TrialsUnavailable | undefined, index: number, of: number): TrialShown | TrialsUnavailable | undefined => {
     if (!drawn || !Array.isArray(drawn)) return drawn;
@@ -85,8 +88,11 @@ function useShown(pick: TrialPick | undefined, clock: TrialClock, offer: TrialOf
   };
   const query = pick?.trials === 'nominal' ? nominal : pick?.trials === 'samples' ? pick.showing.kind === 'all' ? batch : samples
     : undefined;
-  return { shown: read(), query };
+  const possible = possibleShown && Array.isArray(samples.data) ? samples.data : noRecords;
+  return { shown: read(), query, possible };
 }
+
+const noRecords: readonly TrialRecord[] = [];
 
 /**
  * The shelf's rows for what is shown: the nominal trial as its definition draws it, with each drawn length's spread;
@@ -120,15 +126,20 @@ export function useTrialClock({
   };
   const pick = shownPick(clock, offer);
   const index = pick?.showing.kind === 'one' ? pick.showing.index : undefined;
-  const replay = useSavedEvaluationScene(projectId, revision, evaluation, sceneVisible,
+  const replay = useSavedEvaluationScene(projectId, revision, evaluation,
     pick?.trials === 'recorded' ? index : undefined, playhead);
-  const recordedTrial = replay.view.kind === 'replay' ? replay.view.trial : undefined;
-  const { shown, query } = useShown(pick, clock, offer, view, stored, recordedTrial);
+  const recordedTrial = replay.read.kind === 'read' ? replay.read : undefined;
+  const { shown, query, possible } = useShown(pick, clock, offer, view, stored, recordedTrial?.record, sceneVisible);
   const drawn = view && taskDocument ? shelfTask(view, taskDocument) : undefined;
-  const rows = pick?.trials === 'nominal' && drawn ? nominalRows(drawn) : pick && shown && (drawn && period != null ? rowsOf(drawn, pick, shown, period) : []);
   const [taskTime, setTaskTime] = usePlayhead(playhead, JSON.stringify(['task', taskDocument, pick, clock.seed]));
   const [time, setTime] = pick?.trials === 'recorded' ? [replay.time, replay.setTime] : [taskTime, setTaskTime];
-  const replayTimeline = pick?.trials === 'recorded' ? sceneTimeline(replay.view) : null;
+  const stateTime = pick?.trials === 'recorded' ? recordedTrial?.stateTime : undefined;
+  const replayTimeline = stateTime && stateTime.length > 1 && stateTime[stateTime.length - 1] > 0
+    ? { duration: stateTime[stateTime.length - 1], frameTimes: [...stateTime] } : null;
+  /** A recorded trial's step is its run's; any other trial's is the step's Model's. */
+  const step = replayTimeline ? replayTimeline.frameTimes[1] : period;
+  const rows = pick?.trials === 'nominal' && drawn ? nominalRows(drawn)
+    : pick && shown && (drawn && step != null ? rowsOf(drawn, pick, shown, step) : []);
   const epochs = rows?.find((row) => row.kind === 'segments');
   const timeline: ClockTimeline = replayTimeline
     ? { duration: replayTimeline.duration, frameTimes: replayTimeline.frameTimes, bands: [] }
@@ -152,8 +163,17 @@ export function useTrialClock({
       onClick={() => choose(problem)}>{problem.reason}</Button>
     : <span key={at} className="block">{problem.reason}</span>);
   const showing = pick?.showing.kind === 'all' ? 'all' : 'one';
+  const scene: SceneTrial = {
+    shown: shown?.kind === 'problems' ? undefined : shown,
+    possible,
+    frame: frameAt(timeline.frameTimes, time),
+    task: task && taskDocument ? { document: taskDocument, value: task } : undefined,
+    ...pick?.trials === 'recorded' && replay.read.kind === 'failed' && { failure: replay.read },
+  };
   return {
     replay,
+    /** What the Scene draws: the shown trial at the playhead's frame, the trials it may be, and the task. */
+    scene,
     /** What the Variables table and the Inspector show, when it can be drawn. */
     trial: shown?.kind === 'problems' ? undefined : shown,
     clock: pick && <ClockGroup offer={offer} clock={clock} shown={pick} recordedLabels={recorded.labels} onChange={change}

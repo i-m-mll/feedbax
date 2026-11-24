@@ -13,6 +13,7 @@ import { authoredPointer } from './authoredEdits';
 import type { ProjectEditController } from './projectEditController';
 import { unvalued } from './projectWindowPlan';
 import type { Refusal } from './refusals';
+import { filesRemoval, type ConfirmRunRemoval } from './runRemoval';
 import { documentTreeOf } from './useProjectDocuments';
 
 export const setSchema = 'feedbax.set_document.v1';
@@ -28,6 +29,7 @@ export interface SetAuthoringInputs {
   readonly perform: Perform;
   readonly state: () => PipelineSelectionState;
   readonly select: (state: PipelineSelectionState) => void;
+  readonly confirmRemoval: ConfirmRunRemoval;
 }
 
 /** The authored axis of a step's sweep, when the step authors it. */
@@ -41,12 +43,14 @@ function runKey(run: PlanRunView) {
   return { variant, step, row };
 }
 
-export function setAuthoring({ editor, project, applies, perform, state, select }: SetAuthoringInputs) {
+export function setAuthoring({ editor, project, applies, perform, state, select, confirmRemoval }: SetAuthoringInputs) {
   const refuseStep = (step: string) => (reason: string): Refusal => ({ kind: 'step', step, reason });
 
-  async function store(name: string, command: SetCommand): Promise<StudioSetEdit | undefined> {
+  /** Stores the edit `command` makes; one that removes runs first asks when some of them cost a confirmation. */
+  async function store(name: string, command: SetCommand, removes = false): Promise<StudioSetEdit | undefined> {
     const { saved } = editor.getSnapshot();
     const edit = await prepareSetEdit(saved.project_id, { revision: saved.revision, command }, editor.signal);
+    if (removes && !await confirmRemoval(filesRemoval(saved.project_id, edit.revision, edit.files, editor.signal))) return undefined;
     const stored = await editor.storeEdit(name, { files: edit.files, created: edit.created }, { reviewedRevision: edit.revision });
     if (stored.status === 'refused') throw stored.error;
     await editor.flush();
@@ -81,15 +85,44 @@ export function setAuthoring({ editor, project, applies, perform, state, select 
     });
   }
 
-  /** Save Set and Inline Set on a step's authored axis. */
-  function axisCommands(step: string, axis: string): StudioCommand[] {
+  const refuseAxis = (step: string, axis: string) => (reason: string): Refusal => ({ kind: 'axis', step, axis, reason });
+
+  /**
+   * Save Set and Inline Set on a step's authored axis, which convert between its values and the Model differences of a
+   * Set and so apply only while the step reads a Model document (`model`), and Add Entry on an axis whose Set has no
+   * entries (`empty`), which Duplicate Run cannot copy one of.
+   */
+  function axisCommands(step: string, axis: string, { model, empty }: { model: boolean; empty: boolean }): StudioCommand[] {
     const read = authoredAxis(project, step, axis);
     if (!read) return [];
-    const command = (id: 'saveSet' | 'inlineSet', kind: 'save_set' | 'inline_set') => bindStudioCommand(id, () => {
-      void perform(async () => { await store(studioAccessibleName(id, axis), { kind, step, axis }); },
-        (reason) => ({ kind: 'axis', step, axis, reason }));
-    }, { subject: axis, instance: JSON.stringify([step, axis]), enabled: applies });
-    return 'set' in read ? [command('inlineSet', 'inline_set')] : 'values' in read ? [command('saveSet', 'save_set')] : [];
+    const command = (id: 'saveSet' | 'inlineSet' | 'addEntry', edit: SetCommand, enabled = applies) => bindStudioCommand(id, () => {
+      void perform(async () => {
+        const stored = await store(studioAccessibleName(id, axis), edit);
+        if (stored?.selected) select(selectSweepValue(state(), step, stored.selected.axis, stored.selected.value));
+      }, refuseAxis(step, axis));
+    }, { subject: axis, instance: JSON.stringify([step, axis]), enabled });
+    if ('values' in read) return [command('saveSet', { kind: 'save_set', step, axis }, applies && model)];
+    if (!('set' in read)) return [];
+    return [
+      ...empty ? [command('addEntry', { kind: 'add_set_entry', step, axis })] : [],
+      command('inlineSet', { kind: 'inline_set', step, axis }, applies && model),
+    ];
+  }
+
+  /**
+   * Removes `value` from a step's authored axis of named values, or its entry from the Set the axis reads. The last
+   * entry of a required Set is removed too, leaving the Set empty with its Problem. None removes the runs an optional
+   * axis keeps, or a value of another kind of axis.
+   */
+  function removeValue(step: string, axis: string, value: string, label: string): StudioCommand | undefined {
+    const read = authoredAxis(project, step, axis);
+    if (value === unvalued || !read || !('set' in read || 'values' in read)) return undefined;
+    const name = 'set' in read ? 'removeEntry' : 'removeValue';
+    return bindStudioCommand('removeValue', () => {
+      void perform(async () => {
+        await store(studioAccessibleName(name, label), { kind: 'remove_value', step, axis, value }, true);
+      }, refuseAxis(step, axis));
+    }, { name, subject: label, instance: JSON.stringify([step, axis, value]), enabled: applies });
   }
 
   /** The set an axis reads, as the document picker shows a view's document; none for an inline axis. */
@@ -183,7 +216,7 @@ export function setAuthoring({ editor, project, applies, perform, state, select 
     };
   }
 
-  return { duplicateRun, axisCommands, axisPicker, applySet, combination };
+  return { duplicateRun, axisCommands, removeValue, axisPicker, applySet, combination };
 }
 
 export type SetAuthoring = ReturnType<typeof setAuthoring>;

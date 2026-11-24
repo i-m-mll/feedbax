@@ -169,14 +169,16 @@ export function StudioSettings({ project }: { project?: ReactNode }) {
 }
 
 /** The open project's settings, which are written to the project. */
-export function ProjectSettingRows({ settings, steps, change }: {
+export function ProjectSettingRows({ settings, defaultDays, steps, change }: {
   settings: Readonly<Record<string, unknown>>;
+  /** The days superseded runs are kept while the project names none. */
+  defaultDays: number | null | undefined;
   steps: readonly { id: string; label: string }[];
   change: (name: string, setting: 'keep_superseded' | 'run_only_on_request', value: JsonValue) => void;
 }) {
   const [draft, setDraft] = useState<number | null>();
   const stored = settings.keep_superseded;
-  const days = stored === 'none' ? 0 : typeof stored === 'number' ? stored : defaultSupersededDays;
+  const days = stored === 'none' || stored === null ? 0 : typeof stored === 'number' ? stored : defaultDays ?? null;
   const held = new Set(Array.isArray(settings.run_only_on_request) ? settings.run_only_on_request as string[] : []);
   const keepLabel = studioName('keepSuperseded');
   const holdLabel = studioName('manualSteps');
@@ -204,6 +206,3 @@ export function ProjectSettingRows({ settings, steps, change }: {
     </>
   );
 }
-
-/** `DEFAULT_SUPERSEDED_DAYS` of `feedbax/persistence/reachability.py`, which applies while the project names none. */
-const defaultSupersededDays = 14;

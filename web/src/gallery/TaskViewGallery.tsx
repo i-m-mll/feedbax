@@ -12,6 +12,7 @@ import { TaskVariables } from '@/features/projectFolder/task/TaskVariables';
 import type { TaskDocumentView, TaskSelection } from '@/features/projectFolder/task/taskModel';
 import type { FieldModel } from '@/components/values/fieldModel';
 import type { TrialShown } from '@/features/projectFolder/task/trialSample';
+import { epochInstances } from '@/features/projectFolder/task/repeats';
 import { aggregate, documentView, fixtures, pythonView, templates, type DocumentSpec, type PythonSpec } from './taskFixtures';
 
 /** Trials the stepper steps through, and the batch size All aggregates. */
@@ -51,23 +52,26 @@ function useSample(key: string, spec: DocumentSpec | PythonSpec, seed: number) {
 /** Which sampled trial is shown: none (the definition), the batch as one aggregate, or one trial by its index. */
 type TrialChoice = 'definition' | 'all' | number;
 
-/** The fixture task as the shelf draws it: its epochs' bounds and the epochs each signal holds a value over. */
-function shelfTask(view: TaskDocumentView): ShelfTask {
+/** The fixture task as the shelf draws it: its epochs' bounds by instance and the epochs each signal holds a value over. */
+function shelfTask(view: TaskDocumentView, spec: DocumentSpec): ShelfTask {
+  const order = view.epochs.map(({ id }) => id);
   return {
-    document: 'gallery', duration: view.duration, epochs: view.epochs.map(({ bounds }) => bounds),
+    document: 'gallery', duration: view.duration,
+    epochs: epochInstances(view.epochs, spec.repeats, []).map(({ epoch }) => epoch.bounds),
     signals: view.signals.map(({ id, name, cells }) => ({
-      id, name, cells: cells.flatMap((cell) => cell.kind === 'value' ? [{ first: cell.first, last: cell.last }] : []),
+      id, name, covers: cells.flatMap((cell) => cell.kind === 'value'
+        ? order.slice(order.indexOf(cell.first), order.indexOf(cell.last) + 1) : []),
     })),
   };
 }
 
 /** The shelf's rows for the nominal trial, one sampled trial, or the batch. */
-function shelfRows(view: TaskDocumentView, shown: TrialShown | undefined): ShelfRow[] {
+function shelfRows(view: TaskDocumentView, spec: DocumentSpec, shown: TrialShown | undefined): ShelfRow[] {
   const step = view.stepSeconds ?? view.duration / 100;
-  if (!shown) return nominalRows(shelfTask(view));
+  if (!shown) return nominalRows(shelfTask(view, spec));
   switch (shown.kind) {
-    case 'one': return trialRows(shelfTask(view), shown.record, step);
-    case 'all': return batchRows(shelfTask(view), shown.aggregate, step);
+    case 'one': return trialRows(shelfTask(view, spec), shown.record, step);
+    case 'all': return batchRows(shelfTask(view, spec), shown.aggregate, step);
   }
 }
 
@@ -91,7 +95,7 @@ function withoutEpoch(spec: DocumentSpec, id: string): DocumentSpec {
   return {
     ...spec,
     epochs: spec.epochs.filter((epoch) => epoch.id !== id),
-    repeats: spec.repeats.filter(({ first, last }) => first !== id && last !== id),
+    repeats: spec.repeats.filter(({ first_epoch, last_epoch }) => first_epoch !== id && last_epoch !== id),
     signals: spec.signals.map((signal) => ({ ...signal, cells: signal.cells.flatMap((cell) => {
       if (cell.first === id && cell.last === id) return [];
       return [{ ...cell, first: cell.first === id ? neighbour(1) : cell.first, last: cell.last === id ? neighbour(-1) : cell.last }];
@@ -204,7 +208,7 @@ function TaskStates({ fixtureKey, end, cell, variable, signal }: {
   const trial = shownOf(0, sample);
   const batch = shownOf('all', sample);
   const [time, setTime] = useState(0);
-  const strip = (shown: TrialShown | undefined) => <Shelf rows={shelfRows(view, shown)} duration={view.duration}
+  const strip = (shown: TrialShown | undefined) => <Shelf rows={shelfRows(view, spec as DocumentSpec, shown)} duration={view.duration}
     stepSeconds={view.stepSeconds} time={time} onTimeChange={setTime} selected={[]} onSelect={() => undefined} />;
   const inspector = (selected: TaskSelection, shown?: TrialShown) =>
     <TaskInspector view={view} selected={selected} shown={shown} />;

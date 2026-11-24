@@ -25,6 +25,7 @@ import {
   type FieldEdit, type FieldModel, type FieldOption, type FieldRefusal, type ValueKind,
 } from './fieldModel';
 import { clearDraw, DrawParts, startDraw, useDrawDraft, useShownDraw } from './DrawParts';
+import { ItemParts, listRead } from './ItemParts';
 import { FieldIntent } from './fieldIntent';
 import { useFieldGroup } from './fieldGroups';
 import './valueField.css';
@@ -210,8 +211,10 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
     </div>;
   }
 
-  const parts = (indented: boolean) => (indented || model.members || model.canList || draw) && <div className="value-field-parts grid gap-1">
+  const read = textual && !draw ? listRead(model) : undefined;
+  const parts = (indented: boolean) => (indented || model.members || model.canList || draw || read) && <div className="value-field-parts grid gap-1">
     {draw && <DrawParts model={model} draw={draw} />}
+    {read && <ItemParts model={model} read={read} />}
     {model.members && <Members model={model} />}
     {indented && model.parts!.map((part) => <ValueField key={part.id} model={part} />)}
     {model.canList && <Button variant="ghost" className="justify-self-start" disabled={readOnly}
@@ -322,6 +325,8 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
   const { label } = model;
   const input = useRef<HTMLInputElement>(null);
   const [draft, setDraft] = useState<string>();
+  /** The text the field committed and is saving; Escape does not take it back. */
+  const saving = useRef<string>();
   const [menu, setMenu] = useState(false);
   const [caret, setCaret] = useState<number>();
   const [highlight, setHighlight] = useState(0);
@@ -392,7 +397,7 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
     if (event.key === 'Escape') {
       event.stopPropagation();
       if (open) { setDismissed(true); return; }
-      setDraft(undefined);
+      setDraft((current) => current === saving.current ? current : undefined);
       setPending(undefined);
       clearDraw(model.id);
       clearReason();
@@ -401,7 +406,9 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
     if (event.key === 'Enter' && draft !== undefined) {
       event.preventDefault();
       const committed = draft;
+      saving.current = committed;
       void submit({ kind: 'text', text: committed }).then((done) => {
+        if (saving.current === committed) saving.current = undefined;
         if (!done) return;
         setDraft((current) => current === committed ? undefined : current);
         setPending(undefined);
