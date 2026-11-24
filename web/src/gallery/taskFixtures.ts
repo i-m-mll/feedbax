@@ -3,23 +3,23 @@
  * document as shipped, the three-reach task of issue 7f0c01f's acceptance 8 (an Until End, a × 3 repeat, a list
  * variable, `targets[i]` cells), the stabilization document (which leaves the model's input unfed), and a Python task.
  */
-import type { FunctionInfo, ScopedValue } from '@/generated/studioContracts';
+import type { FunctionInfo, ScopedValue, TextSpan } from '@/generated/studioContracts';
 import type { TimelineEpoch, TimelineInterval } from '@/components/timeline/EpochTimeline';
 import type { ChangeMark, FieldModel, ValueKind } from '@/components/values/fieldModel';
 import { rawField } from '@/components/values/adapters/raw';
 import type {
-  TaskCell, TaskDocumentView, TaskEpoch, TaskPerTrial, TaskPythonView, TaskSignal, TaskVariable, VariableLevel,
+  TaskCell, TaskDocumentView, TaskEpoch, TaskPythonView, TaskSignal, TaskVariable, VariableLevel,
 } from '@/features/projectFolder/task/taskModel';
 import type { Percentiles, SampledTrial, SignalAggregate, SignalSteps, TrialBatch } from '@/features/projectFolder/task/trialSample';
 
 export interface VariableSpec {
   id: string; name: string; type: string; count?: number; level?: VariableLevel; text: string;
-  reason?: string; changed?: string;
+  /** A problem with the value, and the term of its text it is about. */
+  reason?: string; span?: TextSpan; changed?: string;
 }
 export interface EpochSpec { id: string; name: string; end: string; least?: number; changed?: string }
 export interface CellSpec { first: string; last: string; text: string | null }
 export interface SignalSpec { id: string; name: string; type: string; cells: CellSpec[] }
-export interface PerTrialSpec { id: string; name: string; link: string | null; problem?: string }
 
 export interface DocumentSpec {
   kind: 'document';
@@ -27,7 +27,6 @@ export interface DocumentSpec {
   epochs: EpochSpec[];
   repeats: { id: string; first: string; last: string; count: string }[];
   signals: SignalSpec[];
-  perTrial: PerTrialSpec[];
   duration: number;
   stepSeconds: number;
   /** The document this one is based on, which its changed values differ from. */
@@ -47,10 +46,13 @@ export interface TaskFixture {
 export interface PythonSpec {
   kind: 'python';
   values: Record<string, string | number | boolean>;
-  perTrial: PerTrialSpec[];
 }
 
-export const types = ['Scalar', 'Length', 'Time', 'Angle', 'Point', 'Velocity', 'Boolean'];
+/** The catalogue's types by name, each with its parts. */
+export const types: Readonly<Record<string, string>> = {
+  Number: 'real', Integer: 'integer', Boolean: 'boolean', Duration: 'real · time', Distance: 'real · length',
+  Point: 'real · 2 · length', Velocity: 'real · 2 · length/time', Vector: 'real · 2',
+};
 
 const functions: FunctionInfo[] = [
   { id: 'U', signature: 'U(low, high)', label: 'Uniform', display_class: 'draw', min_args: 1, max_args: 2,
@@ -138,8 +140,8 @@ function names(spec: DocumentSpec): ScopedValue[] {
 const draws = /^U\(\s*(-?\d*\.?\d+)[^,]*,\s*(-?\d*\.?\d+)[^)]*\)$/;
 
 /** A field as the service projects it: its text, its kind as the text reads, its parts where it has them. */
-export function textField({ id, label, text, kinds, write, reason, changed, scope, finest = 1 }: {
-  id: string; label: string; text: string; kinds: readonly ValueKind[]; write: Write; reason?: string;
+export function textField({ id, label, text, kinds, write, reason, span, changed, scope, finest = 1 }: {
+  id: string; label: string; text: string; kinds: readonly ValueKind[]; write: Write; reason?: string; span?: TextSpan;
   changed?: ChangeMark; scope: readonly ScopedValue[]; finest?: 0 | 1 | 2;
 }): FieldModel {
   const kind = kindOf(text);
@@ -160,7 +162,7 @@ export function textField({ id, label, text, kinds, write, reason, changed, scop
       write: (_, next) => write(id, suffix === 'condition' ? `${next} ≤ ${until![2]}` : `${until![1]} ≤ ${next}`) });
   const members = kind === 'sweep' ? text.split(',').map((value) => value.trim()).filter(Boolean) : undefined;
   return {
-    id, label, text, kind, type: { kind: 'number' }, reason, change: changed,
+    id, label, text, kind, type: { kind: 'number' }, reason, span, change: changed,
     kinds: kinds.map((offer) => ({ kind: offer, enabled: true })),
     keeps: members ? 'm0' : undefined,
     members: members && { values: members.map((value, index) => ({ id: `m${index}`, text: value, selected: index === 1 })) },
@@ -188,11 +190,13 @@ export function documentView(spec: DocumentSpec, texts: Readonly<Record<string, 
     : { from: { kind: 'base', document: spec.base ?? '' }, reset: async () => undefined };
   const bounds = epochBounds({ ...spec, epochs: spec.epochs.map((epoch) => ({ ...epoch, end: text(`end:${epoch.id}`, epoch.end) })) });
   const variables: TaskVariable[] = spec.variables.map((variable) => ({
-    id: variable.id, name: variable.name, type: variable.type, count: variable.count, level: variable.level ?? 'trial',
+    id: variable.id, name: variable.name, type: variable.type, typeParts: types[variable.type], count: variable.count,
+    level: variable.level ?? 'trial',
     typeChoice: rawField({ id: `type:${variable.id}`, label: 'Type', value: variable.type, change: () => undefined,
-      type: { kind: 'choice', options: types.map((type) => ({ value: type, label: type })) } }),
+      type: { kind: 'choice', options: Object.keys(types).map((type) => ({ value: type, label: type })) } }),
     value: textField({ id: `value:${variable.id}`, label: 'Value', text: text(`value:${variable.id}`, variable.text), kinds: valueKinds,
-      write, scope, reason: variable.reason, changed: changed(variable.changed), finest: variable.level === 'step' ? 2 : 1 }),
+      write, scope, reason: variable.reason, span: variable.span, changed: changed(variable.changed),
+      finest: variable.level === 'step' ? 2 : 1 }),
   }));
   const epochs: TaskEpoch[] = spec.epochs.map((epoch, index) => ({
     id: epoch.id, name: epoch.name, bounds: bounds[index],
@@ -214,17 +218,7 @@ export function documentView(spec: DocumentSpec, texts: Readonly<Record<string, 
     repeats: spec.repeats.map((repeat) => ({ ...repeat, count: textField({
       id: `repeat:${repeat.id}`, label: 'Count', text: text(`repeat:${repeat.id}`, repeat.count), kinds: ['value'], write, scope, finest: 0,
     }) })),
-    perTrial: perTrialRows(spec.perTrial, spec.variables.map(({ name }) => name)),
   };
-}
-
-function perTrialRows(rows: readonly PerTrialSpec[], variables: readonly string[]): TaskPerTrial[] {
-  return rows.map((row) => ({
-    id: row.id, name: row.name, problem: row.problem,
-    link: rawField({ id: `link:${row.id}`, label: row.name, value: row.link ?? '', change: () => undefined, type: { kind: 'choice', options: [
-      { value: '', label: '—' }, ...variables.map((name) => ({ value: name, label: name })),
-    ] } }),
-  }));
 }
 
 export function pythonView(spec: PythonSpec): TaskPythonView {
@@ -244,7 +238,6 @@ export function pythonView(spec: PythonSpec): TaskPythonView {
       { id: 'target_pos', name: 'target_pos', type: 'Point' },
       { id: 'force', name: 'force', type: 'Force' },
     ],
-    perTrial: perTrialRows(spec.perTrial, ['init_pos', 'target_pos']),
   };
 }
 
@@ -408,14 +401,10 @@ const delayedReaches: DocumentSpec = {
       { first: 'hold', last: 'hold', text: null }, { first: 'cue', last: 'move', text: 'vector(0, 0)' }] },
     { id: 'goal', name: 'goal', type: 'Point', cells: [
       { first: 'hold', last: 'cue', text: 'start' }, { first: 'move', last: 'move', text: 'where(catch, start, target)' }] },
-    { id: 'fixation', name: 'fixation', type: 'Scalar', cells: [
+    { id: 'fixation', name: 'fixation', type: 'Number', cells: [
       { first: 'hold', last: 'cue', text: '1' }, { first: 'move', last: 'move', text: 'where(catch, 1, 0)' }] },
-    { id: 'target_on', name: 'target_on', type: 'Scalar', cells: [
+    { id: 'target_on', name: 'target_on', type: 'Number', cells: [
       { first: 'hold', last: 'hold', text: null }, { first: 'cue', last: 'move', text: '1' }] },
-  ],
-  perTrial: [
-    { id: 'position', name: 'plant · effector · position', link: 'start' },
-    { id: 'velocity', name: 'plant · effector · velocity', link: null },
   ],
 };
 
@@ -423,11 +412,12 @@ const threeReaches: DocumentSpec = {
   kind: 'document', duration: 4, stepSeconds: 0.01,
   variables: [
     { id: 'start', name: 'start', type: 'Point', text: 'U(disk(0, 0.05))' },
-    { id: 'reach', name: 'reach', type: 'Length', text: '0.1, 0.15, 0.2' },
-    { id: 'angles', name: 'angles', type: 'Angle', count: 3, text: 'U(0°, 360°)' },
+    { id: 'reach', name: 'reach', type: 'Distance', text: '0.1, 0.15, 0.2' },
+    { id: 'angles', name: 'angles', type: 'Number', count: 3, text: 'U(0°, 360°)' },
     { id: 'targets', name: 'targets', type: 'Point', count: 3, text: 'start + polar(reach, angles)' },
     { id: 'at_target', name: 'at_target', type: 'Boolean', level: 'step', text: 'held(dist(hand, targets[i]) < 0.02, 0.2 s)' },
-    { id: 'jitter', name: 'jitter', type: 'Time', text: '0.1 * scale', reason: 'No variable is named scale' },
+    { id: 'jitter', name: 'jitter', type: 'Duration', text: '0.1 * scale', reason: 'No variable is named scale',
+      span: { start: 6, end: 11 } },
   ],
   epochs: [
     { id: 'fixate', name: 'fixate', end: '0.3 s' },
@@ -440,13 +430,10 @@ const threeReaches: DocumentSpec = {
     { id: 'target', name: 'target', type: 'Point', cells: [
       { first: 'fixate', last: 'fixate', text: null }, { first: 'move', last: 'hold', text: 'targets[i]' },
       { first: 'rest', last: 'rest', text: null }] },
-    { id: 'go', name: 'go', type: 'Scalar', cells: [
+    { id: 'go', name: 'go', type: 'Number', cells: [
       { first: 'fixate', last: 'fixate', text: '0' }, { first: 'move', last: 'hold', text: '1' }, { first: 'rest', last: 'rest', text: '0' }] },
-    { id: 'fixation', name: 'fixation', type: 'Scalar', cells: [
+    { id: 'fixation', name: 'fixation', type: 'Number', cells: [
       { first: 'fixate', last: 'fixate', text: '1' }, { first: 'move', last: 'rest', text: '0' }] },
-  ],
-  perTrial: [
-    { id: 'position', name: 'plant · effector · position', link: null, problem: 'plant · effector · position is not linked' },
   ],
 };
 
@@ -456,7 +443,6 @@ const stabilization: DocumentSpec = {
   epochs: [{ id: 'hold', name: 'hold', end: 'rest' }],
   repeats: [],
   signals: [{ id: 'goal', name: 'goal', type: 'Point', cells: [{ first: 'hold', last: 'hold', text: 'start' }] }],
-  perTrial: [{ id: 'position', name: 'plant · effector · position', link: 'start' }],
 };
 
 export const fixtures: TaskFixture[] = [
@@ -466,7 +452,6 @@ export const fixtures: TaskFixture[] = [
     problem: 'Leaves the model input target_pos unfed' },
   { key: 'perturbed-reaches', name: 'Perturbed reaches', python: true, spec: {
     kind: 'python', values: { n_reaches: 8, field: 'curl', field_scale: 12, catch: true },
-    perTrial: [{ id: 'position', name: 'plant · effector · position', link: 'init_pos' }],
   } },
 ];
 

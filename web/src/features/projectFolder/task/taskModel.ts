@@ -12,6 +12,8 @@ export interface TaskVariable {
   readonly name: string;
   /** The type's name, from the catalogue's types. */
   readonly type: string;
+  /** The type's parts: its base, shape and unit. */
+  readonly typeParts: string;
   /** The type as a choice of the catalogue's types. */
   readonly typeChoice: FieldModel;
   /** A list's length. */
@@ -50,16 +52,6 @@ export interface TaskSignal {
   readonly cells: readonly TaskCell[];
 }
 
-/** A model-side value the task sets once per trial, linked to a variable or not. */
-export interface TaskPerTrial {
-  readonly id: string;
-  /** The model's name for the value, as its path. */
-  readonly name: string;
-  readonly link: FieldModel;
-  /** An unlinked value the model requires: a Problem on the step. */
-  readonly problem?: string;
-}
-
 /** A task document as the Task view draws it. */
 export interface TaskDocumentView {
   readonly kind: 'document';
@@ -67,7 +59,6 @@ export interface TaskDocumentView {
   readonly epochs: readonly TaskEpoch[];
   readonly repeats: readonly TaskRepeat[];
   readonly signals: readonly TaskSignal[];
-  readonly perTrial: readonly TaskPerTrial[];
   /** The trial's whole length, in seconds; Rest ends it. */
   readonly duration: number;
   /** The paired model's step, in seconds, when a model is paired. */
@@ -80,14 +71,13 @@ export interface TaskPythonView {
   readonly kind: 'python';
   readonly parameters: readonly FieldModel[];
   readonly signals: readonly { readonly id: string; readonly name: string; readonly type: string }[];
-  readonly perTrial: readonly TaskPerTrial[];
 }
 
 export type TaskView = TaskDocumentView | TaskPythonView;
 
 /** What is selected in the Task view, which the Inspector shows. */
 export type TaskSelection =
-  | { readonly kind: 'variable' | 'epoch' | 'end' | 'signal' | 'repeat' | 'perTrial'; readonly id: string }
+  | { readonly kind: 'variable' | 'epoch' | 'end' | 'signal' | 'repeat'; readonly id: string }
   | { readonly kind: 'cell'; readonly signal: string; readonly id: string };
 
 export const sameSelection = (a: TaskSelection | undefined, b: TaskSelection | undefined) =>

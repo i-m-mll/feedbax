@@ -6,6 +6,7 @@
     "addComponent": "Add Component",
     "insertComponent": "Insert Component",
     "moveCard": "Move Card",
+    "move": "Move",
     "bindSignal": "Bind Signal",
     "bringSignal": "Bring Signal",
     "setValue": "Set Value",
@@ -540,6 +541,7 @@
     "takesText": "{value} takes text"
   },
   "format": {
+    "leavesUnfed": "Leaves {name} unfed",
     "validityDriver": "{driver} revision {previous} → {present}",
     "validityArguments": "Arguments of {slots}",
     "validityProgram": "Program of {slots}",

@@ -5,7 +5,7 @@ import { Inspector } from '@/components/ui/Inspector';
 import { ValueField } from '@/components/values/ValueField';
 import { BatchTrace, TrialTrace } from './SignalTrace';
 import { LevelMark, variableType } from './TaskVariables';
-import type { TaskDocumentView, TaskSelection } from './taskModel';
+import type { TaskDocumentView, TaskSelection, TaskVariable } from './taskModel';
 import type { TrialShown } from './trialSample';
 
 function Fact({ label, children }: { label: string; children: ReactNode }) {
@@ -33,6 +33,16 @@ function Trace({ view, signal, shown }: { view: TaskDocumentView; signal: string
   return null;
 }
 
+/** A variable in the Inspector: its value with the value's parts, and its type. */
+export function VariableInspector({ variable, children }: { variable: TaskVariable; children?: ReactNode }) {
+  return <Inspector name={<span className="flex items-center gap-1 font-mono">{variable.name}<LevelMark variable={variable} /></span>}
+    type={variableType(variable)}>
+    <ValueField model={variable.value} />
+    <ValueField model={variable.typeChoice} />
+    {children}
+  </Inspector>;
+}
+
 /** The Inspector for what is selected in the Task view: its fields with their parts, and, with a trial shown, what it drew. */
 export function TaskInspector({ view, selected, shown }: { view: TaskDocumentView; selected?: TaskSelection; shown: TrialShown }) {
   if (!selected) return null;
@@ -41,12 +51,9 @@ export function TaskInspector({ view, selected, shown }: { view: TaskDocumentVie
     case 'variable': {
       const variable = view.variables.find(({ id }) => id === selected.id);
       if (!variable) return null;
-      return <Inspector name={<span className="flex items-center gap-1 font-mono">{variable.name}<LevelMark variable={variable} /></span>}
-        type={variableType(variable)}>
-        <ValueField model={variable.value} />
-        <ValueField model={variable.typeChoice} />
+      return <VariableInspector variable={variable}>
         {drawn && <Fact label={shown.kind === 'batch' ? studioName('allTrials') : studioName('trial')}>{drawn[variable.id]}</Fact>}
-      </Inspector>;
+      </VariableInspector>;
     }
     case 'epoch': case 'end': {
       const epoch = view.epochs.find(({ id }) => id === selected.id);
@@ -80,13 +87,6 @@ export function TaskInspector({ view, selected, shown }: { view: TaskDocumentVie
       const names = (id: string) => view.epochs.find((epoch) => epoch.id === id)?.name;
       return <Inspector name={studioName('repeat')} type={`${names(repeat.first)}–${names(repeat.last)}`}>
         <ValueField model={repeat.count} />
-      </Inspector>;
-    }
-    case 'perTrial': {
-      const row = view.perTrial.find(({ id }) => id === selected.id);
-      if (!row) return null;
-      return <Inspector name={<span className="font-mono">{row.name}</span>} type={studioName('perTrial')}>
-        <ValueField model={row.link} />
       </Inspector>;
     }
   }
