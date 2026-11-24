@@ -4,7 +4,6 @@ import { elementKey, type ElementAddress } from '@/features/projectWindow/elemen
 import type {
   DomainDiagnostic, JsonValue, ModelAddress, StudioSceneGeometryResponse, TaskDocument, TrialRecord, ValueType,
 } from '@/generated/studioContracts';
-import type { TrialShown } from '@/features/projectFolder/task/trialSample';
 import type { ScenePoint } from './planarProjection';
 import type { Scene, SceneElement, SceneGroup, SceneShape, SceneTrack } from './sceneView';
 
@@ -48,16 +47,18 @@ export function recordedState(record: TrialRecord, frame: number): StateValues |
 }
 
 /**
- * Each world-frame path `record` recorded, with where it is at state frame `frame`. States that are one quantity under
- * two names (a mechanism's effector and its skeleton's position) record the same path, which is drawn once.
+ * Each world-frame path `record` recorded, with where it is at state frame `frame`; under `trails`, drawn up to that
+ * frame. States that are one quantity under two names (a mechanism's effector and its skeleton's position) record the
+ * same path, which is drawn once.
  */
-export function recordedTracks(record: TrialRecord | undefined, frame: number): SceneTrack[] {
-  const paths = new Map(Object.values(record?.states ?? {}).filter((track) => track.frame === 'world')
+export function recordedTracks(record: TrialRecord, frame: number, trails: boolean, picked: boolean): SceneTrack[] {
+  const paths = new Map(Object.values(record.states ?? {}).filter((track) => track.frame === 'world')
     .map((track) => [JSON.stringify(track.samples), track.samples]));
-  return [...paths.values()].map((samples) => ({
-    points: samples.map(point).filter((place) => place !== undefined),
-    head: point(at(samples, frame)),
-  }));
+  return [...paths.values()].map((samples) => {
+    const points = samples.map(point).filter((place) => place !== undefined);
+    const drawn = trails ? samples.slice(0, frame + 1).map(point).filter((place) => place !== undefined).length : points.length;
+    return { points, drawn, head: point(at(samples, frame)), picked };
+  });
 }
 
 const component = (address: ModelAddress) => address.element.kind === 'component' ? address.element.id : undefined;
@@ -127,11 +128,10 @@ export interface SceneTask {
 }
 
 /**
- * The task's variables and signals that have a place, at `step`: solid where `shown` is one trial, hollow at each
- * of the trials that may be shown.
+ * The task's variables and signals that have a place, at `step`: solid in the picked trial, hollow at each of the
+ * trials that may be shown.
  */
-export function taskGroup(task: SceneTask, shown: TrialShown | undefined, possible: readonly TrialRecord[], step: number): SceneGroup | undefined {
-  const record = shown?.kind === 'one' ? shown.record : undefined;
+export function taskGroup(task: SceneTask, record: TrialRecord | undefined, possible: readonly TrialRecord[], step: number): SceneGroup | undefined {
   const address: ElementAddress = { document: task.document, element: { kind: 'named', id: 'task' } };
   const element = (kind: 'variable' | 'signal', id: string, name: string,
     place: (record: TrialRecord, id: string, step: number) => ScenePoint | undefined): SceneElement => {
@@ -154,31 +154,40 @@ export function taskGroup(task: SceneTask, shown: TrialShown | undefined, possib
 }
 
 /**
- * What the clock gives the Scene: the shown trial, at the state frame the playhead is at; the trials that may be shown
- * beside it, before a run; the task; and, when the shown trial could not be read, why.
+ * What the clock gives the Scene: the picked trial (the one shown, or the one drawn heavier under All), at the state
+ * frame the playhead is at; the trials drawn beside it (the samples it may be, or every recorded trial under All); the
+ * task; whether paths end at the playhead; and, when the picked trial could not be read, why.
  */
 export interface SceneTrial {
-  readonly shown: TrialShown | undefined;
+  readonly picked: TrialRecord | undefined;
   readonly possible: readonly TrialRecord[];
   readonly frame: number;
   readonly task: SceneTask | undefined;
+  readonly trails: boolean;
   readonly failure?: { readonly kind: 'failed'; readonly issue: StudioRegionIssue; readonly retry: () => void };
 }
 
-/** The Scene of what the clock shows: the posed mechanisms, the rest pose beneath, the recorded tracks and the task. */
-export function trialScene({ posed, rest, task, shown, possible, frame }: {
+/**
+ * The Scene of what the clock shows: the mechanisms posed by the picked trial, the rest pose beneath, each recorded
+ * track (the picked trial's heavier) and the task.
+ */
+export function trialScene({ posed, rest, task, picked, possible, frame, trails }: {
   posed: StudioSceneGeometryResponse;
   rest: StudioSceneGeometryResponse | undefined;
   task: SceneTask | undefined;
-  shown: TrialShown | undefined;
+  picked: TrialRecord | undefined;
   possible: readonly TrialRecord[];
   /** The state frame at the playhead; the task's values are read at the step it begins. */
   frame: number;
+  trails: boolean;
 }): Scene {
-  const drawn = task && taskGroup(task, shown, possible, frame);
+  const drawn = task && taskGroup(task, picked, possible, frame);
   return {
     groups: [...mechanismGroups(posed), ...drawn ? [drawn] : []],
     rest: rest ? mechanismShapes(rest) : [],
-    tracks: recordedTracks(shown?.kind === 'one' ? shown.record : undefined, frame),
+    tracks: [
+      ...possible.filter((record) => record.id !== picked?.id).flatMap((record) => recordedTracks(record, frame, trails, false)),
+      ...picked ? recordedTracks(picked, frame, trails, true) : [],
+    ],
   };
 }
