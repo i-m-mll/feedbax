@@ -260,13 +260,15 @@
   transform: translateY(-50%);
 }
 
-/* A card's output handle, from which a wire is dragged, shows while the card is hovered or has the keyboard. */
-.studio-map-handle {
+/* A card's own controls (its output handle, New Step, Add Sweep) show while the card is hovered, has the keyboard or is selected, and while one of them holds an open menu. */
+.studio-map-attention {
   opacity: 0;
 }
 
-.studio-map-card:hover .studio-map-handle,
-.studio-map-card:focus-within .studio-map-handle {
+.studio-map-card:hover .studio-map-attention,
+.studio-map-card:focus-within .studio-map-attention,
+.studio-map-card[data-selected] .studio-map-attention,
+.studio-map-attention[aria-expanded='true'] {
   opacity: 1;
 }
 
