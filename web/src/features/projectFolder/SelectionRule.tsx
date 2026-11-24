@@ -1,13 +1,14 @@
-import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { checkRunRule } from '@/api/studioAuthoring';
 import { studioName } from '@/components/activity/studioVocabulary';
-import { RuleField, type RuleFieldCommand } from '@/components/values/RuleField';
+import { RuleField, type RuleFieldCommand, type RuleFieldProblem } from '@/components/values/RuleField';
 import { pickedTerms } from '@/components/values/runRule';
 import type { PlanStepView } from '@/features/pipeline/planView';
 import type { ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import type { SelectedRow, StudioRunRuleRequest, SubsetTerms } from '@/generated/studioContracts';
 import { savedRunId } from './projectWindowPlan';
+import type { RuleProblem } from './selectionEdits';
 
 /** Where a rule is checked: the saved revision and variant whose plan holds the producer's runs. */
 export interface RuleScope {
@@ -27,8 +28,8 @@ const check = (scope: RuleScope, step: string, rule: string, ranked: boolean) =>
 /**
  * The rule of a selection of `source`'s runs, or of a sweep exception (`ranked` false). The count is the plan's for
  * the saved rule and the check's while another is written; while the field has focus the runs it chooses are boxed on
- * `source`'s card. A rule the check refuses is not saved, and the refusal is shown on the field. Pick Runs starts from
- * none; each press on `source`'s card toggles runs, and the field shows the shortest rule choosing those picked.
+ * `source`'s card. Enter saves the rule as written, whether or not it chooses runs, and the plan's problem with it is
+ * shown on the saved rule. Pick Runs starts from none; each press on `source`'s card toggles runs, and the field shows the shortest rule choosing those picked.
  */
 export function SelectionRule({ scope, source, rule, pinned, planned, ranked = true, label = studioName('runs'), picking,
   disabled, problem, onToRows, pick, onCommit }: {
@@ -43,15 +44,13 @@ export function SelectionRule({ scope, source, rule, pinned, planned, ranked = t
   picking?: ElementSelectionStore;
   disabled: boolean;
   /** The plan's problem on the saved rule, or why the last edit of it was refused. */
-  problem?: string;
+  problem?: RuleProblem;
   onToRows?: () => void;
   /** Where runs can be picked on `source`'s card for the selection: its rows, and the save of what is picked. */
   pick?: { readonly rows: readonly SelectedRow[]; onCommit(terms: SubsetTerms): void };
   onCommit(rule: string): void;
 }) {
-  const queries = useQueryClient();
   const [draft, setDraft] = useState<string | null>(null);
-  const [refused, setRefused] = useState<{ rule: string; reason: string }>();
   const checked = useQuery({
     ...check(scope, source.id, draft?.trim() ?? '', ranked), enabled: draft !== null, placeholderData: keepPreviousData,
   });
@@ -90,12 +89,8 @@ export function SelectionRule({ scope, source, rule, pinned, planned, ranked = t
     if (!save || !pick || !pickedWrites || !picked?.size) return;
     pick.onCommit('rows' in pickedWrites ? { rows: [...pickedWrites.rows] } : pickedWrites.rule ? { rule: pickedWrites.rule } : {});
   }
-  async function commit(next: string) {
-    const answer = await queries.fetchQuery(check(scope, source.id, next, ranked));
-    if (answer.result.kind === 'refused') return setRefused({ rule: next, reason: answer.result.reason });
-    setRefused(undefined);
-    onCommit(next);
-  }
+  const shownProblem: RuleFieldProblem | undefined = !writing && problem
+    ? { reason: problem.reason, ...problem.span && { term: { text: rule, ...problem.span } } } : undefined;
   const commands: RuleFieldCommand[] = [
     ...pick ? [{ label: studioName('pickRuns'), disabled: disabled || !source.runs.length, invoke: () => setPicked(new Set()) }] : [],
     ...onToRows ? [{ label: studioName('toRows'), disabled: disabled || writing, invoke: onToRows }] : [],
@@ -103,7 +98,6 @@ export function SelectionRule({ scope, source, rule, pinned, planned, ranked = t
   return <RuleField label={label} value={rule} disabled={disabled} count={count} pinned={pinned}
     vocabulary={{ axes: Object.fromEntries(Object.entries(source.ruleAxes ?? {}).map(([axis, values]) => [axis, Object.values(values)])),
       metrics: ranked ? source.ruleMetrics ?? [] : undefined }}
-    problem={refused && (draft === null || draft.trim() === refused.rule) ? refused.reason : problem}
-    picked={shownPicks}
-    commands={commands} onPickEnd={endPick} onDraft={setDraft} onCommit={(next) => void commit(next)} />;
+    problem={shownProblem} picked={shownPicks}
+    commands={commands} onPickEnd={endPick} onDraft={setDraft} onCommit={onCommit} />;
 }

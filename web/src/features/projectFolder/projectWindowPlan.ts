@@ -304,7 +304,7 @@ export function projectWindowPlan(
     addRun(row.key.step, {
       id, values, label: rowName(producer ? savedRunId(producer.key) : id, row.label), status: row.status, reason, variant: row.key.variant,
       problems,
-      blockedBy: blocking ? { stepId: blocking.step, label: studioFormat('blockedRun', {
+      blockedBy: blocking ? { stepId: blocking.step, label: studioFormat('stepRun', {
         step: shownName(blocking.step, project.steps?.[blocking.step]),
         run: sourceRows.get(savedRunId(blocking))?.label ?? blocking.row,
       }) } : undefined,
