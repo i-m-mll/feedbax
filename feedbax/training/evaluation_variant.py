@@ -121,6 +121,37 @@ def _replacement_task(patch, path):
         raise CannotRun(path, error.errors()[0]["msg"]) from error
 
 
+def _edit_task(task, patch, path, origins):
+    parts = patch.path.split(".")
+    if parts == ["task"] and patch.op == "replace":
+        task = _replacement_task(patch, f"{path}/value")
+        for target in tuple(origins):
+            if target[0] == "task":
+                del origins[target]
+    elif len(parts) > 1 and (isinstance(task, TaskDocument) or len(parts) == 3 and parts[1] == "params"):
+        selected = {"task": task.model_dump(mode="json")}
+        apply_override_patch_in_place(selected, patch)
+        task = type(task).model_validate(selected["task"])
+    else:
+        raise CannotRun(path, "expected an addressed task patch")
+    origins[tuple(parts)] = path
+    return task
+
+
+def resolve_evaluation_task(
+    task: TaskDocument | PythonTaskSelection, patches: VariationEdits,
+) -> TaskDocument | PythonTaskSelection:
+    """Apply the Task's part of a rollout variation independently of graph resolution."""
+    origins = {}
+    for path, patch in authored_variation(patches):
+        if patch.path.split(".", 1)[0] == "task":
+            try:
+                task = _edit_task(task, patch, path, origins)
+            except (ValueError, KeyError, OverflowError) as error:
+                raise CannotRun(path, str(error)) from error
+    return task
+
+
 def resolve_evaluation_variant(
     graph: GraphSpec, task: TaskDocument | PythonTaskSelection, patches: VariationEdits,
     *, components: ComponentRegistry,
@@ -134,19 +165,8 @@ def resolve_evaluation_variant(
     for path, patch in authored_variation(patches):
         parts = patch.path.split(".")
         try:
-            if parts == ["task"] and patch.op == "replace":
-                replacement = _replacement_task(patch, f"{path}/value")
-                edit_origins = {target: origin for target, origin in edit_origins.items() if target[0] != "task"}
-                edit_origins[("task",)] = path
-                continue
-            if parts[0] == "task" and len(parts) > 1 and (
-                isinstance(replacement, TaskDocument)
-                or len(parts) == 3 and parts[1] == "params"
-            ):
-                selected = {"task": replacement.model_dump(mode="json")}
-                apply_override_patch_in_place(selected, patch)
-                replacement = type(replacement).model_validate(selected["task"])
-                edit_origins[tuple(parts)] = path
+            if parts[0] == "task":
+                replacement = _edit_task(replacement, patch, path, edit_origins)
                 continue
             if parts[0] != "graph":
                 raise ValueError("expected an addressed model or task patch")

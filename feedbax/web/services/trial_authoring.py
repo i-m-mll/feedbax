@@ -4,12 +4,12 @@
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 
-from feedbax.execution.trial_resolution import TrialPair, pair_trial_source
+from feedbax.execution.trial_resolution import TrialPair, compile_unpaired_task, pair_trial_source
 from feedbax.contracts.expression_values import (
     Level, Problem, ProblemCode, ScopedValue, Site, SweepList, SweepRange, SweepSample, UnresolvedValue,
     ValueBase, ValueType,
 )
-from feedbax.tasks.document import zero
+from feedbax.tasks.document import TrialSource, zero
 from feedbax.tasks.registry import resolve_python_task_instance
 from feedbax.tasks.structure import restructure
 from feedbax.contracts.manifest import OverridePatch
@@ -17,6 +17,8 @@ from feedbax.contracts.matrix_core import stored_parts
 from feedbax.compiler.model_reset import ModelResetField
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import VariantRuns
+from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES
+from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.contracts.project import (
     RemoveProjectValue, SetProjectValue, apply_document_edits, based_on, json_pointer_parts,
 )
@@ -28,21 +30,22 @@ from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings
 from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
 from feedbax.contracts.studio_authoring import StudioSweptParameterMissing
-from feedbax.contracts.studio_place import task_start
+from feedbax.contracts.studio_place import task_start_path
 from feedbax.studio.authoring import training_document_choice
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.contracts.studio_trials import (
     StudioTaskChoice, StudioTaskType, StudioTrialAuthoring, StudioTrialAuthoringRequest, StudioTrialBindingEdit,
     StudioTrialDocumentEdit, StudioTrialDocumentReset, StudioTrialEpoch, StudioTrialExpressionEdit, StudioTrialField,
-    StudioTrialInput,
+    StudioTrialInput, StudioTrialObjectiveSource,
     StudioTrialOutput, StudioTrialReset, StudioTrialSelectDocument, StudioTrialStepScope, StudioTrialStructureEdit,
 )
 from feedbax.contracts.task_document import (
     PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, Rest, TaskDocument,
 )
-from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument, ObjectiveTerm
 from feedbax.contracts.training import TrialDocuments
+from feedbax.contracts.trial_bindings import selected_signal_id
 from feedbax.contracts.expression_check import references
 from feedbax.contracts.expression_site import FieldKind, project_site, read_field
 from feedbax.contracts.expression_text import parse, print_field, resolve_expression
@@ -64,6 +67,18 @@ from feedbax.web.services.trial_scope import (
 
 
 @dataclass(frozen=True)
+class _InitialTrialDocuments:
+    model: ModelDocument
+    task_source: TaskDocument | PythonTaskSelection
+    objective: ObjectiveDocument | None
+    input_bindings: dict[str, str | None]
+
+    @property
+    def task(self) -> TaskDocument | None:
+        return self.task_source if isinstance(self.task_source, TaskDocument) else None
+
+
+@dataclass(frozen=True)
 class _Projection:
     pair: TrialPair | None
     variables: tuple[ScopedValue, ...]
@@ -73,6 +88,7 @@ class _Projection:
     problems: tuple[Problem, ...]
     task_origins: dict[tuple[str, ...], str] = field(default_factory=dict)
     resets: tuple[ModelResetField, ...] = ()
+    partial_task: TrialSource | None = None
 
 
 def _project(
@@ -100,48 +116,54 @@ def _project(
         epochs = tuple(StudioTrialEpoch(id=epoch.id, name=epoch.name, steps=None) for epoch in task.epochs)
     resets = []
 
-    def pair(task):
-        sites = {}
-        resets.clear()
-        paired = pair_trial_source(
-            documents.model, task, bundle.components, bundle.expression_functions,
-            python_tasks=bundle.python_tasks, input_overrides=documents.input_overrides,
-            task_sites=sites, graph_override=graph_override, reset_fields=resets,
-        )
-        return paired, sites
-
-    paired, task_sites = pair(task)
-    if isinstance(paired, tuple) and isinstance(task, TaskDocument):
-        # The other documents stay authorable against the links that do resolve.
-        unresolved = {problem.path for problem in paired}
-        linked = tuple(link for link in task.links if ("links", link.model_field) not in unresolved)
-        if len(linked) < len(task.links):
-            partial, partial_sites = pair(task.model_copy(update={"links": linked}))
-            if not isinstance(partial, tuple):
-                paired, task_sites = replace(partial, problems=(*paired, *partial.problems)), partial_sites
-    fields.update({("task", *path): site for path, site in task_sites.items()})
+    task_sites = {}
+    paired = pair_trial_source(
+        documents.model, task, bundle.components, bundle.expression_functions,
+        python_tasks=bundle.python_tasks, input_bindings=documents.input_bindings,
+        task_sites=task_sites, graph_override=graph_override, reset_fields=resets,
+    )
+    partial = None
     if isinstance(paired, tuple):
-        if show_objective:
+        problems = paired
+        paired = None
+        if all(problem.path[:1] == ("model",) for problem in problems):
+            preview = compile_unpaired_task(
+                documents.model, task, bundle.expression_functions, python_tasks=bundle.python_tasks, sites=task_sites,
+            )
+            if isinstance(preview, tuple):
+                problems += preview
+            else:
+                partial = preview
+    else:
+        problems = paired.problems
+    fields.update({("task", *path): site for path, site in task_sites.items()})
+    if paired is None and partial is None:
+        if show_objective and documents.objective is not None:
             fields.update(_unpaired_objective_sites(documents, signals))
-        return _Projection(None, variables, signals, epochs, fields, paired, resets=tuple(resets))
-    source = paired.task
+        return _Projection(None, variables, signals, epochs, fields, problems, resets=tuple(resets))
+    source = paired.task if paired is not None else partial.task
+    outputs = paired.model.outputs if paired is not None else partial.outputs
     variables, signals = source.interface.variables, source.interface.signals
     names = {epoch.id: epoch.name for epoch in epochs}
     epochs = tuple(
         StudioTrialEpoch(id=epoch, name=names.get(epoch, epoch), steps=steps)
         for epoch, steps in zip(source.epochs, source.step_counts, strict=True)
     )
-    objective_sites = {}
-    objective = compile_objective(
-        documents.objective, (*paired.model.outputs, *variables, *signals), bundle.expression_functions,
-        task=source, sites=objective_sites if show_objective else None, use=objective_use,
+    if documents.objective is not None:
+        objective_sites = {} if show_objective else None
+        objective = compile_objective(
+            documents.objective, (*outputs, *variables, *signals), bundle.expression_functions,
+            task=source, sites=objective_sites, use=objective_use,
+        )
+        if objective_sites:
+            fields.update({("objective", *path): site for path, site in objective_sites.items()})
+        if not isinstance(objective, ObjectiveExecutor):
+            problems += tuple(problem.model_copy(update={"path": ("objective", *problem.path)})
+                              for problem in objective)
+    return _Projection(
+        paired, variables, signals, epochs, fields, problems, resets=tuple(resets),
+        partial_task=source if paired is None else None,
     )
-    fields.update({("objective", *path): site for path, site in objective_sites.items()})
-    problems = paired.problems
-    if not isinstance(objective, ObjectiveExecutor):
-        problems += tuple(problem.model_copy(update={"path": ("objective", *problem.path)})
-                          for problem in objective)
-    return _Projection(paired, variables, signals, epochs, fields, problems, resets=tuple(resets))
 
 
 def _unpaired_objective_sites(documents, signals) -> dict[tuple[str | int, ...], Site]:
@@ -192,12 +214,13 @@ def _input_address(port: str) -> ModelAddress:
 def _input_rows(documents, projection) -> list[StudioTrialInput]:
     paired = projection.pair
     resolved = {port.id: port.type for port in paired.model.inputs} if paired else {}
-    effective = dict(paired.input_bindings) if paired else {}
+    signals = {signal.name: signal.id for signal in projection.signals}
     return [
         StudioTrialInput(
-            address=address, name=port.name, type=resolved.get(address.to_text()),
-            required=port.default is None, signal=effective.get(port.name),
-            explicit=port.name in documents.input_overrides,
+            id=port.id, address=address, name=port.name, type=resolved.get(address.to_text()),
+            required=port.default is None,
+            signal_id=selected_signal_id(port.id, port.name, signals, documents.input_bindings),
+            explicit=port.id in documents.input_bindings,
         )
         for port in documents.model.ports.inputs
         for address in (_input_address(port.id),)
@@ -216,6 +239,8 @@ def _selected_task(project, document) -> TaskDocument | PythonTaskSelection | No
 
 
 def _with_task(documents, task):
+    if isinstance(documents, _InitialTrialDocuments):
+        return replace(documents, task_source=task)
     if isinstance(task, PythonTaskSelection):
         return documents.model_copy(update={"task": None, "python_task": task})
     return documents.model_copy(update={"task": task, "python_task": None})
@@ -401,28 +426,14 @@ def _train_writes(change, project, definition, documents, projection):
             writes.append(_override("trial_documents.python_task", "remove"))
         return writes
     if isinstance(change, StudioTrialBindingEdit):
-        row = next((row for row in _input_rows(documents, projection) if row.address == change.input), None)
+        row = next((row for row in _input_rows(documents, projection) if row.id == change.input_id), None)
         if row is None:
-            raise ProjectFolderInvalid("The address is not a declared Model input for this row.")
-        overrides = dict(documents.input_overrides)
-        if change.signal is None or change.signal == row.name:
-            overrides.pop(row.name, None)
-        else:
-            overrides[row.name] = change.signal
-        present = "input_overrides" in raw
-        if present:
-            path = f"trial_documents.input_overrides.{row.name}"
-            if "." in row.name:
-                raise ProjectFolderInvalid("This input needs a path-safe name for a scoped edit.")
-            if row.name in overrides:
-                op = "replace" if row.explicit else "add"
-                return [_override(path, op, overrides[row.name])]
-            if row.explicit:
-                return [_override(path, "remove")]
-            return []
-        if overrides:
-            return [_override("trial_documents.input_overrides", "add", overrides)]
-        return []
+            raise ProjectFolderInvalid("The ID is not a declared Model input for this row.")
+        if "input_bindings" in raw:
+            return [_override(
+                f"trial_documents.input_bindings.{row.id}", "replace" if row.explicit else "add", change.signal_id,
+            )]
+        return [_override("trial_documents.input_bindings", "add", {row.id: change.signal_id})]
     field, value = _changed_value(documents, definition, change.kind)
     return _value_writes(f"trial_documents.{field}", value, change)
 
@@ -444,22 +455,51 @@ def _chosen_task(project, document):
 
 
 def _evaluation_task_path(definition):
+    if "subject" in definition.input_documents:
+        return "inputs.task"
     entry = _authored_task_entry(definition.payload.get("params", {}).get("variation"))
     return f"payload.params.variation.{entry}.value" if entry is not None else EVALUATION_TASK
 
 
+def _initial_trial_documents(definition, bundle) -> _InitialTrialDocuments:
+    model = ModelDocument.model_validate(definition.input_documents["subject"].payload)
+    task = definition.input_documents["task"]
+    if task.schema_id == PYTHON_TASK_SCHEMA_ID:
+        source = PythonTaskSelection.model_validate(task.payload)
+    else:
+        source = TaskDocument.model_validate(task.payload)
+    objective = definition.input_documents.get("objective")
+    differences = MODEL_DIFFERENCE_BATCHES.validate_python(definition.payload.get(MODEL_ATTACHMENTS, {}))
+    if differences:
+        model = resolve_effective_model(
+            model, bundle.components, tuple(item for batch in differences.values() for item in batch),
+            functions=bundle.expression_functions,
+        )
+    params = authored_rollout_settings(definition.payload.get("params"))
+    return _InitialTrialDocuments(
+        model, source, ObjectiveDocument.model_validate(objective.payload) if objective is not None else None,
+        params.input_bindings,
+    )
+
+
 def _evaluate_documents(plan, key, definition, bundle):
     upstream = evaluate_subject(definition)
-    subject = next((row for row in plan.runs if upstream and row.key == upstream[0]), None)
-    raw = plan.requests.get(subject.request_id) if subject else None
-    if raw is None:
-        raise ProjectFolderInvalid("The selected Evaluate has no planned Train subject.")
-    request = decode_request(raw, plan.documents.__getitem__).spec
-    if not isinstance(request, DocumentTrainingRequestSpec):
-        raise ProjectFolderInvalid("The selected Evaluate has no managed Train pairing.")
-    documents = request.trial_documents
-    projection = _project(documents, bundle, show_objective=False)
-    if projection.pair is None or projection.problems:
+    if upstream:
+        subject = next((row for row in plan.runs if row.key == upstream[0]), None)
+        raw = plan.requests.get(subject.request_id) if subject else None
+        if raw is None:
+            raise ProjectFolderInvalid("The selected Evaluate has no planned Train subject.")
+        request = decode_request(raw, plan.documents.__getitem__).spec
+        if not isinstance(request, DocumentTrainingRequestSpec):
+            raise ProjectFolderInvalid("The selected Evaluate has no managed Train pairing.")
+        documents = request.trial_documents
+    elif "subject" in definition.input_documents:
+        documents = _initial_trial_documents(definition, bundle)
+    else:
+        raise ProjectFolderInvalid("The selected Evaluate has no authored trial pairing.")
+    objective_use = ObjectiveUse.INHERITED if upstream else ObjectiveUse.TRAIN
+    projection = _project(documents, bundle, objective_use=objective_use)
+    if projection.pair is None:
         return documents, projection, None
     try:
         if definition.payload.get("evaluation_type") != ROLLOUT_TYPE:
@@ -494,8 +534,10 @@ def _evaluate_documents(plan, key, definition, bundle):
                 code=ProblemCode.STRUCTURE, path=("variation",), reason=str(error),
             )),
         ), None
-    documents = _with_task(documents, task)
-    paired = _project(documents, bundle, show_objective=False, graph_override=graph, objective_use=ObjectiveUse.INHERITED)
+    documents = _with_task(documents, task).model_copy(update={
+        "input_bindings": documents.input_bindings | params.input_bindings,
+    })
+    paired = _project(documents, bundle, graph_override=graph, objective_use=objective_use)
     return documents, replace(paired, task_origins=variant.edit_origins), graph
 
 
@@ -561,13 +603,19 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
         if not isinstance(change, StudioTrialDocumentEdit):
             return StoredEdit([]), change, None
     document = None
-    if step.kind == "train" and isinstance(change, StudioTrialDocumentEdit | StudioTrialDocumentReset):
-        field, _ = _changed_value(
-            documents, definition, change.document if isinstance(change, StudioTrialDocumentReset) else change.kind,
-        )
-        document = _whole_document(definition, f"payload.trial_documents.{field}")
+    document_path = None
+    edited_role = (change.document if isinstance(change, StudioTrialDocumentReset)
+                   else change.kind if isinstance(change, StudioTrialDocumentEdit) else None)
+    own_objective = isinstance(documents, _InitialTrialDocuments) and edited_role == "objective"
+    if own_objective:
+        document_path = "inputs.objective"
+    elif step.kind == "train" and edited_role is not None:
+        field, _ = _changed_value(documents, definition, edited_role)
+        document_path = f"payload.trial_documents.{field}"
+    if document_path is not None:
+        document = _whole_document(definition, document_path)
     if isinstance(change, StudioTrialDocumentReset):
-        restored = document if step.kind == "train" else (
+        restored = document if document_path is not None else (
             _whole_document(definition, _evaluation_task_path(definition)) if change.document == "task" else None
         )
         if restored is None:
@@ -591,9 +639,8 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
         chosen = chosen or {key.step}
     selected = selected_runs(plan, key, scope, chosen_steps=chosen)
     if document is not None and isinstance(scope, StudioTrialStepScope):
-        path = f"payload.trial_documents.{field}"
         if any(
-            row.key in selected and row.document_ids.get(path) not in family and not family & row.document_uses
+            row.key in selected and row.document_ids.get(document_path) not in family and not family & row.document_uses
             for row in plan.rows
         ):
             raise ProjectFolderInvalid("A chosen step no longer uses the selected document.")
@@ -603,7 +650,10 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
     whole = isinstance(scope, StudioTrialStepScope)
     stored_scope = VariantRuns(kind="variant", variant=variant) if whole and variant else scope
     view = variant_view(plan, project, variant if whole else None)
-    if step.kind == "evaluate":
+    if own_objective and document is not None and whole:
+        edits = _reordered_terms(project, document, documents.objective, change) or list(change.edits)
+        stored = document_write(project, document, edits, chosen, readers, variant, view=view)
+    elif step.kind == "evaluate":
         if isinstance(change, StudioTrialSelectDocument):
             role = change.role
             if role == "task":
@@ -641,6 +691,14 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
         ) if writes else StoredEdit([])
     if not stored.files and not stored.created:
         return StoredEdit([]), (), None
+    if isinstance(change, StudioTrialDocumentEdit) and change.kind == "task" and any(
+        (parts := json_pointer_parts(edit.path))[:1] == ("signals",)
+        and (len(parts) <= 2 or parts[2:] == ("name",))
+        for edit in change.edits
+    ):
+        from feedbax.web.services.trial_bindings import preserve_renamed_bindings
+
+        stored = preserve_renamed_bindings(folders, project_id, body.revision, project, stored)
     variants = {key.variant} if variant and whole else set(plan.variants)
     reach = reached_runs(plan, variants, selected, stored.reached - {key.step})
     return _validate_files(
@@ -884,8 +942,10 @@ def _validate_files(
                 requested = _present_ops(raw, change)
             if plan.steps[key.variant, key.step].kind == "train":
                 _, raw = _changed_value(old, plan.selected_definitions[key], change.kind)
-                if (order := _reordered(raw.get("terms", []), change)) is not None:
-                    requested = change.model_copy(update={"edits": [change.edits[0].model_copy(update={"value": order})]})
+            elif isinstance(old, _InitialTrialDocuments) and change.kind == "objective":
+                raw = plan.selected_definitions[key].input_documents["objective"].payload
+            if (order := _reordered(raw.get("terms", []), change)) is not None:
+                requested = change.model_copy(update={"edits": [change.edits[0].model_copy(update={"value": order})]})
             expected = type(old_value).model_validate(_edit_value(raw, requested))
             if expected != new_value:
                 raise ProjectFolderInvalid("A selected value is controlled by a different authored source.")
@@ -899,15 +959,10 @@ def _validate_files(
             if definition.document_ids.get(path) != change.document:
                 raise ProjectFolderInvalid(f"A selected {change.role} is controlled by a different authored source.")
         elif isinstance(change, StudioTrialBindingEdit):
-            binding = next((row for row in _input_rows(new, after) if row.address == change.input), None)
-            if binding is None:
+            if not any(row.id == change.input_id for row in _input_rows(new, after)):
                 raise ProjectFolderInvalid("A selected run has no addressed input.")
-            expected = dict(old.input_overrides)
-            if change.signal in (None, binding.name):
-                expected.pop(binding.name, None)
-            else:
-                expected[binding.name] = change.signal
-            if expected != new.input_overrides:
+            expected = old.input_bindings | {change.input_id: change.signal_id}
+            if expected != new.input_bindings:
                 raise ProjectFolderInvalid("A selected input is controlled by a different authored source.")
     refuse_unreached(plan, candidate, reach)
     if files := _resolved_value_files(authored, candidate, pairings, compile_sources, bundle):
@@ -945,7 +1000,7 @@ def _field_problems(path, site: Site, text: str, functions, problems) -> list[Pr
     ]
 
 
-def _trial_fields(path, site: Site, expression, functions, sweep, row, problems) -> list[StudioTrialField]:
+def _trial_fields(path, site: Site, expression, functions, sweep, row, problems, name_paths) -> list[StudioTrialField]:
     """The field at ``path`` with its text, its structure where its value names only what is in scope, its problems,
     and each number in it the step can sweep: ``sweep`` gives the sweep of the number at a path, if the step can sweep it.
 
@@ -954,7 +1009,7 @@ def _trial_fields(path, site: Site, expression, functions, sweep, row, problems)
     """
     missing = references(expression) - {item.id for item in site.names} if expression is not None else set()
     shown = expression is not None and not missing
-    projection = project_site(site, functions)
+    projection = project_site(site, functions, expression, name_paths=name_paths)
     fields = []
     for inner, label in numeric_nodes(expression, functions) if shown else ():
         swept = sweep((*path, *inner), site, label or _field_label(path))
@@ -976,10 +1031,15 @@ def _trial_fields(path, site: Site, expression, functions, sweep, row, problems)
         for reference in sorted(missing)
     ))})
     text = print_field(expression, printed) if expression is not None else ""
+    marks = _field_problems(path, site, text, functions, problems)
+    if not marks and isinstance(expression, UnresolvedValue):
+        resolved = resolve_expression(expression, site, functions)
+        if isinstance(resolved, tuple):
+            marks = [problem.model_copy(update={"path": path}) for problem in resolved]
     return [StudioTrialField(
         path=pointer(tuple(map(str, path))), label=_field_label(path), site=projection, text=text,
         structure=value_structure(expression, site, functions) if shown else None,
-        problems=_field_problems(path, site, text, functions, problems),
+        problems=marks,
     ), *fields]
 
 
@@ -1037,16 +1097,26 @@ def trial_authoring(
     except (ValueError, TypeError, KeyError) as error:
         raise ProjectFolderInvalid(str(error)) from error
     paired = projected.pair
+    compiled = paired.task if paired is not None else projected.partial_task
     task = documents.task_source
     task_path = (f"payload.trial_documents.{_task_field(task)}" if step.kind == "train"
                  else _evaluation_task_path(definition))
     model_document = definition.document_ids.get("payload.trial_documents.model")
+    objective_path = "payload.trial_documents.objective"
+    objective_document = definition.document_ids.get(objective_path)
+    objective_source = StudioTrialObjectiveSource(kind="own", step=key.step) if documents.objective is not None else None
+    if isinstance(documents, _InitialTrialDocuments):
+        model_document = definition.document_ids.get("inputs.subject")
+        objective_path = "inputs.objective"
+        objective_document = definition.document_ids.get(objective_path)
     task_source = None
     task_field_sources = {}
     if step.kind == "evaluate" and (upstream := evaluate_subject(definition)):
         producer = next((row for row in plan.rows if row.key == upstream[0]), None)
         if producer is not None:
             model_document = producer.document_ids.get("payload.trial_documents.model")
+            objective_document = producer.document_ids.get(objective_path)
+        objective_source = StudioTrialObjectiveSource(kind="train", step=upstream[0].step)
         task_source = evaluate_value_source(upstream[1])
         for target, origin_path in projected.task_origins.items():
             if target[0] != "task":
@@ -1061,6 +1131,8 @@ def trial_authoring(
                 else:
                     task_field_sources[target[-1]] = source
     row = next((item for item in plan.rows if item.key == key), None)
+    output_paths = {_output_address(port.id).to_text(): (port.name,)
+                    for port in documents.model.ports.outputs}
 
     def expression(path):
         document = _field_document(documents, path[0])
@@ -1077,42 +1149,48 @@ def trial_authoring(
             return None
         return _field_sweep(project, plan, key, definition, path, site, label)
 
+    fields = [
+        field for path, site in projected.fields.items() if path[1:2] != ("validation_trials",)
+        for field in _trial_fields(
+            path, site, expression(path), bundle.expression_functions, sweep, row, projected.problems, output_paths,
+        )
+    ]
+    field_problems = [
+        problem for field in fields for problem in field.problems
+        if not _held_problems(problem.path, projected.problems)
+    ]
     return StudioTrialAuthoring(
         revision=snapshot.revision, run=body.run, model=model_document,
         task_document=definition.document_ids.get(task_path) if task_path else None,
-        objective_document=definition.document_ids.get("payload.trial_documents.objective"),
-        task=task, objective=documents.objective if step.kind == "train" else None,
+        objective_document=objective_document,
+        task=task, objective=documents.objective, objective_source=objective_source,
         task_changed=changed_from_base(project, _whole_document(definition, task_path) if task_path else None),
         objective_changed=changed_from_base(project, _whole_document(
-            definition, "payload.trial_documents.objective",
-        )) if step.kind == "train" else [],
+            definition, objective_path,
+        )) if objective_source is not None and objective_source.kind == "own" else [],
         task_source=task_source, task_field_sources=task_field_sources,
         task_types=[StudioTaskType(type=key, label=entry.label, parameter_schema=entry.parameters.model_json_schema())
                     for key in bundle.python_tasks.keys() if (entry := bundle.python_tasks.resolve(key))],
         variables=list(projected.variables), signals=list(projected.signals), epochs=list(projected.epochs),
         period_seconds=documents.model.step_seconds,
-        n_steps=paired.task.n_steps if paired else None,
+        n_steps=compiled.n_steps if compiled else None,
         batch_size=_batch_size(step.kind, definition.payload),
-        reads_model=paired.task.reads_model if paired else False,
+        reads_model=compiled.reads_model if compiled else False,
         tasks=[
             StudioTaskChoice(document=name, problems=list(_project(
-                _with_task(documents, other), bundle, show_objective=step.kind == "train", graph_override=graph,
-                objective_use=ObjectiveUse.INHERITED if step.kind == "evaluate" else ObjectiveUse.TRAIN,
+                _with_task(documents, other), bundle, show_objective=False, graph_override=graph,
+                objective_use=ObjectiveUse.INHERITED if objective_source is not None and objective_source.kind == "train"
+                else ObjectiveUse.TRAIN,
             ).problems))
             for name in sorted(project.documents)
             if (other := _selected_task(project, name)) is not None
         ],
-        inputs=_input_rows(documents, projected),
+        input_bindings=documents.input_bindings, inputs=_input_rows(documents, projected),
         outputs=[StudioTrialOutput(address=ModelAddress.from_text(value.id), value=value)
                  for value in paired.model.outputs] if paired else [],
-        resets=[StudioTrialReset(address=field.address, name=task_start(documents.model, field.address).name,
+        resets=[StudioTrialReset(address=field.address, path=task_start_path(documents.model, field.address),
                                  type=field.type, finest=field.finest, required=field.required)
                 for field in projected.resets],
-        fields=[
-            field for path, site in projected.fields.items() if path[1:2] != ("validation_trials",)
-            for field in _trial_fields(
-                path, site, expression(path), bundle.expression_functions, sweep, row, projected.problems,
-            )
-        ],
-        problems=[*projected.problems, *refused], files=stored.files, created=list(stored.created), refusal=refusal,
+        fields=fields, problems=[*projected.problems, *field_problems, *refused],
+        files=stored.files, created=list(stored.created), refusal=refusal,
     )

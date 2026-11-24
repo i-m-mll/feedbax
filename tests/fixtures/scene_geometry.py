@@ -90,9 +90,11 @@ def scene_files():
     ]
 
 
-def seed_scene_project(root: Path) -> None:
+def seed_scene_project(root: Path, files: list[dict] | None = None) -> None:
+    if files is None:
+        files = scene_files()
     project = Project.model_validate({
-        "documents": {file["id"]: file["document"] for file in scene_files()},
+        "documents": {file["id"]: file["document"] for file in files},
     })
     for name, content in dump_text_project(
         project, ProjectConfiguration(project=root.name, store="results")

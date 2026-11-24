@@ -161,20 +161,28 @@ class ProjectFolderService(ProjectFolder):
         )
 
         from feedbax.web.services.model_scope import model_edit_store
+        from feedbax.web.services.trial_bindings import input_names, preserve_renamed_bindings
         from feedbax.web.services.trial_scope import row_model
 
         project_id = self.project_id(project_id)
+        row = None
         if body.rows:
             if body.files:
                 raise ProjectFolderInvalid("A Model edit for selected runs writes no step files alongside it.")
             row = row_model(self, project_id, self.read(project_id, revision=body.revision).project, body)
-            result = self.apply_model_command(
-                project_id, body, components, partial(model_edit_store, self, project_id, row=row), source=row.content,
-            )
-        else:
-            result = self.apply_model_command(
-                project_id, body, components, partial(model_edit_store, self, project_id),
-            )
+
+        def store(project, body, before, after):
+            stored = model_edit_store(self, project_id, project, body, before, after, row)
+            if isinstance(stored, ModelEditAsked):
+                return stored
+            old_names, new_names = input_names(before), input_names(after)
+            if any(old_names[id_] != new_names[id_] for id_ in old_names.keys() & new_names.keys()):
+                return preserve_renamed_bindings(self, project_id, body.revision, project, stored)
+            return stored
+
+        result = self.apply_model_command(
+            project_id, body, components, store, source=row.content if row is not None else None,
+        )
         if isinstance(result, ModelEditAsked):
             return ModelEditResponse(result=result)
         if isinstance(result, ModelEditProblem):

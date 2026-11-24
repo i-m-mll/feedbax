@@ -84,7 +84,7 @@ from feedbax.contracts.request_refs import (
     BatchMember, BatchSetMember, BestRank, LastMember, ProductRef, UpdateSeriesMember,
 )
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec
-from feedbax.contracts.workspace_replay import WorkspaceReplayTrial
+from feedbax.contracts.trial_record import StudioTrialReplayResponse
 from feedbax.persistence.completion import completion_file
 from feedbax.host.plan_history import PlanRowRef, PlanSuccess, plan_run_key, settled_results
 from feedbax.host.job_completion import training_binding_path
@@ -757,7 +757,11 @@ class ProjectPlanService:
         ), None)
         if row is None or receipt is None:
             raise JobNotFound(body.job_id)
-        if isinstance(body, StudioSavedEvaluationReplayRequest) and body.trial not in row.trials:
+        if (
+            isinstance(body, StudioSavedEvaluationReplayRequest)
+            and body.trial is not None
+            and body.trial not in row.trials
+        ):
             raise ProjectFolderInvalid("The selected trial is absent from the saved Evaluate request.")
         result = self.jobs.read_evaluation_result(
             project=view.settled.project_id, store=view.settled.store_path, job_id=body.job_id,
@@ -768,10 +772,10 @@ class ProjectPlanService:
 
     def evaluation_replay(
         self, project_id: str, body: StudioSavedEvaluationReplayRequest,
-    ) -> WorkspaceReplayTrial:
+    ) -> StudioTrialReplayResponse:
         _, _, result = self._evaluation_result(project_id, body)
         try:
-            return result.replay_trial(body.trial, anchor_id="effector", checkpoint=body.checkpoint)
+            return result.replay(body.trial, checkpoint=body.checkpoint, aggregate=body.aggregate)
         except CannotRun as error:
             raise ProjectFolderInvalid(str(error)) from error
         except (OSError, ValueError, KeyError) as error:

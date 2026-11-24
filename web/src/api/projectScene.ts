@@ -1,5 +1,7 @@
 import { asApiRequestError, requestJson, sentBody } from '@/api/request';
-import { parseContract, type StudioPlanarSceneRequest } from '@/generated/studioContracts';
+import {
+  parseContract, type StudioPlanarSceneRequest,
+} from '@/generated/studioContracts';
 
 export async function fetchProjectPlanarScene(id: string, source: StudioPlanarSceneRequest, signal: AbortSignal) {
   const path = `/api/projects/${encodeURIComponent(id)}/scene/planar`;
@@ -16,3 +18,4 @@ export async function fetchProjectPlanarScene(id: string, source: StudioPlanarSc
     throw asApiRequestError(error, path);
   }
 }
+

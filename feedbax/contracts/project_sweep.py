@@ -17,7 +17,7 @@ from pydantic import Field, JsonValue, PrivateAttr, TypeAdapter, model_validator
 
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.expression_values import DrawValue, TextSpan
+from feedbax.contracts.expression_values import DrawValue, TextSpan, WeightPart
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_address import FieldElement, ModelAddress
 from feedbax.contracts.model_attachment import SetField
@@ -262,6 +262,39 @@ class SetAxis(StrictModel):
     set: ProjectName
     where: AxisCondition | None = None
     optional: bool = Field(default=False, exclude_if=lambda optional: not optional)
+
+
+class ListedSetTrials(StrictModel):
+    kind: Literal["listed"]
+
+
+class WeightedSetTrials(StrictModel):
+    kind: Literal["weighted"]
+    weights: dict[ProjectName, WeightPart] = Field(default_factory=dict)
+    none: WeightPart = 1.0
+    """Unspecified entries receive one part, including entries added to the Set later."""
+
+
+class SetEntryParts(StrictModel):
+    on: WeightPart = 1.0
+    off: WeightPart = 1.0
+
+
+class CooccurringSetTrials(StrictModel):
+    kind: Literal["cooccurring"]
+    weights: dict[ProjectName, SetEntryParts] = Field(default_factory=dict)
+
+
+type SetTrialSampling = Annotated[
+    ListedSetTrials | WeightedSetTrials | CooccurringSetTrials, Field(discriminator="kind"),
+]
+
+
+class TrialSetField(StrictModel):
+    """One sweep axis placed in the step's trials."""
+
+    axis: SetAxis
+    sampling: SetTrialSampling
 
 
 type Axis = NamedAxis | InputAxis | ListedAxis | RangeAxis | SampledAxis | CheckpointRuleAxis | SetAxis

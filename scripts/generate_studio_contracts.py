@@ -52,7 +52,7 @@ from feedbax.contracts.acausal import (
 )
 from feedbax.contracts.artifact_custody import ContentObjectRef, StoreTransferProgress
 from feedbax.contracts.execution_target import (
-    CloseWhenIdle, ExecutionTargets, KeepOpen, LocalTarget, LocalTargetProfile, OffTarget, OpeningObservation, ReadyTarget,
+    CloseWhenIdle, ExecutionTargets, HostRuntime, KeepOpen, LocalTarget, LocalTargetProfile, OffTarget, OpeningObservation, ReadyTarget,
     SessionTarget, SessionTargetProfile, TargetOption, TargetRealization, UnreachableTarget,
 )
 from feedbax.contracts.analysis_document import AnalysisDocument
@@ -64,6 +64,12 @@ from feedbax.contracts.studio_scene import (
     ScenePlanarMuscle,
     StudioPlanarSceneRequest,
     StudioPlanarSceneResponse,
+    SceneLinkGeometry,
+    SceneMuscleGeometry,
+    ScenePlanarGeometry,
+    ScenePointGeometry,
+    StudioSceneGeometryRequest,
+    StudioSceneGeometryResponse,
 )
 from feedbax.contracts.representation import (
     RepresentationAnchorSpec,
@@ -151,6 +157,8 @@ from feedbax.contracts.studio_api import (
     PenzaiNodeRequest,
     SuccessPayload,
     SuccessResponse,
+    StudioTrajectorySampleAxis,
+    StudioTrajectoryTrack,
     TrainingTrajectoryPayload,
 )
 from feedbax.contracts.base import ParentRef
@@ -274,6 +282,8 @@ from feedbax.contracts.model_edit import (
     ModelConnectionReview,
     ModelConnectionReviewRequest,
     ModelConnectionVerdict,
+    ModelWireReplacement,
+    ModelGraphProblem,
     ModelLibraryConnection,
     ModelAddedElement,
     ModelPortProjection,
@@ -308,20 +318,6 @@ from feedbax.contracts.model_edit import (
     SetModelAttachment,
     UngroupComposite,
 )
-from feedbax.contracts.workspace_replay import (
-    ResolvedWorkspaceReplayScene,
-    WorkspaceReplayImportedArtifact,
-    WorkspaceReplayManifestRefs,
-    WorkspaceReplayOverlayChannel,
-    WorkspaceReplayProduct,
-    WorkspaceReplayRequiredSelector,
-    WorkspaceReplaySampleAxis,
-    WorkspaceReplayTrack,
-    WorkspaceReplayTrial,
-    WorkspaceReplayTrialIdentity,
-    WorkspaceReplayTrialSpecSnapshot,
-    WorkspaceReplayWarning,
-)
 from feedbax.contracts.studio_refinements import (
     CROSS_FIELD_REFINEMENTS,
     REGISTERED_CONSTRAINT_VALIDATORS,
@@ -332,7 +328,9 @@ from feedbax.contracts.trial_record import (
     TaskTimelineCue,
     TaskVariableRange,
     TrialAggregate,
+    StudioTrialReplayResponse,
     TrialRecord,
+    TrialStateTrack,
     TrialRecords,
     TrialTerm,
     TrialTermAggregate,
@@ -417,7 +415,7 @@ NONE_TYPE = type(None)
 
 
 JOB_MODELS = (
-    KeepOpen, CloseWhenIdle, LocalTargetProfile, SessionTargetProfile, LocalTarget, TargetRealization, SessionTarget,
+    KeepOpen, CloseWhenIdle, HostRuntime, LocalTargetProfile, SessionTargetProfile, LocalTarget, TargetRealization, SessionTarget,
     ReadyTarget, OffTarget, UnreachableTarget, TargetOption, ExecutionTargets, OpeningObservation,
     JobError,
     JobOutcome,
@@ -612,6 +610,8 @@ MODEL_TYPES: list[type[BaseModel]] = [
     ModelConnectionReviewRequest,
     TaskSignalSource,
     ModelConnectionVerdict,
+    ModelWireReplacement,
+    ModelGraphProblem,
     ModelLibraryConnection,
     ModelConnectionReview,
     ModelPortProjection,
@@ -729,26 +729,22 @@ MODEL_TYPES: list[type[BaseModel]] = [
     ScenePlanarModel,
     StudioPlanarSceneRequest,
     StudioPlanarSceneResponse,
+    SceneLinkGeometry,
+    SceneMuscleGeometry,
+    ScenePlanarGeometry,
+    ScenePointGeometry,
+    StudioSceneGeometryRequest,
+    StudioSceneGeometryResponse,
     DomainRegistryPayload,
     StudioErrorReport,
     DomainCompileReport,
-    WorkspaceReplayWarning,
-    WorkspaceReplayTrialIdentity,
-    WorkspaceReplaySampleAxis,
-    WorkspaceReplayTrack,
-    WorkspaceReplayOverlayChannel,
-    WorkspaceReplayTrialSpecSnapshot,
-    WorkspaceReplayManifestRefs,
-    WorkspaceReplayTrial,
-    WorkspaceReplayImportedArtifact,
-    WorkspaceReplayProduct,
-    WorkspaceReplayRequiredSelector,
-    ResolvedWorkspaceReplayScene,
     ComponentDefinition,
     DocumentTrainingConfig,
     TrainContinuation,
     TaskTimelineCue,
+    StudioTrialReplayResponse,
     TrialRecord,
+    TrialStateTrack,
     TrialRecords,
     TrialTerm,
     TrialTermAggregate,
@@ -776,6 +772,8 @@ MODEL_TYPES: list[type[BaseModel]] = [
     PenzaiNodeRequest,
     PenzaiInspectorPayload,
     PenzaiInspectorResponse,
+    StudioTrajectorySampleAxis,
+    StudioTrajectoryTrack,
     TrainingTrajectoryPayload,
     DatasetInfo,
     TrajectoryMetadata,
@@ -900,8 +898,10 @@ CONTRACT_MODEL_NAMES = [
     "DomainCompileReport",
     "StudioPlanarSceneRequest",
     "StudioPlanarSceneResponse",
+    "StudioSceneGeometryRequest",
+    "StudioSceneGeometryResponse",
     "StudioErrorReport",
-    "WorkspaceReplayTrial",
+    "StudioTrialReplayResponse",
     "PenzaiBuilderListResponse",
     "PenzaiInspectorResponse",
     "PenzaiNodeRequest",
@@ -932,6 +932,7 @@ MIGRATION_OR_NORMALIZATION_VALIDATORS = {
     ("PortType", "migrate_legacy_signal_port"),
     ("ComponentDefinition", "migrate_legacy_definition"),
     ("SelectionSpec", "_normalize_mode_fields"),
+    ("TaskTrialSampleRequest", "_normalize_model_without_period"),
 }
 
 

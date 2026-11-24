@@ -74,7 +74,7 @@ def initial_rollout(tmp_path):
         store.store_object(raw)
     params = RolloutParameters(
         trials=task.condition_ids[:2], seed=29, trial_policy="paired", variation=(),
-        input_overrides={"reach_target": "target_pos"},
+        input_bindings={"task-input": "target_pos"},
     )
 
     def prepare():
@@ -163,7 +163,7 @@ def test_equal_rollout_check_preserves_protected_wrapper_staleness(tmp_path, ini
     execution = EvaluationComputation(store)
     with SourceRoster(3, "test Evaluate source") as roster:
         roster.enable()
-        recorder = WorkerRecorder(roster.names, boot_ns=time_ns())
+        recorder = WorkerRecorder(roster, boot_ns=time_ns())
         with recorder.monitor():
             recorder.bind_project(project)
             monkeypatch.setattr(TrialExecution, "evaluate", load(score, original_score))

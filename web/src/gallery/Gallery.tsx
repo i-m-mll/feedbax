@@ -28,7 +28,7 @@ import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { Slider } from '@/components/ui/Slider';
 import { Select, type Option } from '@/components/ui/Select';
 import { StatusMark, type StatusMarkStatus } from '@/components/ui/StatusMark';
-import { Table, TableCell, TableFieldCell, TableHeaderCell, TableRow } from '@/components/ui/Table';
+import { Table, TableCell, TableFieldCell, TableHeaderCell, TableHeaderRow, TableRow } from '@/components/ui/Table';
 import { ValueField } from '@/components/values/ValueField';
 import { rawField } from '@/components/values/adapters/raw';
 import { TextField } from '@/components/ui/TextField';
@@ -254,34 +254,63 @@ function State({ name, children }: { name: string; children: ReactNode }) {
   );
 }
 
-const runs = [['run-1', 1, 0.412], ['run-2', 2, 0.388], ['run-3', 2, 0.401]] as const;
+interface DemoRun {
+  id: string;
+  name: string;
+  seed: number;
+  rate: number;
+  loss: number;
+}
 
-/** The same table in a box narrower than its least width, which scrolls on its own, and in one wide enough. */
+const runs: readonly DemoRun[] = [
+  { id: 'a', name: 'run-1', seed: 1, rate: 0.001, loss: 0.412 },
+  { id: 'b', name: 'run-2', seed: 2, rate: 0.003, loss: 0.388 },
+  { id: 'c', name: 'run-3', seed: 2, rate: 0.01, loss: 0.401 },
+];
+
+/**
+ * The same table in a box narrower than its width, which scrolls on its own, and in one wide enough. Its rows are
+ * dragged by their handles; the move is written after a delay, as a save would be.
+ */
 function TableDemo() {
-  const [rates, setRates] = useState<Record<string, number>>({ 'run-1': 0.001, 'run-2': 0.003, 'run-3': 0.01 });
-  const [names, setNames] = useState<string[]>(runs.map(([name]) => name));
-  const [renaming, setRenaming] = useState<number>();
-  const table = (label: string) => <Table aria-label={label} held={1}
-    columns={[{ least: '7rem', fixed: true }, { least: '5rem' }, { least: '7rem' }, { least: '6rem' }]}
-    addRow={{ label: 'Add Run', onAdd: () => setNames([...names, `run-${names.length + 1}`]) }}
+  const [rows, setRows] = useState<readonly DemoRun[]>(runs);
+  const [renaming, setRenaming] = useState<string>();
+  const update = (id: string, change: Partial<DemoRun>) => setRows(rows.map((row) => row.id === id ? { ...row, ...change } : row));
+  const move = (id: string, index: number) => new Promise<void>((resolve) => setTimeout(() => {
+    setRows((current) => {
+      const moved = current.filter((row) => row.id !== id);
+      moved.splice(index, 0, current.find((row) => row.id === id)!);
+      return moved;
+    });
+    resolve();
+  }, 300));
+  const table = (label: string) => <Table aria-label={label} held={1} moveRow={move}
+    columns={[{ least: '4rem', greatest: '12rem' }, { least: '5rem' }, { least: '7rem' }, { least: '6rem' }]}
+    addRow={{ label: 'Add Run', onAdd: () => setRows([...rows, { ...runs[rows.length % runs.length], id: crypto.randomUUID(),
+      name: `run-${rows.length + 1}` }]) }}
     box={{ className: 'rounded-control border border-shell-divider' }}>
-    <thead><tr>
+    <thead><TableHeaderRow>
       <TableHeaderCell scope="col">Run</TableHeaderCell><TableHeaderCell scope="col">Seed</TableHeaderCell>
       <TableHeaderCell scope="col">Learning rate</TableHeaderCell><TableHeaderCell scope="col">Loss</TableHeaderCell>
-    </tr></thead>
-    <tbody>{names.map((_, index) => [`run-${index + 1}`, ...runs[index % runs.length].slice(1)] as const).map(([run, seed, loss], index) =>
-      <TableRow key={run} tabIndex={0} selected={index === 1} related={index === 2}>
+    </TableHeaderRow></thead>
+    <tbody>{rows.map((run, index) =>
+      <TableRow key={run.id} tabIndex={0} selected={index === 1} related={index === 2}
+        sortable={{ id: run.id, label: `Move ${run.name}` }}
+        menu={{ label: `Run ${run.name}`, items: <>
+          <MenuItem onClick={() => setRenaming(run.id)}>Rename</MenuItem>
+          <MenuItem onClick={() => setRows(rows.filter((row) => row.id !== run.id))}>Remove</MenuItem>
+        </> }}>
       <TableFieldCell header>
-        <InlineEdit form="cell" aria-label={`Rename ${names[index]}`} value={names[index]} editing={renaming === index}
-          onEditingChange={(editing) => setRenaming(editing ? index : undefined)}
-          onCommit={(name) => setNames(names.map((old, at) => at === index ? name : old))} />
+        <InlineEdit form="cell" aria-label={`Rename ${run.name}`} value={run.name} editing={renaming === run.id}
+          onEditingChange={(editing) => setRenaming(editing ? run.id : undefined)}
+          onCommit={(name) => update(run.id, { name })} />
       </TableFieldCell>
-      <TableCell>{seed}</TableCell>
+      <TableCell>{run.seed}</TableCell>
       <TableFieldCell><ValueField form="cell" model={rawField({
-        id: run, label: `Learning rate ${run}`, type: { kind: 'number' }, value: rates[run] ?? 0.001,
-        change: (value) => setRates({ ...rates, [run]: value as number }),
+        id: run.id, label: `Learning rate ${run.name}`, type: { kind: 'number' }, value: run.rate,
+        change: (value) => update(run.id, { rate: value as number }),
       })} /></TableFieldCell>
-      <TableCell className="tabular-nums">{loss}</TableCell>
+      <TableCell className="tabular-nums">{run.loss}</TableCell>
     </TableRow>)}</tbody>
   </Table>;
   return <div className="grid w-full gap-3">

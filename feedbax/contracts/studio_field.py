@@ -121,6 +121,7 @@ class StudioFieldView(StrictModel):
 
 class ModelFieldView(StudioFieldView):
     address: ModelAddress
+    problems: list[Problem] = Field(default_factory=list)
     sources: list[StudioPlanReviewSource] = Field(default_factory=list)
 
 
