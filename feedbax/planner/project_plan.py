@@ -932,6 +932,8 @@ class _ModelSource:
     evaluation_problem: ProjectDiagnostic | None = None
     evaluation_graph: GraphSpec | None = None
     trained: _TrainedSource | None = None
+    unpaired: bool = False
+    """The Train's Model, Task and Objective do not pair, so nothing evaluates what it would train."""
 
 
 @dataclass(frozen=True)
@@ -1051,14 +1053,14 @@ def _refused_difference(
     """Address the first of an Evaluate Model document's differences that the trained model refuses on its own."""
     from feedbax.compiler.model_attachment import lower_evaluate_attachments
 
-    for pointer, difference in model.differences.items():
+    for at, difference in model.differences.items():
         try:
             evaluated = ModelDocument.model_validate(
-                apply_differences(trained.model_dump(mode="json"), {pointer: difference}),
+                apply_differences(trained.model_dump(mode="json"), {at: difference}),
             )
             lower_evaluate_attachments(trained, evaluated, None, components, (), functions=functions)
         except ValueError:
-            return ModelAddress.at_stored_path(json_pointer_parts(pointer))
+            return ModelAddress.at_stored_path(json_pointer_parts(at))
     return None
 
 
@@ -1214,22 +1216,27 @@ def _builtin_expression_registry():
     return registry
 
 
-def _trial_problem(
-    key: RunKey, problem: Problem, document_ids: Mapping[str, str], *, initial: bool = False,
-) -> ProjectDiagnostic:
-    path = problem.path
-    match path:
+def _trial_place(problem: Problem) -> tuple[str, tuple[str, ...]]:
+    """The trial document a pairing Problem lies in, and its path in that document."""
+    match problem.path:
         case ("model" | "task" | "python_task" | "objective" as role, *parts):
             pass
         case ("terms", *_):
-            role, parts = "objective", path
+            role, parts = "objective", problem.path
         case _:
-            role, parts = "task", path
+            role, parts = "task", problem.path
+    return str(role), tuple(map(str, parts))
+
+
+def _trial_problem(
+    key: RunKey, problem: Problem, document_ids: Mapping[str, str], *, initial: bool = False,
+) -> ProjectDiagnostic:
+    role, parts = _trial_place(problem)
     slot = (
         "inputs.subject" if role == "model" else "inputs.task" if role == "python_task" else f"inputs.{role}"
     ) if initial else f"payload.trial_documents.{role}"
     document = document_ids.get(slot)
-    location = tuple(map(str, parts))
+    location = parts
     return ProjectDiagnostic(
         ResolutionCode.INVALID_PAYLOAD, ".".join((slot, *location)), problem.reason,
         key.step, row=key.row, variant=key.variant, document=document,
@@ -1288,6 +1295,9 @@ def _encode_row(
     components: ComponentRegistry | None = None,
 ) -> _LoweredRow:
     checkpoint_problem = None
+    pairing_problem: RunProblem | None = None
+    pairing_diagnostics: tuple[ProjectDiagnostic, ...] = ()
+    preparation: _TrainPreparation | None = None
     if prepared_train is not None:
         payload = payload | {"trial_documents": prepared_train.documents}
         preparation = prepared_train.preparation
@@ -1307,17 +1317,25 @@ def _encode_row(
                     ), lowering_stamp)
                 authored = authored.model_copy(update={"python_task": resolved.selection()})
                 payload = payload | {"trial_documents": authored.model_dump(mode="json")}
-            preparation = prepare_trial(authored)
+            prepared = prepare_trial(authored)
         except ValueError as error:
             return _LoweredRow(None, (ProjectDiagnostic(
                 ResolutionCode.INVALID_PAYLOAD, "payload.trial_documents", str(error), key.step,
                 row=key.row, variant=key.variant,
             ),), lowering_stamp)
-        if isinstance(preparation, tuple):
-            return _LoweredRow(None, tuple(
-                _trial_problem(key, problem, document_ids) for problem in preparation
-            ), lowering_stamp)
-        checkpoint_problem = preparation.checkpoint_problem
+        assert model_source is not None
+        if isinstance(prepared, tuple):
+            # The Model, Task and Objective do not pair: the row is planned and cannot run, at the first Problem.
+            role, parts = _trial_place(prepared[0])
+            pairing_problem = RunProblem(
+                pointer(("trial_documents", role, *parts)), prepared[0].reason, prepared[0].model_address,
+            )
+            pairing_diagnostics = tuple(_trial_problem(key, problem, document_ids) for problem in prepared)
+            model_source = replace(model_source, unpaired=True)
+        else:
+            preparation = prepared
+            checkpoint_problem = preparation.checkpoint_problem
+    if preparation is not None and prepared_train is None:
         assert model_source is not None
         if isinstance(preparation.evaluation, ProjectDiagnostic):
             model_source = replace(
@@ -1392,10 +1410,10 @@ def _encode_row(
     except ValueError as error:
         problems = (("", str(error)),)
     else:
-        if remember_train is not None:
+        if remember_train is not None and preparation is not None:
             assert isinstance(spec, DocumentTrainingRequestSpec) and model_source is not None
             remember_train(_PreparedTrainRow(spec.trial_documents, preparation, model_source))
-        if isinstance(spec, DocumentTrainingRequestSpec):
+        if isinstance(spec, DocumentTrainingRequestSpec) and preparation is not None:
             assert model_source is not None
             model_source = replace(model_source, trained=_TrainedSource(
                 preparation.graph, spec.method, spec.training_config.replicates,
@@ -1403,16 +1421,17 @@ def _encode_row(
             if checkpoint_problem is None and checkpoint_source is not None:
                 assert components is not None
                 checkpoint_problem = _checkpoint_fit_problem(checkpoint_source, preparation, spec, components)
-        problem = (
-            RunProblem("/trial_documents/model/interior/components", "Model has no components.")
-            if isinstance(spec, DocumentTrainingRequestSpec) and not spec.trial_documents.model.interior.components else
-            RunProblem("/trial_documents/objective/terms", "Objective has no enabled terms.")
-            if isinstance(spec, DocumentTrainingRequestSpec) and not any(
-                term.enabled for term in spec.trial_documents.objective.terms
-            ) else checkpoint_problem
-        )
+        documents = spec.trial_documents if isinstance(spec, DocumentTrainingRequestSpec) else None
+        if pairing_problem is not None:
+            problem = pairing_problem
+        elif documents is not None and not documents.model.interior.components:
+            problem = RunProblem("/trial_documents/model/interior/components", "Model has no components.")
+        elif documents is not None and not any(term.enabled for term in documents.objective.terms):
+            problem = RunProblem("/trial_documents/objective/terms", "Objective has no enabled terms.")
+        else:
+            problem = checkpoint_problem
         return _LoweredRow(
-            encoded, (), lowering_stamp, admission_problem=problem,
+            encoded, pairing_diagnostics, lowering_stamp, admission_problem=problem,
             model_source=model_source, encoded_spec=encoded_spec,
         )
     return _LoweredRow(
@@ -2960,7 +2979,7 @@ class _Compiler:
         inputs: Mapping[str, tuple[PlannedInput, ...]],
     ) -> bool:
         """Give ``key`` one ``blocked_input`` when a producer of its members cannot run, and report whether ``key``
-        must stay unlowered because that producer has no request.
+        must stay unlowered because that producer has no request, or has one whose documents do not pair.
 
         A row left unlowered is a ``BlockedRow`` that keeps its own definition and documents, so it stays authorable.
         A row whose producer has a request is lowered as usual and keeps every problem of its own."""
@@ -2980,7 +2999,8 @@ class _Compiler:
             f"{producer.variant}/{producer.step}/{producer.row} cannot run",
             key.step, row=key.row, variant=key.variant, blocked_by=producer,
         ))
-        if binding.waits_on is None:
+        source = self.model_sources.get(producer)
+        if binding.waits_on is None and not (source is not None and source.unpaired):
             return False
         definition = self.select_definition(template, key, row, inputs)
         resolved = definition if definition is not None else self.resolve_row(template, key, row, None)

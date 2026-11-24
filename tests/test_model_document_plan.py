@@ -1003,7 +1003,8 @@ def test_unresolved_relative_link_is_reported_at_the_task():
     link["model_field"] = missing
     plan = compile_project(Project.model_validate(raw))
 
-    assert not plan.runs
+    (train,) = plan.runs
+    assert train.key.step == "train" and train.admission_problem is not None
     assert {(problem.step, problem.document, problem.document_path) for problem in plan.diagnostics} == {
         (step, "task", pointer(("links", missing))) for step in ("train", "baseline")
     }
@@ -1023,7 +1024,7 @@ def test_stored_model_plan_uses_the_supplied_component_registry():
     project = Project.model_validate(raw)
     memo = ProjectPlanMemo()
     first = compile_project(project, memo=memo)
-    assert not first.runs
+    assert [run.admission_problem is not None for run in first.runs if run.kind == "train"] == [True]
     assert any("unknown leaf type 'test.CustomRelay'" in problem.detail for problem in first.diagnostics)
     registry = ComponentRegistry()
     register_owners(registry, "test", CustomRelay)
@@ -1919,7 +1920,7 @@ def test_reading_the_plan_refuses_an_acausal_leaf_in_a_causal_model(monkeypatch)
     }
     _refuse_realization(monkeypatch)
     plan = compile_project(Project.model_validate(raw))
-    assert not plan.requests
+    assert [run.admission_problem is not None for run in plan.runs if run.kind == "train"] == [True]
     assert any(
         "'feedbax.Mass' for node 'mass' belongs to domain 'feedbax.domain.acausal'" in problem.detail
         for problem in plan.diagnostics

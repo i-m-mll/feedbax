@@ -447,7 +447,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
     ...singleModel.document, payload: { step_seconds: 0.01, ports: {}, interior: {} },
   } };
   const documents = (model: string) => ({
-    model: { document: model }, python_task: { document: task.id }, objective: { document: objective.id },
+    model: { document: model }, task: { document: task.id }, objective: { document: objective.id },
   });
   const step = (id: string, model: string) => ({
     ...template, id, step: { ...template.step, base: { inline: {
@@ -650,7 +650,7 @@ test('a view with nothing to show is dimmed in the rail, and an open one gives w
   } };
   const step = (id: string, model: string) => ({
     ...template, id, step: { ...template.step, base: { inline: { ...template.step.base.inline, trial_documents: {
-      model: { document: model }, python_task: { document: task.id }, objective: { document: objective.id },
+      model: { document: model }, task: { document: task.id }, objective: { document: objective.id },
     } } } },
   });
   const { snapshot } = await seedManagedProject(request, [

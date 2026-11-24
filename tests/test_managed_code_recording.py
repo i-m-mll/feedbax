@@ -66,31 +66,28 @@ def test_source_comparison_counts_new_names_and_only_observed_function_bodies(tm
     assert change is not None and change.functions == ("used",)
 
 
-def test_dotted_plugin_declaration_tracks_helpers_elsewhere_in_its_package(tmp_path, monkeypatch):
-    package = tmp_path / "installed" / "example"
-    declarations = package / "declarations"
+def test_plugin_source_names_do_not_depend_on_what_the_process_imported(tmp_path, monkeypatch):
+    """A step that used a plugin's code is identified the same way by a process that never imported it."""
+    installed = tmp_path / "installed"
+    declarations = installed / "example_plugin" / "declarations"
     declarations.mkdir(parents=True)
-    helper = package / "numerics.py"
+    (installed / "example_plugin" / "__init__.py").write_text("")
+    (declarations / "__init__.py").write_text("")
+    helper = installed / "example_plugin" / "numerics.py"
     helper.write_text("def run(): return 1\n")
-    module = ModuleType("example.declarations")
-    module.__file__ = str(declarations / "__init__.py")
-    monkeypatch.setitem(sys.modules, module.__name__, module)
-    monkeypatch.setattr("feedbax.validity.source.plugin_packages", lambda: {module.__name__: "example"})
-    catalog = source_catalog(tmp_path / "project")
-    path = catalog.locate(helper)
-    assert path == SourcePath(scope="plugin:example", path="numerics.py")
-    assert catalog.read(path) is not None
+    monkeypatch.syspath_prepend(str(installed))
+    importlib.invalidate_caches()
+    monkeypatch.setattr("feedbax.validity.source.plugin_packages", lambda: {"example_plugin.declarations": "example"})
+    expected = SourcePath(scope="plugin:example", path="numerics.py")
 
-    extra_package = tmp_path / "editable" / "example"
-    extra_declarations = extra_package / "declarations"
-    extra_declarations.mkdir(parents=True)
-    extra = extra_package / "numerics.py"
-    extra.write_text("def run(): return 2\n")
-    module.__file__ = None
-    module.__path__ = [str(declarations), str(extra_declarations)]
-    assert source_catalog(tmp_path / "project").locate(extra) == SourcePath(
-        scope="plugin:example:1", path="numerics.py",
-    )
+    before = source_catalog(tmp_path / "project")
+    assert "example_plugin" not in sys.modules
+    assert before.locate(helper) == expected
+    assert before.read(expected) is not None
+
+    monkeypatch.setattr(sys, "modules", dict(sys.modules))
+    importlib.import_module("example_plugin.declarations")
+    assert source_catalog(tmp_path / "project").locate(helper) == expected
 
 
 def test_warm_job_retains_observed_source_registry_and_file_identity(tmp_path, monkeypatch):

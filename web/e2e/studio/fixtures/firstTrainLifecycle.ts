@@ -9,9 +9,9 @@ import type { Studio } from './studio';
 export async function authorAndRecoverTrain(page: Page, request: APIRequestContext, info: TestInfo, studio: Studio) {
   const totalUpdates = 6000;
   const { home } = studio;
-  // Softmax keeps the total force at one along the diagonal reach, regardless of training.
-  const authored = await authorFirstTrain(page, request, totalUpdates, { targetY: 0.22, activation: 'softmax' });
-  const { saved, projectPath, plan, savedProject, plantId } = authored;
+  // Softmax keeps the total force at one, regardless of training.
+  const authored = await authorFirstTrain(page, request, totalUpdates, { activation: 'softmax' });
+  const { saved, projectPath, plan, savedProject, plantId, task, reach } = authored;
   const project = saved.project_id;
   const observe = async (action: string, ...args: string[]) =>
     JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.managed_lifecycle', action, home, project, ...args));
@@ -133,5 +133,5 @@ export async function authorAndRecoverTrain(page: Page, request: APIRequestConte
     }),
     contentType: 'application/json',
   });
-  return { home, project, projectPath, plantId, stopped: initial, trained: final.result! };
+  return { home, project, projectPath, plantId, task, reach, stopped: initial, trained: final.result! };
 }

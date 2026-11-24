@@ -3,7 +3,7 @@ import { once } from 'node:events';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable } from 'node:stream';
-import { repo } from './studio';
+import { pythonEnvironment, repo } from './studio';
 
 export type PythonProgram = { module: string } | { path: string } | { code: string };
 
@@ -19,7 +19,7 @@ function describe(program: PythonProgram, argv: readonly string[]) {
 function startRunner(): Runner {
   // The runner exits when its parent does, so the worker is its direct parent rather than `uv run`.
   const child = spawn(python(), ['-B', '-m', 'web.e2e.studio.fixtures.runner'], {
-    cwd: repo, stdio: ['pipe', 'ignore', 'pipe', 'pipe'],
+    cwd: repo, env: pythonEnvironment, stdio: ['pipe', 'ignore', 'pipe', 'pipe'],
   });
   const log: Buffer[] = [];
   child.stderr!.on('data', (chunk: Buffer) => log.push(chunk));
@@ -81,7 +81,7 @@ export async function runPython(program: PythonProgram, argv: readonly string[] 
  */
 export async function runPythonProcess(program: PythonProgram, argv: readonly string[] = []) {
   const source = 'module' in program ? ['-m', program.module] : 'path' in program ? [program.path] : ['-c', program.code];
-  const child = spawn(python(), ['-B', ...source, ...argv], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(python(), ['-B', ...source, ...argv], { cwd: repo, env: pythonEnvironment, stdio: ['ignore', 'pipe', 'pipe'] });
   const stdout: Buffer[] = [];
   const stderr: Buffer[] = [];
   child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));

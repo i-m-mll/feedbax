@@ -2,6 +2,7 @@
 
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from typing import TypeGuard
 
 from pydantic import BaseModel
 
@@ -99,7 +100,7 @@ def numeric_nodes(expression: Expression | None, functions: FunctionRegistry) ->
                 yield ("args", str(index)), names[index] if index < len(names) else str(index + 1)
 
 
-def _numeric(node: object) -> bool:
+def _numeric(node: object) -> TypeGuard[LiteralValue]:
     return isinstance(node, LiteralValue) and type(node.value) in (int, float) and (
         node.unit is None or node.unit == "st" or node.unit in UNITS and UNITS[node.unit].scale == 1
     )
@@ -128,9 +129,10 @@ def trial_field_sweep(
     ``site`` is the site of the expression the number lies in; ``parse`` reads the document's payload.
     """
     entry = compose_document(project.documents.get, document) if document is not None else None
-    if entry is None or isinstance(entry, ProjectDiagnostic):
+    if entry is None or isinstance(entry, ProjectDiagnostic) or not isinstance(entry.payload, dict):
         return None
-    node = at(parse(entry.payload), path)
+    parsed = parse(entry.payload)
+    node = at(parsed, path)
     if not _numeric(node):
         return None
     duration = node.unit == "st"
@@ -145,7 +147,7 @@ def trial_field_sweep(
     )
     patch = ".".join(("trial_documents", role, *path, "value"))
     target = SweepTarget(node.value, lambda _value: [], patch)
-    named = _names(parse(entry.payload), path) or (role,)
+    named = _names(parsed, path) or (role,)
     return TrialFieldSweep(
         role, path, field, FieldSweeps(step, target, label, named, integer=duration), at(entry.payload, path) is not None,
         path,
@@ -191,7 +193,7 @@ def trial_field_sweep_edit(
         return result
     if isinstance(result, list):
         stored = StoredEdit(
-            [StudioProjectFilePatch(address=AuthoredFileAddress(kind="step", id=step_id), patches=result)],
+            [StudioProjectFilePatch(address=AuthoredFileAddress(kind="step", id=step_id), patches=list(result))],
             reached=frozenset({step_id}),
         )
         kept = [patch.value for patch in prepared.keep if patch.op != "remove"]
