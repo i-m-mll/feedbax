@@ -154,7 +154,6 @@ class StudioTrialAuthoring(StrictModel):
     """The same, in the Objective document."""
     objective: ObjectiveDocument | None
     objective_source: StudioTrialObjectiveSource | None = None
-    input_overrides: dict[str, str] = Field(default_factory=dict)
     task_types: list[StudioTaskType]
     tasks: list[StudioTaskChoice]
     variables: list[ScopedValue]

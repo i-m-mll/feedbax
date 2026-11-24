@@ -4428,7 +4428,6 @@ export type StudioTrialAuthoring = {
   "objective_changed"?: Array<Pointer>;
   "objective": ObjectiveDocument | null;
   "objective_source"?: StudioTrialObjectiveSource | null;
-  "input_overrides"?: Record<string, string>;
   "task_types": Array<StudioTaskType>;
   "tasks": Array<StudioTaskChoice>;
   "variables": Array<ScopedValue>;
@@ -12275,7 +12274,6 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "objective_changed": z.array(PointerSchema).optional(),
     "objective": z.union([ObjectiveDocumentSchema, z.null()]),
     "objective_source": z.union([StudioTrialObjectiveSourceSchema, z.null()]).optional(),
-    "input_overrides": z.record(z.string(), z.string()).optional(),
     "task_types": z.array(StudioTaskTypeSchema),
     "tasks": z.array(StudioTaskChoiceSchema),
     "variables": z.array(ScopedValueSchema),
