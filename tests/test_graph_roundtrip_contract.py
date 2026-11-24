@@ -87,8 +87,6 @@ _NONE_VALUES: dict[tuple[str, str], Any] = {
     ("feedbax.DynamicsMatrixPerturb", "mass"): 1.25,
     ("feedbax.LinearStateSpace", "B_w"): [[0.1], [0.2], [0.3], [0.4]],
     ("feedbax.StructuralLinearStateSpace", "B_w"): [[0.1], [0.2], [0.3], [0.4]],
-    ("feedbax.StateFeedbackSelector", "expected_state_dim"): 4,
-    ("feedbax.StateFeedbackSelector", "output_size"): 4,
     ("feedbax.ConstantInput", "arrays"): [0.25, -0.5],
     ("feedbax.NetworkClamp", "unit_spec"): [0.25, None],
     ("feedbax.NetworkConstantInput", "unit_spec"): [0.25, None],
@@ -117,14 +115,6 @@ _VALUES: dict[tuple[str, str], Any] = {
     ("feedbax.DelayedReaches", "target_visible_from_start"): True,
     ("feedbax.DelayedReaches", "target_on_epochs"): [0, 2],
     ("feedbax.SelectState", "paths"): ["effector.force"],
-    ("feedbax.StateFeedbackSelector", "state_slices"): {
-        "position": {"start": 1, "stop": 3},
-        "velocity": {"start": 3, "stop": 5},
-    },
-    ("feedbax.StateFeedbackSelector", "channels"): [
-        {"slice": "position", "transform": "negate"},
-        {"slice": "velocity", "transform": "identity"},
-    ],
     ("feedbax.StructuralLinearStateSpace", "delta_A"): {
         "schema_id": "feedbax.spec.component_param.array_value",
         "schema_version": "feedbax.spec.component_param.array_value.v1",
@@ -223,9 +213,6 @@ def _contextualize_params(
     ):
         payload_field = _INTERVENTION_PAYLOAD_FIELDS[component_type]
         params[payload_field] = deepcopy(_NONE_VALUES[component_type, payload_field])
-    elif component_type == "feedbax.StateFeedbackSelector" and param_name == "output_size":
-        params["channels"] = [{"slice": "position", "transform": "identity"}]
-        params["output_size"] = 2
     return params
 
 

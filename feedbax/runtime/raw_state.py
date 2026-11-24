@@ -8,7 +8,7 @@ from operator import attrgetter
 
 from equinox.nn import State, StateIndex
 import jax
-from jax.tree_util import GetAttrKey
+from jax.tree_util import DictKey, GetAttrKey, KeyPath, SequenceKey, keystr
 import numpy as np
 from pydantic import ValidationError
 
@@ -18,7 +18,6 @@ from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.dataset import Variable
 from feedbax.runtime.graph import Graph, _nested_cycle_key, init_state_from_component
-from feedbax.contracts.model_values import StateValue
 
 
 class StateLayoutError(ValueError):
@@ -68,11 +67,21 @@ class RawStateLayout:
         return variables, coordinates
 
 
-def _leaf_reader(index: StateIndex, value: StateValue) -> Callable[[State, dict | None], jax.Array]:
-    if not value.fields:
-        return lambda state, carry: state.get(index)
-    get = attrgetter(".".join(value.fields))
-    return lambda state, carry: get(state.get(index))
+def _leaf_reader(index: StateIndex, fields: KeyPath) -> Callable[[State, dict | None], jax.Array]:
+    def read(state: State, carry: dict | None) -> jax.Array:
+        value = state.get(index)
+        for key in fields:
+            if isinstance(key, GetAttrKey):
+                value = getattr(value, key.name)
+            elif isinstance(key, DictKey):
+                value = value[key.key]
+            elif isinstance(key, SequenceKey):
+                value = value[key.idx]
+            else:
+                raise ValueError(f"unsupported state key {key!r}")
+        return value
+
+    return read
 
 
 def _bind_owner(
@@ -104,37 +113,62 @@ def _bind_owner(
         return ()
     if len(indices) != 1 or indices[0] is not index or not declared:
         raise StateLayoutError(path, "runtime state slots differ from the owner declaration")
-    leaves = jax.tree.leaves_with_path(initial.get(index))
-    if any(
-        not isinstance(leaf, jax.Array) or not all(isinstance(key, GetAttrKey) for key in fields)
-        for fields, leaf in leaves
-    ) or {tuple(key.name for key in fields) for fields, _ in leaves} != {
-        leaf.fields for leaf in declared
-    }:
+    storage = initial.get(index)
+    leaves = dict(jax.tree.leaves_with_path(storage))
+    if not all(
+        isinstance(array, jax.Array) and all(isinstance(key, (GetAttrKey, DictKey, SequenceKey)) for key in fields)
+        for fields, array in leaves.items()
+    ):
         raise StateLayoutError(path, "runtime state leaves differ from the owner declaration")
 
     values = []
+    covered = set()
     for leaf in declared:
-        key = semantic_key("model", "state", (*scope, name), leaf.symbol)
-        if selected is not None and key not in selected:
-            continue
-        read = _leaf_reader(index, leaf)
-        shape = read(initial, None).shape
-        dimension = f"{'/'.join((*scope, name))}:{leaf.axis}"
-        if leaf.axis == "xy":
-            if shape != (2,):
-                raise StateLayoutError(path, f"{leaf.symbol} requires two Cartesian coordinates")
-            dimension = "xy"
-        elif leaf.axis == "muscle" and shape == ():
-            dimension = None
-        elif len(shape) != 1:
-            raise StateLayoutError(path, f"{leaf.symbol} requires a one-dimensional owner axis")
-        values.append(BoundStateValue(
-            key, dimension, leaf.units, leaf.frame, read,
-            position=leaf.space == "point" and leaf.frame == "world",
-            configuration=leaf.configuration,
-        ))
+        root = tuple(GetAttrKey(field) for field in leaf.fields)
+        if leaf.subtree:
+            if leaf.fields and not _has_path(storage, leaf.fields):
+                raise StateLayoutError(path, "runtime state subtree differs from the owner declaration")
+            paths = tuple(fields for fields in leaves if fields[:len(root)] == root)
+        else:
+            paths = (root,)
+        for fields in paths:
+            if fields not in leaves or fields in covered:
+                raise StateLayoutError(path, "runtime state leaves differ from the owner declaration")
+            covered.add(fields)
+            relative = fields[len(root):]
+            symbol = leaf.symbol + (f"/{keystr(relative, separator='/')}" if relative else "")
+            key = semantic_key("model", "state", (*scope, name), symbol)
+            if selected is not None and key not in selected:
+                continue
+            shape = leaves[fields].shape
+            dimension = f"{'/'.join((*scope, name))}:{leaf.axis}"
+            if leaf.subtree:
+                prefix = f"{'/'.join((*scope, name))}:{symbol}"
+                dimension = tuple(f"{prefix}:axis{axis}" for axis in range(len(shape))) or None
+            elif leaf.axis == "xy":
+                if shape != (2,):
+                    raise StateLayoutError(path, f"{leaf.symbol} requires two Cartesian coordinates")
+                dimension = "xy"
+            elif leaf.axis == "muscle" and shape == ():
+                dimension = None
+            elif len(shape) != 1:
+                raise StateLayoutError(path, f"{leaf.symbol} requires a one-dimensional owner axis")
+            values.append(BoundStateValue(
+                key, dimension, leaf.units, leaf.frame, _leaf_reader(index, fields),
+                position=leaf.space == "point" and leaf.frame == "world",
+                configuration=leaf.configuration,
+            ))
+    if covered != leaves.keys():
+        raise StateLayoutError(path, "runtime state leaves differ from the owner declaration")
     return tuple(values)
+
+
+def _has_path(value, fields: tuple[str, ...]) -> bool:
+    try:
+        attrgetter(".".join(fields))(value)
+    except AttributeError:
+        return False
+    return True
 
 
 def _carry_reader(
