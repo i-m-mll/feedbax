@@ -4,7 +4,7 @@ import type { ShelfBar, ShelfRow, ShelfSegment } from '@/components/timeline/She
 import type { NamedElementAddress } from '@/features/projectWindow/elementSelection';
 import { viewGlyphs } from '@/features/projectWindow/ProjectWindow';
 import type { EpochBounds } from './taskModel';
-import type { TrialAggregate, TrialRecord } from '@/generated/studioContracts';
+import type { Problem, TrialAggregate, TrialRecord } from '@/generated/studioContracts';
 import { signalSteps } from './trialSample';
 
 /**
@@ -86,19 +86,25 @@ function presence(steps: readonly unknown[], stepSeconds: number): ShelfBar[] {
   return bars;
 }
 
-/** One row per term that is on, with `bars` of the term's id: none where the term applies nowhere. */
-function termRows(task: ShelfTask, bars: (term: string) => ShelfBar[]): ShelfRow[] {
+/**
+ * One row per term that is on, with the bars `drawn` gives of the term's id (none where the term applies nowhere) and
+ * its first Problem, marked at its name.
+ */
+function termRows(task: ShelfTask, drawn: (term: string) => { bars: ShelfBar[]; problems?: readonly Problem[] }): ShelfRow[] {
   const objective = task.objective;
   if (!objective) return [];
   const glyph = createElement(viewGlyphs.objective, { 'aria-hidden': true, className: 'size-3 shrink-0' });
-  return objective.terms.map(({ id, name }): ShelfRow => ({
-    kind: 'bars', key: `term:${id}`, name, glyph, selects: named(objective.document, id), bars: bars(id),
-  }));
+  return objective.terms.map(({ id, name }): ShelfRow => {
+    const { bars, problems } = drawn(id);
+    const problem = problems?.[0]?.reason;
+    return { kind: 'bars', key: `term:${id}`, name, glyph, selects: named(objective.document, id), bars, ...problem && { problem } };
+  });
 }
 
 /** The terms' rows for one trial: each term where `record` has it apply. */
-export const trialTermRows = (task: ShelfTask, record: TrialRecord, stepSeconds: number) =>
-  termRows(task, (term) => presence(record.terms?.[term]?.steps ?? [], stepSeconds));
+export const trialTermRows = (task: ShelfTask, record: TrialRecord, stepSeconds: number) => termRows(task, (term) => ({
+  bars: presence(record.terms?.[term]?.steps ?? [], stepSeconds), problems: record.terms?.[term]?.problems,
+}));
 
 /**
  * One trial's rows: each epoch instance where it began and ended, each signal present where the trial has it, each term
@@ -147,6 +153,8 @@ export function batchRows(task: ShelfTask, aggregate: TrialAggregate, stepSecond
       kind: 'bars', key: `signal:${signal.id}`, name: signal.name, selects: named(task.document, `signal:${signal.id}`),
       bars: shareBars(aggregate.signals[signal.id]?.presence ?? [], stepSeconds),
     })),
-    ...termRows(task, (term) => shareBars(aggregate.terms?.[term]?.steps ?? [], stepSeconds)),
+    ...termRows(task, (term) => ({
+      bars: shareBars(aggregate.terms?.[term]?.steps ?? [], stepSeconds), problems: aggregate.terms?.[term]?.problems,
+    })),
   ];
 }
