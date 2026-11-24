@@ -81,7 +81,7 @@ function Ticks({ duration, stepSeconds }: { duration: number; stepSeconds?: numb
       style={{ left: percent(tick, duration) }}>
       <span className="h-1 w-px bg-shell-divider" />
       <span>{seconds(tick, step)}{tick === 0 ? ` ${studioUnit('second')}` : ''}
-        {stepSeconds && tick > 0 ? <span className="opacity-70"> · {Math.round(tick / stepSeconds)}</span> : null}
+        {stepSeconds && tick > 0 ? <span> · {Math.round(tick / stepSeconds)}</span> : null}
       </span>
     </span>)}
   </div>;
