@@ -10,6 +10,7 @@ from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.semantic_values import model_state_address, semantic_key
 from feedbax.contracts.studio_place import path_parts
 from feedbax.contracts.trial_record import TaskTimelineCue, TrialRecord, TrialStateTrack, TrialTerm
+from feedbax.execution.trial_record import trial_weight_values
 
 if TYPE_CHECKING:
     from feedbax.dataset import Dataset, Variable
@@ -87,6 +88,10 @@ def trial_dataset_fields(
         put(_term_field("steps", name), trace.steps, transition_axes)
         if trace.values is not None:
             put(_term_field("values", name), np.where(trace.steps, trace.values, 0.0), transition_axes)
+        if trace.weight is not None:
+            defined = trace.weight.defined & np.isfinite(trace.weight.value)
+            put(_term_field("weights", name), np.where(defined, trace.weight.value, 0.0), transition_axes)
+            put(_term_field("weight_defined", name), defined, transition_axes)
         put(_term_field("trial_coverage", name), trace.covered, trial_axes)
         put(_term_field("trial_values", name), np.where(trace.covered, trace.reduced.value, 0.0), trial_axes)
     return fields, coords, RecordedTrialLayout(
@@ -123,6 +128,7 @@ def read_trial_record(
     for name in term_names:
         covered = dataset.data(_term_field("trial_coverage", name), selection).item()
         values_field = _term_field("values", name)
+        weights_field = _term_field("weights", name)
         terms[name] = TrialTerm(
             steps=dataset.data(_term_field("steps", name), selection).tolist(),
             covered=covered,
@@ -131,6 +137,9 @@ def read_trial_record(
                 if values_field in dataset.descriptor.variables else None
             ),
             value=dataset.data(_term_field("trial_values", name), selection).item() if covered else None,
+            weights=trial_weight_values(
+                dataset.data(weights_field, selection), dataset.data(_term_field("weight_defined", name), selection),
+            ) if weights_field in dataset.descriptor.variables else None,
         )
     return TrialRecord(
         id=trial_id, inits=groups.get("initial", {}), inputs=groups.get("output", {}),
