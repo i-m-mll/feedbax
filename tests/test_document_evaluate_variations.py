@@ -141,7 +141,7 @@ def test_saved_addressed_condition_restores_document_train_model(host, tmp_path,
         registry.components,
         registry.expression_functions,
         python_tasks=registry.python_tasks,
-        input_overrides=documents.input_overrides,
+        input_bindings=documents.input_bindings,
         graph_override=variant.graph,
     )
     assert isinstance(paired, PreparedTrialExecution), paired
@@ -295,7 +295,7 @@ def test_saved_source_field_rebuilds_derived_owner(host, tmp_path, authored):  #
     paired = compile_trial_execution(
         documents.model, documents.task_source,
         registry.components, registry.expression_functions, python_tasks=registry.python_tasks,
-        input_overrides=documents.input_overrides, graph_override=variant.graph,
+        input_bindings=documents.input_bindings, graph_override=variant.graph,
     )
     assert isinstance(paired, PreparedTrialExecution), paired
     effective_hash = canonical_sha256({

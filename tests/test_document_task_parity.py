@@ -243,7 +243,7 @@ def example(kind, functions, *, zero=False, interface=PORTLESS, reference_valida
         doc,
         functions,
         model=interface,
-        input_overrides={"reach_target": "target_pos"} if interface.inputs else None,
+        input_bindings={"task-input": "target_pos"} if interface.inputs else None,
     )
     assert isinstance(task, DocumentTask), task
     return doc, task
@@ -657,20 +657,20 @@ def test_a_start_the_model_requires_is_a_problem_until_a_variable_initializes_it
         for binding in interface.reset._bindings
     )))
     doc, _ = example("simple", functions, interface=interface)
-    overrides = {"reach_target": "target_pos"}
-    unset = compile_task(doc.model_copy(update={"links": ()}), functions, model=required, input_overrides=overrides)
+    overrides = {"task-input": "target_pos"}
+    unset = compile_task(doc.model_copy(update={"links": ()}), functions, model=required, input_bindings=overrides)
     assert [problem.path for problem in unset] == [("links", position)]
     # Catches a missing start not tied to its Model value, which Studio could then name only by the Task's links.
     assert unset[0].model_address == reset_position(interface)
     # Catches a link to a variable that does not exist placed nowhere, though it leaves its Model value unstarted.
     dangling = compile_task(
         doc.model_copy(update={"links": (Link(model_field=position, variable="ghost"),)}),
-        functions, model=required, input_overrides=overrides,
+        functions, model=required, input_bindings=overrides,
     )
     assert [(problem.path, problem.model_address) for problem in dangling] == [
         (("links", position), reset_position(interface)),
     ]
-    assert not isinstance(compile_task(doc, functions, model=required, input_overrides=overrides), tuple)
+    assert not isinstance(compile_task(doc, functions, model=required, input_bindings=overrides), tuple)
 
 
 @pytest.mark.parametrize("kind", ["simple", "delayed", "stabilization"])
@@ -688,7 +688,7 @@ def test_document_pair_drives_signed_model_graph_with_real_reset(kind, functions
         doc,
         functions,
         model=interface,
-        input_overrides={"reach_target": "target_vel"},
+        input_bindings={"task-input": "target_vel"},
     )
     assert bad[0].code.value == "type_mismatch"
     read_only = reset_position(interface)
@@ -697,7 +697,7 @@ def test_document_pair_drives_signed_model_graph_with_real_reset(kind, functions
     })})
     bad = compile_task(
         doc.model_copy(update={"links": (Link(model_field=read_only.to_text(), variable="start"),)}),
-        functions, model=interface, input_overrides={"reach_target": "target_pos"},
+        functions, model=interface, input_bindings={"task-input": "target_pos"},
     )
     assert bad[0].path == ("links", read_only.to_text())
     assert bad[0].code.value == "unknown_name"
@@ -743,6 +743,7 @@ def test_document_pair_drives_signed_model_graph_with_real_reset(kind, functions
     term = ObjectiveTerm(
         id="effort",
         measure=expression("sqnorm(command)", (command,)),
+        weight=expression("2.3"),
         reduction=Reduction.SUM,
         epochs=("move",),
     )
@@ -755,9 +756,16 @@ def test_document_pair_drives_signed_model_graph_with_real_reset(kind, functions
     assert isinstance(executor, ObjectiveExecutor), executor
     loss = executor.evaluate({command.id: output}, trials, run_key=run_key, trial_keys=keys)
     mask = jnp.arange(STEPS) >= trials.epochs.starts[:, -1, None]
-    expected = jnp.mean(jnp.sum(jnp.where(mask, jnp.sum(output**2, axis=-1), 0), axis=-1))
+    expected = 2.3 * jnp.mean(jnp.sum(jnp.where(mask, jnp.sum(output**2, axis=-1), 0), axis=-1))
     assert int(loss.terms["effort"].covered) == len(keys)
     assert float(loss.loss) == pytest.approx(float(expected), rel=2e-6)
+    # A plotted term must reduce to the score from the same rollout.
+    trial = jax.tree.map(lambda batch: batch[0], trials)
+    term = executor.trial_terms({command.id: output[0]}, trial, run_key, keys[0])["effort"]
+    scored = executor.evaluate_trial({command.id: output[0]}, trial, run_key, keys[0])["effort"]
+    assert term.values is not None
+    assert jnp.sum(term.values[term.steps]) == pytest.approx(float(scored.value), rel=2e-6)
+    np.testing.assert_array_equal(term.steps, mask[0])
 
 
 @pytest.mark.parametrize("kind", ["simple", "stabilization"])
