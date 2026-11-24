@@ -10,6 +10,7 @@ from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.request_refs import Sha256
 from feedbax.contracts.studio_authoring import StudioRunSelection
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
+from feedbax.contracts.studio_scope import StudioStoreChoice
 
 
 class DuplicateRun(StudioRunSelection):
@@ -78,6 +79,8 @@ class AddSetEntry(StrictModel):
 
 class StudioSetEditRequest(StrictModel):
     revision: Sha256
+    selection: StudioRunSelection | None = None
+    store_choice: Sha256 | None = None
     command: Annotated[
         DuplicateRun | SaveSet | InlineSet | ApplySet | SetToField | SetToSweep | RemoveAxisValue | AddSetEntry,
         Field(discriminator="kind"),
@@ -97,6 +100,7 @@ class StudioSetEdit(StrictModel):
     created: list[CreateNamedDocument] = Field(default_factory=list)
     selected: StudioAxisValue | None = None
     problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
+    store_choices: list[StudioStoreChoice] | None = None
 
 
 class StudioSetsOfferedRequest(StrictModel):

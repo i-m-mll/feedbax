@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import IntEnum
 from itertools import groupby
 from math import isfinite
@@ -879,7 +879,7 @@ def compile_task(
                     if first <= last:
                         cells.append(_Cell(offset + first - members[0], offset + last - members[0], cell.field, repeat))
                 offset += len(members)
-            return _Signal(signal.name, signal.absent, tuple(cells))
+            return replace(signal, cells=tuple(cells))
 
         signals = [instantiate(signal) for signal in signals]
     epoch_ids = tuple(epochs)

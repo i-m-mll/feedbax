@@ -1,7 +1,7 @@
 import {
   Background, BaseEdge, ConnectionMode, EdgeLabelRenderer, Handle, Position, ReactFlowProvider,
-  getBezierPath, getSmoothStepPath, useReactFlow, useStore, useUpdateNodeInternals,
-  type Edge, type EdgeProps, type Node, type NodeProps, type OnConnectStart,
+  getBezierPath, getSmoothStepPath, useConnection, useReactFlow, useStore, useUpdateNodeInternals,
+  type Edge, type EdgeProps, type Node, type NodeProps, type OnConnectStart, type OnSelectionChangeParams,
 } from '@xyflow/react';
 import {
   createContext, memo, useCallback, useContext, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState,
@@ -42,7 +42,13 @@ export type ModelCardData = {
   pickPort?: (port: Port) => void;
   canPick?: (port: Port) => boolean;
   cancelPick?: () => void;
-  portReasons?: ReadonlyMap<string, string | null>;
+  /**
+   * Whether each input is offered to the connection being drawn, by port id; `note` is why it is not, or the Problem the
+   * offered wire is stored with.
+   */
+  portVerdicts?: ReadonlyMap<string, { offered: boolean; note?: string }>;
+  /** Previews the connection being drawn ending at `port`, or at none. */
+  previewPort?: (port: Port | undefined) => void;
   portProblems?: ReadonlyMap<string, string>;
   onPort(port: Port): void;
   keyboardConnect(port: Port): void;
@@ -63,7 +69,8 @@ export type ModelEdgeData = {
   }[];
   ghost?: boolean;
   change?: ChangeMarkProps;
-  self?: number;
+  /** Nesting order among the wires between the same cards, innermost first, for a wire routed under them. */
+  rank?: number;
   bundleCount?: number;
   moveWaypoint?: (index: number, point: ModelPosition) => void;
   problem?: string;
@@ -101,14 +108,16 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
   const input = useRef<HTMLInputElement>(null);
   const ports = data.ports.map((port) => {
     const key = portId(port);
-    const reason = data.portReasons?.get(key);
+    const offer = data.portVerdicts?.get(key);
+    const reason = offer?.note;
     const available = data.canPick?.(port);
     const problem = data.portProblems?.get(key);
-    const verdict = reason ? 'refused' : reason === null || available ? 'allowed' : available === false ? 'refused' : undefined;
+    const verdict = offer ? offer.offered ? reason ? 'marked' : 'allowed' : 'refused'
+      : available ? 'allowed' : available === false ? 'refused' : undefined;
     return { port, key, reason, available, problem, verdict };
   });
   const geometry = JSON.stringify([!!data.collapsed, !!data.flipped, ports.map(({ port, key, verdict, problem }) =>
-    [key, port.name, port.mark, verdict === 'allowed', !!problem])]);
+    [key, port.name, port.mark, verdict === 'allowed' || verdict === 'marked', !!problem])]);
   useEffect(() => { update(id); }, [id, update, geometry]);
   useEffect(() => { if (data.renaming) input.current?.select(); }, [data.renaming]);
   return <SurfaceCard as="article" className="studio-model-card" data-stacked={data.stacked} selected={data.selected}
@@ -144,7 +153,9 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
           role="button" tabIndex={data.collapsed ? -1 : 0}
           aria-disabled={!interactive && !available}
           aria-description={[studioName(port.direction), portTypeLabel(port), reason ?? problem].filter(Boolean).join(' · ')}
-          aria-label={studioAccessibleName('port', port.name)} data-model-port className="nodrag" style={{ pointerEvents: 'auto' }} onClick={(event) => {
+          aria-label={studioAccessibleName('port', port.name)} data-model-port className="nodrag" style={{ pointerEvents: 'auto' }}
+          onFocus={available ? () => data.previewPort?.(port) : undefined}
+          onBlur={data.canPick ? () => data.previewPort?.(undefined) : undefined} onClick={(event) => {
             event.stopPropagation();
             if (available) data.pickPort?.(port);
             else if (!data.canPick) data.onPort(port);
@@ -204,21 +215,25 @@ function rounded(points: readonly ModelPosition[]) {
   return `${path} L ${last.x},${last.y}`;
 }
 
-const Wire = memo(function Wire({ id, data, type, source, sourceX, sourceY, targetX, targetY,
+const Wire = memo(function Wire({ id, data, type, source, target, sourceX, sourceY, targetX, targetY,
   sourcePosition, targetPosition, markerEnd }: EdgeProps<ModelEdge>) {
   const { screenToFlowPosition } = useReactFlow();
   const [moving, setMoving] = useState<{ index: number; point: ModelPosition }>();
   const physical = type === 'physical';
   const start = { x: sourceX, y: sourceY }, end = { x: targetX, y: targetY };
-  const a = { x: sourceX + (sourcePosition === Position.Left ? -16 : 16), y: sourceY };
-  const b = { x: targetX + (targetPosition === Position.Left ? -16 : 16), y: targetY };
-  const self = data?.self;
-  const bottom = useStore((state) => {
-    if (self === undefined) return 0;
-    const node = state.nodeLookup.get(source);
+  const exit = sourcePosition === Position.Left ? -1 : 1;
+  const entry = targetPosition === Position.Left ? 1 : -1;
+  /** A wire whose target lies behind its source's side runs under both cards rather than back through them. */
+  const under = !physical && exit === entry && (targetX - sourceX) * exit < 32;
+  const rank = data?.rank ?? 0;
+  const reach = under ? 16 + rank * 10 : 16;
+  const a = { x: sourceX + exit * reach, y: sourceY };
+  const b = { x: targetX - entry * reach, y: targetY };
+  const bottom = useStore((state) => under ? Math.max(...[source, target].map((card) => {
+    const node = state.nodeLookup.get(card);
     return node ? node.internals.positionAbsolute.y + (node.measured.height ?? 0) : 0;
-  });
-  const bend = self === undefined ? (sourceY + targetY) / 2 : Math.max(sourceY, targetY, bottom) + 20 + self * 10;
+  })) : 0);
+  const bend = under ? Math.max(sourceY, targetY, bottom) + 20 + rank * 10 : (sourceY + targetY) / 2;
   const waypoints = data?.waypoints?.map((point, index) => moving?.index === index ? moving.point : point);
   const pivots = waypoints?.length ? waypoints
     : [{ x: a.x, y: bend }, { x: b.x, y: bend }];
@@ -231,7 +246,7 @@ const Wire = memo(function Wire({ id, data, type, source, sourceX, sourceY, targ
   const turns = points.filter((point, index) => index === 0 || point.x !== points[index - 1].x || point.y !== points[index - 1].y);
   const geometry = { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition };
   const [path, labelX, labelY] = physical ? getBezierPath(geometry)
-    : self === undefined && !waypoints?.length ? getSmoothStepPath({ ...geometry, borderRadius: 6, offset: 16 })
+    : !under && !waypoints?.length ? getSmoothStepPath({ ...geometry, borderRadius: 6, offset: 16 })
       : [rounded(turns), (a.x + b.x) / 2, bend];
   const mid = { x: labelX, y: labelY };
   const delayed = data?.attachments?.some((item) => item.delay);
@@ -309,6 +324,8 @@ type Props = {
   onConnectStart: OnConnectStart;
   onConnect(source: string, sourceHandle: string | null, target: string, targetHandle: string | null): void;
   onConnectEnd(point: ModelPosition, valid: boolean, empty: boolean): void;
+  /** The handle a pointer drawing a connection is over changed. */
+  onConnectHover(node: string, handle: string | null): void;
   onLibraryDrop(type: string, point: ModelPosition, edge: ModelEdge | undefined, reversed: boolean): void;
   onAttachmentDrop(raw: string, edge: ModelEdge): void;
 };
@@ -318,7 +335,7 @@ export function ModelCanvas(props: Props) {
 }
 
 function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdit, lock, collapse, viewportCommands, onCanvasPoint,
-  onSearch, onNode, onEdge, onClear, onBox, onMove, onContext, onConnect, onConnectStart, onConnectEnd,
+  onSearch, onNode, onEdge, onClear, onBox, onMove, onContext, onConnect, onConnectStart, onConnectEnd, onConnectHover,
   onLibraryDrop, onAttachmentDrop }: Props) {
   const { screenToFlowPosition, setNodes, setEdges, getNode, getEdge, getInternalNode } = useReactFlow<ModelCard, ModelEdge>();
   const viewport = useRef<CanvasViewport>(null);
@@ -328,7 +345,19 @@ function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdi
     zoomOut: () => viewport.current?.zoomOut(),
   }), []);
   const [initial] = useState(() => ({ nodes, edges }));
-  const [boxSelecting, setBoxSelecting] = useState(false);
+  const over = useConnection((connection) => connection.inProgress && connection.toHandle
+    ? [connection.toHandle.nodeId, connection.toHandle.id ?? null] as const : undefined);
+  const hovered = useRef(onConnectHover);
+  hovered.current = onConnectHover;
+  const [overNode, overHandle] = over ?? [];
+  useEffect(() => { hovered.current(overNode ?? '', overHandle ?? null); }, [overNode, overHandle]);
+  /** React Flow answers every new selection handler with the current selection, so the handler stays one function. */
+  const boxing = useRef(false);
+  const boxed = useRef(onBox);
+  boxed.current = onBox;
+  const boxChange = useCallback((selection: OnSelectionChangeParams) => {
+    if (boxing.current) boxed.current(selection.nodes as ModelCard[]);
+  }, []);
   const point = (event: { clientX: number; clientY: number }) => screenToFlowPosition({ x: event.clientX, y: event.clientY });
   /** The cards follow their props before the browser paints, so a card added by a gesture is drawn in the next frame. */
   useLayoutEffect(() => {
@@ -379,8 +408,8 @@ function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdi
         zoomOnDoubleClick={false} nodesDraggable={canEdit && !locked} nodesConnectable={canEdit && !locked}
         connectionMode={physical ? ConnectionMode.Loose : ConnectionMode.Strict}
         multiSelectionKeyCode="Shift" selectionKeyCode="Shift"
-        onSelectionStart={() => setBoxSelecting(true)} onSelectionEnd={() => setBoxSelecting(false)}
-        onSelectionChange={boxSelecting ? (selection) => onBox(selection.nodes as ModelCard[]) : undefined}
+        onSelectionStart={() => { boxing.current = true; }} onSelectionEnd={() => { boxing.current = false; }}
+        onSelectionChange={boxChange}
         onNodeClick={(event, node) => onNode(node as ModelCard, event.shiftKey)}
         onNodeDoubleClick={(_, node) => (node as ModelCard).data.enter?.()}
         onNodeContextMenu={(event, node) => onContext(event, (node as ModelCard).data.address, point(event))}

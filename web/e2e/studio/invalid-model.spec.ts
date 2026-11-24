@@ -98,7 +98,10 @@ test('keeps the steps that read an invalid Model editable and marks them waiting
   await tab(page, 'Objective').click();
   const objective = page.getByRole('tabpanel', { name: 'Objective', exact: true });
   const weight = objective.getByRole('textbox', { name: 'Weight', exact: true }).first();
-  const weighted = await edit(() => enter(weight, '3'));
+  const weighted = await edit(async () => {
+    await enter(weight, '3');
+    await page.getByRole('menu', { name: 'Apply To', exact: true }).getByRole('menuitem', { name: 'All 2 Steps', exact: true }).click();
+  });
   expect(rootPayload(weighted.documents?.objective)).toMatchObject({
     terms: [expect.objectContaining({ weight: expect.objectContaining({ kind: 'literal', value: 3 }) })],
   });

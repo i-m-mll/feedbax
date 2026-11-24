@@ -1,8 +1,9 @@
 import clsx from 'clsx';
-import { useRef, type PointerEvent, type ReactNode } from 'react';
+import { useRef, type CSSProperties, type PointerEvent, type ReactNode } from 'react';
 import { studioName, studioUnit } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
-import { elementKey, type ElementAddress } from '@/features/projectWindow/elementSelection';
+import { elementKey, isModelAddress, type ElementAddress } from '@/features/projectWindow/elementSelection';
+import { useAxisWithin, type TimeAxisStore } from './timeAxis';
 
 /**
  * A named span of a row, in seconds: an epoch of one trial. `spread` is where its end may fall over trials, drawn as a
@@ -50,6 +51,10 @@ export interface ShelfProps {
   readonly onSelect: (address: ElementAddress) => void;
   /** Controls drawn at the shelf's trailing end. */
   readonly trailing?: ReactNode;
+  /** The scrubber whose track the time axis spans; without one the shelf lays out its own axis. */
+  readonly axis?: TimeAxisStore;
+  /** Why the shown trial cannot be drawn: the rows are dimmed, with this reason across the axis. */
+  readonly unavailable?: ReactNode;
 }
 
 const percent = (value: number, total: number) => `${(100 * value / total).toFixed(3)}%`;
@@ -79,6 +84,10 @@ function Ticks({ duration, stepSeconds }: { duration: number; stepSeconds?: numb
 
 const markAttribute = 'data-shelf-mark';
 
+/** The element an address names, whichever of its fields is selected: a row is chosen while any cell of its element is. */
+const elementOf = (address: ElementAddress) =>
+  elementKey(isModelAddress(address) ? address : { ...address, element: { kind: 'named', id: address.element.id } });
+
 function Segment({ segment, duration, chosen }: { segment: ShelfSegment; duration: number; chosen: boolean }) {
   const { key, name, start, end, spread, dashedFrom, selects } = segment;
   const width = end - start;
@@ -107,12 +116,14 @@ function Segment({ segment, duration, chosen }: { segment: ShelfSegment; duratio
 
 /**
  * Rows on one time axis under the clock, their ends at the scrubber's ends, for one trial: each a name, then named
- * segments or bars. A row, or a segment, selects what it stands for; dragging along the axis moves the playhead,
+ * segments or bars. The rows scroll inside the shelf's height; the axis stays below them. A row, or a segment, selects what it stands for; dragging along the axis moves the playhead,
  * which runs through every row. The shelf knows what its rows select, not what they are.
  */
-export function Shelf({ rows, duration, stepSeconds, time, onTimeChange, selected, onSelect, trailing }: ShelfProps) {
-  const chosen = new Set(selected.map(elementKey));
-  const isChosen = (address?: ElementAddress) => !!address && chosen.has(elementKey(address));
+export function Shelf({ rows, duration, stepSeconds, time, onTimeChange, selected, onSelect, trailing, axis, unavailable }: ShelfProps) {
+  const section = useRef<HTMLElement>(null);
+  const span = useAxisWithin(axis, section);
+  const chosen = new Set(selected.map(elementOf));
+  const isChosen = (address?: ElementAddress) => !!address && chosen.has(elementOf(address));
   const selects = new Map(rows.flatMap((row) => row.kind === 'segments'
     ? row.segments.flatMap(({ key, selects }) => selects ? [[`${row.key}:${key}`, selects] as const] : [])
     : row.selects ? [[row.key, row.selects] as const] : []));
@@ -121,7 +132,7 @@ export function Shelf({ rows, duration, stepSeconds, time, onTimeChange, selecte
     const box = event.currentTarget.getBoundingClientRect();
     return Math.min(duration, Math.max(0, (event.clientX - box.left) / box.width * duration));
   };
-  const axis = (row: ShelfRow) => ({
+  const along = (row: ShelfRow) => ({
     onPointerDown: (event: PointerEvent<HTMLElement>) => {
       if (event.button !== 0) return;
       event.currentTarget.setPointerCapture(event.pointerId);
@@ -147,34 +158,45 @@ export function Shelf({ rows, duration, stepSeconds, time, onTimeChange, selecte
     onPointerCancel: () => { drag.current = undefined; },
   });
   const head = Math.min(duration, Math.max(0, time));
-  return <section aria-label={studioName('shelf')} className="flex min-w-0 items-start gap-3 px-3 py-2">
-    <div className="grid min-w-0 flex-1 grid-cols-[7rem_minmax(0,1fr)] gap-x-2 gap-y-1">
-      {rows.map((row) => {
-        const rowChosen = row.kind === 'bars' && isChosen(row.selects);
-        const name = <>{row.glyph}<span className="truncate font-mono">{row.name}</span></>;
-        return <div key={row.key} role="group" aria-label={row.name} className="col-span-2 grid grid-cols-subgrid items-center">
-          {row.kind === 'bars' && row.selects
-            ? <Button variant="bare" size="content" align="start" pressed={rowChosen} onClick={() => onSelect(row.selects!)}
-              className={clsx('flex h-5 min-w-0 items-center gap-1 text-left text-xs', rowChosen ? 'text-shell-foreground' : 'text-shell-muted')}>
-              {name}
-            </Button>
-            : <span className="flex h-5 min-w-0 items-center gap-1 text-xs text-shell-muted">{name}</span>}
-          <div className="relative h-5 touch-none" {...axis(row)}>
-            {row.kind === 'segments'
-              ? row.segments.map((segment) => <Segment key={segment.key} segment={segment} duration={duration}
-                chosen={isChosen(segment.selects)} />)
-              : row.bars.map((bar) => <span key={bar.start} data-start={bar.start} data-end={bar.end} data-share={bar.some ? 'some' : 'all'}
-                className={clsx('absolute inset-y-1 rounded-sm bg-shell-foreground',
-                  bar.some ? rowChosen ? 'opacity-30' : 'opacity-[0.15]' : rowChosen ? 'opacity-70' : 'opacity-40')}
-                style={{ left: percent(bar.start, duration), width: percent(bar.end - bar.start, duration) }} />)}
-            <span aria-hidden="true" className="pointer-events-none absolute -inset-y-0.5 w-px bg-shell-accent"
-              style={{ left: percent(head, duration) }} />
-          </div>
-        </div>;
-      })}
-      <span />
+  const columns: CSSProperties = span
+    ? { gridTemplateColumns: `${Math.max(0, span.left)}px ${span.width}px minmax(0,1fr)` }
+    : { gridTemplateColumns: '7rem minmax(0,1fr) auto' };
+  const nameCell = span ? 'pl-3 pr-2' : 'pl-3';
+  return <section ref={section} aria-label={studioName('shelf')} aria-disabled={unavailable ? true : undefined}
+    className={clsx('grid max-h-[40vh] min-w-0 grid-rows-[minmax(0,1fr)_auto] items-start gap-y-1 py-2', !span && 'gap-x-2')}
+    style={columns}>
+    <div data-shelf-rows="" className={clsx('col-span-2 col-start-1 row-start-1 grid max-h-full min-h-0 grid-cols-subgrid content-start gap-y-1 overflow-y-auto',
+      !span && 'gap-x-2')}>
+    {rows.map((row, index) => {
+      const rowChosen = row.kind === 'bars' && isChosen(row.selects);
+      const name = <>{row.glyph}<span className="truncate font-mono">{row.name}</span></>;
+      return <div key={row.key} role="group" aria-label={row.name}
+        className={clsx('col-span-2 col-start-1 grid grid-cols-subgrid items-center', unavailable && 'opacity-40')}
+        style={{ gridRow: index + 1 }}>
+        {row.kind === 'bars' && row.selects && !unavailable
+          ? <Button variant="bare" size="content" align="start" pressed={rowChosen} onClick={() => onSelect(row.selects!)}
+            className={clsx(nameCell, 'flex h-5 min-w-0 items-center gap-1 text-left text-xs', rowChosen ? 'text-shell-foreground' : 'text-shell-muted')}>
+            {name}
+          </Button>
+          : <span className={clsx(nameCell, 'flex h-5 min-w-0 items-center gap-1 text-xs text-shell-muted')}>{name}</span>}
+        <div className="relative h-5 touch-none" {...unavailable ? {} : along(row)}>
+          {row.kind === 'segments'
+            ? row.segments.map((segment) => <Segment key={segment.key} segment={segment} duration={duration}
+              chosen={isChosen(segment.selects)} />)
+            : row.bars.map((bar) => <span key={bar.start} data-start={bar.start} data-end={bar.end} data-share={bar.some ? 'some' : 'all'}
+              className={clsx('absolute inset-y-1 rounded-sm bg-shell-foreground',
+                bar.some ? rowChosen ? 'opacity-30' : 'opacity-[0.15]' : rowChosen ? 'opacity-70' : 'opacity-40')}
+              style={{ left: percent(bar.start, duration), width: percent(bar.end - bar.start, duration) }} />)}
+          {!unavailable && <span aria-hidden="true" data-shelf-playhead="" className="pointer-events-none absolute -inset-y-0.5 w-px bg-shell-accent"
+            style={{ left: percent(head, duration) }} />}
+        </div>
+      </div>;
+    })}
+    {unavailable && <div className="col-start-2 text-xs text-shell-muted" style={{ gridRow: rows.length + 1 }}>{unavailable}</div>}
+    </div>
+    <div className="col-start-2 row-start-2">
       <Ticks duration={duration} stepSeconds={stepSeconds} />
     </div>
-    {trailing}
+    {trailing && <div className="col-start-3 row-start-1 flex justify-end pr-3">{trailing}</div>}
   </section>;
 }

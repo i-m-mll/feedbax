@@ -1,6 +1,7 @@
 """Project the selected run's compiler and task facts onto stored Model addresses."""
 
 from feedbax.compiler.model_document import lower_model_document
+from feedbax.compiler.model_ports import ModelRegistryPorts
 from feedbax.compiler.resolution import resolve_graph_parameters
 from feedbax.contracts.model_address import ComponentPortAddress, ModelAddress, PortElement
 from feedbax.contracts.model_document import ModelDocument, SignalType
@@ -11,7 +12,7 @@ from feedbax.compiler.graph_schema import _enumerate_graph_ports
 from feedbax.contracts.project import BasedDocument
 from feedbax.contracts.trial_bindings import selected_signal_id
 from feedbax.planner.project_plan import RunKey
-from feedbax.project_folder import model_edit_source
+from feedbax.project_folder import ProjectFolderInvalid, model_edit_source
 from feedbax.project_model_selection import selected_model as selected_model, selected_model_and_task, task_signal
 from feedbax.compiler.model_differences import structural_differences
 from feedbax.web.services.trial_scope import runs_scope, selected_value, value_model
@@ -29,18 +30,15 @@ def _dumped(payload) -> dict:
     return ModelDocument.model_validate(payload).model_dump(mode="json")
 
 
-def model_differences(folders, project_id, body):
+def model_differences(folders, project_id, body, snapshot, shown, layout):
     """The shown document's structural differences from its base, and the selected value's from the step's Model."""
-    snapshot = folders.read(project_id, revision=body.revision)
     project = snapshot.project
-    payload, layout = model_edit_source(snapshot, body.document)
-    shown = _dumped(payload)
     from_base = from_value = ()
     entry = project.documents[body.document]
     if isinstance(entry, BasedDocument):
         base, base_layout = model_edit_source(snapshot, entry.base.document)
         from_base = structural_differences(_dumped(base), shown, base_layout.get("positions", {}))
-    if body.rows:
+    if body.rows and body.run is not None:
         plan = folders.read_plan(project_id, revision=body.revision).plan
         key = RunKey(body.run.variant, body.run.step, body.rows[0])
         named = selected_value(project, key.step, runs_scope(project, plan, key, tuple(body.rows), body.axes or {}))
@@ -52,15 +50,39 @@ def model_differences(folders, project_id, body):
 
 
 def model_projection(folders, project_id, body, components):
-    differences = model_differences(folders, project_id, body)
-    model, task, objective, overrides = selected_model_and_task(folders, project_id, body)
-    task_signals = tuple(task_signal(item) for item in task.exposed_data if item.bindable)
+    snapshot = folders.read(project_id, revision=body.revision)
+    payload, layout = model_edit_source(snapshot, body.document)
+    authored = ModelDocument.model_validate(payload)
+    differences = model_differences(folders, project_id, body, snapshot, authored.model_dump(mode="json"), layout)
+    selected = None
+    if body.run is not None:
+        try:
+            selected = selected_model_and_task(folders, project_id, body)
+        except ProjectFolderInvalid:
+            # A broken pairing can leave the current Model independently readable.
+            pass
+    model, task, objective, overrides = selected or (authored, None, None, {})
+    task_signals = tuple(task_signal(item) for item in task.exposed_data if item.bindable) if task is not None else ()
     names = {signal.label: signal.id for signal in task_signals}
     ids = set(names.values())
-    supplied = {
-        port.name for port in model.ports.inputs
+    bound = tuple(
+        port for port in model.ports.inputs
         if selected_signal_id(port.id, port.name, names, overrides) in ids
-    }
+    )
+    supplied = {port.name for port in bound}
+    problems = tuple(ModelRegistryPorts(components).problems(model))
+    task_inputs = tuple(
+        ModelAddress.model_validate({
+            "composites": [],
+            "element": {"kind": "port", "end": {"owner": "inputs", "port": port.id}},
+        }) for port in bound
+    )
+    known = dict(
+        task_signals=task_signals, task_inputs=task_inputs, resolved_model=model,
+        problems=problems, **differences,
+    )
+    if problems:
+        return ModelProjection(**known)
     try:
         lowered = lower_model_document(
             model, components, supplied_inputs=frozenset(supplied),
@@ -68,19 +90,13 @@ def model_projection(folders, project_id, body, components):
     except ValueError:
         # The selected Plan carries the addressed failure. Exposed task signals
         # are still known when the Model cannot be lowered.
-        return ModelProjection(task_signals=task_signals, resolved_model=model, **differences)
-    task_inputs = tuple(
-        ModelAddress.model_validate({
-            "composites": [],
-            "element": {"kind": "port", "end": {"owner": "inputs", "port": port.id}},
-        }) for port in model.ports.inputs if port.name in supplied
-    )
+        return ModelProjection(**known)
     try:
         resolution = resolve_graph_parameters(
             lowered.graph, {}, components, allow_incomplete=True,
         )
     except ValueError:
-        return ModelProjection(task_signals=task_signals, task_inputs=task_inputs, resolved_model=model, **differences)
+        return ModelProjection(**known)
     ports = []
     def collect(resolved, owner, composites):
         for port in _enumerate_graph_ports(resolved.graph, component_registry=components, resolution=resolved):
@@ -120,6 +136,5 @@ def model_projection(folders, project_id, body, components):
                 if isinstance(address.element, PortElement):
                     objective_ports[reference] = address
     return ModelProjection(
-        ports=tuple(ports), task_signals=task_signals, task_inputs=task_inputs,
-        objective_ports=tuple(objective_ports.values()), resolved_model=model, **differences,
+        ports=tuple(ports), objective_ports=tuple(objective_ports.values()), **known,
     )

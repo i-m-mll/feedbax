@@ -1,38 +1,41 @@
-import { appTip } from '@window-shell/browser/tooltip';
 import clsx from 'clsx';
-import { Plus } from 'lucide-react';
-import { useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { queryOptions, useQuery, useQueryClient } from '@tanstack/react-query';
 import { catalogEntries, readStudioTrialAuthoring, useAuthoringCatalog } from '@/api/studioAuthoring';
 import { shownError } from '@/api/shownErrors';
-import { studioAccessibleName, studioDefinitionStatus, studioEvaluateValueSource, studioName, studioRunReason } from '@/components/activity/studioVocabulary';
-import { IconButton } from '@/components/ui/Button';
+import { studioAccessibleName, studioDefinitionStatus, studioEvaluateValueSource, studioName } from '@/components/activity/studioVocabulary';
+import { ChangeMark as ChangedMark } from '@/components/ui/ChangeMark';
+import { Combobox } from '@/components/ui/Combobox';
+import { InlineEdit } from '@/components/ui/InlineEdit';
 import { Inspector } from '@/components/ui/Inspector';
-import { Menu, MenuContent, MenuItem, MenuTrigger } from '@/components/ui/Menu';
-import { StatusMark } from '@/components/ui/StatusMark';
+import { editedElement } from '@/components/ui/ChoiceMenu';
+import { MenuItem } from '@/components/ui/Menu';
 import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
 import {
   evaluateChange, reasonOf, type ChangeMark, type ChangeSource, type FieldModel, type FieldRefusal,
 } from '@/components/values/fieldModel';
 import { Drawer, DrawerSection, type DrawerSections } from '@/features/projectWindow/DrawerForms';
-import { Table, TableFieldCell, TableHeaderCell, type TableColumn } from '@/components/ui/Table';
+import { Table, TableFieldCell, TableHeaderCell, TableHeaderRow, TableRow, type TableColumn } from '@/components/ui/Table';
 import { CatalogPicker } from '@/components/ui/CatalogPicker';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { SettingsForm } from '@/components/values/SettingsForm';
-import { FieldChange, ValueField } from '@/components/values/ValueField';
+import { changeTip, FieldChange, ValueField } from '@/components/values/ValueField';
 import { setIn } from '@/components/values/adapters/jsonSchema';
 import { isRecord, rawField } from '@/components/values/adapters/raw';
-import { fromFieldView } from '@/components/values/adapters/fieldView';
+import { fromFieldView, type FieldViewOptions } from '@/components/values/adapters/fieldView';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type {
-  FieldKind, JsonValue, ObjectiveTerm, Problem, ProjectValueEdit, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
+  FieldKind, JsonValue, ObjectiveTerm, ProjectValueEdit, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
+  StudioTrialField,
 } from '@/generated/studioContracts';
-import { authoredPointer, authoredPointerParts } from './authoredEdits';
-import { BatchTrace, TrialTrace } from './task/SignalTrace';
-import type { TrialShown } from './task/trialSample';
+import { authoredPointer } from './authoredEdits';
+import { addressKey } from './model/modelGraph';
+import { BatchTrace, TermTrace, TrialTrace } from './task/SignalTrace';
+import { epochBoundaries, signalAggregate, signalSteps, type TrialShown } from './task/trialSample';
 import { baseOf } from './documentPayload';
 import type { ProjectEditController } from './projectEditController';
 import { filesRemoval, type ConfirmRunRemoval } from './runRemoval';
+import type { AskStore } from './storeChoice';
 import { SweepTargetItem, type SweepTarget } from './StudioTrainAuthoringForm';
 import { TaskOutline, type OutlineGroup } from './task/TaskOutline';
 
@@ -41,7 +44,8 @@ type Change = NonNullable<StudioTrialAuthoringRequest['change']>;
 export type TrialChangeScope = (change: Change) => StudioTrialAuthoringRequest['scope'] | undefined;
 /**
  * Applies a change; `removes` marks one that takes runs out of the project, which the run confirmation guards. A
- * refused field edit answers with the problem at that field, with the term of its text it is about.
+ * change is stored with whatever Problems it introduces, which the documents' fields mark; it answers with a reason
+ * only when the service refuses the write.
  */
 export type Commit = (name: string, change: Change, removes?: boolean) => Promise<FieldRefusal | undefined>;
 /** A step's Trial authoring, with what the changed values of its Task and Objective documents differ from. */
@@ -65,28 +69,34 @@ export function changedAt(view: TrialView, document: 'task' | 'objective', path:
   return { from, reset: commit && (() => commit(studioName('reset'), { kind: 'reset', document, paths: [path] })) };
 }
 
-/** The problem that refuses `change`: for a field's edit, the one at that field, with its term's place in the text. */
-function refusalOf(change: Change, problems: readonly Problem[]): FieldRefusal {
-  const at = change.kind === 'expression' ? authoredPointerParts(change.path) : undefined;
-  const own = at && [...problems].reverse().find(({ path = [] }) => path.length === at.length &&
-    path.every((part, index) => String(part) === at[index]));
-  const chosen = own ?? problems[0];
-  return chosen.span ? { reason: chosen.reason, span: chosen.span } : chosen.reason;
-}
-
 /** The kind a stored expression reads as, which its field's mark shows. */
 export function expressionKind(value: JsonValue | undefined): FieldKind {
   const kind = isRecord(value) ? value.kind : undefined;
   return kind === 'name' ? 'link' : kind === 'call' || kind === 'unresolved' ? 'formula' : kind === 'draw' ? 'draw' : 'value';
 }
 
+/** A field the service projects in a step's Task or Objective, marked with its first stored Problem. */
+export function trialField(projection: StudioTrialField, label: string, runs: TrialRuns | undefined, options: FieldViewOptions): FieldModel {
+  const [problem] = projection.problems ?? [];
+  return {
+    ...fromFieldView({ ...projection, label, effective: runs?.selected ? projection.effective : null }, options),
+    reason: problem?.reason, span: problem?.span ?? undefined,
+  };
+}
+
+/** The read of a run's Trial authoring at a revision. */
+const trialAuthoringQuery = (project: string, revision: string, run: StudioSavedTrainKey | undefined) => queryOptions({
+  queryKey: ['trial-authoring', project, revision, run] as const,
+  queryFn: ({ signal }) => readStudioTrialAuthoring(project, { revision, run: run! }, signal),
+});
+
 export function useTrialAuthoring(
   editor: ProjectEditController, project: string, revision: string, run: StudioSavedTrainKey | undefined,
-  enabled: boolean, editable: boolean, scope: TrialChangeScope, confirmRemoval: ConfirmRunRemoval,
+  enabled: boolean, editable: boolean, scope: TrialChangeScope, confirmRemoval: ConfirmRunRemoval, askStore: AskStore,
 ) {
+  const queryClient = useQueryClient();
   const query = useQuery({
-    queryKey: ['trial-authoring', project, revision, run],
-    queryFn: ({ signal }) => readStudioTrialAuthoring(project, { revision, run: run! }, signal),
+    ...trialAuthoringQuery(project, revision, run),
     enabled: enabled && !!run,
     placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === project &&
       JSON.stringify(previousQuery.queryKey[3]) === JSON.stringify(run) ? previous : undefined,
@@ -103,28 +113,37 @@ export function useTrialAuthoring(
     };
     return { ...data, changedFrom: { task: from(data.task_document), objective: from(data.objective_document) } };
   }, [data, authored, run]);
-  const commit: Commit | undefined = editable && run && query.data ? (name, change, removes) => editor.command(async (saved) => {
-    const result = await readStudioTrialAuthoring(saved.project_id, {
-      revision: saved.revision, run, change, scope: scope(change),
-    }, editor.signal);
-    if (result.files.length) {
-      if (removes && !await confirmRemoval(filesRemoval(saved.project_id, saved.revision, result.files, editor.signal))) return;
-      const documents = [result.model, result.task_document, result.objective_document];
-      const stored = editor.storeEdit(name, result, {
-        reviewedRevision: saved.revision,
-        dependencies: [
-          { kind: 'step', id: run.step },
-          ...documents.flatMap((id) => id ? [{ kind: 'document' as const, id }] : []),
-        ],
-      });
-      await editor.flush();
-      const settled = await stored;
-      if (settled.status === 'refused') return shownError(settled.error);
-    } else if (result.problems.length) {
-      return refusalOf(change, result.problems);
-    }
-    return undefined;
-  }).catch(shownError) : undefined;
+  const commit: Commit | undefined = editable && run && query.data ? (name, change, removes) => {
+    const committedFrom = document.activeElement;
+    return editor.command(async (saved) => {
+      const request = { revision: saved.revision, run, change, scope: scope(change) };
+      let result = await readStudioTrialAuthoring(saved.project_id, request, editor.signal);
+      if (result.store_choices) {
+        // The edit reaches beyond the selection: it waits here, holding later commands, until a store is chosen.
+        const choice = await askStore(editedElement(committedFrom), result.store_choices);
+        if (!choice) return undefined;
+        result = await readStudioTrialAuthoring(saved.project_id, { ...request, store_choice: choice }, editor.signal);
+        if (result.store_choices) throw new Error('The chosen store was offered again.');
+      }
+      if (result.files.length || result.created?.length) {
+        if (removes && !await confirmRemoval(filesRemoval(saved.project_id, saved.revision, result.files, editor.signal))) return;
+        const documents = [result.model, result.task_document, result.objective_document];
+        const stored = editor.storeEdit(name, result, {
+          reviewedRevision: saved.revision,
+          dependencies: [
+            { kind: 'step', id: run.step },
+            ...documents.flatMap((id) => id ? [{ kind: 'document' as const, id }] : []),
+          ],
+        });
+        await editor.flush();
+        const settled = await stored;
+        if (settled.status === 'refused') return shownError(settled.error);
+        // The commit settles once the view of what it stored is read, so its field never draws the value it replaced.
+        await queryClient.prefetchQuery(trialAuthoringQuery(project, editor.getSnapshot().saved.revision, run));
+      }
+      return undefined;
+    }).catch(shownError);
+  } : undefined;
   return { view, error: query.error, retry: () => { void query.refetch(); }, commit };
 }
 
@@ -205,7 +224,11 @@ export function TrialTaskOutline({ sections, view, selected, select }: {
     variables: task && entries('variables', task.variables),
     epochs: task && entries('epochs', task.epochs),
     signals: task ? entries('signals', task.signals) : view.signals.map(({ id, name }) => ({ id, name: humanizeLabel(name) })),
-    modelInputs: view.inputs.map(({ id, name, signal_id }) => ({ id, name, muted: !signal_id })),
+    modelInputs: view.inputs.map(({ id, name, address, signal_id }) => {
+      const signal = view.signals.find((item) => item.id === signal_id)?.name;
+      const reason = view.problems.find(({ model_address }) => model_address && addressKey(model_address) === addressKey(address))?.reason;
+      return { id, name, muted: !signal_id, reason, detail: signal === name ? undefined : signal };
+    }),
   };
   const [kind, ...rest] = selected?.split(':') ?? [];
   const group = (Object.keys(outlineKinds) as OutlineGroup[]).find((key) => outlineKinds[key] === kind);
@@ -225,16 +248,16 @@ export function TrialTaskInspector({ view, commit, selected, shown }: {
   const key = rest.join(':');
   if (kind === 'signal') {
     const value = view.signals.find(({ id }) => id === key);
-    const trial = shown?.kind === 'trial' ? shown.trial : undefined;
-    const steps = trial?.signals[key];
-    const aggregate = shown?.kind === 'batch' ? shown.batch.signals[key] : undefined;
+    const record = shown?.kind === 'one' ? shown.record : undefined;
+    const steps = record && value && signalSteps(record, value.id);
+    const aggregate = shown?.kind === 'all' && value ? signalAggregate(shown.aggregate, value.id) : undefined;
+    const period = view.period_seconds;
     return value ? <Inspector name={humanizeLabel(value.name)} type={value.type.shape?.join(' × ') || value.type.base}>
-      {trial && steps && <section aria-label={studioName('plot')} className="grid gap-1">
-        <TrialTrace label={value.name} steps={steps} duration={steps.length * view.period_seconds}
-          boundaries={trial.intervals.slice(1).map(({ start }) => Math.round(start / view.period_seconds))} />
+      {period != null && record && steps && <section aria-label={studioName('plot')} className="grid gap-1">
+        <TrialTrace label={value.name} steps={steps} duration={steps.length * period} boundaries={epochBoundaries(record)} />
       </section>}
-      {aggregate && <section aria-label={studioName('plot')} className="grid gap-1">
-        <BatchTrace label={value.name} aggregate={aggregate} duration={aggregate.presence.length * view.period_seconds} boundaries={[]} />
+      {period != null && aggregate && <section aria-label={studioName('plot')} className="grid gap-1">
+        <BatchTrace label={value.name} aggregate={aggregate} duration={aggregate.presence.length * period} boundaries={[]} />
       </section>}
     </Inspector> : null;
   }
@@ -257,17 +280,21 @@ export function TrialTaskInspector({ view, commit, selected, shown }: {
   </Inspector>;
 }
 
-/** A term's fields, by the column that shows them. */
-type TermField = 'name' | 'enabled' | 'measure' | 'window' | 'weight' | 'reduction';
-const columns = ['name', 'measure', 'window', 'weight', 'enabled'] as const satisfies readonly TermField[];
+/** A term's fields that are values, by the column that shows them; its Window is a choice of epochs. */
+type TermField = 'name' | 'enabled' | 'measure' | 'weight' | 'reduction';
+type TermColumn = 'name' | 'measure' | 'window' | 'weight' | 'enabled';
+const columns = ['name', 'measure', 'window', 'weight', 'enabled'] as const satisfies readonly TermColumn[];
 const columnNames = { name: 'term', enabled: 'enabled', measure: 'measure', window: 'window', weight: 'weight' } as const;
-const columnWidths: Record<(typeof columns)[number], TableColumn> = {
-  name: { least: '9rem', fixed: true }, measure: { least: '10rem' }, window: { least: '8rem' }, weight: { least: '7rem' },
-  enabled: { least: '4.5rem', fixed: true },
+const columnWidths: Record<TermColumn, TableColumn> = {
+  name: { least: '6rem', greatest: '16rem' }, measure: { least: '10rem' }, window: { least: '8rem' }, weight: { least: '7rem' },
+  enabled: { least: '4.5rem', greatest: '4.5rem' },
 };
 
 /** The anchor of a term's Weight, which Add Sweep puts the keyboard on. */
 export const weightAnchor = (term: string) => `objective:${term}:weight`;
+
+/** The anchor of a term's Measure, which a term just added puts the keyboard on. */
+const measureAnchor = (term: string) => `objective:${term}:measure`;
 
 /** The runs the Objective is shown for: `selected` says the user chose them, whose swept values are marked as differing
  * from the step's; `values` are the chosen values of each sweep, and `choose` chooses one. */
@@ -277,8 +304,11 @@ export interface TrialRuns {
   choose?(sweep: string, value: string, extend: boolean): void;
 }
 
-function termFields(view: TrialView, term: ObjectiveTerm, index: number, commit?: Commit, runs?: TrialRuns): Record<TermField, FieldModel> {
-  const path = '/terms/' + index;
+const termPath = (index: number) => '/terms/' + index;
+
+function termFields(view: TrialView, term: ObjectiveTerm, index: number, commit?: Commit, runs?: TrialRuns,
+  shown?: TrialShown): Record<TermField, FieldModel> {
+  const path = termPath(index);
   const changed = (field: keyof ObjectiveTerm) => changedAt(view, 'objective', path + '/' + field, commit);
   const set = (field: keyof ObjectiveTerm, name: string) => commit && ((value: JsonValue) => commit(
     studioAccessibleName('set', name), { kind: 'objective', edits: [write(path + '/' + field, value, has(term, field))] }));
@@ -288,30 +318,22 @@ function termFields(view: TrialView, term: ObjectiveTerm, index: number, commit?
     if (!projection) throw new Error(`The Objective's ${field} of term ${term.id} has no field`);
     const kind = expressionKind(term[field] as JsonValue | undefined);
     const sweep = projection.sweep?.id;
-    const model = fromFieldView({ ...projection, label, effective: runs?.selected ? projection.effective : null }, {
+    const model = trialField(projection, label, runs, {
       id: term.id + field, kind, changed: changed(field),
       commit: commit && ((edit) => commit('Set ' + label, { kind: 'expression', path: projection.path, edit })),
       selectedMembers: sweep ? runs?.values(sweep) : undefined,
       chooseMember: sweep && runs?.choose ? (value, extend) => runs.choose!(sweep, value, extend) : undefined,
     });
-    return field === 'weight' ? { ...model, anchor: weightAnchor(term.id) } : model;
+    if (field === 'measure') return { ...model, anchor: measureAnchor(term.id) };
+    const weights = shown?.kind === 'one' ? shown.record.terms?.[term.id]?.weights ?? undefined : undefined;
+    return { ...model, anchor: weightAnchor(term.id), curve: weights };
   };
-  const epochs = term.epochs ?? [];
   return {
     name: rawField({ id: term.id + 'name', label: studioName('name'), type: { kind: 'string' },
       value: term.name ?? '', change: set('name', studioName('name')), changed: changed('name') }),
     enabled: rawField({ id: term.id + 'enabled', label: studioName('enabled'), type: { kind: 'boolean' },
       value: term.enabled ?? true, change: set('enabled', studioName('enabled')), changed: changed('enabled') }),
     measure: expression('measure'),
-    window: rawField({ id: term.id + 'window', label: studioName('window'), changed: changed('epochs'),
-      value: epochs.length === 1 ? epochs[0] : epochs.length ? epochs.join(', ') : '',
-      type: { kind: 'choice', options: [
-        { value: '', label: studioName('wholeTrial') },
-        ...epochs.length > 1 ? [{ value: epochs.join(', '), label: epochs.join(', ') }] : [],
-        ...view.epochs.map(({ id, name }) => ({ value: id, label: name })),
-      ] },
-      change: commit && ((epoch) => epoch === epochs.join(', ') && epochs.length > 1 ? undefined
-        : commit('Set Window', { kind: 'objective', edits: [write(path + '/epochs', epoch ? [epoch] : [], has(term, 'epochs'))] })) }),
     weight: expression('weight'),
     reduction: rawField({ id: term.id + 'reduction', label: studioName('reduction'),
       value: term.reduction ?? 'mean', change: set('reduction', humanizeLabel('reduction')), changed: changed('reduction'), type: { kind: 'choice', options:
@@ -320,77 +342,127 @@ function termFields(view: TrialView, term: ObjectiveTerm, index: number, commit?
   };
 }
 
+/** A term's Window: the epochs it applies in, as tokens; none checked is the whole trial. */
+function TermWindow({ view, term, index, commit, labelId }: {
+  view: TrialView; term: ObjectiveTerm; index: number; commit?: Commit; labelId?: string;
+}) {
+  const epochs = term.epochs ?? [];
+  const changed = changedAt(view, 'objective', termPath(index) + '/epochs', commit);
+  return <Combobox className="w-full" aria-labelledby={labelId} aria-label={labelId ? undefined : studioName('window')}
+    items={view.epochs.map(({ id, name }) => ({ value: id, label: name }))}
+    checked={epochs} text="" tokens disabled={!commit}
+    trailing={changed && <ChangedMark tip={changeTip(changed.from)} reset={changed.reset && (() => { void changed.reset!(); })} />}
+    onToggle={(epoch) => {
+      const next = view.epochs.map(({ id }) => id)
+        .filter((id) => id === epoch ? !epochs.includes(id) : epochs.includes(id));
+      void commit?.(studioAccessibleName('set', studioName('window')),
+        { kind: 'objective', edits: [{ op: 'add', path: termPath(index) + '/epochs', value: next }] });
+    }} />;
+}
+
 /** A term, and the field of it whose cell is selected. */
 export interface TermSelection {
   term: string;
   field?: string;
 }
 
-/** Add Term: a plus that lists every quantity a term can measure; the term added penalises its squared size. */
-export function TrialObjectiveAdd({ view, commit, select }: {
-  view: StudioTrialAuthoring; commit?: Commit; select(term: string): void;
-}) {
-  const [refusal, setRefusal] = useState<string>();
-  const terms = view.objective?.terms ?? [];
-  const sources = [...view.outputs.map(({ value }) => value), ...view.variables, ...view.signals]
+/** The quantities a term can measure: the Model's outputs, the task's variables and its signals, of a real or integer type. */
+function measured(view: StudioTrialAuthoring) {
+  return [...view.outputs.map(({ value }) => value), ...view.variables, ...view.signals]
     .filter(({ type }) => type.base === 'real' || type.base === 'integer');
-  const add = async (chosen: (typeof sources)[number]) => {
-    if (!commit) return;
-    const id = crypto.randomUUID();
-    const value = {
-      id, name: humanizeLabel(chosen.name),
-      measure: { kind: 'call', function: 'sqnorm', args: [{ kind: 'name', reference: chosen.id }] },
-      measure_type: { base: 'real', dimensions: Object.fromEntries(
-        Object.entries(chosen.type.dimensions ?? {}).map(([name, exponent]) => [name, exponent * 2]),
-      ) },
-      weight: { kind: 'literal', value: 1 }, epochs: [], enabled: true,
-    } satisfies JsonValue;
-    const edits = terms.length
-      ? [write('/terms/-', value, false)]
-      : [write('/terms', [value], has(view.objective ?? {}, 'terms'))];
-    const reason = await commit(studioName('addTerm'), { kind: 'objective', edits });
-    setRefusal(reasonOf(reason));
-    if (!reason) select(id);
-  };
-  return <>
-    <Menu>
-      <MenuTrigger render={<IconButton variant="ghost" label={studioName('addTerm')} icon={<Plus aria-hidden="true" />}
-        disabled={!commit || !sources.length} aria-description={refusal} />} />
-      <MenuContent aria-label={studioName('addTerm')}>
-        {sources.map((source) => <MenuItem key={source.id} onClick={() => { void add(source); }}>
-          {humanizeLabel(source.name)}
-        </MenuItem>)}
-      </MenuContent>
-    </Menu>
-    {refusal && <span role="alert" className="inline-flex" {...appTip(studioRunReason({ reason: refusal }))}>
-      <StatusMark status="cannot_run" label={refusal} />
-    </span>}
-  </>;
 }
 
+/** The term that penalises `chosen`'s squared size. */
+function newTerm(chosen: ReturnType<typeof measured>[number]) {
+  return {
+    id: crypto.randomUUID(), name: humanizeLabel(chosen.name),
+    measure: { kind: 'call', function: 'sqnorm', args: [{ kind: 'name', reference: chosen.id }] },
+    measure_type: { base: 'real', dimensions: Object.fromEntries(
+      Object.entries(chosen.type.dimensions ?? {}).map(([name, exponent]) => [name, exponent * 2]),
+    ) },
+    weight: { kind: 'literal', value: 1 }, epochs: [], enabled: true,
+  } satisfies JsonValue;
+}
+
+/**
+ * The Objective's terms as a table of Term, Measure, Window, Weight and the on-off check. Add Term at the foot of the
+ * Term column lists the quantities a term can measure, and the term added is selected with its Measure focused. A
+ * term is renamed by clicking its name, moved by dragging its handle, and removed from its row's menu.
+ */
 export function TrialObjectiveTable({ view, commit, selected, select, runs }: {
   view: TrialView; commit?: Commit; selected?: TermSelection; select(term: string, field?: string): void; runs?: TrialRuns;
 }) {
   const terms = view.objective?.terms ?? [];
+  const box = useRef<HTMLDivElement>(null);
+  const [renaming, setRenaming] = useState<string>();
+  const [added, setAdded] = useState<string>();
+  useEffect(() => {
+    if (!added || !terms.some(({ id }) => id === added)) return;
+    box.current?.querySelector<HTMLInputElement>(`[data-field="${CSS.escape(measureAnchor(added))}"] input`)?.focus();
+    setAdded(undefined);
+  }, [added, terms]);
+  const save = (name: string, edits: ProjectValueEdit[], removes?: boolean) => commit?.(name, { kind: 'objective', edits }, removes);
+  const move = commit && ((id: string, index: number) => {
+    const from = terms.findIndex((term) => term.id === id);
+    const reordered = [...terms];
+    reordered.splice(index, 0, ...reordered.splice(from, 1));
+    return save(studioAccessibleName('move', studioName('term')), [write('/terms', reordered as unknown as JsonValue, true)]);
+  });
+  const sources = measured(view);
+  const add = async (chosen: (typeof sources)[number]) => {
+    const value = newTerm(chosen);
+    const edits = terms.length ? [write('/terms/-', value, false)] : [write('/terms', [value], has(view.objective ?? {}, 'terms'))];
+    if (await save(studioName('addTerm'), edits)) return;
+    select(value.id, 'measure');
+    setAdded(value.id);
+  };
   return <Table aria-label={studioName('objectiveTerms')} held={1} columns={columns.map((id) => columnWidths[id])}
-    box={{ axis: 'both', className: 'h-full min-h-0 [--fade-inset-top:var(--row-height)]' }}>
-    <thead className="sticky top-0 z-10"><tr>{columns.map((id) =>
+    box={{ ref: box, axis: 'both', className: 'h-full min-h-0 [--fade-inset-top:var(--row-height)]' }}
+    moveRow={move}
+    addRow={{ label: studioName('addTerm'), disabled: !commit || !sources.length, items: sources.map((source) =>
+      <MenuItem key={source.id} onClick={() => { void add(source); }}>{humanizeLabel(source.name)}</MenuItem>) }}>
+    <thead className="sticky top-0 z-10"><TableHeaderRow>{columns.map((id) =>
       <TableHeaderCell scope="col" key={id} className={clsx(id === 'enabled' && 'text-center')}>
         {studioName(columnNames[id])}
       </TableHeaderCell>)}
-    </tr></thead>
+    </TableHeaderRow></thead>
     <tbody>{terms.map((term, index) => {
       const fields = termFields(view, term, index, commit, runs);
-      return <tr key={term.id}>
-        {columns.map((field) => {
-          const chosenCell = selected?.term === term.id && selected.field === field;
-          return <TableFieldCell key={field} selected={chosenCell}
-            onFocusCapture={() => { if (!chosenCell) select(term.id, field); }}
-            onPointerDown={() => { if (!chosenCell) select(term.id, field); }}>
-            <ValueField model={fields[field]} form="cell" />
-          </TableFieldCell>;
-        })}
-      </tr>;
+      const name = term.name ?? studioAccessibleName('term', index + 1);
+      const cell = (field: TermColumn) => {
+        const chosen = selected?.term === term.id && selected.field === field;
+        return { selected: chosen, onFocusCapture: () => { if (!chosen) select(term.id, field); },
+          onPointerDown: () => { if (!chosen) select(term.id, field); } };
+      };
+      return <TableRow key={term.id} selected={selected?.term === term.id && !selected.field} sortable={move && { id: term.id, label: studioAccessibleName('move', name) }}
+        menu={commit && { label: studioAccessibleName('term', name), items: <>
+          <MenuItem onClick={() => setRenaming(term.id)}>{studioName('rename')}</MenuItem>
+          <MenuItem disabled={index === 0} onClick={() => { void move?.(term.id, index - 1); }}>{studioName('moveEarlier')}</MenuItem>
+          <MenuItem disabled={index === terms.length - 1} onClick={() => { void move?.(term.id, index + 1); }}>
+            {studioName('moveLater')}
+          </MenuItem>
+          <MenuItem onClick={() => { void save(studioAccessibleName('remove', studioName('term')), [{ op: 'remove', path: termPath(index) }], true); }}>
+            {studioName('remove')}
+          </MenuItem>
+        </> }}>
+        <TableFieldCell header {...cell('name')}>
+          <span className="flex h-full min-w-0 items-center">
+            <InlineEdit form="cell" value={term.name ?? ''} editing={renaming === term.id} className="min-w-0 flex-1"
+              aria-label={studioAccessibleName('rename', name)}
+              onEditingChange={(editing) => setRenaming(editing ? term.id : undefined)}
+              onCommit={(next) => {
+                if (!commit || !next.trim()) return false;
+                if (next.trim() !== term.name) void save(studioAccessibleName('set', studioName('name')),
+                  [write(termPath(index) + '/name', next.trim(), has(term, 'name'))]);
+              }} />
+            <FieldChange change={fields.name.change} id={`${term.id}-name-change`} />
+          </span>
+        </TableFieldCell>
+        <TableFieldCell {...cell('measure')}><ValueField model={fields.measure} form="cell" /></TableFieldCell>
+        <TableFieldCell {...cell('window')}><TermWindow view={view} term={term} index={index} commit={commit} /></TableFieldCell>
+        <TableFieldCell {...cell('weight')}><ValueField model={fields.weight} form="cell" /></TableFieldCell>
+        <TableFieldCell className="text-center" {...cell('enabled')}><ValueField model={fields.enabled} form="cell" /></TableFieldCell>
+      </TableRow>;
     })}</tbody>
   </Table>;
 }
@@ -434,18 +506,31 @@ export function TrialObjectiveOutline({ sections, view, commit, selected, select
   </Drawer>;
 }
 
-export function TrialObjectiveInspector({ view, commit, selected, runs }: {
-  view: TrialView; commit?: Commit; selected?: TermSelection; runs?: TrialRuns;
+/**
+ * The Inspector of the selected term: a Weight that is a Shape draws its curve in the trial the clock shows, and where
+ * what is shown recorded the term's value per step, its plot.
+ */
+export function TrialObjectiveInspector({ view, commit, selected, runs, shown }: {
+  view: TrialView; commit?: Commit; selected?: TermSelection; runs?: TrialRuns; shown?: TrialShown;
 }) {
+  const windowLabel = useId();
   const index = view.objective?.terms?.findIndex(({ id }) => id === selected?.term) ?? -1;
   const term = view.objective?.terms?.[index];
   if (!term) return null;
-  const fields = termFields(view, term, index, commit, runs);
-  const first = (Object.keys(fields) as TermField[]).find((field) => field === selected?.field);
-  const order = [...first ? [first] : [], ...(Object.keys(fields) as TermField[]).filter((field) => field !== first)];
-  return <Inspector name={term.name ?? studioAccessibleName('term', index + 1)} type={term.name ? studioName('term') : undefined}>
-    {order.map((field) => <ValueField key={term.id + field + JSON.stringify(fields[field].value ?? fields[field].text)}
-      model={fields[field]} />)}
+  const fields = termFields(view, term, index, commit, runs, shown);
+  const order: (TermField | 'window')[] = ['name', 'measure', 'window', 'weight', 'enabled', 'reduction'];
+  const first = order.find((field) => field === selected?.field);
+  const name = term.name ?? studioAccessibleName('term', index + 1);
+  const period = view.period_seconds;
+  return <Inspector name={name} type={term.name ? studioName('term') : undefined}>
+    {shown && period != null && <section aria-label={studioName('plot')} className="grid gap-1 empty:hidden">
+      <TermTrace label={name} term={term.id} shown={shown} stepSeconds={period} />
+    </section>}
+    {[...first ? [first] : [], ...order.filter((field) => field !== first)].map((field) => field === 'window'
+      ? <FieldRow key="window" label={studioName('window')} labelId={windowLabel}>
+        <TermWindow view={view} term={term} index={index} commit={commit} labelId={windowLabel} />
+      </FieldRow>
+      : <ValueField key={term.id + field + JSON.stringify(fields[field].value ?? fields[field].text)} model={fields[field]} />)}
   </Inspector>;
 }
 
@@ -465,11 +550,7 @@ export const startAnchor = (address: string) => `task:start:${address}`;
 export function TrialSweepItems({ project, revision, run, onChoose }: {
   project: string; revision: string; run?: StudioSavedTrainKey; onChoose(anchor: string, view: 'task' | 'objective'): void;
 }) {
-  const { data } = useQuery({
-    queryKey: ['trial-authoring', project, revision, run],
-    queryFn: ({ signal }) => readStudioTrialAuthoring(project, { revision, run: run! }, signal),
-    enabled: !!run,
-  });
+  const { data } = useQuery({ ...trialAuthoringQuery(project, revision, run), enabled: !!run });
   if (!data) return null;
   const sweepable = (path: string) => data.fields.some((field) => field.path === path && field.can_sweep && !field.sweep);
   const variables = 'variables' in data.task ? data.task.variables.filter(({ id }) =>

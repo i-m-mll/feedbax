@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace
 
 from feedbax.compiler.model_attachment import resolve_effective_model
+from feedbax.compiler.model_document import ModelCompilationProblem
+from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES, AttachmentDifference
 from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.model_edit import (
@@ -13,7 +16,8 @@ from feedbax.contracts.model_edit import (
 )
 from feedbax.contracts.project import DifferenceNotApplied, Differences, Project, apply_differences, diff, nearest_shared_base
 from feedbax.planner.project_plan import EVALUATION_MODEL, ProjectPlan, RunKey, SelectedRunDefinition
-from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
+from feedbax.contracts.project_io import project_declaration_name
+from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode, compose_document
 from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.project_folder import ProjectFolderInvalid
 from feedbax.project_model_selection import selected_model
@@ -49,10 +53,17 @@ def read_evaluate_model(
     """The Model the selected Evaluate run evaluates: the trained model with the run's Model differences applied."""
     snapshot = folders.read(project_id, revision=body.revision)
     key = RunKey(body.run.variant, body.run.step, body.run.row)
+    step = snapshot.project.steps.get(key.step)
+    if step is None or step.kind != "evaluate":
+        raise ProjectFolderInvalid("Choose an Evaluate step.")
     if selected is None:
         selected = folders.read_plan(project_id, revision=body.revision, source_runs=(key,)).plan
     definition = selected.selected_definitions.get(key)
-    editable = _editable(selected, key, body)
+    problems = [
+        problem for problem in selected.diagnostics
+        if problem.step == key.step and problem.variant in (None, key.variant) and problem.row in (None, key.row)
+    ]
+    editable = _editable(selected, key, body, has_problem=bool(problems))
     effective = MODEL_DIFFERENCE_BATCHES.validate_python(
         definition.payload.get(MODEL_ATTACHMENTS, {}) if definition else {},
     )
@@ -62,6 +73,10 @@ def read_evaluate_model(
     field_sources = {}
     changes: Differences = {}
     shared = None
+
+    def located(problem: ProjectDiagnostic) -> ProjectDiagnostic:
+        return replace(problem, step=key.step, row=key.row, variant=key.variant)
+
     if upstream := evaluate_subject(definition):
         producer, provenance = upstream
         source = evaluate_value_source(provenance)
@@ -75,15 +90,22 @@ def read_evaluate_model(
                 raise ProjectFolderInvalid("The selected run does not use this Model.")
             if document and read and (model := selected_model(train, document)) is not None:
                 own = selected_model(definition, read)
-                shared, changes = _document_changes(snapshot.project, document, read, own)
-                try:
-                    model = apply_differences(model, changes)
-                except DifferenceNotApplied as error:
-                    raise ProjectFolderInvalid(f"{read} does not apply to the trained model: {error}") from error
-                resolved = resolve_effective_model(
-                    ModelDocument.model_validate(model), components or folders.components,
-                    differences, functions=folders.functions,
-                )
+                changes_from_shared = _document_changes(snapshot.project, document, read, own)
+                if isinstance(changes_from_shared, ProjectDiagnostic):
+                    if not any(problem.path == EVALUATION_MODEL for problem in problems):
+                        problems.append(located(changes_from_shared))
+                else:
+                    shared, changes = changes_from_shared
+                    try:
+                        resolved = resolve_effective_model(
+                            ModelDocument.model_validate(apply_differences(model, changes)),
+                            components or folders.components, differences, functions=folders.functions,
+                        )
+                    except (DifferenceNotApplied, ModelCompilationProblem) as error:
+                        problems.append(located(ProjectDiagnostic(
+                            ResolutionCode.INVALID_DOCUMENT, EVALUATION_MODEL, str(error), document=read,
+                            model_address=error.address if isinstance(error, ModelCompilationProblem) else None,
+                        )))
                 for batch, records in effective.items():
                     for index, record in enumerate(records):
                         site = ("payload", MODEL_ATTACHMENTS, batch, str(index))
@@ -100,27 +122,33 @@ def read_evaluate_model(
         source=source,
         field_sources=field_sources,
         changed_from=shared,
+        problems=[
+            StudioProjectWindowMapProblem.from_diagnostic(problem, declaration=project_declaration_name(project_id))
+            for problem in problems
+        ],
     ), changes, shared)
 
 
 def _document_changes(
     project: Project, subject: str, read: str, own: object = None,
-) -> tuple[str | None, Differences]:
+) -> tuple[str | None, Differences] | ProjectDiagnostic:
     """The nearest document the read one shares with the subject's, and the run's copy of it, ``own`` when the run
     reads one, differs from it by."""
     if read == subject and own is None:
         return None, {}
     shared = nearest_shared_base(project.documents, subject, read)
     if shared is None:
-        raise ProjectFolderInvalid(f"{read} shares no document with {subject}.")
+        return ProjectDiagnostic(
+            ResolutionCode.BAD_REFERENCE, EVALUATION_MODEL, f"{read} shares no document with {subject}.", document=read,
+        )
     composed = [compose_document(project.documents.get, name) for name in (shared, read)]
     if bad := next((entry for entry in composed if isinstance(entry, ProjectDiagnostic)), None):
-        raise ProjectFolderInvalid(bad.detail)
+        return replace(bad, path=EVALUATION_MODEL, document=read)
     changes = diff(composed[0].payload, own if isinstance(own, dict) else composed[1].payload)
     return (shared if changes or read != subject else None), changes
 
 
-def _editable(plan: ProjectPlan, key: RunKey, body: EvaluateModelRequest) -> bool:
+def _editable(plan: ProjectPlan, key: RunKey, body: EvaluateModelRequest, *, has_problem: bool) -> bool:
     scope = body.scope
     rows = {row.key: row for row in plan.rows if row.key.step == key.step}
     editable = True
@@ -136,6 +164,8 @@ def _editable(plan: ProjectPlan, key: RunKey, body: EvaluateModelRequest) -> boo
         selected = {item for item in rows if item.variant == scope.variant}
     else:
         selected = set(rows)
+        if not selected and has_problem:
+            return False
     if key not in selected:
         raise ProjectFolderInvalid("The selected run is outside the selection.")
     return editable

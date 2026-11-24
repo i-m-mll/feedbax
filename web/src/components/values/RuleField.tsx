@@ -4,6 +4,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 're
 import { studioName } from '@/components/activity/studioVocabulary';
 import { FieldProblem } from '@/components/ui/FieldProblem';
 import { FieldRow } from '@/components/ui/FieldRow';
+import { TermText } from '@/components/ui/TextField';
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger, MenuItem } from '@/components/ui/Menu';
 import { usePopupLayer } from '@/components/ui/popupLayer';
 import { fieldBox, fieldInput, popupItem, popupSurface, primaryText } from '@/components/ui/styles';
@@ -11,6 +12,12 @@ import { contextMenuKey } from '@/components/pipeline/CommandContextMenu';
 import { rulePickSurface } from '@/features/projectWindow/elementSelection';
 import { useDraft } from '@/hooks/useDraft';
 import { ruleCompletions, type RuleCompletion, type RuleVocabulary } from './runRule';
+
+/** A rule's problem, and the term it is about in the text it is about, drawn while the field shows that text. */
+export interface RuleFieldProblem {
+  readonly reason: string;
+  readonly term?: { readonly text: string; readonly start: number; readonly end: number };
+}
 
 /** A command on the field's menu. */
 export interface RuleFieldCommand {
@@ -28,8 +35,8 @@ export interface RuleFieldProps {
   count?: string;
   /** The rows To Rows pinned beside the rule, by name. */
   pinned?: readonly string[];
-  /** Why the rule, or the last one committed, is refused, or why the saved rule chooses nothing. */
-  problem?: string;
+  /** Why the rule being written, or the saved one, does not choose runs, with the term of that text it is about. */
+  problem?: RuleFieldProblem;
   disabled?: boolean;
   commands?: readonly RuleFieldCommand[];
   /** While runs are picked for the rule, what the picked runs write: the rule's text, or the rows they pin; a new object for each pick. */
@@ -55,7 +62,8 @@ export function RuleField({
   const [caret, setCaret] = useState(value.length);
   const [focused, setFocused] = useState(false);
   const [dismissed, setDismissed] = useState(false);
-  const input = useRef<HTMLInputElement>(null);
+  const input = useRef<HTMLInputElement | null>(null);
+  const [element, setElement] = useState<HTMLInputElement | null>(null);
   const highlighted = useRef<RuleCompletion>();
   const placed = useRef<number>();
   const box = useRef<HTMLDivElement>(null);
@@ -117,10 +125,12 @@ export function RuleField({
     if (!disabled && draft.trim() !== value.trim()) onCommit(draft.trim());
   }
   const shownPinned = picked ? picked.pinned : pinned;
-  const field = <div ref={box} className={clsx(fieldBox, 'min-w-0')}>
-    <Autocomplete.Input ref={input} id={id} disabled={disabled} spellCheck={false} autoComplete="off"
+  const term = problem?.term && problem.term.text === draft && problem.term.end <= draft.length
+    ? { ...problem.term, reason: problem.reason } : undefined;
+  const field = <div ref={box} className={clsx(fieldBox, 'min-w-0', term && 'relative')}>
+    <Autocomplete.Input ref={(node: HTMLInputElement | null) => { input.current = node; setElement(node); }} id={id} disabled={disabled} spellCheck={false} autoComplete="off"
       aria-invalid={problem !== undefined || undefined} aria-describedby={problem ? `${id}-problem` : undefined}
-      className={clsx(fieldInput, 'font-mono')}
+      className={clsx(fieldInput, 'font-mono', term && 'text-transparent caret-shell-foreground')}
       onSelect={(event) => setCaret(event.currentTarget.selectionStart ?? draft.length)}
       onFocus={() => { setFocused(true); setDismissed(true); onDraft?.(draft); }}
       onBlur={() => { setFocused(false); onDraft?.(null); commit(); }}
@@ -138,7 +148,8 @@ export function RuleField({
     {shownPinned?.length
       ? <span className="shrink-0 pr-1 text-shell-muted" aria-description={shownPinned.join(', ')}>{studioName('rows')}</span> : null}
     {count ? <span className="shrink-0 pr-control-inline tabular-nums text-shell-muted">{count}</span> : null}
-    {problem && <FieldProblem reason={problem} id={`${id}-problem`} className="mr-1" />}
+    {term && element && <TermText input={element} text={draft} term={term} />}
+    {problem && <FieldProblem reason={problem.reason} id={`${id}-problem`} className="mr-1" />}
   </div>;
   return <FieldRow label={label} htmlFor={id}>
     <Autocomplete.Root items={completions} filter={null} value={draft} mode="list"
