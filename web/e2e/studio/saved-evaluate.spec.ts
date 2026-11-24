@@ -536,8 +536,11 @@ test('authors checkpoint rules and replays covered updates from Results', { tag:
   await expect(kind).toHaveText('Every');
   await expect(every).toHaveValue('2');
   await pick(kind, 'List');
-  await updates.fill('2, 2');
-  await updates.press('Enter');
+  const held = await saved(async () => {
+    await updates.fill('2, 2');
+    await updates.press('Enter');
+  });
+  expect(held.project.steps!.evaluate.inputs?.subject).toMatchObject({ checkpoint: { kind: 'unresolved', text: '2, 2' } });
   await expect(updates).toHaveAttribute('aria-invalid', 'true');
   await expect(updates).toHaveAccessibleDescription(/\S/);
   await expect(checkpoint.getByRole('img', { name: 'Problem', exact: true })).toBeVisible();
