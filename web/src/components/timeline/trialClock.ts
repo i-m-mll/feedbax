@@ -125,6 +125,15 @@ export const samePick = (a: TrialPick | undefined, b: TrialPick | undefined) =>
   !!a && !!b && a.trials === b.trials && a.showing.kind === b.showing.kind &&
   (a.showing.kind === 'all' || a.showing.index === (b.showing as { index: number }).index);
 
+/** The frame of `frameTimes` nearest `time`, which views read a trial's values at. */
+export function frameAt(frameTimes: readonly number[], time: number): number {
+  let best = 0;
+  for (let index = 1; index < frameTimes.length; index += 1) {
+    if (Math.abs(frameTimes[index] - time) < Math.abs(frameTimes[best] - time)) best = index;
+  }
+  return best;
+}
+
 /** The playhead: the time, in seconds, in the trial `scope` names. It is saved nowhere. */
 interface Playhead {
   readonly scope: string;

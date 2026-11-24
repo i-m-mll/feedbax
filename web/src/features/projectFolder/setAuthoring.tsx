@@ -14,6 +14,8 @@ import { documentPayload } from './documentPayload';
 import type { ProjectEditController } from './projectEditController';
 import { unvalued } from './projectWindowPlan';
 import type { Refusal } from './refusals';
+import { sendWithStore, type AskStore } from './storeChoice';
+import { editedElement } from '@/components/ui/ChoiceMenu';
 import { filesRemoval, type ConfirmRunRemoval } from './runRemoval';
 import { documentTreeOf } from './useProjectDocuments';
 
@@ -31,6 +33,8 @@ export interface SetAuthoringInputs {
   readonly state: () => PipelineSelectionState;
   readonly select: (state: PipelineSelectionState) => void;
   readonly confirmRemoval: ConfirmRunRemoval;
+  /** Asks where an edit that reaches beyond the selection is written. */
+  readonly ask: AskStore;
 }
 
 /** The authored axis of a step's sweep, when the step authors it. */
@@ -44,13 +48,17 @@ function runKey(run: PlanRunView) {
   return { variant, step, row };
 }
 
-export function setAuthoring({ editor, project, applies, perform, state, select, confirmRemoval }: SetAuthoringInputs) {
+export function setAuthoring({ editor, project, applies, perform, state, select, confirmRemoval, ask }: SetAuthoringInputs) {
   const refuseStep = (step: string) => (reason: string): Refusal => ({ kind: 'step', step, reason });
 
   /** Stores the edit `command` makes; one that removes runs first asks when some of them cost a confirmation. */
   async function store(name: string, command: SetCommand, removes = false): Promise<StudioSetEdit | undefined> {
     const { saved } = editor.getSnapshot();
-    const edit = await prepareSetEdit(saved.project_id, { revision: saved.revision, command }, editor.signal);
+    const from = document.activeElement;
+    const edit = await sendWithStore(ask, () => editedElement(from, from), () => editor.flush(),
+      (store_choice) => prepareSetEdit(saved.project_id, { revision: saved.revision, command, store_choice }, editor.signal),
+      (answer) => answer.store_choices);
+    if (!edit) return undefined;
     if (removes && !await confirmRemoval(filesRemoval(saved.project_id, edit.revision, edit.files, editor.signal))) return undefined;
     const stored = await editor.storeEdit(name, { files: edit.files, created: edit.created }, { reviewedRevision: edit.revision });
     if (stored.status === 'refused') throw stored.error;
@@ -90,13 +98,14 @@ export function setAuthoring({ editor, project, applies, perform, state, select,
 
   /**
    * Save Set and Inline Set on a step's authored axis, which convert between its values and the Model differences of a
-   * Set and so apply only while the step reads a Model document (`model`), and Add Entry on an axis whose Set has no
-   * entries (`empty`), which Duplicate Run cannot copy one of.
+   * Set and so apply only while the step reads a Model document (`model`); Add Entry on an axis whose Set has no
+   * entries (`empty`), which Duplicate Run cannot copy one of; and To Field on a Train's Set axis, which moves the Set
+   * into the run's trials.
    */
   function axisCommands(step: string, axis: string, { model, empty }: { model: boolean; empty: boolean }): StudioCommand[] {
     const read = authoredAxis(project, step, axis);
     if (!read) return [];
-    const command = (id: 'saveSet' | 'inlineSet' | 'addEntry', edit: SetCommand, enabled = applies) => bindStudioCommand(id, () => {
+    const command = (id: 'saveSet' | 'inlineSet' | 'addEntry' | 'toField', edit: SetCommand, enabled = applies) => bindStudioCommand(id, () => {
       void perform(async () => {
         const stored = await store(studioAccessibleName(id, axis), edit);
         if (stored?.selected) select(selectSweepValue(state(), step, stored.selected.axis, stored.selected.value));
@@ -107,7 +116,17 @@ export function setAuthoring({ editor, project, applies, perform, state, select,
     return [
       ...empty ? [command('addEntry', { kind: 'add_set_entry', step, axis })] : [],
       command('inlineSet', { kind: 'inline_set', step, axis }, applies && model),
+      ...project.steps?.[step]?.kind === 'train' ? [command('toField', { kind: 'set_to_field', step, axis })] : [],
     ];
+  }
+
+  /** Moves a Set the step's trials apply back to the sweep axis `axis`, whose runs it was moved out of. */
+  function toSweep(step: string, axis: string): StudioCommand {
+    return bindStudioCommand('toSweep', () => {
+      void perform(async () => {
+        await store(studioAccessibleName('toSweep', axis), { kind: 'set_to_sweep', step, axis });
+      }, refuseStep(step));
+    }, { subject: axis, instance: JSON.stringify([step, axis]), enabled: applies });
   }
 
   /**
@@ -221,7 +240,7 @@ export function setAuthoring({ editor, project, applies, perform, state, select,
     };
   }
 
-  return { duplicateRun, axisCommands, removeValue, axisPicker, applySet, combination };
+  return { duplicateRun, axisCommands, toSweep, removeValue, axisPicker, applySet, combination };
 }
 
 export type SetAuthoring = ReturnType<typeof setAuthoring>;

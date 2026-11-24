@@ -3,7 +3,7 @@ import { type Page } from '@playwright/test';
 import type { ModelDocument, ModelEditResponse, StudioProjectDocument } from '../../src/generated/studioContracts';
 import { chooseSweepValue, enter, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
-import { outlineRow, pick, placeFromLibrary } from './fixtures/controls';
+import { modelEdit, outlineRow, pick, placeFromLibrary } from './fixtures/controls';
 import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
@@ -206,7 +206,8 @@ test('an Evaluate attachment for the step is stored in a document based on the s
     new URL(response.url()).pathname === `${projectPath}/model/edit`);
   await outlineRow(page, 'Cell.output → Readout.input').click();
   await inspector.getByRole('button', { name: 'Add Attachment', exact: true }).click();
-  const [added] = await Promise.all([edited(), page.getByRole('menuitem', { name: 'Add Intervention', exact: true }).click()]);
+  const added = await modelEdit(page, projectPath,
+    () => page.getByRole('menuitem', { name: 'Add Intervention', exact: true }).click(), 'Selected Readers');
   expect(added.ok(), await added.text()).toBe(true);
   expect(added.request().postDataJSON()).toMatchObject({ step: 'baseline', command: { operation: { op: 'set_attachment' } } });
   const { result } = await added.json() as { result: { created: string[] } };

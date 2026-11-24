@@ -72,7 +72,7 @@ test('selecting a Weight cell that holds a draw shows its parts in the Inspector
   await cell.click();
   await expect(inspector.getByRole('textbox', { name: 'Low', exact: true })).toHaveValue('0.5');
   await expect(inspector.getByRole('textbox', { name: 'High', exact: true })).toHaveValue('2');
-  await expect(table.getByRole('img', { name: 'Weight kind: Draw', exact: true })).toBeVisible();
+  await expect(table.getByRole('button', { name: 'Weight kind: Draw', exact: true })).toBeVisible();
   await expect(table.getByRole('img', { name: 'Weight density', exact: true })).toHaveCount(0);
 
   await enter(inspector.getByRole('textbox', { name: 'Low', exact: true }), '1');
