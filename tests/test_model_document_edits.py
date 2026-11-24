@@ -513,3 +513,35 @@ def test_library_previews_the_same_reason_as_an_unplaceable_template_edit(tmp_pa
         assert result["status"] == "refused"
         assert result["problem"] == {"address": graph, "detail": reason}
         assert project.snapshot()["revision"] == before["revision"]
+
+
+def test_insert_registered_template_routes_the_wire_through_its_composite_ports(tmp_path):
+    """Inserting a template must splice its real input and output into the targeted wire."""
+    data = _data()
+    data["steps"] = {}
+    source = {"owner": "inputs", "port": "in"}
+    target = {"owner": "outputs", "port": "out"}
+    data["documents"]["model"]["payload"] = {
+        "step_seconds": 0.01,
+        "ports": {
+            "inputs": [{"id": "in", "name": "Input", "type": {}}],
+            "outputs": [{"id": "out", "name": "Output", "type": {}}],
+        },
+        "interior": {"wires": {"straight": {"source": source, "target": target}}},
+    }
+    project = _Project(tmp_path, data)
+    with project.client:
+        project.edit({
+            "op": "insert_component", "address": {"composites": [], "element": {"kind": "wire", "id": "straight"}},
+            "id": "controller", "component": {"kind": "definition", "definition": "feedbax.CDEDecay"},
+            "input_port": "obs", "output_port": "h_new", "position": {"x": 20, "y": 30},
+        })
+
+    interior = project.composed("model")["interior"]
+    component = interior["components"]["controller"]
+    assert component["kind"] == "composite" and "decay" in component["interior"]["components"]
+    assert interior["wires"]["straight"]["source"] == {"owner": "component", "component": "controller", "port": "h_new"}
+    assert interior["wires"]["straight"]["target"] == target
+    (incoming,) = [wire for key, wire in interior["wires"].items() if key != "straight"]
+    assert incoming["source"] == source
+    assert incoming["target"] == {"owner": "component", "component": "controller", "port": "obs"}
