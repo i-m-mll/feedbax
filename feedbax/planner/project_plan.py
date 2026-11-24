@@ -2704,11 +2704,11 @@ class _Compiler:
                 components=self.components or _builtin_model_registry(),
             )
             refusal = None
-            if any(target[0] == "task" for target in variant.edit_origins):
+            if settings.input_bindings or any(target[0] == "task" for target in variant.edit_origins):
                 pairing = pair_trial_source(
                     documents.model, variant.task,
                     self.components or _builtin_model_registry(), self.functions or _builtin_expression_registry(),
-                    python_tasks=self.python_tasks, input_bindings=documents.input_bindings,
+                    python_tasks=self.python_tasks, input_bindings=documents.input_bindings | settings.input_bindings,
                     graph_override=variant.graph,
                 )
                 problems = pairing if isinstance(pairing, tuple) else pairing.problems

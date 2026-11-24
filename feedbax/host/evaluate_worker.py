@@ -173,10 +173,11 @@ def resolve_rollout(
     validate_evaluation_source(source_graph, registry.components)
     variant = resolve_evaluation_variant(source_graph, task, params.variation, components=registry.components)
     paired = source_pair
-    if variant.graph != source_graph or variant.task != task:
+    varied_bindings = input_bindings | params.input_bindings
+    if variant.graph != source_graph or variant.task != task or varied_bindings != input_bindings:
         varied = prepare_model_task(
             initial, variant.task, objective=objective, objective_use=ObjectiveUse.INHERITED,
-            input_bindings=input_bindings, registry=registry, artifacts=model_assets, graph_override=variant.graph,
+            input_bindings=varied_bindings, registry=registry, artifacts=model_assets, graph_override=variant.graph,
         )
         if isinstance(varied, tuple):
             raise variant.task_refusal(varied[0])

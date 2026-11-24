@@ -62,7 +62,7 @@ def _prepare_request(request, registry) -> PreparedTrialExecution:
     paired = compile_trial_execution(
         documents.model, documents.task_source,
         registry.components, registry.expression_functions, python_tasks=registry.python_tasks,
-        objective=documents.objective, input_overrides=documents.input_overrides,
+        objective=documents.objective, input_bindings=documents.input_bindings,
         initialization_key=model_initialization_key(request.seed or 0),
     )
     assert isinstance(paired, PreparedTrialExecution), paired
@@ -970,7 +970,7 @@ def test_nested_model_plans_with_stable_identity_and_compiles():
     assert graph.nodes["wrapper"].nodes["controller"].nodes["cell"].cell.weight_ih.shape[1] == 2
 
     documents = raw["steps"]["train"]["base"]["inline"]["trial_documents"]
-    documents.pop("input_overrides")
+    documents.pop("input_bindings")
     raw["documents"]["reach-model"]["payload"]["ports"]["inputs"][0]["name"] = "unknown"
     refused = compile_project(Project.model_validate(raw))
     (problem,) = [problem for row in refused.rows if row.key.step == "train" for problem in row.problems]
@@ -989,7 +989,7 @@ def _use_initial_evaluation(raw):
         "task": {"kind": "task", "source": trial["task"]},
         "objective": {"kind": "objective", "source": trial["objective"]},
     }
-    evaluation["base"]["inline"]["params"]["input_overrides"] = dict(trial["input_overrides"])
+    evaluation["base"]["inline"]["params"]["input_bindings"] = dict(trial["input_bindings"])
 
 
 def test_unresolved_relative_link_is_reported_at_the_task():
@@ -1801,11 +1801,6 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
 
     model = raw["documents"][model_name]["payload"]
     model["ports"]["inputs"][0]["name"] = "renamed_reach_target"
-    overrides = raw["steps"]["train"]["base"]["inline"]["trial_documents"]["input_overrides"]
-    overrides["renamed_reach_target"] = overrides.pop("reach_target")
-    if not grouped:
-        overrides = raw["steps"]["baseline"]["base"]["inline"]["params"]["input_overrides"]
-        overrides["renamed_reach_target"] = overrides.pop("reach_target")
     _save_project(folders, project, Project.model_validate(raw))
     changed = reopened.read_plan(project, revision=None)
     assert not changed.plan.diagnostics

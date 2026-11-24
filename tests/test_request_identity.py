@@ -134,7 +134,7 @@ def test_inline_trial_memo_preserves_canonical_requests_and_window_facts():
         assert compare(spec, inputs).id != prior.id
 
     prior = compare(spec, inputs)
-    spec.trial_documents.input_overrides["extra"] = "different"
+    spec.trial_documents.input_bindings["extra"] = "different"
     assert compare(spec, inputs).id != prior.id
 
 
@@ -151,7 +151,7 @@ def test_inline_trial_memo_keeps_canonical_error_precedence_and_paths():
     assert raised.value.path == "/inputs/checkpoint/0/reference/size"
 
     malformed = spec.model_copy(update={"trial_documents": spec.trial_documents.model_copy(
-        update={"input_overrides": {"target": "\ud800"}},
+        update={"input_bindings": {"target": "\ud800"}},
     )})
     for document_memo in (None, memo):
         with pytest.raises(CanonicalJsonError) as raised:
@@ -160,9 +160,9 @@ def test_inline_trial_memo_keeps_canonical_error_precedence_and_paths():
         assert raised.value.code == CanonicalJsonErrorCode.LONE_SURROGATE
     assert encode_request(spec, {}, document_memo=memo, capture_train_task=True) == first
 
-    spec.trial_documents.input_overrides["1"] = "target"
+    spec.trial_documents.input_bindings["1"] = "target"
     encode_request(spec, {}, document_memo=memo, capture_train_task=True)
-    spec.trial_documents.input_overrides[1] = spec.trial_documents.input_overrides.pop("1")
+    spec.trial_documents.input_bindings[1] = spec.trial_documents.input_bindings.pop("1")
     with pytest.raises(CanonicalJsonError) as raised:
         encode_request(spec, {}, document_memo=memo, capture_train_task=True)
     assert raised.value.code == CanonicalJsonErrorCode.NON_STRING_KEY
