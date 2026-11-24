@@ -217,7 +217,7 @@ def _bind_carries(graph: Graph, authored: GraphSpec, scope: tuple[str, ...]) -> 
         state = next((
             state for state in facts.states or ()
             if state.reset is not None and state.symbol == initializer.get("state_slot")
-            and state.reset.output_port == wire.source_port
+            and state.prototype[0] == wire.source_port
             and state.reset.override_port == wire.target_port
         ), None) if facts is not None else None
         if (

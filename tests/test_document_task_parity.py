@@ -69,7 +69,7 @@ PORTLESS = ResolvedModelInterface(PERIOD, (), (), (), ())
 def reset_position(interface):
     return next(
         field.address for field in interface.reset.fields
-        if field.address.element.path == ("reset", "effector", "position")
+        if field.address.element.path == ("state", "effector/position")
     )
 
 
@@ -574,10 +574,10 @@ def test_temporal_variable_can_leave_a_cell_absent(functions):
 
 def test_nested_reset_updates_observations_and_delay_queues():
     interface, graph = _pair_model(writable_gru=True)
-    field, = (field for field in interface.reset.fields if field.address.composites)
-    assert field.address.composites == ("wrapper", "controller")
-    assert field.address.element.path == ("reset", "hidden")
-    identifier = field.address.to_text()
+    scope = ("wrapper", "controller")
+    identifier = ModelAddress.at_state(scope, "cell", "hidden").to_text()
+    output_id = ModelAddress.at_state(scope, "cell", "output").to_text()
+    field = next(field for field in interface.reset.fields if field.address.to_text() == identifier)
     key = jr.key(32)
     hidden = jnp.ones(field.type.shape, dtype=jnp.int32)
     reset = interface.reset.prepare(graph, {identifier: hidden}, key=key)
@@ -590,25 +590,43 @@ def test_nested_reset_updates_observations_and_delay_queues():
     np.testing.assert_array_equal(reset.outputs["hidden"], hidden)
     carry = reset.cycle_init["__nested__", "wrapper"]["__nested__", "controller"]
     np.testing.assert_array_equal(carry["readout", "input"], jnp.stack((hidden, hidden)))
+    explicit = interface.reset.prepare(graph, {identifier: hidden, output_id: hidden + 2}, key=key)
+    np.testing.assert_array_equal(cell.state_view(explicit.state).hidden, hidden)
+    np.testing.assert_array_equal(explicit.outputs["hidden"], hidden + 2)
+    explicit_carry = explicit.cycle_init["__nested__", "wrapper"]["__nested__", "controller"]
+    np.testing.assert_array_equal(explicit_carry["readout", "input"], jnp.stack((hidden + 2, hidden + 2)))
     default = interface.reset.prepare(graph, {}, key=key)
     np.testing.assert_array_equal(cell.state_view(default.state).hidden, 0)
     renamed, _ = _pair_model(writable_gru=True, rename=True)
     assert renamed.reset.fields == interface.reset.fields
 
 
+def test_scalar_distance_initializes_both_coordinates(functions, paired_model):
+    interface, graph = paired_model
+    doc, _ = example("simple", functions, interface=interface)
+    start, target = doc.variables
+    start = start.model_copy(update={
+        "type": ValueType(base=ValueBase.REAL, dimensions=LENGTH), "value": expression("0.25 m"),
+    })
+    task = compile_task(
+        doc.model_copy(update={"variables": (start, target)}), functions,
+        model=interface, input_overrides={"reach_target": "target_pos"},
+    )
+    assert isinstance(task, DocumentTask), task
+    key = jr.key(0)
+    trial = task.ahead(TaskParameters(), key, key)
+    reset = interface.reset.prepare(graph, trial.inits, key=key)
+    np.testing.assert_array_equal(graph.nodes["plant"].state_view(reset.state).effector.pos, [0.25, 0.25])
+
+
 def test_writable_reset_fields_refuse_read_only_shapes_and_dtypes(paired_model):
     interface, graph = paired_model
     writable = reset_position(interface)
-    unsupported = writable.model_copy(update={"element": writable.element.model_copy(update={
-        "path": ("reset", "effector", "force"),
-    })})
-    assert {field.address.element.path for field in interface.reset.fields} == {
-        ("reset", "effector", "position"), ("reset", "effector", "velocity"),
-    }
+    unsupported = ModelAddress.at_state((), "plant", "effector/acceleration")
     key = jr.key(0)
     for address, value, message in (
         (unsupported, [0.0, 0.0], "not a declared writable"),
-        (writable, [1.0], "shape"),
+        (writable, [[1.0, 2.0]], "shape"),
         (writable, [True, False], "real"),
     ):
         with pytest.raises(ModelResetError, match=message) as error:
@@ -624,8 +642,8 @@ def test_trial_configuration_changes_force_without_mutating_model():
     }
     key = jr.key(11)
     updates = {
-        ("reset", "effector", "position"): [0.5, -0.25],
-        ("reset", "effector", "velocity"): [2.0, 1.0],
+        ("state", "effector/position"): [0.5, -0.25],
+        ("state", "effector/velocity"): [2.0, 1.0],
         ("fields", "active"): True,
         ("fields", "scale"): 2,
         ("fields", "amplitude"): 3,
@@ -635,8 +653,8 @@ def test_trial_configuration_changes_force_without_mutating_model():
     plant = graph.nodes["plant"]
     curl = graph.nodes["curl"]
     effector = plant.state_view(reset.state).effector
-    np.testing.assert_array_equal(effector.pos, updates["reset", "effector", "position"])
-    np.testing.assert_array_equal(effector.vel, updates["reset", "effector", "velocity"])
+    np.testing.assert_array_equal(effector.pos, updates["state", "effector/position"])
+    np.testing.assert_array_equal(effector.vel, updates["state", "effector/velocity"])
     inputs = {"effector": effector, "force": jnp.zeros((2,), dtype=jnp.float32)}
     active, _ = curl(inputs, reset.state, key=key)
     default = interface.reset.prepare(graph, {}, key=key)

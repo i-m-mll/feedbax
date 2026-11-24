@@ -1,6 +1,7 @@
 """A task document's structure is changed by the service, and the document it leaves compiles."""
 
 from feedbax.contracts.expression_values import ValueType
+from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.studio_trials import StudioTrialAuthoring
 from feedbax.contracts.expression_values import LiteralValue
 from feedbax.contracts.task_document import BLANK_TASK, TaskDocument
@@ -9,10 +10,7 @@ from tests.test_model_document_edits import _URL, _Project
 from tests.test_task_document_fields import _save
 
 TASK = "delayed-reaches-task"
-LINKED = (
-    '{"composites":[],"element":{"kind":"field","parent":{"id":"plant","kind":"component"},'
-    '"path":["reset","effector","position"]}}'
-)
+LINKED = ModelAddress.at_state((), "plant", "effector/position").to_text()
 DURATION = {"base": "real", "dimensions": {"time": 1}}
 
 
@@ -82,6 +80,10 @@ def test_a_variable_added_for_a_model_start_initializes_it_in_the_same_edit(tmp_
     """Catches naming a Model start that writes the variable without its link, or leaves the start linked twice."""
     project = _project(tmp_path)
     with project.client:
+        resets = {item.address.to_text(): item for item in _change(project, None).resets}
+        skeleton = resets[ModelAddress.at_state((), "plant", "skeleton/position").to_text()]
+        assert skeleton.path == ("Point mass", "skeleton", "position")
+        assert skeleton.type == ValueType.model_validate(POINT) and not skeleton.required
         change = {"op": "add", "member": "variable", "name": "origin", "type": POINT, "initializes": [LINKED]}
         assert _made(project, change) == []
         task = project.composed(TASK)

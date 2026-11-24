@@ -776,7 +776,7 @@ def compile_task(
             )
         elif link.variable in broken:
             problem(ProblemCode.UNKNOWN_NAME, f"{variable.name!r} has problems.", path, link.variable)
-        elif variable.list_count is not None or variable.level > target.finest or not target.type.accepts(variable.type):
+        elif variable.list_count is not None or variable.level > target.finest or not target.accepts(variable.type):
             problem(ProblemCode.TYPE_MISMATCH, f"{variable.name} does not fit its Model field.", path, link.variable)
         elif link.model_field in links:
             problem(
