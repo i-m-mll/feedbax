@@ -1,5 +1,6 @@
 {
   "schema": "feedbax.spec.objective_document",
+  "label": "Stabilization",
   "payload": {
     "id": "stabilization",
     "terms": [
