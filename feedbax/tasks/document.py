@@ -46,6 +46,7 @@ from feedbax.contracts.expression_check import dependency_order
 from feedbax.expression_compile import Compiled, Inputs, compile_expression
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.contracts.rollout import trial_indices
+from feedbax.contracts.trial_bindings import selected_signal_id
 from feedbax.runtime._graph_key_schedule import map_trial_samples, validation_trial_keys
 from feedbax.runtime.epoch_windows import EpochRecord, in_epoch
 
@@ -146,7 +147,7 @@ class _Cell:
 
 @dataclass(frozen=True)
 class _Signal:
-    name: str
+    id: str
     absent: _Field
     cells: tuple[_Cell, ...]
 
@@ -329,34 +330,37 @@ def zero(base, shape) -> Expression:
 def bind_task_inputs(
     model: ResolvedModelInterface,
     signals: tuple[ScopedValue, ...],
-    input_overrides: Mapping[str, str] | None,
+    input_bindings: Mapping[str, str | None] | None,
 ) -> tuple[tuple[tuple[str, str], ...], tuple[Problem, ...]]:
-    """Resolve model input names to task signal names and describe refused bindings."""
+    """Resolve runtime input names to stable signal IDs and report invalid bindings."""
     problems = []
-
     bindings = []
-    signal_names = {value.name: value for value in signals}
-    overrides = input_overrides or {}
+    by_id = {value.id: value for value in signals}
+    by_name = {value.name: value.id for value in signals}
+    authored = input_bindings or {}
     for port in model.inputs:
-        signal_name = overrides.get(port.name, port.name)
-        signal = signal_names.get(signal_name)
+        signal_id = selected_signal_id(port.root_id, port.name, by_name, authored)
+        signal = by_id.get(signal_id) if signal_id is not None else None
         path = ("model", "inputs", port.id)
         if signal is None:
-            if port.required or port.name in overrides:
-                problems.append(Problem(
-                    code=ProblemCode.UNKNOWN_NAME,
-                    reason=f"Model input {port.name!r} reads signal {signal_name!r}, which the Task does not declare.",
-                    path=path, model_address=port.address,
-                ))
+            if signal_id is not None:
+                reason = f"Model input {port.name!r} reads undeclared signal ID {signal_id!r}."
+            elif port.required:
+                reason = f"Model input {port.name!r} needs a Task signal."
+            else:
+                continue
+            problems.append(Problem(
+                code=ProblemCode.UNKNOWN_NAME, reason=reason, path=path, model_address=port.address,
+            ))
         elif not port.type.accepts(signal.type):
             problems.append(Problem(
                 code=ProblemCode.TYPE_MISMATCH,
-                reason=f"Signal {signal_name!r} does not fit model input {port.name!r}.",
+                reason=f"Signal {signal.name!r} does not fit model input {port.name!r}.",
                 path=path, model_address=port.address,
             ))
         else:
-            bindings.append((port.name, signal.name))
-    for port in sorted(overrides.keys() - {item.name for item in model.inputs}):
+            bindings.append((port.name, signal.id))
+    for port in sorted(authored.keys() - {item.root_id for item in model.inputs}):
         problems.append(Problem(
             code=ProblemCode.UNKNOWN_NAME, reason=f"{port!r} is not an input of the Model.",
             path=("model", "inputs", port),
@@ -370,7 +374,7 @@ def compile_task(
     functions: FunctionRegistry,
     *,
     model: ResolvedModelInterface,
-    input_overrides: Mapping[str, str] | None = None,
+    input_bindings: Mapping[str, str | None] | None = None,
     sites: dict[tuple[str | int, ...], Site] | None = None,
 ) -> DocumentTask | tuple[Problem, ...]:
     """Compile a bounded ahead-of-rollout task from resolved model field types, or every independent Problem.
@@ -586,13 +590,13 @@ def compile_task(
             if code is not None:
                 cells.append(_Cell(first, last, code))
         if absent is not None:
-            signals.append(_Signal(signal.name, absent, tuple(cells)))
+            signals.append(_Signal(signal.id, absent, tuple(cells)))
         if kept_signals.get(signal.id) is signal:
             declared_signals.append(
                 ScopedValue(id=signal.id, name=signal.name, type=signal.type, level=Level.STEP)
             )
 
-    bindings, input_problems = bind_task_inputs(model, tuple(declared_signals), input_overrides)
+    bindings, input_problems = bind_task_inputs(model, tuple(declared_signals), input_bindings)
     problems.extend(input_problems)
 
     writable = {field.address.to_text(): field for field in model.reset.fields}

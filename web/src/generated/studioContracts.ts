@@ -2261,7 +2261,7 @@ export interface TaskTrialSampleRequest {
   model: ModelDocument;
   task?: TaskDocument | null;
   python_task?: PythonTaskSelection | null;
-  input_overrides?: Record<string, string>;
+  input_bindings?: Record<string, string | null>;
   objective?: ObjectiveDocument | null;
   evaluation_trials?: string[] | null;
   seed?: number;
@@ -4443,7 +4443,6 @@ export type StudioTrialAuthoring = {
   "objective_changed"?: Array<Pointer>;
   "objective": ObjectiveDocument | null;
   "objective_source"?: StudioTrialObjectiveSource | null;
-  "input_overrides"?: Record<string, string>;
   "task_types": Array<StudioTaskType>;
   "tasks": Array<StudioTaskChoice>;
   "variables": Array<ScopedValue>;
@@ -4453,6 +4452,7 @@ export type StudioTrialAuthoring = {
   "n_steps": number | null;
   "batch_size": number | null;
   "reads_model": boolean;
+  "input_bindings": Record<string, string | null>;
   "inputs": Array<StudioTrialInput>;
   "outputs": Array<StudioTrialOutput>;
   "resets": Array<StudioTrialReset>;
@@ -4472,8 +4472,8 @@ export type StudioTrialAuthoringRequest = {
 
 export type StudioTrialBindingEdit = {
   "kind": "binding";
-  "input": ModelAddress;
-  "signal": string | null;
+  "input_id": string;
+  "signal_id": string | null;
 };
 
 export type StudioTrialDocumentEdit = {
@@ -4519,11 +4519,12 @@ export type StudioTrialField = {
 };
 
 export type StudioTrialInput = {
+  "id": string;
   "address": ModelAddress;
   "name": string;
   "type": ValueType | null;
   "required": boolean;
-  "signal": string | null;
+  "signal_id": string | null;
   "explicit": boolean;
 };
 
@@ -4652,7 +4653,7 @@ export type TrialDocuments = {
   "model": ModelDocument;
   "task": TaskDocument | null;
   "objective": ObjectiveDocument;
-  "input_overrides"?: Record<string, string>;
+  "input_bindings"?: Record<string, string | null>;
   "python_task"?: PythonTaskSelection | null;
 };
 
@@ -9330,7 +9331,7 @@ export const TaskTrialSampleRequestSchema: z.ZodType<TaskTrialSampleRequest> = z
       "model": ModelDocumentSchema,
       "task": TaskDocumentSchema.nullable().optional(),
       "python_task": PythonTaskSelectionSchema.nullable().optional(),
-      "input_overrides": z.record(z.string(), z.string()).optional(),
+      "input_bindings": z.record(z.string(), z.string().nullable()).optional(),
       "objective": ObjectiveDocumentSchema.nullable().optional(),
       "evaluation_trials": z.array(z.string()).min(1).nullable().optional(),
       "seed": z.number().int().safe().optional(),
@@ -9339,7 +9340,7 @@ export const TaskTrialSampleRequestSchema: z.ZodType<TaskTrialSampleRequest> = z
     })
     .strict()
     .superRefine((input, ctx) => {
-      const value = { ...{"input_overrides": {}, "seed": 0, "count": 8, "aggregate": false}, ...input };
+      const value = { ...{"input_bindings": {}, "seed": 0, "count": 8, "aggregate": false}, ...input };
       if ((value.task == null) === (value.python_task == null)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -12311,7 +12312,6 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "objective_changed": z.array(PointerSchema).optional(),
     "objective": z.union([ObjectiveDocumentSchema, z.null()]),
     "objective_source": z.union([StudioTrialObjectiveSourceSchema, z.null()]).optional(),
-    "input_overrides": z.record(z.string(), z.string()).optional(),
     "task_types": z.array(StudioTaskTypeSchema),
     "tasks": z.array(StudioTaskChoiceSchema),
     "variables": z.array(ScopedValueSchema),
@@ -12321,6 +12321,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "n_steps": z.union([z.number().int().safe(), z.null()]),
     "batch_size": z.union([z.number().int().safe(), z.null()]),
     "reads_model": z.boolean(),
+    "input_bindings": z.record(z.string(), z.union([z.string(), z.null()])),
     "inputs": z.array(StudioTrialInputSchema),
     "outputs": z.array(StudioTrialOutputSchema),
     "resets": z.array(StudioTrialResetSchema),
@@ -12344,8 +12345,8 @@ export const StudioTrialAuthoringRequestSchema: z.ZodType<StudioTrialAuthoringRe
 export const StudioTrialBindingEditSchema: z.ZodType<StudioTrialBindingEdit> = z.lazy(() =>
   z.object({
     "kind": z.literal("binding"),
-    "input": ModelAddressSchema,
-    "signal": z.union([z.string(), z.null()]),
+    "input_id": z.string(),
+    "signal_id": z.union([z.string(), z.null()]),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialBindingEdit>;
 
@@ -12403,11 +12404,12 @@ export const StudioTrialFieldSchema: z.ZodType<StudioTrialField> = z.lazy(() =>
 
 export const StudioTrialInputSchema: z.ZodType<StudioTrialInput> = z.lazy(() =>
   z.object({
+    "id": z.string(),
     "address": ModelAddressSchema,
     "name": z.string(),
     "type": z.union([ValueTypeSchema, z.null()]),
     "required": z.boolean(),
-    "signal": z.union([z.string(), z.null()]),
+    "signal_id": z.union([z.string(), z.null()]),
     "explicit": z.boolean(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialInput>;
@@ -12582,7 +12584,7 @@ export const TrialDocumentsSchema: z.ZodType<TrialDocuments> = z.lazy(() =>
     "model": ModelDocumentSchema,
     "task": z.union([TaskDocumentSchema, z.null()]),
     "objective": ObjectiveDocumentSchema,
-    "input_overrides": z.record(z.string(), z.string()).optional(),
+    "input_bindings": z.record(z.string(), z.union([z.string(), z.null()])).optional(),
     "python_task": z.union([PythonTaskSelectionSchema, z.null()]).optional(),
   }).strict().superRefine((value, ctx) => { if ((value.task == null) === (value.python_task == null)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Select one Task document or registered Python task." }); })
 ) as unknown as z.ZodType<TrialDocuments>;

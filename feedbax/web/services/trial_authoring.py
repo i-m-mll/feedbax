@@ -42,6 +42,7 @@ from feedbax.contracts.task_document import (
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument, ObjectiveTerm
 from feedbax.contracts.training import TrialDocuments
+from feedbax.contracts.trial_bindings import selected_signal_id
 from feedbax.contracts.expression_check import references
 from feedbax.contracts.expression_site import FieldKind, project_site, read_field
 from feedbax.contracts.expression_text import ParsedField, parse, print_field
@@ -104,7 +105,7 @@ def _project(
         resets.clear()
         paired = pair_trial_source(
             documents.model, task, bundle.components, bundle.expression_functions,
-            python_tasks=bundle.python_tasks, input_overrides=documents.input_overrides,
+            python_tasks=bundle.python_tasks, input_bindings=documents.input_bindings,
             task_sites=sites, graph_override=graph_override, reset_fields=resets,
         )
         return paired, sites
@@ -191,12 +192,13 @@ def _input_address(port: str) -> ModelAddress:
 def _input_rows(documents, projection) -> list[StudioTrialInput]:
     paired = projection.pair
     resolved = {port.id: port.type for port in paired.model.inputs} if paired else {}
-    effective = dict(paired.input_bindings) if paired else {}
+    signals = {signal.name: signal.id for signal in projection.signals}
     return [
         StudioTrialInput(
-            address=address, name=port.name, type=resolved.get(address.to_text()),
-            required=port.default is None, signal=effective.get(port.name),
-            explicit=port.name in documents.input_overrides,
+            id=port.id, address=address, name=port.name, type=resolved.get(address.to_text()),
+            required=port.default is None,
+            signal_id=selected_signal_id(port.id, port.name, signals, documents.input_bindings),
+            explicit=port.id in documents.input_bindings,
         )
         for port in documents.model.ports.inputs
         for address in (_input_address(port.id),)
@@ -403,28 +405,14 @@ def _train_writes(change, project, definition, documents, projection):
             writes.append(_override("trial_documents.python_task", "remove"))
         return writes
     if isinstance(change, StudioTrialBindingEdit):
-        row = next((row for row in _input_rows(documents, projection) if row.address == change.input), None)
+        row = next((row for row in _input_rows(documents, projection) if row.id == change.input_id), None)
         if row is None:
-            raise ProjectFolderInvalid("The address is not a declared Model input for this row.")
-        overrides = dict(documents.input_overrides)
-        if change.signal is None or change.signal == row.name:
-            overrides.pop(row.name, None)
-        else:
-            overrides[row.name] = change.signal
-        present = "input_overrides" in raw
-        if present:
-            path = f"trial_documents.input_overrides.{row.name}"
-            if "." in row.name:
-                raise ProjectFolderInvalid("This input needs a path-safe name for a scoped edit.")
-            if row.name in overrides:
-                op = "replace" if row.explicit else "add"
-                return [_override(path, op, overrides[row.name])]
-            if row.explicit:
-                return [_override(path, "remove")]
-            return []
-        if overrides:
-            return [_override("trial_documents.input_overrides", "add", overrides)]
-        return []
+            raise ProjectFolderInvalid("The ID is not a declared Model input for this row.")
+        if "input_bindings" in raw:
+            return [_override(
+                f"trial_documents.input_bindings.{row.id}", "replace" if row.explicit else "add", change.signal_id,
+            )]
+        return [_override("trial_documents.input_bindings", "add", {row.id: change.signal_id})]
     field, value = _changed_value(documents, definition, change.kind)
     return _value_writes(f"trial_documents.{field}", value, change)
 
@@ -847,15 +835,10 @@ def _validate_files(
             if definition.document_ids.get(path) != change.document:
                 raise ProjectFolderInvalid(f"A selected {change.role} is controlled by a different authored source.")
         elif isinstance(change, StudioTrialBindingEdit):
-            binding = next((row for row in _input_rows(new, after) if row.address == change.input), None)
-            if binding is None:
+            if not any(row.id == change.input_id for row in _input_rows(new, after)):
                 raise ProjectFolderInvalid("A selected run has no addressed input.")
-            expected = dict(old.input_overrides)
-            if change.signal in (None, binding.name):
-                expected.pop(binding.name, None)
-            else:
-                expected[binding.name] = change.signal
-            if expected != new.input_overrides:
+            expected = old.input_bindings | {change.input_id: change.signal_id}
+            if expected != new.input_bindings:
                 raise ProjectFolderInvalid("A selected input is controlled by a different authored source.")
         if not evaluate_field and not keeps_problems and key in previous and key not in current:
             diagnostic = next((
@@ -1038,7 +1021,7 @@ def trial_authoring(
             for name in sorted(snapshot.project.documents)
             if (other := _selected_task(snapshot.project, name)) is not None
         ],
-        inputs=_input_rows(documents, projected),
+        input_bindings=documents.input_bindings, inputs=_input_rows(documents, projected),
         outputs=[StudioTrialOutput(address=ModelAddress.from_text(value.id), value=value)
                  for value in paired.model.outputs] if paired else [],
         resets=[StudioTrialReset(address=field.address, name=task_start(documents.model, field.address).name,

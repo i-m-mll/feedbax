@@ -2340,7 +2340,7 @@ class _Compiler:
         paired = resolve_trial_execution(
             authored.model, authored.task_source,
             components, self.functions or _builtin_expression_registry(),
-            python_tasks=self.python_tasks, objective=authored.objective, input_overrides=authored.input_overrides,
+            python_tasks=self.python_tasks, objective=authored.objective, input_bindings=authored.input_bindings,
         )
         result: _TrainPreparation | tuple[Problem, ...]
         if isinstance(paired, tuple):
@@ -2582,7 +2582,7 @@ class _Compiler:
                 return _LoweredRow(None, (problem,)), {}
             paired = pair_trial_source(
                 source.document, task, components, functions,
-                python_tasks=tasks, input_overrides=settings.input_overrides,
+                python_tasks=tasks, input_bindings=settings.input_bindings,
             )
             unpaired = paired if isinstance(paired, tuple) else paired.problems
             refusals = _trial_problems(unpaired, source.document, initial=True)
@@ -2595,7 +2595,7 @@ class _Compiler:
                 if variant.task != task:
                     paired = pair_trial_source(
                         source.document, variant.task, components, functions,
-                        python_tasks=tasks, input_overrides=settings.input_overrides, graph_override=variant.graph,
+                        python_tasks=tasks, input_bindings=settings.input_bindings, graph_override=variant.graph,
                     )
                     conditions = evaluation_conditions(variant.task, tasks)
                     if isinstance(paired, tuple) or paired.problems:
@@ -2708,7 +2708,7 @@ class _Compiler:
                 pairing = pair_trial_source(
                     documents.model, variant.task,
                     self.components or _builtin_model_registry(), self.functions or _builtin_expression_registry(),
-                    python_tasks=self.python_tasks, input_overrides=documents.input_overrides,
+                    python_tasks=self.python_tasks, input_bindings=documents.input_bindings,
                     graph_override=variant.graph,
                 )
                 problems = pairing if isinstance(pairing, tuple) else pairing.problems
