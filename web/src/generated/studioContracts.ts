@@ -903,7 +903,7 @@ export interface FlipComponent {
 export interface InsertComponentOnWire {
   op: "insert_component";
   address: ModelAddress;
-  component: LeafComponent | CompositeComponent;
+  component: LeafComponent | CompositeComponent | RegisteredComponent;
   input_port: string;
   output_port: string;
   position: ModelPosition;
@@ -7066,7 +7066,7 @@ export const InsertComponentOnWireSchema: z.ZodType<InsertComponentOnWire> = z.l
     .object({
       "op": z.literal("insert_component"),
       "address": ModelAddressSchema,
-      "component": z.union([LeafComponentSchema, CompositeComponentSchema]),
+      "component": z.union([LeafComponentSchema, CompositeComponentSchema, RegisteredComponentSchema]),
       "input_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
       "output_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
       "position": ModelPositionSchema,
