@@ -269,6 +269,8 @@ def test_huber_requires_a_positive_scalar_delta_in_the_residual_units(functions)
         assert not bool(result.defined)
     assert read_field("huber(2 m, [1 m, 2 m])", measure, functions)[0].code == ProblemCode.TYPE_MISMATCH
     assert read_field("huber(2 m, 1 s)", measure, functions)[0].code == ProblemCode.UNIT_MISMATCH
+    problem = read_field("huber(2 m, 0 m)", measure, functions)[0]
+    assert (problem.code, problem.path) == (ProblemCode.TYPE_MISMATCH, ("args", 1))
 
 
 def test_literal_edits_keep_real_operands_and_do_not_retrace(functions):

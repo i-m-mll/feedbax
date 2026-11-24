@@ -628,6 +628,14 @@ def _huber_type(
     return _norm(args, kwargs, power=2)
 
 
+def _bind_huber(function: Function, node: CallValue) -> tuple[Function, CallValue] | SignatureError:
+    if len(node.args) == 2:
+        delta = node.args[1]
+        if isinstance(delta, LiteralValue) and type(delta.value) is not bool and delta.value <= 0:
+            return SignatureError(ProblemCode.TYPE_MISMATCH, "Huber delta must be positive.", ("args", 1))
+    return function, node
+
+
 def _operand_context(
     expected: OperandHint,
     known: tuple[Dimensions | None, ...],
@@ -854,6 +862,7 @@ def register_builtins(registry: FunctionRegistry) -> None:
         display_class=_PENALTY,
         argument_context=_squared_context,
         result_dimensions=partial(_known_result, power=2),
+        bind=_bind_huber,
     )
     for name in ("sigmoid", "softplus"):
 
