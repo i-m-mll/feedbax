@@ -1805,7 +1805,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                   ? <FocusedFields className="contents" request={fieldFocus?.step === step?.id && fieldFocus?.target?.startsWith('task:') ? fieldFocus : undefined}
                     onFocused={() => setFieldFocus(undefined)}>
                     <TrialTaskDocument view={value} commit={commit} runs={runs} selected={selected} select={choose(document)}
-                      drawn={'variables' in value.task ? drawnVariables(trialClock.trial, value.task.variables) : undefined} />
+                      drawn={drawnVariables(trialClock.trial)} />
                   </FocusedFields>
                   : <TrialTaskForm view={value} commit={commit} />),
                 drawer: <TrialTaskOutline sections={drawerSections} view={value} selected={selected} select={choose(document)} />,

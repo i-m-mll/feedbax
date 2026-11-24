@@ -250,11 +250,14 @@ def _norm_value(power: int, _context: CallContext, value, other=None):
     return squared if power == 2 else jnp.sqrt(squared)
 
 
-def _huber(_context: CallContext, value, delta):
+def _huber(context: CallContext, value, delta=1.0):
     import jax.numpy as jnp
 
+    valid = jnp.isfinite(delta) & (delta > 0)
+    delta = jnp.where(valid, delta, 1.0)
     absolute = jnp.abs(value)
-    return jnp.where(absolute <= delta, 0.5 * jnp.square(value), delta * (absolute - 0.5 * delta))
+    penalties = jnp.where(absolute <= delta, 0.5 * jnp.square(value), delta * (absolute - 0.5 * delta))
+    return Evaluation(jnp.sum(penalties), valid & _all_defined(context))
 
 
 def _hold(_context: CallContext, value):
@@ -269,6 +272,41 @@ def _interpolate(minimum_jerk: bool, context: CallContext, start, stop, *, over=
     if minimum_jerk:
         fraction = fraction**3 * (10 + fraction * (-15 + 6 * fraction))
     return start + (stop - start) * fraction
+
+
+def _truncexp_quantile(mean, low, high, quantile):
+    import jax.numpy as jnp
+
+    width = -jnp.expm1(-(high - low) / mean)
+    return low - mean * jnp.log1p(-quantile * width)
+
+
+def _nominal_sample(family: str, context: CallContext, *args):
+    import jax.numpy as jnp
+
+    match family:
+        case "uniform" if context.discrete_uniform:
+            low, high = (jnp.rint(arg / context.period_seconds) for arg in args)
+            return jnp.rint((low + high) / 2) * context.period_seconds
+        case "uniform":
+            low, high = args
+            return low + (high - low) / 2
+        case "loguniform":
+            low, high = args
+            return jnp.exp((jnp.log(low) + jnp.log(high)) / 2)
+        case "normal":
+            mean, sd = args
+            return jnp.broadcast_to(mean, jnp.broadcast_shapes(jnp.shape(mean), jnp.shape(sd)))
+        case "bernoulli":
+            return args[0] > 0.5
+        case "choice":
+            eligible = jnp.asarray(context.defined, dtype=bool)
+            return Evaluation(jnp.stack(args)[jnp.argmax(eligible)], jnp.any(eligible))
+        case "truncexp":
+            return _truncexp_quantile(*args, 0.5)
+        case "uniform_region":
+            return args[0]
+    raise AssertionError(family)
 
 
 def _sample(family: str, context: CallContext, *args):
@@ -298,8 +336,7 @@ def _sample(family: str, context: CallContext, *args):
         case "truncexp":
             mean, lo, hi = args
             shape = jnp.broadcast_shapes(*(jnp.shape(arg) for arg in args))
-            width = -jnp.expm1(-(hi - lo) / mean)
-            return lo - mean * jnp.log1p(-random.uniform(key, shape) * width)
+            return _truncexp_quantile(mean, lo, hi, random.uniform(key, shape))
         case "uniform_region":
             center, radius = args
             radial_key, angular_key = random.split(key)
@@ -357,16 +394,15 @@ def _held_value(context: CallContext, condition, duration):
     return condition & (elapsed >= duration), start
 
 
-def _filtered(ou: bool, context: CallContext, value, tau):
+def _filtered(ou: bool, context: CallContext, value, tau, *, nominal=False):
     import jax.numpy as jnp
     import jax.random as random
 
     previous = jnp.broadcast_to(context.state, value.shape)
     mix = -jnp.expm1(-context.period_seconds / tau)
     if ou:
-        result = (1 - mix) * previous + value * jnp.sqrt(mix * (2 - mix)) * random.normal(
-            context.key, value.shape
-        )
+        innovation = 0 if nominal else random.normal(context.key, value.shape)
+        result = (1 - mix) * previous + value * jnp.sqrt(mix * (2 - mix)) * innovation
     else:
         result = previous + mix * (value - previous)
     return result, jnp.where(context.defined[0] & context.defined[1], result, previous)
@@ -620,10 +656,17 @@ def _filter_state(value: ValueType):
 def _huber_type(
     args: tuple[ValueType, ...], kwargs: Mapping[str, ValueType]
 ) -> ValueType | SignatureError:
-    result = _elementwise(args, kwargs, base=_REAL)
-    if isinstance(result, SignatureError):
-        return result
-    return result.model_copy(update={"dimensions": result.dimensions.raised(2)})
+    if len(args) == 2 and args[1].shape:
+        return _type("Huber delta must be scalar.")
+    return _norm(args, kwargs, power=2)
+
+
+def _bind_huber(function: Function, node: CallValue) -> tuple[Function, CallValue] | SignatureError:
+    if len(node.args) == 2:
+        delta = node.args[1]
+        if isinstance(delta, LiteralValue) and type(delta.value) is not bool and delta.value <= 0:
+            return SignatureError(ProblemCode.TYPE_MISMATCH, "Huber delta must be positive.", ("args", 1))
+    return function, node
 
 
 def _operand_context(
@@ -658,6 +701,17 @@ def _operand_context(
 def _arithmetic_context(expected: OperandHint, known, _keywords):
     left = expected.dimensions if all(unit is None for unit in known) else None
     return (OperandHint(left, expected.base), OperandHint(base=expected.base)), {}
+
+
+def _squared_context(expected: OperandHint, known, keywords):
+    dimensions = expected.dimensions
+    powers = dimensions.model_dump() if dimensions is not None else {}
+    operand = (
+        Dimensions(**{name: exponent // 2 for name, exponent in powers.items()})
+        if powers and all(exponent % 2 == 0 for exponent in powers.values())
+        else None
+    )
+    return _operand_context(OperandHint(operand, _REAL), known, keywords)
 
 
 def _known_result(known, *, start=0, stop=None, power=1):
@@ -696,6 +750,7 @@ def register_builtins(registry: FunctionRegistry) -> None:
         label=None,
         parameters=(),
         density=None,
+        nominal=None,
     ):
         minimum, maximum = count if isinstance(count, tuple) else (count, count)
         registry.register(
@@ -723,6 +778,7 @@ def register_builtins(registry: FunctionRegistry) -> None:
                 result_dimensions,
                 bind,
                 density,
+                nominal,
             )
         )
 
@@ -834,13 +890,14 @@ def register_builtins(registry: FunctionRegistry) -> None:
         )
     add(
         "huber",
-        "x, delta",
-        2,
+        "x[, delta]",
+        (1, 2),
         _huber_type,
         _huber,
         display_class=_PENALTY,
-        argument_context=partial(_operand_context, base=_REAL),
+        argument_context=_squared_context,
         result_dimensions=partial(_known_result, power=2),
+        bind=_bind_huber,
     )
     for name in ("sigmoid", "softplus"):
 
@@ -930,6 +987,7 @@ def register_builtins(registry: FunctionRegistry) -> None:
         2,
         partial(_elementwise, base=_REAL),
         _noise,
+        nominal=partial(_nominal_sample, "normal"),
         display_class=_SHAPE,
         level=Level.STEP,
         random=True,
@@ -966,6 +1024,7 @@ def register_builtins(registry: FunctionRegistry) -> None:
             len(parameters) if parameters else (1, None),
             infer,
             partial(_sample, family),
+            nominal=partial(_nominal_sample, family),
             display_class=_DRAW,
             label=label,
             parameters=parameters,
@@ -1000,6 +1059,7 @@ def register_builtins(registry: FunctionRegistry) -> None:
             2,
             _filter,
             partial(_filtered, name == "ou"),
+            nominal=partial(_filtered, True, nominal=True) if name == "ou" else None,
             level=Level.STEP,
             random=name == "ou",
             reset=StateReset.EPOCH if name == "ou" else StateReset.TRIAL,

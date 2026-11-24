@@ -9,19 +9,17 @@ import { studioName } from '@/components/activity/studioVocabulary';
 import type { MapDocumentScope } from '@/components/pipeline/StudioPipelineMap';
 import { CanvasStrip } from '@/components/canvas/CanvasStrip';
 import { canvasViewportCommands } from '@/components/canvas/StudioCanvas';
-import { SceneCanvas, SceneDrawer, SceneElementInspector, SceneLayers, sceneLayers } from '@/components/scene/SceneRegion';
+import { SceneCanvas, SceneDrawer, SceneElementInspector, SceneLayers, sceneContents } from '@/components/scene/SceneRegion';
 import type { PlanarScenePose } from '@/components/scene/planarModel';
-import { fittedCamera, sceneGeometry, zoomScene, type SceneCamera, type SceneDrawing, type SceneOverlay, type SceneView } from '@/components/scene/sceneView';
+import { emptyScene, fittedCamera, sceneElements, zoomScene, type Scene, type SceneCamera, type SceneLayer, type SceneView } from '@/components/scene/sceneView';
 import { useProjectPlanarScene } from '@/components/scene/useProjectPlanarScene';
 import type { PlanStepView, RunAddress } from '@/features/pipeline/planView';
 import type { PipelineSelection } from '@/features/pipeline/selection';
 import type { StudioCommand } from '@/features/projectWindow/studioCommands';
-import type { ResolvedScene } from '@/features/scenario/projections';
-import { primaryWorkspaceReplayTrack, workspaceReplayFrameIndex, workspaceReplaySampleAt } from '@/features/scenario/workspaceReplay';
 import {
   DocumentReferenceSchema, ModelDocumentSchema,
   type EvaluateModelRequest, type ModelDocument, type StudioSavedEvaluationRow,
-  type StudioSavedTrainKey, type WorkspaceReplayTrial, type StudioProjectWindowMapProblem, type ModelAddress,
+  type StudioSavedTrainKey, type StudioProjectWindowMapProblem, type ModelAddress,
 } from '@/generated/studioContracts';
 import { modelDocumentId, ownDefinition } from './authoredEdits';
 import { placeMember, type Reveal } from './projectWindowProblems';
@@ -31,7 +29,7 @@ import { useStoredModelView } from './model/ModelView';
 import type { DrawerSections } from '@/features/projectWindow/DrawerForms';
 import type { ConfirmRunRemoval } from './runRemoval';
 import { modelSchema } from './model/modelGraph';
-import { elementKey, isModelAddress, type ElementSelectionStore, type ModelLocation } from '@/features/projectWindow/elementSelection';
+import { elementKey, isModelAddress, selectedElement, type ElementAddress, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import { useStore } from 'zustand';
 import { usePlayhead, type PlayheadStore } from '@/components/timeline/trialClock';
 import { Select } from '@/components/ui/Select';
@@ -94,42 +92,7 @@ interface DetailInputs {
 const rootModelPath: string[] = [];
 
 const referencePose: PlanarScenePose = { kind: 'reference' };
-const shownOverlays = new Set<SceneOverlay>();
-
-const emptyReplayScene: ResolvedScene = {
-  scenario_id: null, frame: 'world', units: 'm', entities: [], anchors: [], elements: [],
-  required_selectors: [], validation: [],
-};
-
-function evaluationScene(trial: WorkspaceReplayTrial): SceneDrawing {
-  const track = primaryWorkspaceReplayTrack(trial);
-  if (!track) return { kind: 'replay', trial, scene: emptyReplayScene };
-  const id = track.anchor_id;
-  const anchorId = `${id}:position`;
-  const label = studioName('effector');
-  const frame = track.frame ?? emptyReplayScene.frame;
-  const sceneAt = (time: number): ResolvedScene => {
-    const position = workspaceReplaySampleAt(track, workspaceReplayFrameIndex(trial, time));
-    return {
-      ...emptyReplayScene, frame, units: track.units ?? emptyReplayScene.units,
-      entities: [{
-        id, label, kind: 'mechanics_object', summary: null, related_entity_ids: [],
-        anchor_ids: [anchorId], element_ids: [id],
-      }],
-      anchors: [{
-        id: anchorId, entity_id: id, local_id: 'position', label, semantic_role: 'effector',
-        position, selectable: true, hoverable: true, interaction_roles: [], objective_roles: [],
-        frame, selector: track.selector, metadata: {},
-      }],
-      elements: [{
-        id, entity_id: id, local_id: 'point', archetype: 'point', anchor_ids: [anchorId], frame,
-        scale_invariant: true, style: {}, metadata: {},
-        geometry: { kind: 'points', points: position ? [position] : [] },
-      }],
-    };
-  };
-  return { kind: 'replay', trial, scene: sceneAt(0), sceneAt };
-}
+const shownLayers = new Set<SceneLayer>();
 
 /** The trials a saved evaluation recorded, which the clock's picker lists, with each one's condition. */
 export function recordedTrials(evaluation: StudioSavedEvaluationRow | undefined) {
@@ -156,10 +119,12 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
     },
     enabled: visible && !!trial && (!evaluation?.checkpoint_series || checkpoint !== undefined),
   });
-  const replayDrawing = useMemo(() => replay.data && evaluationScene(replay.data), [replay.data]);
+  const record = replay.data?.drawn.kind === 'trials' ? replay.data.drawn.trials[0] : undefined;
   const view: SceneView = replay.error
     ? { kind: 'failed', issue: studioRegionIssue('scene', replay.error), retry: () => { void replay.refetch(); } }
-    : replayDrawing ?? { kind: trial && (!evaluation?.checkpoint_series || checkpoint !== undefined) ? 'loading' : 'empty' };
+    : replay.data && record
+      ? { kind: 'replay', trial: record, stateTime: replay.data.state_time, position: replay.data.position, scene: emptyScene }
+      : { kind: replay.isFetching ? 'loading' : 'empty' };
   const timeScope = JSON.stringify(['recorded', jobId, trial, checkpoint]);
   const [time, setTime] = usePlayhead(playhead, timeScope);
   const chooseCheckpoint = (coordinate: number) => {
@@ -173,47 +138,14 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
   return { view, time, setTime, checkpoints, chooseCheckpoint };
 }
 
-/** The Model element a Scene entity shows, or an anchor that is itself a model element (a joint). */
-function sceneAddress(id: string): ModelLocation | undefined {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(id);
-  } catch (error) {
-    if (error instanceof SyntaxError) return undefined;
-    throw error;
-  }
-  if (!Array.isArray(parsed) || parsed.length !== 4) return undefined;
-  const [, document, composites, element] = parsed as unknown[];
-  return typeof document === 'string' && Array.isArray(composites) && composites.every((item) => typeof item === 'string') &&
-    typeof element === 'string' ? { document, address: { composites, element: { kind: 'component', id: element } } } : undefined;
-}
-
-/**
- * The Scene draws the window's selection: an entity is the Model component it shows. An anchor that is not an element
- * of its own (a body's end, a muscle's path point) is selected as its entity, and the Scene keeps which anchor it was.
- * An entity with no Model element (a replay's effector) is a named element of the Scene, `document`.
- */
-function useSceneSelection(elements: ElementSelectionStore, scene: ResolvedScene | null, document: string) {
-  const selection = useStore(elements, (current) => current.selection);
-  const [anchor, setAnchor] = useState<string>();
-  const first = selection[0];
-  const owner = (id: string) => sceneAddress(id) ?? sceneAddress(scene?.anchors.find((item) => item.id === id)?.entity_id ?? '');
-  const anchorAddress = anchor ? owner(anchor) : undefined;
-  const selectedKey = first && isModelAddress(first) ? elementKey(first) : undefined;
-  const selectedId = !first || !scene ? null
-    : !isModelAddress(first) ? first.document === document ? first.element.id : null
-    : anchor && anchorAddress && elementKey(anchorAddress) === selectedKey ? anchor
-    : [...scene.entities.map(({ id }) => id), ...scene.anchors.map(({ id }) => id)]
-      .find((id) => { const address = sceneAddress(id); return address && elementKey(address) === selectedKey; }) ?? null;
+/** The Scene's part of the window's selection: the key of the selected element the Scene draws, a field as its element. */
+function useSceneSelection(elements: ElementSelectionStore, scene: Scene | null) {
+  const first = useStore(elements, (current) => current.selection[0]);
+  const key = first && elementKey(isModelAddress(first) ? { ...first, address: selectedElement(first.address) } : first);
+  const drawn = scene && (sceneElements(scene).some((element) => element.key === key) || scene.groups.some((group) => group.key === key));
   return {
-    selectedId,
-    onSelect: (id: string | null) => {
-      const address = id === null ? undefined : owner(id);
-      setAnchor(address && !sceneAddress(id!) ? id! : undefined);
-      elements.setState({
-        selection: address ? [address] : id === null ? [] : [{ document, element: { kind: 'named', id } }],
-      });
-    },
+    selected: drawn ? key! : null,
+    onSelect: (address: ElementAddress | null) => elements.setState({ selection: address ? [address] : [] }),
   };
 }
 
@@ -234,37 +166,37 @@ function useSceneDetail({
   const checkpoints = evaluating ? evaluationReplay.checkpoints : undefined;
   const sceneScope = JSON.stringify([scope, path, evaluation?.result?.job_id]);
   const [cameraState, setCamera] = useState<{ scope: string; value: SceneCamera }>();
-  const [overlayState, setOverlays] = useState<{ scope: string; value: ReadonlySet<SceneOverlay> }>();
+  const [layerState, setLayers] = useState<{ scope: string; value: ReadonlySet<SceneLayer> }>();
   const camera = cameraState?.scope === sceneScope ? cameraState.value : fittedCamera;
   const onCameraChange = (value: SceneCamera) => setCamera({ scope: sceneScope, value });
-  const hiddenOverlays = overlayState?.scope === sceneScope ? overlayState.value : shownOverlays;
-  const scene = view.kind === 'geometry' || view.kind === 'replay' ? sceneGeometry(view, time) : null;
-  const selection = useSceneSelection(elements, scene, sceneScope);
-  const layers = sceneLayers(view);
+  const hiddenLayers = layerState?.scope === sceneScope ? layerState.value : shownLayers;
+  const scene = view.kind === 'geometry' || view.kind === 'replay' ? view.scene : null;
+  const selection = useSceneSelection(elements, scene);
+  const contents = sceneContents(view);
   const viewport = canvasViewportCommands(() => ({
     fitView: () => onCameraChange(fittedCamera),
     zoomIn: () => onCameraChange(zoomScene(camera, 1.2)),
     zoomOut: () => onCameraChange(zoomScene(camera, 1 / 1.2)),
-  }), layers.navigable);
+  }), contents.navigable);
   return {
     documentId: model?.id,
     path: interiors.length > 1 && path && <Select aria-label={studioName('interior')} value={JSON.stringify(path)}
       items={interiors.map((candidate) => ({ value: JSON.stringify(candidate), label: candidate.join(' / ') }))}
       onValueChange={(value) => chooseInterior({ scope, path: value })} />,
     commands: viewport,
-    body: source || evaluating ? <CanvasStrip viewport={viewport} tools={<SceneLayers overlays={layers.overlays}
-      hiddenOverlays={hiddenOverlays} onToggleOverlay={(overlay) => {
-        const next = new Set(hiddenOverlays);
-        if (next.has(overlay)) next.delete(overlay);
-        else next.add(overlay);
-        setOverlays({ scope: sceneScope, value: next });
+    body: source || evaluating ? <CanvasStrip viewport={viewport} tools={<SceneLayers layers={contents.layers}
+      hidden={hiddenLayers} onToggle={(layer) => {
+        const next = new Set(hiddenLayers);
+        if (next.has(layer)) next.delete(layer);
+        else next.add(layer);
+        setLayers({ scope: sceneScope, value: next });
       }} />}>
       <div className="min-h-0 flex-1">
-        <SceneCanvas view={view} time={time} camera={camera} onCameraChange={onCameraChange} hiddenOverlays={hiddenOverlays} fitToSlot {...selection} />
+        <SceneCanvas view={view} time={time} camera={camera} onCameraChange={onCameraChange} hiddenLayers={hiddenLayers} fitToSlot {...selection} />
       </div>
     </CanvasStrip> : null,
-    drawer: (scene || checkpoints) && <SceneDrawer sections={drawerSections} scene={scene ?? emptyReplayScene} checkpoints={checkpoints} {...selection} />,
-    inspector: scene && selection.selectedId ? <SceneElementInspector scene={scene} selectedId={selection.selectedId} /> : null,
+    drawer: (scene || checkpoints) && <SceneDrawer sections={drawerSections} scene={scene ?? emptyScene} checkpoints={checkpoints} {...selection} />,
+    inspector: scene && selection.selected ? <SceneElementInspector scene={scene} selected={selection.selected} /> : null,
   };
 }
 

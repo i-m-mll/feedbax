@@ -12,13 +12,13 @@ import { Button } from '@/components/ui/Button';
 import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { studioRegionIssue, StudioRegion } from '@/components/activity/StudioRegion';
 import { sceneTimeline } from '@/components/scene/sceneView';
-import type { Problem, StudioSavedEvaluationRow, TaskDocument } from '@/generated/studioContracts';
+import type { Problem, StudioSavedEvaluationRow, TaskDocument, TrialRecord } from '@/generated/studioContracts';
 import { selectElement, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import { showProjectWindowView, type ProjectWindowState, type ProjectWindowView } from '@/features/projectWindow/projectWindowState';
 import { recordedTrials, useSavedEvaluationScene, type StoredModel } from './managedProjectDetails';
 import type { TrialView } from './StudioTrialAuthoring';
 import { batchRows, nominalRows, trialRows, type ShelfTask } from './task/shelfRows';
-import { shelfTask, taskDocumentOf, useTaskBatch, useTaskSamples } from './task/taskTrials';
+import { shelfTask, taskDocumentOf, useNominalTrial, useTaskBatch, useTaskSamples } from './task/taskTrials';
 import type { TrialShown, TrialsUnavailable } from './task/trialSample';
 
 interface TrialClockInputs {
@@ -51,46 +51,50 @@ function problemElement(task: TaskDocument, problem: Problem): string | undefine
 }
 
 /**
- * What the clock shows as views draw it, of what is picked: the task's definition, one trial's record, or the
- * aggregate; the Problems that keep it from being drawn; or nothing while it is read. A recorded trial is not yet given
- * as a record: the replay route returns its record once the Service side records the whole trial.
+ * What the clock shows as views draw it, of what is picked: one trial's record (the nominal trial, a sample, or a
+ * recorded trial) or the samples' aggregate; the Problems that keep it from being drawn; or nothing while it is read.
  */
 function useShown(pick: TrialPick | undefined, clock: TrialClock, offer: TrialOffer, view: TrialView | undefined,
-  stored: StoredModel | undefined) {
+  stored: StoredModel | undefined, recorded: TrialRecord | undefined) {
   const count = sampleCount(clock, offer);
   const sampled = pick?.trials === 'samples';
+  const nominal = useNominalTrial(view, stored?.value, pick?.trials === 'nominal');
   const samples = useTaskSamples(view, stored?.value, clock.seed, count, sampled && pick.showing.kind === 'one');
   const batch = useTaskBatch(view, stored?.value, clock.seed, count, sampled && pick.showing.kind === 'all');
+  const one = (drawn: TrialRecord[] | TrialsUnavailable | undefined, index: number, of: number): TrialShown | TrialsUnavailable | undefined => {
+    if (!drawn || !Array.isArray(drawn)) return drawn;
+    const record = drawn[index];
+    return record && { kind: 'one', index, count: of, record };
+  };
   const read = (): TrialShown | TrialsUnavailable | undefined => {
     if (!pick) return undefined;
+    const { showing } = pick;
     switch (pick.trials) {
-      case 'nominal': return { kind: 'definition' };
-      case 'recorded': return undefined;
-      case 'samples': {
-        const { showing } = pick;
+      case 'nominal': return one(nominal.data, 0, 1);
+      case 'recorded': return showing.kind === 'one' && recorded
+        ? { kind: 'one', index: showing.index, count: offer.recorded, record: recorded } : undefined;
+      case 'samples':
         switch (showing.kind) {
-          case 'one': {
-            const drawn = samples.data;
-            if (!drawn || !Array.isArray(drawn)) return drawn;
-            const record = drawn[showing.index];
-            return record && { kind: 'one', index: showing.index, count, record };
-          }
+          case 'one': return one(samples.data, showing.index, count);
           case 'all': {
             const drawn = batch.data;
             return !drawn || drawn.kind === 'problems' ? drawn : { kind: 'all', count, aggregate: drawn };
           }
         }
-      }
     }
   };
-  const query = pick?.showing.kind === 'all' ? batch : samples;
-  return { shown: read(), query: sampled ? query : undefined };
+  const query = pick?.trials === 'nominal' ? nominal : pick?.trials === 'samples' ? pick.showing.kind === 'all' ? batch : samples
+    : undefined;
+  return { shown: read(), query };
 }
 
-/** The shelf's rows for what is shown. */
-function rowsOf(task: ShelfTask, shown: TrialShown | TrialsUnavailable, stepSeconds: number): ShelfRow[] {
+/**
+ * The shelf's rows for what is shown: the nominal trial as its definition draws it, with each drawn length's spread;
+ * one trial as its record has it; the aggregate's shares.
+ */
+function rowsOf(task: ShelfTask, pick: TrialPick, shown: TrialShown | TrialsUnavailable, stepSeconds: number): ShelfRow[] {
+  if (pick.trials === 'nominal' || shown.kind === 'problems') return nominalRows(task);
   switch (shown.kind) {
-    case 'definition': case 'problems': return nominalRows(task);
     case 'one': return trialRows(task, shown.record, stepSeconds);
     case 'all': return batchRows(task, shown.aggregate, stepSeconds);
   }
@@ -117,10 +121,11 @@ export function useTrialClock({
   const index = pick?.showing.kind === 'one' ? pick.showing.index : undefined;
   const replay = useSavedEvaluationScene(projectId, revision, evaluation, sceneVisible,
     pick?.trials === 'recorded' ? index : undefined, playhead);
-  const { shown, query } = useShown(pick, clock, offer, view, stored);
+  const recordedTrial = replay.view.kind === 'replay' ? replay.view.trial : undefined;
+  const { shown, query } = useShown(pick, clock, offer, view, stored, recordedTrial);
   const drawn = view && taskDocument ? shelfTask(view, taskDocument) : undefined;
   const period = view?.period_seconds ?? 0;
-  const rows = pick?.trials === 'recorded' ? [] : drawn && shown && rowsOf(drawn, shown, period);
+  const rows = pick?.trials === 'nominal' && drawn ? nominalRows(drawn) : pick && shown && (drawn ? rowsOf(drawn, pick, shown, period) : []);
   const [taskTime, setTaskTime] = usePlayhead(playhead, JSON.stringify(['task', taskDocument, pick, clock.seed]));
   const [time, setTime] = pick?.trials === 'recorded' ? [replay.time, replay.setTime] : [taskTime, setTaskTime];
   const replayTimeline = pick?.trials === 'recorded' ? sceneTimeline(replay.view) : null;

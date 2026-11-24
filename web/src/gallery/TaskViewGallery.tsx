@@ -62,17 +62,17 @@ function shelfTask(view: TaskDocumentView): ShelfTask {
 }
 
 /** The shelf's rows for the nominal trial, one sampled trial, or the batch. */
-function shelfRows(view: TaskDocumentView, shown: TrialShown): ShelfRow[] {
+function shelfRows(view: TaskDocumentView, shown: TrialShown | undefined): ShelfRow[] {
   const step = view.stepSeconds ?? view.duration / 100;
+  if (!shown) return nominalRows(shelfTask(view));
   switch (shown.kind) {
-    case 'definition': return nominalRows(shelfTask(view));
     case 'one': return trialRows(shelfTask(view), shown.record, step);
     case 'all': return batchRows(shelfTask(view), shown.aggregate, step);
   }
 }
 
-function shownOf(choice: TrialChoice, sample: ReturnType<typeof useSample>): TrialShown {
-  if (!sample || choice === 'definition') return { kind: 'definition' };
+function shownOf(choice: TrialChoice, sample: ReturnType<typeof useSample>): TrialShown | undefined {
+  if (!sample || choice === 'definition') return undefined;
   if (choice === 'all') return { kind: 'all', count: sample.trials.length, aggregate: sample.batch };
   return { kind: 'one', index: choice, count: stepped, record: sample.trials[choice] };
 }
@@ -128,7 +128,6 @@ function TaskWindow() {
   const sections = useDrawerSections(state, setState);
   const [selected, setSelected] = useState<TaskSelection | undefined>({ kind: 'end', id: 'cue' });
   const view = tasks.view(key);
-  const shown: TrialShown = { kind: 'definition' };
   const fixture = fixtures.find((candidate) => candidate.key === key)!;
   const choose = (next: string) => {
     setKey(next);
@@ -180,7 +179,7 @@ function TaskWindow() {
             : <TaskPythonBody view={view} />,
           drawer: view.kind === 'document' ? <TaskOutline sections={sections} groups={outlineGroups(view)} selected={outlineSelection(selected)}
             select={(group, id) => setSelected({ kind: outlineKinds[group], id })} /> : undefined,
-          inspector: view.kind === 'document' ? <TaskInspector view={view} selected={selected} shown={shown} /> : undefined,
+          inspector: view.kind === 'document' ? <TaskInspector view={view} selected={selected} /> : undefined,
         }} />
     </div>
   </ProjectWindowPalette>;
@@ -201,13 +200,13 @@ function TaskStates({ fixtureKey, end, cell, variable, signal }: {
   const spec = tasks.specs[fixtureKey];
   const view = tasks.view(fixtureKey) as TaskDocumentView;
   const sample = useSample(fixtureKey, spec, 1);
-  const definition: TrialShown = { kind: 'definition' };
+  const definition = undefined;
   const trial = shownOf(0, sample);
   const batch = shownOf('all', sample);
   const [time, setTime] = useState(0);
-  const strip = (shown: TrialShown) => <Shelf rows={shelfRows(view, shown)} duration={view.duration}
+  const strip = (shown: TrialShown | undefined) => <Shelf rows={shelfRows(view, shown)} duration={view.duration}
     stepSeconds={view.stepSeconds} time={time} onTimeChange={setTime} selected={[]} onSelect={() => undefined} />;
-  const inspector = (selected: TaskSelection, shown: TrialShown = definition) =>
+  const inspector = (selected: TaskSelection, shown?: TrialShown) =>
     <TaskInspector view={view} selected={selected} shown={shown} />;
   const box = 'w-[244px] rounded-control border border-shell-divider bg-shell-sidebar';
   return <section className="grid gap-3" aria-label={fixtures.find(({ key }) => key === fixtureKey)!.name}>

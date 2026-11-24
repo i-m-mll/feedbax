@@ -14,12 +14,11 @@ export interface SignalAggregate {
 }
 
 /**
- * What every view that shows a trial is given by the clock: the task's definition (the nominal trial), one trial's
- * record of the `count` the clock holds, or the aggregate of all of them. A view handles each case and does not know
- * whether a record was sampled or recorded.
+ * What every view that shows a trial is given by the clock: one trial's record of the `count` the clock holds, or the
+ * aggregate of all of them. A view handles each case and does not know whether a record is nominal, sampled or
+ * recorded.
  */
 export type TrialShown =
-  | { readonly kind: 'definition' }
   | { readonly kind: 'one'; readonly index: number; readonly count: number; readonly record: TrialRecord }
   | { readonly kind: 'all'; readonly count: number; readonly aggregate: TrialAggregate };
 
@@ -32,17 +31,17 @@ export interface TrialsUnavailable {
 const numbers = (value: unknown): number[] => Array.isArray(value) ? value.flatMap(numbers)
   : typeof value === 'boolean' ? [Number(value)] : typeof value === 'number' ? [value] : [];
 
-/** The signal `name`'s value at each step of `record`, null where it is absent. */
-export function signalSteps(record: TrialRecord, name: string): SignalSteps {
-  const values = record.inputs[name];
-  const present = record.present[name];
+/** The signal `id`'s value at each step of `record`, null where it is absent. */
+export function signalSteps(record: TrialRecord, id: string): SignalSteps {
+  const values = record.inputs[id];
+  const present = record.present[id];
   return (Array.isArray(values) ? values : []).map((value, step) =>
     Array.isArray(present) && present[step] ? numbers(value) : null);
 }
 
-/** The signal `name` over the trials `aggregate` holds. */
-export function signalAggregate(aggregate: TrialAggregate, name: string): SignalAggregate | undefined {
-  const signal = aggregate.signals[name];
+/** The signal `id` over the trials `aggregate` holds. */
+export function signalAggregate(aggregate: TrialAggregate, id: string): SignalAggregate | undefined {
+  const signal = aggregate.signals[id];
   return signal && {
     presence: signal.presence,
     ...signal.percentiles && { percentiles: signal.percentiles as (Percentiles[] | null)[] },
@@ -67,18 +66,14 @@ function rangeText(least: unknown, greatest: unknown): string {
 }
 
 /**
- * Each of `variables`' values in what is shown, as text, by variable id: its drawn value in one trial, or the range of
- * its values over all of them; nothing for the definition.
+ * Each variable's value in what is shown, as text, by variable id: its drawn value in one trial, or the range of its
+ * values over all of them.
  */
-export function drawnVariables(shown: TrialShown | undefined, variables: readonly { readonly id: string; readonly name: string }[]) {
+export function drawnVariables(shown: TrialShown | undefined): Readonly<Record<string, string>> | undefined {
   if (!shown) return undefined;
   switch (shown.kind) {
-    case 'definition': return undefined;
-    case 'one': return Object.fromEntries(variables.flatMap(({ id, name }) =>
-      name in shown.record.variables ? [[id, valueText(shown.record.variables[name])]] : []));
-    case 'all': return Object.fromEntries(variables.flatMap(({ id, name }) => {
-      const range = shown.aggregate.variables[name];
-      return range ? [[id, rangeText(range.least, range.greatest)]] : [];
-    }));
+    case 'one': return Object.fromEntries(Object.entries(shown.record.variables).map(([id, value]) => [id, valueText(value)]));
+    case 'all': return Object.fromEntries(Object.entries(shown.aggregate.variables)
+      .map(([id, { least, greatest }]) => [id, rangeText(least, greatest)]));
   }
 }

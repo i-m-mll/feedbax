@@ -22,12 +22,13 @@ import { SettingsForm } from '@/components/values/SettingsForm';
 import { FieldChange, ValueField } from '@/components/values/ValueField';
 import { setIn } from '@/components/values/adapters/jsonSchema';
 import { isRecord, rawField } from '@/components/values/adapters/raw';
-import { fromFieldView } from '@/components/values/adapters/fieldView';
+import { fromFieldView, type FieldViewOptions } from '@/components/values/adapters/fieldView';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type {
-  FieldKind, JsonValue, ObjectiveTerm, Problem, ProjectValueEdit, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
+  FieldKind, JsonValue, ObjectiveTerm, ProjectValueEdit, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
+  StudioTrialField,
 } from '@/generated/studioContracts';
-import { authoredPointer, authoredPointerParts } from './authoredEdits';
+import { authoredPointer } from './authoredEdits';
 import { BatchTrace, TrialTrace } from './task/SignalTrace';
 import { epochBoundaries, signalAggregate, signalSteps, type TrialShown } from './task/trialSample';
 import { baseOf } from './documentPayload';
@@ -41,7 +42,8 @@ type Change = NonNullable<StudioTrialAuthoringRequest['change']>;
 export type TrialChangeScope = (change: Change) => StudioTrialAuthoringRequest['scope'] | undefined;
 /**
  * Applies a change; `removes` marks one that takes runs out of the project, which the run confirmation guards. A
- * refused field edit answers with the problem at that field, with the term of its text it is about.
+ * change is stored with whatever Problems it introduces, which the documents' fields mark; it answers with a reason
+ * only when the service refuses the write.
  */
 export type Commit = (name: string, change: Change, removes?: boolean) => Promise<FieldRefusal | undefined>;
 /** A step's Trial authoring, with what the changed values of its Task and Objective documents differ from. */
@@ -65,19 +67,19 @@ export function changedAt(view: TrialView, document: 'task' | 'objective', path:
   return { from, reset: commit && (() => commit(studioName('reset'), { kind: 'reset', document, paths: [path] })) };
 }
 
-/** The problem that refuses `change`: for a field's edit, the one at that field, with its term's place in the text. */
-function refusalOf(change: Change, problems: readonly Problem[]): FieldRefusal {
-  const at = change.kind === 'expression' ? authoredPointerParts(change.path) : undefined;
-  const own = at && [...problems].reverse().find(({ path = [] }) => path.length === at.length &&
-    path.every((part, index) => String(part) === at[index]));
-  const chosen = own ?? problems[0];
-  return chosen.span ? { reason: chosen.reason, span: chosen.span } : chosen.reason;
-}
-
 /** The kind a stored expression reads as, which its field's mark shows. */
 export function expressionKind(value: JsonValue | undefined): FieldKind {
   const kind = isRecord(value) ? value.kind : undefined;
   return kind === 'name' ? 'link' : kind === 'call' || kind === 'unresolved' ? 'formula' : kind === 'draw' ? 'draw' : 'value';
+}
+
+/** A field the service projects in a step's Task or Objective, marked with its first stored Problem. */
+export function trialField(projection: StudioTrialField, label: string, runs: TrialRuns | undefined, options: FieldViewOptions): FieldModel {
+  const [problem] = projection.problems ?? [];
+  return {
+    ...fromFieldView({ ...projection, label, effective: runs?.selected ? projection.effective : null }, options),
+    reason: problem?.reason, span: problem?.span ?? undefined,
+  };
 }
 
 export function useTrialAuthoring(
@@ -120,8 +122,6 @@ export function useTrialAuthoring(
       await editor.flush();
       const settled = await stored;
       if (settled.status === 'refused') return shownError(settled.error);
-    } else if (result.problems.length) {
-      return refusalOf(change, result.problems);
     }
     return undefined;
   }).catch(shownError) : undefined;
@@ -205,7 +205,7 @@ export function TrialTaskOutline({ sections, view, selected, select }: {
     variables: task && entries('variables', task.variables),
     epochs: task && entries('epochs', task.epochs),
     signals: task ? entries('signals', task.signals) : view.signals.map(({ id, name }) => ({ id, name: humanizeLabel(name) })),
-    modelInputs: view.inputs.map(({ name, signal }) => ({ id: name, name, muted: !signal })),
+    modelInputs: view.inputs.map(({ id, name, signal_id }) => ({ id, name, muted: !signal_id })),
   };
   const [kind, ...rest] = selected?.split(':') ?? [];
   const group = (Object.keys(outlineKinds) as OutlineGroup[]).find((key) => outlineKinds[key] === kind);
@@ -226,8 +226,8 @@ export function TrialTaskInspector({ view, commit, selected, shown }: {
   if (kind === 'signal') {
     const value = view.signals.find(({ id }) => id === key);
     const record = shown?.kind === 'one' ? shown.record : undefined;
-    const steps = record && value && signalSteps(record, value.name);
-    const aggregate = shown?.kind === 'all' && value ? signalAggregate(shown.aggregate, value.name) : undefined;
+    const steps = record && value && signalSteps(record, value.id);
+    const aggregate = shown?.kind === 'all' && value ? signalAggregate(shown.aggregate, value.id) : undefined;
     return value ? <Inspector name={humanizeLabel(value.name)} type={value.type.shape?.join(' × ') || value.type.base}>
       {record && steps && <section aria-label={studioName('plot')} className="grid gap-1">
         <TrialTrace label={value.name} steps={steps} duration={steps.length * view.period_seconds} boundaries={epochBoundaries(record)} />
@@ -242,16 +242,16 @@ export function TrialTaskInspector({ view, commit, selected, shown }: {
     return epoch ? <Inspector name={epoch.name} type={studioName('epochs')} /> : null;
   }
   if (kind !== 'input') return null;
-  const input = view.inputs.find(({ name }) => name === key);
+  const input = view.inputs.find(({ id }) => id === key);
   if (!input) return null;
   return <Inspector name={input.name} type={studioName('modelInputs')}>
-    <ValueField key={JSON.stringify([input.name, input.signal])} model={rawField({
-      id: 'signal', label: studioName('signals'), value: input.signal ?? '',
+    <ValueField key={JSON.stringify([input.id, input.signal_id])} model={rawField({
+      id: 'signal', label: studioName('signals'), value: input.signal_id ?? '',
       type: { kind: 'choice', options: [
         { value: '', label: studioDefinitionStatus('unbound') },
-        ...view.signals.map(({ name }) => ({ value: name, label: humanizeLabel(name) })),
+        ...view.signals.map(({ id, name }) => ({ value: id, label: humanizeLabel(name) })),
       ] },
-      change: commit && ((value) => commit('Bind Task Signal', { kind: 'binding', input: input.address, signal: String(value) || null })),
+      change: commit && ((value) => commit('Bind Task Signal', { kind: 'binding', input_id: input.id, signal_id: String(value) || null })),
     })} />
   </Inspector>;
 }
@@ -261,8 +261,8 @@ type TermField = 'name' | 'enabled' | 'measure' | 'window' | 'weight' | 'reducti
 const columns = ['name', 'measure', 'window', 'weight', 'enabled'] as const satisfies readonly TermField[];
 const columnNames = { name: 'term', enabled: 'enabled', measure: 'measure', window: 'window', weight: 'weight' } as const;
 const columnWidths: Record<(typeof columns)[number], TableColumn> = {
-  name: { least: '9rem', fixed: true }, measure: { least: '10rem' }, window: { least: '8rem' }, weight: { least: '7rem' },
-  enabled: { least: '4.5rem', fixed: true },
+  name: { least: '6rem', greatest: '16rem' }, measure: { least: '10rem' }, window: { least: '8rem' }, weight: { least: '7rem' },
+  enabled: { least: '4.5rem', greatest: '4.5rem' },
 };
 
 /** The anchor of a term's Weight, which Add Sweep puts the keyboard on. */
@@ -287,7 +287,7 @@ function termFields(view: TrialView, term: ObjectiveTerm, index: number, commit?
     if (!projection) throw new Error(`The Objective's ${field} of term ${term.id} has no field`);
     const kind = expressionKind(term[field] as JsonValue | undefined);
     const sweep = projection.sweep?.id;
-    const model = fromFieldView({ ...projection, label, effective: runs?.selected ? projection.effective : null }, {
+    const model = trialField(projection, label, runs, {
       id: term.id + field, kind, changed: changed(field),
       commit: commit && ((edit) => commit('Set ' + label, { kind: 'expression', path: projection.path, edit })),
       selectedMembers: sweep ? runs?.values(sweep) : undefined,

@@ -91,7 +91,7 @@ export function trialRows(task: ShelfTask, record: TrialRecord, stepSeconds: num
     },
     ...task.signals.map((signal): ShelfRow => ({
       kind: 'bars', key: `signal:${signal.id}`, name: signal.name, selects: named(task.document, `signal:${signal.id}`),
-      bars: presence(signalSteps(record, signal.name), stepSeconds),
+      bars: presence(signalSteps(record, signal.id), stepSeconds),
     })),
   ];
 }
@@ -120,7 +120,7 @@ export function batchRows(task: ShelfTask, aggregate: TrialAggregate, stepSecond
     })),
     ...task.signals.map((signal): ShelfRow => ({
       kind: 'bars', key: `signal:${signal.id}`, name: signal.name, selects: named(task.document, `signal:${signal.id}`),
-      bars: shareBars(aggregate.signals[signal.name]?.presence ?? [], stepSeconds),
+      bars: shareBars(aggregate.signals[signal.id]?.presence ?? [], stepSeconds),
     })),
   ];
 }

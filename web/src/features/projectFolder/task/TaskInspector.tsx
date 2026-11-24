@@ -15,15 +15,15 @@ function Fact({ label, children }: { label: string; children: ReactNode }) {
 const round = (value: number) => Number(value.toPrecision(3));
 
 /** A signal's trace over the shown trial or trials, with one trial's epoch boundaries. */
-function Trace({ view, signal, shown }: { view: TaskDocumentView; signal: string; shown: TrialShown }) {
+function Trace({ view, signal, shown }: { view: TaskDocumentView; signal: string; shown?: TrialShown }) {
   const name = view.signals.find(({ id }) => id === signal)?.name ?? signal;
+  if (!shown) return null;
   switch (shown.kind) {
-    case 'definition': return null;
     case 'one': return <section aria-label={studioName('plot')} className="grid gap-1">
-      <TrialTrace label={name} steps={signalSteps(shown.record, name)} boundaries={epochBoundaries(shown.record)} duration={view.duration} />
+      <TrialTrace label={name} steps={signalSteps(shown.record, signal)} boundaries={epochBoundaries(shown.record)} duration={view.duration} />
     </section>;
     case 'all': {
-      const aggregate = signalAggregate(shown.aggregate, name);
+      const aggregate = signalAggregate(shown.aggregate, signal);
       return aggregate ? <section aria-label={studioName('plot')} className="grid gap-1">
         <BatchTrace label={name} aggregate={aggregate} boundaries={[]} duration={view.duration} />
       </section> : null;
@@ -42,15 +42,15 @@ export function VariableInspector({ variable, children }: { variable: TaskVariab
 }
 
 /** The Inspector for what is selected in the Task view: its fields with their parts, and, with a trial shown, what it drew. */
-export function TaskInspector({ view, selected, shown }: { view: TaskDocumentView; selected?: TaskSelection; shown: TrialShown }) {
+export function TaskInspector({ view, selected, shown }: { view: TaskDocumentView; selected?: TaskSelection; shown?: TrialShown }) {
   if (!selected) return null;
-  const drawn = drawnVariables(shown, view.variables);
+  const drawn = drawnVariables(shown);
   switch (selected.kind) {
     case 'variable': {
       const variable = view.variables.find(({ id }) => id === selected.id);
       if (!variable) return null;
       return <VariableInspector variable={variable}>
-        {drawn && <Fact label={shown.kind === 'all' ? studioName('allTrials') : studioName('trial')}>{drawn[variable.id]}</Fact>}
+        {drawn && <Fact label={shown?.kind === 'all' ? studioName('allTrials') : studioName('trial')}>{drawn[variable.id]}</Fact>}
       </VariableInspector>;
     }
     case 'epoch': case 'end': {

@@ -51,22 +51,22 @@ def selected_model_and_task(folders: ProjectFolder, project_id: str, body: Model
     if managed.get("python_task") is not None:
         selection = PythonTaskSelection.model_validate(managed["python_task"])
         template = resolve_python_task(selection, folders.python_tasks or application_python_tasks())
-        signals = {} if isinstance(template, tuple) else template.signals
+        signals = [] if isinstance(template, tuple) else [(name, name, type_) for name, type_ in template.signals.items()]
     elif managed.get("task") is not None:
         task = TaskDocument.model_validate(managed["task"])
-        signals = {signal.name: signal.type for signal in task.signals}
+        signals = [(signal.id, signal.name, signal.type) for signal in task.signals]
     else:
-        signals = {}
+        signals = []
     binding = StudioTaskBindingSpec(exposed_data=[
         StudioTaskDataSpec(
-            id=name, label=name, kind="signal", path=name,
+            id=id_, label=name, kind="signal", path=id_,
             dtype={"integer": "int", "real": "float", "boolean": "bool"}[type_.base],
             expected_shape=["time", *type_.shape], bindable=True,
             units=next((name for name, unit in UNITS.items()
                         if name and name != "st" and unit.scale == 1 and unit.dimensions == type_.dimensions), None),
-        ) for name, type_ in signals.items()
+        ) for id_, name, type_ in signals
     ])
-    return ModelDocument.model_validate(model), binding, managed.get("objective"), managed.get("input_overrides", {})
+    return ModelDocument.model_validate(model), binding, managed.get("objective"), managed.get("input_bindings", {})
 
 
 def selected_task_signal(folders: ProjectFolder, project_id: str, body: ModelProjectionRequest, signal: str) -> ModelTaskSignal:

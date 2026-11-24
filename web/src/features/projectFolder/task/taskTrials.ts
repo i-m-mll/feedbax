@@ -41,19 +41,22 @@ function drawnAs<Kind extends 'trials' | 'aggregate'>(drawn: Drawn, kind: Kind):
   throw new Error(`The sampling route answered ${drawn.kind} where ${kind} was asked for.`);
 }
 
-/** The request that draws `count` trials under `seed` from the step's pairing: its Task, its Model, its bindings and its Objective. */
-function sampleRequest(view: StudioTrialAuthoring, task: TaskDocument, model: ModelDocument, seed: number, count: number,
-  aggregate: boolean): TaskTrialSampleRequest {
+/** Which trials a request draws: the nominal trial, `count` samples under `seed`, or their aggregate. */
+type Draw = { readonly nominal: true } | { readonly nominal: false; readonly seed: number; readonly count: number; readonly aggregate: boolean };
+
+/** The request that draws `draw` from the step's pairing: its Task, its Model, its bindings and its Objective. */
+function sampleRequest(view: StudioTrialAuthoring, task: TaskDocument, model: ModelDocument | undefined, draw: Draw): TaskTrialSampleRequest {
   return {
-    model, task, seed, count, aggregate, input_overrides: view.input_overrides,
+    task, input_bindings: view.input_bindings, ...draw,
+    ...model && { model },
     ...view.objective && { objective: view.objective },
   };
 }
 
-function useDrawn<Shown>(view: StudioTrialAuthoring | undefined, model: ModelDocument | undefined, seed: number, count: number,
-  aggregate: boolean, enabled: boolean, read: (drawn: Drawn) => Shown) {
+function useDrawn<Shown>(view: StudioTrialAuthoring | undefined, model: ModelDocument | undefined, draw: Draw, enabled: boolean,
+  read: (drawn: Drawn) => Shown) {
   const task = view && taskDocumentOf(view);
-  const body = view && task && model ? sampleRequest(view, task, model, seed, count, aggregate) : undefined;
+  const body = view && task ? sampleRequest(view, task, model, draw) : undefined;
   return useQuery({
     queryKey: ['task-trials', body],
     queryFn: async ({ signal }) => read((await sampleTaskTrials(body!, signal)).drawn),
@@ -62,13 +65,20 @@ function useDrawn<Shown>(view: StudioTrialAuthoring | undefined, model: ModelDoc
   });
 }
 
-/** The `count` trials drawn under `seed` from the step's pairing, when `enabled`. */
-export const useTaskSamples = (view: StudioTrialAuthoring | undefined, model: ModelDocument | undefined, seed: number, count: number,
-  enabled: boolean) => useDrawn(view, model, seed, count, false, enabled, (drawn) => {
+const records = (drawn: Drawn) => {
   const answer = drawnAs(drawn, 'trials');
   return answer.kind === 'problems' ? answer : answer.trials;
-});
+};
+
+/** The step's nominal trial, as one record, when `enabled`. */
+export const useNominalTrial = (view: StudioTrialAuthoring | undefined, model: ModelDocument | undefined, enabled: boolean) =>
+  useDrawn(view, model, { nominal: true }, enabled, records);
+
+/** The `count` trials drawn under `seed` from the step's pairing, when `enabled`. */
+export const useTaskSamples = (view: StudioTrialAuthoring | undefined, model: ModelDocument | undefined, seed: number, count: number,
+  enabled: boolean) => useDrawn(view, model, { nominal: false, seed, count, aggregate: false }, enabled, records);
 
 /** The aggregate of the `count` trials drawn under `seed` from the step's pairing, when `enabled`. */
 export const useTaskBatch = (view: StudioTrialAuthoring | undefined, model: ModelDocument | undefined, seed: number, count: number,
-  enabled: boolean) => useDrawn(view, model, seed, count, true, enabled, (drawn) => drawnAs(drawn, 'aggregate'));
+  enabled: boolean) => useDrawn(view, model, { nominal: false, seed, count, aggregate: true }, enabled,
+  (drawn) => drawnAs(drawn, 'aggregate'));
