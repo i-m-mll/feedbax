@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 from pydantic import Field
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.expression_values import WeightPart
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.request_refs import Sha256
@@ -59,6 +60,17 @@ class SetToSweep(StrictModel):
     axis: ProjectName
 
 
+class SetFieldWeight(StrictModel):
+    """Set one weight in a trial Set. Use a null entry for None and a part for a co-occurring entry."""
+
+    kind: Literal["set_field_weight"]
+    step: ProjectName
+    axis: ProjectName
+    entry: ProjectName | None
+    part: Literal["on", "off"] | None = None
+    weight: WeightPart
+
+
 class RemoveAxisValue(StrictModel):
     """Remove a value of a named axis or an entry of the set it reads; an inline axis left with one value that makes
     no difference is removed."""
@@ -82,7 +94,8 @@ class StudioSetEditRequest(StrictModel):
     selection: StudioRunSelection | None = None
     store_choice: Sha256 | None = None
     command: Annotated[
-        DuplicateRun | SaveSet | InlineSet | ApplySet | SetToField | SetToSweep | RemoveAxisValue | AddSetEntry,
+        DuplicateRun | SaveSet | InlineSet | ApplySet | SetToField | SetToSweep | SetFieldWeight
+        | RemoveAxisValue | AddSetEntry,
         Field(discriminator="kind"),
     ]
 

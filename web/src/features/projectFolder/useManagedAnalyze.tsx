@@ -45,7 +45,7 @@ import { placeElement, type Reveal } from './projectWindowProblems';
 import { ChangeRow, ProblemRow } from '@/features/projectWindow/StudioProblems';
 import { SavedFigureResult } from './SavedLightProducts';
 import { ElementRequests, requestMember } from './ElementRequests';
-import { generatedName } from './generatedName';
+import { generatedName, keyOfLabel } from './generatedName';
 import type { GestureFailures } from './refusals';
 
 type Source = OperationElement['inputs'][string];
@@ -53,6 +53,7 @@ type RefusalPlace = 'dialog' | readonly [string, string] | { readonly key: strin
 
 const operationDragType = 'application/x-feedbax-operation';
 const figureItem = 'velocity_summary';
+const summaryTemplate = 'feedbax.VelocitySummary';
 
 export function useManagedAnalyze({
   editor, key, projection, wholeStep, chosen, focusedView, reveal, savePosition, selection, sections, steps, failures, selectStep,
@@ -168,7 +169,11 @@ export function useManagedAnalyze({
     return `${shownCard}/${shownName(source, cardAnalysis(card)?.operations?.[source])}.${product}`;
   }
   const selectedInput = selected ? declarations[selected] : undefined;
-  const inputRoles = useAuthoringCatalog().data?.analyze_inputs;
+  const authoringCatalog = useAuthoringCatalog().data;
+  const inputRoles = authoringCatalog?.analyze_inputs;
+  const figureEntries = authoringCatalog?.registries.figure_templates?.entries;
+  const figureTemplates = useMemo(() => figureEntries?.filter((entry) => 'settings_schema' in entry)
+    .filter(({ key }) => key !== summaryTemplate) ?? [], [figureEntries]);
   const inputRole = selectedInput && inputRoles?.[selectedInput.kind];
   const armed = usePick(selection);
   const canvasPick = useMemo(() => armed && document ? {
@@ -457,7 +462,10 @@ export function useManagedAnalyze({
       },
     })),
     { id: figureItem, name: humanizeLabel(figureItem), group: studioName('figures'), glyph: <ChartLine /> },
-  ] : [], [catalog]);
+    ...figureTemplates.map((entry) => ({
+      id: entry.key, name: entry.label, group: studioName('figures'), glyph: <ChartLine />, terms: entry.key,
+    })),
+  ] : [], [catalog, figureTemplates]);
   function selectElement(id: string | null, extend = false) {
     setInspected(undefined);
     element.onSelect(id, extend);
@@ -466,6 +474,10 @@ export function useManagedAnalyze({
   function place(id: string, point?: PresentationPosition) {
     if (id === figureItem) addFigure(point);
     else if (definitions.has(id)) addOperation(id, point);
+    else if (figureTemplates.some(({ key }) => key === id)) {
+      const stem = keyOfLabel(id.split('.').at(-1)!.replace(/([a-z0-9])([A-Z])/g, '$1-$2'));
+      add('views', stem, { figure: { template: id }, inputs: {} }, point);
+    }
   }
   const libraryInspector = shownItem && <Inspector name={shownItem.name} type={shownItem.group}>
     {definitions.get(shownItem.id)?.description && <p className="text-shell-muted">{definitions.get(shownItem.id)!.description}</p>}

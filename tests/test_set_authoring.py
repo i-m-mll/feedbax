@@ -285,6 +285,54 @@ def test_to_field_moves_the_set_into_one_train_and_to_sweep_restores_it(studio):
     assert not folders.read(PROJECT).project.steps["other"].set_fields
 
 
+@pytest.mark.parametrize(("sampling", "edits", "weights", "variants"), [
+    (
+        {"kind": "weighted", "weights": {"nominal": 3}, "none": 4},
+        [{"entry": "heavy", "weight": 2}, {"entry": None, "weight": 0}],
+        {None: 0, "heavy": 2, "nominal": 3},
+        True,
+    ),
+    (
+        {"kind": "cooccurring", "weights": {"heavy": {"off": 3}, "nominal": {"on": 4}}},
+        [{"entry": "heavy", "part": "on", "weight": 2}],
+        {"heavy": {"on": 2, "off": 3}, "nominal": {"on": 4, "off": 1}},
+        False,
+    ),
+])
+def test_set_field_weight_changes_only_the_named_part_of_the_selected_train(tmp_path, sampling, edits, weights, variants):
+    raw = document_project(authored_documents())
+    raw["documents"]["loads"] = {
+        "schema": "feedbax.set_document.v1", "payload": {"entries": {"heavy": {}, "nominal": {}}},
+    }
+    raw["steps"]["train"]["set_fields"] = {"load": {"axis": {"set": "loads"}, "sampling": sampling}}
+    raw["steps"]["other"] = deepcopy(raw["steps"]["train"])
+    if variants:
+        raw["sweep"] = {"rows": {"base": {}, "compare": {"from": "base"}}}
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, PROJECT, Project.model_validate(raw))
+    before = folders.read(PROJECT)
+    train, other = (_runs(folders, step) for step in ("train", "other"))
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        for edit in edits:
+            result = _set_edit(folders, client, {
+                "kind": "set_field_weight", "step": "train", "axis": "load", **edit,
+            }, store="whole_step" if variants else None)
+            assert [file["address"] for file in result["files"]] == [{"kind": "step", "id": "train"}]
+        saved = folders.read(PROJECT)
+        reply = client.post(f"{BASE}/authoring/trials", json={
+            "revision": saved.revision,
+            "run": {"variant": "base" if variants else "default", "step": "train", "row": "default"},
+        })
+        assert reply.status_code == 200, reply.text
+        (field,) = reply.json()["set_fields"]
+        assert {item["entry"]: item["weight"] for item in field["entries"]} == weights
+
+    assert saved.project.documents["loads"] == before.project.documents["loads"]
+    assert saved.project.steps["other"] == before.project.steps["other"]
+    assert _runs(folders, "train") != train
+    assert _runs(folders, "other") == other
+
+
 def test_required_set_can_be_emptied_and_repaired(tmp_path):
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     raw["documents"]["draft"] = {"schema": "feedbax.set_document.v1", "payload": {"entries": {"one": {}}}}

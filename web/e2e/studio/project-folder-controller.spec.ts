@@ -54,7 +54,7 @@ async function outsideWrite(root: string, batch: number) {
   await rename(replacement, path);
 }
 
-test('the focused File Rename command follows the declaration and refuses a stale dialog', async ({ page, request, studio }, info) => {
+test('File Rename marks invalid names and refuses a stale dialog', async ({ page, request, studio }, info) => {
   const created = await request.post('/api/projects');
   expect(created.status(), await created.text()).toBe(201);
   const { snapshot, configuration } = await created.json();
@@ -91,7 +91,14 @@ test('the focused File Rename command follows the declaration and refuses a stal
   const submit = dialog.getByRole('button', { name: 'Rename', exact: true });
   await chooseRename();
   await expect(name).toHaveValue(configuration.project);
+  await name.fill('Reaching (test)');
+  await submit.click();
+  await expect(name).toHaveAttribute('aria-invalid', 'true');
+  await expect(name).toHaveAccessibleDescription(/names use letters, digits, underscores, and hyphens/);
+  await expect(name).toHaveValue('Reaching (test)');
+  expect(await readFile(declaration)).toEqual(bytes);
   await name.fill('stale-draft');
+  await expect(name).not.toHaveAttribute('aria-invalid', 'true');
   const outside = join(root, 'outside.feedbax');
   await rename(declaration, outside);
   await expect(submit).toBeDisabled();

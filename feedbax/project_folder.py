@@ -6,6 +6,7 @@ from base64 import b64decode, b64encode
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 import fcntl
 from functools import lru_cache, partial
 import os
@@ -90,6 +91,8 @@ from feedbax.contracts.studio_project import (
     StudioMemberCommandResult,
     StudioPresentationWrite,
     StudioProjectDocument,
+    StudioProjectList,
+    StudioProjectListEntry,
     StudioProjectCreateFile,
     StudioProjectCreateFiles,
     StudioProjectPatch,
@@ -1023,6 +1026,33 @@ class ProjectFolder:
 
     def open(self, project_id: str) -> StudioProjectDocument:
         return self._open_folder(self._folder(project_id))
+
+    def list_projects(self) -> StudioProjectList:
+        """List valid home projects without opening them or recovering pending writes."""
+        try:
+            children = tuple(self.root.iterdir())
+        except FileNotFoundError:
+            children = ()
+        except OSError as error:
+            raise ProjectFolderInvalid(str(error)) from error
+        projects = []
+        for child in children:
+            try:
+                if not child.is_dir(follow_symlinks=False):
+                    continue
+                location = ProjectFolderLocation.selected(child)
+                text = self._load(location.path)
+                stamps = (text_file_stamp(location.path / name, location.path) for name in text.files)
+                modified_ns = max(mtime_ns for _, _, _, _, mtime_ns, _ in stamps)
+                if ProjectFolderLocation.selected(child) != location:
+                    continue
+            except (OSError, ProjectFolderInvalid, ProjectReadError):
+                continue
+            projects.append(StudioProjectListEntry(
+                project_id=location.project_id, name=text.configuration.project,
+                modified=datetime.fromtimestamp(modified_ns / 1_000_000_000, tz=timezone.utc),
+            ))
+        return StudioProjectList(projects=sorted(projects, key=lambda project: (project.name, project.project_id)))
 
     def represented_declaration(self, project_id: str, identity: tuple[int, int]) -> Path:
         location = self._folder(project_id)

@@ -551,6 +551,7 @@
     "copyFailed": "{value} could not be copied",
     "saving": "{value} is saving",
     "nameChangedDuringEdit": "{value} changed during this edit",
+    "projectNameCharacters": "{value} names use letters, digits, underscores, and hyphens. Start with a letter, digit, or underscore.",
     "wholeUpdate": "{value} is outside the whole update range",
     "positiveUpdates": "{value} contains a nonpositive or invalid update",
     "reversedUpdates": "{value} ends before it begins",
