@@ -147,7 +147,7 @@ def _project(
     names = {epoch.id: epoch.name for epoch in epochs}
     epochs = tuple(
         StudioTrialEpoch(id=epoch, name=names.get(epoch, epoch), steps=steps)
-        for epoch, steps in zip(source.epochs, source.step_counts, strict=True)
+        for epoch, steps in dict(zip(source.epochs, source.step_counts, strict=True)).items()
     )
     if documents.objective is not None:
         objective_sites = {} if show_objective else None
@@ -238,12 +238,13 @@ def _selected_task(project, document) -> TaskDocument | PythonTaskSelection | No
     return None
 
 
-def _with_task(documents, task):
+def _with_task(documents, task, *, input_bindings: dict[str, str | None] | None = None):
+    bindings = documents.input_bindings if input_bindings is None else input_bindings
     if isinstance(documents, _InitialTrialDocuments):
-        return replace(documents, task_source=task)
+        return replace(documents, task_source=task, input_bindings=bindings)
     if isinstance(task, PythonTaskSelection):
-        return documents.model_copy(update={"task": None, "python_task": task})
-    return documents.model_copy(update={"task": task, "python_task": None})
+        return documents.model_copy(update={"task": None, "python_task": task, "input_bindings": bindings})
+    return documents.model_copy(update={"task": task, "python_task": None, "input_bindings": bindings})
 
 
 def _field_document(documents, role):
@@ -527,6 +528,7 @@ def _evaluate_documents(plan, key, definition, bundle):
                         components=bundle.components,
                     )
                     graph, task = lowered.graph, lowered.task
+                params = effective_params
     except ValueError as error:
         return documents, _Projection(
             projection.pair, projection.variables, projection.signals, projection.epochs,
@@ -534,9 +536,7 @@ def _evaluate_documents(plan, key, definition, bundle):
                 code=ProblemCode.STRUCTURE, path=("variation",), reason=str(error),
             )),
         ), None
-    documents = _with_task(documents, task).model_copy(update={
-        "input_bindings": documents.input_bindings | params.input_bindings,
-    })
+    documents = _with_task(documents, task, input_bindings=documents.input_bindings | params.input_bindings)
     paired = _project(documents, bundle, graph_override=graph, objective_use=objective_use)
     return documents, replace(paired, task_origins=variant.edit_origins), graph
 
@@ -721,8 +721,8 @@ def _structure_edit(change, documents, definition) -> StudioTrialDocumentEdit | 
     _, raw = _changed_value(documents, definition, "task")
     before, after = task.model_dump(mode="json"), changed.model_dump(mode="json")
     edits = [
-        SetProjectValue(op="replace" if field in raw else "add", path=pointer((field,)), value=after[field])
-        for field in after if after[field] != before[field]
+        SetProjectValue(op="replace" if field in raw else "add", path=pointer((field,)), value=after.get(field, []))
+        for field in dict.fromkeys((*after, *before)) if after.get(field) != before.get(field)
     ]
     if not edits:
         raise ProjectFolderInvalid("The change leaves the task as it is.")

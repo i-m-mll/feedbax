@@ -126,7 +126,7 @@ def result(paths, host, project, attempt, successor, revision, evaluation, trial
     assert bound.evaluation_subject is not None
     assert bound.evaluation_subject.terminal_receipt == train_ref
     with result.open_states(verify=True) as dataset:
-        position = dataset.descriptor.attrs["scene_position"]
+        position = dataset.descriptor.attrs["trial_record"]["positions"][0]
         samples = dataset.select(position, labels={"trial": trial})[0, 0].tolist()
     return {"receipt": result.receipt.model_dump(mode="json"), "samples": samples}
 
