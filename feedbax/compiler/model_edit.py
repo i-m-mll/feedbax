@@ -1155,6 +1155,11 @@ def _attachment_problem(chain: list[Record]) -> str | None:
     return None
 
 
+def model_ungroup_eligibility(document: ModelDocument) -> tuple[edits.ModelUngroupEligibility, ...]:
+    draft = ModelEditDraft(edits.ModelEditState(document=document), lambda *_: None, lambda *_: True)
+    return tuple(draft.ungroup_eligibility())
+
+
 def model_graph_problems(
     document: ModelDocument, *, ports: LeafPorts, accepts: AcceptComponent = lambda *_: True,
 ) -> Iterator[edits.ModelGraphProblem]:

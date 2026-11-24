@@ -7,6 +7,7 @@ from dataclasses import replace
 
 from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.compiler.model_document import ModelCompilationProblem
+from feedbax.compiler.model_edit import model_ungroup_eligibility
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES, AttachmentDifference
 from feedbax.contracts.model_document import ModelDocument
@@ -119,6 +120,7 @@ def read_evaluate_model(
         editable=editable,
         effective=tuple(record for record in differences if isinstance(record, AttachmentDifference)),
         resolved_model=resolved,
+        ungroup=model_ungroup_eligibility(resolved) if resolved is not None else (),
         source=source,
         field_sources=field_sources,
         changed_from=shared,
