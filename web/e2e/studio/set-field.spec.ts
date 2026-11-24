@@ -25,12 +25,12 @@ test('To Field moves a Set into the run as a variable of the Task, and To Sweep 
   const marks = card.locator('.studio-map-run-mark');
   const primary = page.locator('[data-slot="primary"]');
   const row = primary.getByRole('table', { name: 'Variables', exact: true }).getByRole('row')
-    .filter({ has: page.getByRole('list', { name: 'Values load', exact: true }) });
+    .filter({ has: page.getByRole('list', { name: 'Values loads', exact: true }) });
   const step = async () => ((await (await request.get(projectPath)).json()) as StudioProjectSnapshot).project.steps!.train;
 
   await page.goto(`/?project=${snapshot.project_id}`);
   await expect(marks).toHaveCount(3);
-  await sweepLabel(card, 'load').click();
+  await sweepLabel(card, 'loads').click();
   await page.getByRole('menuitem', { name: 'To Field', exact: true }).click();
   await expect(marks).toHaveCount(1);
   await expect.poll(async () => Object.keys((await step()).set_fields ?? {})).toEqual(['load']);
@@ -40,7 +40,7 @@ test('To Field moves a Set into the run as a variable of the Task, and To Sweep 
   await expect(row.getByRole('listitem')).toHaveText(['Light1', 'Mid1', 'Heavy1', 'None1']);
 
   await row.hover();
-  await row.getByRole('button', { name: 'Variable load', exact: true }).click();
+  await row.getByRole('button', { name: 'Variable loads', exact: true }).click();
   await page.getByRole('menuitem', { name: 'To Sweep', exact: true }).click();
   await expect(marks).toHaveCount(3);
   await expect(row).toHaveCount(0);

@@ -7,7 +7,7 @@ import { FieldProblem } from '@/components/ui/FieldProblem';
 import { InlineEdit } from '@/components/ui/InlineEdit';
 import { MenuCheckboxItem, MenuItem } from '@/components/ui/Menu';
 import {
-  Table, TableCell, TableFieldCell, TableHeaderCell, TableHeaderRow, TableRow, type TableColumn,
+  Table, TableCell, TableFieldCell, TableHeaderCell, TableHeaderRow, TableRow, TableRowHeader, type TableColumn,
 } from '@/components/ui/Table';
 import { TreeChoice } from '@/components/ui/TreeChoice';
 import { changeTip, ValueField } from '@/components/values/ValueField';
@@ -145,15 +145,15 @@ export function TaskVariables({ variables, sets = [], starts = [], selected, sel
   </Table>;
 }
 
-/** A Set the trials apply: its name, its Set, and its entries with their weights in parts. */
+/** A Set the trials apply, named as its sweep's label names it, with its entries and their weights in parts. */
 function SetRow({ set, drawn }: { set: TaskSetVariable & { readonly toSweep?: StudioCommand }; drawn: boolean }) {
   const { toSweep } = set;
-  return <TableRow menu={toSweep && { label: studioAccessibleName('variable', set.axis), items:
+  return <TableRow menu={toSweep && { label: studioAccessibleName('variable', set.set), items:
     <MenuItem disabled={!toSweep.enabled} onClick={() => toSweep.invoke()}>{toSweep.title}</MenuItem> }}>
-    <TableCell className="font-mono">{set.axis}</TableCell>
-    <TableCell className="text-shell-muted">{set.set}</TableCell>
+    <TableRowHeader className="font-mono">{set.set}</TableRowHeader>
+    <TableCell className="text-shell-muted">{studioName('set')}</TableCell>
     <TableCell>
-      <ul aria-label={studioAccessibleName('values', set.axis)} className="flex min-w-0 flex-wrap gap-x-3">
+      <ul aria-label={studioAccessibleName('values', set.set)} className="flex min-w-0 flex-wrap gap-x-3">
         {set.entries.map(({ id, label, parts }) => <li key={id ?? ''} className="flex items-baseline gap-1">
           <span>{label}</span>
           {parts && <span className="font-mono tabular-nums text-shell-muted">{parts}</span>}
