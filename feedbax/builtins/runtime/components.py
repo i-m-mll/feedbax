@@ -1707,6 +1707,7 @@ class Switch(Component):
         threshold: Comparison threshold for routing.
     """
 
+    model_facts = ModelFacts()
     config: ClassVar[type[BaseModel]] = _SwitchConfig
 
     ports: ClassVar[Ports] = Ports(

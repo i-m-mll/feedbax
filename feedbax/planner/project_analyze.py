@@ -249,7 +249,7 @@ class _Lowerer:
     ) -> tuple[tuple[PlannedInput, ...], DatasetPort, _Entries]:
         """The bindings of a dataset input, its port, and the labelled entries the stacked dataset holds."""
         if isinstance(source, OperationDataset):
-            requests = self.elements.get(source.element)
+            requests = None if source.unresolved else self.elements.get(source.element)
             if not requests:
                 raise _ElementIssue(path, f"Unknown or unplannable operation {source.element!r}.")
             bindings = tuple(
@@ -684,7 +684,7 @@ def lower_analyze(
                 {
                     source.element
                     for source in element.inputs.values()
-                    if isinstance(source, OperationDataset)
+                    if isinstance(source, OperationDataset) and not source.unresolved
                     and source.element in document.operations
                 }
             ),

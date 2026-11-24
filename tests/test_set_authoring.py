@@ -282,3 +282,31 @@ def test_applying_an_inapplicable_set_stores_the_reference_and_marks_the_differe
         assert path.startswith("/sweep/axes/draft/values/heavy/patches/")
         assert any(problem.authored_path.startswith(path) for problem in folders.read_plan(PROJECT, revision=None).plan.diagnostics
                    if problem.authored_path is not None)
+
+
+def test_to_field_moves_the_set_into_one_train_and_to_sweep_restores_it(studio):
+    folders, client = studio
+    train_before = _runs(folders, "train")
+    for _ in range(3):
+        _duplicate(folders, client, "other", ["default"])
+    _set_edit(folders, client, {"kind": "save_set", "step": "other", "axis": "run"})
+    before = folders.read(PROJECT).project.steps["other"].sweep.axes["run"]
+    sweep = _runs(folders, "other")
+    assert len(sweep) == 4
+
+    _set_edit(folders, client, {"kind": "set_to_field", "step": "other", "axis": "run"})
+    assert list(_runs(folders, "other")) == ["default"]
+    revision = folders.read(PROJECT).revision
+    reply = client.post(f"{BASE}/authoring/trials", json={
+        "revision": revision, "run": {"variant": "default", "step": "other", "row": "default"},
+    })
+    assert reply.status_code == 200, reply.text
+    (field,) = reply.json()["set_fields"]
+    assert field["axis"] == "run" and field["set"] == before.set
+    assert field["entries"][0]["entry"] is None
+    assert all(item["weight"] == 1 for item in field["entries"])
+    assert _runs(folders, "train") == train_before
+
+    _set_edit(folders, client, {"kind": "set_to_sweep", "step": "other", "axis": "run"})
+    assert _runs(folders, "other") == sweep
+    assert not folders.read(PROJECT).project.steps["other"].set_fields

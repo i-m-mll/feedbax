@@ -13,12 +13,20 @@ from feedbax.contracts.expression_values import (
 TASK_DOCUMENT_SCHEMA_ID = "feedbax.spec.task_document"
 
 
+class SetVariableChoices(ValueRecord):
+    """Entry identities indexed by the variable's recorded integer or Boolean value."""
+
+    set: str
+    entries: tuple[str | None, ...]
+
+
 class Variable(ValueRecord):
     id: str
     name: str
     type: ValueType
     value: Expression
     count: Expression | None = Field(default=None, exclude_if=lambda value: value is None)
+    set_choices: SetVariableChoices | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class Length(ValueRecord):
