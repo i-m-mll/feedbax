@@ -3,6 +3,7 @@ import type { ModelDocument, ModelEditResponse } from '../../src/generated/studi
 import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { expectVisibleFocus } from './fixtures/studioAccessibility';
 import { rootPayload } from './fixtures/rootPayload';
+import { palette } from './fixtures/studioKeyboard';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -155,4 +156,11 @@ test('a wire drawn to an occupied input of another type replaces its wire, keepi
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
   await expect(model.locator('.studio-model-attachments').getByRole('img', { name: 'Problems', exact: true }))
     .toHaveAccessibleDescription(/m ≠ .*s/);
+  // Problems lists each Problem the canvas marks.
+  const marked = await model.locator('[role="img"][aria-label="Problems"][aria-description]')
+    .evaluateAll((marks) => marks.map((mark) => mark.getAttribute('aria-description')!));
+  expect(marked.length).toBeGreaterThan(0);
+  await palette(page, 'problems', 'Problems');
+  const listed = page.getByRole('dialog', { name: 'Problems', exact: true }).getByRole('button');
+  for (const reason of new Set(marked)) await expect(listed.filter({ hasText: reason }).first()).toBeVisible();
 });
