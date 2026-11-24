@@ -53,6 +53,7 @@ from feedbax.contracts.expression_text import parse, print_field, resolve_expres
 from feedbax.studio.value_structure import value_structure
 from feedbax.objectives.document import ObjectiveExecutor, ObjectiveUse, compile_objective
 from feedbax.application.bundle import ApplicationRegistryBundle
+from feedbax.web.services.authored_scope import edited_authored_rows
 from feedbax.web.services.evaluate_sources import evaluate_subject, evaluate_value_source
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
 from feedbax.web.services.set_authoring import trial_set_fields
@@ -967,7 +968,7 @@ def _validate_files(
             stored = preserve(stored)
         authored = preview_stored(project, stored)
         after = compile_sources(authored, possible)
-        runs = _changed_runs(before, after, key, stored)
+        runs = _changed_runs(before, after)
         value = stored, authored, after
         if kind == "all_readers":
             return all_readers_store(source, runs, value)
@@ -1023,11 +1024,9 @@ def _validate_files(
     return stored, (), (authored, candidate)
 
 
-def _changed_runs(before, after, key: RunKey, stored: StoredEdit) -> frozenset[RunKey]:
+def _changed_runs(before, after) -> frozenset[RunKey]:
     """Run identities whose own resolved definition or sweep coordinates change."""
-    kind = before.steps[key.variant, key.step].kind
-    documents = {file.address.id for file in stored.files if file.address.kind == "document"}
-    documents.update(file.id for file in stored.created)
+    authored = edited_authored_rows(before, after)
 
     def values(plan):
         return {
@@ -1036,10 +1035,7 @@ def _changed_runs(before, after, key: RunKey, stored: StoredEdit) -> frozenset[R
                 if (definition := plan.selected_definitions.get(row.key)) is not None else None,
                 row.document_ids, row.coordinates,
             )
-            for row in plan.rows if row.kind in {"train", "evaluate"} and (
-                row.kind == kind or row.key.step in stored.reached
-                or (row.document_uses - row.followed_documents) & documents
-            )
+            for row in plan.rows if row.kind in {"train", "evaluate"} and row.key in authored
         }
 
     old, new = values(before), values(after)
