@@ -1,35 +1,41 @@
 import { studioName } from '@/components/activity/studioVocabulary';
 import { StatusMark } from '@/components/ui/StatusMark';
-import { Tree, type TreeNode } from '@/components/ui/Tree';
+import { Tree } from '@/components/ui/Tree';
 import { Drawer, DrawerSection, type DrawerSections } from '@/features/projectWindow/DrawerForms';
-import type { FieldModel } from '@/components/values/fieldModel';
-import type { TaskDocumentView, TaskSelection } from './taskModel';
 
-/** The first problem among an element's fields, as its status mark. */
-function mark(fields: readonly (FieldModel | undefined)[]) {
-  const reason = fields.find((field) => field?.reason)?.reason;
-  return reason ? <StatusMark status="cannot_run" label={reason} /> : undefined;
+/** The Outline's groups, in its order. */
+const groupOrder = ['variables', 'epochs', 'signals', 'modelInputs'] as const;
+export type OutlineGroup = (typeof groupOrder)[number];
+
+/** An element of the task in the Outline: its name, and its first problem as its status mark. */
+export interface OutlineEntry {
+  readonly id: string;
+  readonly name: string;
+  readonly reason?: string;
+  readonly muted?: boolean;
 }
 
-/** The drawer's Outline: variables, epochs and signals, each with its status mark; a row selects its element in the view. */
-export function TaskOutline({ sections, view, selected, select }: {
-  sections: DrawerSections; view: TaskDocumentView; selected?: TaskSelection; select(selection: TaskSelection): void;
+/**
+ * The drawer's Outline: variables, epochs and signals, and the Model's inputs where the task feeds them, each element
+ * with its status mark; a row selects its element in the view. A group with no elements is left out.
+ */
+export function TaskOutline({ sections, groups, selected, select }: {
+  sections: DrawerSections;
+  groups: Readonly<Partial<Record<OutlineGroup, readonly OutlineEntry[]>>>;
+  selected?: { readonly group: OutlineGroup; readonly id: string };
+  select(group: OutlineGroup, id: string): void;
 }) {
-  const groups = [
-    { id: 'variables', kind: 'variable', nodes: view.variables.map((variable) => ({
-      id: variable.id, name: variable.name, trailing: mark([variable.value]),
-    })) },
-    { id: 'epochs', kind: 'epoch', nodes: view.epochs.map((epoch) => ({ id: epoch.id, name: epoch.name, trailing: mark([epoch.end]) })) },
-    { id: 'signals', kind: 'signal', nodes: view.signals.map((signal) => ({
-      id: signal.id, name: signal.name, trailing: mark(signal.cells.map((cell) => cell.kind === 'value' ? cell.value : undefined)),
-    })) },
-  ] as const satisfies readonly { id: 'variables' | 'epochs' | 'signals'; kind: TaskSelection['kind']; nodes: readonly TreeNode[] }[];
-  const owner = selected && (selected.kind === 'end' ? 'epoch' : selected.kind === 'cell' ? 'signal' : selected.kind);
-  const ownerId = selected && (selected.kind === 'cell' ? selected.signal : selected.id);
   return <Drawer>
-    {groups.map(({ id, kind, nodes }) => <DrawerSection key={id} sections={sections} id={`task.${id}`} name={studioName(id)}>
-      <Tree aria-label={studioName(id)} nodes={nodes} selected={owner === kind && ownerId ? [ownerId] : []}
-        onSelectedChange={(ids) => { const chosen = ids.at(-1); if (chosen) select({ kind, id: chosen }); }} />
-    </DrawerSection>)}
+    {groupOrder.map((group) => {
+      const entries = groups[group];
+      if (!entries?.length) return null;
+      const nodes = entries.map(({ id, name, reason, muted }) => ({
+        id, name, muted, trailing: reason ? <StatusMark status="cannot_run" label={reason} /> : undefined,
+      }));
+      return <DrawerSection key={group} sections={sections} id={`task.${group}`} name={studioName(group)}>
+        <Tree aria-label={studioName(group)} nodes={nodes} selected={selected?.group === group ? [selected.id] : []}
+          onSelectedChange={(ids) => { const chosen = ids.at(-1); if (chosen) select(group, chosen); }} />
+      </DrawerSection>;
+    })}
   </Drawer>;
 }

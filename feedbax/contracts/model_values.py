@@ -36,6 +36,8 @@ class StateReset:
     output_path: tuple[str, ...] = ()
     aliases: tuple[tuple[str, ...], ...] = ()
     override_port: str | None = None
+    required: bool = False
+    """The component has no meaningful start of its own, so a task must initialize the field."""
 
 
 @dataclass(frozen=True)

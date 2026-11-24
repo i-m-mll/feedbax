@@ -23,6 +23,8 @@ _NEW_EPOCH = Length(length=LiteralValue(value=1, unit="st"))
 def restructure(document: TaskDocument, change: TaskStructureChange) -> TaskDocument | Problem:
     """``document`` with ``change`` made, or the Problem that names a member the document does not have."""
     match change:
+        case AddMember(member="epoch" | "signal", initializes=(_, *_)):
+            return Problem(code=ProblemCode.STRUCTURE, reason="Only a variable initializes the Model.")
         case AddMember():
             return _add(document, change)
         case RemoveMember(member="epoch") if len(document.epochs) == 1:
@@ -75,7 +77,11 @@ def _add(document: TaskDocument, change: AddMember) -> TaskDocument:
         "signal": lambda: Signal(id=id, name=change.name, type=value_type, cells=()),
     }[change.member]()
     index = len(members) if change.index is None else min(change.index, len(members))
-    return document.model_copy(update={field: (*members[:index], added, *members[index:])})
+    links = tuple(link for link in document.links if link.model_field not in change.initializes)
+    return document.model_copy(update={
+        field: (*members[:index], added, *members[index:]),
+        "links": (*links, *(Link(model_field=address, variable=id) for address in change.initializes)),
+    })
 
 
 def _edit_member(

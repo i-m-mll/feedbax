@@ -4,20 +4,22 @@ import { Activity, GripVertical, MoreHorizontal } from 'lucide-react';
 import { useState, type DragEvent } from 'react';
 import { studioAccessibleName, studioName, studioValueType } from '@/components/activity/studioVocabulary';
 import { IconButton } from '@/components/ui/Button';
+import { ChangeMark } from '@/components/ui/ChangeMark';
+import { Combobox } from '@/components/ui/Combobox';
 import { FieldProblem } from '@/components/ui/FieldProblem';
 import { InlineEdit } from '@/components/ui/InlineEdit';
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '@/components/ui/Menu';
 import { Table, TableCell, TableFieldCell, TableHeaderCell, TableRow, type TableColumn } from '@/components/ui/Table';
-import { ValueField } from '@/components/values/ValueField';
+import { changeTip, ValueField } from '@/components/values/ValueField';
 import { withAttention } from './attention';
-import type { TaskSelection, TaskVariable } from './taskModel';
+import type { TaskSelection, TaskVariable, UninitializedStart, VariableInitializes } from './taskModel';
 
 /** A refusal of a variable's edit, or nothing once it is made. */
 type Made = Promise<string | undefined> | void;
 
 export interface VariableEdits {
-  /** Adds a variable named `name` at the end. */
-  add?(name: string): Made;
+  /** Adds a variable named `name` at the end; given `start`, it is of that value's type and initializes it. */
+  add?(name: string, start?: UninitializedStart): Made;
   rename?(id: string, name: string): Made;
   remove?(id: string): Made;
   /** Moves the variable to `index` among the variables. */
@@ -38,7 +40,28 @@ export function LevelMark({ variable }: { variable: Pick<TaskVariable, 'level'> 
 
 const columns: readonly TableColumn[] = [
   { least: '2rem', fixed: true }, { least: '9rem', fixed: true }, { least: '9rem', fixed: true }, { least: '10rem' },
+  { least: '12rem' },
 ];
+
+/** The Model values a variable initializes, as a choice with type-ahead of those its type fits. */
+function Initializes({ variable, initializes }: { variable: string; initializes?: VariableInitializes }) {
+  const [refusal, setRefusal] = useState<string>();
+  if (!initializes) return null;
+  const { chosen, options, reason, changed, toggle } = initializes;
+  const items = [...options, ...chosen.filter(({ id }) => !options.some((option) => option.id === id))];
+  const shown = refusal ?? reason;
+  return <Combobox className="w-full" aria-label={studioAccessibleName('initializes', variable)}
+    items={items.map(({ id, name }) => ({ value: id, label: name }))}
+    checked={chosen.map(({ id }) => id)} text={chosen.map(({ name }) => name).join(', ')}
+    disabled={!toggle} invalid={!!shown}
+    trailing={(shown || changed) && <>
+      {shown && <FieldProblem reason={shown} />}
+      {changed && <ChangeMark tip={changeTip(changed.from)} reset={changed.reset && (() => { void changed.reset!(); })} />}
+    </>}
+    onToggle={(id) => {
+      void Promise.resolve(toggle?.(id)).then((made) => setRefusal(made || undefined));
+    }} />;
+}
 
 const dragType = 'application/x-feedbax-task-variable';
 
@@ -52,8 +75,10 @@ function dropIndex(event: DragEvent<HTMLTableRowElement>, index: number) {
  * Variables as a table of Name, Type and Value. A name is edited by clicking into it; a variable is added at the foot
  * of the Name column once it has a name, removed by its row's menu, and moved by dragging its grip.
  */
-export function TaskVariables({ variables, selected, select, edits }: {
+export function TaskVariables({ variables, starts = [], selected, select, edits }: {
   variables: readonly TaskVariable[];
+  /** The paired Model's values no variable initializes, each a row with its name empty. */
+  starts?: readonly UninitializedStart[];
   selected?: TaskSelection;
   select(selection: TaskSelection): void;
   edits: VariableEdits;
@@ -72,6 +97,7 @@ export function TaskVariables({ variables, selected, select, edits }: {
       <TableHeaderCell scope="col">{studioName('name')}</TableHeaderCell>
       <TableHeaderCell scope="col">{studioName('type')}</TableHeaderCell>
       <TableHeaderCell scope="col">{studioName('value')}</TableHeaderCell>
+      <TableHeaderCell scope="col">{studioName('initializes')}</TableHeaderCell>
     </tr></thead>
     <tbody>{variables.map((variable, index) => {
       const chosen = selected?.kind === 'variable' && selected.id === variable.id;
@@ -132,8 +158,10 @@ export function TaskVariables({ variables, selected, select, edits }: {
           <ValueField form="cell" model={variable.typeChoice} />
         </TableFieldCell>
         <TableFieldCell><ValueField form="cell" model={variable.value} /></TableFieldCell>
+        <TableFieldCell><Initializes variable={variable.name} initializes={variable.initializes} /></TableFieldCell>
       </TableRow>;
     })}
+    {starts.map((start) => <StartRow key={start.id} start={start} add={edits.add} />)}
     {adding && edits.add && <NewVariable add={edits.add} done={() => setAdding(false)} />}
     </tbody>
   </Table>;
@@ -155,6 +183,37 @@ function NewVariable({ add, done }: { add(name: string): Made; done(): void }) {
         {refusal && <FieldProblem reason={refusal} />}
       </span>
     </TableFieldCell>
-    <TableCell /><TableCell />
+    <TableCell /><TableCell /><TableCell />
+  </TableRow>;
+}
+
+/**
+ * A Model value no variable initializes: its type and the value, with the problem's mark when the Model needs it.
+ * Naming it writes a variable of that type which initializes it.
+ */
+function StartRow({ start, add }: { start: UninitializedStart; add?: VariableEdits['add'] }) {
+  const [editing, setEditing] = useState(false);
+  const [refusal, setRefusal] = useState<string>();
+  const reason = refusal ?? (start.required ? studioName('neededAtStart') : undefined);
+  return <TableRow>
+    <TableCell />
+    <TableFieldCell header>
+      <span className="flex h-full min-w-0 items-center">
+        <InlineEdit form="cell" value="" editing={editing} className="min-w-0 flex-1 font-mono"
+          aria-label={studioAccessibleName('name', start.name)} onEditingChange={setEditing}
+          onCommit={(name) => {
+            if (!add) return false;
+            void Promise.resolve(add(name, start)).then((made) => setRefusal(made || undefined));
+          }} />
+      </span>
+    </TableFieldCell>
+    <TableCell className="text-shell-muted" {...appTip(studioValueType(start.valueType))}>{start.type}</TableCell>
+    <TableCell />
+    <TableCell>
+      <span className="flex min-w-0 items-center">
+        <span className="min-w-0 flex-1 truncate">{start.name}</span>
+        {reason && <FieldProblem reason={reason} />}
+      </span>
+    </TableCell>
   </TableRow>;
 }
