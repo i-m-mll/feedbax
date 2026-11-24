@@ -1659,7 +1659,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     activity, problemCommand, failure && !isStudioDefect(failureCause) && retryCommand,
   ].filter((command): command is StudioCommand => !!command);
 
-  const projectSettings = <ProjectSettingRows settings={configuration.settings ?? {}}
+  const projectSettings = <ProjectSettingRows settings={configuration.settings ?? {}} defaultDays={saved.default_keep_superseded_days}
     steps={Object.entries(saved.project.steps ?? {}).map(([id, step]) => ({ id, label: shownName(id, step) }))}
     change={(name, setting, value) => editor.edit(declarationAddress, name, [{ op: 'add', path: `/settings/${setting}`, value }])} />;
 
