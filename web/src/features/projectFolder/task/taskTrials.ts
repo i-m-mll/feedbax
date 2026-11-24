@@ -43,16 +43,16 @@ function drawnText(value: unknown): string {
   return '';
 }
 
-/** A trial the route drew, as the shelf, the Variables table and the Inspector read it; values are keyed by name. */
+/** A trial the route drew, as the shelf, the Variables table and the Inspector read it; values are keyed by id. */
 export function sampledTrial(view: StudioTrialAuthoring, task: TaskDocument, trial: TrialRecord): SampledTrial {
   const period = view.period_seconds;
   return {
     intervals: trial.timeline.map(({ epoch, label, start, end }) => ({ id: epoch, name: label, start: start * period, end: end * period })),
-    variables: Object.fromEntries(task.variables.flatMap(({ id, name }) =>
-      name in trial.variables ? [[id, drawnText(trial.variables[name])]] : [])),
-    signals: Object.fromEntries(task.signals.map(({ id, name }): [string, SignalSteps] => {
-      const values = trial.inputs[name];
-      const present = trial.present[name];
+    variables: Object.fromEntries(task.variables.flatMap(({ id }) =>
+      id in trial.variables ? [[id, drawnText(trial.variables[id])]] : [])),
+    signals: Object.fromEntries(task.signals.map(({ id }): [string, SignalSteps] => {
+      const values = trial.inputs[id];
+      const present = trial.present[id];
       const steps = Array.isArray(values) ? values : [];
       return [id, steps.map((value, step) => Array.isArray(present) && present[step] ? numbers(value) : null)];
     })),
@@ -71,12 +71,12 @@ export function trialBatch(task: TaskDocument, count: number, aggregate: TrialAg
   return {
     count,
     epochs: aggregate.epochs.map(({ epoch, label, share }) => ({ id: epoch, name: label, share })),
-    variables: Object.fromEntries(task.variables.flatMap(({ id, name }) => {
-      const range = aggregate.variables[name];
+    variables: Object.fromEntries(task.variables.flatMap(({ id }) => {
+      const range = aggregate.variables[id];
       return range ? [[id, rangeText(range.least, range.greatest)]] : [];
     })),
-    signals: Object.fromEntries(task.signals.flatMap(({ id, name }) => {
-      const signal = aggregate.signals[name];
+    signals: Object.fromEntries(task.signals.flatMap(({ id }) => {
+      const signal = aggregate.signals[id];
       return signal ? [[id, {
         presence: signal.presence,
         ...signal.percentiles && { percentiles: signal.percentiles as (Percentiles[] | null)[] },
@@ -97,8 +97,8 @@ function useDrawn<Shown>(view: StudioTrialAuthoring | undefined, model: ModelDoc
   aggregate: boolean, enabled: boolean, read: (task: TaskDocument, drawn: Drawn) => Shown) {
   const task = view && taskDocumentOf(view);
   return useQuery({
-    queryKey: ['task-trials', model, task, seed, count, aggregate],
-    queryFn: async ({ signal }) => read(task!, (await sampleTaskTrials({ model: model!, task: task!, seed, count, aggregate }, signal)).drawn),
+    queryKey: ['task-trials', model, task, view?.input_bindings, seed, count, aggregate],
+    queryFn: async ({ signal }) => read(task!, (await sampleTaskTrials({ model: model!, task: task!, input_bindings: view?.input_bindings, seed, count, aggregate }, signal)).drawn),
     enabled: enabled && !!task && !!model,
     staleTime: Infinity,
   });

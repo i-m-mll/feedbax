@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
+from feedbax.contracts.execution_target import HostRuntime
 from feedbax.host import jax_cache, live_evaluate
 from feedbax.persistence.checkpoint_selection import requested_checkpoint_selection
 from feedbax.persistence.completion import CompletionFileError
@@ -62,6 +63,16 @@ class Worker:
 
 def failure(code: str, message: str, *, outcome: str = "failed") -> dict:
     return {"outcome": outcome, "error": {"code": code, "message": message}}
+
+
+def _runtime_inventory() -> HostRuntime:
+    import jax
+
+    try:
+        backend = jax.default_backend()
+        return HostRuntime(backend=backend, devices=tuple(device.device_kind for device in jax.devices(backend)))
+    except RuntimeError as error:
+        raise HostError("runtime_unavailable", str(error)) from error
 
 
 class Host:
@@ -980,7 +991,10 @@ class Host:
             case "shutdown":
                 return await self._shutdown(**message)
             case "ping":
-                identity = {} if self.stream_id is None else {"stream_id": self.stream_id}
+                identity: JsonObject = {} if self.stream_id is None else {"stream_id": self.stream_id}
+                if message.get("include_runtime") is True:
+                    runtime = await asyncio.to_thread(_runtime_inventory)
+                    identity["runtime"] = runtime.model_dump(mode="json")
                 return {"version": VERSION, "pid": os.getpid(), **identity}
             case "events":
                 return await self._events(**message)

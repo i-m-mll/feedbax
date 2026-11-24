@@ -205,7 +205,7 @@ export function TrialTaskOutline({ sections, view, selected, select }: {
     variables: task && entries('variables', task.variables),
     epochs: task && entries('epochs', task.epochs),
     signals: task ? entries('signals', task.signals) : view.signals.map(({ id, name }) => ({ id, name: humanizeLabel(name) })),
-    modelInputs: view.inputs.map(({ name, signal }) => ({ id: name, name, muted: !signal })),
+    modelInputs: view.inputs.map(({ id, name, signal_id }) => ({ id, name, muted: !signal_id })),
   };
   const [kind, ...rest] = selected?.split(':') ?? [];
   const group = (Object.keys(outlineKinds) as OutlineGroup[]).find((key) => outlineKinds[key] === kind);
@@ -243,16 +243,16 @@ export function TrialTaskInspector({ view, commit, selected, shown }: {
     return epoch ? <Inspector name={epoch.name} type={studioName('epochs')} /> : null;
   }
   if (kind !== 'input') return null;
-  const input = view.inputs.find(({ name }) => name === key);
+  const input = view.inputs.find(({ id }) => id === key);
   if (!input) return null;
   return <Inspector name={input.name} type={studioName('modelInputs')}>
-    <ValueField key={JSON.stringify([input.name, input.signal])} model={rawField({
-      id: 'signal', label: studioName('signals'), value: input.signal ?? '',
+    <ValueField key={JSON.stringify([input.id, input.signal_id])} model={rawField({
+      id: 'signal', label: studioName('signals'), value: input.signal_id ?? '',
       type: { kind: 'choice', options: [
         { value: '', label: studioDefinitionStatus('unbound') },
-        ...view.signals.map(({ name }) => ({ value: name, label: humanizeLabel(name) })),
+        ...view.signals.map(({ id, name }) => ({ value: id, label: humanizeLabel(name) })),
       ] },
-      change: commit && ((value) => commit('Bind Task Signal', { kind: 'binding', input: input.address, signal: String(value) || null })),
+      change: commit && ((value) => commit('Bind Task Signal', { kind: 'binding', input_id: input.id, signal_id: String(value) || null })),
     })} />
   </Inspector>;
 }
@@ -262,8 +262,8 @@ type TermField = 'name' | 'enabled' | 'measure' | 'window' | 'weight' | 'reducti
 const columns = ['name', 'measure', 'window', 'weight', 'enabled'] as const satisfies readonly TermField[];
 const columnNames = { name: 'term', enabled: 'enabled', measure: 'measure', window: 'window', weight: 'weight' } as const;
 const columnWidths: Record<(typeof columns)[number], TableColumn> = {
-  name: { least: '9rem', fixed: true }, measure: { least: '10rem' }, window: { least: '8rem' }, weight: { least: '7rem' },
-  enabled: { least: '4.5rem', fixed: true },
+  name: { least: '6rem', greatest: '16rem' }, measure: { least: '10rem' }, window: { least: '8rem' }, weight: { least: '7rem' },
+  enabled: { least: '4.5rem', greatest: '4.5rem' },
 };
 
 /** The anchor of a term's Weight, which Add Sweep puts the keyboard on. */

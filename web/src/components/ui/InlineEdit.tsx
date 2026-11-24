@@ -16,9 +16,11 @@ export interface InlineEditProps {
    * the input's focus, and `editing` set from outside focuses it with the name selected.
    */
   form?: 'cell';
+  /** Shown while the text is empty, which then commits nothing rather than being refused. */
+  empty?: string;
 }
 
-export function InlineEdit({ value, editing, onEditingChange, onCommit, children, className, form, ...aria }: InlineEditProps) {
+export function InlineEdit({ value, editing, onEditingChange, onCommit, children, className, form, empty, ...aria }: InlineEditProps) {
   const [draft, setDraft] = useState(value);
   const input = useRef<HTMLInputElement>(null);
   const settled = useRef(false);
@@ -41,6 +43,7 @@ export function InlineEdit({ value, editing, onEditingChange, onCommit, children
   const commit = () => {
     const next = draft.trim();
     if (next === value) return finish(true);
+    if (!next && empty !== undefined) return finish(true);
     if (!next || onCommit(next) === false) return input.current?.select();
     finish();
   };
@@ -58,7 +61,8 @@ export function InlineEdit({ value, editing, onEditingChange, onCommit, children
       ref={input}
       value={draft}
       onValueChange={setDraft}
-      aria-invalid={!draft.trim() || undefined}
+      placeholder={empty}
+      aria-invalid={(empty === undefined && !draft.trim()) || undefined}
       className={clsx(
         'w-full min-w-0 text-[length:inherit] font-[inherit] text-shell-foreground outline-none',
         cell ? 'studio-cell-input block h-[calc(var(--row-height)-1px)] truncate text-left bg-transparent px-row-inline aria-[invalid]:text-shell-status-failure'

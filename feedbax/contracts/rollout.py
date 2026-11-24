@@ -97,7 +97,7 @@ class RolloutSettings(StrictModel):
     trial_policy: Literal["paired"]
     retention: Literal["raw_states", "observations"] = "raw_states"
     variation: VariationEdits
-    input_overrides: dict[str, str] = Field(default_factory=dict, exclude_if=lambda value: not value)
+    input_bindings: dict[str, str | None] = Field(default_factory=dict, exclude_if=lambda value: not value)
 
     @field_validator("variation")
     @classmethod
@@ -157,7 +157,7 @@ class ResolvedInitialRollout(StrictModel):
 
 def rollout_semantics(
     graph: GraphSpec, schedule: GraphKeySchedule, task_source: TaskDocument | PythonTaskSelection,
-    input_bindings: Mapping[str, str] | tuple[tuple[str, str], ...], source_overrides: Mapping[str, float],
+    input_bindings: Mapping[str, str | None] | tuple[tuple[str, str], ...], source_overrides: Mapping[str, float],
 ) -> tuple[str, str]:
     """Identify the resolved model and task without using their numerical state."""
     model = sha256_bytes(canonical_json_v2_bytes({

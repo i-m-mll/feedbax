@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from feedbax.contracts.component import ComponentDefinition
 from feedbax.contracts.domain import (
@@ -16,7 +16,7 @@ from feedbax.contracts.domain import (
     DomainRegistryPayload,
 )
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.workspace_replay import WorkspaceReplaySampleAxis, WorkspaceReplayTrack
+from feedbax.contracts.graph import StudioSelectorRef
 
 
 STUDIO_API_TRANSPORT_SCHEMA_ID = "feedbax.spec.studio.api_transport"
@@ -140,6 +140,46 @@ class PenzaiInspectorResponse(StudioApiModel):
     data: PenzaiInspectorPayload
 
 
+class StudioTrajectorySampleAxis(StrictModel):
+    """Time/sample axis for replay tracks."""
+
+    length: int = Field(ge=0)
+    units: Optional[str] = None
+    dt: Optional[float] = Field(default=None, gt=0)
+    values: Optional[list[float]] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_values_length(self) -> "StudioTrajectorySampleAxis":
+        if self.values is not None and len(self.values) != self.length:
+            raise ValueError("time axis values length must equal length")
+        return self
+
+
+class StudioTrajectoryTrack(StrictModel):
+    """One server-resolved Cartesian anchor track for a trial."""
+
+    anchor_id: str
+    selector: StudioSelectorRef
+    samples: list[list[float]]
+    dim: int = Field(gt=0)
+    dtype: str = "float32"
+    units: Optional[str] = None
+    frame: Optional[str] = None
+    label: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_samples_shape(self) -> "StudioTrajectoryTrack":
+        for index, sample in enumerate(self.samples):
+            if len(sample) != self.dim:
+                raise ValueError(
+                    f"track {self.anchor_id!r} sample {index} has dim {len(sample)}, "
+                    f"expected {self.dim}"
+                )
+        return self
+
+
 class TrainingTrajectoryPayload(StudioApiModel):
     """Trajectory snapshot carried by a live Jobs frame."""
 
@@ -148,8 +188,8 @@ class TrainingTrajectoryPayload(StudioApiModel):
     source_kind: Literal["live_snapshot"] = "live_snapshot"
     fidelity: Literal["lower_fidelity_live_snapshot"] = "lower_fidelity_live_snapshot"
     n_steps: Optional[int] = None
-    time: Optional[WorkspaceReplaySampleAxis] = None
-    tracks: dict[str, WorkspaceReplayTrack] = Field(default_factory=dict)
+    time: Optional[StudioTrajectorySampleAxis] = None
+    tracks: dict[str, StudioTrajectoryTrack] = Field(default_factory=dict)
     observables: dict[str, Any] = Field(default_factory=dict)
     outputs: dict[str, Any] = Field(default_factory=dict)
     effector: Optional[list[Any]] = None

@@ -479,7 +479,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   const upper = scene.getByRole('button', { name: 'Select upper', exact: true });
   await expect(upper).toBeVisible();
   const drawer = page.getByRole('complementary', { name: 'Details Drawer' });
-  await drawer.getByRole('region', { name: 'Bodies' }).getByRole('treeitem', { name: 'upper', exact: true }).click();
+  await drawer.getByRole('tree', { name: 'Outline' }).getByRole('treeitem', { name: 'upper', exact: true }).click();
   await expect(upper).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByRole('complementary', { name: 'Inspector' })).toContainText('upper.proximal');
   await scanStudio(page, info, 'train-scene-geometry');
