@@ -67,7 +67,7 @@ from feedbax.contracts.result_address import ANALYSIS_SCHEMA, payload_elements
 from feedbax.persistence.project_subject import terminal_train_reader
 from feedbax.persistence.reachability import DEFAULT_SUPERSEDED_DAYS
 from feedbax.project_members import (
-    change_member_key, detach_refusals, duplicate_document_name, duplicate_step, fresh_element_keys, generated_name,
+    change_member_key, duplicate_document_name, duplicate_step, fresh_element_keys, generated_name,
     label_member, merge_cards, preserve_dangling_member, regroup_refused, split_card,
 )
 from feedbax.contracts.strict_json import strict_json_loads
@@ -379,7 +379,6 @@ class SettledProjectPlan:
     plan: ProjectPlan
     readers: BaseReaders
     project_root: Path
-    detach_refused: frozenset[str]
     regroup_refused: frozenset[str]
 
     @classmethod
@@ -391,7 +390,7 @@ class SettledProjectPlan:
         return cls(
             location.project_id, text.revision, project_semantic_root(text.project),
             text.configuration, text.store_path if store is None else store, plan, readers, text.root,
-            detach_refusals(text.project.documents), regroup_refused(text.project),
+            regroup_refused(text.project),
         )
 
 
@@ -483,7 +482,7 @@ def compile_saved_project(
         )
         settled = SettledProjectPlan(
             project_id, text.revision, semantic_root, text.configuration, store, plan, readers, text.root,
-            detach_refusals(text.project.documents), regroup_refused(text.project),
+            regroup_refused(text.project),
         )
         if reusable:
             memo.saved = _SavedCompilation(stamp, settled, observations)
