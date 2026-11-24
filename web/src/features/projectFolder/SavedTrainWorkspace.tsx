@@ -614,10 +614,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         : undefined);
   const evaluateScope = step?.kind === 'evaluate' ? trialScope : undefined;
   const wholeTrialStep = trialScope && (trialScope.kind === 'step' || trialScope.kind === 'variant');
-  const trialEditScope = trialScope && (trialScope.kind === 'variant' ? { kind: 'step' } as const : trialScope);
+  const trialEditScope = !trialScope ? undefined : trialScope.kind === 'variant' ? { kind: 'step' } as const : trialScope;
   const documentEditable = !outside;
   const trialEditable = documentEditable && Boolean(trialScope);
-  const trialChangeScope: TrialChangeScope = () => trialEditScope || undefined;
+  const trialChangeScope: TrialChangeScope = () => trialEditScope;
   // A run whose own definition is refused has no Task or Objective to read; its views are dimmed by its problems.
   const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, trialStep && namedRow?.resolved !== false,
     trialEditable, trialChangeScope, runRemoval.confirm);

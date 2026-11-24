@@ -903,11 +903,13 @@ def _validate_files(
         sources = {candidate[2]: candidate for candidate in controlling(before, missed)}
         alternatives.extend(preview(*candidate) for candidate in sources.values())
     remaining = preferred.runs & selected
-    if other_runs is not None and remaining and missed and all(
-        run.step == key.step and run.variant == before.variants[0] for run in remaining
+    if (
+        other_runs is not None and remaining and preferred.runs != selected
+        and not any(store.runs == remaining for store in alternatives)
+        and all(run.step == key.step and run.variant == before.variants[0] for run in remaining)
     ):
         if isinstance(narrowed := other_runs(remaining), StoredEdit):
-            option = preview("other_runs", "Other Runs", key.step, narrowed)
+            option = preview("other_runs", "Other Runs" if missed else "Selected Runs", key.step, narrowed)
             if option.runs and option.runs <= remaining and option.runs != preferred.runs:
                 alternatives.append(option)
     alternatives = [
