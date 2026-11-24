@@ -281,12 +281,11 @@ export function studioMentionReason(name: string, detail: string) {
 }
 
 /**
- * The name of what a problem is about: the field of its document it points into, labelled as Studio labels a field,
- * or else its place.
+ * The name of what a problem is about: the deepest field of its document it points into, labelled as Studio labels a
+ * field, or else its place. A pointer's index or encoded entry key is not a field.
  */
 export function studioProblemName({ place, document_path }: StudioProjectWindowMapProblem) {
-  const field = document_path?.split('/').slice(1).map((part) => part.replace(/~1/g, '/').replace(/~0/g, '~'))
-    .filter((part) => part && !/^\d+$/.test(part)).at(-1);
+  const field = document_path?.split('/').slice(1).filter((part) => /^[A-Za-z_]\w*$/.test(part)).at(-1);
   return field ? humanizeLabel(field) : studioPlaceName(place);
 }
 

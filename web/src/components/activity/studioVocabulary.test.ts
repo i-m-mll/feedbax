@@ -11,7 +11,7 @@ describe('studioProblemName', () => {
   it('names a problem by the field it points into, never by a pointer or an index', () => {
     expect(studioProblemName(problem('/interior/components'))).toBe('Components');
     expect(studioProblemName(problem('/terms/0'))).toBe('Terms');
-    expect(studioProblemName(problem('/params/hidden~1size'))).toBe('Hidden/Size');
+    expect(studioProblemName(problem('/links/{"element":{"kind":"field","path":["reset"]}}'))).toBe('Links');
   });
 
   it('names a problem about a whole document by its place', () => {
