@@ -426,6 +426,8 @@ def stateful_vector_output_prototype(
 class Gain(Component):
     """Multiply input by a constant gain."""
 
+    model_facts = ModelFacts(values=(ModelValue("gain", "gain", "source"),))
+
     ports: ClassVar[Ports] = Ports(
         inputs={"input": PortType(dtype="any")}, outputs={"output": PortType(dtype="any")}
     )
@@ -484,6 +486,8 @@ class Input(Component):
 class Sum(Component):
     """Sum present inputs."""
 
+    model_facts = ModelFacts()
+
     ports: ClassVar[Ports] = Ports(
         inputs={
             "a": PortType(dtype="any"),
@@ -510,6 +514,8 @@ class Sum(Component):
 
 class Subtract(Component):
     """Subtract input ``b`` from input ``a``."""
+
+    model_facts = ModelFacts()
 
     ports: ClassVar[Ports] = Ports(
         inputs={"a": PortType(dtype="any"), "b": PortType(dtype="any")},
@@ -1045,6 +1051,11 @@ class _NoiseConfig(BaseModel):
 class Noise(Component):
     """Random noise source."""
 
+    model_facts = ModelFacts(values=(
+        ModelValue("mean", "mean", "source"),
+        ModelValue("std", "std", "source"),
+    ))
+
     config: ClassVar[type[BaseModel]] = _NoiseConfig
 
     ports: ClassVar[Ports] = Ports(inputs={}, outputs={"output": PortType(dtype="any")})
@@ -1577,6 +1588,7 @@ class Mux(Component):
         n_inputs: Number of input ports to create.
     """
 
+    model_facts = ModelFacts()
     config: ClassVar[type[BaseModel]] = _MuxConfig
 
     ports: ClassVar[Ports] = Ports(
@@ -1645,6 +1657,7 @@ class Demux(Component):
         sizes: Tuple of sizes for each output slice along the last axis.
     """
 
+    model_facts = ModelFacts()
     config: ClassVar[type[BaseModel]] = _DemuxConfig
 
     ports: ClassVar[Ports] = Ports(
