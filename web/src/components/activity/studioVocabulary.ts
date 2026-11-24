@@ -322,9 +322,9 @@ export function studioStep(kind: keyof typeof vocabulary.step | StudioActivityJo
   };
 }
 
-/** A type as its parts: its base, its shape, and its unit's dimensions, as in `Real · 2 · length`. */
-export function studioValueType({ base, shape = [], dimensions = {} }: ValueType) {
+/** A type as its parts: its base, its shape, and its unit's dimensions, as in `Real · 2 · length`, after its name where it has one. */
+export function studioValueType({ base, shape = [], dimensions = {} }: ValueType, name?: string) {
   const unit = Object.entries(dimensions).filter(([, exponent]) => exponent).map(([name, exponent]) =>
     exponent === 1 ? name : `${name}^${exponent}`).join('·');
-  return [studioName(base), shape.length ? shape.join('×') : undefined, unit || undefined].filter(Boolean).join(' · ');
+  return [name, studioName(base), shape.length ? shape.join('×') : undefined, unit || undefined].filter(Boolean).join(' · ');
 }

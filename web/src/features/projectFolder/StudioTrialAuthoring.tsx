@@ -28,10 +28,13 @@ import type {
   FieldKind, JsonValue, ObjectiveTerm, Problem, ProjectValueEdit, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
 } from '@/generated/studioContracts';
 import { authoredPointer, authoredPointerParts } from './authoredEdits';
+import { TrialTrace } from './task/SignalTrace';
+import type { SampledTrial } from './task/trialSample';
 import { baseOf } from './documentPayload';
 import type { ProjectEditController } from './projectEditController';
 import { filesRemoval, type ConfirmRunRemoval } from './runRemoval';
 import { SweepTargetItem, type SweepTarget } from './StudioTrainAuthoringForm';
+import { TaskOutline, type OutlineGroup } from './task/TaskOutline';
 
 type Change = NonNullable<StudioTrialAuthoringRequest['change']>;
 /** The scope a change is made in. */
@@ -171,50 +174,70 @@ export function TrialTaskForm({ view, commit }: { view: TrialView; commit?: Comm
   </div>;
 }
 
-/** The Task's elements by kind, as the drawer's sections: what the task produces and what the Model reads. */
-function taskGroups(view: StudioTrialAuthoring) {
-  const signal = (name: string) => humanizeLabel(name);
-  return [
-    { id: 'variables', nodes: view.variables.map(({ id, name }) => ({ id: 'variable:' + id, name: humanizeLabel(name) })) },
-    { id: 'signals', nodes: view.signals.map(({ id, name }) => ({ id: 'signal:' + id, name: signal(name) })) },
-    { id: 'epochs', nodes: view.epochs.map(({ id, name }) => ({ id: 'epoch:' + id, name })) },
-    { id: 'perTrial', nodes: view.resets.flatMap(({ address }) => address.element.kind === 'field'
-      ? [{ id: 'reset:' + JSON.stringify(address), name: address.element.path.map(String).join(' · ') }] : []) },
-    { id: 'modelInputs', nodes: view.inputs.map(({ name, signal: bound }) => ({
-      id: 'input:' + name, name, muted: !bound,
-    })) },
-  ] as const satisfies readonly { id: Parameters<typeof studioName>[0]; nodes: readonly TreeNode[] }[];
+/** The first problem of each element of the task, by its group and id; a link's is its variable's. */
+function outlineReasons(view: StudioTrialAuthoring) {
+  const links = 'variables' in view.task ? view.task.links ?? [] : [];
+  const reasons = new Map<string, string>();
+  for (const { path = [], reason } of view.problems) {
+    const [section, id] = path.map(String);
+    const linked = section === 'links' ? links.find(({ model_field }) => model_field === id)?.variable : undefined;
+    const key = linked ? `variables:${linked}`
+      : section === 'variables' || section === 'epochs' || section === 'signals' ? `${section}:${id}` : undefined;
+    if (key && !reasons.has(key)) reasons.set(key, reason);
+  }
+  return reasons;
 }
 
+const outlineKinds = { variables: 'variable', epochs: 'epoch', signals: 'signal', modelInputs: 'input' } as const;
+
+/**
+ * The drawer's Outline of the Task: a task document's variables, epochs and signals, or a Python task's signals, and
+ * the Model's inputs, each with its status mark. Selecting one selects it (`<kind>:<id>`).
+ */
 export function TrialTaskOutline({ sections, view, selected, select }: {
   sections: DrawerSections; view: StudioTrialAuthoring; selected?: string; select(id: string | null): void;
 }) {
-  return <Drawer>
-    {taskGroups(view).map(({ id, nodes }) => nodes.length > 0 && <DrawerSection key={id} sections={sections} id={`task.${id}`}
-      name={studioName(id)}>
-      <Tree aria-label={studioName(id)} nodes={nodes} selected={selected && nodes.some((node) => node.id === selected) ? [selected] : []}
-        onSelectedChange={(ids) => select(ids.at(-1) ?? null)} />
-    </DrawerSection>)}
-  </Drawer>;
+  const reasons = outlineReasons(view);
+  const entries = (group: OutlineGroup, items: readonly { id: string; name: string }[]) =>
+    items.map(({ id, name }) => ({ id, name, reason: reasons.get(`${group}:${id}`) }));
+  const task = 'variables' in view.task ? view.task : undefined;
+  const groups = {
+    variables: task && entries('variables', task.variables),
+    epochs: task && entries('epochs', task.epochs),
+    signals: task ? entries('signals', task.signals) : view.signals.map(({ id, name }) => ({ id, name: humanizeLabel(name) })),
+    modelInputs: view.inputs.map(({ name, signal }) => ({ id: name, name, muted: !signal })),
+  };
+  const [kind, ...rest] = selected?.split(':') ?? [];
+  const group = (Object.keys(outlineKinds) as OutlineGroup[]).find((key) => outlineKinds[key] === kind);
+  return <TaskOutline sections={sections} groups={groups} selected={group && { group, id: rest.join(':') }}
+    select={(chosen, id) => select(`${outlineKinds[chosen]}:${id}`)} />;
 }
 
-export function TrialTaskInspector({ view, commit, selected }: { view: TrialView; commit?: Commit; selected?: string }) {
+/**
+ * The Inspector of a signal, an epoch or a Model input the drawer or the shelf selects; a signal, with a trial drawn,
+ * shows its plot over that trial.
+ */
+export function TrialTaskInspector({ view, commit, selected, trial }: {
+  view: TrialView; commit?: Commit; selected?: string; trial?: SampledTrial;
+}) {
   if (!selected) return null;
   const [kind, ...rest] = selected.split(':');
   const key = rest.join(':');
-  if (kind === 'variable' || kind === 'signal') {
-    const value = (kind === 'variable' ? view.variables : view.signals).find(({ id }) => id === key);
-    return value ? <Inspector name={humanizeLabel(value.name)} type={value.type.shape?.join(' × ') || value.type.base} /> : null;
+  if (kind === 'signal') {
+    const value = view.signals.find(({ id }) => id === key);
+    const steps = trial?.signals[key];
+    return value ? <Inspector name={humanizeLabel(value.name)} type={value.type.shape?.join(' × ') || value.type.base}>
+      {trial && steps && <section aria-label={studioName('plot')} className="grid gap-1">
+        <TrialTrace label={value.name} steps={steps} duration={steps.length * view.period_seconds}
+          boundaries={trial.intervals.slice(1).map(({ start }) => Math.round(start / view.period_seconds))} />
+      </section>}
+    </Inspector> : null;
   }
   if (kind === 'epoch') {
     const epoch = view.epochs.find(({ id }) => id === key);
     return epoch ? <Inspector name={epoch.name} type={studioName('epochs')} /> : null;
   }
-  if (kind === 'reset') {
-    const reset = view.resets.find(({ address }) => JSON.stringify(address) === key);
-    return reset && reset.address.element.kind === 'field' ? <Inspector name={reset.address.element.path.map(String).join(' · ')}
-      type={reset.variable ?? studioDefinitionStatus('unlinked')} /> : null;
-  }
+  if (kind !== 'input') return null;
   const input = view.inputs.find(({ name }) => name === key);
   if (!input) return null;
   return <Inspector name={input.name} type={studioName('modelInputs')}>

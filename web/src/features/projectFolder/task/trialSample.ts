@@ -1,11 +1,24 @@
-import type { TimelineInterval, TimelineShare } from '@/components/timeline/EpochTimeline';
+/** An epoch's interval in one trial, in seconds; a repeated epoch has one per repetition. */
+export interface EpochInterval {
+  readonly id: string;
+  readonly name: string;
+  readonly start: number;
+  readonly end: number;
+}
+
+/** An epoch over a batch of trials: per step, the share of trials that are in it. */
+export interface EpochShare {
+  readonly id: string;
+  readonly name: string;
+  readonly share: readonly number[];
+}
 
 /** A signal's value at each step of one trial, one number per component; null where the signal is absent. */
 export type SignalSteps = readonly (readonly number[] | null)[];
 
 /** One trial sampled from the task without a model: its epochs' intervals, each variable's drawn value, each signal's values. */
 export interface SampledTrial {
-  readonly intervals: readonly TimelineInterval[];
+  readonly intervals: readonly EpochInterval[];
   /** Each variable's drawn value, as text, by variable id. */
   readonly variables: Readonly<Record<string, string>>;
   readonly signals: Readonly<Record<string, SignalSteps>>;
@@ -24,7 +37,7 @@ export interface SignalAggregate {
 /** A batch of sampled trials as its aggregate. */
 export interface TrialBatch {
   readonly count: number;
-  readonly epochs: readonly TimelineShare[];
+  readonly epochs: readonly EpochShare[];
   /** The range of each variable's drawn values, as text, by variable id. */
   readonly variables: Readonly<Record<string, string>>;
   readonly signals: Readonly<Record<string, SignalAggregate>>;

@@ -45,8 +45,8 @@ def successor_file():
     }}
 
 
-def ordinary_files(batches: str, *rates: str):
-    example = managed_train_project(batches=int(batches))
+def ordinary_files(batches: str, *rates: str, scenario: str = "simple-reaches"):
+    example = managed_train_project(batches=int(batches), scenario=scenario)
     step = example.steps["train"].model_dump(mode="json", by_alias=True, exclude_unset=True)
     if rates:
         step["sweep"] = {
@@ -325,6 +325,8 @@ if __name__ == "__main__":
         print(json.dumps([*ordinary_files("2"), successor_file()]))
     elif action == "ordinary-files":
         print(json.dumps(ordinary_files(*arguments)))
+    elif action == "delayed-reaches-files" and not arguments:
+        print(json.dumps(ordinary_files("2", scenario="delayed-reaches")))
     elif action == "run-saved-cli":
         run_saved_cli(*arguments)
     elif action == "seed-variants":

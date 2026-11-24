@@ -56,9 +56,11 @@ import {
 } from '@/generated/studioContracts';
 import { useConnection } from '@/api/connection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
-import { authoredPointer, directTrainStep, modelDocumentId } from './authoredEdits';
+import { authoredPointer, ownDefinition, modelDocumentId } from './authoredEdits';
 import { withBaseDescendants } from './baseDescendants';
-import { useManagedProjectDetails, useSavedEvaluationScene, useStoredModel, type NamedDocumentScope } from './managedProjectDetails';
+import { useManagedProjectDetails, useStoredModel, type NamedDocumentScope } from './managedProjectDetails';
+import { useTrialClock } from './useTrialClock';
+import { usePlayheadStore } from '@/components/timeline/trialClock';
 import { viewOffer, viewsByKind } from './viewContent';
 import {
   choosePick, clearSelection, isModelAddress, selectElement, useChoosing, useElementSelectionStore, usePick, type PickTarget,
@@ -88,12 +90,13 @@ import { StudioEvaluationAttemptDetails } from './StudioEvaluationResults';
 import { focusedResult, SavedResults } from './SavedResults';
 import { filesRemoval, RunRemovalContext, useRunRemovalDialog } from './runRemoval';
 import {
-  jsonPointerPath, StudioTrainAuthoringForm, SweepFieldItems, useTrainClassFields, useTrainFieldLabels,
+  jsonPointerPath, StudioStepField, StudioTrainAuthoringForm, SweepFieldItems, useTrainClassFields, useTrainFieldLabels,
 } from './StudioTrainAuthoringForm';
 import {
   TrialObjectiveAdd, TrialSweepItems, TrialObjectiveInspector, TrialObjectiveOutline, TrialObjectiveTable, type TrialRuns, TrialTaskForm, TrialTaskInspector, TrialTaskOutline, useTrialAuthoring,
   type TrialChangeScope,
 } from './StudioTrialAuthoring';
+import { inGrid, TrialGridInspector } from './task/trialGrid';
 import { selectedVariable, TrialTaskDocument, TrialVariableInspector, unfedTasks } from './task/trialTask';
 import { documentFamily, useProjectDocuments, type DocumentRole } from './useProjectDocuments';
 import { useManagedAnalyze } from './useManagedAnalyze';
@@ -104,6 +107,8 @@ import type { AxisMenu } from '@/components/pipeline/PipelineRunMarks';
 import { OfferedSets, setAuthoring } from './setAuthoring';
 
 type EditorSession = ReturnType<typeof bindProjectEditor>;
+/** The anchor of an Evaluate's sampled number of trials, which the Trials editor draws. */
+const trialCount = '/params/trial_set/count';
 
 function valueText(value: JsonValue) {
   return typeof value === 'string' ? value : JSON.stringify(value);
@@ -214,6 +219,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const [windowState, setWindowState] = useProjectWindowState(saved.project_id);
   const drawerSections = useDrawerSections(windowState, setWindowState);
   const elements = useElementSelectionStore();
+  const playhead = usePlayheadStore();
   const armedPick = usePick(elements);
   const choosing = useChoosing(elements);
   const mapPick = useMemo(() => armedPick && {
@@ -337,10 +343,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const selectedValue = primaryVariant && valueTerms?.length === 1 && valueTerms[0].valueIds.length === 1 &&
     state.selection?.kind === 'values' && state.selection.stepId === step?.id
     ? { axis: valueTerms[0].sweepId, value: valueTerms[0].valueIds[0] } : undefined;
-  const canAuthorSweep = (id: string) => primaryVariant && directTrainStep(saved.project, id, true) !== null;
+  const canAuthorSweep = (id: string) => primaryVariant && ownDefinition(saved.project, id, true) !== null;
   const authored = step && saved.project.steps?.[step.id];
   const subjectCheckpoint = authored?.kind === 'evaluate' ? exactCheckpoint(authored) : undefined;
-  const authoring = step && (primaryVariant && directTrainStep(saved.project, step.id, true) !== null ||
+  const authoring = step && (primaryVariant && ownDefinition(saved.project, step.id, true) !== null ||
     wholeStep && authored?.kind === 'train') &&
     state.selection ? {
     editor, stepId: step.id, step, selection: state.selection,
@@ -584,11 +590,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   }
   const exactSources = selectedEvaluation?.result?.checkpoint_sources;
   const exactSource = subjectCheckpoint !== undefined && exactSources?.length === 1 ? exactSources[0] : undefined;
-  const evaluationReplay = useSavedEvaluationScene(saved.project_id, saved.revision, selectedEvaluation,
-    windowState.mode !== 'map' && [primaryView, secondaryView].includes('scene'));
   const trialStep = step?.kind === 'train' || step?.kind === 'evaluate';
-  const trialVisible = windowState.mode !== 'map' &&
-    [primaryView, secondaryView].some((view) => view === 'task' || view === 'objective');
   const selectedSweepValues = new Map<string, Set<string>>();
   if (state.selection && state.selection.kind !== 'steps') {
     for (const row of selectedDefinitionRows) {
@@ -629,8 +631,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       : change.kind === 'objective' || change.kind === 'expression' ? documentScopes.objective?.lit : undefined;
     return chosen && { kind: 'step', chosen_steps: [...chosen] };
   };
-  const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, trialStep && trialVisible,
+  const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, trialStep,
     trialEditable, trialChangeScope, runRemoval.confirm);
+  const trialClock = useTrialClock({
+    windowState, setWindowState, projectId: saved.project_id, revision: saved.revision, view: trial.view,
+    taskDocument: trial.view && (trial.view.task_document ?? step?.id), stored, evaluation: selectedEvaluation,
+    sceneVisible: windowState.mode !== 'map' && [primaryView, secondaryView].includes('scene'), elements, playhead,
+  });
+  const evaluationReplay = trialClock.replay;
   const documentBase = authored && 'document' in authored.base && !authored.base.pointer ? authored.base.document : undefined;
   const pickDocument = useProjectDocuments({
     editor, stepId: step?.id, run: namedRun, scope: trialEditScope,
@@ -1725,7 +1733,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
           {insertMenu.menu}
           {validity.popover}
         </>}
-        clock={evaluationReplay.clock}
+        clock={trialClock.clock}
+        shelf={trialClock.shelf}
         failure={failure && <div role="alert" className="flex min-w-0 items-center gap-1">
           <span className="min-w-0 break-words">{failure}</span>
           {!isStudioDefect(failureCause) &&
@@ -1792,12 +1801,15 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                 body: withProblem('variables' in value.task
                   ? <FocusedFields className="contents" request={fieldFocus?.step === step?.id && fieldFocus?.target?.startsWith('task:') ? fieldFocus : undefined}
                     onFocused={() => setFieldFocus(undefined)}>
-                    <TrialTaskDocument view={value} commit={commit} runs={runs} selected={selected} select={choose(document)} />
+                    <TrialTaskDocument view={value} commit={commit} runs={runs} selected={selected} select={choose(document)}
+                      drawn={trialClock.sample?.variables} />
                   </FocusedFields>
                   : <TrialTaskForm view={value} commit={commit} />),
                 drawer: <TrialTaskOutline sections={drawerSections} view={value} selected={selected} select={choose(document)} />,
                 inspector: variable ? <TrialVariableInspector view={value} commit={commit} runs={runs} id={variable.id} />
-                  : selected && <TrialTaskInspector view={value} commit={commit} selected={selected} />,
+                  : selected && 'variables' in value.task && inGrid(selected)
+                    ? <TrialGridInspector view={value} commit={commit} runs={runs} selected={selected} trial={trialClock.sample} />
+                    : selected && <TrialTaskInspector view={value} commit={commit} selected={selected} trial={trialClock.sample} />,
               };
             }
             const document = value.objective_document ?? step?.id ?? '';
@@ -1854,6 +1866,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             });
             const revealedException = exceptionReveal?.revision === saved.revision && exceptionReveal.step === step.id
               ? exceptionReveal.id : undefined;
+            const ownFieldProps = authoring && { ...authoring, run: namedRun, runPending: !shown && !plans.error,
+              fieldRows: detailInputs.fieldRows, fieldAxes: detailInputs.fieldAxes };
+            const ownFields = ownFieldProps && <StudioTrainAuthoringForm {...ownFieldProps}
+              omitted={evaluationEditor?.authored.trialSet.kind === 'sample' ? [trialCount] : undefined} />;
             return {
               header: <StudioRunControls commands={step.kind === 'train' || step.kind === 'evaluate' || lightSteps.has(step.id)
                 ? runCommands : undefined}
@@ -1876,15 +1892,16 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                 fields={(authoring || inputEditor || evaluationEditor) &&
                   <FocusedFields request={slot === focusSlot && fieldFocus?.step === step.id ? fieldFocus : undefined}
                     onFocused={() => setFieldFocus(undefined)}>
-                    {authoring && <StudioTrainAuthoringForm {...authoring} run={namedRun} runPending={!shown && !plans.error}
-                      fieldRows={detailInputs.fieldRows} fieldAxes={detailInputs.fieldAxes} />}
+                    {authored?.kind === 'train' && ownFields}
                     {inputEditor}
                     {subjectDocuments && <SubjectDocuments subject={subjectDocuments} project={saved.project}
                       onChoose={applies && wholeStep ? onCurrentPlan('chooseSubjectDocument') : undefined} />}
                     {evaluationEditor && <TrialsEditor key={step.id} initial={evaluationEditor.authored.trialSet}
                       domain={evaluationEditor.domain} disabled={!applies} refusal={refusedAt('trials')}
+                      count={ownFieldProps && <StudioStepField {...ownFieldProps} anchor={trialCount} label={studioName('count')} />}
                       onSave={(rule) => onCurrentPlan('editEvaluation')('trials', studioName('trials'),
                         { op: 'replace', path: '/base/inline/params/trial_set', value: rule })} />}
+                    {authored?.kind === 'evaluate' && ownFields}
                   </FocusedFields>}
                 attachments={(exceptions.length > 0 || listedInputs.length > 0) && <>
                   {exceptions.length > 0 && <SweepExceptions exceptions={exceptions} revealed={revealedException}

@@ -1,14 +1,16 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import { EpochTimeline, type TimelineContent } from '@/components/timeline/EpochTimeline';
+import { Shelf, type ShelfRow } from '@/components/timeline/Shelf';
+import { nominalRows, trialRows, type ShelfTask } from '@/features/projectFolder/task/shelfRows';
 import { ProjectWindow, ProjectWindowPalette } from '@/features/projectWindow/ProjectWindow';
 import { useDrawerSections } from '@/features/projectWindow/DrawerForms';
 import { defaultProjectWindowState, type ProjectWindowState } from '@/features/projectWindow/projectWindowState';
 import { TaskInspector } from '@/features/projectFolder/task/TaskInspector';
-import { TaskOutline } from '@/features/projectFolder/task/TaskOutline';
+import { TaskOutline, type OutlineEntry, type OutlineGroup } from '@/features/projectFolder/task/TaskOutline';
 import { TaskGrid } from '@/features/projectFolder/task/TaskGrid';
 import { TaskDocumentBody, TaskPythonBody } from '@/features/projectFolder/task/TaskView';
 import { TaskVariables } from '@/features/projectFolder/task/TaskVariables';
 import type { TaskDocumentView, TaskSelection } from '@/features/projectFolder/task/taskModel';
+import type { FieldModel } from '@/components/values/fieldModel';
 import type { TrialShown } from '@/features/projectFolder/task/trialSample';
 import { aggregate, documentView, fixtures, pythonView, templates, type DocumentSpec, type PythonSpec } from './taskFixtures';
 
@@ -49,15 +51,20 @@ function useSample(key: string, spec: DocumentSpec | PythonSpec, seed: number) {
 /** Which sampled trial is shown: none (the definition), the batch as one aggregate, or one trial by its index. */
 type TrialChoice = 'definition' | 'all' | number;
 
-/** What the strip draws: the definition, the shown trial's boundaries, or the batch's shares. */
-function timelineContent(view: TaskDocumentView, shown: TrialShown): TimelineContent {
-  if (shown.kind === 'trial') return { kind: 'trial', intervals: shown.trial.intervals };
-  if (shown.kind === 'batch') return { kind: 'batch', epochs: shown.batch.epochs };
+/** The fixture task as the shelf draws it: its epochs' bounds and the epochs each signal holds a value over. */
+function shelfTask(view: TaskDocumentView): ShelfTask {
   return {
-    kind: 'definition',
-    epochs: view.epochs.map(({ bounds }) => bounds),
-    repeats: view.repeats.map(({ first, last, count }) => ({ first, last, count: Number(count.text) || 1 })),
+    document: 'gallery', duration: view.duration, epochs: view.epochs.map(({ bounds }) => bounds),
+    signals: view.signals.map(({ id, name, cells }) => ({
+      id, name, cells: cells.flatMap((cell) => cell.kind === 'value' ? [{ first: cell.first, last: cell.last }] : []),
+    })),
   };
+}
+
+/** The shelf's rows for the nominal trial or one sampled trial. */
+function shelfRows(view: TaskDocumentView, shown: TrialShown): ShelfRow[] {
+  return shown.kind === 'trial' ? trialRows(shelfTask(view), shown.trial, view.stepSeconds ?? view.duration / 100)
+    : nominalRows(shelfTask(view));
 }
 
 function shownOf(choice: TrialChoice, sample: ReturnType<typeof useSample>): TrialShown {
@@ -86,6 +93,28 @@ function withoutEpoch(spec: DocumentSpec, id: string): DocumentSpec {
       return [{ ...cell, first: cell.first === id ? neighbour(1) : cell.first, last: cell.last === id ? neighbour(-1) : cell.last }];
     }) })),
   };
+}
+
+const firstReason = (fields: readonly (FieldModel | undefined)[]) => fields.find((field) => field?.reason)?.reason;
+
+/** The fixture's variables, epochs and signals as the Outline lists them. */
+function outlineGroups(view: TaskDocumentView): Partial<Record<OutlineGroup, OutlineEntry[]>> {
+  return {
+    variables: view.variables.map(({ id, name, value }) => ({ id, name, reason: firstReason([value]) })),
+    epochs: view.epochs.map(({ id, name, end }) => ({ id, name, reason: firstReason([end]) })),
+    signals: view.signals.map(({ id, name, cells }) => ({
+      id, name, reason: firstReason(cells.map((cell) => cell.kind === 'value' ? cell.value : undefined)),
+    })),
+  };
+}
+
+const outlineKinds = { variables: 'variable', epochs: 'epoch', signals: 'signal', modelInputs: 'signal' } as const;
+
+function outlineSelection(selected: TaskSelection | undefined) {
+  if (!selected || selected.kind === 'repeat') return undefined;
+  const group: OutlineGroup = selected.kind === 'variable' ? 'variables'
+    : selected.kind === 'epoch' || selected.kind === 'end' ? 'epochs' : 'signals';
+  return { group, id: selected.kind === 'cell' ? selected.signal : selected.id };
 }
 
 function TaskWindow() {
@@ -130,9 +159,8 @@ function TaskWindow() {
                 move: (id, to) => edit((current) => ({ ...current, variables: moved(current.variables, id, to) })),
               }} />}
               grid={<TaskGrid epochs={view.epochs} repeats={view.repeats} signals={view.signals} selected={selected} select={setSelected} edits={{
-                addEpoch: (before) => edit((current) => {
-                  const epoch = { id: fresh('e'), name: 'epoch', end: '0.1 s' };
-                  const at = before ? current.epochs.findIndex(({ id }) => id === before) : current.epochs.length;
+                addEpoch: (name, at) => edit((current) => {
+                  const epoch = { id: fresh('e'), name, end: '0.1 s' };
                   const epochs = [...current.epochs];
                   epochs.splice(at, 0, epoch);
                   return { ...current, epochs, signals: current.signals.map((signal) => ({ ...signal, cells: [...signal.cells,
@@ -140,13 +168,14 @@ function TaskWindow() {
                     epochs.findIndex(({ id }) => id === a.first) - epochs.findIndex(({ id }) => id === b.first)) })) };
                 }),
                 renameEpoch: (id, name) => edit((current) => ({ ...current, epochs: current.epochs.map((item) => item.id === id ? { ...item, name } : item) })),
-                removeEpoch: (id) => edit((current) => withoutEpoch(current, id)),
-                addSignal: () => edit((current) => ({ ...current, signals: [...current.signals, {
-                  id: fresh('s'), name: 'signal', type: 'Number', cells: [{ first: current.epochs[0].id, last: current.epochs.at(-1)!.id, text: null }],
+                removeEpochs: (ids) => edit((current) => ids.reduce(withoutEpoch, current)),
+                addSignal: (name) => edit((current) => ({ ...current, signals: [...current.signals, {
+                  id: fresh('s'), name, type: 'Number', cells: [{ first: current.epochs[0].id, last: current.epochs.at(-1)!.id, text: null }],
                 }] })),
               }} />} />
             : <TaskPythonBody view={view} />,
-          drawer: view.kind === 'document' ? <TaskOutline sections={sections} view={view} selected={selected} select={setSelected} /> : undefined,
+          drawer: view.kind === 'document' ? <TaskOutline sections={sections} groups={outlineGroups(view)} selected={outlineSelection(selected)}
+            select={(group, id) => setSelected({ kind: outlineKinds[group], id })} /> : undefined,
           inspector: view.kind === 'document' ? <TaskInspector view={view} selected={selected} shown={shown} /> : undefined,
         }} />
     </div>
@@ -160,7 +189,7 @@ function Frame({ name, children, className }: { name: string; children: ReactNod
   </figure>;
 }
 
-/** One task's states side by side: the strip in each mode, and the Inspector for an End, a cell, a variable and a signal's traces. */
+/** One task's states side by side: the shelf for the nominal trial and a sample, and the Inspector for an End, a cell, a variable and a signal's traces. */
 function TaskStates({ fixtureKey, end, cell, variable, signal }: {
   fixtureKey: string; end: string; cell: { signal: string; id: string }; variable: string; signal: string;
 }) {
@@ -171,17 +200,17 @@ function TaskStates({ fixtureKey, end, cell, variable, signal }: {
   const definition: TrialShown = { kind: 'definition' };
   const trial = shownOf(0, sample);
   const batch = shownOf('all', sample);
-  const strip = (shown: TrialShown) => <EpochTimeline content={timelineContent(view, shown)} duration={view.duration}
-    stepSeconds={view.stepSeconds} />;
+  const [time, setTime] = useState(0);
+  const strip = (shown: TrialShown) => <Shelf rows={shelfRows(view, shown)} duration={view.duration}
+    stepSeconds={view.stepSeconds} time={time} onTimeChange={setTime} selected={[]} onSelect={() => undefined} />;
   const inspector = (selected: TaskSelection, shown: TrialShown = definition) =>
     <TaskInspector view={view} selected={selected} shown={shown} />;
   const box = 'w-[244px] rounded-control border border-shell-divider bg-shell-sidebar';
   return <section className="grid gap-3" aria-label={fixtures.find(({ key }) => key === fixtureKey)!.name}>
     <h2 className="text-sm font-medium">{fixtures.find(({ key }) => key === fixtureKey)!.name}</h2>
     <div className="grid max-w-4xl gap-3">
-      <Frame name="Definition">{strip(definition)}</Frame>
-      <Frame name="Trial 1 of 8">{strip(trial)}</Frame>
-      <Frame name={`All ${batchSize}`}>{strip(batch)}</Frame>
+      <Frame name="nominal">{strip(definition)}</Frame>
+      <Frame name="sample 1 of 8">{strip(trial)}</Frame>
     </div>
     <div className="flex flex-wrap items-start gap-3">
       <Frame name="End" className={box}>{inspector({ kind: 'end', id: end })}</Frame>
