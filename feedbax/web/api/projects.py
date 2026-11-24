@@ -30,6 +30,7 @@ from feedbax.contracts.studio_project import (
     StudioProjectCreateFile,
     StudioProjectCreateFiles,
     StudioProjectDocument,
+    StudioProjectList,
     StudioProjectPatch,
     StudioProjectPatchBatch,
     StudioProjectRename,
@@ -413,6 +414,11 @@ def put_project_presentation(
     return _project_response(
         response, lambda: request.app.state.project_folders.write_presentation(project_id, body)
     )
+
+
+@router.get("")
+def list_projects(request: Request, response: Response) -> StudioProjectList:
+    return _project_response(response, request.app.state.project_folders.list_projects)
 
 
 @router.post("", status_code=201, response_model_exclude_unset=True)
