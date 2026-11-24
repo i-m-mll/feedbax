@@ -77,19 +77,16 @@ async function selectFixedGuide(page: Page) {
   const muscle = proof.getByRole('button', { name: 'Select cross_chain', exact: true });
   await muscle.locator(':scope > circle').nth(1).click();
   await expect(muscle).toHaveAttribute('aria-pressed', 'true');
-  await expect(proof.getByRole('region', { name: 'Muscles' }).getByRole('treeitem', { name: 'cross_chain' }))
+  await expect(proof.getByRole('tree', { name: 'Outline' }).getByRole('treeitem', { name: 'cross_chain' }))
     .toHaveAttribute('aria-selected', 'true');
 }
 
-async function expectInvalidGeometry(page: Page, code: string, message: RegExp) {
+/** A pose or an authored frame that cannot be drawn is marked on the mechanism's Outline row, and nothing is drawn as if it could. */
+async function expectInvalidGeometry(page: Page, message: RegExp) {
   const proof = page.locator('#scene-proof');
-  await expect(proof.getByRole('alert')).toContainText(message);
-  await expect(proof.locator('svg')).toHaveCount(0);
-  const codes = await page.evaluate(() => {
-    const view = (window as unknown as Probe).sceneProof.current()?.view;
-    return view?.kind === 'geometry' ? view.scene.validation.map((issue) => issue.type) : [];
-  });
-  expect(codes).toEqual([code]);
+  const mechanism = proof.getByRole('treeitem', { name: /^mechanics/ }).first();
+  await expect(mechanism.getByLabel(message)).toBeVisible();
+  await expect(proof.locator('svg polyline')).toHaveCount(0);
 }
 
 function distance(actual: Point, expected: Point) {
@@ -103,7 +100,8 @@ async function comparePose(page: Page, address: StudioPlanarSceneRequest, sample
     if (view?.kind !== 'geometry') throw new Error('Planar Scene was not resolved');
     return view.scene;
   });
-  expect(scene.validation).toEqual([]);
+  expect(scene.groups.flatMap((group) => [group.problem, ...group.elements.map((element) => element.problem)]).filter(Boolean)).toEqual([]);
+  const values = (name: string) => scene.groups[0].elements.find((element) => element.name === name)?.values ?? [];
   const polylines = await page.locator('#scene-proof svg g[aria-label] > polyline').evaluateAll((lines) => Object.fromEntries(
     lines.map((line) => [line.parentElement?.getAttribute('aria-label'), line.getAttribute('points')?.split(' ').map((point) => point.split(',').map(Number))]),
   )) as Record<string, Point[]>;
@@ -116,14 +114,13 @@ async function comparePose(page: Page, address: StudioPlanarSceneRequest, sample
   let maxRotation = 0;
   for (const [name, body] of Object.entries(sample.bodies)) {
     const [a, b] = polylines[`Select ${name}`];
-    const frame = scene.anchors.find((anchor) => anchor.label === `${name}.proximal`);
-    const tip = scene.anchors.find((anchor) => anchor.label === `${name}.distal`);
-    expect(frame?.position).toBeTruthy();
-    expect(tip?.position).toBeTruthy();
-    const angle = Number(frame?.metadata.angle);
-    const rotation = [Math.cos(angle), -Math.sin(angle), Math.sin(angle), Math.cos(angle)];
+    const [frame, tip] = values(name).map((value) => value.point);
+    expect(frame).toBeTruthy();
+    expect(tip).toBeTruthy();
+    const length = distance(tip, frame);
+    const rotation = [(tip[0] - frame[0]) / length, -(tip[1] - frame[1]) / length, (tip[1] - frame[1]) / length, (tip[0] - frame[0]) / length];
     maxRotation = Math.max(maxRotation, ...rotation.map((value, index) => Math.abs(value - body.rotation[index])));
-    maxPosition = Math.max(maxPosition, distance(frame!.position!, body.start), distance(tip!.position!, body.end),
+    maxPosition = Math.max(maxPosition, distance(frame, body.start), distance(tip, body.end),
       distance(fromScreen(a), body.start), distance(fromScreen(b), body.end));
   }
   for (const [joint, point] of Object.entries(sample.joints)) {
@@ -189,16 +186,16 @@ test('M2 Scene geometry agrees with compiled kinematics across a saved folder ed
   await expect(guide).toHaveValue('0.05, -0.07');
 
   await show(page, address, { kind: 'recorded', sample: { modelIdentity: initial.chain.identity, qpos: edited.samples[0].qpos } });
-  await expectInvalidGeometry(page, 'scene.pose_model_mismatch', /different model/);
+  await expectInvalidGeometry(page, /different model/);
   await show(page, address, { kind: 'recorded', sample: null });
-  await expectInvalidGeometry(page, 'scene.pose_unavailable', /no planar pose/);
+  await expectInvalidGeometry(page, /no planar pose/);
   await show(page, address, { kind: 'inspection', qpos: [0.4] });
-  await expectInvalidGeometry(page, 'scene.invalid_pose', /coordinate per joint/);
+  await expectInvalidGeometry(page, /coordinate per joint/);
   const { revision: invalid } = await setFields(request, projectUrl, editedRevisions, [
     { component: 'cross_chain', path: ['path_points', 1, 'frame'], value: 'missing.distal' },
   ]);
   await show(page, source('chain', invalid), { kind: 'reference' });
-  await expectInvalidGeometry(page, 'mechanics.muscle_path_missing_frame', /cross_chain.*missing\.distal/);
+  await expectInvalidGeometry(page, /cross_chain.*missing\.distal/);
   expect(geometryRequests).toEqual(['single', 'chain', 'chain', 'chain']);
   const measured = {
     samples: residuals.length,

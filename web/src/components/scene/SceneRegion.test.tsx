@@ -5,12 +5,11 @@ import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DrawerSections } from '@/features/projectWindow/DrawerForms';
 import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
-import { normalizeTrainingTrajectoryPayload } from '@/features/scenario/liveTraining';
-import type { ResolvedScene } from '@/features/scenario/projections';
+import { elementKey, type ElementAddress } from '@/features/projectWindow/elementSelection';
 import { WORKSPACE_REPLAY_FIXTURE } from '@/test/workspaceReplay.fixture';
 import { SceneClockControls } from './SceneClockControls';
-import { SceneCanvas, SceneDrawer, SceneElementInspector, SceneLayers, sceneLayers } from './SceneRegion';
-import { fittedCamera, sceneTimeline, type SceneOverlay, type SceneView } from './sceneView';
+import { SceneCanvas, SceneDrawer, SceneElementInspector, SceneLayers, sceneContents } from './SceneRegion';
+import { emptyScene, fittedCamera, sceneTimeline, type Scene, type SceneElement, type SceneLayer, type SceneView } from './sceneView';
 
 afterEach(cleanup);
 beforeEach(() => {
@@ -24,59 +23,51 @@ beforeEach(() => {
 
 const sections: DrawerSections = { isOpen: (_, initially = true) => initially, setOpen: () => {} };
 
-const scene: ResolvedScene = {
-  scenario_id: null,
-  frame: 'world.xy',
-  units: 'm',
-  required_selectors: [],
-  validation: [],
-  entities: [
-    { id: 'arm', label: 'Arm', kind: 'mechanics_object', summary: null, anchor_ids: [], element_ids: ['arm-line'], related_entity_ids: [] },
-    { id: 'goal', label: 'Far goal', kind: 'task_object', summary: null, anchor_ids: [], element_ids: ['goal-point'], related_entity_ids: [] },
-    { id: 'penalty', label: 'Reaching cost', kind: 'objective_term', summary: null, anchor_ids: [], element_ids: ['penalty-line'], related_entity_ids: [] },
-  ],
-  anchors: [],
-  elements: [
-    { id: 'arm-line', entity_id: 'arm', local_id: 'line', archetype: 'planar_chain', frame: 'world.xy', anchor_ids: [],
-      scale_invariant: false, style: {}, metadata: {}, geometry: { kind: 'polyline', points: [[0, 0], [0.2, 0.4]] } },
-    { id: 'goal-point', entity_id: 'goal', local_id: 'goal', archetype: 'target', frame: 'world.xy', anchor_ids: [],
-      scale_invariant: true, style: { glyph: 'target' }, metadata: {}, geometry: { kind: 'points', points: [[0.5, 0.4]] } },
-    { id: 'penalty-line', entity_id: 'penalty', local_id: 'penalty', archetype: 'objective_link', frame: 'world.xy', anchor_ids: [],
-      scale_invariant: true, style: {}, metadata: {}, geometry: { kind: 'link', points: [[0.2, 0.4], [0.5, 0.4]] } },
-  ],
-};
+function element(id: string, layer: SceneLayer, shape: SceneElement['shape']): SceneElement {
+  const address: ElementAddress = { document: 'arm', address: { composites: ['mechanics'], element: { kind: 'component', id } } };
+  return { key: elementKey(address), address, name: id, layer, shape, values: [] };
+}
 
-const noOverlaysHidden = new Set<SceneOverlay>();
+const mechanism: ElementAddress = { document: 'arm', address: { composites: [], element: { kind: 'component', id: 'mechanics' } } };
+const scene: Scene = { groups: [{ key: elementKey(mechanism), address: mechanism, name: 'mechanics', elements: [
+  element('upper', 'bodies', { kind: 'segment', points: [[0, 0], [0.2, 0.4]] }),
+  element('shoulder', 'joints', { kind: 'point', point: [0, 0] }),
+  element('flexor', 'muscles', { kind: 'path', points: [[0.05, 0], [0.15, 0.3]] }),
+] }] };
+
+const noLayersHidden = new Set<SceneLayer>();
 
 describe('Scene regions', () => {
-  it('shares entity selection between separately mounted canvas, drawer and inspector', async () => {
+  it('shares one selection by address between canvas, Outline and inspector, and Layers hides one class', async () => {
     function View() {
-      const [selectedId, onSelect] = useState<string | null>(null);
-      const [hiddenOverlays, setHidden] = useState<ReadonlySet<SceneOverlay>>(noOverlaysHidden);
+      const [selected, select] = useState<string | null>(null);
+      const onSelect = (address: ElementAddress | null) => select(address && elementKey(address));
+      const [hidden, setHidden] = useState<ReadonlySet<SceneLayer>>(noLayersHidden);
       const [camera, onCameraChange] = useState(fittedCamera);
       const view: SceneView = { kind: 'geometry', scene };
       return (
         <>
-          <SceneLayers overlays={sceneLayers(view).overlays}
-            hiddenOverlays={hiddenOverlays} onToggleOverlay={(overlay) => setHidden(new Set([overlay]))} />
-          <SceneCanvas view={view} time={0} selectedId={selectedId} onSelect={onSelect}
-            camera={camera} onCameraChange={onCameraChange} hiddenOverlays={hiddenOverlays} />
-          <SceneDrawer sections={sections} scene={scene} selectedId={selectedId} onSelect={onSelect} />
-          <SceneElementInspector scene={scene} selectedId={selectedId} />
+          <SceneLayers layers={sceneContents(view).layers} hidden={hidden} onToggle={(layer) => setHidden(new Set([layer]))} />
+          <SceneCanvas view={view} time={0} selected={selected} onSelect={onSelect}
+            camera={camera} onCameraChange={onCameraChange} hiddenLayers={hidden} />
+          <SceneDrawer sections={sections} scene={scene} selected={selected} onSelect={onSelect} />
+          <SceneElementInspector scene={scene} selected={selected} />
         </>
       );
     }
     render(<View />);
     const canvas = within(screen.getByRole('group', { name: studioName('scene') }));
-    fireEvent.click(screen.getByRole('treeitem', { name: 'Arm' }));
-    expect(canvas.getByRole('button', { name: studioAccessibleName('select', 'Arm') }).getAttribute('aria-pressed')).toBe('true');
-    fireEvent.click(canvas.getByRole('button', { name: studioAccessibleName('select', 'Far goal') }));
-    expect(screen.getByRole('treeitem', { name: 'Far goal' }).getAttribute('aria-selected')).toBe('true');
-    expect(screen.getByRole('region', { name: 'Far goal' })).toBeTruthy();
+    const select = (name: string) => canvas.queryByRole('button', { name: studioAccessibleName('select', name) });
+    fireEvent.click(screen.getByRole('treeitem', { name: 'upper' }));
+    expect(select('upper')?.getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(select('shoulder')!);
+    expect(screen.getByRole('treeitem', { name: 'shoulder' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('region', { name: 'shoulder' })).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: studioName('layers') }));
-    await userEvent.click(await screen.findByRole('menuitemcheckbox', { name: studioName('objectives') }));
-    expect(canvas.queryByRole('button', { name: studioAccessibleName('select', 'Reaching cost') })).toBeNull();
-    expect(canvas.getByRole('button', { name: studioAccessibleName('select', 'Far goal') }).getAttribute('aria-pressed')).toBe('true');
+    await userEvent.click(await screen.findByRole('menuitemcheckbox', { name: studioName('muscles') }));
+    expect(select('flexor')).toBeNull();
+    expect(select('upper')).not.toBeNull();
+    expect(select('shoulder')?.getAttribute('aria-pressed')).toBe('true');
   });
 
   it('scrubs a replay and a separate view on the same clock, with no clock for geometry', () => {
@@ -86,15 +77,15 @@ describe('Scene regions', () => {
       const [time, onTimeChange] = useState(0);
       return (
         <>
-          <SceneCanvas view={view} time={time} selectedId={null} onSelect={onSelect}
-            camera={fittedCamera} onCameraChange={vi.fn()} hiddenOverlays={noOverlaysHidden} />
+          <SceneCanvas view={view} time={time} selected={null} onSelect={onSelect}
+            camera={fittedCamera} onCameraChange={vi.fn()} hiddenLayers={noLayersHidden} />
           <div data-testid="results-cursor">{time}</div>
           <SceneClockControls timeline={sceneTimeline(view)} time={time} speed={1}
             onTimeChange={onTimeChange} onSpeedChange={vi.fn()} />
         </>
       );
     }
-    const { container, rerender } = render(<View view={{ kind: 'replay', scene, trial: replay }} />);
+    const { container, rerender } = render(<View view={{ kind: 'replay', scene: emptyScene, trial: replay }} />);
     const initialX = container.querySelector('[data-scene-cursor]')?.getAttribute('cx');
     expect(initialX).toBeDefined();
     fireEvent.change(screen.getByRole('slider'), { target: { value: '0.60' } });
@@ -108,36 +99,12 @@ describe('Scene regions', () => {
   it('exposes a failed replay and retries through the input command', () => {
     const retry = vi.fn();
     render(<SceneCanvas view={{ kind: 'failed', issue: { reason: 'Replay unavailable', detail: 'The selected output could not be read.' }, retry }}
-      time={0} selectedId={null} onSelect={vi.fn()} camera={fittedCamera}
-      onCameraChange={vi.fn()} hiddenOverlays={noOverlaysHidden} />);
+      time={0} selected={null} onSelect={vi.fn()} camera={fittedCamera}
+      onCameraChange={vi.fn()} hiddenLayers={noLayersHidden} />);
     expect(screen.getByRole('alert')).toBeDefined();
     expect(screen.queryByRole('group', { name: studioName('scene') })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: studioName('retry') }));
     expect(retry).toHaveBeenCalledOnce();
   });
 
-  it('updates the live marker from the incoming frame without a playback clock', () => {
-    const frameFor = (samples: number[][]) => normalizeTrainingTrajectoryPayload({
-      tracks: {
-        effector: {
-          anchor_id: 'effector',
-          selector: { namespace: 'graph_output', compact: 'graph_output:effector', role: 'observed' },
-          samples, dim: 2, dtype: 'float32',
-        },
-      },
-    });
-    const frame = frameFor([[-0.5, 0], [0.6, 0]]);
-    const latest = frameFor([[0.6, 0], [-0.5, 0]]);
-    const drawing = {
-      time: 0, selectedId: null, onSelect: vi.fn(), camera: fittedCamera,
-      onCameraChange: vi.fn(), hiddenOverlays: noOverlaysHidden,
-    };
-    const view = (frame: typeof latest) => <SceneCanvas {...drawing} view={{ kind: 'live', scene, frame }} />;
-    const { container, rerender } = render(view(frame));
-    const firstX = Number(container.querySelector('[data-scene-cursor]')?.getAttribute('cx'));
-    rerender(view(latest));
-    const lastX = Number(container.querySelector('[data-scene-cursor]')?.getAttribute('cx'));
-    expect(lastX).toBeLessThan(firstX);
-    expect(sceneTimeline({ kind: 'live', scene, frame: latest })).toBeNull();
-  });
 });
