@@ -7,7 +7,8 @@
           "feedbax.contracts.expression_values.CallValue",
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
-          "feedbax.contracts.expression_values.NameValue"
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       },
       "function": {},
@@ -23,7 +24,8 @@
           "feedbax.contracts.expression_values.CallValue",
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
-          "feedbax.contracts.expression_values.NameValue"
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       }
     },
@@ -59,7 +61,8 @@
           "feedbax.contracts.expression_values.CallValue",
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
-          "feedbax.contracts.expression_values.NameValue"
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       },
       "family": {},
@@ -75,6 +78,9 @@
           "run",
           "trial"
         ]
+      },
+      "weights": {
+        "absent": null
       }
     },
     "feedbax.contracts.expression_values.LiteralValue": {
@@ -97,6 +103,15 @@
         ]
       },
       "reference": {}
+    },
+    "feedbax.contracts.expression_values.UnresolvedValue": {
+      "kind": {
+        "absent": "unresolved",
+        "values": [
+          "unresolved"
+        ]
+      },
+      "text": {}
     },
     "feedbax.contracts.expression_values.ValueType": {
       "base": {
@@ -489,6 +504,11 @@
         "absent": null
       }
     },
+    "feedbax.contracts.model_document.InterventionWindow": {
+      "duration": {},
+      "epoch": {},
+      "offsets": {}
+    },
     "feedbax.contracts.model_document.LeafComponent": {
       "attachments": {
         "absent": {}
@@ -678,7 +698,8 @@
           "feedbax.contracts.expression_values.CallValue",
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
-          "feedbax.contracts.expression_values.NameValue"
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       },
       "measure_type": {
@@ -704,7 +725,8 @@
           "feedbax.contracts.expression_values.CallValue",
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
-          "feedbax.contracts.expression_values.NameValue"
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       }
     },
@@ -1021,7 +1043,8 @@
           "feedbax.contracts.expression_values.CallValue",
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
-          "feedbax.contracts.expression_values.NameValue"
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       }
     },
@@ -1047,7 +1070,8 @@
           "feedbax.contracts.expression_values.CallValue",
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
-          "feedbax.contracts.expression_values.NameValue"
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       },
       "max_steps": {
@@ -1064,6 +1088,20 @@
       },
       "type": {}
     },
+    "feedbax.contracts.task_document.Repeat": {
+      "count": {
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
+        ]
+      },
+      "first_epoch": {},
+      "id": {},
+      "last_epoch": {}
+    },
     "feedbax.contracts.task_document.Rest": {
       "kind": {
         "absent": "rest",
@@ -1072,6 +1110,10 @@
         ]
       }
     },
+    "feedbax.contracts.task_document.SetVariableChoices": {
+      "entries": {},
+      "set": {}
+    },
     "feedbax.contracts.task_document.Signal": {
       "absent": {
         "absent": null,
@@ -1079,7 +1121,8 @@
           "feedbax.contracts.expression_values.CallValue",
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
-          "feedbax.contracts.expression_values.NameValue"
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       },
       "cells": {},
@@ -1094,6 +1137,9 @@
       },
       "id": {},
       "links": {
+        "absent": []
+      },
+      "repeats": {
         "absent": []
       },
       "signals": {},
@@ -1113,20 +1159,34 @@
       }
     },
     "feedbax.contracts.task_document.Variable": {
+      "count": {
+        "absent": null,
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
+        ]
+      },
       "id": {},
       "name": {},
+      "set_choices": {
+        "absent": null
+      },
       "type": {},
       "value": {
         "families": [
           "feedbax.contracts.expression_values.CallValue",
           "feedbax.contracts.expression_values.DrawValue",
           "feedbax.contracts.expression_values.LiteralValue",
-          "feedbax.contracts.expression_values.NameValue"
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
         ]
       }
     },
     "feedbax.contracts.training.TrialDocuments": {
-      "input_overrides": {
+      "input_bindings": {
         "absent": {}
       },
       "model": {},
@@ -3563,6 +3623,11 @@
         "field": "max_steps",
         "migration": "task-epoch-end",
         "model": "feedbax.contracts.task_document.Epoch"
+      },
+      {
+        "field": "input_overrides",
+        "migration": "stable-task-input-bindings",
+        "model": "feedbax.contracts.training.TrialDocuments"
       }
     ],
     "values": [

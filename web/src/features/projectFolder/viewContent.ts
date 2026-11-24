@@ -1,13 +1,11 @@
 import { studioName, studioReason, studioRunReason } from '@/components/activity/studioVocabulary';
 import type { PlanStepView } from '@/features/pipeline/planView';
 import type { ProjectWindowView, ViewOffer } from '@/features/projectWindow/projectWindowState';
-import type {
-  GraphInterior, ModelDocument, StudioProjectWindowMapProblem, StudioSavedEvaluationRow,
-} from '@/generated/studioContracts';
+import type { ModelDocument, StudioProjectWindowMapProblem } from '@/generated/studioContracts';
 
 export const viewsByKind = {
   train: ['runs', 'model', 'task', 'objective', 'training', 'scene', 'results'],
-  evaluate: ['runs', 'model', 'task', 'scene', 'results'],
+  evaluate: ['runs', 'model', 'task', 'objective', 'scene', 'results'],
   analyze: ['runs', 'analysis', 'figures'],
   report: ['runs', 'document'],
 } as const satisfies Record<PlanStepView['kind'], readonly ProjectWindowView[]>;
@@ -22,10 +20,12 @@ export interface ViewSubject {
   /** The step's run its Task and Objective are read through: none, one with a definition, or one whose own definition
    * is refused, for which the definition views are dimmed by its problems. */
   readonly run: 'none' | 'resolved' | 'unresolved';
+  /** Whether the step is scored by an Objective: its own, or that of the Train whose checkpoint it evaluates. */
+  readonly objective: boolean;
   /** The stored Model the step's Model and Scene show. */
   readonly model: ModelDocument | undefined;
-  /** The Evaluate run whose trials the Scene replays. */
-  readonly evaluation: StudioSavedEvaluationRow | undefined;
+  /** Whether the Model has a mechanism the Scene draws; unknown while its geometry is read. */
+  readonly scenePlaces: boolean | undefined;
   /** Why the focused run cannot run. */
   readonly runProblems: readonly StudioProjectWindowMapProblem[];
   /** Whether the Results have something to show: a focused run's results, or the plan's read failed. */
@@ -34,43 +34,26 @@ export interface ViewSubject {
   readonly report: boolean;
 }
 
-/** The interiors of a Model drawn in the Scene: its planar multibody composites, outermost first. */
-export function planarInteriors(graph: GraphInterior, prefix: string[] = []): string[][] {
-  return Object.entries(graph.components ?? {}).flatMap(([id, component]) => {
-    if (component.kind !== 'composite') return [];
-    const path = [...prefix, id];
-    const child = component.interior;
-    if (child.physical_domain === 'planar_multibody') return [path];
-    return child.physical_domain == null ? planarInteriors(child as GraphInterior, path) : [];
-  });
-}
-
 /** Why a view of the step has nothing to show for the selection; undefined when it has something. */
 export function viewAbsence(view: ProjectWindowView, subject: ViewSubject): string | undefined {
   const { step } = subject;
-  if (!subject.planRead && (view === 'task' || view === 'objective' || view === 'results' ||
-    view === 'scene' && step.kind === 'evaluate')) return undefined;
+  if (!subject.planRead && (view === 'task' || view === 'objective' || view === 'results')) return undefined;
   if (subject.run === 'unresolved' && (view === 'task' || view === 'objective' || view === 'training')) {
     return studioRunReason({ problems: subject.runProblems });
   }
   switch (view) {
     case 'model':
       return subject.model ? undefined : studioReason('definitionUnavailable', studioName('model'));
-    case 'task':
     case 'objective':
+      if (!subject.objective) return studioReason('definitionUnavailable', studioName('objective'));
+      return subject.run === 'none' ? studioReason('noRuns', step.label) : undefined;
+    case 'task':
       return subject.run === 'none' ? studioReason('noRuns', step.label) : undefined;
     case 'training':
       return subject.trainingForm ? undefined : studioReason('definitionUnavailable', studioName('training'));
     case 'scene':
-      if (step.kind === 'evaluate') {
-        const { evaluation, runProblems } = subject;
-        if (evaluation?.result?.job_id && evaluation.trials.length) return undefined;
-        if (runProblems.length) return studioRunReason({ problems: runProblems });
-        return evaluation?.reason ?? studioReason('scenePlaybackUnavailable', studioName('playback'));
-      }
       if (!subject.model) return studioReason('definitionUnavailable', studioName('model'));
-      return planarInteriors(subject.model.interior).length
-        ? undefined : studioReason('planarSceneUnavailable', studioName('model'));
+      return subject.scenePlaces === false ? studioReason('planarSceneUnavailable', studioName('model')) : undefined;
     case 'results':
       return subject.results ? undefined : studioReason('emptySelection', studioName('run'));
     case 'document':

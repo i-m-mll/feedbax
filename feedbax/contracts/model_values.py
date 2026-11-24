@@ -25,16 +25,19 @@ class StateValue:
     symbol: str
     fields: tuple[str, ...]
     units: str
-    axis: Literal["xy", "unit", "muscle"]
+    axis: Literal["xy", "unit", "muscle", "joint"]
+    prototype: tuple[str, ...]
+    """The resolved output port and path that provide the storage shape and dtype."""
     frame: str | None = None
+    aliases: tuple[tuple[str, ...], ...] = ()
+    """Storage paths initialized with this value when they have no explicit initializer."""
     reset: StateReset | None = None
+    configuration: bool = False
+    space: Literal["point"] | None = None
 
 
 @dataclass(frozen=True)
 class StateReset:
-    output_port: str
-    output_path: tuple[str, ...] = ()
-    aliases: tuple[tuple[str, ...], ...] = ()
     override_port: str | None = None
     required: bool = False
     """The component has no meaningful start of its own, so a task must initialize the field."""
@@ -55,8 +58,6 @@ class ModelFacts:
     states: tuple[StateValue, ...] | None = ()
     checkpointable: bool = True
     physical_checkpoint: Callable[[ComponentSpec, AcausalGraphSpec], bool] | None = None
-    scene_effector_port: str | None = None
-    scene_position: str | None = None
     configuration_slots: tuple[str, ...] = ()
     fixed_configuration_flag: str | None = None
     optional_state_flag: str | None = None

@@ -3,6 +3,7 @@
 @import "@window-shell/browser/tokens.css";
 @import "@window-shell/browser/frame.css";
 @import "@window-shell/browser/titlebar.css";
+@import "@window-shell/browser/settings.css";
 
 @tailwind base;
 @tailwind components;
@@ -47,9 +48,12 @@
   --studio-kind-evaluate: #a17385;
   --studio-kind-analyze: #85758d;
   --studio-kind-report: #73716f;
-  --studio-scene-feature: #7b4c6d;
-  --studio-scene-guide: #917967;
+  /* A trial's start and goal, drawn as open rings. */
+  --studio-scene-start: #c99400;
+  --studio-scene-goal: #2f9a4a;
   --studio-scene-outline: var(--text-muted);
+  /* The trials drawn beside the picked one, lighter than its path. */
+  --studio-scene-faint: color-mix(in srgb, var(--text-muted) 50%, var(--surface-main));
   --studio-scene-grid: color-mix(in srgb, var(--app-divider) 60%, var(--surface-main));
   --studio-hue-lightness: 0.48;
   /* Mandible's --text-chrome-muted, darkened to the nearest grey that reads at 4.5:1 on the main and sidebar surfaces. */
@@ -72,8 +76,8 @@
   --studio-kind-evaluate: #986b7d;
   --studio-kind-analyze: #807188;
   --studio-kind-report: #797775;
-  --studio-scene-feature: #99688a;
-  --studio-scene-guide: #8a7260;
+  --studio-scene-start: #e3b52f;
+  --studio-scene-goal: #5cbf74;
   --studio-hue-lightness: 0.68;
   --studio-category-text: #838383;
   --studio-shadow-soft: 0 12px 32px rgba(0, 0, 0, 0.32);
@@ -148,7 +152,6 @@
   ::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: var(--radius-sm); }
 }
 
-:root[data-section-chevron='edge'] [data-section-disclosure] { margin-inline-start: auto; }
 
 .studio-scroll-fade {
   /* Where the top fade starts, below content pinned to the top such as a table's header. */
@@ -161,6 +164,7 @@
   --fade-right: 0px;
   /* Content scrolled into view stops clear of the fades. */
   scroll-padding-block: calc(var(--fade-inset-top) + var(--studio-scroll-fade)) var(--studio-scroll-fade);
+  scroll-padding-inline: calc(var(--fade-inset-left) + var(--studio-scroll-fade)) var(--studio-scroll-fade);
   -webkit-mask-image:
     linear-gradient(to bottom, #000 var(--fade-inset-top), transparent var(--fade-inset-top), #000 calc(var(--fade-inset-top) + var(--fade-top)), #000 calc(100% - var(--fade-bottom)), transparent),
     linear-gradient(to right, #000 var(--fade-inset-left), transparent var(--fade-inset-left), #000 calc(var(--fade-inset-left) + var(--fade-left)), #000 calc(100% - var(--fade-right)), transparent);
@@ -184,17 +188,20 @@
 .studio-table[data-held] tr > :nth-child(1) { left: var(--held-left-1); }
 .studio-table[data-held] tr > :nth-child(2) { left: var(--held-left-2); }
 .studio-table[data-held] tr > :nth-child(3) { left: var(--held-left-3); }
+.studio-table[data-held] tr > :nth-child(4) { left: var(--held-left-4); }
 
 .studio-table[data-held="1"] tr > :nth-child(-n + 1),
 .studio-table[data-held="2"] tr > :nth-child(-n + 2),
-.studio-table[data-held="3"] tr > :nth-child(-n + 3) {
+.studio-table[data-held="3"] tr > :nth-child(-n + 3),
+.studio-table[data-held="4"] tr > :nth-child(-n + 4) {
   position: sticky;
   z-index: 1;
 }
 
 .studio-table[data-held="1"] tbody tr > :nth-child(-n + 1),
 .studio-table[data-held="2"] tbody tr > :nth-child(-n + 2),
-.studio-table[data-held="3"] tbody tr > :nth-child(-n + 3) {
+.studio-table[data-held="3"] tbody tr > :nth-child(-n + 3),
+.studio-table[data-held="4"] tbody tr > :nth-child(-n + 4) {
   background:
     linear-gradient(var(--cell-fill, transparent), var(--cell-fill, transparent)),
     linear-gradient(var(--row-fill, transparent), var(--row-fill, transparent)),
@@ -203,7 +210,8 @@
 
 .studio-table[data-held="1"] thead tr > :nth-child(-n + 1),
 .studio-table[data-held="2"] thead tr > :nth-child(-n + 2),
-.studio-table[data-held="3"] thead tr > :nth-child(-n + 3) {
+.studio-table[data-held="3"] thead tr > :nth-child(-n + 3),
+.studio-table[data-held="4"] thead tr > :nth-child(-n + 4) {
   z-index: 2;
   background-color: var(--surface-header);
 }
@@ -211,8 +219,118 @@
 /* Once the table is scrolled, a line divides the held columns from those beneath them. */
 .studio-table-box[data-overflow-left] .studio-table[data-held="1"] tr > :nth-child(1),
 .studio-table-box[data-overflow-left] .studio-table[data-held="2"] tr > :nth-child(2),
-.studio-table-box[data-overflow-left] .studio-table[data-held="3"] tr > :nth-child(3) {
+.studio-table-box[data-overflow-left] .studio-table[data-held="3"] tr > :nth-child(3),
+.studio-table-box[data-overflow-left] .studio-table[data-held="4"] tr > :nth-child(4) {
   box-shadow: inset -1px 0 var(--border-muted);
+}
+
+/* A selected row's name is in the medium weight; a related row is marked at its name's leading edge. */
+.studio-table tr[data-selected] > :nth-child(1 of :not(.studio-table-margin)) { font-weight: 500; }
+.studio-table tr[data-related] > :nth-child(1 of :not(.studio-table-margin)) { box-shadow: inset 2px 0 0 var(--row-related-mark); }
+
+/* The leading margin and the row of column handles lie outside the table: no lines, no fill. */
+.studio-table .studio-table-margin,
+.studio-table .studio-table-handles > * {
+  padding: 0;
+  border: 0;
+  text-align: center;
+  vertical-align: middle;
+  line-height: 0;
+}
+
+.studio-table[data-held] tr > .studio-table-margin.studio-table-margin { background: var(--table-surface); }
+
+.studio-table .studio-table-handles > * { height: 1rem; }
+
+.studio-table-handle {
+  display: inline-flex;
+  cursor: grab;
+  touch-action: none;
+  color: var(--text-muted);
+  opacity: 0;
+}
+
+.studio-table-handle svg { width: 1em; height: 1em; }
+
+.studio-table tr:is(:hover, :focus-within, [data-selected], [data-dragging]) > .studio-table-margin .studio-table-handle,
+.studio-table .studio-table-handles > :is(:hover, [data-attention], [data-dragging]) .studio-table-handle {
+  opacity: 1;
+}
+
+/* A dragged row or column is drawn over the others, opaque in its fill. */
+.studio-table tr[data-dragging] {
+  position: relative;
+  z-index: 3;
+  background: linear-gradient(var(--row-fill, transparent), var(--row-fill, transparent)), var(--table-surface);
+}
+
+.studio-table tbody [data-dragging] {
+  position: relative;
+  z-index: 3;
+  background:
+    linear-gradient(var(--cell-fill, transparent), var(--cell-fill, transparent)),
+    linear-gradient(var(--row-fill, transparent), var(--row-fill, transparent)),
+    var(--table-surface);
+}
+
+.studio-table thead [data-dragging] { z-index: 3; }
+
+/* Measuring: the table at its content's width, each text input as wide as its text. */
+.studio-table[data-measuring] {
+  table-layout: auto !important;
+  width: max-content !important;
+  min-width: 0 !important;
+}
+
+.studio-table[data-measuring] > colgroup > col { width: auto !important; }
+
+.studio-table[data-measuring] input[data-measured] {
+  width: var(--studio-measured) !important;
+  min-width: 0 !important;
+  flex: none !important;
+}
+
+/*
+ * A name cell's trailing end: its owner's menu while the owner has attention, over a fade of the name; without
+ * attention, the fade alone where the name is longer than its column, except while the name is edited.
+ */
+.studio-table-name-end {
+  position: absolute;
+  inset-block: 0;
+  right: 0;
+  display: none;
+  align-items: center;
+  padding-left: var(--studio-scroll-fade);
+  padding-right: 0.25rem;
+  pointer-events: none;
+  background:
+    linear-gradient(var(--cell-fill, transparent), var(--cell-fill, transparent)),
+    linear-gradient(var(--row-fill, transparent), var(--row-fill, transparent)),
+    var(--table-surface);
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 var(--studio-scroll-fade));
+  mask-image: linear-gradient(to right, transparent, #000 var(--studio-scroll-fade));
+}
+
+.studio-table thead .studio-table-name-end {
+  background: linear-gradient(var(--cell-fill, transparent), var(--cell-fill, transparent)), var(--surface-header);
+}
+
+.studio-table-name:has(.studio-cell-input:hover:not(:focus)) > .studio-table-name-end { --cell-fill: var(--surface-hover); }
+
+.studio-table-name-end > * { display: none; pointer-events: auto; }
+
+.studio-table-name[data-overflow]:not(:focus-within) > .studio-table-name-end { display: flex; }
+
+.studio-table tr:is(:hover, :focus-within, [data-selected]) > .studio-table-name > .studio-table-name-end[data-menu],
+.studio-table th.studio-table-name:is(:hover, :focus-within, [data-selected]) > .studio-table-name-end[data-menu],
+.studio-table-name-end[data-shown] {
+  display: flex;
+}
+
+.studio-table tr:is(:hover, :focus-within, [data-selected]) > .studio-table-name > .studio-table-name-end[data-menu] > *,
+.studio-table th.studio-table-name:is(:hover, :focus-within, [data-selected]) > .studio-table-name-end[data-menu] > *,
+.studio-table-name-end[data-shown] > * {
+  display: inline-flex;
 }
 
 /* A field or a name's input in a cell is the cell (P35); the cell keeps no inset of its own. */

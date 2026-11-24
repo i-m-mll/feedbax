@@ -41,17 +41,50 @@ def _ports(component, direction, port):
     return SCALAR if (direction, port) in {("input", "in"), ("output", "out")} else None
 
 
-def _accepts(component, domain):
-    return component["kind"] == "composite" or (component["type"] == "mass") == (domain is not None)
+def _component_problem(component, domain):
+    if component["kind"] == "leaf" and (component["type"] == "mass") != (domain is not None):
+        return "Component is unavailable in this interior"
+    return None
 
 
 def _execute(state, op, **fields):
     command = ModelEditCommand.model_validate({"operation": {"op": op, **fields}})
-    return apply_model_edit(state, command, ports=_ports, accepts=_accepts)
+    return apply_model_edit(state, command, ports=_ports, component_problem=_component_problem)
 
 
 def _bytes(state):
     return canonical_json_v2_bytes(state.model_dump(mode="json"))
+
+
+@pytest.mark.parametrize(("scope", "grow_source"), [((), True), ((), False), (("outer",), False)])
+def test_boundary_growth_reviews_and_stores_a_typed_port(scope, grow_source):
+    state = _start()
+    empty = {"owner": "inputs" if grow_source else "outputs", "port": "__new_port__"}
+    source, target = (empty, _end("same", "in")) if grow_source else (_end("same", "out"), empty)
+    graph = _address(scope)
+    review = model_edit.edits.ModelConnectionReviewRequest.model_validate({
+        "revision": "0" * 64, "document": "model", "graph": graph, "source": source, "grow_source": grow_source,
+    })
+    reviewed = model_edit.review_model_connections(
+        state.document, review, layout=lambda _: {("input", "in"): SCALAR, ("output", "out"): SCALAR},
+        next_input=lambda _: None,
+    )
+    verdict = next(item for item in reviewed.targets if item.target.model_dump(mode="json") == target)
+    assert verdict.reason is None and verdict.problem is None
+    assert verdict.growing is not grow_source
+    result = _execute(state, "connect", graph=graph, source=source, target=target,
+                      grow_source=grow_source, grow_target=not grow_source)
+    assert len(result.changed) == 2 and not result.problems, result
+    saved = result.state.document.model_dump(mode="json")
+    for id_ in scope:
+        saved = saved["interior"]["components"][id_]
+    side = "source" if grow_source else "target"
+    wires = saved["interior"]["wires"].values()
+    wire = next(wire for wire in wires if wire[side]["owner"] == empty["owner"])
+    port = next(port for port in saved["ports"][empty["owner"]] if port["id"] == wire[side]["port"])
+    assert port["id"] != empty["port"]
+    assert port["name"] == ("in" if grow_source else "out")
+    assert port["type"] == SCALAR.type.model_dump(mode="json")
 
 
 def _start(deep_name="inner", *, decorated=False, fanout=False, default=False):
@@ -134,6 +167,7 @@ def test_added_component_takes_the_id_it_is_given_and_refuses_one_in_use():
 
 def test_ungroup_preserves_attachment_order_and_refuses_shared_delay():
     address = _address(("outer",), "component", id="child")
+    assert _ungroup_reason(_start(decorated=True), address) is None
     accepted = _execute(_start(decorated=True), "ungroup", address=address)
     assert not isinstance(accepted, ModelEditProblem), accepted
     wires = accepted.state.document.interior.components["outer"].interior.wires.values()
@@ -146,6 +180,7 @@ def test_ungroup_preserves_attachment_order_and_refuses_shared_delay():
     refused = _execute(start, "ungroup", address=address)
     assert isinstance(refused, ModelEditProblem)
     assert refused.address == ModelAddress.model_validate(_address(("outer",), "wire", id="in"))
+    assert _ungroup_reason(start, address) == refused.detail
     assert _bytes(start) == before
 
 
@@ -159,17 +194,29 @@ def test_ungroup_refuses_port_attachments(outside):
         ProbeAttachment(kind="probe", id="probe", name="Read"),
     )
     before = _bytes(state)
-    result = _execute(state, "ungroup", address=_address(("outer",), "component", id="child"))
+    address = _address(("outer",), "component", id="child")
+    result = _execute(state, "ungroup", address=address)
     assert isinstance(result, ModelEditProblem)
     assert result.address.element.kind == "port"
+    assert _ungroup_reason(state, address) == result.detail
     assert _bytes(state) == before
 
 
 def test_ungroup_refuses_an_unconnected_input_default():
     state = _start(default=True)
-    result = _execute(state, "ungroup", address=_address(("outer",), "component", id="child"))
+    address = _address(("outer",), "component", id="child")
+    result = _execute(state, "ungroup", address=address)
     assert isinstance(result, ModelEditProblem)
     assert result.address.element.kind == "port"
+    assert _ungroup_reason(state, address) == result.detail
+
+
+def _ungroup_reason(state, address):
+    target = ModelAddress.model_validate(address)
+    return next(
+        item.reason for item in model_edit.ModelEditDraft(state, _ports).ungroup_eligibility()
+        if item.address == target
+    )
 
 
 def test_addressed_route_settles_document_and_position_and_rejects_raw_patch(tmp_path):
@@ -254,6 +301,187 @@ def test_addressed_route_settles_document_and_position_and_rejects_raw_patch(tmp
         rejected = replay(replacement, redone.json()["result"]["undo_token"])
         assert rejected.status_code == 422 and "another project" in rejected.text
         assert client.get(url).json() == replacement
+
+
+def test_batch_created_model_recovers_its_original_file_revision_after_undo(tmp_path):
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        response = client.post("/api/projects")
+        assert response.is_success, response.text
+        empty = response.json()["snapshot"]
+        url = f"/api/projects/{empty['project_id']}"
+        response = client.post(url + "/files", json={
+            "revision": empty["revision"],
+            "files": [
+                {"kind": "document", "id": "model", "document": {
+                    "schema": "feedbax.spec.model",
+                    "payload": {"step_seconds": 0.01, "ports": {}, "interior": {}},
+                    "label": "Model",
+                }},
+                {"kind": "step", "id": "fit", "step": {
+                    "kind": "train", "base": {"inline": {"trial_documents": {"model": {"document": "model"}}}},
+                }},
+            ],
+        })
+        assert response.status_code == 201, response.text
+        original = response.json()["snapshot"]
+        response = client.post(url + "/model/edit", json={
+            "revision": original["revision"], "presentation_revision": original["presentation_revision"],
+            "document": "model",
+            "command": {"operation": {
+                "op": "add_component", "graph": _address(()),
+                "component": {"kind": "leaf", "name": "Scale", "type": "feedbax.Scale"},
+                "position": {"x": 2, "y": 3},
+            }},
+        })
+        assert response.is_success, response.text
+        result = response.json()["result"]
+        assert result["status"] == "applied", result
+        edited = result["snapshot"]
+        assert edited["revision"] != original["revision"]
+        response = client.post(url + "/model/undo", json={
+            "revision": edited["revision"], "presentation_revision": edited["presentation_revision"],
+            "token": result["undo_token"],
+        })
+        assert response.is_success, response.text
+        restored = response.json()["result"]["snapshot"]
+        assert restored["file_revisions"] == original["file_revisions"]
+        assert restored["revision"] == original["revision"]
+
+
+@pytest.mark.parametrize("ambiguous", [False, True])
+def test_connection_review_edit_and_undo_keep_the_addressed_model(tmp_path, ambiguous):
+    """Catch lost wire annotations, arbitrary selection among ambiguous wires, and refusal of invalid authored edits."""
+    destination = {"owner": "outputs", "port": "out"}
+    original = {"owner": "inputs", "port": "old"}
+    replacement = {"owner": "inputs", "port": "new"}
+    dangling = {"owner": "inputs", "port": "missing"}
+    attachments = [{"kind": "intervention", "id": "transform", "operation": "scale", "fields": {"factor": 2}}]
+    wires = {
+        "hold": {"source": original, "target": destination, "attachments": attachments},
+        "dangling": {"source": dangling, "target": {"owner": "outputs", "port": "spare"}},
+    }
+    if ambiguous:
+        wires["alternate"] = {"source": dangling, "target": destination}
+    payload = {
+        "step_seconds": 0.01,
+        "ports": {
+            "inputs": [
+                {"id": "old", "name": "Old", "type": {"shape": [2]}},
+                {"id": "new", "name": "New", "type": {"shape": []}},
+            ],
+            "outputs": [
+                {"id": "out", "name": "Out", "type": {"shape": [2]}},
+                {"id": "spare", "name": "Spare", "type": {}},
+            ],
+        },
+        "interior": {"wires": wires},
+    }
+    project = Project(documents={"model": RootDocument(schema="feedbax.spec.model", payload=payload)})
+    path = tmp_path / "project"
+    for name, data in dump_text_project(project, ProjectConfiguration(project="project", store="store")).items():
+        file = path / name
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_bytes(data)
+    hold = ModelAddress.model_validate(_address(kind="wire", id="hold"))
+    stale_layout = ModelAddress.model_validate(_address(kind="wire", id="old-layout"))
+    layout = {hold.to_text(): [{"x": 2, "y": 3}], stale_layout.to_text(): [{"x": 9, "y": 4}]}
+    url = "/api/projects/project"
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        before = client.get(url).json()
+        response = client.put(url + "/presentation", json={
+            "revision": before["presentation_revision"],
+            "presentation": {"documents": {"model": {"waypoints": layout}}},
+        })
+        assert response.status_code == 200, response.text
+        before = client.get(url).json()
+        context = {
+            "revision": before["revision"], "presentation_revision": before["presentation_revision"],
+            "document": "model",
+        }
+
+        def review(source):
+            response = client.post(url + "/model/connections", json={
+                "revision": before["revision"], "document": "model", "graph": _address(), "source": source,
+            })
+            assert response.status_code == 200, response.text
+            return next(item for item in response.json()["targets"] if item["target"] == destination)
+
+        if not ambiguous:
+            assert review(original)["reason"] == "This input already has that source"
+        verdict = review(replacement)
+        assert verdict["reason"] is None and verdict["problem"]
+        old_wires = {"hold", "alternate"} if ambiguous else {"hold"}
+        assert {item["address"]["element"]["id"] for item in verdict["replaced"]} == old_wires
+        old_hold = next(item for item in verdict["replaced"] if item["address"]["element"]["id"] == "hold")
+        assert [item["element"]["id"] for item in old_hold["attachments"]] == ["transform"]
+
+        response = client.post(url + "/model/edit", json=context | {"command": {"operation": {
+            "op": "connect", "graph": _address(), "source": replacement, "target": destination,
+        }}})
+        assert response.status_code == 200, response.text
+        result = response.json()["result"]
+        assert result["status"] == "applied", result
+        saved = client.get(url).json()
+        assert saved["revision"] != before["revision"]
+        saved_wires = saved["project"]["documents"]["model"]["payload"]["interior"]["wires"]
+        (key, wire), = [(key, wire) for key, wire in saved_wires.items() if wire["target"] == destination]
+        assert wire["source"] == replacement
+        assert {p["address"]["element"]["id"] for p in result["problems"]} == {key, "dangling"}
+        assert saved_wires["dangling"] == wires["dangling"]
+        saved_layout = saved["presentation"]["documents"]["model"]["waypoints"]
+        if ambiguous:
+            assert key not in old_wires and not wire.get("attachments")
+            assert saved_layout == {stale_layout.to_text(): layout[stale_layout.to_text()]}
+        else:
+            original_wire = before["project"]["documents"]["model"]["payload"]["interior"]["wires"]["hold"]
+            assert key == "hold" and wire["attachments"] == original_wire["attachments"]
+            assert saved_layout == layout
+
+        response = client.post(url + "/model/undo", json={
+            "revision": saved["revision"], "presentation_revision": saved["presentation_revision"],
+            "token": result["undo_token"],
+        })
+        assert response.status_code == 200, response.text
+        undone = response.json()["result"]["snapshot"]
+        assert undone["project"] == before["project"]
+        assert undone["presentation"] == before["presentation"]
+
+        response = client.post(url + "/model/edit", json=context | {
+            "revision": undone["revision"], "presentation_revision": undone["presentation_revision"],
+            "command": {"operation": {
+                "op": "rename", "address": _address(kind="port", end=replacement), "name": "Old",
+            }},
+        })
+        assert response.status_code == 200, response.text
+        renamed = response.json()["result"]
+        assert renamed["status"] == "applied", renamed
+        snapshot = client.get(url).json()
+        stored = snapshot["project"]["documents"]["model"]["payload"]
+        assert [(port["id"], port["name"]) for port in stored["ports"]["inputs"]] == [("old", "Old"), ("new", "Old")]
+        response = client.post(url + "/model/projection", json={"revision": snapshot["revision"], "document": "model"})
+        assert response.status_code == 200, response.text
+        projection = response.json()
+        assert projection["resolved_model"]["interior"]["wires"] == stored["interior"]["wires"]
+        ports = {p["address"]["element"]["end"]["port"] for p in renamed["problems"]
+                 if p["address"]["element"]["kind"] == "port"}
+        assert ports == {"old", "new"}
+
+
+def test_incompatible_local_physical_ports_keep_an_addressed_connection():
+    """Catch a refusal after connecting two existing ports in a physical interior."""
+    data = _start().model_dump(mode="json")
+    physics = data["document"]["interior"]["components"]["physics"]
+    physics["ports"]["physical"][0]["type"] = "rotational"
+    state = ModelEditState.model_validate(data)
+    result = _execute(
+        state, "connect_physical", graph=_address(("physics",)),
+        connection={"a": _end("mass", "flange"), "b": {"owner": "boundary", "port": "frame"}},
+    )
+    graph = result.state.document.interior.components["physics"].interior
+    connection, = graph.connections.values()
+    assert connection.a.port == "flange" and connection.b.port == "frame"
+    problem, = result.problems
+    assert problem.address == result.changed[0]
 
 
 def _graphs(owner, scope=()):

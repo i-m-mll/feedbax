@@ -9,7 +9,6 @@ import pytest
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
 from feedbax.web.app import create_app
-from feedbax.web.services.project_plan import ProjectPlanRead
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.support.managed_train_fixture import managed_evaluation_step
 from tests.test_document_train_pair import authored_documents, document_project
@@ -142,15 +141,35 @@ def test_change_key_preserves_document_bytes_and_requests_through_undo(studio):
     assert response.json()["presentation"] == before["presentation"]
 
 
-def test_change_key_refuses_a_name_already_in_use(studio):
+def test_change_key_preserves_bound_and_dangling_readers_through_reload_and_undo(studio):
     client, folders = studio
     snapshot = _snapshot(client)
+    untouched = _files(folders)
     _command(client, snapshot, {"kind": "change_key", "family": "documents", "member": "reach-model", "key": "task"}, 409)
+    assert _files(folders) == untouched
     raw = snapshot["project"]
     raw["steps"]["train-b"]["base"]["inline"]["trial_documents"]["objective"] = {"document": "missing"}
     _save_project(folders, PROJECT, Project.model_validate(raw))
     snapshot = _snapshot(client)
-    _command(client, snapshot, {"kind": "change_key", "family": "documents", "member": "objective", "key": "missing"}, 422)
+    before = folders.read_plan(PROJECT, revision=None).plan
+    result = _command(client, snapshot, {
+        "kind": "change_key", "family": "documents", "member": "objective", "key": "missing",
+    })
+    reopened = _snapshot(client)
+    readers = reopened["project"]["steps"]
+    assert readers["train"]["base"]["inline"]["trial_documents"]["objective"] == {"document": "missing"}
+    assert readers["train-b"]["base"]["inline"]["trial_documents"]["objective"] == {
+        "document": "missing", "unresolved": True,
+    }
+    after = folders.read_plan(PROJECT, revision=None).plan
+    assert {run.key: run.request_id for run in after.runs} == {run.key: run.request_id for run in before.runs}
+    assert any(
+        item["address"] == "steps/train-b.json" and item["path"].endswith("objective")
+        for item in result["problems"]
+    )
+    undone = _replay(client, snapshot, reopened)
+    assert undone.status_code == 200, undone.text
+    assert _snapshot(client)["project"] == snapshot["project"]
 
 
 def test_a_step_using_a_duplicate_diverges_alone(studio):
@@ -160,7 +179,9 @@ def test_a_step_using_a_duplicate_diverges_alone(studio):
     result = _command(client, snapshot, {"kind": "duplicate", "family": "documents", "member": "task"})
     copy = result["member"]
     assert copy == "task-2"
-    assert result["snapshot"]["project"]["documents"][copy] == snapshot["project"]["documents"]["task"]
+    assert result["snapshot"]["project"]["documents"][copy] == {
+        **snapshot["project"]["documents"]["task"], "label": "Task 2",
+    }
 
     response = client.post(f"{URL}/authoring/trials", json={
         "revision": result["snapshot"]["revision"], "run": {"variant": "default", "step": "train", "row": "default"},
@@ -191,7 +212,8 @@ def test_a_step_uses_a_duplicated_model_whose_links_and_measures_resolve(studio)
     result = _command(client, before, {"kind": "duplicate", "family": "documents", "member": "reach-model", "name": "arm"})
     assert result["snapshot"]["presentation"]["documents"]["arm"] == before["presentation"]["documents"]["reach-model"]
     files = _files(folders)
-    assert files["documents/arm.json"] == files["documents/reach-model.json"]
+    original = json.loads(files["documents/reach-model.json"])
+    assert json.loads(files["documents/arm.json"]) == original | {"label": "Reach model 2"}
     run = {"variant": "default", "step": "train-b", "row": "default"}
     response = client.post(f"{URL}/authoring/trials", json={
         "revision": result["snapshot"]["revision"], "run": run,
@@ -406,7 +428,8 @@ def test_duplicate_of_a_based_document_is_a_root_with_its_content(based):
     requests = _requests(folders, before["revision"])
     result = _command(client, before, {"kind": "duplicate", "family": "documents", "member": "model-2"})
     assert result["member"] == "model-3"
-    assert "base" not in result["snapshot"]["project"]["documents"]["model-3"]
+    copied = result["snapshot"]["project"]["documents"]["model-3"]
+    assert "base" not in copied and copied["label"] == "Model 3"
     pointed = _point(client, result["snapshot"], "train-b", "model-3")
     assert _requests(folders, pointed["revision"]) == requests
     # The copy is unrelated to `reach-model`, whose later changes do not reach it.
@@ -421,12 +444,15 @@ def test_change_key_of_a_base_rewrites_the_documents_based_on_it(based):
     after = _command(client, before, {"kind": "change_key", "family": "documents", "member": "reach-model", "key": "arm"})["snapshot"]
     assert after["project"]["documents"]["model-2"]["base"] == {"document": "arm"}
     assert _requests(folders, after["revision"]) == requests
-    # A reference by a base keeps the name taken.
     _command(client, after, {"kind": "change_key", "family": "documents", "member": "objective", "key": "reach-model"})
     raw = _snapshot(client)["project"]
     raw["documents"]["orphan"] = {"schema": raw["documents"]["arm"]["schema"], "base": {"document": "gone"}}
     _save_project(folders, PROJECT, Project.model_validate(raw))
-    _command(client, _snapshot(client), {"kind": "change_key", "family": "documents", "member": "arm", "key": "gone"}, 422)
+    _command(client, _snapshot(client), {"kind": "change_key", "family": "documents", "member": "arm", "key": "gone"})
+    reopened = _snapshot(client)
+    assert reopened["project"]["documents"]["orphan"]["base"] == {"document": "gone", "unresolved": True}
+    assert reopened["project"]["documents"]["model-2"]["base"] == {"document": "gone"}
+    assert any(item["address"] == "documents/orphan.json" for item in reopened["problems"])
 
 
 def test_a_document_label_changes_no_key_reference_or_request(based):
@@ -453,7 +479,7 @@ def test_a_document_label_changes_no_key_reference_or_request(based):
     assert _requests(folders, cleared["snapshot"]["revision"]) == requests
 
 
-def test_detach_is_refused_where_an_evaluation_would_lose_its_relation_to_its_subject(based):
+def test_detach_stores_a_problem_for_the_evaluation_that_loses_its_model_base(based):
     client, folders = based
     raw = _snapshot(client)["project"]
     raw["steps"]["baseline"] = managed_evaluation_step("train")
@@ -462,9 +488,19 @@ def test_detach_is_refused_where_an_evaluation_would_lose_its_relation_to_its_su
     raw["documents"]["model-4"] = deepcopy(raw["documents"]["model-2"])
     _save_project(folders, PROJECT, Project.model_validate(raw))
     snapshot = _snapshot(client)
-    files = _files(folders)
-    settled = folders.read_plan(PROJECT, revision=snapshot["revision"])
-    assert ProjectPlanRead.without_history(settled).window_map().detach_refused == ["model-2"]
-    _command(client, snapshot, {"kind": "detach", "member": "model-2"}, 422)
-    assert _files(folders) == files
-    _command(client, snapshot, {"kind": "detach", "member": "model-4"})
+    assert not folders.read_plan(PROJECT, revision=snapshot["revision"]).plan.diagnostics
+    detached = _command(client, snapshot, {"kind": "detach", "member": "model-2"})
+    saved = _snapshot(client)
+    assert "base" not in saved["project"]["documents"]["model-2"]
+    assert any(
+        item["step"] == "baseline" and item["path"] == "payload.trial_documents.model"
+        for item in detached["problems"]
+    )
+    state = client.post(f"{URL}/model/evaluate-model", json={
+        "revision": saved["revision"], "scope": {"kind": "step"},
+        "run": {"variant": "default", "step": "baseline", "row": "default"},
+    })
+    assert state.status_code == 200, state.text
+    assert state.json().get("resolved_model") is None
+    assert any(item["path"] == "payload.trial_documents.model" for item in state.json()["problems"])
+    assert any(run.key.step == "train" for run in folders.read_plan(PROJECT, revision=saved["revision"]).plan.runs)

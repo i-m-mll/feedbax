@@ -58,7 +58,7 @@ from feedbax.contracts.jobs import (
     StudioSavedTrainRuns,
 )
 from feedbax.contracts.project_inputs import (
-    BatchCheckpoint, InputBinding, SelectedRow, StepReference, producer_member_key, subset_to_rows,
+    BatchCheckpoint, InputBinding, SelectedRow, StepReference, SubsetTerms, producer_member_key, subset_to_rows,
 )
 from feedbax.contracts.studio_place import (
     StudioStepPlace, definition_place, document_path, path_parts, variation_targets,
@@ -84,7 +84,7 @@ from feedbax.contracts.request_refs import (
     BatchMember, BatchSetMember, BestRank, LastMember, ProductRef, UpdateSeriesMember,
 )
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec
-from feedbax.contracts.workspace_replay import WorkspaceReplayTrial
+from feedbax.contracts.trial_record import StudioTrialReplayResponse
 from feedbax.persistence.completion import completion_file
 from feedbax.host.plan_history import PlanRowRef, PlanSuccess, plan_run_key, settled_results
 from feedbax.host.job_completion import training_binding_path
@@ -334,6 +334,7 @@ class ProjectPlanRead:
                             else reference.checkpoint
                         ),
                         checkpoint_axis=axis[0] if axis is not None else None,
+                        can_sweep_checkpoint=input_id == "subject" and step.can_sweep_checkpoint,
                         subset=StudioProjectWindowMapSubset(
                             terms=subset.terms, count=len(subset.ranks or subset.members), total=subset.candidates,
                             ranks=list(subset.ranks),
@@ -345,8 +346,22 @@ class ProjectPlanRead:
                             members=[
                                 StudioSavedTrainKey.model_validate(member, from_attributes=True) for member in subset.members
                             ] if evaluation_tasks is not None and step.kind == "evaluate" and role == "subject" else None,
-                        ) if subset is not None else None,
+                        ) if subset is not None else StudioProjectWindowMapSubset(
+                            terms=reference.where, count=0,
+                            total=len(step_rows.get((variant, reference.step), ())), document=None,
+                        ) if isinstance(reference.where, SubsetTerms) else None,
                     )
+
+        def exceptions(variant: str, step_id: str) -> Iterator[StudioProjectWindowMapException]:
+            at = variant, step_id
+            sweep = plan.steps[at].sweep
+            if sweep is None and (project := plan.variant_projects.get(variant)) is not None:
+                sweep = project.steps[step_id].sweep
+            if sweep is not None:
+                matches = plan.exception_matches.get(at, {})
+                for name, rule in sweep.exceptions.items():
+                    if rule is not None:
+                        yield StudioProjectWindowMapException(id=name, count=len(matches.get(name, ())), rule=rule)
 
         def includes(variant: str | None) -> bool:
             return variants is None or variant is None or variant in variants
@@ -371,12 +386,7 @@ class ProjectPlanRead:
                     inputs=list(inputs(variant, step_id)),
                     document_ids=document_ids.get((variant, step_id), {}),
                     document_uses=sorted(document_uses[variant, step_id]),
-                    exceptions=[
-                        StudioProjectWindowMapException(
-                            id=name, count=len(rows), rule=plan.steps[variant, step_id].sweep.exceptions[name],
-                        )
-                        for name, rows in plan.exception_matches.get((variant, step_id), {}).items()
-                    ],
+                    exceptions=list(exceptions(variant, step_id)),
                     status_counts=dict(counts[variant, step_id]),
                     axes=gathered[variant, step_id][0] if (variant, step_id) in gathered else [],
                     rule_metrics=sorted(rule_metrics[variant, step_id]),
@@ -470,7 +480,6 @@ class ProjectPlanRead:
                 for row in plan.rows if includes(row.key.variant) and isinstance(row, PlannedAnalyzeRun)
                 for name, figure in row.figures.items()
             ],
-            detach_refused=sorted(self.settled.detach_refused),
             regroup_refused=sorted(self.settled.regroup_refused),
         )
 
@@ -485,10 +494,14 @@ def row_problems(plan: ProjectPlan, variants: tuple[str, ...] | None = None) -> 
                 parts, row.document_ids.get, member=problem.model_address, variable=problem.variable, start=problem.start,
                 variation=lambda _name, target=problem.variation_target: target,
             )
+            source = problem.sweep_source
             yield StudioProjectWindowMapProblem(
-                code="cannot_run", path=problem.path, detail=problem.detail,
+                code="cannot_run", detail=problem.detail,
+                path=".".join(path_parts(source.path)[:5]) if source is not None else problem.path,
                 variant=row.key.variant, step=row.key.step, row=row.key.row,
-                place=place, document_path=document_path(parts, place), address=f"steps/{row.key.step}.json",
+                place=place, document_path=document_path(parts, place),
+                address=f"steps/{source.step if source is not None else row.key.step}.json",
+                authored_path=source.path if source is not None else None,
             )
 
 
@@ -633,7 +646,9 @@ class ProjectPlanService:
                 ranked=body.ranked,
             )
         except RuleRefusal as refusal:
-            return StudioRunRuleCheck(total=len(rows), result=StudioRunRuleRefused(reason=refusal.detail))
+            return StudioRunRuleCheck(
+                total=len(rows), result=StudioRunRuleRefused(reason=refusal.detail, span=refusal.span),
+            )
         best = chosen.best
         groups = {tuple(coordinates[id(row)][axis].value_id for axis in best.per) for row in chosen.rows} if best else ()
         return StudioRunRuleCheck(total=len(rows), result=StudioRunRuleChosen(
@@ -745,7 +760,11 @@ class ProjectPlanService:
         ), None)
         if row is None or receipt is None:
             raise JobNotFound(body.job_id)
-        if isinstance(body, StudioSavedEvaluationReplayRequest) and body.trial not in row.trials:
+        if (
+            isinstance(body, StudioSavedEvaluationReplayRequest)
+            and body.trial is not None
+            and body.trial not in row.trials
+        ):
             raise ProjectFolderInvalid("The selected trial is absent from the saved Evaluate request.")
         result = self.jobs.read_evaluation_result(
             project=view.settled.project_id, store=view.settled.store_path, job_id=body.job_id,
@@ -756,10 +775,10 @@ class ProjectPlanService:
 
     def evaluation_replay(
         self, project_id: str, body: StudioSavedEvaluationReplayRequest,
-    ) -> WorkspaceReplayTrial:
+    ) -> StudioTrialReplayResponse:
         _, _, result = self._evaluation_result(project_id, body)
         try:
-            return result.replay_trial(body.trial, anchor_id="effector", checkpoint=body.checkpoint)
+            return result.replay(body.trial, checkpoint=body.checkpoint, aggregate=body.aggregate)
         except CannotRun as error:
             raise ProjectFolderInvalid(str(error)) from error
         except (OSError, ValueError, KeyError) as error:

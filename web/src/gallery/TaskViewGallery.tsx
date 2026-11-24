@@ -12,7 +12,7 @@ import { TaskVariables } from '@/features/projectFolder/task/TaskVariables';
 import type { TaskDocumentView, TaskSelection } from '@/features/projectFolder/task/taskModel';
 import type { FieldModel } from '@/components/values/fieldModel';
 import type { TrialShown } from '@/features/projectFolder/task/trialSample';
-import { aggregate, documentView, fixtures, pythonView, templates, type DocumentSpec, type PythonSpec } from './taskFixtures';
+import { aggregate, documentView, instancesOf, fixtures, pythonView, templates, type DocumentSpec, type PythonSpec } from './taskFixtures';
 
 /** Trials the stepper steps through, and the batch size All aggregates. */
 const stepped = 8;
@@ -43,7 +43,7 @@ function useSample(key: string, spec: DocumentSpec | PythonSpec, seed: number) {
     const steps = Math.round(spec.duration / spec.stepSeconds);
     return {
       trials,
-      batch: aggregate(trials, steps, spec.stepSeconds, spec.epochs, spec.variables.map(({ id }) => id)),
+      batch: aggregate(trials, steps, spec.epochs),
     };
   }, [key, spec, seed]);
 }
@@ -51,28 +51,33 @@ function useSample(key: string, spec: DocumentSpec | PythonSpec, seed: number) {
 /** Which sampled trial is shown: none (the definition), the batch as one aggregate, or one trial by its index. */
 type TrialChoice = 'definition' | 'all' | number;
 
-/** The fixture task as the shelf draws it: its epochs' bounds and the epochs each signal holds a value over. */
-function shelfTask(view: TaskDocumentView): ShelfTask {
+/** The fixture task as the shelf draws it: its epochs' bounds by instance and the epochs each signal holds a value over. */
+function shelfTask(view: TaskDocumentView, spec: DocumentSpec): ShelfTask {
+  const order = view.epochs.map(({ id }) => id);
   return {
-    document: 'gallery', duration: view.duration, epochs: view.epochs.map(({ bounds }) => bounds),
+    document: 'gallery', duration: view.duration,
+    epochs: instancesOf(spec).map((id) => view.epochs.find((epoch) => epoch.id === id)!.bounds),
     signals: view.signals.map(({ id, name, cells }) => ({
-      id, name, cells: cells.flatMap((cell) => cell.kind === 'value' ? [{ first: cell.first, last: cell.last }] : []),
+      id, name, covers: cells.flatMap((cell) => cell.kind === 'value'
+        ? order.slice(order.indexOf(cell.first), order.indexOf(cell.last) + 1) : []),
     })),
   };
 }
 
 /** The shelf's rows for the nominal trial, one sampled trial, or the batch. */
-function shelfRows(view: TaskDocumentView, shown: TrialShown): ShelfRow[] {
+function shelfRows(view: TaskDocumentView, spec: DocumentSpec, shown: TrialShown | undefined): ShelfRow[] {
   const step = view.stepSeconds ?? view.duration / 100;
-  return shown.kind === 'trial' ? trialRows(shelfTask(view), shown.trial, step)
-    : shown.kind === 'batch' ? batchRows(shelfTask(view), shown.batch, step)
-      : nominalRows(shelfTask(view));
+  if (!shown) return nominalRows(shelfTask(view, spec));
+  switch (shown.kind) {
+    case 'one': return trialRows(shelfTask(view, spec), shown.record, step);
+    case 'all': return batchRows(shelfTask(view, spec), shown.aggregate, step);
+  }
 }
 
-function shownOf(choice: TrialChoice, sample: ReturnType<typeof useSample>): TrialShown {
-  if (!sample || choice === 'definition') return { kind: 'definition' };
-  if (choice === 'all') return { kind: 'batch', batch: sample.batch };
-  return { kind: 'trial', index: choice, count: stepped, trial: sample.trials[choice] };
+function shownOf(choice: TrialChoice, sample: ReturnType<typeof useSample>): TrialShown | undefined {
+  if (!sample || choice === 'definition') return undefined;
+  if (choice === 'all') return { kind: 'all', count: sample.trials.length, aggregate: sample.batch };
+  return { kind: 'one', index: choice, count: stepped, record: sample.trials[choice] };
 }
 
 function moved<T extends { id: string }>(items: readonly T[], id: string, to: number) {
@@ -89,7 +94,7 @@ function withoutEpoch(spec: DocumentSpec, id: string): DocumentSpec {
   return {
     ...spec,
     epochs: spec.epochs.filter((epoch) => epoch.id !== id),
-    repeats: spec.repeats.filter(({ first, last }) => first !== id && last !== id),
+    repeats: spec.repeats.filter(({ first_epoch, last_epoch }) => first_epoch !== id && last_epoch !== id),
     signals: spec.signals.map((signal) => ({ ...signal, cells: signal.cells.flatMap((cell) => {
       if (cell.first === id && cell.last === id) return [];
       return [{ ...cell, first: cell.first === id ? neighbour(1) : cell.first, last: cell.last === id ? neighbour(-1) : cell.last }];
@@ -126,7 +131,6 @@ function TaskWindow() {
   const sections = useDrawerSections(state, setState);
   const [selected, setSelected] = useState<TaskSelection | undefined>({ kind: 'end', id: 'cue' });
   const view = tasks.view(key);
-  const shown: TrialShown = { kind: 'definition' };
   const fixture = fixtures.find((candidate) => candidate.key === key)!;
   const choose = (next: string) => {
     setKey(next);
@@ -178,7 +182,7 @@ function TaskWindow() {
             : <TaskPythonBody view={view} />,
           drawer: view.kind === 'document' ? <TaskOutline sections={sections} groups={outlineGroups(view)} selected={outlineSelection(selected)}
             select={(group, id) => setSelected({ kind: outlineKinds[group], id })} /> : undefined,
-          inspector: view.kind === 'document' ? <TaskInspector view={view} selected={selected} shown={shown} /> : undefined,
+          inspector: view.kind === 'document' ? <TaskInspector view={view} selected={selected} /> : undefined,
         }} />
     </div>
   </ProjectWindowPalette>;
@@ -199,13 +203,13 @@ function TaskStates({ fixtureKey, end, cell, variable, signal }: {
   const spec = tasks.specs[fixtureKey];
   const view = tasks.view(fixtureKey) as TaskDocumentView;
   const sample = useSample(fixtureKey, spec, 1);
-  const definition: TrialShown = { kind: 'definition' };
+  const definition = undefined;
   const trial = shownOf(0, sample);
   const batch = shownOf('all', sample);
   const [time, setTime] = useState(0);
-  const strip = (shown: TrialShown) => <Shelf rows={shelfRows(view, shown)} duration={view.duration}
+  const strip = (shown: TrialShown | undefined) => <Shelf rows={shelfRows(view, spec as DocumentSpec, shown)} duration={view.duration}
     stepSeconds={view.stepSeconds} time={time} onTimeChange={setTime} selected={[]} onSelect={() => undefined} />;
-  const inspector = (selected: TaskSelection, shown: TrialShown = definition) =>
+  const inspector = (selected: TaskSelection, shown?: TrialShown) =>
     <TaskInspector view={view} selected={selected} shown={shown} />;
   const box = 'w-[244px] rounded-control border border-shell-divider bg-shell-sidebar';
   return <section className="grid gap-3" aria-label={fixtures.find(({ key }) => key === fixtureKey)!.name}>

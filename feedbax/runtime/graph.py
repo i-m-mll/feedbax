@@ -11,11 +11,12 @@ import dataclasses
 from operator import attrgetter
 from collections.abc import Callable
 from copy import copy
-from typing import ClassVar, Literal, Optional, Self
+from typing import ClassVar, Literal, NamedTuple, Optional, Self
 
 import equinox as eqx
 from equinox import Module, field
 from equinox.nn import State, StateIndex
+from jax import Array
 import jax.numpy as jnp
 import jax.tree as jt
 from jaxtyping import PRNGKeyArray, PyTree
@@ -68,6 +69,14 @@ def init_state_from_component(component: "Component") -> State:
     return State(component)
 
 
+class TrialStateProblem(NamedTuple):
+    """A device predicate tied to the explicit storage path that supplied the value."""
+
+    path: tuple[str, ...]
+    invalid: Array
+    reason: str
+
+
 class GraphNode(Module):
     """Executable graph node, without a promise of portable reconstruction."""
 
@@ -105,6 +114,12 @@ class GraphNode(Module):
     def state_consistency_update(self, state: State) -> State:
         """Return a state made self-consistent."""
         return state
+
+    def finalize_trial_state(
+        self, state: State, explicit: frozenset[tuple[str, ...]],
+    ) -> tuple[State, tuple[TrialStateProblem, ...]]:
+        """Derive unlinked companion state after all writes, before reset reads."""
+        return state, ()
 
     def state_view(self, state: State) -> PyTree | None:
         """Return the state view for this component, if any."""

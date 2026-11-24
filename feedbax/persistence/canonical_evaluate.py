@@ -14,7 +14,6 @@ from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.base import ParentRef, Provenance, StrictModel
 from feedbax.contracts.dataset import DATASET_MEDIA_TYPE as STATES_MEDIA_TYPE, DatasetProductRef
 from feedbax.contracts.effective_success import TerminalTrainSubject
-from feedbax.contracts.graph import StudioManifestRef, StudioSelectorRef
 from feedbax.contracts.jobs import (
     JobReceipt, StudioEvaluationCheckpoint, StudioEvaluationCheckpointGap,
     StudioEvaluationObjectivePoint, StudioEvaluationObjectiveSeries, StudioEvaluationObjectiveTerm,
@@ -43,14 +42,9 @@ from feedbax.contracts.rollout import (
     authored_variation,
     rollout_objective_sha256,
 )
-from feedbax.contracts.semantic_values import semantic_key
-from feedbax.contracts.workspace_replay import (
-    WorkspaceReplayManifestRefs,
-    WorkspaceReplaySampleAxis,
-    WorkspaceReplayTrack,
-    WorkspaceReplayTrial,
-    WorkspaceReplayTrialIdentity,
-)
+from feedbax.contracts.semantic_values import model_state_address, semantic_key
+from feedbax.contracts.trial_record import StudioTrialReplayResponse, TrialAggregate, TrialRecord, TrialRecords
+from feedbax.persistence.evaluation_trial_records import RecordedTrialLayout, read_position_track, read_trial_record
 from feedbax.persistence.checkpoint_selection import selected_coordinates
 from feedbax.persistence.best_selection import completion_score
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -152,8 +146,6 @@ def decode_rollout_request(
         first = error.errors()[0]
         path = pointer(("params", *map(str, first["loc"])))
         raise CannotRun(path, first["msg"]) from error
-    if not isinstance(subject, ContentRef) and params.input_overrides:
-        raise CannotRun("/params/input_overrides", "a checkpoint rollout inherits its task bindings")
     for path, patch in authored_variation(params.variation):
         if "op" not in patch.model_fields_set:
             raise CannotRun(f"{path}/op", "declare the override operation explicitly")
@@ -474,15 +466,12 @@ class EvaluationResult:
                 raise ValueError("Evaluation receipt names an incompatible states schema.")
             yield dataset
 
-    def replay_trial(
-        self, trial: str, *, anchor_id: str, checkpoint: int | None = None,
-    ) -> WorkspaceReplayTrial:
-        """Project the declared position selector into the existing Scene trial contract."""
+    def replay(
+        self, trial: str | None = None, *, checkpoint: int | None = None, aggregate: bool = False,
+    ) -> StudioTrialReplayResponse:
+        """Read trial records at one exact preserved Evaluate checkpoint."""
         with self.open_states() as dataset:
             descriptor = dataset.descriptor
-            name = descriptor.attrs.get("scene_position")
-            if not isinstance(name, str) or name not in descriptor.variables:
-                raise CannotRun("/states/scene_position", "the result has no declared Scene position")
             update_axis = next((axis for axis in ("update", "checkpoint") if axis in descriptor.dimensions), None)
             selected = ()
             if "replicate" in descriptor.dimensions:
@@ -497,41 +486,42 @@ class EvaluationResult:
             elif checkpoint is not None:
                 raise CannotRun("/checkpoint", "an initial model rollout has no checkpoint")
             trials = dataset.data("trial").tolist()
-            if trial not in trials:
+            if trial is not None and trial not in trials:
                 raise CannotRun("/trial", "the selected trial is absent from the retained result")
-            trial_index = trials.index(trial)
-            field = descriptor.variables[name]
-            if (
-                field.dims != (
-                    *((update_axis,) if update_axis is not None else ()), "condition", "trial", "state_time", "xy",
-                )
-                or descriptor.dimensions["condition"] != 1 or descriptor.dimensions["xy"] != 2
-            ):
-                raise ValueError("The retained Scene position has an incompatible layout.")
-            axis = dataset.data("state_time")
-            values = dataset.data(name, (*selected, 0, trial_index))
-        return WorkspaceReplayTrial(
-            identity=WorkspaceReplayTrialIdentity(index=trial_index, stable_id=trial),
-            time=WorkspaceReplaySampleAxis(length=len(axis), units="s", values=axis.tolist()),
-            tracks=[
-                WorkspaceReplayTrack(
-                    anchor_id=anchor_id,
-                    selector=StudioSelectorRef(namespace="state_path", compact=name),
-                    samples=values.tolist(),
-                    dim=values.shape[-1],
-                    dtype=str(values.dtype),
-                    units=field.units,
-                    frame=field.frame,
-                )
-            ],
-            manifest_refs=WorkspaceReplayManifestRefs(
-                producer_manifest=StudioManifestRef(
-                    kind="EvaluationRunManifest",
-                    id=self.receipt.manifest_id,
-                    metadata={"manifest_sha256": self.receipt.manifest_sha256},
-                )
-            ),
-        )
+            indices = range(len(trials)) if trial is None else (trials.index(trial),)
+            if descriptor.dimensions["condition"] != 1:
+                raise ValueError("The retained trial has more than one condition.")
+            state_time = dataset.data("state_time").tolist()
+            n_steps = len(state_time) - 1
+            selection = (*selected, 0)
+            raw_layout = descriptor.attrs.get("trial_record")
+            if raw_layout is not None:
+                layout = RecordedTrialLayout.model_validate(raw_layout)
+                position_key = next(iter(layout.positions), None)
+                records = [
+                    read_trial_record(dataset, trials[index], (*selection, index), layout)
+                    for index in indices
+                ]
+            else:
+                legacy_position = descriptor.attrs.get("scene_position")
+                position_key = legacy_position if isinstance(legacy_position, str) else None
+                records = [
+                    _legacy_trial_record(dataset, trials[index], (*selection, index), position_key)
+                    for index in indices
+                ]
+
+            drawn: TrialRecords | TrialAggregate = TrialRecords(kind="trials", trials=records)
+            if aggregate and raw_layout is not None:
+                from feedbax.execution.trial_record import aggregate_trials
+
+                drawn = aggregate_trials(records, n_steps)
+            return StudioTrialReplayResponse(
+                n_steps=n_steps,
+                state_time=state_time,
+                position=model_state_address(position_key).to_text() if position_key is not None else None,
+                receipt=self.receipt,
+                drawn=drawn,
+            )
 
     def objective_series(self, requested: list[int], *, objective: ObjectiveDocument) -> StudioEvaluationObjectiveSeries:
         """Read held-out values and their exact checkpoint publications."""
@@ -581,6 +571,19 @@ class EvaluationResult:
             lineage=lineage, condition=condition, trials=list(params.trials), seed=params.seed,
             objective=objective_hash, requested=requested, points=points, gaps=gaps,
         )
+
+
+def _legacy_trial_record(
+    dataset: Dataset, trial: str, selection: tuple[int, ...], position: str | None,
+) -> TrialRecord:
+    """Old results still expose the one position path they recorded for playback."""
+    states = (
+        {model_state_address(position).to_text(): read_position_track(dataset, position, selection)}
+        if position is not None else {}
+    )
+    return TrialRecord(
+        id=trial, inits={}, inputs={}, present={}, variables={}, variable_defined={}, timeline=[], states=states,
+    )
 
 
 def _objective_checkpoint(parent: ParentRef) -> StudioEvaluationCheckpoint:

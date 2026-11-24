@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, MutableMapping
+from collections import Counter
+from collections.abc import Callable, Iterator, MutableMapping
 from dataclasses import dataclass
 from functools import cache
 from typing import Any, Literal
@@ -28,15 +29,30 @@ from feedbax.compiler.model_differences import structural_differences
 type Record = dict[str, Any]
 type Direction = Literal["input", "output", "physical"]
 
+_EMPTY_BOUNDARY_PORT = "__new_port__"
+
 
 @dataclass(frozen=True)
 class Port:
-    type: SignalType | str
+    type: SignalType | str | None
     reads_state_only: bool = False
 
 
 type LeafPorts = Callable[[Record, Direction, str], Port | None]
-type AcceptComponent = Callable[[Record, str | None], bool]
+type ComponentProblem = Callable[[Record, str | None], str | None]
+
+
+@dataclass(frozen=True)
+class _UngroupRoute:
+    source: Record | None
+    inner: bool
+    attachments: list[Record]
+
+
+@dataclass(frozen=True)
+class _UngroupWiring:
+    parent: dict[str, _UngroupRoute]
+    child: dict[str, _UngroupRoute]
 
 
 class _Refusal(ValueError):
@@ -71,19 +87,69 @@ def _signal(source: Record, target: Record, attachments: list | None = None) -> 
     return {"source": source, "target": target, "attachments": attachments or []}
 
 
-def _same_port(left: SignalType | str, right: SignalType | str) -> bool:
+def _same_port(left: SignalType | str | None, right: SignalType | str | None) -> bool:
+    if left is None or right is None:
+        return True
     if isinstance(left, str) or isinstance(right, str):
         return left == right
-    if any(a is not None and b is not None and a != b for a, b in (
-        (left.base, right.base), (left.unit, right.unit),
-    )):
+    if left.unit is not None and right.unit is not None and left.unit != right.unit:
         return False
+    if left.base and right.base and left.base != right.base:
+        from feedbax.compiler.graph_schema import _dtypes_compatible
+        from feedbax.contracts.value_schema import ValueSchema
+
+        aliases = {"real": "float", "integer": "int", "boolean": "bool"}
+
+        def schema(value: SignalType, dtype: str) -> ValueSchema:
+            return ValueSchema(
+                id="port", label="Port", kind="signal", dtype=dtype,
+                shape=list(value.shape) if value.shape is not None else None,
+            )
+
+        a, b = (aliases.get(value, value) for value in (left.base, right.base))
+        generic_numeric = any(
+            generic in {"int", "float"} and (
+                concrete.startswith(generic)
+                or generic == "int" and concrete.startswith("uint")
+                or generic == "float" and concrete.startswith("bfloat")
+            )
+            for generic, concrete in ((a, b), (b, a))
+        )
+        if not generic_numeric and not _dtypes_compatible(schema(left, a), schema(right, b)):
+            return False
     if left.shape is None or right.shape is None:
         return True
     return len(left.shape) == len(right.shape) and all(
         not (isinstance(a, int) and isinstance(b, int) and a != b)
         for a, b in zip(left.shape, right.shape)
     )
+
+
+def _signal_mismatch(output: Port, input_port: Port) -> str | None:
+    if _same_port(output.type, input_port.type):
+        return None
+
+    def describe(value: SignalType | str | None) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        return " ".join(part for part in (
+            value.base, str(list(value.shape)) if value.shape is not None else None, value.unit,
+        ) if part)
+
+    left, right = describe(output.type), describe(input_port.type)
+    return f"{left} ≠ {right}" if left and right else "Signal types are incompatible"
+
+
+def _target_key(end: Record) -> tuple[str, str | None, str]:
+    return end["owner"], end.get("component"), end["port"]
+
+
+def _task_input_reason(owner: Record, item: edits.ModelTaskSignal) -> str | None:
+    if any(port["name"] == item.label for port in owner["ports"]["inputs"]):
+        return "The task signal already has a Model input"
+    return None
 
 
 def _port_list(owner: Record, direction: Direction) -> list[Record]:
@@ -99,6 +165,18 @@ def _port_name(owner: Record, direction: Direction, port: str) -> str:
     return item["name"] if item else port
 
 
+def _signal_end_name(owner: Record, graph: Record, end: Record, direction: Direction) -> str:
+    if end["owner"] != "component":
+        return _port_name(owner, "input" if end["owner"] == "inputs" else "output", end["port"])
+    component = graph["components"][end["component"]]
+    return _port_name(component, direction, end["port"]) if "ports" in component else end["port"]
+
+
+def _signal_end_label(owner: Record, graph: Record, end: Record, direction: Direction) -> str:
+    card = graph["components"][end["component"]]["name"] if end["owner"] == "component" else end["owner"].title()
+    return f"{card} · {_signal_end_name(owner, graph, end, direction)}"
+
+
 def _new_port(owner: Record, direction: Direction, name: str, port: Port) -> Record:
     names = {item["name"] for item in _port_list(owner, direction)}
     base = name
@@ -107,7 +185,7 @@ def _new_port(owner: Record, direction: Direction, name: str, port: Port) -> Rec
         suffix += 1
         name = f"{base} {suffix}"
     value = {"id": uuid4().hex, "name": name, "type": (
-        port.type if isinstance(port.type, str) else port.type.model_dump(mode="json")
+        port.type.model_dump(mode="json") if isinstance(port.type, SignalType) else port.type
     )}
     _port_list(owner, direction).append(value)
     return value
@@ -118,15 +196,19 @@ def _copy_endpoint(end: Record, ids: dict[str, str]) -> Record:
 
 
 class ModelEditDraft:
-    def __init__(self, state: edits.ModelEditState, ports: LeafPorts, accepts: AcceptComponent):
+    def __init__(
+        self, state: edits.ModelEditState, ports: LeafPorts,
+        component_problem: ComponentProblem = lambda *_: None,
+    ):
         self.document = state.document.model_dump(mode="json")
         self.positions = state.positions.copy()
         self.flipped = state.flipped.copy()
         self.collapsed = state.collapsed.copy()
         self.waypoints = state.waypoints.copy()
         self.changed: list[ModelAddress] = []
+        self.relocations: dict[str, ModelAddress] = {}
         self.leaf_ports = ports
-        self.accepts_component = accepts
+        self.component_problem = component_problem
 
     def layout(self) -> dict[str, MutableMapping[str, Any]]:
         return {
@@ -178,7 +260,13 @@ class ModelEditDraft:
             if component is None:
                 return None
             if component["kind"] == "leaf":
-                return self.leaf_ports(component, direction, end["port"])
+                port = self.leaf_ports(component, direction, end["port"])
+                domain = graph["physical_domain"]
+                if port is not None and port.type is None and direction == "physical" and domain in {
+                    "translational", "rotational",
+                }:
+                    return Port(domain)
+                return port
         port = _listed_port(component, direction, end["port"])
         if port is None:
             return None
@@ -226,39 +314,75 @@ class ModelEditDraft:
     def connect(self, address: ModelAddress, source: Record, target: Record) -> str:
         owner, graph = self.graph(address)
         output = self.port(owner, graph, source, "output")
-        reason = self.connection_reason(owner, graph, output, target)
-        if reason is not None:
-            raise _Refusal(address, reason)
+        verdict = self.connection_verdict(address, owner, graph, source, output, target)
+        if verdict.reason is not None:
+            raise _Refusal(address, verdict.reason)
         assert output is not None
-        key = _id(graph)
-        delayed = self.closes_loop(owner, graph, source, target, output)
-        attachments = [{"kind": "delay", "id": uuid4().hex, "delay": {"value": 1, "unit": "st"},
-                        "initial": 0}] if delayed else []
+        wires = graph["wires"]
+        if len(verdict.replaced) == 1:
+            key = verdict.replaced[0].address.element.id
+            attachments = wires[key]["attachments"]
+        else:
+            key = _id(graph)
+            attachments = []
+            for displaced in verdict.replaced:
+                self.remove(displaced.address)
+                for layout in self.layout().values():
+                    for at in (displaced.address, *displaced.attachments):
+                        layout.pop(at.to_text(), None)
+        if not any(item["kind"] == "delay" for item in attachments) and self.closes_loop(
+            owner, graph, source, target, output, replacing=key,
+        ):
+            attachments.append({
+                "kind": "delay", "id": uuid4().hex, "delay": {"value": 1, "unit": "st"}, "initial": 0,
+            })
         graph["wires"][key] = _signal(source, target, attachments)
         self.changed.append(_address(address.composites, "wire", id=key))
         return key
 
-    def connection_reason(self, owner: Record, graph: Record, output: Port | None, target: Record) -> str | None:
-        input_port = self.port(owner, graph, target, "input")
+    def grow_boundary(self, address: ModelAddress, boundary: str, other: Record) -> Record:
+        owner, graph = self.graph(address)
+        if boundary == "inputs" and address.composites:
+            raise _Refusal(address, "Only the root Inputs card can grow from a connection")
+        direction = "input" if boundary == "inputs" else "output"
+        port = self.port(owner, graph, other, direction)
+        if port is None:
+            raise _Refusal(address, "The other port must exist before adding a boundary port")
+        name = _signal_end_name(owner, graph, other, direction)
+        created = _new_port(owner, direction, name, port)
+        end = _card(boundary, created["id"])
+        self.changed.append(_address(address.composites, "port", end=end))
+        return end
+
+    def connection_verdict(
+        self, address: ModelAddress, owner: Record, graph: Record,
+        source: Record | None, output: Port | None, target: Record,
+        source_reason: str | None = None,
+    ) -> edits.ModelConnectionVerdict:
+        if source_reason is not None:
+            return edits.ModelConnectionVerdict(target=target, reason=source_reason)
         if output is None:
-            return "Source must be a local output or a port of the inputs card"
+            return edits.ModelConnectionVerdict(target=target, reason="Source must be a local output or a port of the inputs card")
+        input_port = self.port(owner, graph, target, "input")
         if input_port is None:
-            return "Target must be a local input or a port of the outputs card"
-        if not _same_port(output.type, input_port.type):
-            def describe(value: SignalType | str) -> str:
-                if isinstance(value, str):
-                    return value
-                return " ".join(part for part in (
-                    value.base, str(list(value.shape)) if value.shape is not None else None, value.unit,
-                ) if part)
+            return edits.ModelConnectionVerdict(target=target, reason="Target must be a local input or a port of the outputs card")
+        incoming = tuple((key, wire) for key, wire in graph["wires"].items() if wire["target"] == target)
+        if len(incoming) == 1 and incoming[0][1]["source"] == source:
+            return edits.ModelConnectionVerdict(target=target, reason="This input already has that source")
+        scope = address.composites
+        replaced = tuple(edits.ModelWireReplacement(
+            address=_address(scope, "wire", id=key),
+            attachments=tuple(_address(
+                scope, "attachment", parent={"kind": "wire", "id": key}, id=item["id"],
+            ) for item in wire["attachments"]),
+        ) for key, wire in incoming)
+        return edits.ModelConnectionVerdict(
+            target=target, reason=None, problem=_signal_mismatch(output, input_port), replaced=replaced,
+        )
 
-            left, right = describe(output.type), describe(input_port.type)
-            return f"{left} ≠ {right}" if left and right else "Signal types are incompatible"
-        if any(wire["target"] == target for wire in graph["wires"].values()):
-            return "Target already has a wire"
-        return None
-
-    def closes_loop(self, owner: Record, graph: Record, source: Record, target: Record, port: Port) -> bool:
+    def closes_loop(
+        self, owner: Record, graph: Record, source: Record, target: Record, port: Port, *, replacing: str,
+    ) -> bool:
         if port.reads_state_only or "component" not in source or "component" not in target:
             return False
         pending = [target["component"]]
@@ -270,11 +394,16 @@ class ModelEditDraft:
             if current in seen:
                 continue
             seen.add(current)
-            for wire in graph["wires"].values():
+            for key, wire in graph["wires"].items():
+                if key == replacing:
+                    continue
                 a, b = wire["source"], wire["target"]
                 if a.get("component") != current or "component" not in b:
                     continue
-                declaration = self.port(owner, graph, a, "output")
+                try:
+                    declaration = self.port(owner, graph, a, "output")
+                except ValueError:
+                    continue
                 if declaration and not declaration.reads_state_only and not any(
                     item["kind"] == "delay" for item in wire["attachments"]
                 ):
@@ -287,8 +416,8 @@ class ModelEditDraft:
             raise _Refusal(address, "physical connections require an Equations or Mechanics interior")
         a = self.port(owner, graph, connection["a"], "physical")
         b = self.port(owner, graph, connection["b"], "physical")
-        if not a or not b or a.type != b.type or connection["a"] == connection["b"]:
-            raise _Refusal(address, "physical endpoints must be distinct local ports of the same type")
+        if not a or not b or connection["a"] == connection["b"]:
+            raise _Refusal(address, "physical endpoints must be distinct local ports")
         if any(
             (item["a"], item["b"]) in (
                 (connection["a"], connection["b"]), (connection["b"], connection["a"]),
@@ -340,7 +469,7 @@ class ModelEditDraft:
             graph[collection][element.id] |= {end: previous[end] for end in ends}
         elif element.kind == "attachment":
             parent = element.parent.model_dump(mode="json")
-            earlier = ModelEditDraft(reference, self.leaf_ports, self.accepts_component).attachment_chain(address, parent)
+            earlier = ModelEditDraft(reference, self.leaf_ports, self.component_problem).attachment_chain(address, parent)
             index = next(index for index, item in enumerate(earlier) if item["id"] == element.id)
             chain = self.attachment_chain(address, parent, create=True)
             chain.insert(min(index, len(chain)), difference.definition.model_dump(mode="json"))
@@ -395,8 +524,8 @@ class ModelEditDraft:
             raise _Refusal(address, "port does not exist")
         ports = _port_list(owner, direction)
         if name is not None:
-            if any(other is not port and other["name"] == name for other in ports):
-                raise _Refusal(address, "port name is already in use")
+            if port["name"] == name:
+                raise _Refusal(address, "This port already has that name")
             port["name"] = name
         elif index is not None:
             if index >= len(ports):
@@ -490,6 +619,9 @@ class ModelEditDraft:
             return
         self.remove(address)
         self.set_attachment(AddModelAttachment(op="add", owner=destination, attachment=item, after=command.after))
+        self.relocations[address.to_text()] = address.model_copy(update={
+            "element": element.model_copy(update={"parent": destination.element}),
+        })
 
     def insert_component(self, command: edits.InsertComponentOnWire) -> None:
         address = command.address
@@ -511,7 +643,7 @@ class ModelEditDraft:
         old_target = wire["target"]
         new_port = self.port(owner, graph, output, "output")
         old_port = self.port(owner, graph, old_target, "input")
-        if new_port is None or old_port is None or not _same_port(new_port.type, old_port.type):
+        if new_port is None or old_port is None:
             raise _Refusal(address, "The inserted component cannot feed this wire's target")
         wire["source"] = output
         self.connect(graph_address, source, _component(created.element.id, command.input_port))
@@ -572,8 +704,6 @@ class ModelEditDraft:
     def add_component(self, command: edits.AddComponent) -> None:
         _, graph = self.graph(command.graph)
         component = command.component.model_dump(mode="json")
-        if not self.accepts_component(component, graph["physical_domain"]):
-            raise _Refusal(command.graph, "the destination graph cannot hold this component")
         key = command.id or _id(graph)
         for kind, members in (("component", "components"), ("wire", "wires"), ("physical_connection", "connections")):
             if key in graph.get(members, {}):
@@ -613,11 +743,7 @@ class ModelEditDraft:
         port = self.port(owner, graph, source, "output")
         if port is None:
             raise _Refusal(command.source_graph, "source port does not exist")
-        if "component" in source:
-            component = graph["components"][source["component"]]
-            name = _port_name(component, "output", source["port"]) if "ports" in component else source["port"]
-        else:
-            name = _port_name(owner, "input", source["port"])
+        name = _signal_end_name(owner, graph, source, "output")
         for index in range(len(prefix), len(destination)):
             scope = destination[:index]
             current = _address(scope, "graph")
@@ -670,11 +796,6 @@ class ModelEditDraft:
         data = clipboard.model_dump(mode="json")
         if data["connections"] and "connections" not in graph:
             raise _Refusal(address, "destination graph cannot hold physical connections")
-        if any(
-            not self.accepts_component(component, graph["physical_domain"])
-            for component in data["components"].values()
-        ):
-            raise _Refusal(address, "destination graph cannot hold the selected components")
         ids: dict[str, str] = {}
         for old, component in data["components"].items():
             key = _id(graph)
@@ -711,25 +832,21 @@ class ModelEditDraft:
     def relocate_layout(
         self, source: tuple[str, ...], destination: tuple[str, ...], ids: dict[str, str], wires: dict[str, str],
     ) -> None:
+        moves = {
+            _address(source, kind, id=old).to_text(): _address(destination, kind, id=new)
+            for kind, pairs in (("component", ids), ("wire", wires)) for old, new in pairs.items()
+        }
+        self.relocations.update(moves)
         for entries in self.layout().values():
             for key, value in tuple(entries.items()):
                 try:
                     old = ModelAddress.from_text(key)
                 except ValueError:
                     continue
-                if old.composites[:len(source)] != source:
-                    continue
-                rest = old.composites[len(source):]
-                if rest and rest[0] in ids:
-                    new = old.model_copy(update={"composites": (*destination, ids[rest[0]], *rest[1:])})
-                elif not rest and old.element.kind == "component" and old.element.id in ids:
-                    new = _address(destination, "component", id=ids[old.element.id])
-                elif not rest and old.element.kind == "wire" and old.element.id in wires:
-                    new = _address(destination, "wire", id=wires[old.element.id])
-                else:
-                    continue
-                del entries[key]
-                entries[new.to_text()] = value
+                new = old.relocated(moves)
+                if new != old:
+                    del entries[key]
+                    entries[new.to_text()] = value
 
     def group(self, command: edits.GroupComponents) -> None:
         graph, ids = self.select(command.selection)
@@ -757,13 +874,11 @@ class ModelEditDraft:
             port_id = feeders.get(signature)
             if port_id is None:
                 port = self.port(owner, graph, source, "output")
-                if port is None:
-                    raise _Refusal(command.selection[0], "crossing wire source does not resolve")
-                source_owner = graph["components"][source_component] if source_component else owner
+                source_owner = graph["components"].get(source_component) if source_component else owner
                 name = _port_name(
                     source_owner, "output" if source_component else "input", source["port"],
-                ) if "ports" in source_owner else source["port"]
-                port_id = _new_port(child, direction, name, port)["id"]
+                ) if source_owner is not None and "ports" in source_owner else source["port"]
+                port_id = _new_port(child, direction, name, port or Port(SignalType()))["id"]
                 feeders[signature] = port_id
                 if src_inside:
                     interior["wires"][_id(interior, set(graph["wires"]))] = _signal(source, _card("outputs", port_id))
@@ -784,7 +899,7 @@ class ModelEditDraft:
         self.changed.extend(command.selection)
         self.changed.append(_address(scope, "component", id=group_id))
 
-    def ungroup(self, address: ModelAddress) -> None:
+    def _ungroup_wiring(self, address: ModelAddress) -> _UngroupWiring:
         graph, component = self.component(address)
         element = address.element
         assert element.kind == "component"
@@ -806,10 +921,33 @@ class ModelEditDraft:
                             "Ungroup would remove a port that has attachments",
                         )
         parent_wires, child_wires = graph["wires"], inner["wires"]
-        outside_inputs = {wire["target"]["port"]: (id_, wire) for id_, wire in parent_wires.items()
-                          if wire["target"].get("component") == key}
-        inside_outputs = {wire["target"]["port"]: (id_, wire) for id_, wire in child_wires.items()
-                          if wire["target"]["owner"] == "outputs"}
+
+        def boundary_wires(wires, selects, location):
+            found = {}
+            for id_, wire in wires.items():
+                target = wire["target"]
+                if not selects(target):
+                    continue
+                port = target["port"]
+                if port in found:
+                    raise _Refusal(
+                        _address(location, "wire", id=id_),
+                        "Ungroup cannot tell which wire drives this boundary port",
+                    )
+                found[port] = id_, wire
+            return found
+
+        outside_inputs = boundary_wires(parent_wires, lambda target: target.get("component") == key, scope)
+        inside_outputs = boundary_wires(child_wires, lambda target: target["owner"] == "outputs", inner_scope)
+        for id_, wire in child_wires.items():
+            if any(
+                end["owner"] == "component" and end["component"] not in inner["components"]
+                for end in (wire["source"], wire["target"])
+            ):
+                raise _Refusal(
+                    _address(inner_scope, "wire", id=id_),
+                    "Ungroup cannot relocate a wire whose component is missing",
+                )
         for port in _port_list(component, "input"):
             if port.get("default") is not None and port["id"] not in outside_inputs:
                 raise _Refusal(
@@ -819,7 +957,7 @@ class ModelEditDraft:
 
         consumed: dict[tuple[tuple[str, ...], str], int] = {}
 
-        def trace(end: Record, local_scope: tuple[str, ...], seen: frozenset) -> tuple[Record | None, list[Record]]:
+        def trace(end: Record, local_scope: tuple[str, ...], seen: frozenset = frozenset()) -> _UngroupRoute:
             if local_scope == scope and end.get("component") == key:
                 feed = inside_outputs.get(end["port"])
                 feed_scope = inner_scope
@@ -827,22 +965,63 @@ class ModelEditDraft:
                 feed = outside_inputs.get(end["port"])
                 feed_scope = scope
             else:
-                return (end if local_scope == scope else _copy_endpoint(end, ids)), []
+                return _UngroupRoute(end, local_scope == inner_scope, [])
             if feed is None:
-                return None, []
+                return _UngroupRoute(None, False, [])
             id_, feeder = feed
             path = (feed_scope, id_)
             if path in seen:
                 raise _Refusal(_address(feed_scope, "wire", id=id_), "boundary feeds itself")
-            source, chain = trace(feeder["source"], feed_scope, seen | {path})
-            if feeder["attachments"] and source is not None:
+            route = trace(feeder["source"], feed_scope, seen | {path})
+            if feeder["attachments"] and route.source is not None:
                 consumed[path] = consumed.get(path, 0) + 1
                 if consumed[path] > 1:
                     raise _Refusal(
                         _address(feed_scope, "wire", id=id_),
                         "Ungroup would copy an attachment onto multiple wires",
                     )
-            return source, [*chain, *feeder["attachments"]]
+            return _UngroupRoute(route.source, route.inner, [*route.attachments, *feeder["attachments"]])
+
+        return _UngroupWiring(
+            parent={
+                id_: trace(wire["source"], scope)
+                for id_, wire in parent_wires.items()
+                if wire["source"].get("component") == key and wire["target"].get("component") != key
+            },
+            child={
+                id_: trace(wire["source"], inner_scope)
+                for id_, wire in child_wires.items()
+                if wire["target"]["owner"] != "outputs"
+            },
+        )
+
+    def ungroup_eligibility(self) -> Iterator[edits.ModelUngroupEligibility]:
+        def candidates(owner: Record, scope: tuple[str, ...]) -> Iterator[edits.ModelUngroupEligibility]:
+            for key, component in owner["interior"]["components"].items():
+                if component["kind"] != "composite":
+                    continue
+                address = _address(scope, "component", id=key)
+                reason = None
+                try:
+                    self._ungroup_wiring(address)
+                except _Refusal as error:
+                    reason = str(error)
+                yield edits.ModelUngroupEligibility(address=address, reason=reason)
+                yield from candidates(component, (*scope, key))
+        return candidates(self.document, ())
+
+    def ungroup(self, address: ModelAddress) -> None:
+        wiring = self._ungroup_wiring(address)
+        graph, component = self.component(address)
+        key, scope = address.element.id, address.composites
+        inner_scope = (*scope, key)
+        inner = component["interior"]
+        parent_wires, child_wires = graph["wires"], inner["wires"]
+        attachment_owners = {
+            id(item): _address(location, "attachment", parent={"kind": "wire", "id": wire_id}, id=item["id"])
+            for location, wires in ((scope, parent_wires), (inner_scope, child_wires))
+            for wire_id, wire in wires.items() for item in wire["attachments"]
+        }
 
         ids: dict[str, str] = {}
         del graph["components"][key]
@@ -857,77 +1036,145 @@ class ModelEditDraft:
                 continue
             if wire["source"].get("component") != key:
                 continue
-            source, chain = trace(wire["source"], scope, frozenset())
-            if source is None:
+            route = wiring.parent[id_]
+            if route.source is None:
                 del parent_wires[id_]
             else:
-                wire["source"] = source
-                wire["attachments"] = [*wire["attachments"], *chain]
+                wire["source"] = _copy_endpoint(route.source, ids) if route.inner else route.source
+                wire["attachments"] = [*wire["attachments"], *route.attachments]
         moved_wires = {}
         for id_, wire in child_wires.items():
             if wire["target"]["owner"] == "outputs":
                 continue
-            source, chain = trace(wire["source"], inner_scope, frozenset())
-            if source is None:
+            route = wiring.child[id_]
+            if route.source is None:
                 continue
+            source = _copy_endpoint(route.source, ids) if route.inner else route.source
             assigned = id_ if id_ not in (graph["components"].keys() | parent_wires.keys() | graph.get("connections", {}).keys()) else _id(graph, reserved)
             parent_wires[assigned] = _signal(
-                source, _copy_endpoint(wire["target"], ids), [*chain, *wire["attachments"]],
+                source, _copy_endpoint(wire["target"], ids), [*route.attachments, *wire["attachments"]],
             )
             moved_wires[id_] = assigned
         self.relocate_layout(inner_scope, scope, ids, moved_wires)
+        for wire_id, wire in parent_wires.items():
+            for item in wire["attachments"]:
+                if (old := attachment_owners.get(id(item))) is not None:
+                    new = _address(scope, "attachment", parent={"kind": "wire", "id": wire_id}, id=item["id"])
+                    if new != old:
+                        self.relocations[old.to_text()] = new
         self.changed.append(address)
         self.changed.extend(_address(scope, "component", id=id_) for id_ in ids.values())
 
-    def validate(self, address: ModelAddress) -> None:
-        def check(owner: Record, graph: Record, scope: tuple[str, ...]) -> None:
-            targets = set()
-            for id_, wire in graph["wires"].items():
-                source, target = wire["source"], wire["target"]
-                output = self.port(owner, graph, source, "output")
-                input_port = self.port(owner, graph, target, "input")
-                at = _address(scope, "wire", id=id_)
-                if output is None or input_port is None:
-                    raise _Refusal(at, "wire does not name a local source and target port")
-                target_key = (target["owner"], target.get("component"), target["port"])
-                if target_key in targets:
-                    raise _Refusal(at, "target already has a wire")
-                targets.add(target_key)
-                self.validate_chain(at, wire["attachments"])
-            for id_, connection in graph.get("connections", {}).items():
-                left, right = (
-                    self.port(owner, graph, connection[end], "physical") for end in ("a", "b")
-                )
-                at = _address(scope, "physical_connection", id=id_)
-                if not left or not right or left.type != right.type or connection["a"] == connection["b"]:
-                    raise _Refusal(at, "physical endpoints must be distinct local ports of the same type")
-            for placement, ports in graph["attachments"].items():
-                for port, chain in ports.items():
-                    end = _card("inputs" if placement == "sources" else "outputs", port)
+    def graph_problems(self) -> Iterator[edits.ModelGraphProblem]:
+        return self._graph_problems(self.document, ())
+
+    def _graph_problems(self, owner: Record, scope: tuple[str, ...]) -> Iterator[edits.ModelGraphProblem]:
+        graph = owner["interior"]
+        unresolved: dict[str, edits.ModelGraphProblem] = {}
+        unavailable = {
+            key: reason for key, component in graph["components"].items()
+            if (reason := self.component_problem(component, graph["physical_domain"])) is not None
+        }
+
+        def port(end: Record, direction: Direction, at: ModelAddress) -> tuple[bool, Port | None]:
+            if end.get("component") in unavailable:
+                return False, None
+            try:
+                return True, self.port(owner, graph, end, direction)
+            except ValueError as error:
+                component = end.get("component")
+                address = _address(scope, "component", id=component) if component is not None else at
+                unresolved[address.to_text()] = edits.ModelGraphProblem(address=address, reason=str(error))
+                return False, None
+
+        def problem(at: ModelAddress, reason: str) -> edits.ModelGraphProblem:
+            return edits.ModelGraphProblem(address=at, reason=reason)
+
+        for key, reason in unavailable.items():
+            yield problem(_address(scope, "component", id=key), reason)
+
+        for direction, boundary in (("input", "inputs"), ("output", "outputs"), ("physical", "boundary")):
+            ports = _port_list(owner, direction)
+            counts = Counter(item["name"] for item in ports)
+            for item in ports:
+                if counts[item["name"]] > 1:
+                    yield problem(
+                        _address(scope, "port", end=_card(boundary, item["id"])),
+                        f"More than one port is named {item['name']!r}",
+                    )
+
+        targets = Counter(_target_key(wire["target"]) for wire in graph["wires"].values())
+        for key, wire in graph["wires"].items():
+            source, target = wire["source"], wire["target"]
+            at = _address(scope, "wire", id=key)
+            source_known, output = port(source, "output", at)
+            target_known, input_port = port(target, "input", at)
+            if (source_known and output is None) or (target_known and input_port is None):
+                yield problem(at, "Wire does not name a local source and target port")
+            elif output is not None and input_port is not None and (reason := _signal_mismatch(output, input_port)):
+                source_name = _signal_end_label(owner, graph, source, "output")
+                target_name = _signal_end_label(owner, graph, target, "input")
+                yield problem(at, f"{source_name} → {target_name}: {reason}")
+            if targets[_target_key(target)] > 1:
+                yield problem(at, "More than one wire drives this input")
+            if reason := _attachment_problem(wire["attachments"]):
+                yield problem(at, reason)
+
+        connections = graph.get("connections", {})
+        ends = Counter(frozenset(_target_key(edge[end]) for end in ("a", "b")) for edge in connections.values())
+        for key, connection in connections.items():
+            at = _address(scope, "physical_connection", id=key)
+            left, right = connection["a"], connection["b"]
+            left_known, a = port(left, "physical", at)
+            right_known, b = port(right, "physical", at)
+            if left == right or (left_known and a is None) or (right_known and b is None):
+                yield problem(at, "Physical endpoints must be distinct local ports")
+            elif a is not None and b is not None and not _same_port(a.type, b.type):
+                yield problem(at, f"Physical port types differ: {a.type} and {b.type}")
+            if ends[frozenset((_target_key(left), _target_key(right)))] > 1:
+                yield problem(at, "These physical ports are connected more than once")
+
+        def attachments(placement: Record, component: str | None) -> Iterator[edits.ModelGraphProblem]:
+            for kind, ports in placement.items():
+                direction: Direction = "output" if kind == "sources" else "input"
+                for key, chain in ports.items():
+                    if not chain:
+                        continue
+                    if component is not None:
+                        end = _component(component, key) | {"direction": direction}
+                    else:
+                        end = _card("inputs" if kind == "sources" else "outputs", key)
                     at = _address(scope, "port", end=end)
-                    direction: Direction = "output" if placement == "sources" else "input"
-                    if self.port(owner, graph, end, direction) is None:
-                        raise _Refusal(at, "attachment owner port does not exist")
-                    self.validate_chain(at, chain)
-            for id_, component in graph["components"].items():
-                for placement, ports in component["attachments"].items():
-                    for port, chain in ports.items():
-                        direction = "output" if placement == "sources" else "input"
-                        end = _component(id_, port)
-                        at = _address(scope, "port", end=end | {"direction": direction})
-                        if self.port(owner, graph, end, direction) is None:
-                            raise _Refusal(at, "attachment owner port does not exist")
-                        self.validate_chain(at, chain)
-                if component["kind"] == "composite":
-                    check(component, component["interior"], (*scope, id_))
+                    known, resolved = port(end, direction, at)
+                    if known and resolved is None:
+                        yield problem(at, "Attachment owner port does not exist")
+                    if reason := _attachment_problem(chain):
+                        yield problem(at, reason)
 
-        owner, graph = self.context(address)
-        check(owner, graph, address.composites)
+        yield from attachments(graph["attachments"], None)
+        for key, component in graph["components"].items():
+            yield from attachments(component["attachments"], key)
+            if component["kind"] == "composite":
+                yield from self._graph_problems(component, (*scope, key))
+        yield from unresolved.values()
 
-    @staticmethod
-    def validate_chain(address: ModelAddress, chain: list[Record]) -> None:
-        if len({item["id"] for item in chain}) != len(chain):
-            raise _Refusal(address, "attachment IDs collide on this owner")
+
+def _attachment_problem(chain: list[Record]) -> str | None:
+    if len({item["id"] for item in chain}) != len(chain):
+        return "Attachment IDs collide on this owner"
+    return None
+
+
+def model_ungroup_eligibility(document: ModelDocument) -> tuple[edits.ModelUngroupEligibility, ...]:
+    draft = ModelEditDraft(edits.ModelEditState(document=document), lambda *_: None)
+    return tuple(draft.ungroup_eligibility())
+
+
+def model_graph_problems(
+    document: ModelDocument, *, ports: LeafPorts, component_problem: ComponentProblem,
+) -> Iterator[edits.ModelGraphProblem]:
+    """Check authored identities and connections independently of graph lowering."""
+    return ModelEditDraft(edits.ModelEditState(document=document), ports, component_problem).graph_problems()
 
 
 @cache
@@ -969,54 +1216,67 @@ def review_model_connections(
     layout: Callable[[Record], dict[tuple[Direction, str], Port]],
     next_input: Callable[[Record], tuple[str, str, int] | None],
     library: tuple[Record, ...] = (),
-    accepts: AcceptComponent = lambda *_: False,
     task_signal: edits.ModelTaskSignal | None = None,
 ) -> edits.ModelConnectionReview:
     address = review.graph
+
+    def available(component: Record) -> dict[tuple[Direction, str], Port]:
+        try:
+            return layout(component)
+        except ValueError:
+            return {}
+
+    def growing_input(component: Record):
+        try:
+            return next_input(component)
+        except ValueError:
+            return None
+
     edit = ModelEditDraft(
         edits.ModelEditState(document=document),
-        lambda component, direction, port: layout(component).get((direction, port)),
-        lambda *_: False,
+        lambda component, direction, port: available(component).get((direction, port)),
     )
     owner, graph = edit.graph(address)
+    source = None if task_signal is not None else review.source.model_dump(mode="json")
+    grow_source = review.grow_source and source == _card("inputs", _EMPTY_BOUNDARY_PORT) and not address.composites
     output = (
         Port(task_signal.type) if task_signal is not None
-        else edit.port(owner, graph, review.source.model_dump(mode="json"), "output")
+        else edit.port(owner, graph, source, "output")
     )
+    source_reason = _task_input_reason(owner, task_signal) if task_signal is not None else None
+    if review.grow_source and not grow_source:
+        source_reason = "Choose an empty port on the root Inputs card"
     targets = [_card("outputs", port["id"]) for port in owner["ports"]["outputs"]]
     growing = []
     for id_, component in graph["components"].items():
         if component["kind"] == "leaf":
-            inputs = [port for direction, port in layout(component) if direction == "input"]
-            if growth := next_input(component):
+            inputs = [port for direction, port in available(component) if direction == "input"]
+            if task_signal is None and not review.grow_source and (growth := growing_input(component)):
                 port, parameter, count = growth
                 trial = {**component, "port_counts": {**component["port_counts"], parameter: count}}
-                receiving = layout(trial).get(("input", port))
-                reason = (
-                    "Signal types are incompatible" if output is None or receiving is None or
-                    not _same_port(output.type, receiving.type) else None
-                )
-                growing.append(edits.ModelConnectionVerdict(target=_component(id_, port), reason=reason))
+                trial_graph = {**graph, "components": {**graph["components"], id_: trial}}
+                growing.append(edit.connection_verdict(address, owner, trial_graph, source, output, _component(id_, port)))
         else:
             inputs = (port["id"] for port in component["ports"]["inputs"])
         targets.extend(_component(id_, port) for port in inputs)
     choices = []
-    if output is not None:
+    if output is not None and task_signal is None and not review.grow_source:
         for component in library:
-            if not accepts(component, graph["physical_domain"]):
-                continue
-            try:
-                available = layout(component)
-            except ValueError:
-                # Required fields with no default cannot be authored by a wire drop.
-                continue
             choices.extend(
                 edits.ModelLibraryConnection(component=component["type"], target_port=port)
-                for (direction, port), value in available.items()
-                if direction == "input" and _same_port(output.type, value.type)
+                for direction, port in available(component)
+                if direction == "input"
             )
+    if not review.grow_source:
+        growing.append(edits.ModelConnectionVerdict(
+            target=_card("outputs", _EMPTY_BOUNDARY_PORT), growing=True,
+            reason=source_reason or ("Source must be a local output or a port of the inputs card" if output is None else None),
+        ))
     return edits.ModelConnectionReview(targets=tuple(growing) + tuple(
-        edits.ModelConnectionVerdict(target=target, reason=edit.connection_reason(owner, graph, output, target))
+        edit.connection_verdict(
+            address, owner, graph, None if grow_source else source,
+            edit.port(owner, graph, target, "input") if grow_source else output, target, source_reason,
+        )
         for target in targets
     ), library=tuple(choices))
 
@@ -1026,24 +1286,32 @@ def apply_model_edit(
     command: edits.ModelEditCommand,
     *,
     ports: LeafPorts,
-    accepts: AcceptComponent,
+    component_problem: ComponentProblem,
     functions=None,
     task_signal: Callable[[edits.ConnectTaskSignal], edits.ModelTaskSignal] | None = None,
     next_input: Callable[[Record], tuple[str, str, int] | None] | None = None,
     reference: Callable[[], edits.ModelEditState | None] | None = None,
+    instantiate_template: Callable[[str], CompositeComponent] | None = None,
 ) -> edits.ModelEditResult | edits.ModelEditProblem:
     """Apply one command to a private draft and return its complete transaction.
 
     ``reference`` gives the Model a structural difference is reset to, when the shown one differs from another.
     """
     operation = command.operation
-    edit = ModelEditDraft(state, ports, accepts)
+    edit = ModelEditDraft(state, ports, component_problem)
     clipboard = None
     primary = _address((), "graph")
     try:
         match operation:
-            case edits.AddComponent(graph=primary):
-                edit.add_component(operation)
+            case edits.AddComponent(graph=primary) | edits.InsertComponentOnWire(address=primary):
+                if isinstance(component := operation.component, edits.RegisteredComponent):
+                    if instantiate_template is None:
+                        raise _Refusal(primary, "Component templates need a registered definition")
+                    operation = operation.model_copy(update={"component": instantiate_template(component.definition)})
+                if isinstance(operation, edits.AddComponent):
+                    edit.add_component(operation)
+                else:
+                    edit.insert_component(operation)
             case edits.MoveCards(placements=placements):
                 primary = placements[0].address
                 for placement in placements:
@@ -1083,26 +1351,52 @@ def apply_model_edit(
                 for address in selection:
                     if address.composites != primary.composites:
                         raise _Refusal(address, "select elements of one graph")
-                    edit.remove(address)
+                _, graph = edit.context(primary)
+                deleted = {address.element.id for address in selection if address.element.kind == "component"}
+                with_components = {
+                    (collection, key)
+                    for collection, ends in (("wires", ("source", "target")), ("connections", ("a", "b")))
+                    for key, edge in graph.get(collection, {}).items()
+                    if any(edge[end].get("component") in deleted for end in ends)
+                }
+                for address in selection:
+                    kind = address.element.kind
+                    collection = {"wire": "wires", "physical_connection": "connections"}.get(kind)
+                    if collection and (collection, address.element.id) in with_components:
+                        edit.changed.append(address)
+                    else:
+                        edit.remove(address)
             case edits.ConnectSignal(graph=primary, source=source, target=target):
-                if operation.grow_target:
+                left, right = source.model_dump(mode="json"), target.model_dump(mode="json")
+                if operation.grow_source:
+                    if operation.grow_target or left != _card("inputs", _EMPTY_BOUNDARY_PORT):
+                        raise _Refusal(primary, "An empty Inputs port needs an existing target")
+                    left = edit.grow_boundary(primary, "inputs", right)
+                elif operation.grow_target and right == _card("outputs", _EMPTY_BOUNDARY_PORT):
+                    right = edit.grow_boundary(primary, "outputs", left)
+                elif operation.grow_target:
                     _, graph = edit.graph(primary)
                     component = graph["components"].get(getattr(target, "component", None))
                     growth = next_input(component) if next_input is not None and component is not None else None
                     if growth is None or growth[0] != target.port:
                         raise _Refusal(primary, "The target has no matching growing input")
                     component["port_counts"][growth[1]] = growth[2]
-                edit.connect(primary, source.model_dump(mode="json"), target.model_dump(mode="json"))
+                edit.connect(primary, left, right)
             case edits.ConnectTaskSignal(graph=primary, target=target):
                 if task_signal is None or primary.composites:
                     raise _Refusal(primary, "A task signal connects at the Model root")
                 item = task_signal(operation)
                 owner, _ = edit.graph(primary)
-                if any(port["name"] == item.id for port in owner["ports"]["inputs"]):
-                    raise _Refusal(primary, "The task signal already has a Model input")
-                port = {"id": uuid4().hex, "name": item.id, "type": item.type.model_dump(mode="json")}
+                if reason := _task_input_reason(owner, item):
+                    raise _Refusal(primary, reason)
+                port = {"id": uuid4().hex, "name": item.label, "type": item.type.model_dump(mode="json")}
                 owner["ports"]["inputs"].append(port)
-                edit.connect(primary, _card("inputs", port["id"]), target.model_dump(mode="json"))
+                left, right = _card("inputs", port["id"]), target.model_dump(mode="json")
+                if operation.grow_target:
+                    if right != _card("outputs", _EMPTY_BOUNDARY_PORT):
+                        raise _Refusal(primary, "Choose an empty Outputs port")
+                    right = edit.grow_boundary(primary, "outputs", left)
+                edit.connect(primary, left, right)
             case edits.ConnectPhysical(graph=primary, connection=connection):
                 edit.physical(primary, connection.model_dump(mode="json"))
             case edits.AddPort(graph=primary):
@@ -1125,8 +1419,6 @@ def apply_model_edit(
                 edit.set_attachment(difference)
             case edits.MoveWireAttachment(address=primary):
                 edit.move_wire_attachment(operation)
-            case edits.InsertComponentOnWire(address=primary):
-                edit.insert_component(operation)
             case edits.BringSignalIn(destination=primary):
                 edit.bring_in(operation)
             case edits.CopyComponents(selection=selection):
@@ -1151,12 +1443,13 @@ def apply_model_edit(
                 if restored is None:
                     raise _Refusal(primary, "This Model is not changed from another")
                 edit.reset_difference(primary, restored)
-        edit.prune_layout()
+        if not isinstance(operation, (edits.ConnectSignal, edits.ConnectTaskSignal)):
+            edit.prune_layout()
         result = ModelDocument.model_validate(edit.document)
-        edit.validate(_address((), "graph"))
         return edits.ModelEditResult(
             state=edits.ModelEditState(document=result, **edit.layout()),
-            changed=tuple(edit.changed), clipboard=clipboard,
+            relocations=edit.relocations,
+            changed=tuple(edit.changed), clipboard=clipboard, problems=tuple(edit.graph_problems()),
         )
     except _Refusal as error:
         return edits.ModelEditProblem(address=error.address, detail=str(error))

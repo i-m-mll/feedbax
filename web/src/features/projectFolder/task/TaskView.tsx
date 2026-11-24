@@ -26,7 +26,7 @@ export function TaskPythonBody({ view }: { view: TaskPythonView }) {
       <div className="grid max-w-md gap-1">{view.parameters.map((field) => <ValueField key={field.id} model={field} />)}</div>
     </TaskSection>
     <TaskSection name="signals">
-      <Table aria-label={studioName('signals')} held={1} columns={[{ least: '10rem', fixed: true }, { least: '8rem' }]}>
+      <Table aria-label={studioName('signals')} held={1} columns={[{ least: '5rem', greatest: '16rem' }, { least: '8rem' }]}>
         <thead><tr>
           <TableHeaderCell scope="col">{studioName('name')}</TableHeaderCell>
           <TableHeaderCell scope="col">{studioName('type')}</TableHeaderCell>

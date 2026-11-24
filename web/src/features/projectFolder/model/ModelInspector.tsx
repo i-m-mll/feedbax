@@ -24,11 +24,15 @@ function duration(raw: string): ModelTime | undefined {
   return value > 0 && (unit === 's' || Number.isInteger(value)) ? { value, unit } : undefined;
 }
 
+export function delayText(delay: DelayAttachment['delay']): string {
+  return 'text' in delay ? delay.text : `${delay.value} ${delay.unit}`;
+}
+
 /** The model's own fields, shown when nothing is selected. */
 export function modelFields(model: ModelDocument, change?: FieldChange): FieldModel[] {
   const label = studioName('step');
   return [rawField({
-    id: 'step_seconds', label, type: { kind: 'string' }, value: `${model.step_seconds} ${studioUnit('second')}`,
+    id: 'step_seconds', label, type: { kind: 'string' }, value: typeof model.step_seconds === 'number' ? `${model.step_seconds} ${studioUnit('second')}` : model.step_seconds.text,
     change: change && ((raw) => {
       const value = period(String(raw));
       return value === undefined ? studioReason('takesPositive', label) : change(['step_seconds'], value);
@@ -44,7 +48,8 @@ export function componentFields(component: Component, definition: ComponentDefin
     if (projected?.has('substeps') || (domain !== 'planar_multibody' && domain !== 'spatial_multibody')) return [];
     const label = studioName('substeps');
     return [rawField({
-      id: 'substeps', label, type: { kind: 'integer' }, value: component.substeps ?? 1,
+      id: 'substeps', label, type: { kind: typeof component.substeps === 'object' ? 'string' : 'integer' },
+      value: typeof component.substeps === 'object' ? component.substeps.text : component.substeps ?? 1,
       change: change && ((value) => typeof value === 'number' && value > 0 ? change(['substeps'], value) : studioReason('takesPositive', label)),
     })];
   }
@@ -63,7 +68,7 @@ export function attachmentFields(item: Attachment, change?: AttachmentChange,
     if (projected?.has('delay')) return [];
     const label = studioName('delay');
     return [rawField({
-      id: 'delay', label, type: { kind: 'string' }, value: `${item.delay.value} ${item.delay.unit}`,
+      id: 'delay', label, type: { kind: 'string' }, value: delayText(item.delay),
       change: change && ((raw) => {
         const delay = duration(String(raw));
         return delay ? write({ ...item, delay }) : studioReason('takesDuration', label);
@@ -131,6 +136,7 @@ export function sharedFields(lists: readonly (readonly FieldModel[])[]): FieldMo
     const same = sameValue(all);
     return [{
       ...model, commit, members: undefined, parts: same ? model.parts : undefined,
+      reason: all.find(({ reason }) => reason)?.reason, span: same ? model.span : undefined,
       ...(same ? {} : { text: null, value: undefined }),
     }];
   });

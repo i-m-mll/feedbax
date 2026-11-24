@@ -94,8 +94,11 @@ export async function number(page: Page, target: Locator, value: string) {
   await page.keyboard.press('Enter');
 }
 
-/** Chooses `label` in a Select of the control layer by keyboard: open, walk from the first option, Enter. */
-export async function chooseOption(page: Page, select: Locator, label: string | RegExp) {
+/**
+ * Chooses `label` in a Select of the control layer by keyboard: open, walk from the first option, Enter; `store` is the
+ * Apply To choice when the edit reaches beyond the selection.
+ */
+export async function chooseOption(page: Page, select: Locator, label: string | RegExp, store?: string) {
   await expect(select).toBeEnabled();
   await tabTo(page, select);
   await page.keyboard.press('ArrowDown');
@@ -111,6 +114,7 @@ export async function chooseOption(page: Page, select: Locator, label: string | 
   await expect(option).toHaveAttribute('data-highlighted');
   await page.keyboard.press('Enter');
   await expect(listbox).toBeHidden();
+  if (store) await activateMenuItem(page, page.getByRole('menu', { name: 'Apply To', exact: true }).getByRole('menuitem', { name: store, exact: true }));
   await expect(select).toHaveText(label);
 }
 

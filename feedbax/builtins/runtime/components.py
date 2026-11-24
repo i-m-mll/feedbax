@@ -21,6 +21,7 @@ from pydantic import Field as ConfigField
 
 from feedbax.contracts.component_history import Change, History
 from feedbax.contracts.component import DynamicPortPolicy, PortType
+from feedbax.contracts.component_presentation import PresentationOverride
 from feedbax.contracts.model_values import ModelFacts, ModelValue, StateReset, StateValue
 from feedbax.contracts.portable import (
     ComponentOptions,
@@ -1260,6 +1261,7 @@ class LinearLayer(GraphNode):
 class Linear(LinearLayer, Component):
     """Affine layer followed by a named elementwise activation."""
 
+    component_presentation = PresentationOverride(headline_field="output_size")
     component_history = History(Change(2, migrate=lambda params: {**params, "initialization": "random"}))
     model_facts = ModelFacts(values=(
         ModelValue("kernel", "layer.weight", "learned"),
@@ -1388,6 +1390,7 @@ class _GRUConfig(BaseModel):
 class GRU(Component):
     """Standalone GRU cell."""
 
+    component_presentation = PresentationOverride(headline_field="hidden_size")
     model_facts = ModelFacts(
         values=(
             ModelValue("input_kernel", "cell.weight_ih", "learned"),
@@ -1397,10 +1400,10 @@ class GRU(Component):
         ),
         states=(
             StateValue(
-                "hidden", ("hidden",), "1", "unit",
-                reset=StateReset("hidden", aliases=(("output",),), override_port="hidden"),
+                "hidden", ("hidden",), "1", "unit", ("hidden",),
+                aliases=(("output",),), reset=StateReset(override_port="hidden"),
             ),
-            StateValue("output", ("output",), "1", "unit"),
+            StateValue("output", ("output",), "1", "unit", ("output",)),
         ),
         optional_state_flag="stateful",
     )
@@ -1707,11 +1710,12 @@ class Switch(Component):
         threshold: Comparison threshold for routing.
     """
 
+    model_facts = ModelFacts()
     config: ClassVar[type[BaseModel]] = _SwitchConfig
 
     ports: ClassVar[Ports] = Ports(
         inputs={
-            "condition": PortType(dtype="scalar"),
+            "condition": PortType(dtype="any"),
             "true_input": PortType(dtype="any"),
             "false_input": PortType(dtype="any"),
         },

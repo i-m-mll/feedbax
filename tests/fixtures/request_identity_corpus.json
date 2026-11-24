@@ -23,16 +23,16 @@
         },
         "evaluation_type": "feedbax.rollout",
         "params": {
-          "input_overrides": {
-            "reach_target": "target_pos"
-          },
           "seed": 731,
           "trial_policy": "paired",
           "trials": [
             "{\"catch\":false,\"start\":[-0.10000002384185791,-0.050000011920928955],\"target\":[0.3999999761581421,-0.050000011920928955]}",
             "{\"catch\":false,\"start\":[-0.10000002384185791,-0.050000011920928955],\"target\":[0.2117448770875089,0.34091572931308595]}"
           ],
-          "variation": []
+          "variation": [],
+          "input_bindings": {
+            "task-input": "target_pos"
+          }
         }
       },
       "inputs": {
@@ -70,7 +70,7 @@
           }
         ]
       },
-      "id": "evaluate:eded1e8ae4cfb924774c35faf3a24e30f54b138b9c16fc468219459fad0ec534"
+      "id": "evaluate:43c322d942d3d736903dab7ae5cf9ed766a639126be20a10aa07c21422787877"
     },
     {
       "kind": "analyze",

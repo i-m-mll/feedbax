@@ -1,6 +1,7 @@
 """Plan and shared graph compilation for a model document with nested owners."""
 
 from copy import deepcopy
+import json
 from unittest.mock import Mock
 
 import jax
@@ -51,6 +52,7 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.contracts.model_edit import ModelEditRequest
 from feedbax.web.services.project_plan import ProjectPlanService
 from feedbax.web.app import create_app
+from tests.support.managed_train_fixture import managed_train_project
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.support.model_documents import read_changed_model
 from tests.support.host import job_row, token, wait_until
@@ -62,7 +64,7 @@ def _prepare_request(request, registry) -> PreparedTrialExecution:
     paired = compile_trial_execution(
         documents.model, documents.task_source,
         registry.components, registry.expression_functions, python_tasks=registry.python_tasks,
-        objective=documents.objective, input_overrides=documents.input_overrides,
+        objective=documents.objective, input_bindings=documents.input_bindings,
         initialization_key=model_initialization_key(request.seed or 0),
     )
     assert isinstance(paired, PreparedTrialExecution), paired
@@ -122,7 +124,7 @@ def test_noncontiguous_group_preserves_rollout_and_gradient(delay, initial_value
         ],
     }})
     grouped = apply_model_edit(
-        ModelEditState(document=model), command, ports=ports.port, accepts=ports.accepts,
+        ModelEditState(document=model), command, ports=ports.port, component_problem=ports.placement_problem,
     )
     assert isinstance(grouped, ModelEditResult), grouped
     group = grouped.changed[-1].element.id
@@ -156,7 +158,7 @@ def test_noncontiguous_group_preserves_rollout_and_gradient(delay, initial_value
         "op": "ungroup", "address": grouped.changed[-1].model_dump(mode="json"),
     }})
     ungrouped = apply_model_edit(
-        grouped.state, command, ports=ports.port, accepts=ports.accepts,
+        grouped.state, command, ports=ports.port, component_problem=ports.placement_problem,
     )
     assert isinstance(ungrouped, ModelEditResult), ungrouped
     assert ungrouped.state.document == model
@@ -489,8 +491,9 @@ def _seed_swept_project(tmp_path, name):
 class _TrainClient:
     """A Train step's edits through the Studio endpoints, each saved as it is made."""
 
-    def __init__(self, client, url):
+    def __init__(self, client, url, *, accepted_steps=()):
         self.client, self.url = client, url
+        self.accepted_steps = set(accepted_steps)
 
     @property
     def revision(self):
@@ -513,7 +516,16 @@ class _TrainClient:
     def save(self, response):
         assert response.status_code == 200, response.text
         body = response.json()
+        if choices := body.get("store_choices"):
+            assert not body["files"] and not body["created"]
+            (choice,) = choices
+            assert set(choice["steps"]) == self.accepted_steps, choice
+            original = json.loads(response.request.content)
+            response = self.client.post(response.request.url, json=original | {"store_choice": choice["id"]})
+            assert response.status_code == 200, response.text
+            body = response.json()
         assert not body.get("problems") and not body.get("refusal"), body
+        assert body["files"], body.get("store_choices")
         saved = self.client.patch(self.url, json={"revision": self.revision, "files": body["files"]})
         assert saved.status_code == 200, saved.text
         return body
@@ -683,7 +695,7 @@ def test_a_parameter_swept_for_one_optimizer_divides_only_its_runs(tmp_path):
     _save_project(ProjectFolderService(tmp_path), name, Project.model_validate(raw))
     url = f"/api/projects/{name}"
     with TestClient(create_app(projects_dir=tmp_path)) as client:
-        train = _TrainClient(client, url)
+        train = _TrainClient(client, url, accepted_steps=("train", "train-2"))
         train.sweep_class(optimizer, {"kind": "to_sweep"})
         train.sweep_class(optimizer, {"kind": "add_member", "key": "sgd"})
         before = train.requests(tmp_path, name)
@@ -835,9 +847,8 @@ def test_a_model_field_swept_for_some_runs_reads_as_the_selected_runs_have_it(tm
         assert other["sweep"] is None and not other["mixed"] and other["text"] == "1.0"
 
 
-def test_a_class_without_a_swept_parameter_is_refused_as_a_member(tmp_path):
-    raw = _model_project()
-    raw["steps"].pop("baseline")
+def test_a_class_without_a_swept_parameter_keeps_the_authored_axis(tmp_path):
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     raw["steps"]["train"]["base"]["inline"]["settings"]["optimizer"]["learning_rate"] = {
         "type": "warmup_cosine_decay_schedule", "init_value": 0.0, "peak_value": 0.001, "warmup_steps": 10,
         "decay_steps": 100, "end_value": 0.0,
@@ -848,9 +859,15 @@ def test_a_class_without_a_swept_parameter_is_refused_as_a_member(tmp_path):
         train = _TrainClient(client, url)
         train.number(schedule + "/peak_value", {"kind": "text", "text": "0.001, 0.002"})
         train.sweep_class(schedule, {"kind": "to_sweep"})
-        refused = train.sweep_class(schedule, {"kind": "add_member", "key": "constant_schedule"}, save=False)
-        assert refused["refusal"] == {"class_label": "Constant", "parameter_label": "Peak Value"}
-        assert refused["files"] == []
+        recipe = train.sweep_class(schedule, {"kind": "add_member", "key": "constant_schedule"})
+        assert recipe["files"]
+        revision = client.get(url).json()["revision"]
+        read = client.post(url + "/authoring/train/train", json={"revision": revision})
+        assert read.status_code == 200, read.text
+        reopened = read.json()
+        (field,) = [field for field in reopened["classes"] if field["id"] == schedule]
+        assert "constant_schedule" in {value["value"] for value in field["sweep"]["members"]}
+        assert any("peak_value" in problem["path"] for problem in reopened["sweep_problems"])
 
 
 def test_a_sweep_turned_into_its_value_keeps_the_edits_made_for_that_value(tmp_path):
@@ -939,7 +956,7 @@ def _group_reaching_pipeline(raw, registry):
         ],
     }})
     result = apply_model_edit(
-        state, command, ports=ports.port, accepts=ports.accepts,
+        state, command, ports=ports.port, component_problem=ports.placement_problem,
     )
     assert isinstance(result, ModelEditResult), result
     raw["documents"]["reach-model"]["payload"] = result.state.document.model_dump(mode="json")
@@ -970,11 +987,12 @@ def test_nested_model_plans_with_stable_identity_and_compiles():
     assert graph.nodes["wrapper"].nodes["controller"].nodes["cell"].cell.weight_ih.shape[1] == 2
 
     documents = raw["steps"]["train"]["base"]["inline"]["trial_documents"]
-    documents.pop("input_overrides")
+    documents.pop("input_bindings")
     raw["documents"]["reach-model"]["payload"]["ports"]["inputs"][0]["name"] = "unknown"
     refused = compile_project(Project.model_validate(raw))
     (problem,) = [problem for row in refused.rows if row.key.step == "train" for problem in row.problems]
-    assert problem.path.startswith("/trial_documents/model/") and "reads signal 'unknown'" in problem.detail
+    assert problem.path.startswith("/trial_documents/model/")
+    assert problem.detail == "Model input 'unknown' needs a Task signal."
     assert problem.model_address == ModelAddress.model_validate({
         "composites": [],
         "element": {"kind": "port", "end": {"owner": "inputs", "port": "task-input"}},
@@ -989,7 +1007,99 @@ def _use_initial_evaluation(raw):
         "task": {"kind": "task", "source": trial["task"]},
         "objective": {"kind": "objective", "source": trial["objective"]},
     }
-    evaluation["base"]["inline"]["params"]["input_overrides"] = dict(trial["input_overrides"])
+    evaluation["base"]["inline"]["params"]["input_bindings"] = dict(trial["input_bindings"])
+
+
+def test_plan_reports_all_authored_graph_problems_for_train_and_initial_evaluate():
+    """Catch a dangling wire in an invalid Model masking an independently repairable wire."""
+    raw = _model_project()
+    _use_initial_evaluation(raw)
+    wires = raw["documents"]["reach-model"]["payload"]["interior"]["wires"]
+    for key in ("dangling-first", "dangling-second"):
+        wires[key] = _wire({"owner": "inputs", "port": key}, {"owner": "outputs", "port": key})
+    plan = compile_project(Project.model_validate(raw))
+    for step in ("train", "baseline"):
+        row, = (row for row in plan.rows if row.key.step == step)
+        assert {item.model_address.element.id for item in row.problems} == {"dangling-first", "dangling-second"}
+
+
+@pytest.mark.parametrize("source", ["linear", "task"])
+def test_model_projection_keeps_the_declared_input_size_after_wiring(tmp_path, source):
+    """Catch a connected sample's shape overwriting the field that constrains its target."""
+    raw = _model_project()
+    interior = raw["documents"]["reach-model"]["payload"]["interior"]
+    before_size, after_size = (1, 3) if source == "linear" else (2, 7)
+    interior["components"]["receiver"] = {
+        "kind": "leaf", "name": "Receiver", "type": "feedbax.Linear" if source == "linear" else "feedbax.GRU",
+        "fields": {"input_size": before_size},
+    }
+    if source == "linear":
+        interior["components"]["sender"] = {
+            "kind": "leaf", "name": "Sender", "type": "feedbax.Linear", "fields": {"input_size": 2, "output_size": 1},
+        }
+        interior["wires"]["sender-input"] = _wire({"owner": "inputs", "port": "task-input"}, _end("sender", "input"))
+        interior["wires"]["receiver-input"] = _wire(_end("sender", "output"), _end("receiver", "input"))
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, "nested", Project.model_validate(raw))
+    document = "reach-model"
+    graph = {"composites": [], "element": {"kind": "graph"}}
+    run = {"variant": "default", "step": "train", "row": "default"}
+    base = "/api/projects/nested/model"
+
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        def apply(operation):
+            snapshot = folders.read("nested")
+            reply = client.post(base + "/edit", json={
+                "revision": snapshot.revision, "presentation_revision": snapshot.presentation_revision,
+                "document": document, "command": {"operation": operation},
+            })
+            assert reply.status_code == 200, reply.text
+            result = reply.json()["result"]
+            assert result["status"] == "applied", result
+            return result
+
+        def projection(snapshot):
+            reply = client.post(base + "/projection", json={
+                "revision": snapshot.revision, "document": document, "run": run,
+            })
+            assert reply.status_code == 200, reply.text
+            return reply.json()
+
+        def projected_type(view, end):
+            return next(
+                item["type"] for item in view["ports"]
+                if not item["address"]["composites"] and item["address"]["element"]["end"] == end
+            )
+
+        if source == "task":
+            apply({
+                "op": "connect_task_signal", "graph": graph, "run": run,
+                "signal": "target_pos", "target": _end("receiver", "input"),
+            })
+            snapshot = folders.read("nested")
+            model = snapshot.project.documents[document].payload
+            task_port = next(port for port in model["ports"]["inputs"] if port["name"] == "target_pos")
+            task_type = {"base": "float", "shape": [2], "unit": "m"}
+            assert task_port["type"] == task_type
+            assert projected_type(projection(snapshot), {"owner": "inputs", "port": task_port["id"]}) == task_type
+
+        edited = apply({
+            "op": "set_field", "address": {"composites": [], "element": {
+                "kind": "field", "parent": {"kind": "component", "id": "receiver"}, "path": ["fields", "input_size"],
+            }}, "value": after_size,
+        })
+        saved = folders.read("nested")
+        wires = saved.project.documents[document].payload["interior"]["wires"]
+        wire_id, = (key for key, wire in wires.items() if wire["target"] == _end("receiver", "input"))
+        view = projection(saved)
+        assert projected_type(view, _end("receiver", "input") | {"direction": "input"})["shape"] == [after_size]
+        address = {"composites": [], "element": {"kind": "wire", "id": wire_id}}
+        message = next(problem["reason"] for problem in edited["problems"] if problem["address"] == address)
+        assert "Receiver · input" in message
+        assert ("Sender · output" if source == "linear" else "Inputs · target_pos") in message
+        plan = folders.read_plan("nested", revision=saved.revision).plan
+        row, = (row for row in plan.rows if row.key.step == "train")
+        assert ModelAddress.model_validate(address) in [problem.model_address for problem in row.problems]
 
 
 def test_unresolved_relative_link_is_reported_at_the_task():
@@ -1212,8 +1322,9 @@ def test_an_evaluate_attachment_for_selected_runs_changes_only_their_request(tmp
 
 
 # The ids the variant's evaluation had at a9b3bb7d, where the change was stored in the step's payload.
-_VARIANT_WIRE = "evaluate:b62012d6a1978258070b4f523fab4cbbe813a1c2a37eb2591bac40a740e33554"
-_VARIANT_FIELD = "evaluate:e37d427b989acfd00a42a8936770f688bcf57ba3a9df5e5f9d39c316827b4e17"
+# The fixture pins requests that bind Task signals by stable Model input ID (8a0009c3).
+_VARIANT_WIRE = "evaluate:f284d8251b66faaddb83eff6ef1b61e0e24c51a1bfbcad769c64433013d0e190"
+_VARIANT_FIELD = "evaluate:3277dacdfdaa2b47fa4da1e6875e362941f9ae9fdb57d832cd659d4540332c85"
 
 
 @pytest.mark.parametrize(("operation", "expected"), [
@@ -1235,10 +1346,16 @@ def test_a_variant_edit_of_an_evaluation_is_a_document_the_variant_points_it_at(
     before = folders.read_plan("nested", revision=None)
     snapshot = folders.read("nested")
     with TestClient(create_app(projects_dir=tmp_path)) as client:
-        reply = client.post("/api/projects/nested/model/edit", json={
+        request = {
             "revision": snapshot.revision, "presentation_revision": snapshot.presentation_revision,
             "document": "reach-model", "command": {"operation": operation}, "step": "baseline", "variant": "treated",
-        })
+        }
+        reply = client.post("/api/projects/nested/model/edit", json=request)
+        assert reply.status_code == 200, reply.text
+        decision = reply.json()["result"]
+        assert decision["status"] == "asked", decision
+        store = next(option for option in decision["store_choices"] if option["kind"] == "selected_readers")
+        reply = client.post("/api/projects/nested/model/edit", json=request | {"store_choice": store["id"]})
         assert reply.status_code == 200, reply.text
         result = reply.json()["result"]
     assert result["status"] == "applied", result
@@ -1346,7 +1463,7 @@ def test_group_keeps_delay_on_a_crossing_gru_output():
         }],
     }})
     result = apply_model_edit(
-        state, command, ports=ports.port, accepts=ports.accepts,
+        state, command, ports=ports.port, component_problem=ports.placement_problem,
     )
     assert isinstance(result, ModelEditResult), result
     raw["documents"]["reach-model"]["payload"] = result.state.document.model_dump(mode="json")
@@ -1801,11 +1918,6 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
 
     model = raw["documents"][model_name]["payload"]
     model["ports"]["inputs"][0]["name"] = "renamed_reach_target"
-    overrides = raw["steps"]["train"]["base"]["inline"]["trial_documents"]["input_overrides"]
-    overrides["renamed_reach_target"] = overrides.pop("reach_target")
-    if not grouped:
-        overrides = raw["steps"]["baseline"]["base"]["inline"]["params"]["input_overrides"]
-        overrides["renamed_reach_target"] = overrides.pop("reach_target")
     _save_project(folders, project, Project.model_validate(raw))
     changed = reopened.read_plan(project, revision=None)
     assert not changed.plan.diagnostics

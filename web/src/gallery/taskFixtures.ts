@@ -3,16 +3,16 @@
  * document as shipped, the three-reach task of issue 7f0c01f's acceptance 8 (an Until End, a × 3 repeat, a list
  * variable, `targets[i]` cells), the stabilization document (which leaves the model's input unfed), and a Python task.
  */
-import type { FunctionInfo, ScopedValue, TextSpan, ValueType } from '@/generated/studioContracts';
+import type { Expression, FunctionInfo, JsonValue, Repeat, ScopedValue, TextSpan, TrialAggregate, TrialRecord, ValueType } from '@/generated/studioContracts';
 import type { ChangeMark, FieldModel, ValueKind } from '@/components/values/fieldModel';
 import { rawField } from '@/components/values/adapters/raw';
 import type {
   EpochBounds, TaskCell, TaskDocumentView, TaskEpoch, TaskPythonView, TaskSignal, TaskVariable, VariableLevel,
 } from '@/features/projectFolder/task/taskModel';
-import type { EpochInterval, Percentiles, SampledTrial, SignalAggregate, SignalSteps, TrialBatch } from '@/features/projectFolder/task/trialSample';
+import type { SignalSteps } from '@/features/projectFolder/task/trialSample';
 
 export interface VariableSpec {
-  id: string; name: string; type: string; count?: number; level?: VariableLevel; text: string;
+  id: string; name: string; type: string; count?: Expression; level?: VariableLevel; text: string;
   /** A problem with the value, and the term of its text it is about. */
   reason?: string; span?: TextSpan; changed?: string;
 }
@@ -24,7 +24,9 @@ export interface DocumentSpec {
   kind: 'document';
   variables: VariableSpec[];
   epochs: EpochSpec[];
-  repeats: { id: string; first: string; last: string; count: string }[];
+  repeats: Repeat[];
+  /** The epochs of one trial by id, in order, as the service's `epoch_instances` lists them; the epochs when none repeat. */
+  instances?: string[];
   signals: SignalSpec[];
   duration: number;
   stepSeconds: number;
@@ -39,7 +41,7 @@ export interface TaskFixture {
   problem?: string;
   spec: DocumentSpec | PythonSpec;
   /** Trials sampled under `seed`. */
-  sample?(seed: number, count: number): SampledTrial[];
+  sample?(seed: number, count: number): TrialRecord[];
 }
 
 export interface PythonSpec {
@@ -108,19 +110,16 @@ function boundsOf(epoch: EpochSpec, step: number): EpochBounds {
   return { ...base, ends: 'length', least: fixed, nominal: fixed, greatest: fixed };
 }
 
+/** The epochs of one trial by id, in order. */
+export const instancesOf = (spec: DocumentSpec) =>
+  spec.instances?.filter((id) => spec.epochs.some((epoch) => epoch.id === id)) ?? spec.epochs.map(({ id }) => id);
+
 /** Each epoch's bounds; Rest's are what the others leave of the trial, a repeated epoch counted at each repetition. */
 export function epochBounds(spec: DocumentSpec): EpochBounds[] {
   const bounds = spec.epochs.map((epoch) => boundsOf(epoch, spec.stepSeconds));
-  const times = (index: number) => {
-    const repeat = spec.repeats.find(({ first, last }) => {
-      const a = spec.epochs.findIndex(({ id }) => id === first);
-      const b = spec.epochs.findIndex(({ id }) => id === last);
-      return index >= a && index <= b;
-    });
-    return repeat ? Number(repeat.count) || 1 : 1;
-  };
-  const sum = (key: 'least' | 'nominal' | 'greatest') => bounds.reduce((total, epoch, index) =>
-    epoch.ends === 'rest' ? total : total + epoch[key] * times(index), 0);
+  const instances = instancesOf(spec).map((id) => bounds.find((epoch) => epoch.id === id)!);
+  const sum = (key: 'least' | 'nominal' | 'greatest') => instances.reduce((total, epoch) =>
+    epoch.ends === 'rest' ? total : total + epoch[key], 0);
   return bounds.map((epoch) => epoch.ends === 'rest' ? {
     ...epoch,
     least: Math.max(0, spec.duration - sum('greatest')),
@@ -129,13 +128,21 @@ export function epochBounds(spec: DocumentSpec): EpochBounds[] {
   } : epoch);
 }
 
+/** A count's text, as the service prints an integer or a name. */
+const countText = (count: Expression, spec: DocumentSpec) => count.kind === 'name'
+  ? spec.variables.find(({ id }) => id === count.reference)?.name ?? count.reference
+  : count.kind === 'literal' ? String(count.value) : '';
+
 /** Change callback by field id. */
 export type Write = (id: string, text: string) => void;
 
 const level = (variable: VariableSpec): ScopedValue['level'] => variable.level === 'step' ? 2 : 1;
 
 function names(spec: DocumentSpec): ScopedValue[] {
-  return spec.variables.map((variable) => ({ id: variable.id, name: variable.name, type: { base: 'real' }, level: level(variable) }));
+  return spec.variables.map((variable) => ({
+    id: variable.id, name: variable.name, type: { base: 'real' }, level: level(variable),
+    list_count: variable.count?.kind === 'literal' ? variable.count.value as number : undefined,
+  }));
 }
 
 const draws = /^U\(\s*(-?\d*\.?\d+)[^,]*,\s*(-?\d*\.?\d+)[^)]*\)$/;
@@ -191,7 +198,9 @@ export function documentView(spec: DocumentSpec, texts: Readonly<Record<string, 
     : { from: { kind: 'base', document: spec.base ?? '' }, reset: async () => undefined };
   const bounds = epochBounds({ ...spec, epochs: spec.epochs.map((epoch) => ({ ...epoch, end: text(`end:${epoch.id}`, epoch.end) })) });
   const variables: TaskVariable[] = spec.variables.map((variable) => ({
-    id: variable.id, name: variable.name, type: variable.type, valueType: types[variable.type], count: variable.count,
+    id: variable.id, name: variable.name, type: variable.type, valueType: types[variable.type],
+    count: variable.count && textField({ id: `count:${variable.id}`, label: 'Count', text: text(`count:${variable.id}`,
+      countText(variable.count, spec)), kinds: ['value', 'link'], write, scope, finest: 0 }),
     level: variable.level ?? 'trial',
     typeChoice: rawField({ id: `type:${variable.id}`, label: 'Type', value: variable.type, change: () => undefined,
       type: { kind: 'choice', options: Object.keys(types).map((type) => ({ value: type, label: type })) } }),
@@ -217,8 +226,9 @@ export function documentView(spec: DocumentSpec, texts: Readonly<Record<string, 
   }));
   return {
     kind: 'document', variables, epochs, signals, duration: spec.duration, stepSeconds: spec.stepSeconds,
-    repeats: spec.repeats.map((repeat) => ({ ...repeat, count: textField({
-      id: `repeat:${repeat.id}`, label: 'Count', text: text(`repeat:${repeat.id}`, repeat.count), kinds: ['value'], write, scope, finest: 0,
+    repeats: spec.repeats.map((repeat) => ({ id: repeat.id, first: repeat.first_epoch, last: repeat.last_epoch, count: textField({
+      id: `repeat:${repeat.id}`, label: 'Count', text: text(`repeat:${repeat.id}`, countText(repeat.count, spec)), kinds: ['value', 'link'],
+      write, scope, finest: 0,
     }) })),
   };
 }
@@ -255,7 +265,32 @@ function random(seed: number) {
   };
 }
 
-const point = (value: readonly number[]) => `(${value.map((part) => part.toFixed(3)).join(', ')})`;
+/** An epoch instance of a fixture trial, in seconds. */
+interface EpochInterval { id: string; name: string; start: number; end: number }
+
+/** A fixture trial before it is written as the record the sampling route returns; signals and variables by name. */
+interface Drawn {
+  intervals: EpochInterval[];
+  variables: Record<string, JsonValue>;
+  signals: Record<string, SignalSteps>;
+}
+
+/** `drawn` as the record the sampling route returns, its times in steps of `step` seconds. */
+function asRecord(drawn: Drawn, step: number, index: number): TrialRecord {
+  const at = (seconds: number) => Math.round(seconds / step);
+  return {
+    id: `trial:${index}`, inits: {}, variable_defined: {}, variables: drawn.variables,
+    timeline: drawn.intervals.map(({ id, name, start, end }) => ({ epoch: id, label: name, start: at(start), end: at(end), outcome: 0 })),
+    inputs: Object.fromEntries(Object.entries(drawn.signals).map(([name, steps]) => {
+      const absent = Array<number>(steps.find(Boolean)?.length ?? 1).fill(0);
+      return [name, steps.map((value) => [...value ?? absent])];
+    })),
+    present: Object.fromEntries(Object.entries(drawn.signals).map(([name, steps]) => [name, steps.map((value) => value !== null)])),
+  };
+}
+
+const recorded = (generate: (seed: number, count: number) => Drawn[], step: number) =>
+  (seed: number, count: number) => generate(seed, count).map((drawn, index) => asRecord(drawn, step, index));
 
 /** Steps of `count` with each epoch interval's value, absent outside the intervals `present` covers. */
 function fill(steps: number, step: number, intervals: readonly EpochInterval[],
@@ -267,7 +302,7 @@ function fill(steps: number, step: number, intervals: readonly EpochInterval[],
   return out;
 }
 
-function delayedTrials(seed: number, count: number): SampledTrial[] {
+function delayedTrials(seed: number, count: number): Drawn[] {
   const next = random(seed);
   const step = 0.01;
   return Array.from({ length: count }, () => {
@@ -285,7 +320,7 @@ function delayedTrials(seed: number, count: number): SampledTrial[] {
     const pick = (interval: EpochInterval, early: readonly number[], late: readonly number[]) => interval.id === 'move' ? late : early;
     return {
       intervals,
-      variables: { start: point(start), target: point(target), catch: String(catchTrial) },
+      variables: { start, target, catch: catchTrial },
       signals: {
         target_pos: fill(80, step, intervals, (interval) => at('hold')(interval) ? null : target),
         target_vel: fill(80, step, intervals, (interval) => at('hold')(interval) ? null : [0, 0]),
@@ -297,7 +332,7 @@ function delayedTrials(seed: number, count: number): SampledTrial[] {
   });
 }
 
-function threeReachTrials(seed: number, count: number): SampledTrial[] {
+function threeReachTrials(seed: number, count: number): Drawn[] {
   const next = random(seed);
   const step = 0.01;
   return Array.from({ length: count }, () => {
@@ -318,10 +353,7 @@ function threeReachTrials(seed: number, count: number): SampledTrial[] {
     const reach = (index: number) => Math.floor((index - 1) / 2);
     return {
       intervals,
-      variables: {
-        start: point(start), reach: '0.15', angles: angles.map((angle) => `${angle.toFixed(0)}°`).join(', '),
-        targets: targets.map(point).join(' '), at_target: '', jitter: '',
-      },
+      variables: { start, reach: 0.15, angles, targets },
       signals: {
         target: fill(400, step, intervals, (interval, index) => interval.id === 'move' || interval.id === 'hold' ? targets[reach(index)] : null),
         go: fill(400, step, intervals, (interval) => [interval.id === 'move' || interval.id === 'hold' ? 1 : 0]),
@@ -331,12 +363,12 @@ function threeReachTrials(seed: number, count: number): SampledTrial[] {
   });
 }
 
-function stabilizationTrials(seed: number, count: number): SampledTrial[] {
+function stabilizationTrials(seed: number, count: number): Drawn[] {
   const next = random(seed);
   return Array.from({ length: count }, () => {
     const start = [-0.1 + next() * 0.2, -0.1 + next() * 0.2];
     const intervals = [{ id: 'hold', name: 'hold', start: 0, end: 1 }];
-    return { intervals, variables: { start: point(start) }, signals: { goal: fill(100, 0.01, intervals, () => start) } };
+    return { intervals, variables: { start }, signals: { goal: fill(100, 0.01, intervals, () => start) } };
   });
 }
 
@@ -346,39 +378,44 @@ function quantile(sorted: readonly number[], q: number) {
   return sorted[low] + (sorted[Math.min(low + 1, sorted.length - 1)] - sorted[low]) * (position - low);
 }
 
-/** The aggregate of `trials`, as the sampling route returns it for a batch. */
-export function aggregate(trials: readonly SampledTrial[], steps: number, step: number, epochs: readonly { id: string; name: string }[],
-  variables: readonly string[]): TrialBatch {
-  const signals: Record<string, SignalAggregate> = {};
-  for (const signal of Object.keys(trials[0].signals)) {
+const numbers = (value: unknown): number[] => Array.isArray(value) ? value.flatMap(numbers)
+  : typeof value === 'boolean' ? [Number(value)] : typeof value === 'number' ? [value] : [];
+
+/** The least or greatest of `values` component by component, in the values' own shape. */
+function extreme(values: readonly JsonValue[], pick: (a: number, b: number) => number): JsonValue {
+  const [first] = values;
+  if (Array.isArray(first)) return first.map((_, index) => extreme(values.map((value) => (value as JsonValue[])[index]), pick));
+  if (typeof first === 'boolean') return values.map(Boolean).reduce((a, b) => Boolean(pick(Number(a), Number(b))));
+  return (values as number[]).reduce(pick);
+}
+
+/** The aggregate of `records`, as the sampling route returns it for a batch. */
+export function aggregate(records: readonly TrialRecord[], steps: number, epochs: readonly { id: string; name: string }[]): TrialAggregate {
+  const signals: TrialAggregate['signals'] = {};
+  for (const signal of Object.keys(records[0].inputs)) {
     const presence: number[] = [];
-    const percentiles: (Percentiles[] | null)[] = [];
+    const percentiles: (number[][] | null)[] = [];
     for (let at = 0; at < steps; at += 1) {
-      const present = trials.map((trial) => trial.signals[signal][at]).filter((value): value is readonly number[] => !!value);
-      presence.push(present.length / trials.length);
+      const present = records.filter((record) => (record.present[signal] as boolean[])[at])
+        .map((record) => numbers((record.inputs[signal] as JsonValue[])[at]));
+      presence.push(present.length / records.length);
       percentiles.push(present.length ? present[0].map((_, component) => {
         const sorted = present.map((value) => value[component]).sort((a, b) => a - b);
-        return [0.05, 0.25, 0.5, 0.75, 0.95].map((q) => quantile(sorted, q)) as unknown as Percentiles;
+        return [0.05, 0.25, 0.5, 0.75, 0.95].map((q) => quantile(sorted, q));
       }) : null);
     }
     signals[signal] = { presence, percentiles };
   }
-  const range = (id: string) => {
-    const texts = trials.map((trial) => trial.variables[id]).filter(Boolean);
-    if (!texts.length) return '';
-    const numbers = texts.map((text) => [...text.matchAll(/-?\d+\.?\d*/g)].map(Number));
-    if (numbers[0].length === 0) return [...new Set(texts)].join(', ');
-    return numbers[0].map((_, index) => {
-      const column = numbers.map((values) => values[index]);
-      return `${Math.min(...column).toFixed(2)}…${Math.max(...column).toFixed(2)}`;
-    }).join(', ');
-  };
+  const variables = Object.keys(records[0].variables);
   return {
-    count: trials.length,
-    epochs: epochs.map(({ id, name }) => ({ id, name, share: Array.from({ length: steps }, (_, at) =>
-      trials.filter((trial) => trial.intervals.some((interval) => interval.id === id &&
-        at >= Math.round(interval.start / step) && at < Math.round(interval.end / step))).length / trials.length) })),
-    variables: Object.fromEntries(variables.map((id) => [id, range(id)])),
+    kind: 'aggregate',
+    epochs: epochs.map(({ id, name }) => ({ epoch: id, label: name, share: Array.from({ length: steps }, (_, at) =>
+      records.filter((record) => record.timeline.some(({ epoch, start, end }) => epoch === id && at >= start && at < end)).length
+        / records.length) })),
+    variables: Object.fromEntries(variables.map((name) => {
+      const values = records.map((record) => record.variables[name]);
+      return [name, { least: extreme(values, Math.min), greatest: extreme(values, Math.max) }];
+    })),
     signals,
   };
 }
@@ -415,8 +452,8 @@ const threeReaches: DocumentSpec = {
   variables: [
     { id: 'start', name: 'start', type: 'Point', text: 'U(disk(0, 0.05))' },
     { id: 'reach', name: 'reach', type: 'Distance', text: '0.1, 0.15, 0.2' },
-    { id: 'angles', name: 'angles', type: 'Number', count: 3, text: 'U(0°, 360°)' },
-    { id: 'targets', name: 'targets', type: 'Point', count: 3, text: 'start + polar(reach, angles)' },
+    { id: 'angles', name: 'angles', type: 'Number', count: { kind: 'literal', value: 3 }, text: 'U(0°, 360°)' },
+    { id: 'targets', name: 'targets', type: 'Point', count: { kind: 'literal', value: 3 }, text: 'start + polar(reach, angles)' },
     { id: 'at_target', name: 'at_target', type: 'Boolean', level: 'step', text: 'held(dist(hand, targets[i]) < 0.02, 0.2 s)' },
     { id: 'jitter', name: 'jitter', type: 'Duration', text: '0.1 * scale', reason: 'No variable is named scale',
       span: { start: 6, end: 11 } },
@@ -427,7 +464,8 @@ const threeReaches: DocumentSpec = {
     { id: 'hold', name: 'hold', end: '0.2 s' },
     { id: 'rest', name: 'rest', end: 'rest' },
   ],
-  repeats: [{ id: 'reaches', first: 'move', last: 'hold', count: '3' }],
+  repeats: [{ id: 'reaches', first_epoch: 'move', last_epoch: 'hold', count: { kind: 'literal', value: 3 } }],
+  instances: ['fixate', 'move', 'hold', 'move', 'hold', 'move', 'hold', 'rest'],
   signals: [
     { id: 'target', name: 'target', type: 'Point', cells: [
       { first: 'fixate', last: 'fixate', text: null }, { first: 'move', last: 'hold', text: 'targets[i]' },
@@ -448,9 +486,9 @@ const stabilization: DocumentSpec = {
 };
 
 export const fixtures: TaskFixture[] = [
-  { key: 'delayed-reaches', name: 'Delayed reaches', spec: delayedReaches, sample: delayedTrials },
-  { key: 'three-reaches', name: 'Three reaches', spec: threeReaches, sample: threeReachTrials },
-  { key: 'stabilization', name: 'Stabilization', spec: stabilization, sample: stabilizationTrials,
+  { key: 'delayed-reaches', name: 'Delayed reaches', spec: delayedReaches, sample: recorded(delayedTrials, 0.01) },
+  { key: 'three-reaches', name: 'Three reaches', spec: threeReaches, sample: recorded(threeReachTrials, 0.01) },
+  { key: 'stabilization', name: 'Stabilization', spec: stabilization, sample: recorded(stabilizationTrials, 0.01),
     problem: 'Leaves the model input target_pos unfed' },
   { key: 'perturbed-reaches', name: 'Perturbed reaches', python: true, spec: {
     kind: 'python', values: { n_reaches: 8, field: 'curl', field_scale: 12, catch: true },

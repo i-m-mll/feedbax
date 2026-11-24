@@ -9,7 +9,7 @@ from pydantic import Field, model_validator
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.project import (
     DifferenceNotApplied, Differences, Document, Payload, Project, RemoveDocumentValue,
-    SetDocumentValue, apply_differences, check_disjoint, json_pointer_parts,
+    SetDocumentValue, apply_differences, check_disjoint, json_pointer_parts, member_display_name,
 )
 from feedbax.contracts.project_inputs import ProjectName, StepReference
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document, compose_step
@@ -35,7 +35,7 @@ class SetEntry(StrictModel):
 
 
 class SetDocument(StrictModel):
-    entries: dict[ProjectName, SetEntry] = Field(min_length=1)
+    entries: dict[ProjectName, SetEntry]
 
 
 class SetMisfit(ValueError):
@@ -88,7 +88,6 @@ def axis_from_set(
     document: SetDocument, model: str, payload: Payload, where: AxisCondition | None = None,
 ) -> NamedAxis:
     """The inline axis of patches into ``model``'s payload that applies each entry's differences to ``payload``."""
-    check_fit(document, payload)
     values = {}
     for key, entry in document.entries.items():
         patches = {
@@ -123,11 +122,22 @@ def set_from_axis(axis: NamedAxis, model: str) -> SetDocument:
 def read_set(read_document: Callable[[str], Document | None], name: str) -> SetDocument:
     """The composed Set document ``name``; raises ValueError when it is missing or not a Set."""
     composed = compose_document(read_document, name)
-    if isinstance(composed, ProjectDiagnostic):
-        raise ValueError(f"set {name!r}: {composed.detail}")
-    if composed.schema_id != SET_DOCUMENT_SCHEMA_ID:
-        raise ValueError(f"{name!r} is not a Set document")
+    if isinstance(composed, ProjectDiagnostic) or composed.schema_id != SET_DOCUMENT_SCHEMA_ID:
+        document = read_document(name)
+        label = member_display_name(name, document.label if document is not None else None)
+        if isinstance(composed, ProjectDiagnostic):
+            raise ValueError(f"Set {label}: {composed.detail}")
+        raise ValueError(f"{label} is not a Set document")
     return SetDocument.model_validate(composed.payload)
+
+
+class SetProblem(SweepExpansionError):
+    """A Set axis blocked by content at an authored location in the Set."""
+
+    def __init__(self, document: str, location: tuple[str, ...], path: str, detail: str):
+        super().__init__(SweepExpansionCode.INVALID_SET, f"{path}.set", detail)
+        self.document = document
+        self.location = location
 
 
 def resolve_set_axes(
@@ -144,13 +154,16 @@ def resolve_set_axes(
         path = f"sweep.axes.{name}"
         try:
             document = read_set(read_document, axis.set)
+            if not document.entries and not axis.optional:
+                raise SetProblem(axis.set, ("entries",), path, "A required Set has no entries.")
             if model is None:
                 raise ValueError("the step reads no Model document")
-            resolved[name] = axis_from_set(document, *model, axis.where)
+            check_fit(document, model[1])
+            resolved[name] = axis_from_set(document, *model, axis.where).model_copy(update={"optional": axis.optional})
+        except SetProblem:
+            raise
         except SetMisfit as error:
-            raise SweepExpansionError(
-                SweepExpansionCode.INVALID_SET, f"{path}.set", f"set {axis.set!r}, {error}",
-            ) from error
+            raise SetProblem(axis.set, ("entries", error.entry, "differences", error.path), path, str(error)) from error
         except ValueError as error:
             raise SweepExpansionError(SweepExpansionCode.INVALID_SET, f"{path}.set", str(error)) from error
     return resolved
@@ -185,18 +198,7 @@ def model_slot(
 
 
 def sets_offered(project: Project, step: str) -> tuple[str, ...]:
-    """The Set documents whose every entry applies to the step's Model, by name."""
-    model = step_model(project, step)
-    if model is None:
+    """The existing Sets an addressable Train or Evaluate sweep may reference."""
+    if project.steps[step].kind not in ("train", "evaluate"):
         return ()
-    offered = []
-    for name, document in project.documents.items():
-        if document.schema_id != SET_DOCUMENT_SCHEMA_ID:
-            continue
-        try:
-            check_fit(read_set(project.documents.get, name), model[1])
-        except ValueError:
-            continue
-        offered.append(name)
-    return tuple(sorted(offered))
-
+    return tuple(sorted(name for name, document in project.documents.items() if document.schema_id == SET_DOCUMENT_SCHEMA_ID))

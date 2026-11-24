@@ -102,13 +102,15 @@ export async function enter(field: Locator, value: string) {
   await field.press('Enter');
 }
 
-export async function authorLearningRateSweep(rate: Locator) {
+/** Sweeps the learning rate over three values; `store` is the Apply To choice when another run reads the step. */
+export async function authorLearningRateSweep(rate: Locator, store?: string) {
   const page = rate.page();
   await activate(page, rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true }));
-  await activateMenuItem(page, page.getByRole('menuitem', { name: 'Sweep', exact: true }));
+  await activateMenuItem(page, page.getByRole('menuitemradio', { name: 'Sweep', exact: true }));
   const text = rate.getByRole('textbox', { name: 'Learning Rate Value', exact: true });
   await expect(text).toBeFocused();
   await expect(text).toHaveValue('0.001');
   await number(page, text, '0.001, 0.002, 0.003');
+  if (store) await activateMenuItem(page, page.getByRole('menu', { name: 'Apply To', exact: true }).getByRole('menuitem', { name: store, exact: true }));
   for (const value of ['0.001', '0.002', '0.003']) await expect(rate.getByText(value, { exact: true })).toBeVisible();
 }

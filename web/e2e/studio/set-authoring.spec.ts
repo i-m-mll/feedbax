@@ -2,7 +2,7 @@ import { expect, test } from './fixtures/studio';
 import { type Locator, type Page } from '@playwright/test';
 import type { StudioJobSnapshot, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { chooseSweepValue, enter, mapStep, runProjectFixture, sweepLabel } from './fixtures/canonicalTrain';
-import { outlineRow, placeFromLibrary } from './fixtures/controls';
+import { applyTo, modelEdit, outlineRow, placeFromLibrary } from './fixtures/controls';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -58,8 +58,10 @@ test('authors a set across runs: Duplicate Run, Save Set, a set as a sweep, Inli
       .filter(({ status }) => status === 'failed').map(({ kind, reason }) => ({ kind, reason }));
     expect(failed).toEqual([]);
   }
-  async function modelEdit(action: () => Promise<unknown>, selection: { axes: Record<string, string[]>; chosen_steps?: string[] }) {
-    const [edited] = await Promise.all([mutation('POST', `${path}/model/edit`), action()]);
+  async function editModel(
+    action: () => Promise<unknown>, selection: { axes: Record<string, string[]>; chosen_steps?: string[] }, store?: string,
+  ) {
+    const edited = await modelEdit(page, path, action, store);
     expect(edited.ok(), await edited.text()).toBe(true);
     expect(edited.request().postDataJSON()).toMatchObject(selection);
     const { result } = await edited.json() as { result: { status: string; problem?: { detail: string } } };
@@ -95,11 +97,11 @@ test('authors a set across runs: Duplicate Run, Save Set, a set as a sweep, Inli
   await saved();
   await tab(page, 'Model').click();
   await expect(model.locator('.react-flow__node[data-id="plant"]')).toBeVisible();
-  await modelEdit(() => placeFromLibrary(page, 'GRU'), { axes: { run: ['run-2'] } });
+  await editModel(() => placeFromLibrary(page, 'GRU'), { axes: { run: ['run-2'] } });
   const gru = model.locator('.react-flow__node').filter({ hasText: 'GRU' }).first();
   await expect(gru).toHaveClass(/\bdraggable\b/);
   const handle = (direction: 'input' | 'output') => gru.locator(`[data-handleid="${direction}:hidden"]`);
-  await modelEdit(async () => {
+  await editModel(async () => {
     await handle('output').hover();
     await page.mouse.down();
     await handle('input').hover();
@@ -113,7 +115,7 @@ test('authors a set across runs: Duplicate Run, Save Set, a set as a sweep, Inli
   await saved();
   await outlineRow(page, 'Wrapper.Force → Plant.force').click();
   await inspector.getByRole('button', { name: 'Add Attachment', exact: true }).click();
-  await modelEdit(() => page.getByRole('menuitem', { name: 'Add Intervention', exact: true }).click(), { axes: { run: ['run-3'] } });
+  await editModel(() => page.getByRole('menuitem', { name: 'Add Intervention', exact: true }).click(), { axes: { run: ['run-3'] } });
 
   // And once more: a field.
   await chooseOriginals('pair', 'run');
@@ -121,7 +123,7 @@ test('authors a set across runs: Duplicate Run, Save Set, a set as a sweep, Inli
   await expect(marks('pair')).toHaveCount(8);
   await saved();
   await outlineRow(page, 'Plant').click();
-  await modelEdit(() => enter(inspector.getByRole('textbox', { name: 'Mass', exact: true }), '3'), { axes: { run: ['run-4'] } });
+  await editModel(() => enter(inspector.getByRole('textbox', { name: 'Mass', exact: true }), '3'), { axes: { run: ['run-4'] } });
 
   const edited = await evaluations('pair');
   expect(Object.keys(edited)).toHaveLength(8);
@@ -166,17 +168,28 @@ test('authors a set across runs: Duplicate Run, Save Set, a set as a sweep, Inli
   await tab(page, 'Model').click();
   await mapStep(page, 'pair').click({ modifiers: ['Shift'] });
   await outlineRow(page, 'Plant').click();
-  await modelEdit(() => enter(inspector.getByRole('textbox', { name: 'Mass', exact: true }), '4'), {
-    chosen_steps: ['other'], axes: { set: ['run-4'] },
-  });
+  // The edit reaches the Evaluate card's runs too, so it asks where it applies; Escape stores nothing.
+  const mass = inspector.getByRole('textbox', { name: 'Mass', exact: true });
+  const unasked = (await snapshot()).revision;
+  await enter(mass, '4');
+  await expect(applyTo(page)).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(applyTo(page)).toBeHidden();
+  expect((await snapshot()).revision).toBe(unasked);
+  // Selected Readers names the Train card only, and it alone reads the changed entry.
+  await editModel(async () => {
+    await enter(mass, '4');
+    await expect(applyTo(page).getByRole('menuitem', { name: 'Selected Readers', exact: true }))
+      .toHaveAccessibleDescription('other');
+  }, { chosen_steps: ['other'], axes: { set: ['run-4'] } }, 'Selected Readers');
   const narrowed = (await snapshot()).project;
   expect(narrowed.documents!['set-2']).toMatchObject({ base: { document: 'set' } });
   expect(narrowed.steps!.other.sweep!.axes!.set).toEqual({ set: 'set-2' });
   expect(narrowed.steps!.pair.sweep!.axes!.run).toEqual({ set: 'set', optional: true });
   await sweepLabel(card('other'), 'set-2').click();
   const listed = page.getByRole('menuitemradio');
-  await expect(listed).toHaveText(['set', 'set-2']);
-  await expect(page.getByRole('menuitemradio', { name: 'set-2', exact: true })).toHaveAttribute('aria-checked', 'true');
+  await expect(listed).toHaveText(['set', 'set 2']);
+  await expect(page.getByRole('menuitemradio', { name: 'set 2', exact: true })).toHaveAttribute('aria-checked', 'true');
   await page.keyboard.press('Escape');
 
   // Inline Set returns the Evaluate card to an inline axis, and no run is out of date.
@@ -186,4 +199,45 @@ test('authors a set across runs: Duplicate Run, Save Set, a set as a sweep, Inli
   await saved();
   expect((await snapshot()).project.steps!.pair.sweep!.axes!.run).toMatchObject({ optional: true, values: expect.any(Object) });
   expect(await evaluations('pair')).toEqual(edited);
+});
+
+test('a required Set keeps its axis when its last entry is removed, marked until an entry is added', async ({ page, request, studio }) => {
+  const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.set_authoring', 'seed_entries', studio.home, 'entries'));
+  const card = page.locator('[data-map-step="train"]');
+  const marks = card.locator('.studio-map-run-mark');
+  const label = () => sweepLabel(card, 'set');
+  // The label's own description, not its accessible one, which a hover tip it showed last can still supply.
+  const empty = 'A required Set has no entries.';
+  async function entries() {
+    const response = await request.get('/api/projects/' + project);
+    expect(response.ok(), await response.text()).toBe(true);
+    return Object.keys(((await response.json() as StudioProjectSnapshot).project.documents!.set as { payload: { entries: object } })
+      .payload.entries).sort();
+  }
+  async function removeEntry(entry: string) {
+    await label().click();
+    await page.getByRole('menuitem', { name: 'Remove Entry', exact: true }).hover();
+    await page.getByRole('menu', { name: 'Remove Entry', exact: true }).getByRole('menuitem', { name: entry, exact: true }).click();
+    await expect(page.getByText('Edited', { exact: true })).toBeHidden();
+  }
+
+  await page.goto('/?project=' + encodeURIComponent(project), { waitUntil: 'domcontentloaded' });
+  await expect(marks).toHaveCount(2);
+  await removeEntry('light');
+  await expect(marks).toHaveCount(1);
+  await expect(label()).not.toHaveAttribute('aria-description');
+
+  // The last entry goes too: the Set is stored empty, and its axis stays on the card with the Problem, after a reload.
+  await removeEntry('heavy');
+  await expect(marks).toHaveCount(0);
+  expect(await entries()).toEqual([]);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await expect(label()).toHaveAttribute('aria-description', empty);
+
+  // Add Entry, offered on the empty Set's axis, repairs it.
+  await label().click();
+  await page.getByRole('menuitem', { name: 'Add Entry', exact: true }).click();
+  await expect(marks).toHaveCount(1);
+  await expect(label()).not.toHaveAttribute('aria-description');
+  expect(await entries()).toHaveLength(1);
 });

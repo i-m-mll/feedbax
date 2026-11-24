@@ -5,11 +5,13 @@ from __future__ import annotations
 from functools import cache
 
 from feedbax.component_registry import ComponentRegistry
+from feedbax.component_registry.declarations import DeclaredComponent
+from feedbax.compiler.graph_schema import _component_port_dimension
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.component import derive_dynamic_port_count, derive_dynamic_port_layout
-from feedbax.contracts.model_document import SignalType
+from feedbax.contracts.model_document import ModelDocument, SignalType
 from feedbax.contracts.strict_json import strict_json_loads
-from feedbax.compiler.model_edit import Direction, Port, Record
+from feedbax.compiler.model_edit import Direction, Port, Record, model_graph_problems
 
 
 class ModelRegistryPorts:
@@ -17,24 +19,40 @@ class ModelRegistryPorts:
         self.registry = registry
         self._layout = cache(self._derive_layout)
 
-    def accepts(self, component: Record, domain: str | None) -> bool:
-        if component["kind"] == "composite":
-            nested = component["interior"]["physical_domain"]
-            return domain is None or domain == nested
+    def _leaf(self, component: Record) -> DeclaredComponent | str:
         declaration = self.registry.get(component["type"])
         if declaration is None or declaration.is_composite:
-            return False
+            return f"unknown leaf type {component['type']!r}"
+        return declaration
+
+    def registration_problem(self, component: Record, _domain: str | None) -> str | None:
+        if component["kind"] == "leaf" and isinstance(declaration := self._leaf(component), str):
+            return declaration
+        return None
+
+    def placement_problem(self, component: Record, domain: str | None) -> str | None:
+        unavailable = "Component is unavailable in this interior"
+        if component["kind"] == "composite":
+            nested = component["interior"]["physical_domain"]
+            return None if domain is None or domain == nested else unavailable
+        declaration = self._leaf(component)
+        if isinstance(declaration, str):
+            return declaration
         if component.get("revision") not in (None, declaration.revision):
-            return False
+            return unavailable
         if domain is None:
-            return declaration.domain == "feedbax.domain.causal"
-        return declaration.domain == "feedbax.domain.acausal" or (
+            return None if declaration.domain == "feedbax.domain.causal" else unavailable
+        allowed = declaration.domain == "feedbax.domain.acausal" or (
             domain in {"planar_multibody", "spatial_multibody"}
             and declaration.domain == "feedbax.domain.mechanics"
         )
+        return None if allowed else unavailable
 
     def port(self, component: Record, direction: Direction, port: str) -> Port | None:
         return self.layout(component).get((direction, port))
+
+    def problems(self, document: ModelDocument):
+        return model_graph_problems(document, ports=self.port, component_problem=self.placement_problem)
 
     def layout(self, component: Record) -> dict[tuple[Direction, str], Port]:
         return self._layout(
@@ -88,13 +106,16 @@ class ModelRegistryPorts:
             for port in ports:
                 spec = type_map.get(port)
                 if spec and spec.kind == "conserving":
-                    if spec.physical_domain:
-                        result["physical", port] = Port(spec.physical_domain)
+                    result["physical", port] = Port(spec.physical_domain)
                     continue
+                dimension = _component_port_dimension(
+                    component_type=type_id, node_params=params, port=port, direction=direction,
+                )
+                shape = dimension["shape"] if dimension is not None else spec.shape if spec else None
                 result[direction, port] = Port(
                     SignalType(
                         base=spec.dtype if spec else None,
-                        shape=tuple(spec.shape) if spec and spec.shape is not None else None,
+                        shape=tuple(shape) if shape is not None else None,
                     ),
                     reads_state_only=direction == "output" and port in declaration.compiler.state_only_outputs,
                 )

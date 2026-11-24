@@ -20,8 +20,11 @@ function themedLayout(layout: Fields | undefined): Fields {
   const axis = (key: string) => ({
     ...(base[key] as Fields | undefined), color: muted, gridcolor: divider, linecolor: divider, zerolinecolor: divider,
   });
+  const { width: _width, height: _height, title: _title, annotations: _annotations, ...sized } = layout ?? {};
   return {
-    ...layout,
+    ...sized,
+    autosize: true,
+    legend: { ...(sized.legend as Fields | undefined), orientation: 'h', x: 0, xanchor: 'left', y: -0.2, yanchor: 'top' },
     template: {
       ...template,
       layout: {
@@ -78,8 +81,8 @@ function SavedPlot({ url, name }: { url: string; name: string }) {
       if (figure.error) void figure.refetch();
     } }
     : figure.data ? { kind: 'result', missing: [] } : { kind: 'loading' };
-  return <StudioRegion state={state} skeleton={<div className="min-h-64 rounded bg-shell-subtle motion-safe:animate-pulse" />}>
-    <div ref={target} role="img" aria-label={studioAccessibleName('figure', name)} className="min-h-64 w-full" aria-busy={!ready || undefined} />
+  return <StudioRegion state={state} skeleton={<div className="h-[min(70vh,36rem)] min-h-80 rounded bg-shell-subtle motion-safe:animate-pulse" />}>
+    <div ref={target} role="img" aria-label={studioAccessibleName('figure', name)} className="h-[min(70vh,36rem)] min-h-80 w-full" aria-busy={!ready || undefined} />
   </StudioRegion>;
 }
 

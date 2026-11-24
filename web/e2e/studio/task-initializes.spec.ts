@@ -5,7 +5,7 @@ import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonica
 test.use({ viewport: { width: 1440, height: 900 } });
 
 const position = JSON.stringify({ composites: [], element: {
-  kind: 'field', parent: { id: 'plant', kind: 'component' }, path: ['reset', 'effector', 'position'],
+  kind: 'field', parent: { id: 'plant', kind: 'component' }, path: ['state', 'effector/position'],
 } });
 
 // Catches a Model start the Model needs that no row shows or marks, a row whose name does not write the variable and
@@ -64,11 +64,31 @@ test('Initializes chooses the Model values a variable starts, and a start the Mo
   expect(await unset()).toEqual([]);
 
   await initializes('origin').click();
-  await page.getByRole('option', { name: positionName, exact: true }).click();
+  await page.keyboard.type('effector position');
+  await page.getByRole('option', { name: 'Point mass · effector · position', exact: true }).click();
   await expect.poll(links).toEqual([{ model_field: position, variable: 'start' }]);
   await page.keyboard.press('Escape');
   await expect(initializes('start')).toHaveAttribute('placeholder', '');
   await expect(initializes('origin')).toHaveAttribute('placeholder', positionName);
+});
+
+// Catches an Initializes list that is flat, offers a state whose unit the variable does not have, or whose type-ahead
+// finds a state only at the level the list is open on.
+test('Initializes opens on the Model\'s components and descends to the states a variable fits', async ({ page, request }) => {
+  const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Task', exact: true }).click();
+  const cell = page.getByRole('tabpanel', { name: 'Task', exact: true }).getByRole('combobox', { name: 'Initializes start', exact: true });
+  const list = page.getByRole('listbox');
+  await cell.click();
+  await expect(list.getByRole('option', { name: 'position', exact: true })).toHaveCount(0);
+  await list.getByRole('option', { name: 'Point mass', exact: true }).click();
+  await list.getByRole('option', { name: 'effector', exact: true }).click();
+  await expect(list.getByRole('option')).toHaveText(['Point mass · effector', 'position']);
+  await cell.fill('pos');
+  await expect(list.getByRole('option', { name: 'Point mass · effector · position', exact: true })).toContainText('Point mass · effector');
+  await expect(list.getByRole('option', { name: /velocity/ })).toHaveCount(0);
 });
 
 // Catches a link's problem named by a pointer or a document member no view shows, and a reveal that marks the Task as a

@@ -90,7 +90,7 @@ def test_bounded_train_and_evaluate_share_trial_objective(authored):
         functions,
         python_tasks=application_python_tasks(),
         objective=objective,
-        input_overrides={"reach_target": "target_pos"},
+        input_bindings={"task-input": "target_pos"},
         initialization_key=model_initialization_key(seed),
     )
     assert isinstance(paired, PreparedTrialExecution), paired
@@ -236,7 +236,7 @@ def test_trial_refusals_keep_the_model_address_for_each_step(authored, prepared_
         })
 
 
-def test_variant_model_field_edit_does_not_reach_inheriting_variants(tmp_path, authored):
+def test_variant_model_field_edit_asks_before_reaching_inheriting_variants(tmp_path, authored):
     from fastapi.testclient import TestClient
 
     from feedbax.web.app import create_app
@@ -256,8 +256,15 @@ def test_variant_model_field_edit_does_not_reach_inheriting_variants(tmp_path, a
             "address": owner | {"element": {"kind": "field", "parent": owner["element"], "path": ["fields", "mass"]}},
             "edit": {"kind": "text", "text": "2"},
         })
-    assert result.status_code == 422, result.text
-    assert "supplies inherited patches" in result.json()["detail"]
+    assert result.status_code == 200, result.text
+    body = result.json()
+    assert not body["files"] and not body["created"]
+    (store,) = body["store_choices"]
+    assert (store["kind"], store["steps"]) == ("variant", ["train"])
+    assert store["runs"] == [
+        {"variant": variant, "step": "train", "row": "default"}
+        for variant in ("compare", "follow")
+    ]
     assert folders.read("variant").revision == revision
 
 
@@ -398,7 +405,7 @@ def test_trial_preparation_distinguishes_effective_scientific_inputs(authored, p
     })
     task = "documents.task.payload.id"
     objective = "documents.objective.payload.terms.effort.weight.value"
-    binding = "steps.train.base.inline.trial_documents.input_overrides.reach_target"
+    binding = "steps.train.base.inline.trial_documents.input_bindings.task-input"
     raw["sweep"] = {"rows": {
         "base": {},
         "model": {"patches": {f"documents.reach-model.{mass.to_text()}": {"value": 2.0}}},
@@ -413,7 +420,7 @@ def test_trial_preparation_distinguishes_effective_scientific_inputs(authored, p
     assert {
         (
             model.interior.components["plant"].fields["mass"], task_source.id,
-            kwargs["objective"].terms[0].weight.value, kwargs["input_overrides"]["reach_target"],
+            kwargs["objective"].terms[0].weight.value, kwargs["input_bindings"]["task-input"],
         )
         for (model, task_source, *_), kwargs in prepared_trials
     } == {
@@ -478,7 +485,7 @@ def document_project(authored, *, evaluation=False):
                     "model": {"document": "reach-model"},
                     "task": {"document": "task"},
                     "objective": {"document": "objective"},
-                    "input_overrides": {"reach_target": "target_pos"},
+                    "input_bindings": {"task-input": "target_pos"},
                 },
                 "training_config": {"n_batches": 2, "batch_size": 4},
                 "method": "feedbax.supervised_gradient",

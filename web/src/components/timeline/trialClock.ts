@@ -4,30 +4,45 @@ import { createStore } from 'zustand/vanilla';
 import { studioFormat } from '@/components/activity/studioVocabulary';
 
 /**
- * A trial the clock can show: the task at its nominal values, the `index`-th trial sampled from the task without a
- * model, or the `index`-th trial the selected run recorded. Indices count from 0.
+ * Which trials the clock shows: the task at its nominal values, the samples drawn from the task with the clock's seed
+ * and count, or the trials the selected run recorded.
  */
-export type TrialEntry =
-  | { readonly kind: 'nominal' }
-  | { readonly kind: 'sample'; readonly index: number }
-  | { readonly kind: 'recorded'; readonly index: number };
+export type TrialSet = 'nominal' | 'samples' | 'recorded';
 
 /**
- * The clock's window state: the picked entry, the seed and count samples are drawn with, whether the shelf is open,
- * and whether it shows the picked trial alone or all the samples at once.
+ * How the clock shows its trials: one of them, or all of them at once. `index`, from 0, is the trial picked: the one
+ * shown, or the one drawn heavier among all.
  */
-export interface TrialClock {
-  readonly picked?: TrialEntry;
-  readonly seed: number;
-  readonly count: number;
-  readonly shelf: boolean;
-  readonly all: boolean;
+export interface TrialShowing {
+  readonly kind: 'one' | 'all';
+  readonly index: number;
 }
 
-export const defaultTrialClock: TrialClock = { seed: 0, count: 8, shelf: false, all: false };
+/** What the clock shows: which trials, and how. Every view that shows a trial draws this and keeps no pick of its own. */
+export interface TrialPick {
+  readonly trials: TrialSet;
+  readonly showing: TrialShowing;
+}
 
 /**
- * The entries that exist for the selection: whether it has a nominal trial, the most trials it can be sampled in (the
+ * The clock's window state: what was picked, the seed and count samples are drawn with, by view whether the shelf is
+ * open there, and whether drawn paths end at the playhead.
+ */
+export interface TrialClock {
+  readonly picked?: TrialPick;
+  readonly seed: number;
+  readonly count: number;
+  readonly shelf: Readonly<Record<string, boolean>>;
+  readonly trails: boolean;
+}
+
+export const defaultTrialClock: TrialClock = { seed: 0, count: 8, shelf: {}, trails: false };
+
+/** Whether the shelf is open in `view`: as the user left it there, else open in the Task view and closed elsewhere. */
+export const shelfOpen = (clock: TrialClock, view: string) => clock.shelf[view] ?? view === 'task';
+
+/**
+ * The trials that exist for the selection: whether it has a nominal trial, the most trials it can be sampled in (the
  * step's batch size; 0 when it cannot be sampled), and how many trials its run recorded.
  */
 export interface TrialOffer {
@@ -39,71 +54,86 @@ export interface TrialOffer {
 /** How many samples are drawn: the clock's count, up to the step's batch size. */
 export const sampleCount = (clock: TrialClock, offer: TrialOffer) => Math.min(clock.count, offer.samples);
 
-/** Whether all the samples are shown at once, which needs a task that can be sampled. */
-export const showsAll = (clock: TrialClock, offer: TrialOffer) => clock.all && offer.samples > 0;
+/** How many trials `trials` holds for `offer`. */
+export const setSize = (trials: TrialSet, clock: TrialClock, offer: TrialOffer) =>
+  trials === 'nominal' ? Number(offer.nominal) : trials === 'samples' ? sampleCount(clock, offer) : offer.recorded;
 
-const index = (value: unknown) => typeof value === 'number' && Number.isInteger(value) && value >= 0;
+/** Whether `trials` can be shown all at once: a set of more than one trial that has an aggregate. */
+export const aggregates = (trials: TrialSet) => trials !== 'nominal';
 
-function entryOf(value: unknown): TrialEntry | undefined {
+const whole = (value: unknown, least: number) => typeof value === 'number' && Number.isInteger(value) && value >= least;
+
+function pickOf(value: unknown): TrialPick | undefined {
   if (!value || typeof value !== 'object') return undefined;
-  const entry = value as { kind?: unknown; index?: unknown };
-  if (entry.kind === 'nominal') return { kind: 'nominal' };
-  if ((entry.kind === 'sample' || entry.kind === 'recorded') && index(entry.index)) {
-    return { kind: entry.kind, index: entry.index as number };
-  }
-  return undefined;
+  const { trials, showing } = value as { trials?: unknown; showing?: { kind?: unknown; index?: unknown } };
+  if (trials !== 'nominal' && trials !== 'samples' && trials !== 'recorded') return undefined;
+  const kind = showing?.kind;
+  if ((kind !== 'one' && kind !== 'all') || !whole(showing?.index, 0)) return undefined;
+  return { trials, showing: { kind, index: showing!.index as number } };
 }
 
 /** The clock's state as stored with the window's arrangement, or nothing when the stored value is not one. */
 export function trialClockOf(value: unknown): TrialClock | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const stored = value as Partial<Record<keyof TrialClock, unknown>>;
-  const count = typeof stored.count === 'number' && Number.isInteger(stored.count) && stored.count >= 1
-    ? stored.count : defaultTrialClock.count;
-  const picked = entryOf(stored.picked);
+  const picked = pickOf(stored.picked);
+  const shelf = stored.shelf && typeof stored.shelf === 'object'
+    ? Object.fromEntries(Object.entries(stored.shelf).filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean'))
+    : {};
   return {
     ...picked && { picked },
-    seed: typeof stored.seed === 'number' && Number.isInteger(stored.seed) ? stored.seed : defaultTrialClock.seed,
-    count,
-    shelf: stored.shelf === true,
-    all: stored.all === true,
+    seed: whole(stored.seed, Number.MIN_SAFE_INTEGER) ? stored.seed as number : defaultTrialClock.seed,
+    count: whole(stored.count, 1) ? stored.count as number : defaultTrialClock.count,
+    shelf,
+    trails: stored.trails === true,
   };
 }
 
-/** The entries the picker lists for `offer`, in order. */
-export function offeredEntries(offer: TrialOffer, count: number): TrialEntry[] {
-  return [
-    ...offer.nominal ? [{ kind: 'nominal' } as const] : [],
-    ...Array.from({ length: count }, (_, index) => ({ kind: 'sample', index }) as const),
-    ...Array.from({ length: offer.recorded }, (_, index) => ({ kind: 'recorded', index }) as const),
-  ];
+/** The single trials the picker lists for `offer`, in order. */
+export function offeredPicks(offer: TrialOffer, count: number): TrialPick[] {
+  const ones = (trials: TrialSet, length: number) =>
+    Array.from({ length }, (_, index): TrialPick => ({ trials, showing: { kind: 'one', index } }));
+  return [...ones('nominal', Number(offer.nominal)), ...ones('samples', count), ...ones('recorded', offer.recorded)];
 }
 
-const offered = (entry: TrialEntry, offer: TrialOffer, count: number) =>
-  entry.kind === 'nominal' ? offer.nominal : entry.kind === 'sample' ? entry.index < count : entry.index < offer.recorded;
+function offered({ trials, showing }: TrialPick, clock: TrialClock, offer: TrialOffer) {
+  return showing.index < setSize(trials, clock, offer) && (showing.kind === 'one' || aggregates(trials));
+}
 
 /**
- * The entry shown: the picked one while it exists for the selection, else the most specific that does (the first
- * recorded trial, then the nominal trial, then the first sample); nothing when no entry exists.
+ * What is shown: the pick while it exists for the selection, else the most specific single trial that does (the first
+ * recorded trial, then the nominal trial, then the first sample); nothing when no trial exists.
  */
-export function shownEntry(clock: TrialClock, offer: TrialOffer): TrialEntry | undefined {
-  if (clock.picked && offered(clock.picked, offer, sampleCount(clock, offer))) return clock.picked;
-  if (offer.recorded) return { kind: 'recorded', index: 0 };
-  if (offer.nominal) return { kind: 'nominal' };
-  if (offer.samples) return { kind: 'sample', index: 0 };
+export function shownPick(clock: TrialClock, offer: TrialOffer): TrialPick | undefined {
+  if (clock.picked && offered(clock.picked, clock, offer)) return clock.picked;
+  const first = (trials: TrialSet): TrialPick => ({ trials, showing: { kind: 'one', index: 0 } });
+  if (offer.recorded) return first('recorded');
+  if (offer.nominal) return first('nominal');
+  if (offer.samples) return first('samples');
   return undefined;
 }
 
-/** What the picker says an entry is: `nominal`, `sample k of n`, `trial k of n`. */
-export function entryText(entry: TrialEntry, count: number, recorded: number) {
-  if (entry.kind === 'nominal') return studioFormat('nominalTrial');
-  return studioFormat(entry.kind === 'sample' ? 'sampleOf' : 'trialOf', {
-    index: entry.index + 1, count: entry.kind === 'sample' ? count : recorded,
-  });
+/** What the picker says is shown: `nominal`, `sample k of n`, `trial k of n`, or `n trials`. */
+export function pickText({ trials, showing }: TrialPick, clock: TrialClock, offer: TrialOffer) {
+  const count = setSize(trials, clock, offer);
+  switch (showing.kind) {
+    case 'all': return studioFormat('trialCount', { count });
+    case 'one': return trials === 'nominal' ? studioFormat('nominalTrial')
+      : studioFormat(trials === 'samples' ? 'sampleOf' : 'trialOf', { index: showing.index + 1, count });
+  }
 }
 
-export const sameEntry = (a: TrialEntry | undefined, b: TrialEntry | undefined) =>
-  !!a && !!b && a.kind === b.kind && (a.kind === 'nominal' || a.index === (b as { index: number }).index);
+export const samePick = (a: TrialPick | undefined, b: TrialPick | undefined) =>
+  !!a && !!b && a.trials === b.trials && a.showing.kind === b.showing.kind && a.showing.index === b.showing.index;
+
+/** The frame of `frameTimes` nearest `time`, which views read a trial's values at. */
+export function frameAt(frameTimes: readonly number[], time: number): number {
+  let best = 0;
+  for (let index = 1; index < frameTimes.length; index += 1) {
+    if (Math.abs(frameTimes[index] - time) < Math.abs(frameTimes[best] - time)) best = index;
+  }
+  return best;
+}
 
 /** The playhead: the time, in seconds, in the trial `scope` names. It is saved nowhere. */
 interface Playhead {
@@ -119,7 +149,10 @@ export function usePlayheadStore() {
   return store;
 }
 
-/** The playhead's time in the trial `scope` names, which is its start until it is moved there, and its setter. */
+/**
+ * The playhead's time in the trial `scope` names, and its setter. A trial the playhead has not been moved in starts at
+ * 0, so the time returns to the start whenever the shown trial changes.
+ */
 export function usePlayhead(store: PlayheadStore, scope: string) {
   const playhead = useStore(store);
   return [

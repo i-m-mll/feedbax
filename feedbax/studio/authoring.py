@@ -13,6 +13,7 @@ import optax
 from pydantic import BaseModel, JsonValue, TypeAdapter, ValidationError
 from pydantic.fields import FieldInfo
 
+from feedbax.compiler.model_templates import with_model_placement_reason
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.task_document import BLANK_TASK, TASK_DOCUMENT_SCHEMA_ID, VALUE_TYPES, TaskDocument
@@ -28,7 +29,7 @@ from feedbax.contracts.project import (
     BasedDocument, DocumentReference, ExternalBase, InlineBase, Project, RunBase, Step, StepBase, StepKind,
     json_pointer_parts,
 )
-from feedbax.contracts.project_sweep import Sweep, SweepCoordinate
+from feedbax.contracts.project_sweep import SweepCoordinate
 from feedbax.contracts.project_inputs import StepReference, SubsetTerms
 from feedbax.planner.project_plan import ProjectPlan, RunKey, analyze_input_roles, step_input_roles
 from feedbax.contracts.project_resolution import (
@@ -57,7 +58,6 @@ from feedbax.contracts.studio_authoring import (
     StudioAuthoringSurface,
     StudioClassField,
     StudioClassSweepChange,
-    StudioSweptParameterMissing,
 )
 from feedbax.contracts.studio_project import SetProjectValue
 from feedbax.contracts.studio_field import FieldResetEdit, TrainFieldRequest, TrainFieldResponse, TrainFieldView
@@ -68,7 +68,7 @@ from feedbax.application.bundle import (
 )
 from feedbax.application.bundle import BootstrapState
 from feedbax.plugins.declarations import ResolvedDeclaration
-from feedbax.studio.authoring_sweeps import SelectedValues, SweepTarget, FieldSweeps, sweep_paths
+from feedbax.studio.authoring_sweeps import SelectedValues, SweepTarget, FieldSweeps
 from feedbax.studio.class_fields import ClassField, edit_class_sweep
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
 from feedbax.studio.selection import StoredEdit, TrainSelection
@@ -183,7 +183,10 @@ def authoring_surface(
         tasks=_task_catalog(),
         registries={
             COMPONENTS.family: StudioAuthoringRegistry(
-                entries=sorted(bundle.components.list_all(), key=lambda definition: definition.name),
+                entries=[
+                    with_model_placement_reason(definition, bundle.components)
+                    for definition in sorted(bundle.components.list_all(), key=lambda definition: definition.name)
+                ],
                 origins=_origins(bundle.components.declaration_record(key) for key in bundle.components.names()),
             ),
             OPERATIONS.family: StudioAuthoringRegistry(
@@ -250,7 +253,7 @@ def _task_catalog() -> StudioTaskCatalog:
     )
 
 
-type _Edit = list[OverridePatch] | StudioSweptParameterMissing
+type _Edit = list[OverridePatch]
 
 
 @dataclass(frozen=True)
@@ -259,7 +262,6 @@ class TrainProjection:
     settings: dict[str, JsonValue] | None
     mixed: list[str]
     stored: StoredEdit
-    refusal: StudioSweptParameterMissing | None
     documents: list[str]
     classes: list[StudioClassField]
     removed: dict[str, list[str]]
@@ -434,13 +436,10 @@ class _StepFields:
         exists = isinstance(parent, dict) and path[-1] in parent
         return OverridePatch(op="replace" if exists else "add", path=".".join(path), value=value)
 
-    def choose_class(self, path: _Path, model: type[BaseModel], label: str) -> _Edit:
-        """Replace the value at ``path`` with ``model``'s, or name the parameter the step sweeps that it lacks."""
+    def choose_class(self, path: _Path, model: type[BaseModel]) -> _Edit:
+        """Replace the value at ``path`` with ``model``'s."""
         current = _get(self.current, path)
         value = replacement(model, current)
-        missing = swept_parameter_missing(self.step.sweep, path, value, label, self.field_label)
-        if missing:
-            return missing
         return _changes(path, current, value) if isinstance(current, dict) else [self.set(path, value)]
 
     def field_label(self, path: _Path) -> str:
@@ -596,8 +595,8 @@ class _StepFields:
 
         def method_change(selected: _Scalar) -> _Edit:
             chosen = registrations[selected]
-            patches = self.choose_class(("settings",), chosen.settings_model, chosen.label or str(selected))
-            return patches if isinstance(patches, StudioSweptParameterMissing) else [self.set(("method",), selected), *patches]
+            patches = self.choose_class(("settings",), chosen.settings_model)
+            return [self.set(("method",), selected), *patches]
 
         self.field(
             ("method",), "Method", key if isinstance(key, str) else None,
@@ -787,28 +786,6 @@ def replacement(model: type[BaseModel], current: JsonValue) -> dict[str, JsonVal
     return value
 
 
-def swept_parameter_missing(
-    sweep: Sweep | None, path: _Path, value: JsonValue, label: str, parameter_label: Callable[[_Path], str],
-) -> StudioSweptParameterMissing | None:
-    """The first parameter ``sweep`` writes below ``path`` that ``value``, written there, lacks.
-
-    ``path`` starts at the step (``settings``, ...). ``label`` names the class or method ``value`` is;
-    ``parameter_label`` names a swept parameter by its path as the step's fields show it.
-    """
-    if sweep is None:
-        return None
-    for swept in sorted(sweep_paths(sweep)):
-        parts = tuple(swept.split("."))
-        if len(parts) <= len(path) or parts[:len(path)] != path:
-            continue
-        record = value
-        for name in parts[len(path):]:
-            if not isinstance(record, dict) or name not in record:
-                return StudioSweptParameterMissing(class_label=label, parameter_label=parameter_label(parts))
-            record = record[name]
-    return None
-
-
 def _set_in(value: JsonValue, path: _Path, leaf: JsonValue) -> JsonValue:
     if not path:
         return leaf
@@ -828,13 +805,12 @@ def project_train_fields(
     reset: str | None = None,
 ) -> TrainProjection:
     """Project the Train step's declared fields and the selected runs' settings, and store one atomic edit for the
-    selected runs, or the reason the step's sweep refuses it."""
+    selected runs."""
     payloads = selection.payloads
     definition = _StepFields(project, step_id, registry, selection.current, selected=payloads, runs=selection.coordinates)
     definition.own(read_plan)
     settings = definition.shown.get("settings")
     mixed = _differences([definition.effective(payload) for payload in payloads]) if payloads else set()
-    edit: StudioSweptParameterMissing | None = None
     stored = StoredEdit([])
     removed: dict[str, list[str]] = {}
     documents: set[str] = set()
@@ -842,10 +818,7 @@ def project_train_fields(
         raise ValueError("An edit is a change, a sweep edit or a reset, one at a time.")
     if class_sweep is not None:
         made = _class_sweep_edit(definition, class_sweep, selection)
-        if isinstance(made, StudioSweptParameterMissing):
-            edit = made
-        else:
-            stored, removed = made.stored, made.removed
+        stored, removed = made.stored, made.removed
     if reset is not None:
         stored = selection.store(reset_writes(project, step_id, reset))
     if change is not None:
@@ -866,16 +839,13 @@ def project_train_fields(
             held = _get(definition.current, tuple(json_pointer_parts(change.field))) if selection.scoped else field.view.value
             if value != held:
                 patches = field.write(value)
-                if not isinstance(patches, StudioSweptParameterMissing):
-                    documents.update(field.documents)
-                    documents.update(
-                        ref.document
-                        for patch in patches
-                        if (ref := _read(DocumentReference, patch.value)) is not None
-                    )
-        if isinstance(patches, StudioSweptParameterMissing):
-            edit = patches
-        elif patches:
+                documents.update(field.documents)
+                documents.update(
+                    ref.document
+                    for patch in patches
+                    if (ref := _read(DocumentReference, patch.value)) is not None
+                )
+        if patches:
             stored = selection.store(patches)
     coordinates = selection.row.coordinates if selection.row is not None else {}
     return TrainProjection(
@@ -883,7 +853,6 @@ def project_train_fields(
         settings if isinstance(settings, dict) else None,
         sorted(mixed),
         stored,
-        edit if isinstance(edit, StudioSweptParameterMissing) else None,
         sorted(documents),
         [
             field.view(
@@ -927,7 +896,7 @@ def _class_sweep_edit(definition: _StepFields, change: StudioClassSweepChange, s
     stored = _get(definition.payload, field.site)
     return edit_class_sweep(
         field, change, stored if isinstance(stored, dict) else {}, scoped=selection.scoped,
-        parameter_label=definition.field_label, store=selection.store,
+        store=selection.store,
         step_file=lambda patches: StudioProjectFilePatch(
             address=AuthoredFileAddress(kind="step", id=definition.step_id), patches=patches,
         ),
@@ -977,7 +946,7 @@ def _settings_edit(definition: _StepFields, change: StudioAuthoringChange) -> _E
         swept = definition.classes.get(pointer(("settings", *below)))
         if swept is not None and swept.covered:
             raise ValueError(f"{swept.label} is swept; its classes are the sweep's members")
-        edit = definition.choose_class(("settings", *below), chosen, chosen.model_config.get("title") or str(change.value))
+        edit = definition.choose_class(("settings", *below), chosen)
     else:
         parent = _get(settings, path[1:-1])
         if isinstance(parent, dict) and parent.get(path[-1], _MISSING) == change.value:
@@ -1126,9 +1095,8 @@ def reset_writes(project: Project, step_id: str, field: str) -> list[OverridePat
 
 def training_document_choice(
     project: Project, step_id: str, registry: TrainingMethodRegistry, document: str,
-) -> list[OverridePatch] | StudioSweptParameterMissing:
-    """The writes that point the Train step at the training document ``document``, or the parameter the step sweeps
-    that the document lacks."""
+) -> list[OverridePatch]:
+    """The writes that point the Train step at the Training document ``document``."""
     entry = compose_document(project.documents.get, document)
     if (
         isinstance(entry, ProjectDiagnostic) or entry.schema_id != TRAINING_DOCUMENT_SCHEMA_ID
@@ -1137,12 +1105,6 @@ def training_document_choice(
         raise ValueError(f"{document} is not a Training document.")
     definition = _StepFields(project, step_id, registry)
     definition.training(None)
-    for key in TRAINING_DOCUMENT_KEYS:
-        missing = swept_parameter_missing(
-            definition.step.sweep, (key,), entry.payload.get(key), document, definition.field_label,
-        )
-        if missing:
-            return missing
     return [
         OverridePatch(op="replace" if key in definition.authored else "add", path=key,
                       value={"document": document, "pointer": f"/{key}"})

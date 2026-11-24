@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { studioAccessibleName, studioName, studioUnit } from '@/components/activity/studioVocabulary';
-import type { SignalAggregate, SignalSteps } from './trialSample';
+import { epochBoundaries, type Percentiles, type SignalAggregate, type SignalSteps, type TrialShown } from './trialSample';
 
 const width = 240;
 const height = 64;
@@ -126,4 +126,30 @@ function Axis({ duration }: { duration: number }) {
   return <div className="flex justify-between text-xs tabular-nums text-shell-muted" aria-hidden="true">
     <span>{0}</span><span>{duration} {studioUnit('second')}</span>
   </div>;
+}
+
+/**
+ * A term's value per step over what is shown, where it was recorded: over one trial, absent where the term does not
+ * apply; over all of them, the median with its percentile bands, and where the term applies in every trial or some.
+ */
+export function TermTrace({ label, term, shown, stepSeconds }: {
+  label: string; term: string; shown: TrialShown; stepSeconds: number;
+}) {
+  switch (shown.kind) {
+    case 'one': {
+      const recorded = shown.record.terms?.[term];
+      const values = recorded?.values;
+      if (!recorded || !values) return null;
+      const steps = values.map((value, step) => recorded.steps[step] ? [value] : null);
+      return <TrialTrace label={label} steps={steps} duration={steps.length * stepSeconds} boundaries={epochBoundaries(shown.record)} />;
+    }
+    case 'all': {
+      const recorded = shown.aggregate.terms?.[term];
+      const percentiles = recorded?.percentiles;
+      if (!recorded || !percentiles) return null;
+      return <BatchTrace label={label} duration={recorded.steps.length * stepSeconds} boundaries={[]} aggregate={{
+        presence: recorded.steps, percentiles: percentiles.map((step) => step && [step]) as (Percentiles[] | null)[],
+      }} />;
+    }
+  }
 }

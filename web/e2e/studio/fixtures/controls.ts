@@ -56,3 +56,23 @@ export async function pickRecordedTrial(page: Page, index: number) {
   await page.getByRole('radio', { name: new RegExp(`^trial ${index + 1} of \\d+`) }).click();
   await expect(picker).toHaveText(new RegExp(`^trial ${index + 1} of \\d+$`));
 }
+
+/** The menu that asks where an edit is written. */
+export function applyTo(page: Page) {
+  return page.getByRole('menu', { name: 'Apply To', exact: true });
+}
+
+/**
+ * The answer to the Model edit `gesture` makes. With `store`, the service is expected to ask where the edit applies, and
+ * `store` is chosen in the Apply To menu; the answer is then that of the edit sent with the choice.
+ */
+export async function modelEdit(page: Page, projectPath: string, gesture: () => Promise<unknown>, store?: string) {
+  const answer = () => page.waitForResponse((response) => response.request().method() === 'POST' &&
+    new URL(response.url()).pathname === `${projectPath}/model/edit`);
+  const [first] = await Promise.all([answer(), gesture()]);
+  if (!store) return first;
+  expect(first.ok(), await first.text()).toBe(true);
+  expect((await first.json() as { result: { status: string } }).result.status).toBe('asked');
+  const [chosen] = await Promise.all([answer(), applyTo(page).getByRole('menuitem', { name: store, exact: true }).click()]);
+  return chosen;
+}

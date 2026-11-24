@@ -17,6 +17,8 @@ export interface LibraryItem {
   terms?: string;
   /** What the item's hover card says about it. */
   about?: LibraryAbout;
+  /** Why the item cannot be placed; such an item is dimmed, its hover card says why, and it places nothing. */
+  refusal?: string;
 }
 
 export interface LibraryAbout {
@@ -45,10 +47,11 @@ export interface LibraryListProps {
   dragType?: string;
 }
 
-function AboutCard({ item: { name, about } }: { item: LibraryItem & { about: LibraryAbout } }) {
+function AboutCard({ item: { name, about, refusal } }: { item: LibraryItem & { about: LibraryAbout } }) {
   const lists = (['inputs', 'outputs', 'parameters'] as const).filter((list) => about[list].length);
   return <div className="grid gap-2">
     <div className="font-medium">{name}</div>
+    {refusal && <p role="status">{refusal}</p>}
     {about.description && <p className="text-shell-muted">{about.description}</p>}
     {lists.length > 0 && <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
       {lists.map((list) => <div key={list} className="contents">
@@ -96,7 +99,7 @@ export function LibraryList({
     if (next !== undefined) {
       event.preventDefault();
       if (shown[next]) focus(shown[next].id);
-    } else if (event.key === 'Enter' && onPlace) {
+    } else if (event.key === 'Enter' && onPlace && !shown[at]?.refusal) {
       event.preventDefault();
       onPlace(id);
     }
@@ -111,16 +114,19 @@ export function LibraryList({
         level="group" name={group} nameId={`${names}-${index}`} initially={false} forceOpen={!!search}>
         <div role="listbox" aria-labelledby={`${names}-${index}`} className="grid gap-px px-1 pb-1">
           {list.map((item) => {
+            const placeable = !item.refusal;
             const row = <ListRow key={item.id} role="option" name={item.name} glyph={item.glyph}
+              disabled={!placeable} aria-description={item.refusal}
               ref={(element) => {
                 if (element) rows.current.set(item.id, element);
                 else rows.current.delete(item.id);
               }}
               tabIndex={item.id === current ? 0 : -1} selected={item.id === selected}
-              draggable={!!dragType} onDragStart={dragType ? (event) => event.dataTransfer.setData(dragType, item.id) : undefined}
+              draggable={!!dragType && placeable}
+              onDragStart={dragType && placeable ? (event) => event.dataTransfer.setData(dragType, item.id) : undefined}
               onFocus={() => setFocused(item.id)}
               onClick={() => onInspect(item.id)}
-              onDoubleClick={onPlace && (() => onPlace(item.id))}
+              onDoubleClick={onPlace && placeable ? () => onPlace(item.id) : undefined}
               onKeyDown={(event) => onKeyDown(event, item.id)} />;
             const { about } = item;
             return about ? <HoverCardTrigger key={item.id} handle={card} payload={{ ...item, about }} render={row} />

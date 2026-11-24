@@ -370,6 +370,19 @@ class ComponentMigrationInfo(BaseModel):
     description: str = ""
 
 
+class ComponentHeadline(BaseModel):
+    """The type name and, where useful, the authored field shown on its Model card."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    field: str | None = None
+
+    @classmethod
+    def for_type(cls, name: str, field: str | None = None) -> ComponentHeadline:
+        return cls(name=name.rpartition(".")[2], field=field)
+
+
 class ComponentDefinition(BaseModel):
     """Definition of a component type available in the library."""
 
@@ -380,6 +393,7 @@ class ComponentDefinition(BaseModel):
         COMPONENT_DEFINITION_SCHEMA_VERSION
     )
     name: str
+    headline: ComponentHeadline
     category: str
     description: str
     param_schema: List[ParamSchema] = Field(default_factory=list)
@@ -393,6 +407,8 @@ class ComponentDefinition(BaseModel):
     interior_domain: Optional[str] = None
     is_composite: bool = False
     template_graph: Optional[GraphSpec | AcausalGraphSpec] = None
+    placement_reason: str | None = None
+    """Why this definition cannot be placed as a component in a Model document."""
     template_ui_state: Optional[GraphUIState] = None
     template_id: Optional[str] = None
     template_kind: Optional[str] = None
@@ -413,4 +429,7 @@ class ComponentDefinition(BaseModel):
     def migrate_legacy_definition(cls, data: Any) -> Any:
         if not isinstance(data, dict) or "name" not in data:
             return data
-        return migrate_component_definition_payload(data)
+        migrated = migrate_component_definition_payload(data)
+        if "headline" not in migrated and isinstance(migrated["name"], str):
+            migrated = {**migrated, "headline": ComponentHeadline.for_type(migrated["name"])}
+        return migrated

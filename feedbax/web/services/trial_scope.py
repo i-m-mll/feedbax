@@ -19,15 +19,17 @@ from feedbax.contracts.project import (
     DifferenceNotApplied, RemoveDocumentValue, RemoveProjectValue, SetDocumentValue, SetProjectValue, StepBase,
     apply_differences,
     apply_document_edit, based_on, diff,
-    document_edit_value, json_pointer_parts, same_json,
+    document_edit_value, json_pointer_parts, member_name, same_json,
 )
 from feedbax.contracts.project_inputs import SweepExceptionTerms
+from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID
 from feedbax.planner.project_plan import RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.project_resolution import (
     ProjectDiagnostic, StepTemplate, compose_document, compose_step, document_write_target,
 )
-from feedbax.contracts.project_sources import pointer
+from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.contracts.project_sweep import (
     AxisCondition, NamedAxis, SetAxis, SetValue, RemoveValue, _compose_writes,
 )
@@ -110,8 +112,45 @@ def file_value(address, raw, parts, value):
     ])
 
 
+def source_value_file(project: Project, origin: ValueSource, before, after) -> StudioProjectFilePatch | None:
+    """Replace a value held by a controlling sweep value, exception or variant patch."""
+    if not origin.path:
+        return None
+    parts = json_pointer_parts(origin.path)
+    if origin.kind == "variant":
+        row = project.sweep.rows.get(origin.name) if project.sweep else None
+        if row is None:
+            return None
+        target = next((
+            (path, split) for path in row.patches
+            if parts[:len(split := tuple(path.split(".")))] == split
+        ), None)
+        if target is None:
+            return None
+        path, split = target
+        address = AuthoredFileAddress(kind="variant", id=origin.name)
+        raw = row.model_dump(mode="json", by_alias=True, exclude_unset=True)
+        location = ("patches", path, "value", *parts[len(split):])
+    elif origin.kind in {"sweep_value", "exception"} and origin.step in project.steps:
+        address = AuthoredFileAddress(kind="step", id=origin.step)
+        raw = project.steps[origin.step].model_dump(mode="json", by_alias=True, exclude_unset=True)
+        location = parts
+    else:
+        return None
+    if not _holds(raw, location):
+        return None
+    value = raw
+    for part in location:
+        value = value[int(part)] if isinstance(value, list) else value[part]
+    if not same_json(value, before) or same_json(value, after):
+        return None
+    return StudioProjectFilePatch(address=address, patches=[
+        SetProjectValue(op="replace", path=pointer(location), value=after),
+    ])
+
+
 def selected_runs(plan, key, scope, *, chosen_steps=()):
-    rows = [row for row in plan.rows if row.key.step == key.step]
+    rows = [row for row in plan.rows if (row.key.variant, row.key.step) == (key.variant, key.step)]
     if isinstance(scope, VariantRuns):
         selected = {row.key for row in rows if row.key.variant == scope.variant}
     elif isinstance(scope, AxisValueRuns):
@@ -265,7 +304,7 @@ def _composed(project: Project, name: str) -> Payload:
     if isinstance(entry, ProjectDiagnostic):
         raise ProjectFolderInvalid(entry.detail)
     if not isinstance(entry.payload, dict):
-        raise ProjectFolderInvalid(f"{name} is not an object.")
+        raise ProjectFolderInvalid(f"{member_name(project.documents, name)} is not an object.")
     return entry.payload
 
 
@@ -315,7 +354,7 @@ class _DocumentStores:
 
 def _document_stores(
     project: Project, shown: str, edits: Sequence[DocumentEdit], chosen: frozenset[str] | None, readers: DocumentUsers,
-    taken: set[str],
+    taken: set[str], adapt: Callable[[Payload], Sequence[DocumentEdit]] | None = None,
 ) -> _DocumentStores:
     """Where ``edits`` of ``shown`` are stored for the ``chosen`` steps, every step when None.
 
@@ -325,7 +364,8 @@ def _document_stores(
     """
     documents = project.documents
     if chosen is not None and (not chosen or not chosen <= lit_steps(documents, readers, shown)):
-        raise ProjectFolderInvalid(f"A chosen step does not read {shown} or a document based on it.")
+        name = member_name(documents, shown)
+        raise ProjectFolderInvalid(f"A chosen step does not read {name} or a document based on it.")
     stores = _DocumentStores([], [], {}, {})
     before: dict[str, Payload] = {}
     after: dict[str, Payload] = {}
@@ -354,7 +394,7 @@ def _document_stores(
         inherits = isinstance(document, BasedDocument) and document.base.document in after
         if name in seen or chosen is not None and not inherits and not lit_steps(documents, readers, name) & chosen:
             return
-        content = _edited(old(name), edits, name)
+        content = _edited(old(name), edits if adapt is None else adapt(old(name)), member_name(documents, name))
         if chosen is None or changed(name, content, ()) <= chosen:
             if not same_json(content, old(name)):
                 after[name] = content
@@ -369,7 +409,8 @@ def _document_stores(
             variant = _document_name(project, name, taken)
             taken.add(variant)
             stores.created.append(CreateNamedDocument(kind="document", id=variant, document=BasedDocument(
-                schema=document.schema_id, base=DocumentBase(document=name), differences=diff(old(name), content),
+                schema=document.schema_id, label=_copy_label(documents, stores.created, name),
+                base=DocumentBase(document=name), differences=diff(old(name), content),
             )))
             for step in direct:
                 stores.pointing.setdefault(step, {})[name] = variant
@@ -378,6 +419,20 @@ def _document_stores(
 
     visit(shown, ())
     return stores
+
+
+def _copy_label(documents: Mapping[str, Document], created: Sequence[CreateNamedDocument], name: str) -> str:
+    document = documents[name]
+    task_schemas = {TASK_DOCUMENT_SCHEMA_ID, PYTHON_TASK_SCHEMA_ID}
+    schemas = task_schemas if document.schema_id in task_schemas else {document.schema_id}
+    default = {
+        TASK_DOCUMENT_SCHEMA_ID: "Task",
+        PYTHON_TASK_SCHEMA_ID: "Task",
+        OBJECTIVE_DOCUMENT_SCHEMA_ID: "Objective",
+    }.get(document.schema_id, name)
+    labels = {item.label or key for key, item in documents.items() if item.schema_id in schemas}
+    labels.update(label for item in created if item.document.schema_id in schemas and (label := item.document.label))
+    return generated_name(document.label or default, labels.__contains__, separator=" ")
 
 
 def _document_name(project: Project, name: str, taken: Collection[str]) -> str:
@@ -531,7 +586,10 @@ class _Store:
         for step, document in bases.items():
             self.base(step, document)
         if missing := set(pointing) - desired.keys() - slots.keys() - bases.keys():
-            raise ProjectFolderInvalid(f"{', '.join(sorted(missing))} reads the document only through its sweep.")
+            if len(missing) == 1:
+                raise ProjectFolderInvalid(f"{member_name(before.steps, next(iter(missing)))} reads the document only through its sweep.")
+            names = ", ".join(member_name(before.steps, step) for step in sorted(missing))
+            raise ProjectFolderInvalid(f"{names} read the document only through their sweeps.")
         for step in sorted(desired.keys() | slots.keys(), key=lambda name: (_step_chain(before, name), name)):
             composed = _step_references(self.view, step)
             writes = [
@@ -612,6 +670,7 @@ def variant_view(plan, project: Project, variant: str | None) -> Project:
 def document_write(
     project: Project, shown: str, edits: Sequence[DocumentEdit], chosen: Collection[str], readers: DocumentUsers,
     variant: str | None = None, named: Mapping[str, tuple[str, str]] = {}, view: Project | None = None,
+    *, adapt: Callable[[Payload], Sequence[DocumentEdit]] | None = None,
 ) -> StoredEdit:
     """Store ``edits`` of the document ``shown`` for the ``chosen`` steps, which read it or a document based on it.
 
@@ -623,7 +682,7 @@ def document_write(
     if variant is not None and view is None:
         raise ValueError("An edit in a variant reads the variant's project.")
     store = _Store(project, variant, view or project)
-    stores = _document_stores(store.view, shown, edits, chosen, readers, set())
+    stores = _document_stores(store.view, shown, edits, chosen, readers, set(), adapt)
     store.documents(stores)
     store.point(stores.pointing, named)
     return store.stored(chosen)
@@ -670,7 +729,7 @@ def base_value_edits(project: Project, document: str, paths: Sequence[str]) -> l
     """The edits that give each of ``paths`` in ``document`` the value of its base, removing what the base lacks."""
     entry = project.documents[document]
     if not isinstance(entry, BasedDocument):
-        raise ProjectFolderInvalid(f"{document} is not based on another document.")
+        raise ProjectFolderInvalid(f"{member_name(project.documents, document)} is not based on another document.")
     base = _composed(project, entry.base.document)
     edits: list[DocumentEdit] = []
     for path in paths:
@@ -907,7 +966,8 @@ def _step_file(project, step_id, address, raw, authored, writes) -> StudioProjec
 
 
 def train_selection(
-    folders, project_id, revision, project, step_id, run, rows=(), axes=None, chosen_steps=(),
+    folders, project_id, revision, project, step_id, run, rows=(), axes=None, chosen_steps=(), *,
+    defer_scope=False,
 ) -> TrainSelection:
     """The runs a Train edit names, read from the plan of ``revision``, and the write that stores an edit for them.
 
@@ -928,7 +988,7 @@ def train_selection(
         settled = folders.read_plan(project_id, revision=revision)
         view = variant_view(settled.plan, project, scope.variant if variant else None)
         stored = scoped_file(project, step_id, scope, writes, chosen=tuple(chosen_steps), users=users, view=view)
-        if stored.files or stored.created:
+        if not defer_scope and (stored.files or stored.created):
             candidate = compile_project(
                 preview_stored(project, stored), readers=settled.readers,
                 operations=folders.operations, components=folders.components, functions=folders.functions,
@@ -945,7 +1005,8 @@ def train_selection(
         return TrainSelection((), None, None, False, partial(checked, StepRuns(kind="step"), frozenset()))
     key = RunKey(run.variant, run.step, run.row)
     if key.step != step_id:
-        raise ProjectFolderInvalid(f"Run {key.row!r} belongs to step {key.step!r}, not {step_id!r}.")
+        source, target = (member_name(project.steps, step) for step in (key.step, step_id))
+        raise ProjectFolderInvalid(f"Run {key.row!r} belongs to {source}. Select a run of {target}.")
     plan = folders.read_plan(project_id, revision=revision, source_runs=(key,)).plan
     scope = selection_scope(project, plan, key, tuple(rows), axes)
     shown = tuple(RunKey(key.variant, step_id, row) for row in rows) or tuple(sorted(
@@ -1060,7 +1121,7 @@ def row_model(folders, project_id: str, project: Project, body) -> RowModel:
         if named is not None:
             content = value_model(project, body.step, named, body.document)
         return RowModel(content, scope, True)
-    raise ProjectFolderInvalid(f"The selected runs do not read {body.document}.")
+    raise ProjectFolderInvalid(f"The selected runs do not read {member_name(project.documents, body.document)}.")
 
 
 def _value_differences(project: Project, step: str, named: SelectedValue, document: str) -> Differences:
@@ -1073,7 +1134,7 @@ def _value_differences(project: Project, step: str, named: SelectedValue, docume
         except ValueError as error:
             raise ProjectFolderInvalid(str(error)) from error
         if entry is None:
-            raise ProjectFolderInvalid(f"{named.set} has no entry {named.value}.")
+            raise ProjectFolderInvalid(f"{member_name(project.documents, named.set)} has no entry {named.value}.")
         return dict(entry.differences)
     axis = project.steps[step].sweep.axes.get(named.axis)
     value = axis.values.get(named.value) if isinstance(axis, NamedAxis) else None
@@ -1092,7 +1153,8 @@ def value_model(project: Project, step: str, named: SelectedValue, document: str
     try:
         return apply_differences(_composed(project, document), _value_differences(project, step, named, document))
     except DifferenceNotApplied as error:
-        raise ProjectFolderInvalid(f"The selected value does not apply to {document}: {error}") from error
+        name = member_name(project.documents, document)
+        raise ProjectFolderInvalid(f"The selected value does not apply to {name}: {error}") from error
 
 
 def _payload_target(document: str, path: str) -> str:
@@ -1174,7 +1236,7 @@ def set_entry_write(
     content = _composed(project, name)
     entries = content.get("entries", {})
     if entry not in entries:
-        raise ProjectFolderInvalid(f"{name} has no entry {entry}.")
+        raise ProjectFolderInvalid(f"{member_name(project.documents, name)} has no entry {entry}.")
     updated = entries[entry] | {"differences": {
         path: value.model_dump(mode="json", exclude_unset=True) for path, value in differences.items()
     }}
@@ -1192,12 +1254,16 @@ def set_document_write(project: Project, name: str, edits: Sequence[DocumentEdit
     for step, mapping in stores.pointing.items():
         authored = view.steps[step]
         raw = authored.model_dump(mode="json", by_alias=True, exclude_unset=True)
+        template = compose_step(view, step)
+        sweep = template.sweep if isinstance(template, StepTemplate) else None
         axes = {
-            axis: mapping[read.set] for axis, read in (authored.sweep.axes.items() if authored.sweep else ())
+            axis: read.model_copy(update={"set": mapping[read.set]}).model_dump(mode="json", exclude_unset=True)
+            for axis, read in (sweep.axes.items() if sweep else ())
             if isinstance(read, SetAxis) and read.set in mapping
         }
         if not axes:
-            raise ProjectFolderInvalid(f"{step} reads the set through the step it is based on.")
+            raise ProjectFolderInvalid(f"{member_name(project.steps, step)} no longer reads this Set.")
         address = AuthoredFileAddress(kind="step", id=step)
-        files.extend(file_value(address, raw, ("sweep", "axes", axis, "set"), new) for axis, new in axes.items())
+        local = raw.get("sweep") or {}
+        files.append(file_value(address, raw, ("sweep",), local | {"axes": local.get("axes", {}) | axes}))
     return StoredEdit(merged_files(files), tuple(stores.created), chosen | set_readers(project, name))

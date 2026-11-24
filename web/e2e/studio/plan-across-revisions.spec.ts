@@ -115,6 +115,9 @@ test('a new revision\'s plan, while read, changes no control and holds a gesture
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const every = inspector.getByRole('textbox', { name: 'Every', exact: true });
   await expect(every).toHaveValue('2');
+  // The window has drawn what its first reads give: the Evaluate's Seed and the clock of its trials.
+  await expect(inspector.getByRole('button', { name: 'Seed kind: Value', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Play', exact: true })).toBeVisible();
   await every.fill('3');
   const evaluate = await heldEdit(snapshot.revision, () => every.press('Enter'), () => page.keyboard.press('Meta+Z'));
   expect(evaluate.changes).toEqual([]);
@@ -123,8 +126,7 @@ test('a new revision\'s plan, while read, changes no control and holds a gesture
   await mapStep(page, 'train').click();
   await page.keyboard.press('Meta+2');
   const model = page.locator('[data-slot="primary"]').getByRole('tabpanel', { name: 'Model', exact: true });
-  await expect(model.locator('.react-flow__node[data-id="@inputs"]').getByRole('button', { name: 'Add Port', exact: true }))
-    .toBeVisible();
+  await expect(model.locator('.react-flow__node[data-id="@inputs"]')).toHaveClass(/\bdraggable\b/);
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
   await expect(drawer.getByRole('button', { name: 'Equinox', exact: true })).toBeVisible();
   await expect(model.getByRole('button', { name: 'Port target_on', exact: true })).toBeVisible();

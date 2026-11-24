@@ -1,4 +1,4 @@
-import { enablePatches, produceWithPatches, type Patch } from 'immer';
+import { current, enablePatches, isDraft, produceWithPatches, type Patch } from 'immer';
 import type {
   AuthoredFileAddress,
   JsonValue,
@@ -8,8 +8,12 @@ import type {
 } from '@/generated/studioContracts';
 
 export type AuthoredProject = StudioProjectSnapshot['project'];
-export type ProjectEditContent = AuthoredProject & { readonly presentation?: PresentationDocument | null };
+export type ProjectEditContent = AuthoredProject & {
+  readonly presentation?: PresentationDocument | null;
+  readonly settings?: StudioProjectSnapshot['settings'];
+};
 export const presentationAddress = { kind: 'presentation', id: 'presentation' } as const;
+export const declarationAddress = { kind: 'declaration', id: 'declaration' } as const;
 type JsonObject = { [key: string]: JsonValue };
 type Container = JsonObject | JsonValue[];
 
@@ -32,6 +36,7 @@ function files(project: JsonObject, kind: AuthoredFileAddress['kind']): JsonObje
     case 'step': return object(project.steps);
     case 'variant': return object(object(project.sweep).rows);
     case 'presentation': return { [presentationAddress.id]: project.presentation ?? {} };
+    case 'declaration': return { [declarationAddress.id]: { settings: project.settings ?? {} } };
   }
 }
 
@@ -62,7 +67,17 @@ function hasIndexedKeys(value: JsonValue | undefined): boolean {
   return Object.entries(value).some(([key, child]) => /^[0-9]+$/.test(key) || hasIndexedKeys(child));
 }
 
-function applyEdit(entry: JsonObject, edit: ProjectValueEdit, checkOrder: boolean) {
+/** The members after a removed object member, in order: an Undo that adds it back adds them again after it. */
+interface Position {
+  readonly path: string;
+  readonly following: readonly (readonly [string, JsonValue])[];
+}
+
+function snapshot(value: JsonValue): JsonValue {
+  return structuredClone(isDraft(value) ? current(value) : value);
+}
+
+function applyEdit(entry: JsonObject, edit: ProjectValueEdit, positions?: Position[]) {
   const path = authoredPointerParts(edit.path);
   let container: Container = entry;
   for (const token of path.slice(0, -1)) {
@@ -74,10 +89,6 @@ function applyEdit(entry: JsonObject, edit: ProjectValueEdit, checkOrder: boolea
   const key = keyAt(container, path[path.length - 1]);
   const exists = own(container, key);
   if (edit.op !== 'add' && !exists) throw new Error(`The field at ${edit.path} no longer exists.`);
-  const previous = Array.isArray(container) ? container[key as number] : container[key];
-  if (checkOrder && edit.op !== 'add' && hasIndexedKeys(previous)) {
-    throw new Error('Choose an individual authored value to preserve the existing order.');
-  }
   if (Array.isArray(container)) {
     const index = key as number;
     if (index > container.length) throw new Error(`The list index at ${edit.path} is out of range.`);
@@ -87,16 +98,45 @@ function applyEdit(entry: JsonObject, edit: ProjectValueEdit, checkOrder: boolea
   } else {
     if (edit.op === 'add' && exists) throw new Error(`The field at ${edit.path} already exists.`);
     if (edit.op === 'remove') {
-      // Inverse add appends to an object in the folder codec. A file's own members are
-      // written in its schema's order, so only removals inside a member need a position.
       const keys = Object.keys(container);
-      if (checkOrder && path.length > 1 && keys.length > 1 &&
-        (keys[keys.length - 1] !== key || keys.some((name) => /^[0-9]+$/.test(name)))) {
-        throw new Error('Removing this authored value requires its position in the ordered file.');
+      const following = keys.slice(keys.indexOf(key as string) + 1);
+      if (positions && following.length) {
+        const parent = container;
+        positions.push({
+          path: authoredPointer(path),
+          following: following.map((name) => [authoredPointer([...path.slice(0, -1), name]), snapshot(parent[name])]),
+        });
       }
       delete container[key];
     } else container[key] = structuredClone(edit.value);
   }
+}
+
+function plainObject(value: JsonValue | undefined): value is JsonObject {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * The edits of individual values that replace `before` at `path` with `after`. A container with indexed keys is
+ * edited member by member: JSON carries no order for its keys, so writing it whole would reorder the file.
+ */
+function addressedReplace(path: readonly string[], before: JsonValue | undefined, after: JsonValue): ProjectValueEdit[] {
+  if (!plainObject(before) || !plainObject(after) || !hasIndexedKeys(before)) {
+    return [{ op: 'replace', path: authoredPointer(path), value: after }];
+  }
+  return [
+    ...Object.keys(before).filter((key) => !own(after, key)).map((key): ProjectValueEdit =>
+      ({ op: 'remove', path: authoredPointer([...path, key]) })),
+    ...Object.entries(after).flatMap(([key, value]): ProjectValueEdit[] => !own(before, key)
+      ? [{ op: 'add', path: authoredPointer([...path, key]), value }]
+      : sameValue(before[key], value) ? [] : addressedReplace([...path, key], before[key], value)),
+  ];
+}
+
+function addressed(entry: JsonObject, edit: ProjectValueEdit): ProjectValueEdit[] {
+  if (edit.op !== 'replace') return [edit];
+  const path = authoredPointerParts(edit.path);
+  return addressedReplace(path, authoredMemberOf(entry, path), edit.value);
 }
 
 function fileEntry(project: ProjectEditContent, address: AuthoredFileAddress) {
@@ -106,7 +146,11 @@ function fileEntry(project: ProjectEditContent, address: AuthoredFileAddress) {
 }
 
 export function authoredMember(project: AuthoredProject, address: AuthoredFileAddress, path: readonly string[]) {
-  let parent: JsonValue | undefined = fileEntry(project, address);
+  return authoredMemberOf(fileEntry(project, address), path);
+}
+
+function authoredMemberOf(entry: JsonObject, path: readonly string[]) {
+  let parent: JsonValue | undefined = entry;
   for (const token of path) {
     if (parent == null || typeof parent !== 'object' || token === '__proto__' ||
         (Array.isArray(parent) && !/^(0|[1-9][0-9]*)$/.test(token))) return;
@@ -122,18 +166,8 @@ export function removeAuthoredMember(
 ): ProjectValueEdit | undefined {
   const parent = authoredMember(project, address, path.slice(0, -1));
   const name = path.at(-1);
-  if (!name || parent == null || typeof parent !== 'object') return;
-  const key = keyAt(parent, name);
-  if (!own(parent, key)) return;
-  if (path.length === 1 || Array.isArray(parent) || Object.keys(parent).at(-1) === key) {
-    return { op: 'remove', path: authoredPointer(path) };
-  }
-  if (hasIndexedKeys(parent)) return;
-  // Replace the container so Undo restores an object member at its old position.
-  return {
-    op: 'replace', path: authoredPointer(path.slice(0, -1)),
-    value: Object.fromEntries(Object.entries(parent).filter(([member]) => member !== key)),
-  };
+  if (!name || parent == null || typeof parent !== 'object' || !own(parent, keyAt(parent, name))) return;
+  return { op: 'remove', path: authoredPointer(path) };
 }
 
 export function sameAuthoredFile(a: ProjectEditContent, b: ProjectEditContent, address: AuthoredFileAddress) {
@@ -216,11 +250,14 @@ function shouldReapply(before: Container, latest: Container, edit: ProjectValueE
   return true;
 }
 
+/**
+ * Applies `edits` to one authored file. The edits it returns are those it applied, as edits of individual values; its
+ * inverse restores each removed object member at its position, by adding the members after it again after it.
+ */
 export function applyAuthoredEdits(
   project: ProjectEditContent,
   address: AuthoredFileAddress,
   edits: readonly ProjectValueEdit[],
-  checkOrder = false,
   rebaseFrom?: ProjectEditContent,
 ) {
   // These models are authored JSON; use one generic traversal over their file envelope.
@@ -229,28 +266,39 @@ export function applyAuthoredEdits(
   const original = fileEntry(project, address);
   const before = rebaseFrom && structuredClone(fileEntry(rebaseFrom, address));
   const reapplied: ProjectValueEdit[] = [];
+  const positions: Position[] = [];
   const [changed, , inverse] = produceWithPatches<JsonObject, JsonObject>(original, (entry) => {
     for (const edit of edits) {
       if (!before || shouldReapply(before, entry, edit)) {
-        applyEdit(entry, edit, checkOrder);
-        reapplied.push(edit);
+        for (const part of addressed(entry, edit)) {
+          applyEdit(entry, part, positions);
+          reapplied.push(part);
+        }
       }
-      if (before) applyEdit(before, edit, false);
+      if (before) applyEdit(before, edit);
     }
   });
   if (!inverse.length) return { project, inverse: [], edits: [] };
   const nextFiles = { ...collection, [address.id]: changed };
-  const updated = address.kind === 'presentation'
+  const updated = address.kind === 'declaration'
+    ? { ...authored, settings: changed.settings }
+    : address.kind === 'presentation'
     ? { ...authored, presentation: changed }
     : address.kind === 'variant'
       ? { ...authored, sweep: { ...object(authored.sweep), rows: nextFiles } }
       : { ...authored, [address.kind === 'document' ? 'documents' : 'steps']: nextFiles };
+  const restored = new Map(positions.map((position) => [position.path, position.following]));
   return {
     project: updated as unknown as ProjectEditContent,
     edits: reapplied,
-    inverse: inverse.map((patch): ProjectValueEdit => patch.op === 'remove'
-      ? { op: 'remove', path: authoredPointer(patch.path) }
-      : { op: patch.op, path: authoredPointer(patch.path), value: patch.value as JsonValue }),
+    inverse: inverse.flatMap((patch): ProjectValueEdit[] => {
+      const path = authoredPointer(patch.path);
+      if (patch.op === 'remove') return [{ op: 'remove', path }];
+      const undone: ProjectValueEdit = { op: patch.op, path, value: patch.value as JsonValue };
+      const following = patch.op === 'add' ? restored.get(path) : undefined;
+      return following ? [undone, ...following.flatMap(([member, value]): ProjectValueEdit[] =>
+        [{ op: 'remove', path: member }, { op: 'add', path: member, value }])] : [undone];
+    }),
   };
 }
 

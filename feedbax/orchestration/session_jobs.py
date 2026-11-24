@@ -85,6 +85,16 @@ def _create_journal(driver: SessionDriver) -> None:
         )
 
 
+def queue_session_stops(driver: SessionDriver, session_id: UUID, job_ids: Sequence[str], mode: StopMode) -> None:
+    """Acknowledge the exact stop intents once they are durable in the controller's journal."""
+    with driver.connection() as db:
+        db.executemany(
+            """INSERT INTO session_stops(session, job, mode) VALUES (?, ?, ?)
+               ON CONFLICT(session, job, mode) DO NOTHING""",
+            ((str(session_id), job_id, mode) for job_id in job_ids),
+        )
+
+
 class _OpeningApproval(SessionModel):
     request: SessionRequest
     authorization: SessionAuthorization
@@ -445,15 +455,6 @@ class SessionJobs:
             (submission.model_dump_json(), self.session_id, submission.token),
         )
 
-    def queue_stop(self, job_id: str, mode: StopMode) -> None:
-        """Persist an exact stop intent even while the Host is unreachable."""
-        with self.driver.connection() as db:
-            db.execute(
-                """INSERT INTO session_stops(session, job, mode) VALUES (?, ?, ?)
-                   ON CONFLICT(session, job, mode) DO NOTHING""",
-                (self.session_id, job_id, mode),
-            )
-
     def replay(self, folders: ProjectFolder) -> None:
         """Send unfinished deliveries with the original tokens and job IDs."""
         with self.driver.connection() as db:
@@ -471,12 +472,15 @@ class SessionJobs:
             ).fetchall()
         for token, request in submissions:
             self._record_submission(self._deliver(folders, token, strict_model_validate_json(Delegation, request)))
+        by_mode: dict[StopMode, list[str]] = {}
         for job_id, mode in stops:
-            reply = self.host.stop((job_id,), mode)
+            by_mode.setdefault(mode, []).append(job_id)
+        for mode, job_ids in by_mode.items():
+            reply = self.host.stop(job_ids, mode)
             with self.driver.connection() as db:
-                db.execute(
+                db.executemany(
                     "UPDATE session_stops SET reply=? WHERE session=? AND job=? AND mode=?",
-                    (json.dumps(reply), self.session_id, job_id, mode),
+                    ((json.dumps([item]), self.session_id, item["job_id"], mode) for item in reply),
                 )
 
     def _observation(self) -> tuple[str, int, JobsSnapshot] | None:

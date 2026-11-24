@@ -3,10 +3,9 @@
 import '@testing-library/jest-dom/vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { useState } from 'react';
-import { beforeAll, expect, it, vi } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { Tree, type TreeNode } from './Tree';
 
-beforeAll(() => { Element.prototype.scrollIntoView = () => {}; });
 
 const nodes: TreeNode[] = [
   { id: 'model', name: 'Model', children: [{ id: 'gru', name: 'GRU' }] },

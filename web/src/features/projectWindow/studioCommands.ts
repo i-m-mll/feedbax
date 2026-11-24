@@ -3,7 +3,7 @@ import {
   ArrowLeft, ArrowRight, Command, Grid2x2, OctagonX, PanelLeft, PanelRight, Play, Square, SquareArrowOutUpRight, StepForward,
   type LucideIcon,
 } from 'lucide-react';
-import { studioAccessibleName, studioName, type StudioNameId } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioName, studioReasonedName, type StudioNameId } from '@/components/activity/studioVocabulary';
 import type { AppearanceCommandId } from '@/appearance/appearance';
 import { bindGesture, invokeGesture } from './heldGestures';
 import { projectWindowViews, type ProjectWindowView } from './projectWindowState';
@@ -71,7 +71,7 @@ const glyphs: Partial<Record<StudioCommandId, LucideIcon>> = {
 };
 
 export type StudioCommandId = keyof typeof shortcuts | ProjectWindowView | AppearanceCommandId |
-  'check' | 'accept' | 'newStep' | 'newSweep' | 'duplicateStep' | 'duplicateRun' | 'split' | 'merge' | 'saveSet' | 'inlineSet' | 'changeKey' | 'openRun' | 'resume' | 'forceStop' | 'activity' | 'problems' | 'retry' |
+  'check' | 'accept' | 'newStep' | 'newSweep' | 'duplicateStep' | 'duplicateRun' | 'removeValue' | 'addEntry' | 'split' | 'merge' | 'saveSet' | 'inlineSet' | 'toField' | 'toSweep' | 'changeKey' | 'openRun' | 'resume' | 'forceStop' | 'activity' | 'problems' | 'retry' |
   'pivot' | 'dismiss' | 'connectPorts' | 'exposeOutput' |
   'flip' | 'enter' | 'collapseAll' | 'lock' | 'addDelay' | 'addIntervention' | 'addProbe' | 'addWaypoint' | 'removeWaypoint' |
   'addText' | 'addFigure' | 'moveEarlier' | 'moveLater' | 'remove' |
@@ -96,6 +96,25 @@ const viewCommands = new Set<StudioCommandId>([
   'fitView', 'zoomIn', 'zoomOut', 'enter', 'leave',
 ]);
 
+function commandShortcut(id: StudioCommandId): Shortcut | undefined {
+  const viewPosition = projectWindowViews.indexOf(id as ProjectWindowView) + 1;
+  return (shortcuts as Partial<Record<StudioCommandId, Shortcut>>)[id] ??
+    (viewPosition > 0 && viewPosition <= 9 ? primary(String(viewPosition)) : undefined);
+}
+
+/** Each command that has a key, by its shown name and key, once each: the views first, then the others. */
+export function studioShortcuts() {
+  const ids = [...projectWindowViews, ...Object.keys(shortcuts) as (keyof typeof shortcuts)[]];
+  const rows = new Map<string, { name: string; keys: string }>();
+  for (const id of ids) {
+    const shortcut = commandShortcut(id);
+    if (!shortcut) continue;
+    const row = { name: studioName(id), keys: shortcutLabel(shortcut) };
+    rows.set(JSON.stringify(row), row);
+  }
+  return [...rows.values()];
+}
+
 export interface StudioCommand {
   readonly id: StudioCommandId;
   readonly name: StudioNameId;
@@ -106,6 +125,8 @@ export interface StudioCommand {
   readonly glyph?: LucideIcon;
   /** Whether the command applies to what is selected; the workspace being unsettled disables nothing. */
   readonly enabled: boolean;
+  /** Why the command does not apply to what is selected, when it is shown dimmed; its tip gives it after its name. */
+  readonly reason?: string;
   readonly selectionScoped: boolean;
   readonly shortcut?: Shortcut;
   /** Runs the command, or holds it until the workspace settles and runs it then if it still applies. */
@@ -114,6 +135,8 @@ export interface StudioCommand {
 
 interface BindingOptions {
   enabled?: boolean;
+  /** Why the command does not apply; a command with a reason is not enabled. */
+  reason?: string;
   name?: StudioNameId;
   subject?: string;
   keyboard?: boolean;
@@ -128,13 +151,12 @@ interface BindingOptions {
 function studioCommand<Id extends StudioCommandId>(
   id: Id, perform: () => void, options: BindingOptions, bound: boolean,
 ): StudioCommand & { readonly id: Id } {
-  const { enabled = true, name = id, subject, keyboard = true, glyph = glyphs[id], instance = '' } = options;
-  const viewPosition = projectWindowViews.indexOf(id as ProjectWindowView) + 1;
-  const shortcut = (shortcuts as Partial<Record<StudioCommandId, Shortcut>>)[id] ??
-    (viewPosition > 0 && viewPosition <= 9 ? primary(String(viewPosition)) : undefined);
+  const { name = id, subject, keyboard = true, glyph = glyphs[id], instance = '', reason } = options;
+  const enabled = reason === undefined && (options.enabled ?? true);
+  const shortcut = commandShortcut(id);
   const label = studioAccessibleName(name, subject);
   const command: StudioCommand & { readonly id: Id } = {
-    id, name, enabled, selectionScoped: selectionCommands.has(id), shortcut: keyboard ? shortcut : undefined,
+    id, name, enabled, reason, selectionScoped: selectionCommands.has(id), shortcut: keyboard ? shortcut : undefined,
     title: studioName(name), label, glyph,
     invoke: () => invokeGesture(command),
   };
@@ -155,9 +177,14 @@ export function unboundStudioCommand<Id extends StudioCommandId>(id: Id): Studio
   return studioCommand(id, () => {}, { enabled: false }, false);
 }
 
+const keyGlyphs: Record<string, string> = {
+  ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→', Backspace: '⌫', Escape: 'Esc',
+};
+
 export function shortcutLabel(shortcut: Shortcut) {
   return [
-    shortcut.control && '⌃', shortcut.alt && '⌥', shortcut.shift && '⇧', shortcut.primary && '⌘', shortcut.key,
+    shortcut.control && '⌃', shortcut.alt && '⌥', shortcut.shift && '⇧', shortcut.primary && '⌘',
+    keyGlyphs[shortcut.key] ?? shortcut.key,
   ].filter(Boolean).join('');
 }
 
@@ -168,11 +195,12 @@ function ariaShortcut(shortcut: Shortcut) {
 }
 
 export function commandAttributes(command: StudioCommand, placement?: 'bottom' | 'right') {
-  const label = studioName(command.name);
+  const label = command.reason === undefined ? studioName(command.name) : studioReasonedName(command.name, command.reason);
   return {
     'data-command-id': command.id,
     'aria-label': command.label,
     'aria-keyshortcuts': command.shortcut && ariaShortcut(command.shortcut),
+    'aria-description': command.reason,
     ...appTip(command.shortcut ? `${label} · ${shortcutLabel(command.shortcut)}` : label, placement),
   };
 }

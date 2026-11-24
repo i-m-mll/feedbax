@@ -403,6 +403,7 @@ test('keyboard reaches the last Runs column in a narrow split', async ({ page, r
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await mapStep(page, 'train').click();
   await page.getByRole('button', { name: 'Split Details', exact: true }).click();
+  await page.getByRole('tablist', { name: 'Details' }).getByRole('tab', { name: 'Model', exact: true }).click();
   await page.getByRole('button', { name: 'Show Details', exact: true }).click();
   await page.getByRole('tabpanel', { name: 'Runs', exact: true }).focus();
   await page.getByRole('button', { name: 'Hide Inspector', exact: true }).click();
@@ -479,7 +480,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   const upper = scene.getByRole('button', { name: 'Select upper', exact: true });
   await expect(upper).toBeVisible();
   const drawer = page.getByRole('complementary', { name: 'Details Drawer' });
-  await drawer.getByRole('region', { name: 'Bodies' }).getByRole('treeitem', { name: 'upper', exact: true }).click();
+  await drawer.getByRole('tree', { name: 'Outline' }).getByRole('treeitem', { name: 'upper', exact: true }).click();
   await expect(upper).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByRole('complementary', { name: 'Inspector' })).toContainText('upper.proximal');
   await scanStudio(page, info, 'train-scene-geometry');
@@ -581,7 +582,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   const rowless = page.getByRole('article', { name: 'Train rowless' });
   await rowless.getByRole('button', { name: "Can't run", exact: true }).click();
   await expect(list.getByRole('listitem')).toHaveCount(1);
-  await list.getByRole('button', { name: /absent-base/ }).click();
+  await list.getByRole('button', { name: 'Base · Absent base', exact: true }).click();
   await expect(mapStep(page, 'rowless')).toHaveAttribute('aria-pressed', 'true');
 
   await problemButton.click();

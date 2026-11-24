@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
-from typing import Annotated, Any, Literal
+import re
+from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import Field, JsonValue, StringConstraints, TypeAdapter, model_validator
 
@@ -20,7 +21,7 @@ from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_inputs import (
     DocumentReference as DocumentReference, InputBinding, NonemptyText, Pointer as Pointer, ProjectName, RowKey,
 )
-from feedbax.contracts.project_sweep import PatchPath, Sweep
+from feedbax.contracts.project_sweep import PatchPath, Sweep, TrialSetField
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID, TrainingDocument
 
@@ -28,6 +29,20 @@ type Payload = dict[str, JsonValue]
 type DifferencePointer = Annotated[Pointer, StringConstraints(min_length=1)]
 type Sha256 = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
 type StepKind = Literal["train", "evaluate", "analyze", "report"]
+
+
+class _LabelledMember(Protocol):
+    @property
+    def label(self) -> str | None: ...
+
+
+def member_display_name(key: str, label: str | None = None) -> str:
+    return label or re.sub(r"[-_]+", " ", key).capitalize()
+
+
+def member_name(members: Mapping[str, _LabelledMember], key: str) -> str:
+    member = members.get(key)
+    return member_display_name(key, member.label if member is not None else None)
 
 
 def json_pointer_parts(pointer: str | None) -> tuple[str, ...]:
@@ -134,6 +149,7 @@ def check_disjoint(differences: Differences) -> None:
 
 class DocumentBase(StrictModel):
     document: ProjectName
+    unresolved: Literal[True] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class BasedDocument(StrictModel):
@@ -232,7 +248,7 @@ def base_chain(documents: Mapping[str, Document], name: str) -> tuple[str, ...]:
     current: str | None = name
     while current is not None and current not in chain and (document := documents.get(current)) is not None:
         chain.append(current)
-        current = document.base.document if isinstance(document, BasedDocument) else None
+        current = document.base.document if isinstance(document, BasedDocument) and not document.base.unresolved else None
     return tuple(chain)
 
 
@@ -240,7 +256,7 @@ def based_on(documents: Mapping[str, Document], name: str) -> tuple[str, ...]:
     """The documents whose base is ``name``, by name."""
     return tuple(sorted(
         other for other, document in documents.items()
-        if isinstance(document, BasedDocument) and document.base.document == name
+        if isinstance(document, BasedDocument) and not document.base.unresolved and document.base.document == name
     ))
 
 
@@ -257,6 +273,7 @@ class InlineBase(StrictModel):
 class StepBase(StrictModel):
     step: ProjectName
     row: RowKey | None = None
+    unresolved: Literal[True] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class RunBase(StrictModel):
@@ -287,6 +304,7 @@ class Step(StrictModel):
     base: Base
     deltas: list[MatrixCompositionDelta] = Field(default_factory=list)
     sweep: Sweep | None = None
+    set_fields: dict[ProjectName, TrialSetField] = Field(default_factory=dict, exclude_if=lambda value: not value)
     inputs: dict[ProjectName, InputBinding | None] = Field(default_factory=dict)
     requires: list[PatchPath] = Field(default_factory=list)
     note: StepNote | None = None

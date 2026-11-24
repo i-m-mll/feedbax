@@ -105,8 +105,11 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
     if (focusedIndex >= 0) virtual.scrollToIndex(focusedIndex);
   }, [focusedIndex, virtual]);
 
+  /** Chrome's focus scrolls only a cell that is out of view, so a wide cell partly in view is scrolled to here. */
   function focusCell(row: HTMLTableRowElement, column: number) {
-    (column === 0 ? row.cells[0]?.querySelector('button') : row.cells[column])?.focus();
+    const target = column === 0 ? row.cells[0]?.querySelector('button') : row.cells[column];
+    target?.focus({ preventScroll: true });
+    target?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
 
   function navigate(event: KeyboardEvent<HTMLTableRowElement>, index: number) {
@@ -148,8 +151,8 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
   return (
       <Table aria-label={studioName("runs")} aria-rowcount={rows.length + 1} {...picking && { [rulePickSurface]: "" }}
         columns={[
-          { least: "2.5rem", fixed: true },
-          ...named ? [{ least: "10rem", fixed: true }] : [],
+          { least: "2.5rem", greatest: "2.5rem" },
+          ...named ? [{ least: "6rem", greatest: "16rem" }] : [],
           ...showVariant ? [{ least: "6rem" }] : [],
           ...sweeps.map(() => ({ least: "6rem" })),
           { least: "8rem" }, { least: "8rem" },

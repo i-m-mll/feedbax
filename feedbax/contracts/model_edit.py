@@ -13,9 +13,10 @@ from feedbax.contracts.model_document import (
     CompositeComponent, LeafComponent, ModelName, ModelPhysicalConnection,
     ModelDocument, ModelWire, PhysicalPort, SignalInput, SignalOutput, SignalType, WireAttachment,
 )
-from feedbax.contracts.jobs import StudioSavedTrainKey
+from feedbax.contracts.jobs import StudioProjectWindowMapProblem, StudioSavedTrainKey
 from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import AxisValueId, ProjectName, RowKey
+from feedbax.contracts.studio_scope import StudioStoreChoice
 from feedbax.contracts.request_refs import Name
 from feedbax.contracts.studio_project import StudioProjectSnapshot
 from feedbax.contracts.studio_project import StudioProjectFilePatch
@@ -26,10 +27,18 @@ class ModelPosition(StrictModel):
     y: Annotated[float, Field(allow_inf_nan=False)]
 
 
+class RegisteredComponent(StrictModel):
+    kind: Literal["definition"]
+    definition: Name
+
+
+type ComponentToPlace = LeafComponent | CompositeComponent | RegisteredComponent
+
+
 class AddComponent(StrictModel):
     op: Literal["add_component"]
     graph: ModelAddress
-    component: LeafComponent | CompositeComponent
+    component: ComponentToPlace
     position: ModelPosition
     id: ModelElementId | None = None
     connect_from: SignalSource | None = None
@@ -76,6 +85,7 @@ class ConnectSignal(StrictModel):
     graph: ModelAddress
     source: SignalSource
     target: SignalTarget
+    grow_source: bool = False
     grow_target: bool = False
 
 
@@ -85,6 +95,7 @@ class ConnectTaskSignal(StrictModel):
     run: StudioSavedTrainKey
     signal: str
     target: SignalTarget
+    grow_target: bool = False
 
 
 class ConnectPhysical(StrictModel):
@@ -132,7 +143,7 @@ class MoveWireAttachment(StrictModel):
 class InsertComponentOnWire(StrictModel):
     op: Literal["insert_component"]
     address: ModelAddress
-    component: LeafComponent | CompositeComponent
+    component: ComponentToPlace
     input_port: ModelElementId
     output_port: ModelElementId
     position: ModelPosition
@@ -212,22 +223,33 @@ class ModelEditProblem(StrictModel):
     detail: str
 
 
+class ModelGraphProblem(StrictModel):
+    address: ModelAddress
+    reason: str
+
+
+class ModelUngroupEligibility(StrictModel):
+    address: ModelAddress
+    reason: str | None
+
+
 class TaskSignalSource(StrictModel):
     owner: Literal["task"]
     run: StudioSavedTrainKey
     signal: str
 
 
-class ModelConnectionReviewRequest(StrictModel):
-    revision: Sha256
-    document: ProjectName
-    graph: ModelAddress
-    source: Annotated[SignalSource | TaskSignalSource, Field(discriminator="owner")]
+class ModelWireReplacement(StrictModel):
+    address: ModelAddress
+    attachments: tuple[ModelAddress, ...]
 
 
 class ModelConnectionVerdict(StrictModel):
     target: SignalTarget
     reason: str | None
+    problem: str | None = None
+    replaced: tuple[ModelWireReplacement, ...] = ()
+    growing: bool = False
 
 
 class ModelConnectionReview(StrictModel):
@@ -245,10 +267,17 @@ class ModelProjectionRequest(StrictModel):
     entry, the projection gives that value's differences from the step's Model."""
 
     revision: Sha256
-    run: StudioSavedTrainKey
+    run: StudioSavedTrainKey | None = None
     document: ProjectName
     rows: list[RowKey] = Field(default_factory=list)
     axes: dict[ProjectName, list[Name]] = Field(default_factory=dict)
+
+
+class ModelConnectionReviewRequest(ModelProjectionRequest):
+    graph: ModelAddress
+    source: Annotated[SignalSource | TaskSignalSource, Field(discriminator="owner")]
+    evaluate_scope: SelectedRuns | None = None
+    grow_source: bool = False
 
 
 class ModelPortProjection(StrictModel):
@@ -309,6 +338,7 @@ class ModelProjection(StrictModel):
     resolved_model: ModelDocument | None = None
     base_differences: tuple[ModelStructuralDifference, ...] = ()
     value_differences: tuple[ModelStructuralDifference, ...] = ()
+    ungroup: tuple[ModelUngroupEligibility, ...] = ()
 
 
 class ModelEditState(ModelLayout):
@@ -317,8 +347,10 @@ class ModelEditState(ModelLayout):
 
 class ModelEditResult(StrictModel):
     state: ModelEditState
+    relocations: dict[str, ModelAddress] = Field(default_factory=dict)
     changed: tuple[ModelAddress, ...] = ()
     clipboard: ModelClipboard | None = None
+    problems: tuple[ModelGraphProblem, ...] = ()
 
 
 class ModelEditRequest(StrictModel):
@@ -344,6 +376,7 @@ class ModelEditRequest(StrictModel):
     rows: list[RowKey] = Field(default_factory=list)
     axes: dict[ProjectName, list[Name]] = Field(default_factory=dict)
     files: list[StudioProjectFilePatch] = Field(default_factory=list)
+    store_choice: Sha256 | None = None
 
     @model_validator(mode="after")
     def _variant_has_step(self) -> ModelEditRequest:
@@ -412,6 +445,8 @@ class EvaluateModelState(StrictModel):
     changed_from: ProjectName | None = None
     """The nearest document the read Model document shares with the subject's, when they differ: what the
     evaluation changes is the read document's differences from it."""
+    problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
+    ungroup: tuple[ModelUngroupEligibility, ...] = ()
 
 
 class ModelEditApplied(StrictModel):
@@ -424,6 +459,8 @@ class ModelEditApplied(StrictModel):
     clipboard: ModelClipboard | None = None
     undo_token: ModelUndoToken | None = None
     created: tuple[ProjectName, ...] = ()
+    problems: tuple[ModelGraphProblem, ...] = ()
+    sweep_problems: tuple[StudioProjectWindowMapProblem, ...] = ()
 
 
 class ModelEditRefused(StrictModel):
@@ -431,5 +468,10 @@ class ModelEditRefused(StrictModel):
     problem: ModelEditProblem
 
 
+class ModelEditAsked(StrictModel):
+    status: Literal["asked"]
+    store_choices: list[StudioStoreChoice] = Field(min_length=1)
+
+
 class ModelEditResponse(StrictModel):
-    result: Annotated[ModelEditApplied | ModelEditRefused, Field(discriminator="status")]
+    result: Annotated[ModelEditApplied | ModelEditRefused | ModelEditAsked, Field(discriminator="status")]

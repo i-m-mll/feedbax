@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from pydantic import JsonValue
 
+from feedbax.contracts.expression_values import UnresolvedValue
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project import Step, json_pointer_parts
 from feedbax.contracts.project_sources import pointer
@@ -273,9 +274,14 @@ class FieldSweeps:
             return None
         values = []
         for value_id, entry in axis.values.items():
-            if entry is None or type(entry.value) not in (int, float):
+            if entry is None:
                 return None
-            values.append(StudioSweepValue(id=value_id, label=entry.label, value=entry.value))
+            value = entry.value
+            if isinstance(value, dict) and value.get("kind") == "unresolved":
+                value = UnresolvedValue.model_validate(value)
+            if not isinstance(value, UnresolvedValue) and type(value) not in (int, float):
+                return None
+            values.append(StudioSweepValue(id=value_id, label=entry.label, value=value))
         return StudioSweepList(kind="list", id=name, values=values, editable=editable)
 
     @staticmethod
@@ -339,7 +345,7 @@ class FieldSweeps:
         validate_number: Callable[[int | float], int | float],
     ) -> list[SetProjectValue]:
         if edit.kind == "toList" and isinstance(axis, (RangeAxis, SampledAxis, ListedAxis)) and self._can_list(axis):
-            return [self._axis_write(name, self.to_list(axis))]
+            return self.write_axis(self.to_list(axis))
         if not isinstance(axis, NamedAxis) or not self.may_edit_member(axis):
             raise ValueError(f"{self.label} has no editable list")
         values = axis.values

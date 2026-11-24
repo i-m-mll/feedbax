@@ -22,7 +22,7 @@ from feedbax.contracts._request_codec import same_typed_value
 from feedbax.contracts.analysis_document import AnalyzeDatasetInput, AnalyzeInput, AnalyzeModelInput, AnalyzeTaskInput
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.expression_values import Problem, ValueBase
+from feedbax.contracts.expression_values import Problem, TextSpan, UnresolvedValue, ValueBase
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, FigureDocument, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.graph import GraphSpec
@@ -39,7 +39,7 @@ from feedbax.contracts.studio_authoring import InputProducer, InputRole
 from feedbax.contracts.studio_place import StudioTaskStart, path_parts, task_start, variation_targets
 from feedbax.contracts.project import (
     DifferenceNotApplied, Differences, Document, InlineBase, Payload, Project, RootDocument, Step, StepBase, StepKind,
-    apply_differences, base_chain, diff, json_pointer_parts, nearest_shared_base,
+    apply_differences, base_chain, diff, json_pointer_parts, member_display_name, member_name, nearest_shared_base,
 )
 from feedbax.contracts.run_rule import RuleRefusal
 from feedbax.contracts.expression_text import RuleBest
@@ -101,6 +101,7 @@ from feedbax.contracts.project_sweep import (
     SweepInputMember,
     axis_coordinates,
     checkpoint_rule_write,
+    checkpoint_sweep_refusal,
     coordinate_text,
     expand_sweep,
     model_field_target,
@@ -108,7 +109,7 @@ from feedbax.contracts.project_sweep import (
 )
 from feedbax.contracts.project_sources import ValueSource, changed_sources, patch_source, place_source, pointer, source_shape
 from feedbax.contracts.report_document import ReportDocument
-from feedbax.contracts.set_document import model_slot, resolve_set_axes
+from feedbax.contracts.set_document import SetProblem, model_slot, resolve_set_axes
 from feedbax.contracts.request_identity import EncodedRequest, RequestDocumentMemo
 from feedbax.contracts.request_refs import (
     BarrierMember,
@@ -214,12 +215,11 @@ RESERVED_LABELS = frozenset({*STEP_LABELS, "variant", "member"})
 
 @dataclass(frozen=True)
 class LabelName:
-    """What a step-valued label value names: a step, an operation, a stored Train run by its request, or the Model
-    document of a model that was never trained."""
+    """What a coordinate value names in the project."""
 
     key: str
     label: str | None = None
-    kind: Literal["step", "run", "document", "element"] = "step"
+    kind: Literal["step", "row", "run", "document", "element"] = "step"
     card: str | None = None
     """The Analyze card holding an element, which tells apart elements of one key in two cards."""
 
@@ -229,7 +229,7 @@ class LabelName:
 
 
 type LabelNames = Mapping[str, Mapping[str, LabelName]]
-"""Each step-valued label's value IDs in one request, and what each names."""
+"""Each named coordinate's value IDs in one request, and what each names."""
 
 
 def label_value_names(labels: Mapping[str, MemberLabel], names: LabelNames) -> dict[str, str]:
@@ -416,6 +416,8 @@ class RunProblem:
     """The Model value a link at ``path`` is missing for."""
     variation_target: str | None = None
     """The dotted path the variation entry at ``path`` patches, which places the problem."""
+    sweep_source: ValueSource | None = None
+    """The authored sweep member that supplied the Model field at this Problem."""
 
 
 @dataclass(frozen=True)
@@ -513,6 +515,7 @@ class PlannedStep:
     inputs: Mapping[str, InputBinding] | None = None
     sweep: Sweep | None = field(default=None, compare=False)
     label: str | None = None
+    can_sweep_checkpoint: bool = False
 
 
 @dataclass(frozen=True)
@@ -592,6 +595,10 @@ class PlanSourceIndex:
             return template.source_leaf(row, parts[1:])
         except (KeyError, ValueError) as error:
             raise ValueError(f"Invalid saved source for {run.variant}/{run.step}/{run.row}: {error}") from error
+
+    def expanded_step(self, variant: str, step: str) -> tuple[StepTemplate, Mapping[str, ExpandedRow]]:
+        """The authored template and expanded rows used to resolve the step's sources."""
+        return self._templates(variant, step)
 
     def _model_field_source(
         self, template: StepTemplate, run: RunKey, row: ExpandedRow, parts: tuple[str, ...],
@@ -834,6 +841,8 @@ def _checkpoint(rule: CheckpointRule | None, *, horizon: int | None = None) -> P
             return UpdateSeriesMember(rule=rule, updates=rule.coordinates(horizon))
         case BarrierCheckpoint(barrier=name):
             return BarrierMember(name=name)
+        case UnresolvedValue():
+            raise ValueError("Expected a checkpoint rule.")
 
 
 def _update_outside_run(rule: CheckpointRule | None, origin: int, total: int) -> int | None:
@@ -859,8 +868,10 @@ def _paired_checkpoint_step(step: Step, reference: InputBinding | None) -> str |
     if (
         step.kind == "train"
         and isinstance(step.base, StepBase)
+        and not step.base.unresolved
         and step.base.row is None
         and isinstance(reference, StepReference)
+        and not reference.unresolved
         and reference.step == step.base.step
         and reference.row is None
         and reference.variants is None
@@ -947,6 +958,7 @@ class _ModelSource:
     trained: _TrainedSource | None = None
     unpaired: bool = False
     """The Train's Model, Task and Objective do not pair, so nothing evaluates what it would train."""
+    authored_model: ModelDocument | None = None
 
 
 @dataclass(frozen=True)
@@ -1030,6 +1042,8 @@ def _with_train_model(
 
 
 def _train_model_definition(definition: SelectedRunDefinition, model: _ModelSource) -> SelectedRunDefinition:
+    if model.authored_model is not None:
+        model = replace(model, model=model.authored_model)
     payload = _with_train_model(definition.payload, model, definition.document_ids, definition.document_pointers)
     prefix = ("trial_documents", "model")
     sources = dict(definition.sources)
@@ -1090,6 +1104,13 @@ def _sweep_problem(
     error: SweepExpansionError, *, step: str | None = None, variant: str | None = None,
     document: str | None = None,
 ) -> ProjectDiagnostic:
+    if isinstance(error, SetProblem):
+        path = pointer(error.location)
+        return ProjectDiagnostic(
+            ResolutionCode.INVALID_SWEEP, error.path, error.detail, step=step, variant=variant,
+            document=error.document, document_path=path,
+            authored_file=f"documents/{error.document}.json", authored_path="/payload" + path,
+        )
     address = None
     if error.target is not None:
         try:
@@ -1102,7 +1123,9 @@ def _sweep_problem(
             pass  # The sweep diagnostic already reports the malformed target.
     return ProjectDiagnostic(
         ResolutionCode.INVALID_SWEEP, error.path, error.detail, step=step, variant=variant,
-        document=document if address is not None else None, model_address=address,
+        document=document if address is not None else None, model_address=address, span=error.span,
+        authored_file=f"steps/{step}.json" if step else None,
+        authored_path=pointer(error.path.split(".")),
     )
 
 
@@ -1204,7 +1227,7 @@ class _Unpaired:
     ``payload`` is None when the Task does not resolve, so its trial rule does not lower."""
 
     payload: Payload | None
-    problem: ProjectDiagnostic
+    problems: tuple[ProjectDiagnostic, ...]
 
 
 def _map_problem[T](
@@ -1214,7 +1237,7 @@ def _map_problem[T](
     if isinstance(result, ProjectDiagnostic):
         return move(result)
     if isinstance(result, _Unpaired):
-        return replace(result, problem=move(result.problem))
+        return replace(result, problems=tuple(map(move, result.problems)))
     return result
 
 
@@ -1839,7 +1862,7 @@ class _Compiler:
                     continue
                 problems.append(ProjectDiagnostic(
                     ResolutionCode.INVALID_DOCUMENT, f"payload.{key.family}.{key.element}",
-                    f"{key.element!r} is also held by {key.holder}, which is unrelated to this document.",
+                    f"{member_name(self.variants[variant].documents, key.holder)} holds the same key in an unrelated document.",
                     document=key.document, element=key.element,
                     variant=None if key in everywhere else variant,
                 ))
@@ -2162,6 +2185,48 @@ class _Compiler:
                 if (subset := self.subsets.get((key.variant, key.step, input_id))) is not None:
                     yield at, subset
 
+    def sweep_problem_source(
+        self, problem: ProjectDiagnostic | RunProblem, composition: StepComposition, key: RunKey, row: ExpandedRow,
+    ) -> ValueSource | None:
+        if not row.patch_origins:
+            return None
+        paths = []
+        if problem.model_address is not None:
+            paths = [
+                path for path in row.patch_origins
+                if (target := model_field_target(path)) is not None and target.address == problem.model_address
+            ]
+        elif key.step and (setting := problem.path.removeprefix("payload.")).startswith("settings."):
+            parts = setting.split(".")
+            # A union validation path includes its selected class between the field and its parameter.
+            paths = [
+                path for path in row.patch_origins if path.startswith("settings.")
+                and path.split(".")[-1] == parts[-1]
+                and all(part in set(parts) for part in path.split("."))
+            ]
+        if len(paths) != 1:
+            return None
+        template = composition.bind(self.variants[key.variant], variant_sources=self.variant_sources.get(key.variant))
+        return template.sweep_source(row, paths[0])
+
+    def locate_sweep_problem(
+        self, problem: ProjectDiagnostic, composition: StepComposition, key: RunKey, row: ExpandedRow,
+    ) -> ProjectDiagnostic:
+        if problem.authored_path is not None or (origin := self.sweep_problem_source(problem, composition, key, row)) is None:
+            return problem
+        return replace(self.locate_authored_problem(problem, origin), code=ResolutionCode.INVALID_SWEEP)
+
+    def locate_sweep_run_problems(
+        self, problems: tuple[RunProblem, ...], composition: StepComposition, key: RunKey, row: ExpandedRow,
+    ) -> tuple[RunProblem, ...]:
+        return tuple(
+            replace(problem, sweep_source=source)
+            if problem.model_address is not None
+            and (source := self.sweep_problem_source(problem, composition, key, row)) is not None
+            and source.kind == "sweep_value" else problem
+            for problem in problems
+        )
+
     def lower_row(
         self,
         composition: StepComposition,
@@ -2173,6 +2238,7 @@ class _Compiler:
         definition: SelectedRunDefinition | None,
         train_rows: _TrainRows | None = None,
     ) -> _LoweredRow:
+        fields = self.variants[key.variant].steps[key.step].set_fields
         member = to_json(tuple(
             (role, binding.member.model_dump(mode="json")) for role, binding in sorted(inputs.items())
         ))
@@ -2195,13 +2261,12 @@ class _Compiler:
                 evaluation_graph=evaluation if isinstance(evaluation, GraphSpec) else None,
                 evaluation_problem=evaluation if isinstance(evaluation, ProjectDiagnostic) else None,
             )
-        source_stamp = (
-            tuple(source.stamp if source is not None else None for source in (
-                self.model_sources.get(producer) for producer in subject.candidates
-            ))
-            if subject is not None and subject.candidates else
-            (model_source.stamp,) if model_source is not None else ()
+        source_models = (
+            tuple(self.model_sources.get(producer) for producer in subject.candidates)
+            if subject is not None and subject.candidates
+            else (model_source,) if model_source is not None else ()
         )
+        source_stamp = tuple(source.stamp if source is not None else None for source in source_models)
         source_problem = model_source.evaluation_problem if model_source is not None else None
         checkpoint = inputs.get("checkpoint") if kind == "train" else None
         trained = self.model_sources.get(checkpoint.producer) if checkpoint is not None and checkpoint.producer else None
@@ -2227,18 +2292,30 @@ class _Compiler:
                 document_ids = definition.document_ids
                 document_uses = definition.document_uses
                 document_pointers = definition.document_pointers
+            if fields:
+                document_uses = document_uses | frozenset(field.axis.set for field in fields.values())
             authored_model = None
             prepared_train = None
             remember_train = None
             train = _train_facts(payload, self.python_tasks) if kind == "train" else None
             has_differences = MODEL_ATTACHMENTS in payload
+            model_lineage = ()
+            if kind == "evaluate" and (document := document_ids.get(EVALUATION_MODEL)) is not None:
+                authored = self.variants[key.variant].documents
+                names = (document, *(source.document for source in source_models if source and source.document))
+                model_lineage = tuple(base_chain(authored, name) for name in names)
+                if reader is not None:
+                    for chain in model_lineage:
+                        for name in chain:
+                            reader(name)
             lowering_stamp = (
                 _RowLoweringStamp(kind, sha256_bytes(to_json((
-                    payload, tuple(sorted(document_ids.items())), tuple(sorted(document_pointers.items())), source_stamp,
+                    payload, tuple(sorted(document_ids.items())), tuple(sorted(document_pointers.items())),
+                    source_stamp, model_lineage,
                 ))), member)
-                if basis is not None else None
+                if basis is not None and not fields else None
             )
-            if previous is not None and previous.lowering_stamp == lowering_stamp:
+            if previous is not None and lowering_stamp is not None and previous.lowering_stamp == lowering_stamp:
                 return replace(
                     previous, document_ids=document_ids, document_uses=document_uses,
                 )
@@ -2261,7 +2338,7 @@ class _Compiler:
                 trial = payload.get("trial_documents")
                 if (
                     train_rows is not None and isinstance(trial, dict)
-                    and train_rows.resolution.contains(trial) and not has_differences
+                    and train_rows.resolution.contains(trial) and not has_differences and not fields
                 ):
                     if (entry := train_rows.prepared) is not None and entry[0] is trial:
                         prepared_train = entry[1]
@@ -2270,6 +2347,38 @@ class _Compiler:
                             train_rows.prepared = trial, prepared
                 if prepared_train is None:
                     payload, authored_model = self.lower_train_model(key, payload, document_ids, document_pointers)
+                from feedbax.compiler.set_fields import SetFieldProblem, has_trial_windows, lower_trial_sets
+
+                if isinstance(payload, dict) and authored_model is not None and (
+                    fields or has_trial_windows(authored_model.model)
+                ):
+                    trial = payload["trial_documents"]
+                    try:
+                        authored_task = TaskDocument.model_validate(trial.get("task"))
+                        model, task = lower_trial_sets(
+                            authored_model.model, authored_task, fields,
+                            reader or self.variants[key.variant].documents.get,
+                        )
+                    except (SetFieldProblem, ValidationError) as error:
+                        if isinstance(error, SetFieldProblem):
+                            place = ("set_fields", error.axis)
+                            if error.entry is not None:
+                                place = (*place, "entries", error.entry)
+                            problem = RunProblem(pointer(place), str(error))
+                        else:
+                            problem = RunProblem("/trial_documents/task", "A Set field needs a Task document.")
+                        return _LoweredRow(
+                            None, (), lowering_stamp, problems=(problem,), document_ids=document_ids,
+                            document_uses=document_uses, train=train,
+                        )
+                    authored_model = replace(
+                        authored_model, model=model, authored_model=authored_model.model,
+                        stamp=sha256_bytes(to_json((authored_model.document, model.model_dump(mode="json")))),
+                    )
+                    payload = _with_train_model(payload, authored_model, document_ids, document_pointers)
+                    trial = payload["trial_documents"]
+                    trial["task"] = task.model_dump(mode="json")
+                    train = _train_facts(payload, self.python_tasks)
             elif kind == "evaluate":
                 reference = subject.member.reference if subject is not None else None
                 read = reader or self.variants[key.variant].documents.get
@@ -2283,19 +2392,21 @@ class _Compiler:
                         key, payload, model_source, reference, has_differences, document_ids, read,
                     )
             if isinstance(payload, ProjectDiagnostic):
+                payload = self.locate_sweep_problem(payload, composition, key, row)
                 return _LoweredRow(
                     None, (payload,), lowering_stamp, document_ids=document_ids, document_uses=document_uses,
                     train=train,
                 )
             refusals: tuple[RunProblem, ...] = ()
             if isinstance(payload, _Unpaired):
-                unpaired = payload.problem
-                refusals = (RunProblem(
-                    unpaired.path, unpaired.detail, unpaired.model_address, unpaired.variation_target,
-                ),)
+                refusals = tuple(
+                    RunProblem(problem.path, problem.detail, problem.model_address, problem.variation_target)
+                    for problem in payload.problems
+                )
                 if payload.payload is None:
                     return _LoweredRow(
-                        None, (), lowering_stamp, problems=refusals, document_ids=document_ids,
+                        None, (), lowering_stamp,
+                        problems=self.locate_sweep_run_problems(refusals, composition, key, row), document_ids=document_ids,
                         document_uses=document_uses, train=train,
                     )
                 payload = payload.payload
@@ -2309,11 +2420,13 @@ class _Compiler:
             )
             return replace(
                 lowered,
+                diagnostics=tuple(self.locate_sweep_problem(problem, composition, key, row)
+                                  for problem in lowered.diagnostics),
                 document_ids=document_ids,
                 document_uses=document_uses,
                 model_source=lowered.model_source or authored_model,
                 train=train,
-                problems=(*refusals, *lowered.problems),
+                problems=self.locate_sweep_run_problems((*refusals, *lowered.problems), composition, key, row),
             )
 
         if self.previous is None:
@@ -2322,7 +2435,8 @@ class _Compiler:
             self.previous.rows,
             self.work.rows,
             key,
-            (kind, basis, to_json(tuple(row.patches.items())), tuple(sorted(inputs.items())), source_stamp),
+            (kind, basis, to_json(tuple(row.patches.items())), tuple(sorted(inputs.items())), source_stamp,
+             to_json({name: value.model_dump(mode="json") for name, value in fields.items()})),
             self.authored_inputs[key.variant],
             lower,
         )
@@ -2340,7 +2454,7 @@ class _Compiler:
         paired = resolve_trial_execution(
             authored.model, authored.task_source,
             components, self.functions or _builtin_expression_registry(),
-            python_tasks=self.python_tasks, objective=authored.objective, input_overrides=authored.input_overrides,
+            python_tasks=self.python_tasks, objective=authored.objective, input_bindings=authored.input_bindings,
         )
         result: _TrainPreparation | tuple[Problem, ...]
         if isinstance(paired, tuple):
@@ -2469,10 +2583,8 @@ class _Compiler:
                 return problem(EVALUATION_MODEL, "Name a Model document.")
             shared = nearest_shared_base(documents, subject, name) if subject is not None else None
             if shared is None:
-                return replace(
-                    problem(EVALUATION_MODEL, f"Shares no document with {subject}." if subject else "Requires a subject Model document."),
-                    code=ResolutionCode.BAD_REFERENCE,
-                )
+                detail = f"Shares no document with {member_name(documents, subject)}." if subject else "Requires a subject Model document."
+                return replace(problem(EVALUATION_MODEL, detail), code=ResolutionCode.BAD_REFERENCE)
             base = compose_document(read, shared)
             if isinstance(base, ProjectDiagnostic):
                 return replace(base, step=key.step, row=key.row, variant=key.variant)
@@ -2501,7 +2613,7 @@ class _Compiler:
             return self.lower_evaluate_trials(key, payload, reference, model_source)
         original = payload.get("params")
         lowered = self.lower_evaluate_model(key, payload, model_source, reference, model)
-        if isinstance(lowered, ProjectDiagnostic):
+        if isinstance(lowered, (ProjectDiagnostic, _Unpaired)):
             return lowered
         result = self.lower_evaluate_trials(key, lowered, reference, model_source)
         # Derived Model patches append to an ordered copy. Report a Task
@@ -2531,7 +2643,7 @@ class _Compiler:
         self, template: StepComposition, key: RunKey, row: ExpandedRow,
     ) -> tuple[_LoweredRow, dict[str, PlannedInput]]:
         from feedbax.compiler.model_document import ModelCompilationProblem
-        from feedbax.execution.trial_resolution import evaluation_conditions, pair_trial_source
+        from feedbax.execution.trial_resolution import evaluation_conditions, model_compilation_problems, pair_trial_source
         from feedbax.contracts.rollout import CannotRun
         from feedbax.tasks.registry import resolve_python_task_instance
         from feedbax.training.evaluation_variant import resolve_evaluation_variant
@@ -2582,7 +2694,7 @@ class _Compiler:
                 return _LoweredRow(None, (problem,)), {}
             paired = pair_trial_source(
                 source.document, task, components, functions,
-                python_tasks=tasks, input_overrides=settings.input_overrides,
+                python_tasks=tasks, input_bindings=settings.input_bindings,
             )
             unpaired = paired if isinstance(paired, tuple) else paired.problems
             refusals = _trial_problems(unpaired, source.document, initial=True)
@@ -2595,12 +2707,15 @@ class _Compiler:
                 if variant.task != task:
                     paired = pair_trial_source(
                         source.document, variant.task, components, functions,
-                        python_tasks=tasks, input_overrides=settings.input_overrides, graph_override=variant.graph,
+                        python_tasks=tasks, input_bindings=settings.input_bindings, graph_override=variant.graph,
                     )
                     conditions = evaluation_conditions(variant.task, tasks)
                     if isinstance(paired, tuple) or paired.problems:
-                        refusal = variant.task_refusal((paired if isinstance(paired, tuple) else paired.problems)[0])
-                        refusals = (RunProblem(refusal.path, refusal.reason),)
+                        problems = paired if isinstance(paired, tuple) else paired.problems
+                        refusals = tuple(
+                            RunProblem(refusal.path, refusal.reason, problem.model_address)
+                            for problem, refusal in ((item, variant.task_refusal(item)) for item in problems)
+                        )
             trials = resolve_trial_ids(raw["trial_set"], conditions)
             payload = payload | {"params": {
                 **{name: value for name, value in raw.items() if name != "trial_set"},
@@ -2611,14 +2726,16 @@ class _Compiler:
                 key, "evaluate", payload, inputs, None, self.work.request_documents,
                 self.prepare_train_trial, resolved.document_ids, self.python_tasks,
             )
+            problems = (*refusals, *narrowed.problems) if narrowed.request is not None else narrowed.problems
             return replace(
                 narrowed, document_ids=resolved.document_ids, document_uses=resolved.document_uses,
-                problems=(*refusals, *narrowed.problems) if narrowed.request is not None else narrowed.problems,
+                problems=self.locate_sweep_run_problems(problems, template, key, row),
             ), inputs
         except ModelCompilationProblem as error:
-            problem = _model_difference_problem(key, resolved.document_ids.get("inputs.subject"), error.address, str(error))
+            problems = _trial_problems(model_compilation_problems(error), None, initial=True)
             return _LoweredRow(
-                None, (problem,), document_ids=resolved.document_ids, document_uses=resolved.document_uses,
+                None, (), problems=self.locate_sweep_run_problems(problems, template, key, row),
+                document_ids=resolved.document_ids, document_uses=resolved.document_uses,
             ), {}
         except (KeyError, ValueError) as error:
             return _LoweredRow(None, (ProjectDiagnostic(
@@ -2657,7 +2774,9 @@ class _Compiler:
                 return replace(lowered, detail=f"Best candidate {name}: {lowered.detail}")
             if isinstance(lowered, _Unpaired):
                 unpaired = unpaired or replace(
-                    lowered, problem=replace(lowered.problem, detail=f"Best candidate {name}: {lowered.problem.detail}"),
+                    lowered, problems=tuple(
+                        replace(problem, detail=f"Best candidate {name}: {problem.detail}") for problem in lowered.problems
+                    ),
                 )
                 if lowered.payload is None:
                     return unpaired
@@ -2703,25 +2822,27 @@ class _Compiler:
                 model_source.evaluation_graph, documents.task_source, settings.variation,
                 components=self.components or _builtin_model_registry(),
             )
-            refusal = None
-            if any(target[0] == "task" for target in variant.edit_origins):
+            refusals = ()
+            if settings.input_bindings or any(target[0] == "task" for target in variant.edit_origins):
                 pairing = pair_trial_source(
                     documents.model, variant.task,
                     self.components or _builtin_model_registry(), self.functions or _builtin_expression_registry(),
-                    python_tasks=self.python_tasks, input_overrides=documents.input_overrides,
+                    python_tasks=self.python_tasks, input_bindings=documents.input_bindings | settings.input_bindings,
                     graph_override=variant.graph,
                 )
                 problems = pairing if isinstance(pairing, tuple) else pairing.problems
                 if problems:
-                    cannot = variant.task_refusal(problems[0])
-                    refusal = ProjectDiagnostic(
-                        ResolutionCode.INVALID_PAYLOAD, cannot.path, cannot.reason, key.step,
-                        row=key.row, variant=key.variant, model_address=problems[0].model_address,
+                    refusals = tuple(
+                        ProjectDiagnostic(
+                            ResolutionCode.INVALID_PAYLOAD, cannot.path, cannot.reason, key.step,
+                            row=key.row, variant=key.variant, model_address=problem.model_address,
+                        )
+                        for problem, cannot in ((item, variant.task_refusal(item)) for item in problems)
                     )
                     if isinstance(variant.task, PythonTaskSelection) and isinstance(
                         resolve_python_task_instance(variant.task, self.python_tasks), tuple,
                     ):
-                        return _Unpaired(None, refusal)
+                        return _Unpaired(None, refusals)
                     conditions = evaluation_conditions(variant.task, self.python_tasks)
                 else:
                     conditions = pairing.task.condition_ids
@@ -2731,7 +2852,7 @@ class _Compiler:
             lowered = payload | {"params": {name: value for name, value in raw.items() if name != "trial_set"} | {
                 "trials": list(trials),
             }}
-            return _Unpaired(lowered, refusal) if refusal is not None else lowered
+            return _Unpaired(lowered, refusals) if refusals else lowered
         except ValueError as error:
             return ProjectDiagnostic(
                 ResolutionCode.INVALID_PAYLOAD,
@@ -2751,7 +2872,7 @@ class _Compiler:
     def lower_evaluate_model(
         self, key: RunKey, payload: Payload, model_source: _ModelSource | None, reference: object,
         model: _EvaluationModel | None = None,
-    ) -> Payload | ProjectDiagnostic:
+    ) -> Payload | ProjectDiagnostic | _Unpaired:
         from feedbax.compiler.model_attachment import lower_evaluate_attachments
         from feedbax.compiler.model_document import ModelCompilationProblem
         from feedbax.compiler.graph_schema import validate_graph_connection_schema
@@ -2823,8 +2944,11 @@ class _Compiler:
                 "variation": [edit.model_dump(mode="json", exclude_unset=True) for edit in variation],
             }}
         except ModelCompilationProblem as error:
-            address = error.address
-            detail = str(error)
+            return _Unpaired(None, tuple(
+                _model_difference_problem(key, document, problem.address, problem.reason,
+                                          path=pointer(problem.address.stored_path()))
+                for problem in error.problems
+            ))
         except CannotRun as error:
             return _model_difference_problem(key, document, address, error.reason, path=error.path)
         except ValueError as error:
@@ -2859,6 +2983,9 @@ class _Compiler:
             return ()
         self.steps[variant, name] = replace(
             step, inputs=MappingProxyType(deepcopy(dict(template.inputs))), sweep=template.sweep,
+            can_sweep_checkpoint=kind == "evaluate" and checkpoint_sweep_refusal(
+                authored.inputs.get("subject"), template.sweep, project_swept=self.project.sweep is not None,
+            ) is None,
         )
         sweep = template.sweep
         if sweep is not None:
@@ -3028,6 +3155,26 @@ class _Compiler:
     ) -> ProductSelector | None | ProjectDiagnostic:
         """The selector an Evaluate row's checkpoint rule makes, or why the rule does not parse or asks for an update
         outside its producer's run. Both need only the rule and the producer's extent, so a blocked row has them too."""
+        path = f"{_selection_path(subject, 'subject', chosen.selection)}.checkpoint"
+        origin = row.patch_origins.get(CHECKPOINT_RULE_TARGET)
+        authored_path = None
+        if origin is not None:
+            match origin:
+                case ("sweep_value", axis, value):
+                    authored_path = pointer(("sweep", "axes", axis, "values", value, "patches", CHECKPOINT_RULE_TARGET, "value"))
+                case ("exception", exception):
+                    authored_path = pointer(("sweep", "exceptions", exception, "patches", CHECKPOINT_RULE_TARGET, "value"))
+                case ("row", row_id):
+                    authored_path = pointer(("sweep", "rows", row_id, "patches", CHECKPOINT_RULE_TARGET, "value"))
+        author = row.patch_authors.get(CHECKPOINT_RULE_TARGET, name)
+
+        def problem(detail: str, span: TextSpan | None = None) -> ProjectDiagnostic:
+            return ProjectDiagnostic(
+                ResolutionCode.BAD_REFERENCE, path, detail, name, row=row.id, variant=variant, span=span,
+                authored_file=f"steps/{author}.json",
+                authored_path=authored_path or pointer(tuple(path.split("."))),
+            )
+
         try:
             write = row.patches.get(CHECKPOINT_RULE_TARGET)
             chosen_subject = chosen.selection if chosen.selection is not None else subject
@@ -3038,27 +3185,23 @@ class _Compiler:
             )
             if rule is None and has_checkpoint_axis:
                 raise ValueError("The selected row has no checkpoint rule")
+            if isinstance(rule, UnresolvedValue):
+                return problem("Expected a checkpoint rule.", TextSpan(start=0, end=len(rule.text)))
             horizon = None
             if isinstance(rule, UpdateCadence) and chosen.producer is not None:
                 facts = self.rows[chosen.producer].train
                 horizon = facts.target_total if facts is not None else None
             selector = _checkpoint(rule, horizon=horizon)
         except (OSError, ValueError) as error:
-            return ProjectDiagnostic(
-                ResolutionCode.BAD_REFERENCE, "inputs.subject.checkpoint", str(error),
-                name, row=row.id, variant=variant,
-            )
+            return problem(str(error))
         facts = self.rows[chosen.producer].train if chosen.producer is not None else None
         if facts is not None and facts.origin is not None and facts.target_total is not None and (
             outside := _update_outside_run(rule, facts.origin, facts.target_total)
         ) is not None:
             assert chosen.producer is not None
-            return ProjectDiagnostic(
-                ResolutionCode.BAD_REFERENCE,
-                f"{_selection_path(subject, 'subject', chosen.selection)}.checkpoint",
+            return problem(
                 f"Update {outside} is outside {chosen.producer.step!r}, "
                 f"which runs updates {facts.origin + 1} to {facts.target_total}.",
-                name, row=row.id, variant=variant,
             )
         return selector
 
@@ -3253,9 +3396,8 @@ class _Compiler:
         except ValueError as error:
             problem("payload.inputs", str(error))
             return ()
-        if unknown := template.inputs.keys() - declarations.keys():
-            problem(f"inputs.{min(unknown)}", "The Analyze document does not declare this role.")
-            return ()
+        for unknown in sorted(template.inputs.keys() - declarations.keys()):
+            problem(f"inputs.{unknown}", "The Analyze document does not declare this role.")
         selected = {}
         document_refs = {}
         for name_of_role, declaration in declarations.items():
@@ -3267,29 +3409,29 @@ class _Compiler:
                 expected = AnalyzeModelInput if isinstance(reference, InitialModelReference) else AnalyzeTaskInput
                 if not isinstance(declaration, expected):
                     problem(path, f"A document reference cannot supply a {declaration.kind} role of this kind.")
-                    return ()
+                    continue
                 document_refs[name_of_role] = reference
                 continue
             if isinstance(declaration, AnalyzeTaskInput):
                 problem(path, "A Task role requires a Task document reference.")
-                return ()
+                continue
             if isinstance(declaration, AnalyzeModelInput):
                 if not isinstance(reference, StepReference) or (
                     reference.checkpoint not in (None, "last") and not isinstance(reference.checkpoint, BatchCheckpoint)
                 ):
                     problem(path, "Select an initial Model document or a Train row's terminal or exact-update checkpoint.")
-                    return ()
+                    continue
                 if isinstance(reference.checkpoint, BatchCheckpoint) and not (
                     0 < reference.checkpoint.at <= MAX_CHECKPOINT_COORDINATE
                 ):
                     problem(f"{path}.checkpoint", "Select a positive completed Train update.")
-                    return ()
+                    continue
             role = _analyze_role(name_of_role, declaration)
             assert role is not None
             resolved = self.select_input(variant, name, template, role, active)
             if isinstance(resolved, ProjectDiagnostic):
                 self.diagnostics.append(replace(resolved, variant=variant))
-                return ()
+                continue
             members, _, subsets = resolved
             if isinstance(declaration, AnalyzeModelInput) and reference.checkpoint is None:
                 members = tuple((replace(binding, member=binding.member.model_copy(update={
@@ -3321,26 +3463,25 @@ class _Compiler:
                 else:
                     candidates = ", ".join(binding.member.key for binding, _ in members)
                     problem(f"inputs.{role}", f"Select one member from {candidates}.", row.id)
-                    break
-            else:
-                if self.block_row(key, template, row, inputs):
+            if self.block_row(key, template, row, inputs):
+                continue
+            definition = self.select_definition(template, key, row, inputs)
+            resolved = definition if definition is not None else self.resolve_row(template, key, row, None)
+            if isinstance(resolved, ProjectDiagnostic):
+                self.diagnostics.append(replace(resolved, variant=variant))
+                continue
+            for role, reference in document_refs.items():
+                if role not in resolved.input_documents:
                     continue
-                definition = self.select_definition(template, key, row, inputs)
-                resolved = definition if definition is not None else self.resolve_row(template, key, row, None)
-                if isinstance(resolved, ProjectDiagnostic):
-                    self.diagnostics.append(replace(resolved, variant=variant))
+                try:
+                    binding = plan_document_input(
+                        reference, resolved.input_documents[role], self.documents, python_tasks=self.python_tasks,
+                    )
+                except ValueError as error:
+                    problem(f"inputs.{role}", str(error), row.id)
                     continue
-                for role, reference in document_refs.items():
-                    try:
-                        binding = plan_document_input(
-                            reference, resolved.input_documents[role], self.documents, python_tasks=self.python_tasks,
-                        )
-                    except (KeyError, ValueError) as error:
-                        problem(f"inputs.{role}", str(error), row.id)
-                        break
-                    inputs[role] = (binding,)
-                else:
-                    runs.append(self.lower_analyze_row(template, key, inputs, resolved))
+                inputs[role] = (binding,)
+            runs.append(self.lower_analyze_row(template, key, inputs, resolved))
         return tuple(runs)
 
     def lower_analyze_row(
@@ -3354,11 +3495,15 @@ class _Compiler:
 
         assert self.operations is not None
         evaluations = {
-            producer.request_id: request_identity.decode_request(
-                self.requests[producer.request_id], self.documents.__getitem__,
-            ).spec
+            source.producer: (
+                request_identity.decode_request(
+                    self.requests[producer.request_id], self.documents.__getitem__,
+                ).spec,
+                LabelName(source.producer.row, self.rows[source.producer].label, kind="row"),
+            )
             for sources in inputs.values() for source in sources
-            if isinstance(producer := source.member.reference, ProductRef)
+            if source.producer is not None
+            and isinstance(producer := source.member.reference, ProductRef)
             and producer.request_id.startswith("evaluate:")
         }
         elements, encoded, problems, figures = lower_analyze(
@@ -3420,7 +3565,7 @@ class _Compiler:
             if members else None
 
         def refusal(detail: str, field: str = path) -> ProjectDiagnostic:
-            return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, field, detail, name)
+            return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, field, detail, name, span=best.span)
 
         axes = tuple(sorted(best.per))
         if len(set(axes)) != len(axes):
@@ -3545,8 +3690,11 @@ class _Compiler:
         for label, coordinate in {"model": SweepCoordinate(name.key, name.label), **trained}.items():
             prior = coordinates.setdefault(label, coordinate)
             if prior.value_id != coordinate.value_id:
+                project = self.variants[run.key.variant]
+                step_name = member_name(project.steps, run.key.step)
+                subject_name = member_name(project.documents, name.key) if name.kind == "document" else name.printed
                 raise ValueError(
-                    f"{run.key.step}/{run.key.row} and its subject {name.key!r} "
+                    f"{step_name}/{run.key.row} and its subject {subject_name!r} "
                     f"give label {label!r} different values"
                 )
         return coordinates
@@ -3702,6 +3850,9 @@ class _Compiler:
                 "a same-project step or row reference is required",
                 name,
             )
+        if reference.unresolved:
+            target = reference.element or reference.step
+            return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, f"Unresolved target {member_display_name(target)}.", name)
         if role.operation_outputs and reference.element is not None and reference.product is not None:
             role = replace(role, producer_kind="analyze", product_role=reference.product)
         element_input = role.producer_kind == "analyze"
@@ -3730,6 +3881,11 @@ class _Compiler:
         subset_document = None
         if isinstance(terms, NamedSubset):
             subset_document = terms.subset
+            if terms.unresolved:
+                return ProjectDiagnostic(
+                    ResolutionCode.MISSING_DOCUMENT, f"{path}.where", member_display_name(subset_document),
+                    name, document=subset_document,
+                )
             document = compose_document(self.variants[variant].documents.get, subset_document)
             if isinstance(document, ProjectDiagnostic):
                 return replace(document, path=f"{path}.where", step=name)
@@ -3770,15 +3926,16 @@ class _Compiler:
         for source_variant in variants:
             target = source_variant, reference.step
             if target in active:
-                chain = " -> ".join(f"{v}/{s}" for v, s in (*active, target))
+                chain = " -> ".join(f"{v}/{member_name(self.variants[v].steps, s)}" for v, s in (*active, target))
                 return ProjectDiagnostic(ResolutionCode.STEP_CYCLE, path, chain, name)
             project = self.variants.get(source_variant)
             producer = project.steps.get(reference.step) if project is not None else None
             if producer is None or producer.kind != role.producer_kind:
+                label = member_name(project.steps if project is not None else self.project.steps, reference.step)
                 return ProjectDiagnostic(
                     ResolutionCode.BAD_REFERENCE,
                     path,
-                    f"{source_variant}/{reference.step} must be a {role.producer_kind} step",
+                    f"{source_variant}/{label} must be a {role.producer_kind} step",
                     name,
                 )
             self.step(*target, active)
@@ -3807,11 +3964,17 @@ class _Compiler:
                 address=lambda run: (run.key.variant, run.key.row),
                 member_key=member_key,
                 coordinates=lambda run: axis_coordinates(run.coordinates, run.input_axes),
-                producer=self.variants[variants[0]].steps[reference.step].label or reference.step,
+                producer=member_name(self.variants[variants[0]].steps, reference.step),
             )
         except RuleRefusal as error:
             return ProjectDiagnostic(
-                ResolutionCode.BAD_REFERENCE, f"{path}.where.{error.path}", error.detail, name
+                ResolutionCode.BAD_REFERENCE, f"{path}.where.{error.path}", error.detail, name, span=error.span,
+                document=subset_document,
+                document_path=f"/{error.path}" if subset_document is not None else None,
+                authored_file=f"documents/{subset_document}.json" if subset_document is not None else None,
+                authored_path=f"/payload/{error.path}" if subset_document is not None else pointer(
+                    (*path.split("."), "where", error.path),
+                ),
             )
         expands_input = template.sweep is not None and any(
             isinstance(axis, InputAxis) and axis.input == role.name
@@ -3821,7 +3984,7 @@ class _Compiler:
             return ProjectDiagnostic(
                 ResolutionCode.BAD_REFERENCE,
                 path,
-                f"no rows of {reference.step!r} are selected",
+                f"No rows of {member_name(self.variants[variants[0]].steps, reference.step)} are selected.",
                 name,
             )
         rule = None if role.name == "subject" else reference.checkpoint

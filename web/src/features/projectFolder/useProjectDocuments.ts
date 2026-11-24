@@ -3,7 +3,7 @@ import { catalogEntries, readStudioTrialAuthoring, useAuthoringCatalog } from '@
 import { landsOnGesture } from '@/api/request';
 import { shownError } from '@/api/shownErrors';
 import {
-  studioAccessibleName, studioName, studioSweptParameterMissing, type StudioNameId,
+  studioAccessibleName, studioName, type StudioNameId,
 } from '@/components/activity/studioVocabulary';
 import { shownName } from '@/features/pipeline/planView';
 import type { DocumentPickerModel, PickerTemplate } from '@/features/projectWindow/DocumentPicker';
@@ -12,7 +12,8 @@ import type {
   Document, StudioProjectFilePatch, StudioSavedTrainKey, StudioTrialAuthoringRequest,
 } from '@/generated/studioContracts';
 import type { ProjectEditController } from './projectEditController';
-import { generatedName, holds } from './generatedName';
+import { baseOf, documentPayload } from './documentPayload';
+import { generatedName, holds, keyOfLabel } from './generatedName';
 
 export type DocumentRole = 'model' | 'task' | 'objective' | 'training' | 'analysis' | 'report';
 
@@ -66,9 +67,26 @@ export interface ProjectDocumentInputs {
   /** The roles in which the step may point at another document, as opposed to editing the one it has. */
   readonly selectable: ReadonlySet<DocumentRole>;
   readonly editable: boolean;
-  /** The based documents whose Detach would leave an Evaluate step's Model document unrelated to its subject's. */
-  readonly detachRefused?: readonly string[];
   readonly onError: (error: unknown) => void;
+}
+
+/** The role whose documents `document` is among. */
+export function roleOf(document: Document) {
+  return (Object.keys(schemas) as DocumentRole[]).find((role) => schemas[role].includes(document.schema));
+}
+
+/**
+ * `document` as a file of a project that holds `documents`: labelled with its own label, or its role's name, numbered
+ * while another document of its role shows that label, and keyed by that label.
+ */
+export function namedDocument(documents: Readonly<Record<string, Document>> | null | undefined, document: Document) {
+  const role = roleOf(document);
+  if (!role) throw new Error(`No role reads documents of schema ${document.schema}.`);
+  const all = documents ?? {};
+  const shown = new Set(documentsOfRole({ documents: all }, role).map((key) => shownName(key, all[key])));
+  const label = generatedName(document.label ?? studioName(role), (label) => shown.has(label), ' ');
+  const id = generatedName(keyOfLabel(label) || role, holds(all));
+  return { id, document: { ...document, label } as Document };
 }
 
 /** The project's documents a step can read in `role`, by name. */
@@ -79,12 +97,13 @@ export function documentsOfRole(project: { documents?: Readonly<Record<string, D
 
 /** `name` and the documents based on it, to any depth. */
 export function documentFamily(project: { documents?: Readonly<Record<string, Document>> | null }, name: string) {
-  const all = Object.entries(project.documents ?? {});
+  const all = Object.keys(project.documents ?? {});
   const family = new Set([name]);
   for (let grew = true; grew;) {
     grew = false;
-    for (const [id, document] of all) {
-      if (!family.has(id) && 'base' in document && family.has(document.base.document)) {
+    for (const id of all) {
+      const base = baseOf(project.documents, id);
+      if (!family.has(id) && base !== undefined && family.has(base)) {
         family.add(id);
         grew = true;
       }
@@ -101,21 +120,24 @@ export function documentTree(project: { documents?: Readonly<Record<string, Docu
 /** The documents of the `schemas`, each followed by the documents based on it, with its depth below its root. */
 export function documentTreeOf(project: { documents?: Readonly<Record<string, Document>> | null }, schemas: readonly string[]) {
   const all = project.documents ?? {};
-  const names = Object.keys(all).filter((id) => schemas.includes(all[id].schema)).sort();
-  const baseOf = (name: string) => {
-    const document = all[name];
-    return 'base' in document && names.includes(document.base.document) ? document.base.document : undefined;
+  /** Ordered by the name each is shown by, as its key is hidden behind its label. */
+  const names = Object.keys(all).filter((id) => schemas.includes(all[id].schema))
+    .sort((left, right) => shownName(left, all[left]).localeCompare(shownName(right, all[right]), undefined, { numeric: true })
+      || left.localeCompare(right));
+  const parent = (name: string) => {
+    const base = baseOf(all, name);
+    return base !== undefined && names.includes(base) ? base : undefined;
   };
   const tree: { key: string; name: string; depth: number; python?: boolean }[] = [];
   const visit = (name: string, depth: number) => {
     tree.push({ key: name, name: shownName(name, all[name]), depth, python: all[name].schema === pythonTask || undefined });
-    for (const child of names) if (baseOf(child) === name) visit(child, depth + 1);
+    for (const child of names) if (parent(child) === name) visit(child, depth + 1);
   };
-  for (const name of names) if (baseOf(name) === undefined) visit(name, 0);
+  for (const name of names) if (parent(name) === undefined) visit(name, 0);
   return tree;
 }
 
-export function useProjectDocuments({ editor, stepId, run, scope, selectable, editable, detachRefused = [], onError }: ProjectDocumentInputs) {
+export function useProjectDocuments({ editor, stepId, run, scope, selectable, editable, onError }: ProjectDocumentInputs) {
   const { saved } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const projectId = saved.project_id;
   const catalog = useAuthoringCatalog().data;
@@ -126,7 +148,7 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
     }] as const),
     ...catalogEntries(catalog, 'python_tasks').map(({ key, label }) => [`python:${key}`, {
       template: { key: `python:${key}`, name: label, python: true },
-      document: { schema: pythonTask, payload: { type: key, params: {} } } as Document,
+      document: { schema: pythonTask, label, payload: { type: key, params: {} } } as Document,
     }] as const),
   ]);
   /** The document a step did not take in a role, and why: it lacks a parameter the step sweeps. */
@@ -142,7 +164,6 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
     const result = await readStudioTrialAuthoring(projectId, {
       revision, run, scope, change: { kind: 'select_document', role, document },
     }, editor.signal);
-    refuse(role, result.refusal ? studioSweptParameterMissing(result.refusal) : undefined);
     return result.files;
   }
 
@@ -173,6 +194,8 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
     const count = sharing && { lit: sharing.lit.size, users: sharing.users.size };
     const documents = documentTree(saved.project, role);
     const based = 'base' in (saved.project.documents?.[document] ?? {});
+    /** Duplicate and Detach write the document's composed content, which a base chain that does not compose lacks. */
+    const composes = documentPayload(saved.project.documents, saved.composed, document) !== undefined;
     const kind = studioName(role);
     const repoint = editable && !!stepId && selectable.has(role);
     return {
@@ -182,13 +205,13 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
       templates: role === 'task' && taskTemplates.size ? [...taskTemplates.values()].map(({ template }) => template) : undefined,
       create: repoint ? (template) => attempt(role, async () => {
         const { saved } = editor.getSnapshot();
-        const id = generatedName(role, holds(saved.project.documents));
-        const document = (template && taskTemplates.get(template)?.document) || blankDocuments[role];
+        const { id, document } = namedDocument(saved.project.documents,
+          (template && taskTemplates.get(template)?.document) || blankDocuments[role]);
         await editor.createFiles(studioAccessibleName('new', kind), [{ kind: 'document', id, document }],
           saved.revision, (snapshot) => use(role, id, snapshot.revision));
         return id;
       }) : undefined,
-      duplicate: repoint ? () => attempt(role, async () => {
+      duplicate: repoint && composes ? () => attempt(role, async () => {
         const result = await editor.memberCommand(studioAccessibleName('duplicate', kind),
           { kind: 'duplicate', family: 'documents', member: document }, editor.getSnapshot().saved,
           (result) => use(role, result.member, result.snapshot.revision));
@@ -198,11 +221,14 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
         void attempt(role, () => editor.memberCommand(studioAccessibleName('rename', kind),
           { kind: 'rename', family: 'documents', member: document, label }, editor.getSnapshot().saved));
       } : undefined,
-      changeKey: editable ? (key) => {
-        void attempt(role, () => editor.memberCommand(studioAccessibleName('changeKey', kind),
-          { kind: 'change_key', family: 'documents', member: document, key }, editor.getSnapshot().saved));
+      changeKey: editable ? {
+        commit: (key) => {
+          void attempt(role, () => editor.memberCommand(studioAccessibleName('changeKey', kind),
+            { kind: 'change_key', family: 'documents', member: document, key }, editor.getSnapshot().saved));
+        },
+        held: new Set(Object.keys(saved.project.documents ?? {})),
       } : undefined,
-      detach: editable && based && !detachRefused.includes(document) ? () => {
+      detach: editable && based && composes ? () => {
         void attempt(role, () => editor.memberCommand(studioAccessibleName('detach', kind),
           { kind: 'detach', member: document }, editor.getSnapshot().saved));
       } : undefined,

@@ -1,8 +1,8 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { ApiRequestError } from '@/api/request';
 import type { AuthoredFileAddress, ProjectValueEdit, StudioProjectDocument, StudioProjectFilePatch, StudioProjectSnapshot, StudioSavedTrainRuns } from '@/generated/studioContracts';
-import { addressKey, applyAuthoredEdits, presentationAddress } from './authoredEdits';
-import { ProjectEditConflictError, ProjectEditController, type ProjectEditTransport } from './projectEditController';
+import { addressKey, applyAuthoredEdits, declarationAddress, presentationAddress } from './authoredEdits';
+import { ProjectEditConflictError, ProjectEditController, type ProjectEditTransport, type StoredEdit } from './projectEditController';
 import { createCheckpointTrain } from './createCheckpointTrain';
 import { createTrain } from './createTrain';
 import { projectWindowPlan, savedRunId } from './projectWindowPlan';
@@ -44,6 +44,11 @@ function fixture(settleMs = 400, start = initial) {
   }
   const document = () => ({ configuration: { project: name, store: 'results' }, snapshot: current });
   const external = (address: AuthoredFileAddress, edits: readonly ProjectValueEdit[], indent?: number) => {
+    if (address.kind === 'declaration') {
+      const { project } = applyAuthoredEdits({ ...current.project, settings: current.settings }, address, edits);
+      current = { ...current, settings: project.settings, revision: hex(sequence++) };
+      return current;
+    }
     if (address.kind === 'presentation') {
       const { project } = applyAuthoredEdits({ ...current.project, presentation: current.presentation }, address, edits);
       current = { ...current, presentation: project.presentation ?? null, presentation_revision: hex(sequence++) };
@@ -66,6 +71,15 @@ function fixture(settleMs = 400, start = initial) {
     if (files.some(({ address }) => address.kind === 'presentation') &&
         body.presentation_revision !== current.presentation_revision) {
       throw new ApiRequestError('http', '/api/projects/reach', 'Presentation changed', { status: 409 });
+    }
+    for (const creation of 'files' in body ? body.created ?? [] : []) {
+      const address = { kind: 'document' as const, id: creation.id };
+      const data = btoa(JSON.stringify(creation.document));
+      const documents = { ...current.project.documents, [creation.id]: creation.document };
+      current = {
+        ...current, project: { ...current.project, documents },
+        file_revisions: [...current.file_revisions, { address, revision: fileDigest(data), data }],
+      };
     }
     for (const { address, patches } of files) external(address, patches);
     return current;
@@ -131,6 +145,27 @@ function fixture(settleMs = 400, start = initial) {
 
 afterEach(() => vi.useRealTimers());
 
+it('writes project settings and Undo through the authored PATCH queue', async () => {
+  const { editor, write, replay } = fixture();
+  const change = editor.edit(declarationAddress, 'Keep superseded runs', [
+    { op: 'add', path: '/settings/keep_superseded', value: 7 },
+  ]);
+  expect(editor.getSnapshot().configuration.settings).toEqual({ keep_superseded: 7 });
+  await editor.flush();
+  await expect(change).resolves.toEqual({ status: 'saved' });
+  expect(editor.getSnapshot().configuration.settings).toEqual({ keep_superseded: 7 });
+
+  editor.undo();
+  await editor.flush();
+  expect(editor.getSnapshot().configuration.settings).toEqual({});
+  expect(write).toHaveBeenCalledTimes(2);
+  expect(write.mock.calls[1][1]).toMatchObject({
+    address: declarationAddress, patches: [{ op: 'remove', path: '/settings/keep_superseded' }],
+  });
+  expect(replay).not.toHaveBeenCalled();
+  editor.dispose();
+});
+
 it('binds the first compatible documents by name, scaffolds only the missing types and names the Train freely', async () => {
   const { editor } = fixture(400, {
     ...initial,
@@ -149,7 +184,7 @@ it('binds the first compatible documents by name, scaffolds only the missing typ
   await createTrain(editor, initial.revision);
   expect(create).toHaveBeenCalledWith('New Step', [
     { kind: 'document', id: 'objective-2', document: {
-      schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] },
+      schema: 'feedbax.spec.objective_document', label: 'Objective', payload: { id: 'objective', terms: [] },
     } },
     { kind: 'document', id: 'training', document: expect.objectContaining({ schema: 'feedbax.spec.training_document' }) },
     expect.objectContaining({ kind: 'step', id: 'train-2', step: expect.objectContaining({
@@ -159,6 +194,33 @@ it('binds the first compatible documents by name, scaffolds only the missing typ
       }, settings: { document: 'training', pointer: '/settings' } }) },
     }) }),
   ], initial.revision);
+  editor.dispose();
+});
+
+it('records the server’s document bytes when batch creation succeeds but loses its response', async () => {
+  const { editor, create, replay, restore, current } = fixture();
+  const authored = { schema: 'feedbax.spec.model', payload: { interior: {} }, label: 'Model' };
+  const stored = { schema: authored.schema, label: authored.label, payload: authored.payload };
+  const address = { kind: 'document', id: 'blank-model' } as const;
+  const data = btoa(JSON.stringify(stored, null, 2) + '\n');
+  create.mockImplementationOnce(async () => {
+    restore({
+      ...initial, revision: hex(53),
+      project: { ...initial.project, documents: { ...initial.project.documents, [address.id]: stored } },
+      file_revisions: [...initial.file_revisions, { address, revision: hex(52), data }],
+    });
+    throw new ApiRequestError('network', '/files', 'Response lost');
+  });
+  const file = { ...address, document: authored };
+  await editor.createFiles('New Model', [file], initial.revision);
+  expect(create.mock.calls[0][1]).toEqual({ revision: initial.revision, files: [file] });
+  expect(editor.getSnapshot().undoName).toBe('New Model');
+  expect(replay).not.toHaveBeenCalled();
+
+  await editor.undo();
+  expect(current().project.documents?.[address.id]).toBeUndefined();
+  await editor.redo();
+  expect(current().file_revisions.find((entry) => entry.address.id === address.id)?.data).toBe(data);
   editor.dispose();
 });
 
@@ -619,14 +681,18 @@ it('undoes a document command and the step use that joined it as one entry', asy
 });
 
 it('undoes a narrowed edit, the document it creates and the patch that follows, as one entry', async () => {
-  const { editor, current, write } = fixture();
+  const { editor, current, write, replay } = fixture();
   const before = current();
-  const settled = await editor.storeEdit('Set Value', {
+  const edit: StoredEdit = {
     created: [{ kind: 'document', id: 'model-2', document: { schema: 'graph', base: { document: 'model' }, differences: { '/value': { value: 2 } } } }],
     files: [{ address: task, patches: [value(7)] }],
-  }, { reviewedRevision: before.revision });
+  };
+  const settled = await editor.storeEdit('Set Value', edit, { reviewedRevision: before.revision });
   expect(settled).toEqual({ status: 'saved' });
-  expect(write).toHaveBeenCalledOnce();
+  expect(write).toHaveBeenCalledExactlyOnceWith(before.project_id, {
+    ...edit, revision: before.revision, presentation_revision: before.presentation_revision,
+  }, expect.any(AbortSignal));
+  expect(replay).not.toHaveBeenCalled();
   const edited = current().project.documents;
   expect(Object.keys(edited ?? {}).sort()).toEqual(['model', 'model-2', 'task']);
   expect(editor.getSnapshot()).toMatchObject({ undoName: 'Set Value', redoName: null });

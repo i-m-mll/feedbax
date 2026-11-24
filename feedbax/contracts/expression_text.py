@@ -32,6 +32,7 @@ from feedbax.contracts.expression_values import (
     SweepRange,
     SweepSample,
     TextSpan,
+    UnresolvedValue,
     scope_problems,
 )
 from feedbax.contracts.expression_registry import POINT_INTERPOLATIONS, FunctionClass, FunctionRegistry
@@ -139,8 +140,8 @@ def _parser(start: Literal["field", "rule"] = "field") -> Lark:
 
 
 @dataclass(frozen=True)
-class ParsedField:
-    value: FieldValue
+class ParsedField[T: FieldValue]:
+    value: T
     spans: Mapping[NodePath, TextSpan]
 
     def to_record(self) -> FieldTextResult:
@@ -336,7 +337,7 @@ class _Reader:
 
 def parse(
     text: str, site: Site, functions: FunctionRegistry | None = None
-) -> ParsedField | tuple[Problem, ...]:
+) -> ParsedField[FieldValue] | tuple[Problem, ...]:
     """Parse editable text against the site's current names."""
     if problems := scope_problems(site):
         return problems
@@ -364,6 +365,20 @@ def parse(
         return (
             Problem(code=ProblemCode.PARSE, reason="Expression exceeds the supported structure."),
         )
+
+
+def resolve_expression(
+    value: Expression, site: Site, functions: FunctionRegistry,
+) -> ParsedField[Expression] | tuple[Problem, ...]:
+    """Read held text in the current site, without checking its type."""
+    if not isinstance(value, UnresolvedValue):
+        return ParsedField(value, {})
+    parsed = parse(value.text, site, functions)
+    if isinstance(parsed, tuple):
+        return parsed
+    if isinstance(parsed.value, SweepList | SweepRange | SweepSample):
+        return (Problem(code=ProblemCode.STRUCTURE, reason="This field takes one expression."),)
+    return ParsedField(parsed.value, parsed.spans)
 
 
 @dataclass(frozen=True)
@@ -487,6 +502,8 @@ def _print(node: Expression, names: Mapping[str, str], least: int = 0) -> str:
 
 def _printed(node: Expression, names: Mapping[str, str]) -> tuple[str, int]:
     match node:
+        case UnresolvedValue(text=text):
+            return text, _ATOM
         case LiteralValue(value=value, unit=unit):
             text = str(value).lower() + ("°" if unit == "°" else f" {unit}" if unit else "")
             return text, _UNARY if text.startswith("-") else _ATOM

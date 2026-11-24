@@ -3,7 +3,7 @@ import type {
   StudioPlanReviewSource,
 } from '@/generated/studioContracts';
 import { studioEvaluateValueSource, studioName, studioPlanValueSource, studioReason } from '@/components/activity/studioVocabulary';
-import { evaluateChange, withReset, type ChangeMark, type FieldModel, type FieldRefusal } from '../fieldModel';
+import { evaluateChange, valueKind, withReset, type ChangeMark, type FieldModel, type FieldRefusal } from '../fieldModel';
 
 export type ProjectedEdit = FieldTextEdit | FieldKindEdit | FieldNameEdit;
 
@@ -18,7 +18,7 @@ export type ExceptionMentions = (source: StudioPlanReviewSource) => ExceptionMen
 export interface FieldViewOptions {
   id: string;
   commit?: (edit: ProjectedEdit) => Promise<FieldRefusal | undefined>;
-  /** The kind of a value that is not a sweep, where the source knows it. */
+  /** The kind of a value that is not a sweep, where the source knows it and the field has no structure to read it from. */
   kind?: FieldKind;
   /** The field shows the value on a selection of rows rather than the document's. */
   rowSelection?: boolean;
@@ -55,10 +55,11 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
     ? Promise.resolve(undefined) : project(edit.kind === 'set' ? { kind: 'text', text: String(edit.value) } : edit)), options.changed);
   const readOnly = !commit;
   const rule = readOnly || !field.can_change_axis ? undefined : commit;
-  const kind = sweep ? 'sweep' : options.kind ?? 'value';
+  const kind = sweep ? 'sweep' : field.structure ? valueKind(field.structure.value, field.site.functions) : options.kind ?? 'value';
   const list = sweep?.kind === 'list' ? sweep : undefined;
   const choices = list?.values ?? field.members ?? [];
-  const authored = list ? list.values.map(({ value }) => value).join(', ') + (list.values.length === 1 ? ',' : '')
+  const memberText = (value: (typeof choices)[number]['value']) => typeof value === 'number' ? String(value) : value.text;
+  const authored = list ? list.values.map(({ value }) => memberText(value)).join(', ') + (list.values.length === 1 ? ',' : '')
     : field.text;
   const effective = multipleRows ? undefined : field.effective ?? undefined;
   const base = { names: [], functions: [], kinds: [], type: { kind: 'number' } } as const;
@@ -116,9 +117,9 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
     })),
     keeps: sweep ? field.selected_value ?? choices[0]?.id : undefined,
     members: list ? {
-      values: list.values.map(({ id, value }) => ({ id, text: String(value), selected: picked.has(id) })),
+      values: list.values.map(({ id, value }) => ({ id, text: memberText(value), selected: picked.has(id) })),
       choose: options.chooseMember,
-    } : held.length ? { values: held.map(({ id, value }) => ({ id, text: String(value), selected: false })) } : undefined,
+    } : held.length ? { values: held.map(({ id, value }) => ({ id, text: memberText(value), selected: false })) } : undefined,
     parts,
     canList: !!sweep && sweep.kind !== 'list' && sweep.can_list && field.can_change_axis,
     origin: [field.conversion, source.text].filter(Boolean).join(' · ') || undefined,
@@ -128,6 +129,8 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
     finest: field.site.site.finest,
     names: field.site.site.names ?? [],
     functions: field.site.functions,
+    sites: field.site.parts,
+    namePaths: field.site.name_paths,
     commit,
   };
 }

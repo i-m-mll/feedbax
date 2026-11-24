@@ -12,6 +12,7 @@ from feedbax.contracts.artifact_custody import StoreTransferProgress
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.code_validity import AttemptProvenance
 from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET, LOCAL_TARGET_ID, OpeningObservation, OpeningStep, TargetId
+from feedbax.contracts.expression_values import TextSpan
 from feedbax.contracts.receipt_validity import ReceiptValidity
 from feedbax.contracts.project import StepKind
 from feedbax.contracts.project_inputs import StepReference, SubsetTerms
@@ -175,7 +176,9 @@ class StudioSavedEvaluationRead(StrictModel):
 
 
 class StudioSavedEvaluationReplayRequest(StudioSavedEvaluationRead):
-    trial: str
+    trial: str | None = None
+    """When absent, select every retained trial at the checkpoint."""
+    aggregate: bool = False
     checkpoint: int | None = Field(default=None, ge=0)
 
 
@@ -325,6 +328,7 @@ class StudioProjectWindowMapInput(StrictModel):
     subset: StudioProjectWindowMapSubset | None
     checkpoint: CheckpointRule | None = Field(default=None, exclude_if=lambda value: value is None)
     checkpoint_axis: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    can_sweep_checkpoint: bool = Field(default=False, exclude_if=lambda value: not value)
 
 
 class StudioProjectWindowMapException(StrictModel):
@@ -388,6 +392,7 @@ class StudioProjectWindowMapProblem(StrictModel):
     authored_path: str | None = Field(default=None, exclude_if=lambda value: value is None)
     blocked_by: StudioSavedTrainKey | None = Field(default=None, exclude_if=lambda value: value is None)
     """The producer row a ``blocked_input`` row waits on."""
+    span: TextSpan | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @classmethod
     def from_diagnostic(cls, diagnostic: ProjectDiagnostic, *, declaration: str) -> StudioProjectWindowMapProblem:
@@ -402,6 +407,7 @@ class StudioProjectWindowMapProblem(StrictModel):
             ) if diagnostic.step else None,
             document_path=diagnostic.document_path, address=diagnostic.authored_file or source,
             layer=diagnostic.layer, authored_path=diagnostic.authored_path,
+            span=diagnostic.span,
             blocked_by=StudioSavedTrainKey.model_validate(diagnostic.blocked_by, from_attributes=True)
             if diagnostic.blocked_by is not None else None,
         )
@@ -478,8 +484,6 @@ class StudioProjectWindowMap(StrictModel):
     evaluations: list[StudioSavedEvaluationRow] = Field(default_factory=list)
     analysis_elements: list[StudioProjectWindowMapElement] = Field(default_factory=list, exclude_if=lambda value: not value)
     analysis_figures: list[StudioProjectWindowMapFigure] = Field(default_factory=list, exclude_if=lambda value: not value)
-    detach_refused: list[str] = Field(default_factory=list)
-    """Based documents whose Detach would leave an Evaluate step's Model document sharing no document with its subject's."""
     regroup_refused: list[str] = Field(default_factory=list)
     """Analyze cards whose Split and Merge are disabled: their document is shared or based, or they are swept."""
 
