@@ -1190,6 +1190,7 @@ def apply_model_edit(
     task_signal: Callable[[edits.ConnectTaskSignal], edits.ModelTaskSignal] | None = None,
     next_input: Callable[[Record], tuple[str, str, int] | None] | None = None,
     reference: Callable[[], edits.ModelEditState | None] | None = None,
+    instantiate_template: Callable[[str], CompositeComponent] | None = None,
 ) -> edits.ModelEditResult | edits.ModelEditProblem:
     """Apply one command to a private draft and return its complete transaction.
 
@@ -1201,7 +1202,11 @@ def apply_model_edit(
     primary = _address((), "graph")
     try:
         match operation:
-            case edits.AddComponent(graph=primary):
+            case edits.AddComponent(graph=primary, component=component):
+                if isinstance(component, edits.RegisteredComponent):
+                    if instantiate_template is None:
+                        raise _Refusal(primary, "Component templates need a registered definition")
+                    operation = operation.model_copy(update={"component": instantiate_template(component.definition)})
                 edit.add_component(operation)
             case edits.MoveCards(placements=placements):
                 primary = placements[0].address
