@@ -29,6 +29,8 @@ export interface SceneElement {
   /** The places the element may take, one per trial that may be shown, drawn hollow. */
   readonly possible?: readonly ScenePoint[];
   readonly values: readonly SceneValue[];
+  /** Which end of the trial a task element marks: the start the Model is placed at, or a goal. */
+  readonly mark?: 'start' | 'goal';
   /** Why the element is not drawn as authored, marked on it. */
   readonly problem?: string;
 }

@@ -25,24 +25,26 @@ async function openScene(page: Page, projectId: string, step: string) {
   await expect(scene(page).getByRole('group', { name: 'Scene', exact: true })).toBeVisible();
 }
 
-/** Where a solid mark is drawn, in the canvas's coordinates. */
-const solid = (mark: Locator) => mark.locator('[data-scene-solid]').evaluate((circle: SVGCircleElement) =>
+/** Where the shown trial's mark is drawn, in the canvas's coordinates. */
+const shown = (mark: Locator) => mark.locator('[data-scene-shown]').evaluate((circle: SVGCircleElement) =>
   [circle.cx.baseVal.value, circle.cy.baseVal.value]);
 
 // Catches a Scene that draws only the mechanism before a run, a task Point placed by name rather than by type, a
-// mechanism not posed by the trial's initial values (the point mass apart from the linked start), and hollow marks
-// that are not one per sample of the picker's count.
-test('with nothing run, the Scene draws the nominal trial solid and each sample hollow', async ({ page, request }) => {
+// mechanism not posed by the trial's initial values (the point mass apart from the linked start), the start and goal
+// drawn alike, and hollow marks that are not one per sample of the picker's count.
+test('with nothing run, the Scene draws the nominal trial\'s start and goal and each sample hollow', async ({ page, request }) => {
   const { snapshot } = await seedManagedProject(request, await trainFiles(8, 'ordinary-files', '2'));
   await openScene(page, snapshot.project_id, 'train');
   await expect(trialPicker(page)).toHaveText('nominal');
   const start = element(page, 'start');
   const target = element(page, 'target');
-  await expect(start.locator('[data-scene-solid]')).toHaveCount(1);
-  await expect(target.locator('[data-scene-solid]')).toHaveCount(1);
+  await expect(start.locator('[data-scene-shown]')).toHaveCount(1);
+  await expect(target.locator('[data-scene-shown]')).toHaveCount(1);
+  await expect(start.locator('[data-scene-shown]')).toHaveAttribute('stroke', 'var(--studio-scene-start)');
+  await expect(target.locator('[data-scene-shown]')).toHaveAttribute('stroke', 'var(--studio-scene-goal)');
   await expect(target.locator('[data-scene-possible]')).toHaveCount(8);
   const plant = element(page, 'Point mass');
-  await expect.poll(() => solid(plant)).toEqual(await solid(start));
+  await expect.poll(() => shown(plant)).toEqual(await shown(start));
   await page.getByRole('complementary', { name: 'Details Drawer', exact: true }).getByRole('tree', { name: 'Outline', exact: true })
     .getByRole('treeitem', { name: 'target', exact: true }).click();
   await expect(target).toHaveAttribute('aria-pressed', 'true');
@@ -54,10 +56,10 @@ test('a Point signal appears in the Scene once the playhead passes its start', a
   await openScene(page, snapshot.project_id, 'train');
   await expect(trialPicker(page)).toHaveText('nominal');
   const target = element(page, 'target_pos');
-  await expect(element(page, 'start').locator('[data-scene-solid]')).toHaveCount(1);
+  await expect(element(page, 'start').locator('[data-scene-shown]')).toHaveCount(1);
   await expect(target).toHaveCount(0);
   await footer(page).getByRole('slider', { name: 'Playback Position' }).press('End');
-  await expect(target.locator('[data-scene-solid]')).toHaveCount(1);
+  await expect(target.locator('[data-scene-shown]')).toHaveCount(1);
 });
 
 /** Runs the evaluation fixture's Train and its baseline Evaluate, and opens the Scene of the baseline's Done run. */
@@ -97,7 +99,7 @@ test('with a Done evaluation the mechanism at the last step is at its path\'s en
   });
   const plant = scene(page).locator('[data-scene-layer="bodies"]').first();
   await expect.poll(async () => {
-    const [x, y] = await solid(plant);
+    const [x, y] = await shown(plant);
     return Math.hypot(x - end[0], y - end[1]);
   }).toBeLessThan(0.5);
   await expect(scene(page).locator('[data-scene-rest] > *')).not.toHaveCount(0);

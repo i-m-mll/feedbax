@@ -127,20 +127,22 @@ export interface SceneTask {
 }
 
 /**
- * The task's variables and signals that have a place, at `step`: solid in the picked trial, hollow at each of the
- * trials that may be shown.
+ * The task's variables and signals that have a place, at `step`: in the picked trial, and at each of the trials that
+ * may be shown. A variable linked to a Model field is the trial's start; every other place is a goal.
  */
 export function taskGroup(task: SceneTask, record: TrialRecord | undefined, possible: readonly TrialRecord[], step: number): SceneGroup | undefined {
   const address: ElementAddress = { document: task.document, element: { kind: 'named', id: 'task' } };
+  const starts = new Set(task.value.links?.map((link) => link.variable));
   const element = (kind: 'variable' | 'signal', id: string, name: string,
     place: (record: TrialRecord, id: string, step: number) => ScenePoint | undefined): SceneElement => {
     const located: ElementAddress = { document: task.document, element: { kind: 'named', id: `${kind}:${id}` } };
-    const solid = record && place(record, id, step);
+    const shown = record && place(record, id, step);
     return {
       key: elementKey(located), address: located, name, layer: kind === 'variable' ? 'variables' : 'signals',
-      ...solid && { shape: { kind: 'point', point: solid } },
+      mark: kind === 'variable' && starts.has(id) ? 'start' : 'goal',
+      ...shown && { shape: { kind: 'point', point: shown } },
       possible: possible.map((trial) => place(trial, id, step)).filter((spot) => spot !== undefined),
-      values: solid ? [{ label: name, point: solid }] : [],
+      values: shown ? [{ label: name, point: shown }] : [],
     };
   };
   const elements = [

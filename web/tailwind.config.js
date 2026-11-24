@@ -40,8 +40,6 @@ export default {
           'status-failure': 'var(--studio-status-failure)',
           'status-ink': 'var(--studio-status-ink)',
           change: 'var(--studio-change-mark)',
-          'scene-feature': 'var(--studio-scene-feature)',
-          'scene-guide': 'var(--studio-scene-guide)',
         }
       },
       spacing: {

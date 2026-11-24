@@ -46,9 +46,10 @@ function selectionHandlers(element: SceneElement, selected: string | null, onSel
 
 /**
  * Bodies under muscles under joints, so that a joint stays pressable where a body or a muscle crosses it; the task's
- * places above the mechanisms.
+ * places above the mechanisms, a variable's above a signal's, so that a goal cue held at the start leaves the start's
+ * ring showing.
  */
-const drawOrder: Record<SceneLayer, number> = { bodies: 0, muscles: 1, joints: 2, variables: 3, signals: 4 };
+const drawOrder: Record<SceneLayer, number> = { bodies: 0, muscles: 1, joints: 2, signals: 3, variables: 4 };
 
 /** Where an element is drawn: its shape in the shown trial, and each place it may take. */
 const elementPoints = (element: SceneElement): readonly ScenePoint[] =>
@@ -79,8 +80,11 @@ function ElementDrawing({ element, active, project }: {
     const [x, y] = project(shape.point);
     return <>
       {possible}
-      <circle data-scene-solid cx={x} cy={y} r={active ? 5 : 3} fill={stroke} />
-      <circle cx={x} cy={y} r={8} fill="transparent" />
+      {element.mark
+        ? <circle data-scene-shown cx={x} cy={y} r={9} fill="transparent" stroke={`var(--studio-scene-${element.mark})`}
+          strokeWidth={active ? 3 : 1.5} vectorEffect="non-scaling-stroke" />
+        : <circle data-scene-shown cx={x} cy={y} r={active ? 7.5 : 6} fill="var(--text-primary)" />}
+      <circle cx={x} cy={y} r={9} fill="transparent" />
     </>;
   }
   const points = shape.points.map(project);
@@ -184,11 +188,11 @@ function SceneDrawingCanvas({
       </g>
       <g pointerEvents="none" aria-hidden="true">
         {scene.tracks.map((track, index) => {
-          const stroke = track.picked ? 'var(--text-primary)' : 'var(--studio-scene-outline)';
+          const stroke = track.picked ? 'var(--studio-scene-outline)' : 'var(--studio-scene-faint)';
           return <g key={index}>
             {track.drawn > 0 && <polyline data-scene-track={track.picked ? 'picked' : 'other'} fill="none" stroke={stroke}
               points={track.points.slice(0, track.drawn).map((point) => project(point).join(',')).join(' ')}
-              strokeWidth={track.picked ? 2 : 1} vectorEffect="non-scaling-stroke" />}
+              strokeWidth={track.picked ? 1.5 : 1} strokeDasharray="0 3" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
             {track.head && <circle data-scene-cursor cx={project(track.head)[0]} cy={project(track.head)[1]} r={track.picked ? 3 : 1.5}
               fill={stroke} />}
           </g>;
