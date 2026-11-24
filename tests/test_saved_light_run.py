@@ -133,7 +133,9 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
         figure = elements["profile"]["result"]
         figure_url = figure["products"]["figure"]
         figure_response = expect(client.get(figure_url))
-        assert figure_response.json()["data"]
+        assert [trace["name"] for trace in figure_response.json()["data"] if trace.get("showlegend", True)] == [
+            "default",
+        ]
         report_url = report["light"]["result"]["products"]["report"]
         rendered = expect(client.get(report_url))
         asset = re.search(r"figures/[0-9a-f]{64}\.json", rendered.text).group()
@@ -223,6 +225,9 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
     path = f"/api/projects/{project}"
     definition = _saved_light_definition(paired=True)
     steps = definition["steps"]
+    mass_values = steps["conditions"]["sweep"]["axes"]["mass"]["values"]
+    mass_values["heavy"]["label"] = "Heavy load"
+    mass_values["nominal"]["label"] = "Nominal load"
     upstream = Project.model_validate(definition | {"steps": {
         name: steps[name] for name in ("train", "conditions")
     }})
@@ -349,7 +354,7 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
         figure = reopened.get(profile["result"]["products"]["figure"])
         assert figure.status_code == 200, figure.text
         traces = [trace for trace in figure.json()["data"] if trace.get("showlegend", True)]
-        assert [trace["name"] for trace in traces] == conditions
+        assert [trace["name"] for trace in traces] == ["mass=Heavy load", "mass=Nominal load"]
         for index, trace in enumerate(traces):
             np.testing.assert_allclose(array(trace["x"]), times[0])
             np.testing.assert_allclose(array(trace["y"]), mean[index, 0, 0])
