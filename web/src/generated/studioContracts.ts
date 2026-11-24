@@ -2186,6 +2186,7 @@ export interface TrialRecords {
 
 export interface TrialTerm {
   steps: boolean[];
+  weights?: Array<number | null> | null;
   covered: boolean;
   values?: number[] | null;
   value?: number | null;
@@ -9283,6 +9284,7 @@ export const TrialTermSchema: z.ZodType<TrialTerm> = z.lazy(() =>
   z
     .object({
       "steps": z.array(z.boolean()),
+      "weights": z.array(z.number().finite().nullable()).nullable().optional(),
       "covered": z.boolean(),
       "values": z.array(z.number().finite()).nullable().optional(),
       "value": z.number().finite().nullable().optional(),

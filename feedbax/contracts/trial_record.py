@@ -19,6 +19,8 @@ class TaskTimelineCue(BaseModel):
 class TrialTerm(BaseModel):
     steps: list[bool]
     """Whether the term applies at each step."""
+    weights: list[float | None] | None = None
+    """At each step, the authored weight within its window, or null where it is undefined."""
     covered: bool
     values: list[float] | None = None
     """The weighted measure at each step, when recorded."""
