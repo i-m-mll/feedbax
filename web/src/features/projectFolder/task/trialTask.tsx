@@ -1,14 +1,13 @@
 import { useAuthoringCatalog } from '@/api/studioAuthoring';
 import { studioAccessibleName, studioFormat, studioName, studioValueType } from '@/components/activity/studioVocabulary';
 import { reasonOf, type FieldModel } from '@/components/values/fieldModel';
-import { fromFieldView } from '@/components/values/adapters/fieldView';
 import { rawField } from '@/components/values/adapters/raw';
 import { ModelAddressSchema, type StudioNamedValueType, type StudioTrialReset, type TaskDocument, type ValueType } from '@/generated/studioContracts';
 import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import { authoredPointer } from '../authoredEdits';
 import { addressKey } from '../model/modelGraph';
 import {
-  changedAt, expressionKind, initializesAnchor, startAnchor, variableAnchor, type Commit, type TrialRuns, type TrialView,
+  changedAt, expressionKind, initializesAnchor, startAnchor, trialField, variableAnchor, type Commit, type TrialRuns, type TrialView,
 } from '../StudioTrialAuthoring';
 import { VariableInspector } from './TaskInspector';
 import { TrialTaskGrid } from './trialGrid';
@@ -20,22 +19,30 @@ const sameType = (a: ValueType, b: ValueType) => studioValueType(a) === studioVa
 
 /** Whether a Model field of type `field` takes a variable of type `variable`, as the service checks a link. */
 const fits = (field: ValueType, variable: ValueType) => {
-  const parts = (type: ValueType) => canonicalJsonV2({ shape: type.shape ?? [], dimensions: type.dimensions ?? {} });
-  return parts(field) === parts(variable) && (field.base === variable.base || field.base === 'real' && variable.base === 'integer');
+  const target = field.shape ?? [];
+  const source = variable.shape ?? [];
+  const offset = target.length - source.length;
+  return offset >= 0 && source.every((size, index) => size === 1 || size === target[offset + index])
+    && canonicalJsonV2(field.dimensions ?? {}) === canonicalJsonV2(variable.dimensions ?? {})
+    && (field.base === variable.base || field.base === 'real' && variable.base === 'integer');
 };
 
 const typeName = (type: ValueType, types: readonly StudioNamedValueType[]) =>
   types.find((named) => sameType(named.type, type))?.name ?? studioValueType(type);
 
-const startOf = (reset: StudioTrialReset): ModelStart =>
-  ({ id: addressKey(reset.address), name: reset.name });
+function startOf(reset: StudioTrialReset): ModelStart {
+  const components = (reset.address.composites?.length ?? 0) + 1;
+  const name = [...reset.path.slice(0, components), reset.path.slice(components).join(' ')].join(' · ');
+  return { id: addressKey(reset.address), name, path: reset.path };
+}
 
 /** A linked Model field the paired Model does not have: its component's id and its path. */
 function missingStart(id: string): ModelStart {
   const { element } = ModelAddressSchema.parse(JSON.parse(id));
-  const name = element.kind === 'field' && element.parent.kind === 'component'
-    ? `${element.parent.id} · ${element.path.slice(1).join(' ')}` : id;
-  return { id, name };
+  if (element.kind !== 'field' || element.parent.kind !== 'component') return { id, name: id, path: [id] };
+  const [kind, ...members] = element.path;
+  const segments = kind === 'state' ? String(members[0]).split('/') : members.map(String);
+  return { id, name: `${element.parent.id} · ${segments.join(' ')}`, path: [element.parent.id, ...segments] };
 }
 
 /** The Model values `variable` initializes, the choice of those its type fits, and its links' problem and change. */
@@ -96,19 +103,25 @@ function variables(view: TrialView, task: TaskDocument, types: readonly StudioNa
     const path = authoredPointer(['task', 'variables', variable.id, 'value']);
     const projection = view.fields.find((field) => field.path === path);
     const sweep = projection?.sweep?.id;
-    const [problem] = projection?.problems ?? [];
     const value: FieldModel = projection ? {
-      ...fromFieldView({ ...projection, label: studioName('value'), effective: runs?.selected ? projection.effective : null }, {
+      ...trialField(projection, studioName('value'), runs, {
         id: `value:${variable.id}`, kind: expressionKind(variable.value),
         changed: changedAt(view, 'task', `/variables/${index}/value`, commit), source: view.task_source ?? undefined,
         commit: commit && ((edit) => commit(studioAccessibleName('set', variable.name), { kind: 'expression', path, edit })),
         selectedMembers: sweep ? runs?.values(sweep) : undefined,
         chooseMember: sweep && runs?.choose ? (member, extend) => runs.choose!(sweep, member, extend) : undefined,
       }),
-      anchor: variableAnchor(variable.id), reason: problem?.reason, span: problem?.span ?? undefined,
+      anchor: variableAnchor(variable.id),
     } : rawField({ id: `value:${variable.id}`, label: studioName('value'), value: '', type: { kind: 'readOnly' } });
+    const countPath = authoredPointer(['task', 'variables', variable.id, 'count']);
+    const countProjection = variable.count ? view.fields.find((field) => field.path === countPath) : undefined;
+    const count = variable.count ? countProjection ? trialField(countProjection, studioName('count'), runs, {
+      id: `count:${variable.id}`, kind: expressionKind(variable.count),
+      changed: changedAt(view, 'task', `/variables/${index}/count`, commit),
+      commit: commit && ((edit) => commit(studioAccessibleName('set', studioName('count')), { kind: 'expression', path: countPath, edit })),
+    }) : rawField({ id: `count:${variable.id}`, label: studioName('count'), value: '', type: { kind: 'readOnly' } }) : undefined;
     return {
-      id: variable.id, name: variable.name, type: name, valueType: variable.type, typeChoice, value,
+      id: variable.id, name: variable.name, type: name, valueType: variable.type, typeChoice, value, count,
       level: levels.get(variable.id) === 2 ? 'step' : 'trial', initializes: initializes(view, task, variable, commit),
     };
   });
@@ -129,6 +142,8 @@ function variableEdits(task: TaskDocument, commit?: Commit): VariableEdits {
       { kind: 'structure', changes: [{ op: 'remove', member: 'variable', id }] }, true),
     move: (id, index) => structure(studioAccessibleName('move', named(id)),
       { kind: 'structure', changes: [{ op: 'move', member: 'variable', id, index }] }),
+    list: (id, list) => structure(studioAccessibleName('set', studioName('list')), { kind: 'structure', changes: [
+      { op: 'set_variable_count', id, count: list ? { kind: 'literal', value: 2 } : null }] }),
   };
 }
 

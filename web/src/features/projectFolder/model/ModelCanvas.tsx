@@ -1,7 +1,7 @@
 import {
   Background, BaseEdge, ConnectionMode, EdgeLabelRenderer, Handle, Position, ReactFlowProvider,
-  getBezierPath, getSmoothStepPath, useReactFlow, useStore, useUpdateNodeInternals,
-  type Edge, type EdgeProps, type Node, type NodeProps, type OnConnectStart,
+  getBezierPath, getSmoothStepPath, useConnection, useReactFlow, useStore, useUpdateNodeInternals,
+  type Edge, type EdgeProps, type Node, type NodeProps, type OnConnectStart, type OnSelectionChangeParams,
 } from '@xyflow/react';
 import {
   createContext, memo, useCallback, useContext, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState,
@@ -42,7 +42,13 @@ export type ModelCardData = {
   pickPort?: (port: Port) => void;
   canPick?: (port: Port) => boolean;
   cancelPick?: () => void;
-  portReasons?: ReadonlyMap<string, string | null>;
+  /**
+   * Whether each input is offered to the connection being drawn, by port id; `note` is why it is not, or the Problem the
+   * offered wire is stored with.
+   */
+  portVerdicts?: ReadonlyMap<string, { offered: boolean; note?: string }>;
+  /** Previews the connection being drawn ending at `port`, or at none. */
+  previewPort?: (port: Port | undefined) => void;
   portProblems?: ReadonlyMap<string, string>;
   onPort(port: Port): void;
   keyboardConnect(port: Port): void;
@@ -101,14 +107,16 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
   const input = useRef<HTMLInputElement>(null);
   const ports = data.ports.map((port) => {
     const key = portId(port);
-    const reason = data.portReasons?.get(key);
+    const offer = data.portVerdicts?.get(key);
+    const reason = offer?.note;
     const available = data.canPick?.(port);
     const problem = data.portProblems?.get(key);
-    const verdict = reason ? 'refused' : reason === null || available ? 'allowed' : available === false ? 'refused' : undefined;
+    const verdict = offer ? offer.offered ? reason ? 'marked' : 'allowed' : 'refused'
+      : available ? 'allowed' : available === false ? 'refused' : undefined;
     return { port, key, reason, available, problem, verdict };
   });
   const geometry = JSON.stringify([!!data.collapsed, !!data.flipped, ports.map(({ port, key, verdict, problem }) =>
-    [key, port.name, port.mark, verdict === 'allowed', !!problem])]);
+    [key, port.name, port.mark, verdict === 'allowed' || verdict === 'marked', !!problem])]);
   useEffect(() => { update(id); }, [id, update, geometry]);
   useEffect(() => { if (data.renaming) input.current?.select(); }, [data.renaming]);
   return <SurfaceCard as="article" className="studio-model-card" data-stacked={data.stacked} selected={data.selected}
@@ -144,7 +152,9 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
           role="button" tabIndex={data.collapsed ? -1 : 0}
           aria-disabled={!interactive && !available}
           aria-description={[studioName(port.direction), portTypeLabel(port), reason ?? problem].filter(Boolean).join(' · ')}
-          aria-label={studioAccessibleName('port', port.name)} data-model-port className="nodrag" style={{ pointerEvents: 'auto' }} onClick={(event) => {
+          aria-label={studioAccessibleName('port', port.name)} data-model-port className="nodrag" style={{ pointerEvents: 'auto' }}
+          onFocus={available ? () => data.previewPort?.(port) : undefined}
+          onBlur={data.canPick ? () => data.previewPort?.(undefined) : undefined} onClick={(event) => {
             event.stopPropagation();
             if (available) data.pickPort?.(port);
             else if (!data.canPick) data.onPort(port);
@@ -309,6 +319,8 @@ type Props = {
   onConnectStart: OnConnectStart;
   onConnect(source: string, sourceHandle: string | null, target: string, targetHandle: string | null): void;
   onConnectEnd(point: ModelPosition, valid: boolean, empty: boolean): void;
+  /** The handle a pointer drawing a connection is over changed. */
+  onConnectHover(node: string, handle: string | null): void;
   onLibraryDrop(type: string, point: ModelPosition, edge: ModelEdge | undefined, reversed: boolean): void;
   onAttachmentDrop(raw: string, edge: ModelEdge): void;
 };
@@ -318,7 +330,7 @@ export function ModelCanvas(props: Props) {
 }
 
 function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdit, lock, collapse, viewportCommands, onCanvasPoint,
-  onSearch, onNode, onEdge, onClear, onBox, onMove, onContext, onConnect, onConnectStart, onConnectEnd,
+  onSearch, onNode, onEdge, onClear, onBox, onMove, onContext, onConnect, onConnectStart, onConnectEnd, onConnectHover,
   onLibraryDrop, onAttachmentDrop }: Props) {
   const { screenToFlowPosition, setNodes, setEdges, getNode, getEdge, getInternalNode } = useReactFlow<ModelCard, ModelEdge>();
   const viewport = useRef<CanvasViewport>(null);
@@ -328,7 +340,19 @@ function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdi
     zoomOut: () => viewport.current?.zoomOut(),
   }), []);
   const [initial] = useState(() => ({ nodes, edges }));
-  const [boxSelecting, setBoxSelecting] = useState(false);
+  const over = useConnection((connection) => connection.inProgress && connection.toHandle
+    ? [connection.toHandle.nodeId, connection.toHandle.id ?? null] as const : undefined);
+  const hovered = useRef(onConnectHover);
+  hovered.current = onConnectHover;
+  const [overNode, overHandle] = over ?? [];
+  useEffect(() => { hovered.current(overNode ?? '', overHandle ?? null); }, [overNode, overHandle]);
+  /** React Flow answers every new selection handler with the current selection, so the handler stays one function. */
+  const boxing = useRef(false);
+  const boxed = useRef(onBox);
+  boxed.current = onBox;
+  const boxChange = useCallback((selection: OnSelectionChangeParams) => {
+    if (boxing.current) boxed.current(selection.nodes as ModelCard[]);
+  }, []);
   const point = (event: { clientX: number; clientY: number }) => screenToFlowPosition({ x: event.clientX, y: event.clientY });
   /** The cards follow their props before the browser paints, so a card added by a gesture is drawn in the next frame. */
   useLayoutEffect(() => {
@@ -379,8 +403,8 @@ function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdi
         zoomOnDoubleClick={false} nodesDraggable={canEdit && !locked} nodesConnectable={canEdit && !locked}
         connectionMode={physical ? ConnectionMode.Loose : ConnectionMode.Strict}
         multiSelectionKeyCode="Shift" selectionKeyCode="Shift"
-        onSelectionStart={() => setBoxSelecting(true)} onSelectionEnd={() => setBoxSelecting(false)}
-        onSelectionChange={boxSelecting ? (selection) => onBox(selection.nodes as ModelCard[]) : undefined}
+        onSelectionStart={() => { boxing.current = true; }} onSelectionEnd={() => { boxing.current = false; }}
+        onSelectionChange={boxChange}
         onNodeClick={(event, node) => onNode(node as ModelCard, event.shiftKey)}
         onNodeDoubleClick={(_, node) => (node as ModelCard).data.enter?.()}
         onNodeContextMenu={(event, node) => onContext(event, (node as ModelCard).data.address, point(event))}

@@ -70,7 +70,7 @@ test('a based document marks the value it changes, and Reset of its only one giv
   const base = await mass.inputValue();
   await expect(mass).not.toHaveAccessibleDescription(/Changed/);
   await mapStep(page, 'sibling').click({ modifiers: ['Shift'] });
-  await expect(picker).toHaveText('point-mass1 of 2');
+  await expect(picker).toHaveText('Point mass1 of 2');
   await setMass('2.5');
   await expect(picker).toHaveText('point-mass-2');
   // The view stays on the element it showed when the header changed document.
@@ -93,7 +93,7 @@ test('an edit in an Evaluate step\'s Model view makes a document for the evaluat
 
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await open('check');
-  await expect(picker).toHaveText('point-mass1 of 3');
+  await expect(picker).toHaveText('Point mass1 of 3');
   await expect(card('Evaluate', 'check')).toHaveAttribute('data-document-scope', 'lit');
   for (const step of ['train', 'sibling']) await expect(card('Train', step)).toHaveAttribute('data-document-scope', 'plain');
   const initial = await requests();
@@ -109,7 +109,7 @@ test('an edit in an Evaluate step\'s Model view makes a document for the evaluat
   expect([edited.train, edited.sibling]).toEqual([initial.train, initial.sibling]);
 
   await picker.click();
-  await expect(menu.getByRole('menuitemradio')).toHaveText(['point-mass', 'point-mass-2']);
+  await expect(menu.getByRole('menuitemradio')).toHaveText(['Point mass', 'point-mass-2']);
   await expect(menu.getByRole('menuitem', { name: 'Detach', exact: true })).toHaveCount(0);
   await menu.getByRole('menuitem', { name: 'Duplicate', exact: true }).click();
   const rename = page.locator('[data-slot="primary"]').getByRole('tabpanel').locator('.studio-window-slot__header').getByRole('textbox');
@@ -167,7 +167,7 @@ test('a Train step put in an Evaluate step\'s Model view takes the edit, and no 
   await expect.poll(async () => (await requests()).train).not.toBe(initial.train);
   expect((await requests()).sibling).not.toBe(initial.sibling);
   expect(Object.keys(await documents())).toEqual(names);
-  await expect(picker).toHaveText('point-mass');
+  await expect(picker).toHaveText('Point mass');
 });
 
 test('an Evaluate step pointed at a Model document unrelated to its subject\'s cannot run, for that document', async ({ page, request }) => {
@@ -215,7 +215,8 @@ test('a based Objective document marks the term value it changes, and Reset give
   await mapStep(page, 'sibling').click({ modifiers: ['Shift'] });
   await name.fill('Effort');
   await name.press('Enter');
-  await expect(picker).toHaveText('simple-reaches-objective-2');
+  await page.getByRole('menu', { name: 'Apply To', exact: true }).getByRole('menuitem', { name: 'Only This Step', exact: true }).click();
+  await expect(picker).toHaveText('Simple reaches 2');
   await name.click();
   await expect(inspected).toHaveValue('Effort');
   await expect(inspected).toHaveAccessibleDescription('Changed from simple-reaches-objective');
@@ -396,7 +397,7 @@ test('a narrowed edit for two of three readers makes one document, and later edi
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await open('train');
   await mapStep(page, 'third').click({ modifiers: ['Shift'] });
-  await expect(picker).toHaveText('point-mass2 of 3');
+  await expect(picker).toHaveText('Point mass2 of 3');
   let before = await requests();
   await setMass('2.5');
   await expect(picker).toHaveText('point-mass-2');
@@ -404,7 +405,7 @@ test('a narrowed edit for two of three readers makes one document, and later edi
   const variant = (await documents())['point-mass-2'];
 
   await open('third');
-  await expect(picker).toHaveText('point-mass');
+  await expect(picker).toHaveText('Point mass');
   for (const step of ['train', 'sibling']) await mapStep(page, step).click({ modifiers: ['Shift'] });
   before = await requests();
   await setMass('3');
@@ -412,7 +413,7 @@ test('a narrowed edit for two of three readers makes one document, and later edi
   expect((await documents())['point-mass-2']).toEqual(variant);
 
   for (const step of ['train', 'sibling']) await mapStep(page, step).click({ modifiers: ['Shift'] });
-  await expect(picker).toHaveText('point-mass');
+  await expect(picker).toHaveText('Point mass');
   before = await requests();
   await setMass('4');
   await expect.poll(() => changed(before)).toEqual(['sibling', 'third', 'train']);
@@ -433,9 +434,9 @@ test('a subject moved to a new document leaves its evaluation\'s document as it 
   const files = await documents();
 
   await open('train');
-  await expect(picker).toHaveText('point-mass');
+  await expect(picker).toHaveText('Point mass');
   for (const step of ['sibling', 'check']) await mapStep(page, step).click({ modifiers: ['Shift'] });
-  await expect(picker).toHaveText('point-mass1 of 3');
+  await expect(picker).toHaveText('Point mass1 of 3');
   await setMass('3');
   await expect(picker).toHaveText('point-mass-3');
   const { 'point-mass-3': created, ...rest } = await documents();
@@ -447,7 +448,7 @@ test('a subject moved to a new document leaves its evaluation\'s document as it 
   expect(moved.sibling).toBe(evaluated.sibling);
 
   await picker.click();
-  await menu.getByRole('menuitemradio', { name: 'point-mass', exact: true }).click();
+  await menu.getByRole('menuitemradio', { name: 'Point mass', exact: true }).click();
   await expect(picker).toHaveText(/^point-mass(\d+ of \d+)?$/);
   await expect.poll(requests).toEqual(evaluated);
 });

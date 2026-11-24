@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import { type APIRequestContext, type CDPSession, type Locator, type Page } from '@playwright/test';
-import { blankTask, type ModelDocument, type ModelEditResponse, type ModelFieldResponse, type StudioJobSubmission, type StudioProjectSnapshot, type StudioSavedTrainRuns, type WorkspaceReplayTrial } from '../../src/generated/studioContracts';
+import { blankTask, type ModelDocument, type ModelEditResponse, type ModelFieldResponse, type StudioJobSubmission, type StudioProjectSnapshot, type StudioSavedTrainRuns, type StudioTrialReplayResponse } from '../../src/generated/studioContracts';
 import { summarizeStudioTrace } from './fixtures/studioTrace';
 import { fixture, mapStep, runName, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { pickRecordedTrial } from './fixtures/controls';
@@ -136,7 +136,7 @@ async function measureField(page: Page, context: CDPSession, projectPath: string
     const acknowledgedAt = performance.now();
     expect(response.ok(), await response.text()).toBe(true);
     const { result } = await response.json() as ModelEditResponse;
-    if (result.status !== 'applied') throw new Error(result.problem.detail);
+    if (result.status !== 'applied') throw new Error(JSON.stringify(result));
     return { snapshot: result.snapshot, changed: result.changed, acknowledgedAt };
   });
   const settled = page.waitForResponse(async (response) => {
@@ -365,13 +365,10 @@ async function measureReplay(page: Page, request: APIRequestContext, context: CD
   const loaded = await responded;
   expect(loaded.ok(), await loaded.text()).toBe(true);
   expect(loaded.request().postDataJSON()).toMatchObject({ key: row.key, job_id: evaluation.job_id, trial });
-  const replay = await loaded.json() as WorkspaceReplayTrial;
-  expect(replay.identity.stable_id).toBe(trial);
-  expect(replay.manifest_refs!.producer_manifest).toMatchObject({
-    kind: 'EvaluationRunManifest', id: result?.result?.receipt.manifest_id,
-    metadata: { manifest_sha256: result?.result?.receipt.manifest_sha256 },
-  });
-  expect(replay.time.length).toBe(81);
+  const replay = await loaded.json() as StudioTrialReplayResponse;
+  expect(replay.drawn).toMatchObject({ kind: 'trials', trials: [{ id: trial }] });
+  expect(replay.receipt).toEqual(result?.result?.receipt);
+  expect(replay.state_time.length).toBe(81);
   await expect(cursor).toBeVisible();
   const clock = footer.getByRole('group', { name: 'Clock', exact: true });
   const scrubber = clock.getByRole('slider', { name: 'Playback Position' });
@@ -408,7 +405,7 @@ async function measureReplay(page: Page, request: APIRequestContext, context: CD
   await cursor.evaluate(() => new Promise<void>((done) => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
   expect(samples.updates.length).toBeGreaterThanOrEqual(60);
   await expect(scrubber).toHaveValue(paused);
-  return { receipt: result?.result?.receipt, trial, sampleCount: replay.time.length,
+  return { receipt: result?.result?.receipt, trial, sampleCount: replay.state_time.length,
     paused, samples, work, cursorUpdates: statistics(gaps(samples.updates)),
     callbackGaps: statistics(gaps(samples.callbacks)) };
 }

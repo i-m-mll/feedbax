@@ -120,7 +120,7 @@ def _resolve_trial(
         documents.model, documents.task_source,
         registries.components, registries.expression_functions,
         python_tasks=registries.python_tasks, objective=documents.objective,
-        input_overrides=documents.input_overrides,
+        input_bindings=documents.input_bindings,
     )
     if isinstance(paired, tuple):
         problem = paired[0]

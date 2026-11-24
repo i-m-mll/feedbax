@@ -20,7 +20,7 @@ from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_inputs import (
     DocumentReference as DocumentReference, InputBinding, NonemptyText, Pointer as Pointer, ProjectName, RowKey,
 )
-from feedbax.contracts.project_sweep import PatchPath, Sweep
+from feedbax.contracts.project_sweep import PatchPath, Sweep, TrialSetField
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID, TrainingDocument
 
@@ -134,6 +134,7 @@ def check_disjoint(differences: Differences) -> None:
 
 class DocumentBase(StrictModel):
     document: ProjectName
+    unresolved: Literal[True] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class BasedDocument(StrictModel):
@@ -232,7 +233,7 @@ def base_chain(documents: Mapping[str, Document], name: str) -> tuple[str, ...]:
     current: str | None = name
     while current is not None and current not in chain and (document := documents.get(current)) is not None:
         chain.append(current)
-        current = document.base.document if isinstance(document, BasedDocument) else None
+        current = document.base.document if isinstance(document, BasedDocument) and not document.base.unresolved else None
     return tuple(chain)
 
 
@@ -240,7 +241,7 @@ def based_on(documents: Mapping[str, Document], name: str) -> tuple[str, ...]:
     """The documents whose base is ``name``, by name."""
     return tuple(sorted(
         other for other, document in documents.items()
-        if isinstance(document, BasedDocument) and document.base.document == name
+        if isinstance(document, BasedDocument) and not document.base.unresolved and document.base.document == name
     ))
 
 
@@ -257,6 +258,7 @@ class InlineBase(StrictModel):
 class StepBase(StrictModel):
     step: ProjectName
     row: RowKey | None = None
+    unresolved: Literal[True] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class RunBase(StrictModel):
@@ -287,6 +289,7 @@ class Step(StrictModel):
     base: Base
     deltas: list[MatrixCompositionDelta] = Field(default_factory=list)
     sweep: Sweep | None = None
+    set_fields: dict[ProjectName, TrialSetField] = Field(default_factory=dict, exclude_if=lambda value: not value)
     inputs: dict[ProjectName, InputBinding | None] = Field(default_factory=dict)
     requires: list[PatchPath] = Field(default_factory=list)
     note: StepNote | None = None

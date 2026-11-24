@@ -13,11 +13,20 @@ from feedbax.contracts.expression_values import (
 TASK_DOCUMENT_SCHEMA_ID = "feedbax.spec.task_document"
 
 
+class SetVariableChoices(ValueRecord):
+    """Entry identities indexed by the variable's recorded integer or Boolean value."""
+
+    set: str
+    entries: tuple[str | None, ...]
+
+
 class Variable(ValueRecord):
     id: str
     name: str
     type: ValueType
     value: Expression
+    count: Expression | None = Field(default=None, exclude_if=lambda value: value is None)
+    set_choices: SetVariableChoices | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class Length(ValueRecord):
@@ -41,6 +50,15 @@ class Epoch(ValueRecord):
     id: str
     name: str
     end: End
+
+
+class Repeat(ValueRecord):
+    """Repeat the inclusive span of authored epochs a fixed total number of times."""
+
+    id: str
+    first_epoch: str
+    last_epoch: str
+    count: Expression
 
 
 class EpochSteps(ValueRecord):
@@ -84,6 +102,7 @@ class TaskDocument(ValueRecord):
     variables: tuple[Variable, ...]
     epochs: tuple[Epoch, ...] = Field(min_length=1)
     signals: tuple[Signal, ...]
+    repeats: tuple[Repeat, ...] = Field(default=(), exclude_if=lambda value: not value)
     links: tuple[Link, ...] = ()
     fixed_steps: int | None = Field(default=None, ge=0)
     validation_trials: tuple[ValidationTrial, ...] = Field(

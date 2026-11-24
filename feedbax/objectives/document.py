@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Set
 from dataclasses import dataclass
 from enum import Enum
 from typing import NamedTuple
@@ -28,7 +28,7 @@ from feedbax.contracts.objective_document import (
 )
 from feedbax.contracts.expression_check import references
 from feedbax.expression_compile import Compiled, Inputs, compile_expression
-from feedbax.contracts.expression_registry import FunctionRegistry
+from feedbax.contracts.expression_registry import Evaluation, FunctionRegistry
 from feedbax.objectives.base import TermTree
 from feedbax.runtime.epoch_windows import whole_window
 from feedbax.tasks.document import Trial, TrialSource
@@ -45,16 +45,28 @@ class TermValue(NamedTuple):
     covered: jax.Array
 
 
+class TermTrace(NamedTuple):
+    values: jax.Array | None
+    steps: jax.Array
+    reduced: TermValue
+    weight: Evaluation | None
+
+    @property
+    def covered(self) -> jax.Array:
+        return self.reduced.covered
+
+
 class ObjectiveResult(NamedTuple):
     loss: jax.Array
     terms: Mapping[str, TermValue]
 
 
 class ObjectiveUse(Enum):
-    """Only a strictly validated Train objective may be inherited by Evaluate."""
+    """Compile strictly, rebind an inherited Objective, or show the terms that resolve."""
 
     TRAIN = "train"
     INHERITED = "inherited"
+    PREVIEW = "preview"
 
 
 @dataclass(frozen=True)
@@ -65,6 +77,7 @@ class _Term:
     reduction: Reduction
     epochs: tuple[int, ...]
     references: frozenset[str]
+    weight_references: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -107,15 +120,15 @@ class ObjectiveExecutor(eqx.Module):
                 parameters=parameters,
             )
         )(retained, trials, trial_keys)
-        reduced = {}
-        for name, (value, covered) in values.items():
-            count = jnp.count_nonzero(covered)
-            reduced[name] = TermValue(
-                jnp.sum(jnp.where(covered, value, 0)) / jnp.maximum(count, 1), count
+        return _reduce_trials(values)
+
+    def evaluate_with_traces(self, retained, trials, *, run_key, trial_keys, parameters=None):
+        traces = jax.vmap(
+            lambda kept, trial, key: self.trial_terms(
+                kept, trial, run_key, key, parameters=parameters,
             )
-        return ObjectiveResult(
-            sum((term.value for term in reduced.values()), jnp.asarray(0.0)), reduced
-        )
+        )(retained, trials, trial_keys)
+        return _reduce_trials({term: trace.reduced for term, trace in traces.items()}), traces
 
     def evaluate_trial(
         self,
@@ -126,23 +139,42 @@ class ObjectiveExecutor(eqx.Module):
         *,
         parameters=None,
     ) -> Mapping[str, TermValue]:
-        """Evaluate every measure over the full trial before selecting its window."""
+        return {
+            term: trace.reduced for term, trace in
+            self.trial_terms(retained, trial, run_key, trial_key, parameters=parameters).items()
+        }
+
+    def trial_terms(
+        self,
+        retained,
+        trial: Trial,
+        run_key,
+        trial_key,
+        *,
+        parameters=None,
+        unobserved: Set[str] = frozenset(),
+    ) -> Mapping[str, TermTrace]:
+        """The weight, weighted measure, covered steps and reduction of each term."""
         n_steps = self.n_steps
         k = jnp.arange(n_steps)
         results = {}
+        uncovered = TermTrace(
+            None, jnp.zeros(n_steps, dtype=bool),
+            TermValue(jnp.asarray(0.0), jnp.asarray(False)), None,
+        )
         fixed = {}
         traces = {}
         available = {}
         for name in self.names:
             if name.id in retained:
                 source = retained[name.id]
-            elif name.name in trial.variables:
-                source = trial.variables[name.name]
-                if trial.variable_defined is not None and name.name in trial.variable_defined:
-                    available[name.id] = trial.variable_defined[name.name]
-            elif name.name in trial.inputs:
-                source = trial.inputs[name.name]
-                available[name.id] = trial.present[name.name]
+            elif name.id in trial.variables:
+                source = trial.variables[name.id]
+                if trial.variable_defined is not None and name.id in trial.variable_defined:
+                    available[name.id] = trial.variable_defined[name.id]
+            elif name.id in trial.inputs:
+                source = trial.inputs[name.id]
+                available[name.id] = trial.present[name.id]
             else:
                 continue
             (traces if name.level == Level.STEP else fixed)[name.id] = source
@@ -150,9 +182,10 @@ class ObjectiveExecutor(eqx.Module):
         supplied = fixed.keys() | traces.keys()
         for term in self.terms:
             if isinstance(term, _UncoveredTerm) or term.references - supplied:
-                results[term.id] = TermValue(jnp.asarray(0.0), jnp.asarray(False))
+                results[term.id] = uncovered
                 continue
             selected = whole_window(trial.epochs, n_steps, term.epochs)
+            show_weight = not term.weight_references & unobserved
             weight_is_step = term.weight.checked.root.level == Level.STEP
             measure_is_step = term.measure.checked.root.level == Level.STEP
             authored = {} if parameters is None else parameters.get(term.id, {})
@@ -169,12 +202,15 @@ class ObjectiveExecutor(eqx.Module):
             if not measure_is_step:
                 measure, _ = term.measure.evaluate_step(measure_inputs, measure_state)
                 weight, _ = term.weight.evaluate_step(weight_inputs, weight_state)
-                results[term.id] = TermValue(
-                    measure.value * weight.value, measure.defined & weight.defined
+                covered = jnp.asarray(measure.defined & weight.defined)
+                results[term.id] = TermTrace(
+                    None, jnp.broadcast_to(covered, (n_steps,)),
+                    TermValue(measure.value * weight.value, covered),
+                    _weight_trace(weight, selected) if show_weight else None,
                 )
                 continue
             if n_steps == 0:
-                results[term.id] = TermValue(jnp.asarray(0.0), jnp.asarray(False))
+                results[term.id] = uncovered
                 continue
             start = jnp.min(jnp.where(selected, k, n_steps))
             last = jnp.max(jnp.where(selected, k, -1))
@@ -191,6 +227,7 @@ class ObjectiveExecutor(eqx.Module):
                 measure, measure_state = term.measure.evaluate_step(
                     measure_inputs._replace(values=values, step=sample, defined=mask), measure_state
                 )
+                weight = None
                 if weight_is_step:
                     weight, weight_state = term.weight.evaluate_step(
                         weight_inputs._replace(
@@ -200,21 +237,35 @@ class ObjectiveExecutor(eqx.Module):
                         ),
                         weight_state,
                     )
-                    measure = measure._replace(
-                        value=measure.value * weight.value,
-                        defined=measure.defined & weight.defined,
-                    )
-                return (measure_state, weight_state), measure
+                return (measure_state, weight_state), (measure, weight)
 
-            _, samples = jax.lax.scan(
+            _, (samples, weight) = jax.lax.scan(
                 step, (measure_state, weight_state), (k, traces, available, t, u)
             )
-            reduced = _reduce(samples.value, samples.defined & selected, term.reduction)
-            if not weight_is_step:
+            if weight is None:
                 weight, _ = term.weight.evaluate_step(weight_inputs, weight_state)
-                reduced = TermValue(reduced.value * weight.value, reduced.covered & weight.defined)
-            results[term.id] = reduced
+            weights = _weight_trace(weight, selected)
+            values = samples.value * weights.value
+            steps = samples.defined & weights.defined
+            reduced = _reduce(values, steps, term.reduction)
+            results[term.id] = TermTrace(values, steps, reduced, weights if show_weight else None)
         return results
+
+
+def _weight_trace(weight: Evaluation, selected: jax.Array) -> Evaluation:
+    return Evaluation(jnp.broadcast_to(weight.value, selected.shape), selected & weight.defined)
+
+
+def _reduce_trials(values):
+    reduced = {}
+    for name, (value, covered) in values.items():
+        count = jnp.count_nonzero(covered)
+        reduced[name] = TermValue(
+            jnp.sum(jnp.where(covered, value, 0)) / jnp.maximum(count, 1), count,
+        )
+    return ObjectiveResult(
+        sum((term.value for term in reduced.values()), jnp.asarray(0.0)), reduced,
+    )
 
 
 def _reduce(values, mask, reduction):
@@ -240,10 +291,11 @@ def compile_objective(
     task: TrialSource,
     sites: dict[tuple[str | int, ...], Site] | None = None,
     use: ObjectiveUse = ObjectiveUse.TRAIN,
+    nominal: bool = False,
 ) -> ObjectiveExecutor | tuple[Problem, ...]:
     """Compile an authored objective or rebind the validated Train terms to Evaluate."""
     period = task.period
-    indexes = {epoch: index for index, epoch in enumerate(task.epochs)}
+    epoch_ids = set(task.epochs)
     problems = []
     terms = []
     seen = set()
@@ -288,8 +340,8 @@ def compile_objective(
             continue
         measure_refs = references(term.measure)
         weight_refs = references(term.weight)
-        absent = set(term.epochs) - indexes.keys()
-        if use is ObjectiveUse.INHERITED and (
+        absent = set(term.epochs) - epoch_ids
+        if use in (ObjectiveUse.INHERITED, ObjectiveUse.PREVIEW) and (
             absent or measure_refs - measure_ids or weight_refs - weight_ids
         ):
             terms.append(_UncoveredTerm(term.id))
@@ -301,6 +353,7 @@ def compile_objective(
             field_address=(document.id, *path, "measure"),
             period_seconds=period,
             path=(*path, "measure"),
+            nominal=nominal,
         )
         if not isinstance(measure, Compiled):
             problems.extend(measure)
@@ -324,24 +377,30 @@ def compile_objective(
             field_address=(document.id, *path, "weight"),
             period_seconds=period,
             path=(*path, "weight"),
+            nominal=nominal,
         )
         if not isinstance(weight, Compiled):
             problems.extend(weight)
             continue
-        used = (measure_refs | weight_refs) - {"t", "T", "u"}
+        used = (references(measure.checked.tree) | references(weight.checked.tree)) - {"t", "T", "u"}
         terms.append(
             _Term(
                 term.id,
                 measure,
                 weight,
                 term.reduction,
-                tuple(indexes[epoch] for epoch in term.epochs),
+                tuple(index for index, epoch in enumerate(task.epochs) if epoch in term.epochs),
                 used,
+                weight_refs,
             )
         )
         referenced.update(used)
-    if problems:
+    if problems and use is not ObjectiveUse.PREVIEW:
         return tuple(problems)
+    if problems:
+        compiled_ids = {term.id for term in terms}
+        missing = dict.fromkeys(term.id for term in document.terms if term.enabled and term.id not in compiled_ids)
+        terms.extend(map(_UncoveredTerm, missing))
     return ObjectiveExecutor(
         document.id,
         tuple(terms),

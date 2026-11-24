@@ -77,11 +77,11 @@ test('the slot header switches, creates, duplicates, renames and re-keys a step\
   await expect(header.getByRole('heading', { name: 'Model', exact: true })).toBeAttached();
   await expect(header.getByRole('heading')).toHaveText('Model');
   await expect(header.getByRole('button')).toHaveCount(2);
-  await expect(picker('Model')).toHaveText('point-mass');
+  await expect(picker('Model')).toHaveText('Point mass');
   await mapStep(page, 'sibling').click({ modifiers: ['Shift'] });
-  await expect(picker('Model')).toHaveText('point-mass1 of 2');
+  await expect(picker('Model')).toHaveText('Point mass1 of 2');
   await mapStep(page, 'sibling').click({ modifiers: ['Shift'] });
-  await expect(picker('Model')).toHaveText('point-mass');
+  await expect(picker('Model')).toHaveText('Point mass');
   await renameStep('train', 'Reach');
   await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   const activity = page.getByRole('region', { name: 'Activity', exact: true })
@@ -93,27 +93,27 @@ test('the slot header switches, creates, duplicates, renames and re-keys a step\
 
   await page.getByRole('tab', { name: 'Task', exact: true }).click();
   await expect(header.getByRole('heading')).toHaveText('Task');
-  await expect(picker('Task')).toHaveText('simple-reaches-task');
+  await expect(picker('Task')).toHaveText('Simple reaches');
   const taskMenu = page.getByRole('menu', { name: 'Task Document', exact: true });
   await picker('Task').click();
   await taskMenu.getByRole('menuitem', { name: 'Duplicate', exact: true }).click();
   await expect(rename).toBeFocused();
   const copy = await rename.inputValue();
-  expect(copy).not.toBe('simple-reaches-task');
+  expect(copy).not.toBe('Simple reaches');
   await page.keyboard.press('Escape');
   await expect(picker('Task')).toHaveText(copy);
-  await expect.poll(async () => [(await uses('train'))?.task.document, (await uses('sibling'))?.task.document])
-    .toEqual([copy, 'simple-reaches-task']);
+  await expect.poll(async () => (await uses('train'))?.task.document).not.toBe('simple-reaches-task');
+  expect((await uses('sibling'))?.task.document).toBe('simple-reaches-task');
   expect(await status('sibling')).toBe('succeeded');
 
   await picker('Task').press('Enter');
-  await expect(taskMenu.getByRole('menuitemradio')).toHaveText(['simple-reaches-task', copy]);
-  await taskMenu.getByRole('menuitemradio', { name: 'simple-reaches-task', exact: true }).press('Enter');
-  await expect(picker('Task')).toHaveText('simple-reaches-task');
+  await expect(taskMenu.getByRole('menuitemradio')).toHaveText(['Simple reaches', copy]);
+  await taskMenu.getByRole('menuitemradio', { name: 'Simple reaches', exact: true }).press('Enter');
+  await expect(picker('Task')).toHaveText('Simple reaches');
   await expect.poll(async () => (await uses('train'))?.task.document).toBe('simple-reaches-task');
 
   await page.getByRole('tab', { name: 'Objective', exact: true }).click();
-  await expect(picker('Objective')).toHaveText('simple-reaches-objective');
+  await expect(picker('Objective')).toHaveText('Simple reaches');
   const objectiveMenu = await openMenu('Objective');
   await page.keyboard.press('End');
   await page.keyboard.press('ArrowUp');
@@ -122,27 +122,27 @@ test('the slot header switches, creates, duplicates, renames and re-keys a step\
   await expect(objectiveMenu.getByRole('menuitem', { name: 'New', exact: true })).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(rename).toBeFocused();
-  await expect(rename).toHaveValue('objective');
+  await expect(rename).toHaveValue('Objective');
   await page.keyboard.type('fresh');
   await page.keyboard.press('Enter');
   await expect(picker('Objective')).toHaveText('fresh');
   await expect.poll(async () => (await uses('train'))?.objective.document).toBe('objective');
   expect((await saved()).project.documents?.objective?.label).toBe('fresh');
   await picker('Objective').click();
-  await page.getByRole('menuitemradio', { name: 'simple-reaches-objective', exact: true }).click();
+  await page.getByRole('menuitemradio', { name: 'Simple reaches', exact: true }).click();
   await expect.poll(async () => (await uses('train'))?.objective.document).toBe('simple-reaches-objective');
 
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
   const menu = await openMenu('Model');
-  await expect(menu.getByRole('menuitemradio')).toHaveText(['point-mass']);
+  await expect(menu.getByRole('menuitemradio')).toHaveText(['Point mass']);
   await page.keyboard.press('End');
   await page.keyboard.press('ArrowUp');
   await expect(menu.getByRole('menuitem', { name: 'Rename', exact: true })).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(rename).toBeFocused();
-  await expect(rename).toHaveValue('point-mass');
+  await expect(rename).toHaveValue('Point mass');
   await page.keyboard.press('Escape');
-  await expect(picker('Model')).toHaveText('point-mass');
+  await expect(picker('Model')).toHaveText('Point mass');
   const requests = (await rows()).rows.map(({ request_id }) => request_id);
   await openMenu('Model');
   await page.keyboard.press('End');
@@ -231,10 +231,11 @@ test('a Train step keeps a new Model with its Problems and a duplicated Model wi
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
-  await expect(picker('Model')).toHaveText('point-mass');
+  await expect(picker('Model')).toHaveText('Point mass');
   const menu = page.getByRole('menu', { name: 'Model Document', exact: true });
 
   for (const choice of ['New', 'Duplicate'] as const) {
+    const keys = Object.keys((await saved()).project.documents ?? {});
     await picker('Model').click();
     await menu.getByRole('menuitem', { name: choice, exact: true }).click();
     const rename = header.getByRole('textbox');
@@ -242,7 +243,10 @@ test('a Train step keeps a new Model with its Problems and a duplicated Model wi
     const created = await rename.inputValue();
     await page.keyboard.press('Escape');
     await expect(picker('Model')).toHaveText(created);
-    await expect.poll(model).toBe(created);
+    await expect.poll(async () => {
+      const key = await model();
+      return key && ((await saved()).project.documents?.[key]?.label ?? key);
+    }).toBe(created);
     const { status, details } = await trainProblems();
     if (choice === 'New') {
       expect(status).toBe('cannot_run');
@@ -256,9 +260,9 @@ test('a Train step keeps a new Model with its Problems and a duplicated Model wi
     await stillAuthored();
 
     await command('Undo');
-    await expect(picker('Model')).toHaveText('point-mass');
+    await expect(picker('Model')).toHaveText('Point mass');
     await expect.poll(model).toBe('point-mass');
-    expect(Object.keys((await saved()).project.documents ?? {})).not.toContain(created);
+    expect(Object.keys((await saved()).project.documents ?? {})).toEqual(keys);
     expect((await trainProblems()).details).toEqual([]);
   }
 
@@ -385,10 +389,10 @@ test('a narrowed edit in the Training view makes a document based on the shown o
   expect(alone.sibling).toBe(edited.sibling);
   expect(await document('training')).toEqual(files.documents?.training);
   expect(await document('training-2')).toMatchObject({ base: { document: 'training' } });
-  await expect(picker('Training')).toHaveText('training-2');
+  await expect(picker('Training')).toHaveText('training 2');
   await expect(batches).toHaveValue('9');
   expect(await indent('training')).toBe('0px');
-  expect(await indent('training-2')).not.toBe('0px');
+  expect(await indent('training 2')).not.toBe('0px');
 
   await primary.focus();
   await page.keyboard.press('Meta+Z');
@@ -398,20 +402,22 @@ test('a narrowed edit in the Training view makes a document based on the shown o
   await page.getByRole('tab', { name: 'Objective', exact: true }).click();
   const objective = picker('Objective');
   const name = (await objective.textContent())!;
+  const [key] = Object.entries((await saved()).project.documents ?? {}).find(([, file]) => file.label === name)!;
   const weight = primary.getByRole('textbox', { name: 'Weight', exact: true }).first();
   await expect(weight).toBeEditable();
   await mapStep(page, 'sibling').click({ modifiers: ['Shift'] });
   await expect(objective).toHaveText(`${name}1 of 2`);
-  const before = await document(name);
+  const before = await document(key);
   const revision = (await saved()).revision;
   await weight.fill('0.5');
   await weight.press('Enter');
+  await page.getByRole('menu', { name: 'Apply To', exact: true }).getByRole('menuitem', { name: 'Only This Step', exact: true }).click();
   await expect.poll(async () => (await saved()).revision).not.toBe(revision);
   const reached = await requests();
   expect(reached.train).not.toBe(edited.train);
   expect(reached.sibling).toBe(edited.sibling);
-  expect(await document(name)).toEqual(before);
-  await expect(objective).toHaveText(`${name}-2`);
+  expect(await document(key)).toEqual(before);
+  await expect(objective).toHaveText(`${name} 2`);
 });
 
 test('a continuation taken out keeps its runs, and Detach cuts a based document from its base', async ({ page, request }) => {
@@ -429,7 +435,7 @@ test('a continuation taken out keeps its runs, and Detach cuts a based document 
   const before = await requests();
   await batches.fill('9');
   await batches.press('Enter');
-  await expect(picker('Training')).toHaveText('training-2');
+  await expect(picker('Training')).toHaveText('training 2');
   const after = await requests();
   expect(after.train).not.toBe(before.train);
   expect(after['train-2']).toBe(before['train-2']);
@@ -438,7 +444,7 @@ test('a continuation taken out keeps its runs, and Detach cuts a based document 
   await picker('Training').click();
   await menu.getByRole('menuitem', { name: 'Detach', exact: true }).click();
   await expect.poll(async () => 'base' in ((await saved()).project.documents?.['training-2'] ?? {})).toBe(false);
-  expect(await indent('training-2')).toBe('0px');
+  expect(await indent('training 2')).toBe('0px');
   expect(await requests()).toEqual(after);
   await picker('Training').click();
   await expect(menu.getByRole('menuitem', { name: 'Detach', exact: true })).toHaveCount(0);
@@ -467,11 +473,11 @@ test('a narrowed edit in the Model view makes a document based on the shown one,
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
-  await expect(picker).toHaveText('point-mass');
+  await expect(picker).toHaveText('Point mass');
   await primary.locator('.react-flow__node').filter({ hasText: 'Point mass' }).locator('header').click();
   await expect(mass).toBeEditable();
   await mapStep(page, 'sibling').click({ modifiers: ['Shift'] });
-  await expect(picker).toHaveText('point-mass1 of 2');
+  await expect(picker).toHaveText('Point mass1 of 2');
   await expect(mass).toBeEditable();
   const files = (await saved()).project;
   const before = await requests();
@@ -489,5 +495,5 @@ test('a narrowed edit in the Model view makes a document based on the shown one,
   await primary.focus();
   await page.keyboard.press('Meta+Z');
   await expect.poll(async () => (await saved()).project).toEqual(files);
-  await expect(picker).toHaveText('point-mass1 of 2');
+  await expect(picker).toHaveText('Point mass1 of 2');
 });

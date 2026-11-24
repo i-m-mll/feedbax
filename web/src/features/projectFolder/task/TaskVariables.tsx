@@ -1,17 +1,16 @@
 import { appTip } from '@window-shell/browser/tooltip';
-import clsx from 'clsx';
-import { Activity, GripVertical, MoreHorizontal } from 'lucide-react';
-import { useState, type DragEvent } from 'react';
+import { Activity } from 'lucide-react';
+import { useState } from 'react';
 import { studioAccessibleName, studioName, studioValueType } from '@/components/activity/studioVocabulary';
-import { IconButton } from '@/components/ui/Button';
 import { ChangeMark } from '@/components/ui/ChangeMark';
-import { Combobox } from '@/components/ui/Combobox';
 import { FieldProblem } from '@/components/ui/FieldProblem';
 import { InlineEdit } from '@/components/ui/InlineEdit';
-import { Menu, MenuContent, MenuItem, MenuTrigger } from '@/components/ui/Menu';
-import { Table, TableCell, TableFieldCell, TableHeaderCell, TableRow, type TableColumn } from '@/components/ui/Table';
+import { MenuCheckboxItem, MenuItem } from '@/components/ui/Menu';
+import {
+  Table, TableCell, TableFieldCell, TableHeaderCell, TableHeaderRow, TableRow, type TableColumn,
+} from '@/components/ui/Table';
+import { TreeChoice } from '@/components/ui/TreeChoice';
 import { changeTip, ValueField } from '@/components/values/ValueField';
-import { withAttention } from './attention';
 import type { TaskSelection, TaskVariable, UninitializedStart, VariableInitializes } from './taskModel';
 
 /** A refusal of a variable's edit, or nothing once it is made. */
@@ -24,11 +23,13 @@ export interface VariableEdits {
   remove?(id: string): Made;
   /** Moves the variable to `index` among the variables. */
   move?(id: string, index: number): Made;
+  /** Makes the variable a list, or a single value again. */
+  list?(id: string, list: boolean): Made;
 }
 
 /** A variable's type, with a list's count beside it. */
 export function variableType({ type, count }: Pick<TaskVariable, 'type' | 'count'>) {
-  return count === undefined ? type : `${type} × ${count}`;
+  return count === undefined ? type : `${type} × ${count.text ?? ''}`;
 }
 
 /** The mark of a variable read every step, because it reads `time` or the model. */
@@ -38,21 +39,19 @@ export function LevelMark({ variable }: { variable: Pick<TaskVariable, 'level'> 
     className="inline-flex shrink-0 text-shell-muted [&_svg]:size-[1em]"><Activity aria-hidden="true" /></span>;
 }
 
-const columns: readonly TableColumn[] = [
-  { least: '2rem', fixed: true }, { least: '9rem', fixed: true }, { least: '9rem', fixed: true }, { least: '10rem' },
-];
-const drawnColumn: TableColumn = { least: '7rem' };
-const initializesColumn: TableColumn = { least: '12rem' };
+const columns: readonly TableColumn[] = [{ least: '5rem', greatest: '16rem' }, { least: '6rem' }, { least: '8rem' }];
+const drawnColumn: TableColumn = { least: '5rem' };
+const initializesColumn: TableColumn = { least: '8rem' };
 
-/** The Model values a variable initializes, as a choice with type-ahead of those its type fits. */
+/** The Model values a variable initializes, as a choice over the Model's tree of those its type fits. */
 function Initializes({ variable, initializes }: { variable: string; initializes?: VariableInitializes }) {
   const [refusal, setRefusal] = useState<string>();
   if (!initializes) return null;
   const { anchor, chosen, options, reason, changed, toggle } = initializes;
   const items = [...options, ...chosen.filter(({ id }) => !options.some((option) => option.id === id))];
   const shown = refusal ?? reason;
-  return <div data-field={anchor} className="contents"><Combobox className="w-full" aria-label={studioAccessibleName('initializes', variable)}
-    items={items.map(({ id, name }) => ({ value: id, label: name }))}
+  return <div data-field={anchor} className="contents"><TreeChoice className="w-full" aria-label={studioAccessibleName('initializes', variable)}
+    options={items.map(({ id, path }) => ({ value: id, path }))}
     checked={chosen.map(({ id }) => id)} text={chosen.map(({ name }) => name).join(', ')}
     disabled={!toggle} invalid={!!shown}
     trailing={(shown || changed) && <>
@@ -64,17 +63,9 @@ function Initializes({ variable, initializes }: { variable: string; initializes?
     }} /></div>;
 }
 
-const dragType = 'application/x-feedbax-task-variable';
-
-/** The index a dragged variable lands at, dropped on the row at `index`: before it in its upper half, else after. */
-function dropIndex(event: DragEvent<HTMLTableRowElement>, index: number) {
-  const box = event.currentTarget.getBoundingClientRect();
-  return event.clientY < box.top + box.height / 2 ? index : index + 1;
-}
-
 /**
  * Variables as a table of Name, Type and Value. A name is edited by clicking into it; a variable is added at the foot
- * of the Name column once it has a name, removed by its row's menu, and moved by dragging its grip.
+ * of the Name column once it has a name, removed by its row's menu, and moved by dragging its handle.
  */
 export function TaskVariables({ variables, starts = [], selected, select, edits, drawn }: {
   variables: readonly TaskVariable[];
@@ -89,53 +80,39 @@ export function TaskVariables({ variables, starts = [], selected, select, edits,
   const [renaming, setRenaming] = useState<string>();
   const [adding, setAdding] = useState(false);
   const [refusals, setRefusals] = useState<Readonly<Record<string, string>>>({});
-  const [dragging, setDragging] = useState<string>();
   const refuse = (id: string) => (reason: string | undefined) =>
     setRefusals((current) => ({ ...current, [id]: reason ?? '' }));
   const settle = (id: string, made: Made) => { void Promise.resolve(made).then((reason) => refuse(id)(reason || undefined)); };
-  return <Table aria-label={studioName('variables')} columns={[...columns, ...drawn ? [drawnColumn] : [], initializesColumn]} held={2}
-    addRow={edits.add && { label: studioName('addVariable'), onAdd: () => setAdding(true), disabled: adding }}>
-    <thead><tr>
-      <TableHeaderCell aria-hidden="true" />
+  const move = edits.move && ((id: string, index: number) => {
+    const made = edits.move!(id, index);
+    settle(id, made);
+    return made;
+  });
+  return <Table aria-label={studioName('variables')} columns={[...columns, ...drawn ? [drawnColumn] : [], initializesColumn]} held={1}
+    addRow={edits.add && { label: studioName('addVariable'), onAdd: () => setAdding(true), disabled: adding }}
+    moveRow={move}>
+    <thead><TableHeaderRow>
       <TableHeaderCell scope="col">{studioName('name')}</TableHeaderCell>
       <TableHeaderCell scope="col">{studioName('type')}</TableHeaderCell>
       <TableHeaderCell scope="col">{studioName('value')}</TableHeaderCell>
       {drawn && <TableHeaderCell scope="col">{studioName('drawn')}</TableHeaderCell>}
       <TableHeaderCell scope="col">{studioName('initializes')}</TableHeaderCell>
-    </tr></thead>
+    </TableHeaderRow></thead>
     <tbody>{variables.map((variable, index) => {
       const chosen = selected?.kind === 'variable' && selected.id === variable.id;
       const choose = () => { if (!chosen) select({ kind: 'variable', id: variable.id }); };
       const refusal = refusals[variable.id];
-      return <TableRow key={variable.id} selected={chosen} className="group/owner"
-        data-dragging={dragging === variable.id || undefined}
-        onPointerDown={choose} onFocusCapture={choose}
-        onDragOver={(event) => {
-          if (!event.dataTransfer.types.includes(dragType)) return;
-          event.preventDefault();
-          event.dataTransfer.dropEffect = 'move';
-        }}
-        onDrop={(event) => {
-          const id = event.dataTransfer.getData(dragType);
-          if (!id || !edits.move) return;
-          event.preventDefault();
-          const from = variables.findIndex((item) => item.id === id);
-          const to = dropIndex(event, index);
-          const at = to > from ? to - 1 : to;
-          if (at !== from) settle(id, edits.move(id, at));
-        }}>
-        <TableCell className="px-0 text-center">
-          <span draggable={!!edits.move} aria-label={studioAccessibleName('move', variable.name)} role="img"
-            className={clsx('inline-flex cursor-grab text-shell-muted [&_svg]:size-[1em]', withAttention)}
-            onDragStart={(event) => {
-              event.dataTransfer.setData(dragType, variable.id);
-              event.dataTransfer.effectAllowed = 'move';
-              setDragging(variable.id);
-            }}
-            onDragEnd={() => setDragging(undefined)}>
-            <GripVertical aria-hidden="true" />
-          </span>
-        </TableCell>
+      return <TableRow key={variable.id} selected={chosen} onPointerDown={choose} onFocusCapture={choose}
+        sortable={move && { id: variable.id, label: studioAccessibleName('move', variable.name) }}
+        menu={edits.remove && { label: studioAccessibleName('variable', variable.name), items: <>
+          <MenuItem onClick={() => setRenaming(variable.id)}>{studioName('rename')}</MenuItem>
+          <MenuItem disabled={index === 0 || !move} onClick={() => move?.(variable.id, index - 1)}>{studioName('moveEarlier')}</MenuItem>
+          <MenuItem disabled={index === variables.length - 1 || !move}
+            onClick={() => move?.(variable.id, index + 1)}>{studioName('moveLater')}</MenuItem>
+          <MenuCheckboxItem checked={!!variable.count} disabled={!edits.list}
+            onCheckedChange={(list) => settle(variable.id, edits.list?.(variable.id, list))}>{studioName('list')}</MenuCheckboxItem>
+          <MenuItem onClick={() => settle(variable.id, edits.remove?.(variable.id))}>{studioName('remove')}</MenuItem>
+        </> }}>
         <TableFieldCell header>
           <span className="flex h-full min-w-0 items-center">
             <InlineEdit form="cell" value={variable.name} editing={renaming === variable.id}
@@ -144,22 +121,14 @@ export function TaskVariables({ variables, starts = [], selected, select, edits,
               onCommit={(name) => { if (edits.rename) settle(variable.id, edits.rename(variable.id, name)); }} />
             {refusal && <FieldProblem reason={refusal} />}
             <LevelMark variable={variable} />
-            {edits.remove && <Menu>
-              <MenuTrigger render={<IconButton variant="ghost" size="mark" className={clsx('mr-1 shrink-0', withAttention)}
-                label={studioAccessibleName('variable', variable.name)} icon={<MoreHorizontal aria-hidden="true" />} />} />
-              <MenuContent aria-label={studioName('variable')}>
-                <MenuItem onClick={() => setRenaming(variable.id)}>{studioName('rename')}</MenuItem>
-                <MenuItem disabled={index === 0 || !edits.move}
-                  onClick={() => settle(variable.id, edits.move?.(variable.id, index - 1))}>{studioName('moveEarlier')}</MenuItem>
-                <MenuItem disabled={index === variables.length - 1 || !edits.move}
-                  onClick={() => settle(variable.id, edits.move?.(variable.id, index + 1))}>{studioName('moveLater')}</MenuItem>
-                <MenuItem onClick={() => settle(variable.id, edits.remove?.(variable.id))}>{studioName('remove')}</MenuItem>
-              </MenuContent>
-            </Menu>}
           </span>
         </TableFieldCell>
         <TableFieldCell {...appTip(studioValueType(variable.valueType))}>
-          <ValueField form="cell" model={variable.typeChoice} />
+          {variable.count ? <span className="flex min-w-0 items-center gap-1">
+            <span className="min-w-0 flex-1"><ValueField form="cell" model={variable.typeChoice} /></span>
+            <span aria-hidden="true" className="text-shell-muted">×</span>
+            <span className="w-12 shrink-0"><ValueField form="cell" model={variable.count} /></span>
+          </span> : <ValueField form="cell" model={variable.typeChoice} />}
         </TableFieldCell>
         <TableFieldCell><ValueField form="cell" model={variable.value} /></TableFieldCell>
         {drawn && <TableCell className="font-mono tabular-nums text-shell-muted">{drawn[variable.id]}</TableCell>}
@@ -176,7 +145,6 @@ export function TaskVariables({ variables, starts = [], selected, select, edits,
 function NewVariable({ add, done, drawn }: { add(name: string): Made; done(): void; drawn: boolean }) {
   const [refusal, setRefusal] = useState<string>();
   return <TableRow>
-    <TableCell />
     <TableFieldCell header>
       <span className="flex h-full min-w-0 items-center">
         <InlineEdit form="cell" value="" editing className="min-w-0 flex-1 font-mono"
@@ -201,7 +169,6 @@ function StartRow({ start, add, drawn }: { start: UninitializedStart; add?: Vari
   const [refusal, setRefusal] = useState<string>();
   const reason = refusal ?? start.reason;
   return <TableRow>
-    <TableCell />
     <TableFieldCell header>
       <span data-field={start.anchor} className="flex h-full min-w-0 items-center">
         <InlineEdit form="cell" value="" editing={editing} className="min-w-0 flex-1 font-mono"

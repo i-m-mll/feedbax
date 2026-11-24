@@ -5,10 +5,12 @@ from typing import Annotated, Literal
 from pydantic import Field
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.request_refs import Sha256
 from feedbax.contracts.studio_authoring import StudioRunSelection
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
+from feedbax.contracts.studio_scope import StudioStoreChoice
 
 
 class DuplicateRun(StudioRunSelection):
@@ -45,6 +47,18 @@ class ApplySet(StrictModel):
     set: ProjectName
 
 
+class SetToField(StrictModel):
+    kind: Literal["set_to_field"]
+    step: ProjectName
+    axis: ProjectName
+
+
+class SetToSweep(StrictModel):
+    kind: Literal["set_to_sweep"]
+    step: ProjectName
+    axis: ProjectName
+
+
 class RemoveAxisValue(StrictModel):
     """Remove a value of a named axis or an entry of the set it reads; an inline axis left with one value that makes
     no difference is removed."""
@@ -55,10 +69,21 @@ class RemoveAxisValue(StrictModel):
     value: ProjectName
 
 
+class AddSetEntry(StrictModel):
+    """Add an entry with no differences to the Set read by this sweep axis."""
+
+    kind: Literal["add_set_entry"]
+    step: ProjectName
+    axis: ProjectName
+
+
 class StudioSetEditRequest(StrictModel):
     revision: Sha256
+    selection: StudioRunSelection | None = None
+    store_choice: Sha256 | None = None
     command: Annotated[
-        DuplicateRun | SaveSet | InlineSet | ApplySet | RemoveAxisValue, Field(discriminator="kind"),
+        DuplicateRun | SaveSet | InlineSet | ApplySet | SetToField | SetToSweep | RemoveAxisValue | AddSetEntry,
+        Field(discriminator="kind"),
     ]
 
 
@@ -74,6 +99,8 @@ class StudioSetEdit(StrictModel):
     files: list[StudioProjectFilePatch]
     created: list[CreateNamedDocument] = Field(default_factory=list)
     selected: StudioAxisValue | None = None
+    problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
+    store_choices: list[StudioStoreChoice] | None = None
 
 
 class StudioSetsOfferedRequest(StrictModel):

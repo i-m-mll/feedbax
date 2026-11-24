@@ -29,16 +29,18 @@ import { useDrawerSections, useFieldFocus, type FieldFocusRequest } from '@/feat
 import { FieldIntent } from '@/components/values/fieldIntent';
 import { X } from 'lucide-react';
 import { Button, IconButton } from '@/components/ui/Button';
+import { ChoiceMenuContext, useChoiceMenu } from '@/components/ui/ChoiceMenu';
 import { Dialog } from '@/components/ui/Dialog';
 import { Select } from '@/components/ui/Select';
 import { TextField } from '@/components/ui/TextField';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type { PipelineCardPresentation } from '@/components/pipeline/pipelineMapLayout';
-import type { PlanRunView, PlanStepView, PlanView } from '@/features/pipeline/planView';
+import { shownName, type PlanRunView, type PlanStepView, type PlanView } from '@/features/pipeline/planView';
 import {
   emptyPipelineSelection, selectRun, selectStep, selectSweepValue, selectedRuns, type PipelineSelection, type PipelineSelectionState,
 } from '@/features/pipeline/selection';
 import { ProjectWindow } from '@/features/projectWindow/ProjectWindow';
+import { ProjectSettingRows } from '@/features/projectWindow/StudioSettings';
 import { useHeldGestures } from '@/features/projectWindow/heldGestures';
 import { StatusMark } from '@/components/ui/StatusMark';
 import { ProblemRow, StudioProblems, problemEntries, type ProblemEntry } from '@/features/projectWindow/StudioProblems';
@@ -56,10 +58,11 @@ import {
 } from '@/generated/studioContracts';
 import { useConnection } from '@/api/connection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
-import { authoredPointer, ownDefinition, modelDocumentId } from './authoredEdits';
+import { authoredPointer, declarationAddress, ownDefinition, modelDocumentId } from './authoredEdits';
 import { withBaseDescendants } from './baseDescendants';
 import { useManagedProjectDetails, useStoredModel, type NamedDocumentScope } from './managedProjectDetails';
 import { useTrialClock } from './useTrialClock';
+import { drawnVariables } from './task/trialSample';
 import { usePlayheadStore } from '@/components/timeline/trialClock';
 import { viewOffer, viewsByKind } from './viewContent';
 import {
@@ -76,19 +79,20 @@ import {
 } from './evaluateAuthoring';
 import { bindProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
-import { bestRankGroups, projectWindowPlan, planVariants, savedRunId, stepSourceRows, unvalued } from './projectWindowPlan';
+import { axisProblems, bestRankGroups, projectWindowPlan, planVariants, savedRunId, stepSourceRows, unvalued } from './projectWindowPlan';
 import { placeField, placeMember, placeView, removeGraphVariation, type Reveal } from './projectWindowProblems';
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
 import { planWithRefusal, problemKey, type GestureFailures, type Refusal } from './refusals';
 import { SubjectDocuments, TrialsEditor, type StepField } from './StudioEvaluateAuthoring';
 import { SelectionRule } from './SelectionRule';
-import { bindingEdit, connection, selectionProblems, stepSelections, subjectAxisEdits } from './selectionEdits';
+import { bindingEdit, connection, exceptionRuleProblem, selectionProblems, stepSelections, subjectAxisEdits } from './selectionEdits';
 import { InputEditor, type InputGesture } from './InputEditor';
 import { documentChoice } from './referenceChoices';
 import { documentsOfRole } from './useProjectDocuments';
 import { StudioEvaluationAttemptDetails } from './StudioEvaluationResults';
 import { focusedResult, SavedResults } from './SavedResults';
 import { filesRemoval, RunRemovalContext, useRunRemovalDialog } from './runRemoval';
+import { askStoreWith } from './storeChoice';
 import {
   jsonPointerPath, StudioStepField, StudioTrainAuthoringForm, SweepFieldItems, useTrainClassFields, useTrainFieldLabels,
 } from './StudioTrainAuthoringForm';
@@ -308,14 +312,25 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     return [...validity.commands(runs, anchor), ...owner ? [sets.duplicateRun(owner, runs)] : []];
   };
   const runRemoval = useRunRemovalDialog(plans.read);
+  const choiceMenu = useChoiceMenu();
   const sets = setAuthoring({
     editor, project: saved.project, applies: !outside && reachable && variantApplies,
-    perform, state: () => latestState.current, select: (next) => selection.select(next),
+    perform, state: () => latestState.current, select: (next) => selection.select(next), confirmRemoval: runRemoval.confirm,
   });
-  const axisMenu: AxisMenu = (stepId, axis) => ({
-    picker: sets.axisPicker(stepId, axis), commands: sets.axisCommands(stepId, axis),
-    refusal: refusal?.kind === 'axis' && refusal.step === stepId && refusal.axis === axis ? refusal.reason : undefined,
-  });
+  const axisMenu: AxisMenu = (stepId, axis) => {
+    const planned = plan.steps.find(({ id }) => id === stepId);
+    const values = planned?.sweeps.find(({ id }) => id === axis)?.values ?? [];
+    const subject = planned?.kind === 'evaluate' ? planned.inputs.find(({ id }) => id === 'subject')?.sourceStepId : undefined;
+    const model = modelDocumentId(planned?.documentIds) ??
+      (subject ? modelDocumentId(plan.steps.find(({ id }) => id === subject)?.documentIds) : undefined);
+    const [problem] = axisProblems(shown?.window_map, stepId, axis, variant);
+    return {
+      picker: sets.axisPicker(stepId, axis),
+      commands: sets.axisCommands(stepId, axis, { model: !!model, empty: !values.some(({ id }) => id !== unvalued) }),
+      removeValue: (value, label) => sets.removeValue(stepId, axis, value, label),
+      refusal: refusal?.kind === 'axis' && refusal.step === stepId && refusal.axis === axis ? refusal.reason : problem?.detail,
+    };
+  };
   const step = plan.steps.find(({ id }) => id === selection.stepId);
   const state = shown ? settledWindowSelection(plan, selection.pipeline) : selection.pipeline;
   const latestState = useRef(state);
@@ -614,30 +629,21 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         : undefined);
   const evaluateScope = step?.kind === 'evaluate' ? trialScope : undefined;
   const wholeTrialStep = trialScope && (trialScope.kind === 'step' || trialScope.kind === 'variant');
-  // A whole-step edit is a step scope in every variant, the run naming the variant. A Train step's is unscoped, the
-  // server writing its shared documents for every step of the variant that uses them, or made for the chosen steps.
-  const trialEditScope = !trialScope || trialScope.kind === 'step' || trialScope.kind === 'variant'
-    ? trialScope && step?.kind !== 'train' ? { kind: 'step' } as const : undefined
-    : trialScope;
+  const trialEditScope = !trialScope ? undefined : trialScope.kind === 'variant' ? { kind: 'step' } as const : trialScope;
   const documentEditable = !outside;
   const trialEditable = documentEditable && Boolean(trialScope);
-  /** A whole-step edit of a Train step's Task or Objective is made for the steps its view chooses. */
-  const trialChangeScope: TrialChangeScope = (change) => {
-    if (step?.kind === 'evaluate' && wholeTrialStep && change.kind === 'task' && documentScopes.task) {
-      return { kind: 'step', chosen_steps: [...documentScopes.task.lit] };
-    }
-    if (trialEditScope || step?.kind !== 'train' || !wholeTrialStep) return trialEditScope;
-    const chosen = change.kind === 'task' ? documentScopes.task?.lit
-      : change.kind === 'objective' || change.kind === 'expression' ? documentScopes.objective?.lit : undefined;
-    return chosen && { kind: 'step', chosen_steps: [...chosen] };
-  };
+  const trialChangeScope: TrialChangeScope = () => trialEditScope;
   // A run whose own definition is refused has no Task or Objective to read; its views are dimmed by its problems.
   const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, trialStep && namedRow?.resolved !== false,
-    trialEditable, trialChangeScope, runRemoval.confirm);
+    trialEditable, trialChangeScope, runRemoval.confirm, askStoreWith(choiceMenu.ask, {
+      step: stepLabel,
+      run: (key) => shown?.window_map?.rows.find((row) => savedRunId(row.key) === savedRunId(key))?.label ?? key.row,
+    }));
   const trialClock = useTrialClock({
     windowState, setWindowState, projectId: saved.project_id, revision: saved.revision, view: trial.view,
     taskDocument: trial.view && (trial.view.task_document ?? step?.id), stored, evaluation: selectedEvaluation,
     sceneVisible: windowState.mode !== 'map' && [primaryView, secondaryView].includes('scene'), elements, playhead,
+    shelfView: windowState.mode === 'map' ? undefined : primaryView ?? undefined,
   });
   const evaluationReplay = trialClock.replay;
   const documentBase = authored && 'document' in authored.base && !authored.base.pointer ? authored.base.document : undefined;
@@ -667,8 +673,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const unlisted = stepCheckpointRule || (!listedSubject ? scopedRule : undefined);
   const checkpointEditors: readonly SelectionCheckpoint[] | undefined = listedCheckpoints ??
     (unlisted ? [{ rule: unlisted, selections: [0] }] : undefined);
-  const canSweepCheckpoint = Boolean(namedRun && stepCheckpointRule && !checkpointVariant && !subject?.checkpoint_axis &&
-    stepCheckpointRule !== 'last' && (Array.isArray(stepCheckpointRule) || 'every' in stepCheckpointRule));
+  const canSweepCheckpoint = Boolean(namedRun && subject?.can_sweep_checkpoint);
   function saveElementPosition(document: string, node: string, position: PresentationPosition) {
     const { outside, saved } = editor.getSnapshot();
     const current = (outside ?? saved).presentation ?? {};
@@ -1083,7 +1088,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   /** Selection `index` of input `role` as its rule field edits it: its terms, unless a named subset holds them. */
   function selectionRuns(role: string, index: number, reference: StepReference, onCommit: (terms: SubsetTerms) => void,
     onToRows?: () => void) {
-    const problem = refusedAt(`subset.${index}`) ?? inputProblems(role, index)?.rule;
+    const refused = refusedAt(`subset.${index}`);
+    const problem = refused !== undefined ? { reason: refused } : inputProblems(role, index)?.rule;
     const source = plan.steps.find(({ id }) => id === reference.step);
     const where = reference.where ?? {};
     if (!source || !shown || !variant || 'subset' in where) return undefined;
@@ -1669,9 +1675,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     activity, problemCommand, failure && !isStudioDefect(failureCause) && retryCommand,
   ].filter((command): command is StudioCommand => !!command);
 
+  const projectSettings = <ProjectSettingRows settings={configuration.settings ?? {}} defaultDays={saved.default_keep_superseded_days}
+    steps={Object.entries(saved.project.steps ?? {}).map(([id, step]) => ({ id, label: shownName(id, step) }))}
+    change={(name, setting, value) => editor.edit(declarationAddress, name, [{ op: 'add', path: `/settings/${setting}`, value }])} />;
+
   return (
-    <RunRemovalContext.Provider value={runRemoval.confirm}>
+    <RunRemovalContext.Provider value={runRemoval.confirm}><ChoiceMenuContext.Provider value={choiceMenu.ask}>
       <ProjectWindow
+        projectSettings={projectSettings}
         state={windowState} onStateChange={setWindowState} projectName={configuration.project}
         saveStatus={pending || snapshot.error ? studioName('edited') : undefined}
         views={views}
@@ -1803,7 +1814,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                   ? <FocusedFields className="contents" request={fieldFocus?.step === step?.id && fieldFocus?.target?.startsWith('task:') ? fieldFocus : undefined}
                     onFocused={() => setFieldFocus(undefined)}>
                     <TrialTaskDocument view={value} commit={commit} runs={runs} selected={selected} select={choose(document)}
-                      drawn={trialClock.trial && (trialClock.trial.kind === 'batch' ? trialClock.trial.batch : trialClock.trial.trial).variables} />
+                      drawn={drawnVariables(trialClock.trial)} />
                   </FocusedFields>
                   : <TrialTaskForm view={value} commit={commit} />),
                 drawer: <TrialTaskOutline sections={drawerSections} view={value} selected={selected} select={choose(document)} />,
@@ -1862,6 +1873,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               ].join(' · '), rule: editable && <SelectionRule scope={{ project: saved.project_id, revision: shown.revision, variant }}
                 source={step} rule={where?.rule ?? ''} ranked={false} picking={elements}
                 planned={{ count: exception.count, total: step.runs.length }}
+                problem={exceptionRuleProblem(shown.window_map?.problems ?? [], step.id, variant, exception.id)}
                 disabled={!applies || !!saved.project.sweep}
                 onCommit={(rule) => onCurrentPlan('editExceptionRule')(exception.id, rule)} /> };
             });
@@ -1945,7 +1957,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         }}
       />
       {runRemoval.dialog}
-    </RunRemovalContext.Provider>
+      {choiceMenu.menu}
+    </ChoiceMenuContext.Provider></RunRemovalContext.Provider>
   );
 }
 
