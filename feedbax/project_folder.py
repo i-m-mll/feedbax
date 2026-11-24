@@ -1413,6 +1413,7 @@ class ProjectFolder:
         from feedbax.contracts.model_edit import ModelEditAsked, ModelEditProblem, ModelEditState, ModelProjectionRequest, SetField
         from feedbax.compiler.model_edit import ModelEditDraft, apply_model_edit
         from feedbax.compiler.model_ports import ModelRegistryPorts
+        from feedbax.compiler.model_templates import instantiate_model_template
         from feedbax.project_model_selection import selected_task_signal
 
         snapshot = self.read(project_id, revision=body.revision)
@@ -1437,6 +1438,7 @@ class ProjectFolder:
         result = apply_model_edit(
             state, body.command, ports=authority.port, accepts=authority.accepts,
             next_input=authority.next_input, functions=self.functions, reference=reference,
+            instantiate_template=lambda name: instantiate_model_template(name, components, state.document.step_seconds),
             task_signal=lambda command: selected_task_signal(self, project_id, ModelProjectionRequest(
                 revision=body.revision, run=command.run, document=body.document,
             ), command.signal),
