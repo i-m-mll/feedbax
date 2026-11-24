@@ -17,6 +17,7 @@ from feedbax.contracts.project_inputs import NonemptyText, ProjectName, StepRefe
 from feedbax.contracts.request_refs import Name
 from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
+from feedbax.contracts.studio_scope import StudioStoreChoice
 
 
 class InputProducer(StrictModel):
@@ -234,6 +235,7 @@ class StudioClassSweepChange(StrictModel):
 
 class StudioTrainAuthoringRequest(StudioRunSelection):
     revision: Sha256
+    store_choice: Sha256 | None = None
     change: StudioAuthoringChange | None = None
     class_sweep: StudioClassSweepChange | None = None
     reset: str | None = None
@@ -300,6 +302,7 @@ class StudioTrainAuthoring(StrictModel):
     created: list[CreateNamedDocument] = Field(default_factory=list)
     """Documents the edit creates, written before ``files``, which may name them."""
     documents: list[ProjectName]
+    store_choices: list[StudioStoreChoice] | None = None
     refusal: StudioSweptParameterMissing | None = None
     classes: list[StudioClassField] = Field(default_factory=list)
     removed_values: dict[str, list[str]] = Field(default_factory=dict)

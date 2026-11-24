@@ -496,6 +496,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         try {
           const result = await editor.editModel(name, model.id, { operation }, reviewed, scope);
           if (result.status === 'refused') return { address: result.problem.address, reason: result.problem.detail };
+          if (result.status === 'asked') return { reason: 'Choose where to store this edit.' };
           const shown = follow(result);
           if (result.clipboard) clipboard = result.clipboard;
           if (choose && result.changed.length) {

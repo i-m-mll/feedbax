@@ -9,6 +9,7 @@ from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.request_refs import Sha256
 from feedbax.contracts.studio_authoring import StudioRunSelection
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
+from feedbax.contracts.studio_scope import StudioStoreChoice
 
 
 class DuplicateRun(StudioRunSelection):
@@ -57,6 +58,8 @@ class RemoveAxisValue(StrictModel):
 
 class StudioSetEditRequest(StrictModel):
     revision: Sha256
+    selection: StudioRunSelection | None = None
+    store_choice: Sha256 | None = None
     command: Annotated[
         DuplicateRun | SaveSet | InlineSet | ApplySet | RemoveAxisValue, Field(discriminator="kind"),
     ]
@@ -74,6 +77,7 @@ class StudioSetEdit(StrictModel):
     files: list[StudioProjectFilePatch]
     created: list[CreateNamedDocument] = Field(default_factory=list)
     selected: StudioAxisValue | None = None
+    store_choices: list[StudioStoreChoice] | None = None
 
 
 class StudioSetsOfferedRequest(StrictModel):

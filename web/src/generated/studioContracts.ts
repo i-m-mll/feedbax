@@ -950,6 +950,7 @@ export interface ModelEditRequest {
   rows?: string[];
   axes?: Record<string, string[]>;
   files?: StudioProjectFilePatch[];
+  store_choice?: string | null;
 }
 
 export interface ModelEditApplied {
@@ -961,13 +962,18 @@ export interface ModelEditApplied {
   created?: string[];
 }
 
+export interface ModelEditAsked {
+  status: "asked";
+  store_choices: StudioStoreChoice[];
+}
+
 export interface ModelEditRefused {
   status: "refused";
   problem: ModelEditProblem;
 }
 
 export interface ModelEditResponse {
-  result: ModelEditApplied | ModelEditRefused;
+  result: ModelEditApplied | ModelEditRefused | ModelEditAsked;
 }
 
 export interface ModelUndoRequest {
@@ -1059,6 +1065,7 @@ export interface ModelFieldRequest {
   axes?: Record<string, string[]>;
   chosen_steps?: string[];
   revision: string;
+  store_choice?: string | null;
   document: string;
   owner: ModelAddress;
   evaluate_scope?: StepRuns | AxisValueRuns | ListedRuns | VariantRuns | null;
@@ -1070,6 +1077,7 @@ export interface ModelFieldResponse {
   fields?: ModelFieldView[];
   files?: StudioProjectFilePatch[];
   problems?: Problem[];
+  store_choices?: StudioStoreChoice[] | null;
   removed_values?: Record<string, string[]>;
   command?: ModelEditCommand | null;
 }
@@ -1183,6 +1191,7 @@ export interface TrainFieldRequest {
   axes?: Record<string, string[]>;
   chosen_steps?: string[];
   revision: string;
+  store_choice?: string | null;
   field?: string | null;
   edit?: FieldTextEdit | FieldKindEdit | FieldNameEdit | FieldResetEdit | null;
 }
@@ -1193,6 +1202,7 @@ export interface TrainFieldResponse {
   created?: CreateNamedDocument[];
   dependencies?: string[];
   problems?: Problem[];
+  store_choices?: StudioStoreChoice[] | null;
   removed_values?: Record<string, string[]>;
 }
 
@@ -3792,18 +3802,20 @@ export type StudioBoundBestSubject = {
 export type StudioCheckpointRuleEdit = {
   "revision": string;
   "files": Array<StudioProjectFilePatch>;
+  "store_choices"?: Array<StudioStoreChoice> | null;
 };
 
 export type StudioCheckpointRuleRequest = {
   "revision": string;
   "run": StudioSavedTrainKey;
   "edit": StudioCheckpointRuleSet | StudioCheckpointRuleToSweep;
+  "store_choice"?: string | null;
 };
 
 export type StudioCheckpointRuleSet = {
   "kind": "set";
   "rule": "last" | BatchCheckpoint | UpdateRule;
-  "scope": AxisValueRuns | ListedRuns;
+  "scope": StepRuns | AxisValueRuns | ListedRuns;
 };
 
 export type StudioCheckpointRuleToSweep = {
@@ -4210,6 +4222,13 @@ export type StudioRunRuleRequest = {
   "ranked"?: boolean;
 };
 
+export type StudioRunSelection = {
+  "run"?: StudioSavedTrainKey | null;
+  "rows"?: Array<string>;
+  "axes"?: Record<string, Array<string>>;
+  "chosen_steps"?: Array<string>;
+};
+
 export type StudioSavedLightHistory = {
   "result"?: StudioSavedLightResult | null;
   "previous"?: StudioSavedLightResult | null;
@@ -4230,10 +4249,13 @@ export type StudioSetEdit = {
   "files": Array<StudioProjectFilePatch>;
   "created"?: Array<CreateNamedDocument>;
   "selected"?: StudioAxisValue | null;
+  "store_choices"?: Array<StudioStoreChoice> | null;
 };
 
 export type StudioSetEditRequest = {
   "revision": string;
+  "selection"?: StudioRunSelection | null;
+  "store_choice"?: string | null;
   "command": DuplicateRun | SaveSet | InlineSet | ApplySet | RemoveAxisValue;
 };
 
@@ -4317,6 +4339,7 @@ export type StudioTrainAuthoring = {
   "files": Array<StudioProjectFilePatch>;
   "created"?: Array<CreateNamedDocument>;
   "documents": Array<string>;
+  "store_choices"?: Array<StudioStoreChoice> | null;
   "refusal"?: StudioSweptParameterMissing | null;
   "classes"?: Array<StudioClassField>;
   "removed_values"?: Record<string, Array<string>>;
@@ -4329,6 +4352,7 @@ export type StudioTrainAuthoringRequest = {
   "axes"?: Record<string, Array<string>>;
   "chosen_steps"?: Array<string>;
   "revision": Sha256;
+  "store_choice"?: Sha256 | null;
   "change"?: StudioAuthoringChange | null;
   "class_sweep"?: StudioClassSweepChange | null;
   "reset"?: string | null;
@@ -6955,6 +6979,7 @@ export const ModelEditRequestSchema: z.ZodType<ModelEditRequest> = z.lazy(() =>
       "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).optional(),
       "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1))).optional(),
       "files": z.array(StudioProjectFilePatchSchema).optional(),
+      "store_choice": z.string().regex(new RegExp("^[a-f0-9]{64}$")).nullable().optional(),
     })
     .strict()
     .superRefine((input, ctx) => {
@@ -6981,6 +7006,15 @@ export const ModelEditAppliedSchema: z.ZodType<ModelEditApplied> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<ModelEditApplied>;
 
+export const ModelEditAskedSchema: z.ZodType<ModelEditAsked> = z.lazy(() =>
+  z
+    .object({
+      "status": z.literal("asked"),
+      "store_choices": z.array(StudioStoreChoiceSchema).min(1),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelEditAsked>;
+
 export const ModelEditRefusedSchema: z.ZodType<ModelEditRefused> = z.lazy(() =>
   z
     .object({
@@ -6993,7 +7027,7 @@ export const ModelEditRefusedSchema: z.ZodType<ModelEditRefused> = z.lazy(() =>
 export const ModelEditResponseSchema: z.ZodType<ModelEditResponse> = z.lazy(() =>
   z
     .object({
-      "result": z.union([ModelEditAppliedSchema, ModelEditRefusedSchema]),
+      "result": z.union([ModelEditAppliedSchema, ModelEditRefusedSchema, ModelEditAskedSchema]),
     })
     .strict()
 ) as unknown as z.ZodType<ModelEditResponse>;
@@ -7141,6 +7175,7 @@ export const ModelFieldRequestSchema: z.ZodType<ModelFieldRequest> = z.lazy(() =
       "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1)).min(1)).optional(),
       "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+      "store_choice": z.string().regex(new RegExp("^[a-f0-9]{64}$")).nullable().optional(),
       "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
       "owner": ModelAddressSchema,
       "evaluate_scope": z.union([StepRunsSchema, AxisValueRunsSchema, ListedRunsSchema, VariantRunsSchema]).nullable().optional(),
@@ -7156,6 +7191,7 @@ export const ModelFieldResponseSchema: z.ZodType<ModelFieldResponse> = z.lazy(()
       "fields": z.array(ModelFieldViewSchema).optional(),
       "files": z.array(StudioProjectFilePatchSchema).optional(),
       "problems": z.array(ProblemSchema).optional(),
+      "store_choices": z.array(StudioStoreChoiceSchema).nullable().optional(),
       "removed_values": z.record(z.string(), z.array(z.string())).optional(),
       "command": ModelEditCommandSchema.nullable().optional(),
     })
@@ -7317,6 +7353,7 @@ export const TrainFieldRequestSchema: z.ZodType<TrainFieldRequest> = z.lazy(() =
       "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1)).min(1)).optional(),
       "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+      "store_choice": z.string().regex(new RegExp("^[a-f0-9]{64}$")).nullable().optional(),
       "field": z.string().nullable().optional(),
       "edit": z.union([FieldTextEditSchema, FieldKindEditSchema, FieldNameEditSchema, FieldResetEditSchema]).nullable().optional(),
     })
@@ -7331,6 +7368,7 @@ export const TrainFieldResponseSchema: z.ZodType<TrainFieldResponse> = z.lazy(()
       "created": z.array(CreateNamedDocumentSchema).optional(),
       "dependencies": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
       "problems": z.array(ProblemSchema).optional(),
+      "store_choices": z.array(StudioStoreChoiceSchema).nullable().optional(),
       "removed_values": z.record(z.string(), z.array(z.string())).optional(),
     })
     .strict()
@@ -11393,6 +11431,7 @@ export const StudioCheckpointRuleEditSchema: z.ZodType<StudioCheckpointRuleEdit>
   z.object({
     "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
     "files": z.array(StudioProjectFilePatchSchema),
+    "store_choices": z.union([z.array(StudioStoreChoiceSchema), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioCheckpointRuleEdit>;
 
@@ -11401,6 +11440,7 @@ export const StudioCheckpointRuleRequestSchema: z.ZodType<StudioCheckpointRuleRe
     "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
     "run": StudioSavedTrainKeySchema,
     "edit": z.union([StudioCheckpointRuleSetSchema, StudioCheckpointRuleToSweepSchema]),
+    "store_choice": z.union([z.string().regex(new RegExp("^[0-9a-f]{64}$")), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioCheckpointRuleRequest>;
 
@@ -11408,7 +11448,7 @@ export const StudioCheckpointRuleSetSchema: z.ZodType<StudioCheckpointRuleSet> =
   z.object({
     "kind": z.literal("set"),
     "rule": z.union([z.literal("last"), BatchCheckpointSchema, UpdateRuleSchema]),
-    "scope": z.union([AxisValueRunsSchema, ListedRunsSchema]),
+    "scope": z.union([StepRunsSchema, AxisValueRunsSchema, ListedRunsSchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioCheckpointRuleSet>;
 
@@ -11930,6 +11970,15 @@ export const StudioRunRuleRequestSchema: z.ZodType<StudioRunRuleRequest> = z.laz
   }).strict()
 ) as unknown as z.ZodType<StudioRunRuleRequest>;
 
+export const StudioRunSelectionSchema: z.ZodType<StudioRunSelection> = z.lazy(() =>
+  z.object({
+    "run": z.union([StudioSavedTrainKeySchema, z.null()]).optional(),
+    "rows": z.array(z.string()).optional(),
+    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1)).min(1)).optional(),
+    "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioRunSelection>;
+
 export const StudioSavedLightHistorySchema: z.ZodType<StudioSavedLightHistory> = z.lazy(() =>
   z.object({
     "result": z.union([StudioSavedLightResultSchema, z.null()]).optional(),
@@ -11955,12 +12004,15 @@ export const StudioSetEditSchema: z.ZodType<StudioSetEdit> = z.lazy(() =>
     "files": z.array(StudioProjectFilePatchSchema),
     "created": z.array(CreateNamedDocumentSchema).optional(),
     "selected": z.union([StudioAxisValueSchema, z.null()]).optional(),
+    "store_choices": z.union([z.array(StudioStoreChoiceSchema), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioSetEdit>;
 
 export const StudioSetEditRequestSchema: z.ZodType<StudioSetEditRequest> = z.lazy(() =>
   z.object({
     "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "selection": z.union([StudioRunSelectionSchema, z.null()]).optional(),
+    "store_choice": z.union([z.string().regex(new RegExp("^[0-9a-f]{64}$")), z.null()]).optional(),
     "command": z.union([DuplicateRunSchema, SaveSetSchema, InlineSetSchema, ApplySetSchema, RemoveAxisValueSchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioSetEditRequest>;
@@ -12070,6 +12122,7 @@ export const StudioTrainAuthoringSchema: z.ZodType<StudioTrainAuthoring> = z.laz
     "files": z.array(StudioProjectFilePatchSchema),
     "created": z.array(CreateNamedDocumentSchema).optional(),
     "documents": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))),
+    "store_choices": z.union([z.array(StudioStoreChoiceSchema), z.null()]).optional(),
     "refusal": z.union([StudioSweptParameterMissingSchema, z.null()]).optional(),
     "classes": z.array(StudioClassFieldSchema).optional(),
     "removed_values": z.record(z.string(), z.array(z.string())).optional(),
@@ -12084,6 +12137,7 @@ export const StudioTrainAuthoringRequestSchema: z.ZodType<StudioTrainAuthoringRe
     "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1)).min(1)).optional(),
     "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
     "revision": Sha256Schema,
+    "store_choice": z.union([Sha256Schema, z.null()]).optional(),
     "change": z.union([StudioAuthoringChangeSchema, z.null()]).optional(),
     "class_sweep": z.union([StudioClassSweepChangeSchema, z.null()]).optional(),
     "reset": z.union([z.string(), z.null()]).optional(),
