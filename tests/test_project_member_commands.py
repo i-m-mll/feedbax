@@ -212,7 +212,8 @@ def test_a_step_uses_a_duplicated_model_whose_links_and_measures_resolve(studio)
     result = _command(client, before, {"kind": "duplicate", "family": "documents", "member": "reach-model", "name": "arm"})
     assert result["snapshot"]["presentation"]["documents"]["arm"] == before["presentation"]["documents"]["reach-model"]
     files = _files(folders)
-    assert files["documents/arm.json"] == files["documents/reach-model.json"]
+    original = json.loads(files["documents/reach-model.json"])
+    assert json.loads(files["documents/arm.json"]) == original | {"label": "Reach model 2"}
     run = {"variant": "default", "step": "train-b", "row": "default"}
     response = client.post(f"{URL}/authoring/trials", json={
         "revision": result["snapshot"]["revision"], "run": run,

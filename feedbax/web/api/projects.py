@@ -199,6 +199,7 @@ def project_train_numeric_fields(
             raise ProjectFolderInvalid(str(error)) from error
         stored = train_edit_store(
             folders, project_id, snapshot.project, step_id, body, StoredEdit(projection.files, tuple(projection.created)),
+            new_rows_for_selection=selection.values is not None,
         )
         if isinstance(stored, list):
             return projection.model_copy(update={"files": [], "created": [], "store_choices": stored})

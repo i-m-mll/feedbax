@@ -23,7 +23,7 @@ from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.contracts.project import (
     RemoveProjectValue, SetProjectValue, apply_document_edits, json_pointer_parts, member_name,
 )
-from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
+from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode, compose_document, resolve_step
 from feedbax.planner.project_plan import EVALUATION_TASK, RunKey, compile_project, own_task_variation
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import DocumentTrainingConfig, DocumentTrainingRequestSpec, EvaluationRequestSpec
@@ -564,8 +564,9 @@ def _definition(plan, key):
     return definition
 
 
-def _pairing(plan, key, bundle):
-    definition = _definition(plan, key)
+def _pairing(plan, key, bundle, *, definition=None):
+    if definition is None:
+        definition = _definition(plan, key)
     step = plan.steps[key.variant, key.step]
     if step.kind == "train":
         documents = TrialDocuments.model_validate(definition.payload.get("trial_documents"))
@@ -575,10 +576,9 @@ def _pairing(plan, key, bundle):
     raise ProjectFolderInvalid("The selected run has no authored trial pairing.")
 
 
-def _prepare_edits(body, folders, project_id, project, settled, key, bundle, documents, projected):
+def _prepare_edits(body, folders, project_id, project, settled, key, bundle, definition, documents, projected):
     change, scope = body.change, body.scope
     plan = settled.plan
-    definition = plan.selected_definitions[key]
     step = plan.steps[key.variant, key.step]
     expression = change if isinstance(change, StudioTrialExpressionEdit) else None
     if expression is not None:
@@ -1130,20 +1130,36 @@ def trial_authoring(
     snapshot = folders.read(project_id, revision=body.revision)
     settled = folders.read_plan(project_id, revision=snapshot.revision, source_runs=(key,))
     plan = settled.plan
-    definition = _definition(plan, key)
     step = plan.steps.get((key.variant, key.step))
     if step is None or step.kind not in ("train", "evaluate"):
         raise ProjectFolderInvalid("The selected run has no authored trial pairing.")
     try:
         project = snapshot.project
-        documents, projected, graph = _pairing(plan, key, bundle)
+        definition = plan.selected_definitions.get(key)
+        change = body.change
+        if (
+            definition is None and step.kind == "train"
+            and isinstance(change, StudioTrialSelectDocument) and change.role == "training"
+            and (body.scope is None or isinstance(body.scope, StudioTrialStepScope))
+            and any(
+                item.code == ResolutionCode.INVALID_SWEEP and item.step == key.step and item.row == key.row
+                and item.variant == key.variant for item in plan.diagnostics
+            )
+        ):
+            # The Training document can be replaced from the authored step even when a sweep row no longer resolves.
+            base = resolve_step(plan.variant_projects[key.variant], key.step, readers=settled.readers)
+            if not isinstance(base, ProjectDiagnostic):
+                definition = base
+        if definition is None:
+            definition = _definition(plan, key)
+        documents, projected, graph = _pairing(plan, key, bundle, definition=definition)
         stored, refused = StoredEdit([]), ()
         store_choices = None
         if body.store_choice is not None and body.change is None:
             raise ProjectFolderInvalid("A store choice requires the edit it was offered for.")
         if body.change is not None:
             stored, refused, preview = _prepare_edits(
-                body, folders, project_id, snapshot.project, settled, key, bundle, documents, projected,
+                body, folders, project_id, snapshot.project, settled, key, bundle, definition, documents, projected,
             )
             if isinstance(refused, list):
                 store_choices, refused = refused, ()

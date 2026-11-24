@@ -8,7 +8,8 @@ from pydantic import JsonValue
 from feedbax.contracts.project import Project, base_chain
 from feedbax.contracts.project_resolution import RunKey
 from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.studio_authoring import StudioRunSelection
+from feedbax.contracts.studio_authoring import StudioRunSelection, StudioTrainAuthoringRequest
+from feedbax.contracts.studio_field import TrainFieldRequest
 from feedbax.contracts.studio_scope import StoreKind, StudioStoreChoice
 from feedbax.planner.project_plan import ProjectPlan, compile_project
 from feedbax.project_folder import SettledProjectPlan
@@ -175,7 +176,9 @@ def choose_prepared_edit(
 
 
 def train_edit_store(
-    folders: ProjectFolderService, project_id: str, project: Project, step: str, body, stored: StoredEdit,
+    folders: ProjectFolderService, project_id: str, project: Project, step: str,
+    body: StudioTrainAuthoringRequest | TrainFieldRequest, stored: StoredEdit,
+    *, new_rows_for_selection: bool = False,
 ) -> StoredEdit | list[StudioStoreChoice]:
     if not stored.files and not stored.created and body.store_choice is None:
         return stored
@@ -189,7 +192,10 @@ def train_edit_store(
         kind, label = "row_exception", "Selected Runs"
     else:
         kind, label = "whole_step", "Whole Step"
+    edit = body.edit if isinstance(body, TrainFieldRequest) else body.class_sweep.edit if body.class_sweep else None
     return choose_prepared_edit(
         folders, project_id, body.revision, project, selected,
         body.model_dump(mode="json", exclude={"store_choice"}), body.store_choice, (kind, label, step, stored),
+        copies_selection=new_rows_for_selection,
+        retain_equivalent=edit is not None and edit.kind in {"to_sweep", "to_list", "to_value"},
     )

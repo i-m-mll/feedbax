@@ -1,6 +1,7 @@
 """Plan and shared graph compilation for a model document with nested owners."""
 
 from copy import deepcopy
+import json
 from unittest.mock import Mock
 
 import jax
@@ -490,8 +491,9 @@ def _seed_swept_project(tmp_path, name):
 class _TrainClient:
     """A Train step's edits through the Studio endpoints, each saved as it is made."""
 
-    def __init__(self, client, url):
+    def __init__(self, client, url, *, accepted_steps=()):
         self.client, self.url = client, url
+        self.accepted_steps = set(accepted_steps)
 
     @property
     def revision(self):
@@ -514,7 +516,16 @@ class _TrainClient:
     def save(self, response):
         assert response.status_code == 200, response.text
         body = response.json()
+        if choices := body.get("store_choices"):
+            assert not body["files"] and not body["created"]
+            (choice,) = choices
+            assert set(choice["steps"]) == self.accepted_steps, choice
+            original = json.loads(response.request.content)
+            response = self.client.post(response.request.url, json=original | {"store_choice": choice["id"]})
+            assert response.status_code == 200, response.text
+            body = response.json()
         assert not body.get("problems") and not body.get("refusal"), body
+        assert body["files"], body.get("store_choices")
         saved = self.client.patch(self.url, json={"revision": self.revision, "files": body["files"]})
         assert saved.status_code == 200, saved.text
         return body
@@ -684,7 +695,7 @@ def test_a_parameter_swept_for_one_optimizer_divides_only_its_runs(tmp_path):
     _save_project(ProjectFolderService(tmp_path), name, Project.model_validate(raw))
     url = f"/api/projects/{name}"
     with TestClient(create_app(projects_dir=tmp_path)) as client:
-        train = _TrainClient(client, url)
+        train = _TrainClient(client, url, accepted_steps=("train", "train-2"))
         train.sweep_class(optimizer, {"kind": "to_sweep"})
         train.sweep_class(optimizer, {"kind": "add_member", "key": "sgd"})
         before = train.requests(tmp_path, name)
