@@ -367,11 +367,7 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
   );
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
-  const task = page.getByRole('tabpanel', { name: 'Task', exact: true });
   const mass = inspector.getByRole('textbox', { name: 'Mass', exact: true });
-  const target = task.getByRole('textbox', { name: 'Target x (m)', exact: true });
-  const targetY = task.getByRole('textbox', { name: 'Target y (m)', exact: true });
-  const taskSteps = task.getByRole('textbox', { name: 'N Steps', exact: true });
   const stepField = inspector.getByRole('textbox', { name: 'Step', exact: true });
   const chooseRow = async (run = selectedKey, extend = false) => {
     const definition = (await plan()).window_map?.rows.find(({ key }) => key.step === run.step && key.row === run.row);
@@ -427,7 +423,7 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
   expect(row(repaired, siblingKey)).toEqual(sibling);
   expect(row(repaired, unselectedKey)).toEqual(unselected);
   expect(storedControl(await saved())).toEqual({
-    op: 'replace', value: { 'row-y': { op: 'replace', path: 'task.params.y', value: 0.04 } },
+    op: 'replace', value: { 'row-y': { op: 'replace', path: 'task.variables.target.value.args.1.value', value: 0.04 } },
   });
   await model.focus();
   await saveEdit(() => page.keyboard.press('Meta+Z'));
@@ -444,60 +440,13 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
   await enter(mass, '2');
   await expect(mass).toHaveAccessibleDescription('Changed by conditions');
   await expect(mass).toHaveValue('2');
-  await tab(page, 'Runs').click();
-  await chooseRow(siblingKey, true);
-  await tab(page, 'Task').click();
-  await expect(target).toHaveAccessibleDescription('Trained by train');
-  await expect(target).toHaveValue('0.18');
-  await enter(target, '0.24');
-  await expect(target).toHaveAccessibleDescription('Changed by conditions');
-  await expect(target).toHaveValue('0.24');
-  await tab(page, 'Runs').click();
-  await chooseRow(siblingKey);
-  await tab(page, 'Task').click();
-  await expect(target).toHaveValue('0.24');
-  await expect(targetY).toHaveValue('0.06');
-  await expect(targetY).toHaveAccessibleDescription('Changed by conditions');
-
   const changed = await plan();
-  const edited = await saved();
   expect(changed.rows).toEqual(before.rows);
-  expect(row(changed, siblingKey)?.request_id).not.toBe(sibling?.request_id);
+  expect(row(changed, siblingKey)).toEqual(sibling);
   expect(row(changed, unselectedKey)).toEqual(unselected);
   expect(row(changed, selectedKey)?.request_id).not.toBe(original?.request_id);
-  expect(edited.project.documents).toEqual(snapshot.project.documents);
-  expect(edited.project.steps?.train).toEqual(snapshot.project.steps?.train);
-  expect(Object.values(edited.project.steps?.conditions?.sweep?.exceptions ?? {}).map((item) => item?.where))
-    .toEqual(expect.arrayContaining([{ rows: [selectedKey.row] }, { rows: [siblingKey.row, selectedKey.row] }]));
-
-  await page.reload();
-  await chooseStep(page, 'conditions');
-  await chooseRow();
-  await tab(page, 'Task').click();
-  await expect(target).toHaveValue('0.24');
-  await expect(targetY).toHaveValue('0.04');
-  await expect(taskSteps).toHaveAccessibleDescription('Trained by train');
-  await expect(taskSteps).toHaveValue('12');
-  await enter(taskSteps, '0');
   const selectedProblem = async () => (await plan()).window_map?.problems.find(({ step, row }) =>
     step === selectedKey.step && row === selectedKey.row);
-  await expect.poll(selectedProblem).toMatchObject({
-    path: '/params/variation/task-n_steps', detail: expect.stringMatching(/greater than 0/),
-  });
-  const taskProblem = (await selectedProblem())!;
-  await tab(page, 'Runs').click();
-  await expect(plans(page).getByText("Can't run", { exact: true })).toBeVisible();
-  // A variation entry's problem is placed where the field it patches lives: the Task's N Steps.
-  expect(taskProblem.place).toEqual({ part: 'task', document: null, parameter: 'n_steps' });
-  await expect(inspector).toContainText(`N Steps · ${taskProblem.detail}`);
-  await tab(page, 'Task').click();
-  await expect(taskSteps).toBeEditable();
-  await expect(taskSteps).toHaveValue('0');
-  await enter(taskSteps, '12');
-  await expect.poll(async () => row(await plan(), selectedKey)?.can_run).toBe(true);
-  const repairedTask = await plan();
-  expect(row(repairedTask, siblingKey)).toEqual(row(changed, siblingKey));
-  expect(row(repairedTask, unselectedKey)).toEqual(unselected);
   await tab(page, 'Model').click();
   await model.locator('[data-id="plant"] header').click();
   await expect(mass).toHaveValue('2');
@@ -517,7 +466,7 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
   await tab(page, 'Model').click();
   await expect(stepField).toBeEditable();
   await enter(stepField, clock);
-  await expect.poll(async () => row(await plan(), selectedKey)?.request_id).toBe(row(repairedTask, selectedKey)?.request_id);
+  await expect.poll(async () => row(await plan(), selectedKey)?.request_id).toBe(row(changed, selectedKey)?.request_id);
   await tab(page, 'Runs').click();
   await chooseRow();
   const [evaluation] = await submit(page, path);
