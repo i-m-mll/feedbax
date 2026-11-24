@@ -22,7 +22,8 @@ from feedbax.persistence.array_container import ArrayContainerReader
 from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.persistence.canonical_evaluate import RAW_STATES_SCHEMA, decode_rollout_request
 from feedbax.contracts.rollout import CannotRun
-from feedbax.builtins.reaching import REACHING_TASK
+from feedbax.examples import load_shipped_projects
+from tests.support.reaching_task import REACHING_TASK
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project, managed_evaluation_definition
@@ -199,27 +200,40 @@ def test_encoded_rollout_still_decodes_named_graph_variation():
     assert encode_request(decoded, inputs) == stored
 
 
+def _short_reaches(steps):
+    """The shipped simple reaches, ``steps`` long, with a target the step's fields set and no fixed cohort."""
+    task = load_shipped_projects()["point-mass-reaching"].documents["simple-reaches-task"].model_dump(
+        mode="json", by_alias=True, exclude_unset=True,
+    )
+    payload = task["payload"]
+    payload["fixed_steps"] = steps
+    payload["epochs"][0]["end"]["length"]["value"] = steps
+    del payload["validation_trials"]
+    (target,) = (variable for variable in payload["variables"] if variable["id"] == "target")
+    target["value"] = {"kind": "call", "function": "vector", "args": [
+        {"kind": "literal", "value": 0.1, "unit": "m"}, {"kind": "literal", "value": 0.0, "unit": "m"},
+    ]}
+    return task
+
+
 def _selected_task_variants():
     raw = managed_evaluation_definition()
     train = raw["steps"]["train"]
-    inline = train["base"]["inline"]
-    inline["trial_documents"].update(task=None, python_task={"document": "task"}, input_overrides={})
-    raw["documents"]["task"] = {
-        "schema": "feedbax.spec.python_task",
-        "payload": {"type": REACHING_TASK, "params": {"x": 0.1, "n_steps": 5}},
-    }
+    raw["documents"]["task"] = _short_reaches(5)
     raw["documents"]["objective"]["payload"]["terms"][0].pop("epochs")
     train["sweep"] = {"axes": {"target": {"values": {
-        name: {"patches": {"trial_documents.python_task.params.y": {"op": "add", "value": y}}}
+        name: {"patches": {"trial_documents.task.variables.target.value.args.1.value": {"value": y}}}
         for name, y in (("low", -0.2), ("high", 0.3))
     }}}}
     evaluate = raw["steps"]["baseline"]
     evaluate["sweep"] = {"axes": {"trained": {"input": "subject"}}}
     params = evaluate["base"]["inline"]["params"]
     params["trial_set"] = {"kind": "sample", "count": 1}
-    params["variation"] = {"target-x": _patch("task.params.x", 0.4)}
+    params["variation"] = {"target-x": _patch("task.variables.target.value.args.0.value", 0.4)}
     refused_step = deepcopy(evaluate)
-    refused_step["base"]["inline"]["params"]["variation"] = {"bad-length": _patch("task.params.n_steps", 0)}
+    refused_step["base"]["inline"]["params"]["variation"] = {
+        "bad-length": _patch("task.epochs.move.end.length.value", -1),
+    }
     raw["steps"] = {"train": train, "baseline": evaluate, "refused": refused_step}
     return Project.model_validate(raw)
 
@@ -259,14 +273,15 @@ def test_saved_task_field_preserves_each_selected_train_task(host, tmp_path, mon
         producer = producers[run.inputs["subject"].producer]
         inherited = decode_request(
             plan.plan.requests[producer.request_id], plan.plan.documents.__getitem__,
-        ).spec.trial_documents.python_task
-        assert inherited.params["x"] == 0.1
+        ).spec.trial_documents.task
+        x, y = (arg.value for arg in next(item for item in inherited.variables if item.id == "target").value.args)
+        assert x == 0.1
         result = jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=item.job_id)
         with result.open_states() as states:
-            actual = states.data("/v1/task/output/reach_target")
+            actual = states.data("/v1/task/output/target_pos")
             np.testing.assert_allclose(actual[..., 0], 0.4)
-            np.testing.assert_allclose(actual[..., 1], inherited.params["y"])
-        targets.append(inherited.params["y"])
+            np.testing.assert_allclose(actual[..., 1], y)
+        targets.append(y)
     assert set(targets) == {-0.2, 0.3}
 
 

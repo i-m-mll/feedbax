@@ -8,7 +8,7 @@ from hashlib import sha256
 
 from feedbax.execution.trial_resolution import TrialPair, pair_trial_source
 from feedbax.contracts.expression_values import (
-    Level, LiteralValue, Problem, ProblemCode, ScopedValue, Site, SweepList, SweepRange, SweepSample,
+    Level, Problem, ProblemCode, ScopedValue, Site, SweepList, SweepRange, SweepSample,
     ValueBase, ValueType,
 )
 from feedbax.tasks.registry import resolve_python_task_instance
@@ -50,9 +50,11 @@ from feedbax.application.bundle import ApplicationRegistryBundle
 from feedbax.web.services.evaluate_sources import evaluate_subject, evaluate_value_source
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, preview_authored_files
 from feedbax.studio.selection import StoredEdit
-from feedbax.studio.authoring_sweeps import FieldSweeps, SweepTarget
-from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
-from feedbax.contracts.studio_project import StudioProjectFilePatch
+from feedbax.studio.numeric_fields import project_numeric_field
+from feedbax.web.services.trial_fields import (
+    TrialFieldSweep, at, index_pointer, numeric_nodes, routes_to_sweep, site_expression, trial_field_sweep,
+    trial_field_sweep_edit,
+)
 from feedbax.web.services.trial_scope import (
     authored_payload, base_value_edits, changed_from_base, document_write, evaluation_document_write, file_value, lit_steps, preview_stored, reached_runs, refuse_unreached, scoped_file,
     selected_runs, variant_view,
@@ -213,13 +215,21 @@ def _with_task(documents, task):
     return documents.model_copy(update={"task": task, "python_task": None})
 
 
+def _field_document(documents, role):
+    """The document of ``role`` whose fields the view edits as expressions, if the step reads one."""
+    if role == "objective":
+        return documents.objective
+    return documents.task_source if role == "task" and isinstance(documents.task_source, TaskDocument) else None
+
+
 def _expression_edit(change, documents, projection, bundle):
-    site = projection.fields.get(("objective", "terms", change.term, change.field))
-    index = next((i for i, term in enumerate(documents.objective.terms) if term.id == change.term), None)
-    if site is None or index is None:
-        raise ProjectFolderInvalid("The selected objective field is unavailable.")
+    role, *rest = json_pointer_parts(change.path)
+    site = projection.fields.get((role, *rest))
+    document = _field_document(documents, role)
+    if site is None or document is None or index_pointer(document.model_dump(mode="json"), tuple(rest[:-1])) is None:
+        raise ProjectFolderInvalid("The selected field is unavailable.")
     if change.edit.kind != "text" or change.edit.value_id is not None:
-        return (Problem(code=ProblemCode.STRUCTURE, reason="This objective field takes one expression."),)
+        return (Problem(code=ProblemCode.STRUCTURE, reason="This field takes one expression."),)
     text = change.edit.text
     parsed = (
         read_field(text, site, bundle.expression_functions) if projection.pair is not None
@@ -228,85 +238,27 @@ def _expression_edit(change, documents, projection, bundle):
     if not isinstance(parsed, ParsedField):
         return parsed
     if isinstance(parsed.value, SweepList | SweepRange | SweepSample):
-        return (Problem(code=ProblemCode.STRUCTURE, reason="This objective field takes one expression."),)
-    return StudioTrialDocumentEdit(kind="objective", edits=[SetProjectValue(
-        op="replace" if change.field in documents.objective.terms[index].model_fields_set else "add",
-        path=pointer(("terms", str(index), change.field)),
-        value=parsed.value.model_dump(mode="json"),
+        return (Problem(code=ProblemCode.STRUCTURE, reason="This field takes one expression."),)
+    raw = document.model_dump(mode="json", exclude_unset=True)
+    stored = index_pointer(raw, tuple(rest))
+    path = stored or index_pointer(raw, tuple(rest[:-1])) + pointer(tuple(rest[-1:]))
+    return StudioTrialDocumentEdit(kind=role, edits=[SetProjectValue(
+        op="replace" if stored else "add", path=path, value=parsed.value.model_dump(mode="json"),
     )])
 
 
-@dataclass(frozen=True)
-class _WeightSweep:
-    """A term's numeric Weight as a field the Train step sweeps, at the term's id."""
-
-    index: int
-    field: NumericField
-    axis: FieldSweeps
-    stored: bool
-    """The document stores the Weight, rather than leaving it to the default."""
+def _field_label(path) -> str:
+    return str(path[-1]).replace("_", " ").capitalize()
 
 
-def _weight_sweep(project, definition, step_id, term_id) -> _WeightSweep | None:
-    """The Weight of ``term_id`` in the Objective document the step reads, when it is a number the step can sweep."""
-    name = _whole_document(definition, "payload.trial_documents.objective")
-    entry = compose_document(project.documents.get, name) if name is not None else None
-    if entry is None or isinstance(entry, ProjectDiagnostic):
+def _field_sweep(project, definition, step_id, path, site, label) -> TrialFieldSweep | None:
+    """The number at ``path`` of a document the Train step reads whole, when the step can sweep it."""
+    role, *rest = path
+    parse = {"objective": ObjectiveDocument.model_validate, "task": TaskDocument.model_validate}.get(role)
+    if parse is None:
         return None
-    objective = ObjectiveDocument.model_validate(entry.payload)
-    index, term = next(((i, term) for i, term in enumerate(objective.terms) if term.id == term_id), (None, None))
-    if term is None or not isinstance(term.weight, LiteralValue) or type(term.weight.value) not in (int, float):
-        return None
-    stored = "weight" in entry.payload["terms"][index]
-    step = project.steps[step_id]
-    label = "Weight"
-    path = f"trial_documents.objective.terms.{term.id}.weight.value"
-    field = NumericField(
-        key=("objective", "terms", term.id, "weight"), label=label, value=term.weight.value,
-        site=Site(expected=ValueType(base=ValueBase.REAL), finest=Level.RUN, structural=True),
-        stored=True, validate=lambda value: value, unit=term.weight.unit,
-    )
-    name = (term.name,) if term.name else ("term", str(index + 1))
-    target = SweepTarget(term.weight.value, lambda _value: [], path)
-    return _WeightSweep(index, field, FieldSweeps(step, target, label, (*name, "weight"), integer=False), stored)
-
-
-def _routes_to_sweep(change, swept: _WeightSweep, site: Site, functions) -> bool:
-    """The edit is the step's sweep of the Weight: it edits a sweep, makes one, or ends one."""
-    edit = change.edit
-    if edit.kind != "text" or edit.value_id is not None or swept.axis.covering:
-        return True
-    parsed = read_field(edit.text, site, functions)
-    return isinstance(parsed, ParsedField) and isinstance(parsed.value, SweepList | SweepRange | SweepSample)
-
-
-def _weight_sweep_edit(
-    change, swept: _WeightSweep, step_id, functions, write_document,
-) -> StoredEdit | tuple[Problem, ...]:
-    """The files that store a sweep edit of a term's Weight: the step's sweep, and the value it is reduced to.
-
-    A sweep sets the number of a Weight the document stores, so a term that leaves its Weight to the default is
-    given it explicitly.
-    """
-    prepared = prepare_numeric_field(swept.field, swept.axis, change.edit, functions)
-    result = prepared.result
-    if isinstance(result, tuple):
-        return result
-    if not isinstance(result, list):
-        raise ProjectFolderInvalid("The Weight's sweep has no value to keep.")
-    stored = StoredEdit(
-        [StudioProjectFilePatch(address=AuthoredFileAddress(kind="step", id=step_id), patches=result)],
-        reached=frozenset({step_id}),
-    )
-    weight = ("terms", str(swept.index), "weight")
-    kept = [patch.value for patch in prepared.keep if patch.op != "remove"]
-    edits = [] if swept.stored else [SetProjectValue(
-        op="add", path=pointer(weight), value=LiteralValue(value=swept.field.value, unit=swept.field.unit)
-        .model_dump(mode="json", exclude_none=True),
-    )]
-    if kept:
-        edits.append(SetProjectValue(op="replace", path=pointer((*weight, "value")), value=kept[-1]))
-    return write_document(edits) + stored if edits else stored
+    document = _whole_document(definition, f"payload.trial_documents.{role}")
+    return trial_field_sweep(project, step_id, document, role, tuple(map(str, rest)), site, label, parse)
 
 
 def _task_field(task):
@@ -578,19 +530,21 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
     step = plan.steps[key.variant, key.step]
     expression = change if isinstance(change, StudioTrialExpressionEdit) else None
     if expression is not None:
-        if step.kind != "train":
-            raise ProjectFolderInvalid("Evaluate authoring edits the task variation.")
-        site = projected.fields.get(("objective", "terms", expression.term, expression.field))
-        swept = _weight_sweep(project, definition, key.step, expression.term) if (
-            expression.field == "weight" and site is not None and projected.pair is not None
+        path = json_pointer_parts(expression.path)
+        site = projected.fields.get(path)
+        swept = _field_sweep(project, definition, key.step, path, site, _field_label(path)) if (
+            step.kind == "train" and site is not None and projected.pair is not None
         ) else None
-        if swept is not None and _routes_to_sweep(expression, swept, site, bundle.expression_functions):
+        if swept is not None and routes_to_sweep(expression.edit, swept, site, bundle.expression_functions):
             if scope is not None and not isinstance(scope, StudioTrialStepScope):
-                raise ProjectFolderInvalid("A Weight has one sweep for every run of the step.")
+                raise ProjectFolderInvalid("A field has one sweep for every run of the step.")
             readers = lambda name: plan.document_users(key.variant, name)  # noqa: E731
-            shown = _whole_document(definition, "payload.trial_documents.objective")
-            made = _weight_sweep_edit(
-                expression, swept, key.step, bundle.expression_functions,
+            shown = _whole_document(definition, f"payload.trial_documents.{swept.role}")
+            entry = compose_document(project.documents.get, shown)
+            if isinstance(entry, ProjectDiagnostic):
+                raise ProjectFolderInvalid(entry.detail)
+            made = trial_field_sweep_edit(
+                expression.edit, swept, key.step, entry.payload, bundle.expression_functions,
                 lambda edits: document_write(project, shown, edits, {key.step}, readers),
             )
             return (StoredEdit([]), made) if isinstance(made, tuple) else (made, ())
@@ -815,9 +769,11 @@ def _validate_files(
         old, before, _ = _pairing(plan, key, bundle)
         new, after, _ = _pairing(candidate, key, bundle)
         if expression is not None:
-            _, index, _ = json_pointer_parts(change.edits[0].path)
-            if int(index) >= len(old.objective.terms) or old.objective.terms[int(index)].id != expression.term:
-                raise ProjectFolderInvalid("The selected runs have different Objective term orders.")
+            role, *rest = json_pointer_parts(expression.path)
+            shown = _field_document(old, role)
+            parent = index_pointer(shown.model_dump(mode="json"), tuple(rest[:-1])) if shown is not None else None
+            if parent is None or not change.edits[0].path.startswith(parent + "/"):
+                raise ProjectFolderInvalid("The selected runs order this field's members differently.")
         introduced = tuple(problem for problem in after.problems if problem not in before.problems)
         if introduced and not evaluate_field and not choosing:
             return StoredEdit([]), introduced
@@ -876,28 +832,33 @@ def _objective_names(plan, key):
     objective = pairing.get("objective") if isinstance(pairing, dict) else None
     terms = objective.get("terms", []) if isinstance(objective, dict) else []
     return {term.get("id"): term.get("name") for term in terms if isinstance(term, dict) and term.get("name")}
-def _trial_field(path, site: Site, expression, functions, swept: _WeightSweep | None, row) -> StudioTrialField:
-    """A field with its text and structure, where its value names only what is in scope.
+def _trial_fields(path, site: Site, expression, functions, sweep, row) -> list[StudioTrialField]:
+    """The field at ``path`` with its text and structure, where its value names only what is in scope, and each number
+    in it the step can sweep: ``sweep`` gives the sweep of the number at a path, if the step can sweep it.
 
-    A Weight the step can sweep, or sweeps, carries that sweep; no other field takes the Sweep kind.
+    A field that is a number carries its sweep; each number given to a draw in it is a field of its own.
     """
     shown = expression is not None and references(expression) <= {item.id for item in site.names}
     projection = project_site(site, functions)
-    pointed = pointer(tuple(map(str, path)))
-    label = str(path[-1]).replace("_", " ").capitalize()
-    if swept is not None:
+    fields = []
+    for inner, label in numeric_nodes(expression, functions) if shown else ():
+        swept = sweep((*path, *inner), site, label or _field_label(path))
+        if swept is None:
+            continue
         view = project_numeric_field(
-            StudioTrialField, swept.field, swept.axis, functions, row,
-            expression.value if isinstance(expression, LiteralValue) else None, path=pointed,
+            StudioTrialField, swept.field, swept.axis, functions, row, at(expression, inner).value,
+            path=pointer(tuple(map(str, (*path, *inner)))),
         )
-        if view.sweep is not None or view.can_sweep:
-            return view.model_copy(update={"site": projection})
+        if inner:
+            fields.append(view)
+        elif view.sweep is not None or view.can_sweep:
+            return [view.model_copy(update={"site": projection})]
     projection = projection.model_copy(update={"kinds": tuple(kind for kind in projection.kinds if kind != FieldKind.SWEEP)})
-    return StudioTrialField(
-        path=pointed, label=label, site=projection,
+    return [StudioTrialField(
+        path=pointer(tuple(map(str, path))), label=_field_label(path), site=projection,
         text=print_field(expression, site) if shown else "",
         structure=value_structure(expression, site, functions) if shown else None,
-    )
+    ), *fields]
 
 
 def trial_authoring(
@@ -952,10 +913,16 @@ def trial_authoring(
                     task_field_sources[target[-1]] = source
     links = dict(paired.task.interface.links) if paired else {}
     row = next((item for item in plan.rows if item.key == key), None)
-    expressions = {
-        ("objective", "terms", term.id, field): getattr(term, field)
-        for term in documents.objective.terms for field in ("measure", "weight")
-    } if step.kind == "train" else {}
+
+    def expression(path):
+        document = _field_document(documents, path[0])
+        return site_expression(document, tuple(map(str, path[1:]))) if document is not None else None
+
+    def sweep(path, site, label):
+        if step.kind != "train" or paired is None:
+            return None
+        return _field_sweep(snapshot.project, definition, key.step, path, site, label)
+
     return StudioTrialAuthoring(
         revision=snapshot.revision, run=body.run, model=model_document,
         task_document=definition.document_ids.get(task_path) if task_path else None,
@@ -985,12 +952,9 @@ def trial_authoring(
         resets=[StudioTrialReset(address=field.address, type=field.type, finest=field.finest,
                                 variable=links.get(field.address.to_text()))
                 for field in paired.model.reset.fields] if paired else [],
-        fields=[_trial_field(
-            path, site, expressions.get(path), bundle.expression_functions,
-            _weight_sweep(snapshot.project, definition, key.step, path[2])
-            if step.kind == "train" and path[:2] == ("objective", "terms") and path[-1] == "weight"
-            and paired is not None else None,
-            row,
-        ) for path, site in projected.fields.items()],
+        fields=[
+            field for path, site in projected.fields.items() if path[1:2] != ("validation_trials",)
+            for field in _trial_fields(path, site, expression(path), bundle.expression_functions, sweep, row)
+        ],
         problems=[*projected.problems, *refused], files=stored.files, created=list(stored.created), refusal=refusal,
     )

@@ -53,7 +53,7 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   });
   expect(saved.project.documents).toMatchObject({
     model: { schema: 'feedbax.spec.model', payload: { ports: {}, interior: {} } },
-    task: { schema: 'feedbax.spec.python_task', payload: { type: 'feedbax.Reaching', params: {} } },
+    task: { schema: 'feedbax.spec.task_document', payload: { epochs: [{ id: 'epoch' }] } },
     objective: { schema: 'feedbax.spec.objective_document', payload: { terms: [] } },
   });
 

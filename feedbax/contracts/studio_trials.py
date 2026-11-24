@@ -21,7 +21,7 @@ from feedbax.contracts.task_document import EpochSteps, PythonTaskSelection, Tas
 
 
 class StudioTrialField(StudioFieldView):
-    """A field of the pairing at ``path``; an Objective term's Weight carries the step's sweep of it."""
+    """A field of the pairing at ``path``; a number the step can sweep carries the step's sweep of it."""
 
     path: str
 
@@ -79,9 +79,10 @@ class StudioTrialBindingEdit(StrictModel):
 
 
 class StudioTrialExpressionEdit(StrictModel):
+    """An edit of the field at ``path``, one of the view's fields."""
+
     kind: Literal["expression"]
-    term: str
-    field: Literal["measure", "weight"]
+    path: Pointer
     edit: Annotated[FieldTextEdit | FieldKindEdit | FieldNameEdit, Field(discriminator="kind")]
 
 
