@@ -12740,7 +12740,7 @@ export const SweepSampleSchema: z.ZodType<SweepSample> = z.lazy(() =>
 ) as unknown as z.ZodType<SweepSample>;
 
 export const SweepTargetSchema: z.ZodType<SweepTarget> = z.lazy(() =>
-  z.string().regex(new RegExp("^(?:(?:(?:steps|documents)\\.[A-Za-z0-9_][A-Za-z0-9_-]*\\.)?\\{[\\s\\S]+\\}|[^.]+(?:\\.[^.]+)*)$"))
+  z.string().regex(new RegExp("^(?:(?:(?:steps|documents)\\.\\??[A-Za-z0-9_][A-Za-z0-9_-]*\\.)?\\{[\\s\\S]+\\}|[^.]+(?:\\.[^.]+)*)$"))
 ) as unknown as z.ZodType<SweepTarget>;
 
 export const TakesSchema: z.ZodType<Takes> = z.lazy(() =>

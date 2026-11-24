@@ -1231,7 +1231,21 @@ def apply_model_edit(
                 for address in selection:
                     if address.composites != primary.composites:
                         raise _Refusal(address, "select elements of one graph")
-                    edit.remove(address)
+                _, graph = edit.context(primary)
+                deleted = {address.element.id for address in selection if address.element.kind == "component"}
+                with_components = {
+                    (collection, key)
+                    for collection, ends in (("wires", ("source", "target")), ("connections", ("a", "b")))
+                    for key, edge in graph.get(collection, {}).items()
+                    if any(edge[end].get("component") in deleted for end in ends)
+                }
+                for address in selection:
+                    kind = address.element.kind
+                    collection = {"wire": "wires", "physical_connection": "connections"}.get(kind)
+                    if collection and (collection, address.element.id) in with_components:
+                        edit.changed.append(address)
+                    else:
+                        edit.remove(address)
             case edits.ConnectSignal(graph=primary, source=source, target=target):
                 if operation.grow_target:
                     _, graph = edit.graph(primary)
