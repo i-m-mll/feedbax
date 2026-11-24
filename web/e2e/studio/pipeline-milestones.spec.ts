@@ -226,6 +226,13 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   const groupedLists = groupLabels.map((label) =>
     inputs.getByRole('list', { name: `Members ${label}`, exact: true }).getByRole('listitem'));
   const freeze = page.getByRole('menuitem', { name: 'To Rows', exact: true });
+  const unfrozen = async () => {
+    await rule.click({ button: 'right' });
+    await expect(page.getByRole('menuitem', { name: 'Pick Runs', exact: true })).toBeVisible();
+    await expect(freeze).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('menu')).toHaveCount(0);
+  };
   const saveWhere = async (click: () => Promise<void>) => {
     const saved = page.waitForResponse((response) => response.request().method() === 'PATCH'
       && new URL(response.url()).pathname === projectPath
@@ -298,8 +305,7 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
 
   await select(page, 'evaluate');
   for (const list of memberLists) await expect(list).toHaveText(['Rank 1', 'Rank 2']);
-  await rule.click({ button: 'right' });
-  await expect(freeze).toHaveCount(0);
+  await unfrozen();
   const ranked = (await readPlan()).window_map!.evaluations!.filter(({ key }) => key.step === 'evaluate');
   expect(ranked.map(({ key }) => key)).toEqual(ranks.map(({ key }) => key));
   if (grouped) {
@@ -311,8 +317,7 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
     await select(page, 'evaluate');
     await expect(groupedLists[0]).toHaveText(expected.slice(0, 2).map(({ label }, index) => `Rank ${index + 1} · ${label}`));
     await expect(groupedLists[1]).toHaveText(['Rank 1', 'Rank 2']);
-    await rule.click({ button: 'right' });
-    await expect(freeze).toHaveCount(0);
+    await unfrozen();
   }
   await launchRows(page, projectPath, (grouped ? ranked.slice(2) : ranked).map(({ key }) => key));
   await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(ranked.length, { timeout: 18_000 });
