@@ -108,13 +108,18 @@ def test_renaming_keeps_each_delayed_reaches_pairing(tmp_path, rename):
 
         def signal_name(id_, name):
             snapshot = folders.read("rename")
-            response = client.post(url + "/authoring/trials", json={
+            request = {
                 "revision": snapshot.revision, "run": train,
                 "change": {"kind": "structure", "changes": [
                     {"op": "rename", "member": "signal", "id": id_, "name": name},
                 ]},
-            })
+            }
+            response = client.post(url + "/authoring/trials", json=request)
             assert response.status_code == 200, response.text
+            if choices := response.json()["store_choices"]:
+                shared = next(choice for choice in choices if choice["kind"] == "all_readers")
+                response = client.post(url + "/authoring/trials", json=request | {"store_choice": shared["id"]})
+                assert response.status_code == 200, response.text
             saved = client.patch(url, json={
                 "revision": snapshot.revision,
                 "files": response.json()["files"],

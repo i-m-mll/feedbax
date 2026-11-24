@@ -407,6 +407,8 @@ class ComponentDefinition(BaseModel):
     interior_domain: Optional[str] = None
     is_composite: bool = False
     template_graph: Optional[GraphSpec | AcausalGraphSpec] = None
+    placement_reason: str | None = None
+    """Why this definition cannot be placed as a component in a Model document."""
     template_ui_state: Optional[GraphUIState] = None
     template_id: Optional[str] = None
     template_kind: Optional[str] = None

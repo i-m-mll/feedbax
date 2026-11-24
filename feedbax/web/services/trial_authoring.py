@@ -1032,7 +1032,8 @@ def _changed_runs(before, after, key: RunKey, stored: StoredEdit) -> frozenset[R
     def values(plan):
         return {
             row.key: (
-                definition.payload if (definition := plan.selected_definitions.get(row.key)) is not None else None,
+                (definition.payload, definition.input_documents)
+                if (definition := plan.selected_definitions.get(row.key)) is not None else None,
                 row.document_ids, row.coordinates,
             )
             for row in plan.rows if row.kind in {"train", "evaluate"} and (
