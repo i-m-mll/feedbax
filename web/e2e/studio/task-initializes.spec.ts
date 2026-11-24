@@ -62,3 +62,23 @@ test('Initializes chooses the Model values a variable starts, and a start the Mo
   await expect(initializes('start')).toHaveAttribute('placeholder', '');
   await expect(initializes('origin')).toHaveAttribute('placeholder', positionName);
 });
+
+// Catches a link's problem named by a pointer or a document member no view shows, and a reveal that marks the Task as a
+// whole instead of the cell of the variable whose link it is.
+test('a link to a field the Model lacks is named and revealed at its variable\'s Initializes', async ({ page, request }) => {
+  const response = await request.post('/api/projects');
+  expect(response.status()).toBe(201);
+  const { snapshot } = await response.json() as { snapshot: StudioProjectSnapshot };
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await page.getByRole('button', { name: 'New Step', exact: true }).press('Enter');
+  await page.getByRole('menu').getByRole('menuitem', { name: 'Train', exact: true }).press('Enter');
+  const reason = 'Initializes · start is linked to a field the Model does not have.';
+  await page.getByRole('button', { name: 'Problems 1', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Problems', exact: true }).getByRole('button', { name: new RegExp(`^${reason}`) }).click();
+  const task = page.getByRole('tabpanel', { name: 'Task', exact: true });
+  const cell = task.getByRole('combobox', { name: 'Initializes start', exact: true });
+  await expect(cell).toBeFocused();
+  await expect(task.locator('[data-field="task:start:initializes"] [data-field-problem]'))
+    .toHaveAttribute('data-app-tip', /start is linked to a field the Model does not have/);
+  await expect(task.getByText(reason, { exact: true })).toHaveCount(0);
+});

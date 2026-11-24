@@ -22,6 +22,8 @@ class StudioTaskPlace(StrictModel):
     part: Literal["task"]
     document: str | None
     parameter: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    initializes: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    """The id of the variable whose Initializes, the Model values its links start, the place names."""
 
 
 class StudioObjectivePlace(StrictModel):
@@ -75,11 +77,17 @@ def path_parts(path: str | None) -> tuple[str, ...]:
     return tuple(path.split("."))
 
 
-def _document_place(kind: str, document: str | None, rest: Sequence[str], member: ModelAddress | None) -> StudioPlace:
+def _document_place(
+    kind: str, document: str | None, rest: Sequence[str], member: ModelAddress | None, variable: str | None,
+) -> StudioPlace:
     if kind == "model":
         return StudioModelPlace(part="model", document=document, member=member)
     if kind == "task":
-        return StudioTaskPlace(part="task", document=document, parameter=rest[1] if len(rest) > 1 and rest[0] == "params" else None)
+        return StudioTaskPlace(
+            part="task", document=document,
+            parameter=rest[1] if len(rest) > 1 and rest[0] == "params" else None,
+            initializes=variable if rest[:1] == ("links",) else None,
+        )
     return StudioObjectivePlace(part="objective", document=document)
 
 
@@ -89,12 +97,14 @@ def definition_place(
     *,
     element: str | None = None,
     member: ModelAddress | None = None,
+    variable: str | None = None,
     variation: Callable[[str], str | None] = lambda _name: None,
 ) -> StudioPlace:
     """Name the part of a step's definition at ``parts``, a path from the step's root or its payload.
 
     ``document`` answers which project document supplies the definition at a slot such as
     ``payload.trial_documents.objective`` or ``payload.settings``, or ``None`` when the step holds it inline.
+    ``variable`` names the Task variable a link at ``parts`` belongs to, so the link is placed in its Initializes.
     ``variation`` answers the dotted path a named variation entry patches, so the entry is placed
     where its field lives.
     """
@@ -105,7 +115,7 @@ def definition_place(
         role, rest = parts[1], parts[2:]
         kind = _INPUT_DOCUMENTS.get(role)
         if kind is not None and (rest or member is not None):
-            return _document_place(kind, document(f"inputs.{role}"), rest, member)
+            return _document_place(kind, document(f"inputs.{role}"), rest, member, variable)
         return StudioInputPlace(part="input", role=role)
     if parts[:1] == ("payload",):
         parts = parts[1:]
@@ -114,11 +124,11 @@ def definition_place(
         case "trial_documents" if rest:
             role = rest[0]
             kind = "model" if role == "model" else "task" if role in ("task", "python_task") else "objective"
-            return _document_place(kind, document(f"payload.trial_documents.{role}"), rest[1:], member)
+            return _document_place(kind, document(f"payload.trial_documents.{role}"), rest[1:], member, variable)
         case "graph":
             return StudioModelPlace(part="model", document=document("payload.graph"), member=member)
         case "task" | "task_binding_spec":
-            return _document_place("task", document(f"payload.{field}"), rest, member)
+            return _document_place("task", document(f"payload.{field}"), rest, member, variable)
         case "objective":
             return StudioObjectivePlace(part="objective", document=document("payload.objective"))
         case "training_config":
@@ -132,7 +142,7 @@ def definition_place(
         case "params" if rest[:1] == ("variation",):
             target = path_parts(variation(rest[1])) if len(rest) > 1 else ()
             if target[:1] == ("task",):
-                return _document_place("task", document("payload.task"), target[1:], member)
+                return _document_place("task", document("payload.task"), target[1:], member, variable)
             return StudioModelPlace(part="model", document=None, member=member)
     if member is not None:
         model = document("payload.trial_documents.model") or document("payload.graph")

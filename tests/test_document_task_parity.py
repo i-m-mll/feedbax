@@ -691,6 +691,8 @@ def test_document_pair_drives_signed_model_graph_with_real_reset(kind, functions
     )
     assert bad[0].path == ("links", read_only.to_text())
     assert bad[0].code.value == "unknown_name"
+    # Catches a link problem not tied to its variable, which Studio would then mark on the Task as a whole.
+    assert bad[0].variable == "start"
 
     run_key = jr.key(8)
     keys = jr.split(run_key, 6)

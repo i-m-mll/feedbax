@@ -8,7 +8,7 @@ import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import { authoredPointer } from '../authoredEdits';
 import { addressKey } from '../model/modelGraph';
 import {
-  changedAt, expressionKind, variableAnchor, type Commit, type TrialRuns, type TrialView,
+  changedAt, expressionKind, initializesAnchor, variableAnchor, type Commit, type TrialRuns, type TrialView,
 } from '../StudioTrialAuthoring';
 import { VariableInspector } from './TaskInspector';
 import { TrialTaskGrid } from './trialGrid';
@@ -50,6 +50,7 @@ function initializes(view: TrialView, task: TaskDocument, variable: TaskDocument
   const differs = from && view.task_changed?.some((path) =>
     own.some((index) => path === `/links/${index}` || path.startsWith(`/links/${index}/`)));
   return {
+    anchor: initializesAnchor(variable.id),
     chosen: [...fields].map((field) => { const reset = starts.get(field); return reset ? startOf(reset) : missingStart(field); }),
     options: view.resets.filter((reset) => fits(reset.type, variable.type)).map(startOf),
     reason,

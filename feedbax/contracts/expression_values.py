@@ -119,6 +119,8 @@ class Problem(ValueRecord):
     path: tuple[str | int, ...] = ()
     span: TextSpan | None = None
     model_address: ModelAddress | None = Field(default=None, exclude_if=lambda value: value is None)
+    variable: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    """The id of the Task variable whose member at ``path`` the problem is in, such as the variable a link initializes."""
 
 
 type Scalar = StrictBool | StrictInt | FiniteFloat

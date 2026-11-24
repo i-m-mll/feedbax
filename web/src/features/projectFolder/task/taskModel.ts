@@ -19,6 +19,8 @@ export interface ModelStart {
 
 /** The Model values a variable initializes, and those its type fits. */
 export interface VariableInitializes {
+  /** The `data-field` a revealed problem of its links focuses. */
+  readonly anchor: string;
   readonly chosen: readonly ModelStart[];
   readonly options: readonly ModelStart[];
   /** The problem of one of its links. */
