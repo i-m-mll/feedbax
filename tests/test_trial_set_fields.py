@@ -58,6 +58,9 @@ def test_weighted_set_switches_real_training_trials_at_the_window_boundaries():
     nominal = prepare(model, task)
     parameters = TaskParameters()
     sampled, _ = compiled.execution.sample_trials(parameters, run_key=jr.key(0), update_key=jr.key(1), count=2000)
+    variable = next(variable for variable in document.task.variables if variable.id == "bank")
+    assert variable.set_choices.set == "bank"
+    assert variable.set_choices.entries == (None, "x", "y", "z")
     assert np.allclose(np.bincount(sampled.variables["bank"], minlength=4) / 2000, [0.1, 0.2, 0.3, 0.4], atol=0.035)
     observed_perturbations = np.asarray(sampled.variables["bank"][:64])
     assert set(observed_perturbations) == {0, 1, 2, 3}

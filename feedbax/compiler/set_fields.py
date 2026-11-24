@@ -18,7 +18,7 @@ from feedbax.contracts.model_document import (
 from feedbax.contracts.project import Document, apply_differences
 from feedbax.contracts.project_sweep import CooccurringSetTrials, ListedSetTrials, SetEntryParts, TrialSetField
 from feedbax.contracts.set_document import read_set
-from feedbax.contracts.task_document import Cell, Signal, TaskDocument, ValidationTrial, Variable
+from feedbax.contracts.task_document import Cell, SetVariableChoices, Signal, TaskDocument, ValidationTrial, Variable
 
 
 class SetFieldProblem(ValueError):
@@ -71,10 +71,12 @@ class _Union:
         self.alternatives: dict[str, list[_Alternative]] = defaultdict(list)
         self.conditions: list[tuple[dict[str, int], ...]] = []
 
-    def variable(self, id: str, value_type: ValueType, value: Expression) -> NameValue:
+    def variable(
+        self, id: str, value_type: ValueType, value: Expression, *, choices: SetVariableChoices | None = None,
+    ) -> NameValue:
         if any(var.name == id or var.id == id for var in self.variables):
             raise ValueError(f"Task variable {id!r} is already in use.")
-        self.variables.append(Variable(id=id, name=id, type=value_type, value=value))
+        self.variables.append(Variable(id=id, name=id, type=value_type, value=value, set_choices=choices))
         return NameValue(reference=id)
 
     def gate(self, alt: _Alternative, gate_id: str, window: InterventionWindow | None):
@@ -149,7 +151,7 @@ class _Union:
         try:
             entries = read_set(read, placement.axis.set).entries
             sample = placement.sampling
-            by_id = sorted(entries)
+            by_id = tuple(entries)
             if isinstance(sample, ListedSetTrials):
                 weights = (1.0,) * len(by_id)
                 choices = tuple(range(1, len(by_id) + 1))
@@ -169,13 +171,13 @@ class _Union:
                     gates.append(self.variable(_id(axis, entry), _BOOL, DrawValue(
                         family="choice", args=(LiteralValue(value=False), LiteralValue(value=True)),
                         weights=(parts.off, parts.on),
-                    )))
+                    ), choices=SetVariableChoices(set=placement.axis.set, entries=(None, entry))))
             else:
                 if not any(weights):
                     raise ValueError("The choice has zero total parts.")
                 selected = self.variable(axis, _INT, DrawValue(
                     family="choice", args=tuple(LiteralValue(value=value) for value in choices), weights=weights,
-                ))
+                ), choices=SetVariableChoices(set=placement.axis.set, entries=(None, *by_id)))
                 if isinstance(sample, ListedSetTrials):
                     self.conditions.append(tuple({selected.reference: value} for value in choices))
                 gates = [_call("eq", selected, LiteralValue(value=index)) for index in range(1, len(by_id) + 1)]

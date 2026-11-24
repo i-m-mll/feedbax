@@ -41,7 +41,7 @@ def trial_set_fields(project: Project, step: str) -> list[StudioSetField]:
         rows = []
         if isinstance(sampling, WeightedSetTrials):
             rows.append(StudioSetFieldEntry(entry=None, weight=sampling.none))
-        for id, entry in sorted(entries.items()):
+        for id, entry in entries.items():
             if isinstance(sampling, ListedSetTrials):
                 weight = None
             elif isinstance(sampling, CooccurringSetTrials):
