@@ -43,6 +43,8 @@ class MoveMember(StrictModel):
 
 
 class SetType(StrictModel):
+    """The member takes ``type``, and its values become that type's zero."""
+
     op: Literal["set_type"]
     member: Literal["variable", "signal"]
     id: str

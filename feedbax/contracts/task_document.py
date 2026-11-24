@@ -6,7 +6,7 @@ from pydantic import Field, JsonValue
 
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.expression_values import (
-    LENGTH, TIME, Expression, LiteralValue, Scalar, ValueBase, ValueRecord, ValueType,
+    ANGLE, LENGTH, TIME, Expression, LiteralValue, Scalar, ValueBase, ValueRecord, ValueType,
 )
 
 
@@ -112,6 +112,7 @@ VALUE_TYPES: tuple[tuple[str, ValueType], ...] = (
     ("Boolean", ValueType(base=ValueBase.BOOLEAN)),
     ("Duration", ValueType(base=ValueBase.REAL, dimensions=TIME)),
     ("Distance", ValueType(base=ValueBase.REAL, dimensions=LENGTH)),
+    ("Angle", ValueType(base=ValueBase.REAL, dimensions=ANGLE)),
     ("Point", ValueType(base=ValueBase.REAL, shape=(2,), dimensions=LENGTH)),
     ("Velocity", ValueType(base=ValueBase.REAL, shape=(2,), dimensions=LENGTH.combine(TIME, -1))),
     ("Vector", ValueType(base=ValueBase.REAL, shape=(2,))),

@@ -862,8 +862,14 @@ def _field_problems(path, site: Site, text: str, functions, problems) -> list[Pr
     if not held or not text:
         return [problem.model_copy(update={"path": path}) for problem in held]
     read = read_field(text, site, functions)
-    termed = read if isinstance(read, tuple) and any(problem.span for problem in read) else held
-    return [problem.model_copy(update={"path": path}) for problem in termed]
+    if isinstance(read, tuple):
+        termed = read if any(problem.span for problem in read) else held
+        return [problem.model_copy(update={"path": path}) for problem in termed]
+    within = len(path) - 1 if path[0] == "task" else len(path)
+    return [
+        problem.model_copy(update={"path": path, "span": problem.span or read.spans.get(problem.path[within:])})
+        for problem in held
+    ]
 
 
 def _trial_fields(path, site: Site, expression, functions, sweep, row, problems) -> list[StudioTrialField]:

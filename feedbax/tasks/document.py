@@ -21,12 +21,14 @@ from feedbax.contracts.expression_values import (
     Level,
     CallValue,
     LiteralValue,
+    NameValue,
     Problem,
     ProblemCode,
     ScopedValue,
     Site,
     ValueBase,
     ValueType,
+    walk,
 )
 from feedbax.contracts.task_document import (
     Cell as Cell,
@@ -371,7 +373,11 @@ def compile_task(
     input_overrides: Mapping[str, str] | None = None,
     sites: dict[tuple[str | int, ...], Site] | None = None,
 ) -> DocumentTask | tuple[Problem, ...]:
-    """Compile a bounded ahead-of-rollout task from resolved model field types."""
+    """Compile a bounded ahead-of-rollout task from resolved model field types, or every independent Problem.
+
+    A variable with problems keeps its declared type in scope, so each field that reads it is marked where it does, and
+    fields that do not read it report only their own problems.
+    """
     problems = []
     period = model.period_seconds
     if not isfinite(period) or period <= 0:
@@ -394,15 +400,16 @@ def compile_task(
                     f"Repeated or reserved name {item.name!r}.",
                     (section, item.id),
                 )
+                continue
             result[item.id] = item
             names.add(item.name)
         return result
 
     variables = unique(document.variables, "variables")
     epochs = unique(document.epochs, "epochs")
-    unique(document.signals, "signals")
-    if problems:
-        return tuple(problems)
+    kept_signals = unique(document.signals, "signals")
+    broken: set[str] = set()
+    """The variables with problems of their own or read from another that has them."""
 
     def lower(tree, expected, finest, scope, address, *, epoch=False, discrete=False):
         site = Site(expected=expected, finest=finest, names=tuple(scope))
@@ -418,17 +425,27 @@ def compile_task(
             discrete_uniform=discrete,
             path=address,
         )
-        if isinstance(code, Compiled):
-            return _Field(address, code)
-        problems.extend(code)
-        return None
+        marks = [
+            Problem(
+                code=ProblemCode.UNKNOWN_NAME,
+                reason=f"{variables[node.reference].name!r} has problems.",
+                path=(*address, *at),
+            )
+            for at, node in walk(tree)
+            if isinstance(node, NameValue) and node.reference in broken
+        ]
+        problems.extend(marks if isinstance(code, Compiled) else (*code, *marks))
+        return _Field(address, code) if isinstance(code, Compiled) and not marks else None
 
     time_type = ValueType(base=ValueBase.REAL, dimensions=TIME)
     time = ScopedValue(id="time", name="time", type=time_type, level=Level.STEP)
-    order = dependency_order({key: item.value for key, item in variables.items()})
-    if order and isinstance(order[0], Problem):
-        return order
+    order, cycles = dependency_order({key: item.value for key, item in variables.items()})
+    problems.extend(cycles)
     scope = {}
+    for cycle in cycles:
+        (_, key, _) = cycle.path
+        broken.add(key)
+        scope[key] = ScopedValue(id=key, name=variables[key].name, type=variables[key].type, level=Level.RUN)
     fields = []
     for key in order:
         variable = variables[key]
@@ -439,16 +456,16 @@ def compile_task(
             (*scope.values(), time),
             ("variables", key, "value"),
         )
-        if field is not None:
-            declared = ScopedValue(
-                id=key, name=variable.name, type=variable.type, level=field.code.checked.root.level
-            )
-            scope[key] = declared
-            fields.append((declared, field))
-    if problems:
-        return tuple(problems)
+        level = Level.RUN if field is None else field.code.checked.root.level
+        scope[key] = ScopedValue(id=key, name=variable.name, type=variable.type, level=level)
+        if field is None:
+            broken.add(key)
+        else:
+            fields.append((scope[key], field))
 
     lengths = []
+    unread = set()
+    """The epochs whose length has problems."""
     bounds = []
     counts: list[EpochSteps | None] = []
     rest = []
@@ -464,6 +481,12 @@ def compile_task(
         discrete = isinstance(end.length, DrawValue) and end.length.family == "uniform"
         field = lower(end.length, time_type, Level.TRIAL, scope.values(), path, discrete=discrete)
         bound = end.max_steps
+        if field is None:
+            unread.add(epoch.id)
+            lengths.append(None)
+            bounds.append(bound or 0)
+            counts.append(EpochSteps(least=0, nominal=bound or 0, greatest=bound or 0))
+            continue
         count = None
         if isinstance(end.length, LiteralValue) and field is not None:
             (seconds,) = field.code.parameters
@@ -511,8 +534,6 @@ def compile_task(
             "The length bounds exceed the fixed trial length.",
             ("epochs",),
         )
-    if problems:
-        return tuple(problems)
 
     axes = tuple(
         ScopedValue(id=name, name=name, type=value_type, level=Level.STEP)
@@ -563,6 +584,7 @@ def compile_task(
                 cells.append(_Cell(first, last, code))
         if absent is not None:
             signals.append(_Signal(signal.name, absent, tuple(cells)))
+        if kept_signals.get(signal.id) is signal:
             declared_signals.append(
                 ScopedValue(id=signal.id, name=signal.name, type=signal.type, level=Level.STEP)
             )
@@ -580,6 +602,8 @@ def compile_task(
             problem(ProblemCode.UNKNOWN_NAME, f"{link.variable} is linked to a field the Model does not have.", path)
         elif variable is None:
             problem(ProblemCode.UNKNOWN_NAME, f"{link.variable} is not a variable of the Task.", path)
+        elif link.variable in broken:
+            problem(ProblemCode.UNKNOWN_NAME, f"{variable.name!r} has problems.", path)
         elif variable.level > target.finest or not target.type.accepts(variable.type):
             problem(ProblemCode.TYPE_MISMATCH, f"{link.variable} does not fit its Model field.", path)
         elif link.model_field in links:
@@ -602,6 +626,8 @@ def compile_task(
         row_values = {}
         for key, value in row.variables.items():
             variable = scope.get(key)
+            if key in broken:
+                continue
             if variable is None or variable.level == Level.STEP:
                 problem(
                     ProblemCode.OUT_OF_SCOPE,
@@ -624,6 +650,8 @@ def compile_task(
                 )[0].value
         for key, value in row.epoch_steps.items():
             epoch_index = indexes.get(key)
+            if key in unread:
+                continue
             if (
                 epoch_index is None
                 or lengths[epoch_index] is None

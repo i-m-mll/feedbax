@@ -2,7 +2,8 @@
 
 from feedbax.contracts.expression_values import ValueType
 from feedbax.contracts.studio_trials import StudioTrialAuthoring
-from feedbax.contracts.task_document import BLANK_TASK
+from feedbax.contracts.expression_values import LiteralValue
+from feedbax.contracts.task_document import BLANK_TASK, TaskDocument
 from tests.support.managed_train_fixture import managed_train_project
 from tests.test_model_document_edits import _URL, _Project
 from tests.test_task_document_fields import _save
@@ -45,12 +46,14 @@ def _made(project, change) -> list:
 
 
 def test_each_structural_change_leaves_a_document_that_compiles(tmp_path):
+    """Catches a change, such as a new type on a member whose values were of the old one, that leaves a Problem."""
     project = _project(tmp_path)
     with project.client:
         for change in (
             {"op": "add", "member": "variable", "name": "gain"},
             {"op": "rename", "member": "variable", "id": "gain", "name": "g"},
             {"op": "move", "member": "variable", "id": "gain", "index": 0},
+            {"op": "set_type", "member": "variable", "id": "gain", "type": POINT},
             {"op": "set_type", "member": "variable", "id": "gain", "type": DURATION},
             {"op": "remove", "member": "variable", "id": "gain"},
             {"op": "add", "member": "epoch", "name": "settle", "index": 1},
@@ -62,6 +65,7 @@ def test_each_structural_change_leaves_a_document_that_compiles(tmp_path):
             {"op": "move", "member": "signal", "id": "extra", "index": 0},
             {"op": "set_type", "member": "signal", "id": "extra", "type": DURATION},
             {"op": "present", "signal": "extra", "epoch": "hold"},
+            {"op": "set_type", "member": "signal", "id": "extra", "type": POINT},
             {"op": "set_span", "signal": "extra", "cell": "hold", "first_epoch": "hold", "last_epoch": "cue"},
             {"op": "absent", "signal": "extra", "cell": "hold"},
             {"op": "remove", "member": "signal", "id": "extra"},
@@ -143,3 +147,22 @@ def test_a_problem_about_a_name_carries_the_name_s_place_in_the_field_s_text(tmp
         refused = [problem for problem in view.problems if problem.path == ("task", "signals", "goal", "cells", "move", "value")]
         assert not view.files and refused, view.problems
         assert text[refused[-1].span.start:refused[-1].span.end] == "scale", refused
+
+
+def test_a_variable_with_problems_marks_each_field_that_reads_it_where_it_reads_it(tmp_path):
+    """Catches a bad variable whose readers go unmarked, are marked without the name's place, or hide fields that do not
+    read it."""
+    raw = managed_train_project(scenario="delayed-reaches").model_dump(mode="json", by_alias=True, exclude_unset=True)
+    task = TaskDocument.model_validate(raw["documents"][TASK]["payload"])
+    task = task.model_copy(update={"variables": tuple(
+        item.model_copy(update={"value": LiteralValue(value=1, unit="m")}) if item.id == "catch" else item
+        for item in task.variables
+    )})
+    project = _project(tmp_path, task)
+    with project.client:
+        fields = {field.path: field for field in _change(project, None).fields}
+        marked = {path: field for path, field in fields.items() if field.problems}
+        assert "/task/variables/catch/value" in marked and "/task/variables/start/value" not in marked
+        field = marked["/task/signals/goal/cells/move/value"]
+        (problem,) = field.problems
+        assert field.text[problem.span.start:problem.span.end] == "catch", (field.text, problem)
