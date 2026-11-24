@@ -28,8 +28,8 @@ import type {
   FieldKind, JsonValue, ObjectiveTerm, Problem, ProjectValueEdit, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
 } from '@/generated/studioContracts';
 import { authoredPointer, authoredPointerParts } from './authoredEdits';
-import { TrialTrace } from './task/SignalTrace';
-import type { SampledTrial } from './task/trialSample';
+import { BatchTrace, TrialTrace } from './task/SignalTrace';
+import type { TrialShown } from './task/trialSample';
 import { baseOf } from './documentPayload';
 import type { ProjectEditController } from './projectEditController';
 import { filesRemoval, type ConfirmRunRemoval } from './runRemoval';
@@ -214,22 +214,27 @@ export function TrialTaskOutline({ sections, view, selected, select }: {
 }
 
 /**
- * The Inspector of a signal, an epoch or a Model input the drawer or the shelf selects; a signal, with a trial drawn,
- * shows its plot over that trial.
+ * The Inspector of a signal, an epoch or a Model input the drawer or the shelf selects; a signal, with a trial or a
+ * batch drawn, shows its plot over that trial or its median and percentile bands over the batch.
  */
-export function TrialTaskInspector({ view, commit, selected, trial }: {
-  view: TrialView; commit?: Commit; selected?: string; trial?: SampledTrial;
+export function TrialTaskInspector({ view, commit, selected, shown }: {
+  view: TrialView; commit?: Commit; selected?: string; shown?: TrialShown;
 }) {
   if (!selected) return null;
   const [kind, ...rest] = selected.split(':');
   const key = rest.join(':');
   if (kind === 'signal') {
     const value = view.signals.find(({ id }) => id === key);
+    const trial = shown?.kind === 'trial' ? shown.trial : undefined;
     const steps = trial?.signals[key];
+    const aggregate = shown?.kind === 'batch' ? shown.batch.signals[key] : undefined;
     return value ? <Inspector name={humanizeLabel(value.name)} type={value.type.shape?.join(' × ') || value.type.base}>
       {trial && steps && <section aria-label={studioName('plot')} className="grid gap-1">
         <TrialTrace label={value.name} steps={steps} duration={steps.length * view.period_seconds}
           boundaries={trial.intervals.slice(1).map(({ start }) => Math.round(start / view.period_seconds))} />
+      </section>}
+      {aggregate && <section aria-label={studioName('plot')} className="grid gap-1">
+        <BatchTrace label={value.name} aggregate={aggregate} duration={aggregate.presence.length * view.period_seconds} boundaries={[]} />
       </section>}
     </Inspector> : null;
   }

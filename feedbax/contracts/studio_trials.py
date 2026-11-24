@@ -154,6 +154,9 @@ class StudioTrialAuthoring(StrictModel):
     epochs: list[StudioTrialEpoch]
     period_seconds: float
     n_steps: int | None
+    batch_size: int | None
+    """How many trials the step runs at once (a Train's batch size, an Evaluate's sampled Trials), which bounds how many
+    the clock samples; null for an Evaluate of a fixed cohort's conditions."""
     reads_model: bool
     """Whether the paired task reads the model's outputs, so that no trial can be drawn from it without a model."""
     inputs: list[StudioTrialInput]

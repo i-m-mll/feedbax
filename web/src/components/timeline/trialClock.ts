@@ -12,25 +12,35 @@ export type TrialEntry =
   | { readonly kind: 'sample'; readonly index: number }
   | { readonly kind: 'recorded'; readonly index: number };
 
-/** The clock's window state: the picked entry, the seed and count samples are drawn with, and whether the shelf is open. */
+/**
+ * The clock's window state: the picked entry, the seed and count samples are drawn with, whether the shelf is open,
+ * and whether it shows the picked trial alone or all the samples at once.
+ */
 export interface TrialClock {
   readonly picked?: TrialEntry;
   readonly seed: number;
   readonly count: number;
   readonly shelf: boolean;
+  readonly all: boolean;
 }
 
-export const defaultTrialClock: TrialClock = { seed: 0, count: 8, shelf: false };
+export const defaultTrialClock: TrialClock = { seed: 0, count: 8, shelf: false, all: false };
 
-/** The most trials one sample draws, as the sampling route allows. */
-export const maxSampleCount = 64;
-
-/** The entries that exist for the selection: whether it has a nominal trial, whether it can be sampled, and how many trials its run recorded. */
+/**
+ * The entries that exist for the selection: whether it has a nominal trial, the most trials it can be sampled in (the
+ * step's batch size; 0 when it cannot be sampled), and how many trials its run recorded.
+ */
 export interface TrialOffer {
   readonly nominal: boolean;
-  readonly samples: boolean;
+  readonly samples: number;
   readonly recorded: number;
 }
+
+/** How many samples are drawn: the clock's count, up to the step's batch size. */
+export const sampleCount = (clock: TrialClock, offer: TrialOffer) => Math.min(clock.count, offer.samples);
+
+/** Whether all the samples are shown at once, which needs a task that can be sampled. */
+export const showsAll = (clock: TrialClock, offer: TrialOffer) => clock.all && offer.samples > 0;
 
 const index = (value: unknown) => typeof value === 'number' && Number.isInteger(value) && value >= 0;
 
@@ -48,7 +58,7 @@ function entryOf(value: unknown): TrialEntry | undefined {
 export function trialClockOf(value: unknown): TrialClock | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const stored = value as Partial<Record<keyof TrialClock, unknown>>;
-  const count = typeof stored.count === 'number' && Number.isInteger(stored.count) && stored.count >= 1 && stored.count <= maxSampleCount
+  const count = typeof stored.count === 'number' && Number.isInteger(stored.count) && stored.count >= 1
     ? stored.count : defaultTrialClock.count;
   const picked = entryOf(stored.picked);
   return {
@@ -56,6 +66,7 @@ export function trialClockOf(value: unknown): TrialClock | undefined {
     seed: typeof stored.seed === 'number' && Number.isInteger(stored.seed) ? stored.seed : defaultTrialClock.seed,
     count,
     shelf: stored.shelf === true,
+    all: stored.all === true,
   };
 }
 
@@ -63,20 +74,20 @@ export function trialClockOf(value: unknown): TrialClock | undefined {
 export function offeredEntries(offer: TrialOffer, count: number): TrialEntry[] {
   return [
     ...offer.nominal ? [{ kind: 'nominal' } as const] : [],
-    ...offer.samples ? Array.from({ length: count }, (_, index) => ({ kind: 'sample', index }) as const) : [],
+    ...Array.from({ length: count }, (_, index) => ({ kind: 'sample', index }) as const),
     ...Array.from({ length: offer.recorded }, (_, index) => ({ kind: 'recorded', index }) as const),
   ];
 }
 
 const offered = (entry: TrialEntry, offer: TrialOffer, count: number) =>
-  entry.kind === 'nominal' ? offer.nominal : entry.kind === 'sample' ? offer.samples && entry.index < count : entry.index < offer.recorded;
+  entry.kind === 'nominal' ? offer.nominal : entry.kind === 'sample' ? entry.index < count : entry.index < offer.recorded;
 
 /**
  * The entry shown: the picked one while it exists for the selection, else the most specific that does (the first
  * recorded trial, then the nominal trial, then the first sample); nothing when no entry exists.
  */
 export function shownEntry(clock: TrialClock, offer: TrialOffer): TrialEntry | undefined {
-  if (clock.picked && offered(clock.picked, offer, clock.count)) return clock.picked;
+  if (clock.picked && offered(clock.picked, offer, sampleCount(clock, offer))) return clock.picked;
   if (offer.recorded) return { kind: 'recorded', index: 0 };
   if (offer.nominal) return { kind: 'nominal' };
   if (offer.samples) return { kind: 'sample', index: 0 };

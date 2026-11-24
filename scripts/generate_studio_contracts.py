@@ -327,7 +327,12 @@ from feedbax.contracts.studio_refinements import (
 )
 from feedbax.web.api.execution import (
     SampledTaskTrial,
+    SampledTaskTrials,
+    TaskEpochShare,
+    TaskSignalAggregate,
     TaskTimelineCue,
+    TaskTrialAggregate,
+    TaskVariableRange,
     TaskTrialSampleRequest,
     TaskTrialSampleResponse,
 )
@@ -740,6 +745,11 @@ MODEL_TYPES: list[type[BaseModel]] = [
     TrainContinuation,
     TaskTimelineCue,
     SampledTaskTrial,
+    SampledTaskTrials,
+    TaskEpochShare,
+    TaskSignalAggregate,
+    TaskVariableRange,
+    TaskTrialAggregate,
     TaskTrialSampleRequest,
     TaskTrialSampleResponse,
     ParentRef,

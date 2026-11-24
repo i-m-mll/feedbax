@@ -11,7 +11,7 @@ test('draws the Task view mockup and the shelf for both fixtures without a conso
 
   for (const name of ['Delayed reaches', 'Three reaches']) {
     const states = page.getByRole('region', { name, exact: true });
-    await expect(states.getByRole('region', { name: 'Shelf' })).toHaveCount(2);
+    await expect(states.getByRole('region', { name: 'Shelf' })).toHaveCount(3);
     await expect(states.getByRole('img', { name: /^Plot / })).toHaveCount(2);
   }
   const window = page.locator('.studio-project-window');

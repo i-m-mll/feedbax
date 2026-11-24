@@ -1802,14 +1802,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                   ? <FocusedFields className="contents" request={fieldFocus?.step === step?.id && fieldFocus?.target?.startsWith('task:') ? fieldFocus : undefined}
                     onFocused={() => setFieldFocus(undefined)}>
                     <TrialTaskDocument view={value} commit={commit} runs={runs} selected={selected} select={choose(document)}
-                      drawn={trialClock.sample?.variables} />
+                      drawn={trialClock.trial && (trialClock.trial.kind === 'batch' ? trialClock.trial.batch : trialClock.trial.trial).variables} />
                   </FocusedFields>
                   : <TrialTaskForm view={value} commit={commit} />),
                 drawer: <TrialTaskOutline sections={drawerSections} view={value} selected={selected} select={choose(document)} />,
                 inspector: variable ? <TrialVariableInspector view={value} commit={commit} runs={runs} id={variable.id} />
                   : selected && 'variables' in value.task && inGrid(selected)
-                    ? <TrialGridInspector view={value} commit={commit} runs={runs} selected={selected} trial={trialClock.sample} />
-                    : selected && <TrialTaskInspector view={value} commit={commit} selected={selected} trial={trialClock.sample} />,
+                    ? <TrialGridInspector view={value} commit={commit} runs={runs} selected={selected} shown={trialClock.trial} />
+                    : selected && <TrialTaskInspector view={value} commit={commit} selected={selected} shown={trialClock.trial} />,
               };
             }
             const document = value.objective_document ?? step?.id ?? '';
