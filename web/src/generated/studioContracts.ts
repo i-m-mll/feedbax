@@ -1098,6 +1098,7 @@ export interface ModelFieldRequest {
 export interface ModelFieldResponse {
   fields?: ModelFieldView[];
   files?: StudioProjectFilePatch[];
+  created?: CreateNamedDocument[];
   problems?: Problem[];
   store_choices?: StudioStoreChoice[] | null;
   removed_values?: Record<string, string[]>;
@@ -7381,6 +7382,7 @@ export const ModelFieldResponseSchema: z.ZodType<ModelFieldResponse> = z.lazy(()
     .object({
       "fields": z.array(ModelFieldViewSchema).optional(),
       "files": z.array(StudioProjectFilePatchSchema).optional(),
+      "created": z.array(CreateNamedDocumentSchema).optional(),
       "problems": z.array(ProblemSchema).optional(),
       "store_choices": z.array(StudioStoreChoiceSchema).nullable().optional(),
       "removed_values": z.record(z.string(), z.array(z.string())).optional(),

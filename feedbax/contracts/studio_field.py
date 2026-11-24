@@ -153,6 +153,7 @@ class TrainFieldResponse(StrictModel):
 class ModelFieldResponse(StrictModel):
     fields: list[ModelFieldView] = Field(default_factory=list)
     files: list[StudioProjectFilePatch] = Field(default_factory=list)
+    created: list[CreateNamedDocument] = Field(default_factory=list)
     problems: list[Problem] = Field(default_factory=list)
     store_choices: list[StudioStoreChoice] | None = None
     removed_values: dict[str, list[str]] = Field(default_factory=dict)
