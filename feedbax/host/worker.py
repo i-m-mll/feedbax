@@ -66,7 +66,7 @@ def main(control_fd: str, report_fd: str, profile_path: str) -> int:
             entered.enable()
             from feedbax.validity.recording import WorkerRecorder
 
-            recorder = WorkerRecorder(entered.names, boot_ns=boot_ns)
+            recorder = WorkerRecorder(entered, boot_ns=boot_ns)
             with recorder.monitor():
                 return _serve(profile, control, report, recorder)
     return _serve(profile, control, report, None)
