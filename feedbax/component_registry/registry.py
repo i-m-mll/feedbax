@@ -10,6 +10,7 @@ from feedbax.contracts.portable import ComponentOwner, GraphTemplate
 
 from feedbax.contracts.component import (
     ComponentDefinition,
+    ComponentHeadline,
     ComponentMigrationInfo,
     DynamicPortLayout,
     derive_dynamic_port_layout,
@@ -491,6 +492,7 @@ class ComponentRegistry:
         meta = deepcopy(meta)
         return ComponentDefinition(
             name=meta.name,
+            headline=ComponentHeadline.for_type(meta.name, meta.headline_field),
             category=meta.category,
             description=meta.description,
             param_schema=[] if meta.is_composite else meta.param_schema,

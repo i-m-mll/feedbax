@@ -428,6 +428,6 @@ class ComponentDefinition(BaseModel):
         if not isinstance(data, dict) or "name" not in data:
             return data
         migrated = migrate_component_definition_payload(data)
-        if "headline" not in migrated:
+        if "headline" not in migrated and isinstance(migrated["name"], str):
             migrated = {**migrated, "headline": ComponentHeadline.for_type(migrated["name"])}
         return migrated
