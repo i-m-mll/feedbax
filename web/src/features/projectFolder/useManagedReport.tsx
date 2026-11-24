@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { documentPayload } from './documentPayload';
-import { studioChangeDetail, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
-import { MentionRow, ProblemRow } from '@/features/projectWindow/StudioProblems';
+import { studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
+import { ChangeRow, ProblemRow } from '@/features/projectWindow/StudioProblems';
 import { Button } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
 import { Select } from '@/components/ui/Select';
@@ -206,7 +206,7 @@ export function useManagedReport({
     {planned && projection?.window_map?.problems.filter((problem) => problem.step === planned.key.step &&
       (problem.variant === null || problem.variant === planned.key.variant) && (problem.row == null || problem.row === planned.key.row))
       .map((problem, index) => <ProblemRow key={index} problem={problem} />)}
-    {planned?.light?.changed && <MentionRow place={planned.light.changed.place} detail={studioChangeDetail(planned.light.changed)} />}
+    {planned?.light?.changed && <ChangeRow change={planned.light.changed} />}
     {previewUrl && <SavedReportResult key={retained.job_id} url={previewUrl} />}
     <div className="flex flex-wrap items-end gap-3">
       <label className="grid min-w-36 flex-1 gap-1">{studioName('reportTitle')}

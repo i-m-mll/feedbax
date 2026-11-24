@@ -42,7 +42,7 @@ async function connect(page: Page, source: Locator, target: Locator, path: strin
 }
 
 test('authors a managed Train in an empty folder and reopens its result', async ({ page, request }) => {
-  test.fixme(true, 'Owned by V1 (feature/bf89b13-r2-v1): a field edit made right after a save is dropped when the run-scoped projection rebuilds the field controls.');
+  test.fixme(true, 'Stale against the current Model view; revived with the Model view rebuild, issue 0afecb2.');
   test.setTimeout(58_000);
   // The Studio's test Python task, which a package would register; the new Train reads it.
   const { snapshot, projectPath } = await seedManagedProject(request, [{

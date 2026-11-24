@@ -1,14 +1,15 @@
 import { TriangleAlert, X } from 'lucide-react';
 import { useId, useLayoutEffect, useRef, type ReactNode } from 'react';
 import { appTip } from '@window-shell/browser/tooltip';
-import { studioName, studioPlaceName, studioProblemDetail, studioRunReason, type StudioPlace } from '@/components/activity/studioVocabulary';
-import type { StudioProjectWindowMapProblem } from '@/generated/studioContracts';
+import { studioChangeDetail, studioName, studioPlaceName, studioProblemName, studioRunReason } from '@/components/activity/studioVocabulary';
+import type { StudioDefinitionChange, StudioProjectWindowMapProblem, StudioSavedTrainChange } from '@/generated/studioContracts';
 import { commandAttributes, type StudioCommand } from './studioCommands';
 import { Button, IconButton } from '@/components/ui/Button';
 
 /** A reason that names a place: pressed, it reveals the place. Every list of problems and changes draws this row. */
-export function MentionRow({ place, detail, context = [], placeShown = true, refusal, onReveal }: {
-  place: StudioPlace | null;
+export function MentionRow({ name, detail, context = [], placeShown = true, refusal, onReveal }: {
+  /** The name of what the reason is about, such as its place's or field's. */
+  name: string;
   detail: string;
   /** Why the last gesture on this entry was refused. */
   refusal?: string;
@@ -19,7 +20,7 @@ export function MentionRow({ place, detail, context = [], placeShown = true, ref
   onReveal?: () => void;
 }) {
   const entry = <>
-    {placeShown && <><span className="font-medium">{studioPlaceName(place)}</span>{' · '}</>}{detail}
+    {placeShown && <><span className="font-medium">{name}</span>{' · '}</>}{detail}
     {context.length > 0 && <span className="block text-xs text-shell-muted">{context.join(' · ')}</span>}
   </>;
   const refused = refusal ? { 'aria-description': refusal, ...appTip(studioRunReason({ reason: refusal })) } : {};
@@ -37,7 +38,11 @@ export function ProblemRow({ problem, ...row }: {
   refusal?: string;
   onReveal?: () => void;
 }) {
-  return <MentionRow place={problem.place} detail={studioProblemDetail(problem)} {...row} />;
+  return <MentionRow name={studioProblemName(problem)} detail={problem.detail} {...row} />;
+}
+
+export function ChangeRow({ change }: { change: StudioDefinitionChange | StudioSavedTrainChange }) {
+  return <MentionRow name={studioPlaceName(change.place)} detail={studioChangeDetail(change)} />;
 }
 
 /** A problem as the Problems list holds it: one per place and detail, with the number of runs it is on. */
