@@ -78,7 +78,7 @@ const labelPlate: [number, number] = [8, 3];
 const multiSelectionKeys = ['Meta', 'Control', 'Shift'];
 
 function Canvas({ items, connections, positions, selectedIds, onSelect, openAt, rememberPoint, placing, viewportRef, pick, drop }: CanvasProps) {
-  const { screenToFlowPosition } = useReactFlow();
+  const { screenToFlowPosition, getInternalNode } = useReactFlow();
   // A selection change carries no modifiers; the gesture that made it records them.
   const extend = useRef(false);
   const { nodes, edges } = useMemo(() => {
@@ -92,8 +92,7 @@ function Canvas({ items, connections, positions, selectedIds, onSelect, openAt, 
       const { x, y } = layout.node(item.id);
       return {
         id: item.id, type: 'element', ariaLabel: studioAccessibleName('select', item.name),
-        // React Flow hides a node it has no size for, and forgets the measured size when the node changes; a hidden
-        // card would drop the focus of a name being edited in it.
+        // React Flow hides a node it has no size for; a hidden card would drop the focus of a name being edited in it.
         initialWidth: cardWidth(item.name), initialHeight: cardHeight,
         data: { ...item, selected: false },
         position: positions?.[item.id] ?? { x: x - cardWidth(item.name) / 2, y: y - cardHeight / 2 },
@@ -101,14 +100,16 @@ function Canvas({ items, connections, positions, selectedIds, onSelect, openAt, 
     });
     return { nodes, edges };
   }, [items, connections, positions]);
+  // A node given without its measured size loses its handles until React Flow measures it again, and a second change
+  // that lands before that measurement leaves it unmeasured, so its edges are never drawn.
   const shownNodes = useMemo(() => nodes.map((node) => ({
-    ...node, selected: !pick && selectedIds.includes(node.data.selectionId),
+    ...node, measured: getInternalNode(node.id)?.measured, selected: !pick && selectedIds.includes(node.data.selectionId),
     data: { ...node.data, selected: !pick && selectedIds.includes(node.data.selectionId) },
     ...pick && {
       selectable: false,
       domAttributes: { 'data-pick': pick.accepts(node.data.selectionId) ? 'allowed' : 'refused' } as Node['domAttributes'],
     },
-  })), [nodes, selectedIds, pick]);
+  })), [nodes, selectedIds, pick, getInternalNode]);
   // A label sits on a canvas-coloured plate wide enough that the edge visibly stops short of the text.
   const shownEdges = useMemo(() => edges.map((edge) => ({
     ...edge, selected: selectedIds.includes(edge.id), labelBgPadding: labelPlate,
