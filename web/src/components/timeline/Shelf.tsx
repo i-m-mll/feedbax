@@ -2,6 +2,7 @@ import clsx from 'clsx';
 import { useRef, type CSSProperties, type PointerEvent, type ReactNode } from 'react';
 import { studioName, studioUnit } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
+import { StatusMark } from '@/components/ui/StatusMark';
 import { elementKey, isModelAddress, type ElementAddress } from '@/features/projectWindow/elementSelection';
 import { useAxisWithin, type TimeAxisStore } from './timeAxis';
 
@@ -29,11 +30,15 @@ export interface ShelfBar {
   readonly some?: boolean;
 }
 
-/** A row of the shelf: its name at the left, then its segments or its bars on the shelf's time axis. */
+/**
+ * A row of the shelf: its name at the left, then its segments or its bars on the shelf's time axis. `problem` is the
+ * reason what the row stands for cannot be drawn as authored, marked at its name.
+ */
 export type ShelfRow = {
   readonly key: string;
   readonly name: string;
   readonly glyph?: ReactNode;
+  readonly problem?: string;
 } & (
   | { readonly kind: 'segments'; readonly segments: readonly ShelfSegment[] }
   | { readonly kind: 'bars'; readonly bars: readonly ShelfBar[]; readonly selects?: ElementAddress }
@@ -169,7 +174,8 @@ export function Shelf({ rows, duration, stepSeconds, time, onTimeChange, selecte
       !span && 'gap-x-2')}>
     {rows.map((row, index) => {
       const rowChosen = row.kind === 'bars' && isChosen(row.selects);
-      const name = <>{row.glyph}<span className="truncate font-mono">{row.name}</span></>;
+      const name = <>{row.glyph}<span className="truncate font-mono">{row.name}</span>
+        {row.problem && <StatusMark status="cannot_run" label={row.problem} className="ml-auto" />}</>;
       return <div key={row.key} role="group" aria-label={row.name}
         className={clsx('col-span-2 col-start-1 grid grid-cols-subgrid items-center', unavailable && 'opacity-40')}
         style={{ gridRow: index + 1 }}>
