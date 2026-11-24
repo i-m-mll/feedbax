@@ -4157,7 +4157,6 @@ export type StudioProjectWindowMap = {
   "evaluations"?: Array<StudioSavedEvaluationRow>;
   "analysis_elements"?: Array<StudioProjectWindowMapElement>;
   "analysis_figures"?: Array<StudioProjectWindowMapFigure>;
-  "detach_refused"?: Array<string>;
   "regroup_refused"?: Array<string>;
 };
 
@@ -12037,7 +12036,6 @@ export const StudioProjectWindowMapSchema: z.ZodType<StudioProjectWindowMap> = z
     "evaluations": z.array(StudioSavedEvaluationRowSchema).optional(),
     "analysis_elements": z.array(StudioProjectWindowMapElementSchema).optional(),
     "analysis_figures": z.array(StudioProjectWindowMapFigureSchema).optional(),
-    "detach_refused": z.array(z.string()).optional(),
     "regroup_refused": z.array(z.string()).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMap>;
