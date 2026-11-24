@@ -54,6 +54,37 @@ def _bytes(state):
     return canonical_json_v2_bytes(state.model_dump(mode="json"))
 
 
+@pytest.mark.parametrize(("scope", "grow_source"), [((), True), ((), False), (("outer",), False)])
+def test_boundary_growth_reviews_and_stores_a_typed_port(scope, grow_source):
+    state = _start()
+    empty = {"owner": "inputs" if grow_source else "outputs", "port": "__new_port__"}
+    source, target = (empty, _end("same", "in")) if grow_source else (_end("same", "out"), empty)
+    graph = _address(scope)
+    review = model_edit.edits.ModelConnectionReviewRequest.model_validate({
+        "revision": "0" * 64, "document": "model", "graph": graph, "source": source, "grow_source": grow_source,
+    })
+    reviewed = model_edit.review_model_connections(
+        state.document, review, layout=lambda _: {("input", "in"): SCALAR, ("output", "out"): SCALAR},
+        next_input=lambda _: None,
+    )
+    verdict = next(item for item in reviewed.targets if item.target.model_dump(mode="json") == target)
+    assert verdict.reason is None and verdict.problem is None
+    assert verdict.growing is not grow_source
+    result = _execute(state, "connect", graph=graph, source=source, target=target,
+                      grow_source=grow_source, grow_target=not grow_source)
+    assert len(result.changed) == 2 and not result.problems, result
+    saved = result.state.document.model_dump(mode="json")
+    for id_ in scope:
+        saved = saved["interior"]["components"][id_]
+    side = "source" if grow_source else "target"
+    wires = saved["interior"]["wires"].values()
+    wire = next(wire for wire in wires if wire[side]["owner"] == empty["owner"])
+    port = next(port for port in saved["ports"][empty["owner"]] if port["id"] == wire[side]["port"])
+    assert port["id"] != empty["port"]
+    assert port["name"] == ("in" if grow_source else "out")
+    assert port["type"] == SCALAR.type.model_dump(mode="json")
+
+
 def _start(deep_name="inner", *, decorated=False, fanout=False, default=False):
     delay = {"kind": "delay", "id": "delay", "delay": {"value": 1, "unit": "st"}}
     inner = {"components": {"same": _leaf("leaf", gain=1), "sink": _leaf()}}
