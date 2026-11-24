@@ -22,12 +22,14 @@ from feedbax.contracts.project import (
     document_edit_value, json_pointer_parts, same_json,
 )
 from feedbax.contracts.project_inputs import SweepExceptionTerms
+from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
+from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID
 from feedbax.planner.project_plan import RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.project_resolution import (
     ProjectDiagnostic, StepTemplate, compose_document, compose_step, document_write_target,
 )
-from feedbax.contracts.project_sources import pointer
+from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.contracts.project_sweep import (
     AxisCondition, NamedAxis, SetAxis, SetValue, RemoveValue, _compose_writes,
 )
@@ -110,8 +112,45 @@ def file_value(address, raw, parts, value):
     ])
 
 
+def source_value_file(project: Project, origin: ValueSource, before, after) -> StudioProjectFilePatch | None:
+    """Replace a value held by a controlling sweep value, exception or variant patch."""
+    if not origin.path:
+        return None
+    parts = json_pointer_parts(origin.path)
+    if origin.kind == "variant":
+        row = project.sweep.rows.get(origin.name) if project.sweep else None
+        if row is None:
+            return None
+        target = next((
+            (path, split) for path in row.patches
+            if parts[:len(split := tuple(path.split(".")))] == split
+        ), None)
+        if target is None:
+            return None
+        path, split = target
+        address = AuthoredFileAddress(kind="variant", id=origin.name)
+        raw = row.model_dump(mode="json", by_alias=True, exclude_unset=True)
+        location = ("patches", path, "value", *parts[len(split):])
+    elif origin.kind in {"sweep_value", "exception"} and origin.step in project.steps:
+        address = AuthoredFileAddress(kind="step", id=origin.step)
+        raw = project.steps[origin.step].model_dump(mode="json", by_alias=True, exclude_unset=True)
+        location = parts
+    else:
+        return None
+    if not _holds(raw, location):
+        return None
+    value = raw
+    for part in location:
+        value = value[int(part)] if isinstance(value, list) else value[part]
+    if not same_json(value, before) or same_json(value, after):
+        return None
+    return StudioProjectFilePatch(address=address, patches=[
+        SetProjectValue(op="replace", path=pointer(location), value=after),
+    ])
+
+
 def selected_runs(plan, key, scope, *, chosen_steps=()):
-    rows = [row for row in plan.rows if row.key.step == key.step]
+    rows = [row for row in plan.rows if (row.key.variant, row.key.step) == (key.variant, key.step)]
     if isinstance(scope, VariantRuns):
         selected = {row.key for row in rows if row.key.variant == scope.variant}
     elif isinstance(scope, AxisValueRuns):
@@ -315,7 +354,7 @@ class _DocumentStores:
 
 def _document_stores(
     project: Project, shown: str, edits: Sequence[DocumentEdit], chosen: frozenset[str] | None, readers: DocumentUsers,
-    taken: set[str],
+    taken: set[str], adapt: Callable[[Payload], Sequence[DocumentEdit]] | None = None,
 ) -> _DocumentStores:
     """Where ``edits`` of ``shown`` are stored for the ``chosen`` steps, every step when None.
 
@@ -354,7 +393,7 @@ def _document_stores(
         inherits = isinstance(document, BasedDocument) and document.base.document in after
         if name in seen or chosen is not None and not inherits and not lit_steps(documents, readers, name) & chosen:
             return
-        content = _edited(old(name), edits, name)
+        content = _edited(old(name), edits if adapt is None else adapt(old(name)), name)
         if chosen is None or changed(name, content, ()) <= chosen:
             if not same_json(content, old(name)):
                 after[name] = content
@@ -369,7 +408,8 @@ def _document_stores(
             variant = _document_name(project, name, taken)
             taken.add(variant)
             stores.created.append(CreateNamedDocument(kind="document", id=variant, document=BasedDocument(
-                schema=document.schema_id, base=DocumentBase(document=name), differences=diff(old(name), content),
+                schema=document.schema_id, label=_copy_label(documents, stores.created, name),
+                base=DocumentBase(document=name), differences=diff(old(name), content),
             )))
             for step in direct:
                 stores.pointing.setdefault(step, {})[name] = variant
@@ -378,6 +418,20 @@ def _document_stores(
 
     visit(shown, ())
     return stores
+
+
+def _copy_label(documents: Mapping[str, Document], created: Sequence[CreateNamedDocument], name: str) -> str:
+    document = documents[name]
+    task_schemas = {TASK_DOCUMENT_SCHEMA_ID, PYTHON_TASK_SCHEMA_ID}
+    schemas = task_schemas if document.schema_id in task_schemas else {document.schema_id}
+    default = {
+        TASK_DOCUMENT_SCHEMA_ID: "Task",
+        PYTHON_TASK_SCHEMA_ID: "Task",
+        OBJECTIVE_DOCUMENT_SCHEMA_ID: "Objective",
+    }.get(document.schema_id, name)
+    labels = {item.label or key for key, item in documents.items() if item.schema_id in schemas}
+    labels.update(label for item in created if item.document.schema_id in schemas and (label := item.document.label))
+    return generated_name(document.label or default, labels.__contains__, separator=" ")
 
 
 def _document_name(project: Project, name: str, taken: Collection[str]) -> str:
@@ -612,6 +666,7 @@ def variant_view(plan, project: Project, variant: str | None) -> Project:
 def document_write(
     project: Project, shown: str, edits: Sequence[DocumentEdit], chosen: Collection[str], readers: DocumentUsers,
     variant: str | None = None, named: Mapping[str, tuple[str, str]] = {}, view: Project | None = None,
+    *, adapt: Callable[[Payload], Sequence[DocumentEdit]] | None = None,
 ) -> StoredEdit:
     """Store ``edits`` of the document ``shown`` for the ``chosen`` steps, which read it or a document based on it.
 
@@ -623,7 +678,7 @@ def document_write(
     if variant is not None and view is None:
         raise ValueError("An edit in a variant reads the variant's project.")
     store = _Store(project, variant, view or project)
-    stores = _document_stores(store.view, shown, edits, chosen, readers, set())
+    stores = _document_stores(store.view, shown, edits, chosen, readers, set(), adapt)
     store.documents(stores)
     store.point(stores.pointing, named)
     return store.stored(chosen)

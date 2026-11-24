@@ -113,8 +113,8 @@ function gridEdits(task: TaskDocument, commit?: Commit): GridEdits {
       [{ op: 'set_span', signal: id, cell: cell.id, first_epoch: cell.first, last_epoch: cell.first }]),
     absent: (id, cells) => make(studioAccessibleName('absent', signal(id)),
       cells.map((cell) => ({ op: 'absent', signal: id, cell }))),
-    present: (id, epochs) => make(studioAccessibleName('set', signal(id)),
-      epochs.map((at) => ({ op: 'present', signal: id, epoch: at }))),
+    present: (id, epochs, text) => make(studioAccessibleName('set', signal(id)),
+      epochs.map((at) => ({ op: 'present', signal: id, epoch: at, ...text === undefined ? {} : { text } }))),
   };
 }
 
@@ -151,5 +151,5 @@ export function TrialGridInspector({ view, commit, runs, selected, shown: drawn 
     duration: (view.n_steps ?? 0) * view.period_seconds, stepSeconds: view.period_seconds,
   };
   return <TaskInspector view={document} selected={selectionOf(selected)}
-    shown={drawn ?? { kind: 'definition' }} />;
+    shown={drawn} />;
 }

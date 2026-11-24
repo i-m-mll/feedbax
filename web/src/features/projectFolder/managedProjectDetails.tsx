@@ -10,9 +10,8 @@ import type { MapDocumentScope } from '@/components/pipeline/StudioPipelineMap';
 import { CanvasStrip } from '@/components/canvas/CanvasStrip';
 import { canvasViewportCommands } from '@/components/canvas/StudioCanvas';
 import { SceneCanvas, SceneDrawer, SceneElementInspector, SceneLayers, sceneContents } from '@/components/scene/SceneRegion';
-import { SceneClockControls } from '@/components/scene/SceneClockControls';
 import type { PlanarScenePose } from '@/components/scene/planarModel';
-import { emptyScene, fittedCamera, sceneElements, sceneTimeline, zoomScene, type Scene, type SceneCamera, type SceneLayer, type SceneView } from '@/components/scene/sceneView';
+import { emptyScene, fittedCamera, sceneElements, zoomScene, type Scene, type SceneCamera, type SceneLayer, type SceneView } from '@/components/scene/sceneView';
 import { useProjectPlanarScene } from '@/components/scene/useProjectPlanarScene';
 import type { PlanStepView, RunAddress } from '@/features/pipeline/planView';
 import type { PipelineSelection } from '@/features/pipeline/selection';
@@ -102,7 +101,7 @@ export function recordedTrials(evaluation: StudioSavedEvaluationRow | undefined)
   return { ids: evaluation.trials, labels: evaluation.trials.map((id) => labels.get(id) ?? id) };
 }
 
-/** The replay of the `recorded`-th trial the saved evaluation recorded, on the window's playhead. */
+/** The replay of the `recorded`-th trial the saved evaluation recorded, and its time on the window's playhead. */
 export function useSavedEvaluationScene(projectId: string, revision: string, evaluation: StudioSavedEvaluationRow | undefined,
   visible: boolean, recorded: number | undefined, playhead: PlayheadStore) {
   const result = evaluation?.result;
@@ -128,7 +127,6 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
       : { kind: replay.isFetching ? 'loading' : 'empty' };
   const timeScope = JSON.stringify(['recorded', jobId, trial, checkpoint]);
   const [time, setTime] = usePlayhead(playhead, timeScope);
-  const [speed, setSpeed] = useState(1);
   const chooseCheckpoint = (coordinate: number) => {
     if (jobId && coordinates?.includes(coordinate)) setCheckpoint({ jobId, coordinate });
   };
@@ -137,11 +135,7 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
     selected: checkpoint,
     onSelect: chooseCheckpoint,
   } : undefined;
-  return {
-    view, time, checkpoints, chooseCheckpoint,
-    transport: visible && view.kind === 'replay' && <SceneClockControls key={timeScope} timeline={sceneTimeline(view)} time={time}
-      speed={speed} onSpeedChange={setSpeed} onTimeChange={setTime} />,
-  };
+  return { view, time, setTime, checkpoints, chooseCheckpoint };
 }
 
 /** The Scene's part of the window's selection: the key of the selected element the Scene draws, a field as its element. */

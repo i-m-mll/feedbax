@@ -111,7 +111,7 @@ test('Evaluate edits that remove runs ask first and keep the other results', { t
   await appendManagedFiles(page.request, initial, [{ kind: 'step', id: 'trials', step: {
     ...initial.project.steps!.baseline, sweep: { axes: { subject: { input: 'subject' } } },
   } }]);
-  await page.addInitScript(() => window.localStorage.setItem('feedbax.studio.removal-threshold', '0'));
+  await page.addInitScript(() => window.localStorage.setItem('feedbax.settings', JSON.stringify({ removalThreshold: 0 })));
   await page.goto('/?project=' + encodeURIComponent(project));
   await runStep(page, project, 'train');
   await runStep(page, project, 'trials');

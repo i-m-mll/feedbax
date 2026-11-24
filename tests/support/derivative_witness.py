@@ -75,7 +75,7 @@ class QuadraticFeedback(Component):
     component_options: ClassVar = ComponentOptions(
         output_prototype_fn=input_passthrough_output_prototype,
     )
-    model_facts: ClassVar = ModelFacts(states=(StateValue("value", ("output",), "1", "unit"),))
+    model_facts: ClassVar = ModelFacts(states=(StateValue("value", ("output",), "1", "unit", ("output",)),))
     state_index: StateIndex
 
     def __init__(self):

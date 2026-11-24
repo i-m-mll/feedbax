@@ -274,7 +274,46 @@ def _interpolate(minimum_jerk: bool, context: CallContext, start, stop, *, over=
     return start + (stop - start) * fraction
 
 
-def _sample(family: str, context: CallContext, *args):
+def _truncexp_quantile(mean, low, high, quantile):
+    import jax.numpy as jnp
+
+    width = -jnp.expm1(-(high - low) / mean)
+    return low - mean * jnp.log1p(-quantile * width)
+
+
+def _nominal_sample(family: str, context: CallContext, *args, weights=None):
+    import jax.numpy as jnp
+
+    match family:
+        case "uniform" if context.discrete_uniform:
+            low, high = (jnp.rint(arg / context.period_seconds) for arg in args)
+            return jnp.rint((low + high) / 2) * context.period_seconds
+        case "uniform":
+            low, high = args
+            return low + (high - low) / 2
+        case "loguniform":
+            low, high = args
+            return jnp.exp((jnp.log(low) + jnp.log(high)) / 2)
+        case "normal":
+            mean, sd = args
+            return jnp.broadcast_to(mean, jnp.broadcast_shapes(jnp.shape(mean), jnp.shape(sd)))
+        case "bernoulli":
+            return args[0] > 0.5
+        case "choice":
+            eligible = jnp.asarray(context.defined, dtype=bool)
+
+            parts = jnp.ones(len(args)) if weights is None else weights
+            eligible = eligible & (parts > 0)
+            winner = jnp.argmax(jnp.where(eligible, parts, -1))
+            return Evaluation(jnp.stack(args)[winner], jnp.any(eligible))
+        case "truncexp":
+            return _truncexp_quantile(*args, 0.5)
+        case "uniform_region":
+            return args[0]
+    raise AssertionError(family)
+
+
+def _sample(family: str, context: CallContext, *args, weights=None):
     import jax.numpy as jnp
     import jax.random as random
 
@@ -296,13 +335,14 @@ def _sample(family: str, context: CallContext, *args):
             )
         case "bernoulli":
             return random.bernoulli(key, args[0])
+        case "choice" if weights is not None:
+            return random.choice(key, jnp.stack(args), axis=0, p=weights / weights.sum())
         case "choice":
             return jnp.stack(args)[random.randint(key, (), 0, len(args))]
         case "truncexp":
             mean, lo, hi = args
             shape = jnp.broadcast_shapes(*(jnp.shape(arg) for arg in args))
-            width = -jnp.expm1(-(hi - lo) / mean)
-            return lo - mean * jnp.log1p(-random.uniform(key, shape) * width)
+            return _truncexp_quantile(mean, lo, hi, random.uniform(key, shape))
         case "uniform_region":
             center, radius = args
             radial_key, angular_key = random.split(key)
@@ -360,16 +400,15 @@ def _held_value(context: CallContext, condition, duration):
     return condition & (elapsed >= duration), start
 
 
-def _filtered(ou: bool, context: CallContext, value, tau):
+def _filtered(ou: bool, context: CallContext, value, tau, *, nominal=False):
     import jax.numpy as jnp
     import jax.random as random
 
     previous = jnp.broadcast_to(context.state, value.shape)
     mix = -jnp.expm1(-context.period_seconds / tau)
     if ou:
-        result = (1 - mix) * previous + value * jnp.sqrt(mix * (2 - mix)) * random.normal(
-            context.key, value.shape
-        )
+        innovation = 0 if nominal else random.normal(context.key, value.shape)
+        result = (1 - mix) * previous + value * jnp.sqrt(mix * (2 - mix)) * innovation
     else:
         result = previous + mix * (value - previous)
     return result, jnp.where(context.defined[0] & context.defined[1], result, previous)
@@ -717,6 +756,7 @@ def register_builtins(registry: FunctionRegistry) -> None:
         label=None,
         parameters=(),
         density=None,
+        nominal=None,
     ):
         minimum, maximum = count if isinstance(count, tuple) else (count, count)
         registry.register(
@@ -744,6 +784,7 @@ def register_builtins(registry: FunctionRegistry) -> None:
                 result_dimensions,
                 bind,
                 density,
+                nominal,
             )
         )
 
@@ -952,6 +993,7 @@ def register_builtins(registry: FunctionRegistry) -> None:
         2,
         partial(_elementwise, base=_REAL),
         _noise,
+        nominal=partial(_nominal_sample, "normal"),
         display_class=_SHAPE,
         level=Level.STEP,
         random=True,
@@ -988,6 +1030,7 @@ def register_builtins(registry: FunctionRegistry) -> None:
             len(parameters) if parameters else (1, None),
             infer,
             partial(_sample, family),
+            nominal=partial(_nominal_sample, family),
             display_class=_DRAW,
             label=label,
             parameters=parameters,
@@ -1022,6 +1065,7 @@ def register_builtins(registry: FunctionRegistry) -> None:
             2,
             _filter,
             partial(_filtered, name == "ou"),
+            nominal=partial(_filtered, True, nominal=True) if name == "ou" else None,
             level=Level.STEP,
             random=name == "ou",
             reset=StateReset.EPOCH if name == "ou" else StateReset.TRIAL,

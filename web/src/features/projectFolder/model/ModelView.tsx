@@ -36,7 +36,7 @@ import type {
 import { ModelAddressSchema, ModelDocumentSchema, ModelEditProblemSchema } from '@/generated/studioContracts';
 import type { ProjectEditController } from '../projectEditController';
 import { ModelCanvas, type ModelCard, type ModelEdge } from './ModelCanvas';
-import { attachmentFields, componentFields, initialField, modelFields, sharedFields, type Attachment, type FieldChange } from './ModelInspector';
+import { attachmentFields, componentFields, delayText, initialField, modelFields, sharedFields, type Attachment, type FieldChange } from './ModelInspector';
 import {
   accepts, addressKey, at, attachmentAddress, boundaryPorts, componentPorts, endKey, fieldAddress, graphKind, modelPath,
   holds, modelRegistry, portId, portTypeLabel, shortName, wireEnd, withRemoved, type Component, type Port,
@@ -143,9 +143,11 @@ function linkedAddress(value: string) {
   }
 }
 
-function stepCount(item: Attachment, step: number) {
-  return item.kind === 'delay' ? String(item.delay.unit === 'st' ? item.delay.value : Math.round(item.delay.value / step))
-    : item.kind === 'probe' ? '⌖' : '◇';
+function stepCount(item: Attachment, step: ModelDocument['step_seconds'] | undefined) {
+  if (item.kind !== 'delay') return item.kind === 'probe' ? '⌖' : '◇';
+  if ('text' in item.delay) return '';
+  if (item.delay.unit === 'st') return String(item.delay.value);
+  return typeof step === 'number' ? String(Math.round(item.delay.value / step)) : '';
 }
 
 function attachmentName(item: Attachment) {
@@ -496,6 +498,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         try {
           const result = await editor.editModel(name, model.id, { operation }, reviewed, scope);
           if (result.status === 'refused') return { address: result.problem.address, reason: result.problem.detail };
+          if (result.status === 'asked') return { reason: 'Choose where to store this edit.' };
           const shown = follow(result);
           if (result.clipboard) clipboard = result.clipboard;
           if (choose && result.changed.length) {
@@ -534,6 +537,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
             step: readBody.run.step, chosen_steps: [...chosenSteps], ...evaluateEditRuns(scope, readBody.run, fieldRows),
           });
           if (applied.status === 'refused') throw new Error(applied.problem.detail);
+          if (applied.status === 'asked') throw new Error('Choose where to store this edit.');
           shown = follow(applied) ?? shown;
           const [first] = applied.changed;
           if (!first) throw new Error('The edit changed nothing.');
@@ -918,8 +922,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     if (self !== undefined) selfLoops.set(source, self + 1);
     const ghost = ghostKeys.has(key);
     const attached = (list: readonly Attachment[], removedHere: boolean) => list.map((item) => ({
-      id: item.id, label: attachmentName(item), mark: stepCount(item, model?.value.step_seconds ?? 0.01),
-      description: item.kind === 'delay' ? `${item.delay.value} ${item.delay.unit} · ${wireLabel}` : wireLabel,
+      id: item.id, label: attachmentName(item), mark: stepCount(item, model?.value.step_seconds),
+      description: item.kind === 'delay' ? `${delayText(item.delay)} · ${wireLabel}` : wireLabel,
       delay: item.kind === 'delay', select: () => select(attachmentAddress(address, item.id)),
       drag: !removedHere && !ghost && model && editTopology && !locked ? { document: model.id, address: attachmentAddress(address, item.id) } : undefined,
       ghost: removedHere || ghost, change: changeMark(attachmentAddress(address, item.id)),
@@ -1129,7 +1133,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const byKey = new Map(rows.map((row) => [addressKey(attachmentAddress(row.owner, row.item.id)), row]));
     const nodes: TreeNode[] = [...byKey].map(([id, { owner, item, port }]) => ({
       id, name: attachmentName(item) + (isAuthored(attachmentAddress(owner, item.id)) ? ' ◇' : ''),
-      trailing: <>{port && <span>{port}</span>}<span>{stepCount(item, model?.value.step_seconds ?? 0.01)}</span></>,
+      trailing: <>{port && <span>{port}</span>}<span>{stepCount(item, model?.value.step_seconds)}</span></>,
     }));
     return <Tree aria-label={studioName('attachment')} nodes={nodes} selected={selectionKeys.filter((key) => byKey.has(key))}
       onSelectedChange={(ids) => {
