@@ -959,10 +959,15 @@ def _trial_fields(path, site: Site, expression, functions, sweep, row, problems,
         for reference in sorted(missing)
     ))})
     text = print_field(expression, printed) if expression is not None else ""
+    marks = _field_problems(path, site, text, functions, problems)
+    if not marks and isinstance(expression, UnresolvedValue):
+        resolved = resolve_expression(expression, site, functions)
+        if isinstance(resolved, tuple):
+            marks = [problem.model_copy(update={"path": path}) for problem in resolved]
     return [StudioTrialField(
         path=pointer(tuple(map(str, path))), label=_field_label(path), site=projection, text=text,
         structure=value_structure(expression, site, functions) if shown else None,
-        problems=_field_problems(path, site, text, functions, problems),
+        problems=marks,
     ), *fields]
 
 
@@ -1062,6 +1067,16 @@ def trial_authoring(
             return None
         return _field_sweep(project, plan, key, definition, path, site, label)
 
+    fields = [
+        field for path, site in projected.fields.items() if path[1:2] != ("validation_trials",)
+        for field in _trial_fields(
+            path, site, expression(path), bundle.expression_functions, sweep, row, projected.problems, output_paths,
+        )
+    ]
+    field_problems = [
+        problem for field in fields for problem in field.problems
+        if not _held_problems(problem.path, projected.problems)
+    ]
     return StudioTrialAuthoring(
         revision=snapshot.revision, run=body.run, model=model_document,
         task_document=definition.document_ids.get(task_path) if task_path else None,
@@ -1093,11 +1108,6 @@ def trial_authoring(
         resets=[StudioTrialReset(address=field.address, path=task_start_path(documents.model, field.address),
                                  type=field.type, finest=field.finest, required=field.required)
                 for field in projected.resets],
-        fields=[
-            field for path, site in projected.fields.items() if path[1:2] != ("validation_trials",)
-            for field in _trial_fields(
-                path, site, expression(path), bundle.expression_functions, sweep, row, projected.problems, output_paths,
-            )
-        ],
-        problems=[*projected.problems, *refused], files=stored.files, created=list(stored.created), refusal=refusal,
+        fields=fields, problems=[*projected.problems, *field_problems, *refused],
+        files=stored.files, created=list(stored.created), refusal=refusal,
     )

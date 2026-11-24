@@ -264,6 +264,8 @@ def test_task_saves_unresolved_text_and_binds_it_when_a_variable_appears(tmp_pat
     raw = document_project(authored_documents())
     task_file = raw["documents"]["task"]["payload"]
     target = next(variable for variable in task_file["variables"] if variable["id"] == "target")
+    terms = raw["documents"]["objective"]["payload"]["terms"]
+    terms.append(terms[0] | {"id": "disabled", "enabled": False})
     project = "held-expression"
     folders = app.state.project_folders
     _save_project(folders, project, Project.model_validate(raw))
@@ -291,6 +293,14 @@ def test_task_saves_unresolved_text_and_binds_it_when_a_variable_appears(tmp_pat
             return next(field for field in view.fields if field.path == path)
 
         assert not author().problems
+        disabled_path = "/objective/terms/disabled/weight"
+        disabled = author({"kind": "expression", "path": disabled_path, "edit": {
+            "kind": "text", "text": "(",
+        }})
+        disabled_field = next(field for field in disabled.fields if field.path == disabled_path)
+        assert disabled.files and disabled_field.text == "("
+        (disabled_problem,) = disabled_field.problems
+        assert disabled_problem.code == "parse" and disabled_problem in disabled.problems
         edit = author({"kind": "expression", "path": path, "edit": {
             "kind": "text", "text": "start + offset",
         }})
