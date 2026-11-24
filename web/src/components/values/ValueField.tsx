@@ -347,6 +347,8 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
   const { label } = model;
   const input = useRef<HTMLInputElement>(null);
   const [draft, setDraft] = useState<string>();
+  /** The text the field committed and is saving; Escape does not take it back. */
+  const saving = useRef<string>();
   const [menu, setMenu] = useState(false);
   const [caret, setCaret] = useState<number>();
   const [highlight, setHighlight] = useState(0);
@@ -446,7 +448,7 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
     if (event.key === 'Escape') {
       event.stopPropagation();
       if (open) { setDismissed(true); return; }
-      setDraft(undefined);
+      setDraft((current) => current === saving.current ? current : undefined);
       setPending(undefined);
       setPartDraft(model.id, undefined);
       clearReason();
@@ -455,7 +457,9 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
     if (event.key === 'Enter' && draft !== undefined) {
       event.preventDefault();
       const committed = draft;
+      saving.current = committed;
       void submit({ kind: 'text', text: committed }).then((done) => {
+        if (saving.current === committed) saving.current = undefined;
         if (!done) return;
         setDraft((current) => current === committed ? undefined : current);
         setPending(undefined);

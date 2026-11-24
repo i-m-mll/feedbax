@@ -29,6 +29,7 @@ import { useDrawerSections, useFieldFocus, type FieldFocusRequest } from '@/feat
 import { FieldIntent } from '@/components/values/fieldIntent';
 import { X } from 'lucide-react';
 import { Button, IconButton } from '@/components/ui/Button';
+import { ChoiceMenuContext, useChoiceMenu } from '@/components/ui/ChoiceMenu';
 import { Dialog } from '@/components/ui/Dialog';
 import { Select } from '@/components/ui/Select';
 import { TextField } from '@/components/ui/TextField';
@@ -84,13 +85,14 @@ import { settledWindowSelection, useProjectWindowSelection } from './projectWind
 import { planWithRefusal, problemKey, type GestureFailures, type Refusal } from './refusals';
 import { SubjectDocuments, TrialsEditor, type StepField } from './StudioEvaluateAuthoring';
 import { SelectionRule } from './SelectionRule';
-import { bindingEdit, connection, selectionProblems, stepSelections, subjectAxisEdits } from './selectionEdits';
+import { bindingEdit, connection, exceptionRuleProblem, selectionProblems, stepSelections, subjectAxisEdits } from './selectionEdits';
 import { InputEditor, type InputGesture } from './InputEditor';
 import { documentChoice } from './referenceChoices';
 import { documentsOfRole } from './useProjectDocuments';
 import { StudioEvaluationAttemptDetails } from './StudioEvaluationResults';
 import { focusedResult, SavedResults } from './SavedResults';
 import { filesRemoval, RunRemovalContext, useRunRemovalDialog } from './runRemoval';
+import { askStoreWith } from './storeChoice';
 import {
   jsonPointerPath, StudioStepField, StudioTrainAuthoringForm, SweepFieldItems, useTrainClassFields, useTrainFieldLabels,
 } from './StudioTrainAuthoringForm';
@@ -310,6 +312,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     return [...validity.commands(runs, anchor), ...owner ? [sets.duplicateRun(owner, runs)] : []];
   };
   const runRemoval = useRunRemovalDialog(plans.read);
+  const choiceMenu = useChoiceMenu();
   const sets = setAuthoring({
     editor, project: saved.project, applies: !outside && reachable && variantApplies,
     perform, state: () => latestState.current, select: (next) => selection.select(next),
@@ -622,7 +625,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const trialChangeScope: TrialChangeScope = () => trialEditScope;
   // A run whose own definition is refused has no Task or Objective to read; its views are dimmed by its problems.
   const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, trialStep && namedRow?.resolved !== false,
-    trialEditable, trialChangeScope, runRemoval.confirm);
+    trialEditable, trialChangeScope, runRemoval.confirm, askStoreWith(choiceMenu.ask, {
+      step: stepLabel,
+      run: (key) => shown?.window_map?.rows.find((row) => savedRunId(row.key) === savedRunId(key))?.label ?? key.row,
+    }));
   const trialClock = useTrialClock({
     windowState, setWindowState, projectId: saved.project_id, revision: saved.revision, view: trial.view,
     taskDocument: trial.view && (trial.view.task_document ?? step?.id), stored, evaluation: selectedEvaluation,
@@ -657,8 +663,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const unlisted = stepCheckpointRule || (!listedSubject ? scopedRule : undefined);
   const checkpointEditors: readonly SelectionCheckpoint[] | undefined = listedCheckpoints ??
     (unlisted ? [{ rule: unlisted, selections: [0] }] : undefined);
-  const canSweepCheckpoint = Boolean(namedRun && stepCheckpointRule && !checkpointVariant && !subject?.checkpoint_axis &&
-    stepCheckpointRule !== 'last' && (Array.isArray(stepCheckpointRule) || 'every' in stepCheckpointRule));
+  const canSweepCheckpoint = Boolean(namedRun && subject?.can_sweep_checkpoint);
   function saveElementPosition(document: string, node: string, position: PresentationPosition) {
     const { outside, saved } = editor.getSnapshot();
     const current = (outside ?? saved).presentation ?? {};
@@ -1073,7 +1078,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   /** Selection `index` of input `role` as its rule field edits it: its terms, unless a named subset holds them. */
   function selectionRuns(role: string, index: number, reference: StepReference, onCommit: (terms: SubsetTerms) => void,
     onToRows?: () => void) {
-    const problem = refusedAt(`subset.${index}`) ?? inputProblems(role, index)?.rule;
+    const refused = refusedAt(`subset.${index}`);
+    const problem = refused !== undefined ? { reason: refused } : inputProblems(role, index)?.rule;
     const source = plan.steps.find(({ id }) => id === reference.step);
     const where = reference.where ?? {};
     if (!source || !shown || !variant || 'subset' in where) return undefined;
@@ -1664,7 +1670,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     change={(name, setting, value) => editor.edit(declarationAddress, name, [{ op: 'add', path: `/settings/${setting}`, value }])} />;
 
   return (
-    <RunRemovalContext.Provider value={runRemoval.confirm}>
+    <RunRemovalContext.Provider value={runRemoval.confirm}><ChoiceMenuContext.Provider value={choiceMenu.ask}>
       <ProjectWindow
         projectSettings={projectSettings}
         state={windowState} onStateChange={setWindowState} projectName={configuration.project}
@@ -1856,6 +1862,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               ].join(' · '), rule: editable && <SelectionRule scope={{ project: saved.project_id, revision: shown.revision, variant }}
                 source={step} rule={where?.rule ?? ''} ranked={false} picking={elements}
                 planned={{ count: exception.count, total: step.runs.length }}
+                problem={exceptionRuleProblem(shown.window_map?.problems ?? [], step.id, variant, exception.id)}
                 disabled={!applies || !!saved.project.sweep}
                 onCommit={(rule) => onCurrentPlan('editExceptionRule')(exception.id, rule)} /> };
             });
@@ -1939,7 +1946,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         }}
       />
       {runRemoval.dialog}
-    </RunRemovalContext.Provider>
+      {choiceMenu.menu}
+    </ChoiceMenuContext.Provider></RunRemovalContext.Provider>
   );
 }
 
