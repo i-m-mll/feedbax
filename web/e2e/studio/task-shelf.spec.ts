@@ -112,5 +112,5 @@ test('the clock picks the nominal trial or a sample of a task document, and the 
   await expect(bands.locator('[data-share="some"]')).toHaveAttribute('data-end', String(Math.max(...ends)));
   const catches = [...new Set(reseeded.map(({ variables }) => variables.catch as boolean))].sort();
   await expect(variables.getByRole('row').filter({ has: page.getByRole('textbox', { name: 'Rename catch', exact: true }) })
-    .getByRole('cell').last()).toHaveText(catches.map(String).join(', '));
+    .getByRole('cell').nth(-2)).toHaveText(catches.map(String).join(', '));
 });
