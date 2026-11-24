@@ -115,6 +115,17 @@ def series_files():
     return files
 
 
+def missing_run_files():
+    """A Train over seeds 0 to 3 and an Evaluate whose stored Runs rule asks for seed 7."""
+    files = walkthrough_files()
+    train = files[-1]["step"]
+    train["base"]["inline"]["seed"] = 0
+    train["sweep"] = {"axes": {"seed": {"path": "seed", "values": [0, 1, 2, 3]}}}
+    evaluate = _evaluation_step()
+    evaluate["inputs"]["subject"]["where"] = {"rule": "seed=7"}
+    return [*files, {"kind": "step", "id": "evaluate", "step": evaluate}]
+
+
 def measured_subset_files():
     files = walkthrough_files()
     files[-1]["step"]["sweep"] = {"axes": {"updates": {"values": {
@@ -301,5 +312,5 @@ if __name__ == "__main__":
         "series-files": series_files, "seed-series-variants": seed_series_variants,
         "scoped-series-files": scoped_series_files, "measured-subset-files": measured_subset_files,
         "grouped-subset-files": grouped_subset_files, "train-measures": train_measures,
-        "task-pivot-files": task_pivot_files,
+        "task-pivot-files": task_pivot_files, "missing-run-files": missing_run_files,
     }[action](*args)))

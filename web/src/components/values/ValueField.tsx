@@ -13,6 +13,7 @@ import { Button, IconButton } from '@/components/ui/Button';
 import { ChangeMark } from '@/components/ui/ChangeMark';
 import { Checkbox } from '@/components/ui/Checkbox';
 import { Combobox } from '@/components/ui/Combobox';
+import { FieldProblem } from '@/components/ui/FieldProblem';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '@/components/ui/Menu';
 import { usePopupLayer } from '@/components/ui/popupLayer';
@@ -126,13 +127,15 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
   const changeId = useId();
   const { reason, setReason, submit } = useSubmit(model);
   const readOnly = !model.commit;
-  const describedBy = [model.change && changeId, model.origin && originId, (reason ?? model.reason) && reasonId]
+  const shownReason = reason ?? model.reason;
+  const describedBy = [model.change && changeId, model.origin && originId, shownReason && reasonId]
     .filter(Boolean).join(' ') || undefined;
-  const mark = <FieldChange change={model.change} id={changeId} onReset={readOnly ? undefined : () => void submit({ kind: 'reset' })} />;
-  const below = <>
-    {model.origin && <Origin id={originId} text={model.origin} reveal={model.revealOrigin} />}
-    {(reason ?? model.reason) && <p role="alert" id={reasonId}>{reason ?? model.reason}</p>}
-  </>;
+  const problem = shownReason && <FieldProblem reason={shownReason} id={reasonId} />;
+  const change = model.change && <FieldChange change={model.change} id={changeId}
+    onReset={readOnly ? undefined : () => void submit({ kind: 'reset' })} />;
+  /** The field's marks at its box's trailing end: its problem, then its change. */
+  const marks = (problem || change) && <>{problem}{change}</>;
+  const below = model.origin && <Origin id={originId} text={model.origin} reveal={model.revealOrigin} />;
 
   function chooseKind(kind: FieldKind) {
     const edit = kindEdit(model, kind);
@@ -147,18 +150,18 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
         return <span className="value-field-check">
           <Checkbox aria-labelledby={labelId} checked={model.value === true} disabled={readOnly}
             aria-describedby={describedBy} onCheckedChange={(checked) => void submit({ kind: 'set', value: checked })} />
-          {mark}
+          {marks}
         </span>;
       case 'choice': {
         const index = optionIndex(type.options, model.value);
         return <Select aria-labelledby={labelId} aria-describedby={describedBy} className="w-full" disabled={readOnly}
-          value={index < 0 ? null : String(index)} placeholder={studioName('mixed')} trailing={model.change && mark}
+          value={index < 0 ? null : String(index)} placeholder={studioName('mixed')} trailing={problem || change}
           items={type.options.map((option, position) => ({ value: String(position), label: option.label }))}
           onValueChange={(position) => void submit({ kind: 'set', value: type.options[Number(position)].value })} />;
       }
       case 'class':
         return <ClassPicker model={model} labelId={labelId} inline={boxed} readOnly={readOnly} submit={submit}
-          chooseKind={chooseKind} mark={boxed ? undefined : model.change && mark} describedBy={describedBy} />;
+          chooseKind={chooseKind} mark={boxed ? undefined : marks} describedBy={describedBy} />;
       case 'vector':
         return <div className="grid min-w-0 auto-cols-[minmax(0,1fr)] grid-flow-col gap-1">
           {model.parts?.map((part) => <ValueField key={part.id} model={part} form="cell" />)}
@@ -166,8 +169,8 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
       case 'group': case 'list':
         return null;
       default:
-        return <ValueText model={model} id={id} readOnly={readOnly} describedBy={describedBy} invalid={!!reason}
-          submit={submit} clearReason={() => setReason(undefined)} chooseKind={chooseKind} changeMark={model.change && mark} />;
+        return <ValueText model={model} id={id} readOnly={readOnly} describedBy={describedBy} invalid={!!shownReason}
+          submit={submit} clearReason={() => setReason(undefined)} chooseKind={chooseKind} changeMark={marks} />;
     }
   })();
 
@@ -179,7 +182,6 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
       aria-label={studioFieldLabel('field', label)}>
       {textual ? <label id={labelId} htmlFor={id} className="sr-only">{label}</label> : <span id={labelId} className="sr-only">{label}</span>}
       {widget}
-      {(reason ?? model.reason) && <p role="alert" id={reasonId} className="text-xs">{reason ?? model.reason}</p>}
     </div>;
   }
 
@@ -191,24 +193,25 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
       onClick={() => void submit({ kind: 'to_list' })}>{studioName('toList')}</Button>}
   </div>;
   if (boxed) return <ClassValue model={model} parameter={parameter!} labelId={labelId} picker={widget} pickReason={reason} />;
+  const headerMarks = (problem || change) && <span className="inline-flex items-center">{problem}{change}</span>;
   if (type.kind === 'class' && !model.parts?.length) {
     return <section className="value-field grid min-w-0 gap-1" aria-label={studioFieldLabel('field', label)}>
-      <FieldRow label={label} labelId={labelId} below={model.origin || reason || model.reason ? below : undefined}>
+      <FieldRow label={label} labelId={labelId} below={below}>
         {widget}
       </FieldRow>
       {parts(false)}
     </section>;
   }
   if (type.kind === 'group' || type.kind === 'class' || type.kind === 'list') {
-    return <FieldGroup model={model} labelId={labelId} picker={widget} mark={type.kind === 'class' ? undefined : model.change && mark}>
-      {(model.origin || reason || model.reason) && <div className="field-row-below">{below}</div>}
+    return <FieldGroup model={model} labelId={labelId} picker={widget} mark={type.kind === 'class' ? undefined : headerMarks}>
+      {below && <div className="field-row-below">{below}</div>}
       {parts(!!model.parts?.length)}
     </FieldGroup>;
   }
   return <section className="value-field grid min-w-0 tabular-nums" aria-label={studioFieldLabel('field', label)}>
     <FieldRow label={label} labelId={labelId} htmlFor={textual ? id : undefined}
-      actions={type.kind === 'vector' ? model.change && mark : undefined}
-      below={model.origin || reason || model.reason ? below : undefined}>
+      actions={type.kind === 'vector' ? headerMarks : undefined}
+      below={below}>
       {widget}
     </FieldRow>
     {parts(type.kind !== 'vector' && !!model.parts?.length)}
@@ -255,20 +258,19 @@ function ClassValue({ model, parameter, labelId, picker, pickReason }: {
   const reset = readOnly ? undefined : parameter.change ? () => void submit({ kind: 'reset' })
     : model.commit ? () => void model.commit!({ kind: 'reset' }).then(setReason) : undefined;
   const describedBy = [change && changeId, origin && originId, shown && reasonId].filter(Boolean).join(' ') || undefined;
+  const problem = shown && <FieldProblem reason={shown} id={reasonId} />;
   function chooseKind(kind: FieldKind) {
     const edit = kindEdit(parameter, kind);
     if (edit) void submit(edit);
   }
   return <section className={clsx('value-field value-field-class grid min-w-0 tabular-nums', parameter.members && 'value-field-class-swept')}
     aria-label={studioFieldLabel('field', model.label)}>
-    <FieldRow label={model.label} labelId={labelId} below={origin || shown ? <>
-      {origin && <Origin id={originId} text={origin} reveal={parameter.origin ? parameter.revealOrigin : model.revealOrigin} />}
-      {shown && <p role="alert" id={reasonId}>{shown}</p>}
-    </> : undefined}>
+    <FieldRow label={model.label} labelId={labelId}
+      below={origin && <Origin id={originId} text={origin} reveal={parameter.origin ? parameter.revealOrigin : model.revealOrigin} />}>
       <div data-field={parameter.anchor} className="contents">
-        <ValueText model={parameter} id={id} readOnly={readOnly} describedBy={describedBy} invalid={!!reason}
+        <ValueText model={parameter} id={id} readOnly={readOnly} describedBy={describedBy} invalid={!!shown}
           submit={submit} clearReason={() => setReason(undefined)} chooseKind={chooseKind}
-          changeMark={change && <FieldChange change={change} id={changeId} onReset={reset} />}
+          changeMark={(problem || change) && <>{problem}{change && <FieldChange change={change} id={changeId} onReset={reset} />}</>}
           end={picker} parameterOf={[model.label, parameter.parameter!]} />
       </div>
     </FieldRow>
@@ -284,7 +286,7 @@ function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearRea
   model: FieldModel; id: string; readOnly: boolean; describedBy?: string; invalid: boolean;
   submit(edit: FieldEdit): Promise<boolean>; clearReason(): void;
   chooseKind(kind: FieldKind): void;
-  /** The changed mark, at the box's trailing end. */
+  /** The field's problem and changed marks, at the box's trailing end. */
   changeMark?: ReactNode;
   end?: ReactNode;
   /** The field and parameter whose names make the input's accessible name, for a chosen class's only parameter. */
@@ -432,7 +434,7 @@ function KindMark({ model, kind = model.kind, label = model.label, readOnly, ope
 function ClassPicker({ model, labelId, inline, readOnly, submit, chooseKind, mark, describedBy }: {
   model: FieldModel; labelId: string; inline: boolean; readOnly: boolean;
   submit(edit: FieldEdit): Promise<boolean>; chooseKind(kind: FieldKind): void;
-  /** The class's changed mark, at the box's trailing end. */
+  /** The class's problem and changed marks, at the box's trailing end. */
   mark?: ReactNode;
   describedBy?: string;
 }) {

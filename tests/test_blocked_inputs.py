@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from feedbax.contracts.project import Project
 from feedbax.planner.project_plan import BlockedRow, PlannedRun, ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.project_resolution import ResolutionCode
-from feedbax.jobs import JobService, _planned_checkpoint_catalogs
+from feedbax.jobs import JobService, PlanJobAttempts, PlanJobReader, _planned_checkpoint_catalogs
 from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.application.composition import application_python_tasks
 from feedbax.web.app import create_app
@@ -128,6 +128,56 @@ def test_a_checkpoint_outside_the_subjects_range_is_a_problem_on_the_row():
             ResolutionCode.BAD_REFERENCE, "inputs.subject.checkpoint", "default",
         )
         assert all(part in problem.detail for part in (f"Update {at} ", step, first, last)), problem.detail
+
+
+def test_a_blocked_evaluate_still_reports_an_update_outside_its_train():
+    raw = _one_bad_train_row()
+    raw["steps"]["train"]["base"]["inline"]["training_config"]["n_batches"] = 4
+    raw["steps"]["baseline"]["inputs"]["subject"]["checkpoint"] = {"at": 9}
+    plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
+    blocked = next(row for row in plan.rows if isinstance(row, BlockedRow))
+    problems = {
+        (problem.code, problem.path) for problem in plan.diagnostics
+        if problem.step == "baseline" and problem.row == blocked.key.row
+    }
+    assert problems == {
+        (ResolutionCode.BLOCKED_INPUT, "inputs.subject"), (ResolutionCode.BAD_REFERENCE, "inputs.subject.checkpoint"),
+    }
+
+
+class _FinishedTrain(PlanJobReader):
+    """A Host whose one Train producer finished having saved ``held``, and which ran nothing else."""
+
+    def __init__(self, train: str, held: tuple[int, ...]):
+        super().__init__(host=None)
+        self.attempts = PlanJobAttempts(
+            0, {}, checkpoint_producers=frozenset({train}), finished_checkpoints={train: held},
+        )
+
+    def read_plan_attempts(self, **_scope) -> PlanJobAttempts:
+        return self.attempts
+
+
+def test_an_update_a_finished_train_did_not_save_is_a_problem_on_the_checkpoint_before_anything_runs(tmp_path):
+    folders = ProjectFolderService(tmp_path)
+    raw = document_project(authored_documents(), evaluation=True)
+    raw["steps"]["train"]["base"]["inline"]["training_config"].update(n_batches=4, snapshot_interval=2)
+    for at, expected in ((3, True), (4, False)):
+        raw["steps"]["baseline"]["inputs"]["subject"] = {"step": "train", "checkpoint": {"at": at}}
+        _save_project(folders, "missing", Project.model_validate(raw))
+        settled = folders.read_plan("missing", revision=None)
+        (train,) = [run for run in settled.plan.runs if run.key.step == "train"]
+        read = window_service.read_settled_project_plan(settled, _FinishedTrain(train.request_id, (2, 4)))
+        window = read.window_map(evaluation_tasks=application_python_tasks())
+        missing = [
+            problem for problem in window.problems
+            if problem.step == "baseline" and problem.path == "/inputs/subject/checkpoint"
+        ]
+        assert bool(missing) == expected, window.problems
+        (row,) = window.evaluations
+        assert row.can_run is not expected
+        if expected:
+            assert all(part in missing[0].detail for part in ("Update 3 ", "'train'", "2, 4")), missing[0].detail
 
 
 def test_objective_expressions_stay_editable_when_the_model_does_not_pair(tmp_path):

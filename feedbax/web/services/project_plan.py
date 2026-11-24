@@ -918,6 +918,17 @@ def _evaluation_row(
             jobs.checkpoint_catalogs.get(subject.request_id, ())
         ):
             raise CannotRun("/inputs/subject/checkpoint", "admitted Train catalogue omits requested batches")
+        if (
+            isinstance(subject, ProductRef) and isinstance(subject.select, BatchMember) and planned is not None
+            and planned.producer is not None
+            and (held := jobs.finished_checkpoints.get(subject.request_id)) is not None
+            and subject.select.batch not in held
+        ):
+            raise CannotRun(
+                _subject_checkpoint_path(settled, run, planned),
+                f"Update {subject.select.batch} was not saved by {planned.producer.step!r}, "
+                f"which saved updates {', '.join(map(str, held)) or 'none'}.",
+            )
     except CannotRun as error:
         problem = StudioProjectWindowMapProblem(
             code="cannot_run", path=error.path, detail=error.reason,
@@ -961,6 +972,15 @@ def _evaluation_row(
         subject_rank_key=planned.member.key if isinstance(reference, BestRank) and reference.group else None,
         bound_subject=_planned_bound(attempts[-1].bound_subject, planned) if attempts else None,
     ), problem
+
+
+def _subject_checkpoint_path(settled: SettledProjectPlan, run: PlannedRun, planned: PlannedInput) -> str:
+    """Where the checkpoint of the selection that chose ``planned`` is authored: its list item's, or the role's."""
+    step = settled.plan.steps[run.key.variant, run.key.step]
+    authored = (step.inputs if step.inputs is not None else step.authored_inputs).get("subject")
+    if isinstance(authored, list) and planned.selection in authored:
+        return f"/inputs/subject/{authored.index(planned.selection)}/checkpoint"
+    return "/inputs/subject/checkpoint"
 
 
 def _planned_bound(bound: StudioBoundBestSubject | None, planned: PlannedInput | None) -> StudioBoundBestSubject | None:

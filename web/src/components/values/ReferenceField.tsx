@@ -1,9 +1,10 @@
 import { Combobox } from '@base-ui/react/combobox';
 import clsx from 'clsx';
 import { Check, ChevronDown, Crosshair } from 'lucide-react';
-import { useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useRef, type ReactNode } from 'react';
 import { studioAccessibleName } from '@/components/activity/studioVocabulary';
 import { IconButton } from '@/components/ui/Button';
+import { FieldProblem } from '@/components/ui/FieldProblem';
 import { usePopupLayer } from '@/components/ui/popupLayer';
 import { disabledLook, fieldFrame, fieldInput, focusRing, glyph, leadingSlot, popupItem, popupSurface } from '@/components/ui/styles';
 import {
@@ -32,6 +33,8 @@ export interface ReferenceFieldProps {
   onChoose?: (choice: ReferenceChoice) => void;
   /** The window's element selection, whose pick the crosshair arms. Without it the field has no crosshair. */
   picking?: ElementSelectionStore;
+  /** Why the field's choice is refused, or what it reads cannot be read. */
+  problem?: string;
   /** The visible label that names the field's trigger, popup and filter. */
   'aria-labelledby': string;
   className?: string;
@@ -42,7 +45,8 @@ export interface ReferenceFieldProps {
  * the field accepts, grouped, filtered by typing. Its crosshair arms picking: a click on an accepted card or
  * element fills it, and Escape disarms it.
  */
-export function ReferenceField({ label, groups, value, onChoose, picking, className, ...aria }: ReferenceFieldProps) {
+export function ReferenceField({ label, groups, value, onChoose, picking, problem, className, ...aria }: ReferenceFieldProps) {
+  const problemId = useId();
   const shown = useMemo(() => groups.filter(({ choices }) => choices.length), [groups]);
   const pickable = useMemo(() => new Map(groups.flatMap(({ choices }) =>
     choices.flatMap((choice) => choice.pick ? [[pickKey(choice.pick), choice] as const] : []))), [groups]);
@@ -59,12 +63,15 @@ export function ReferenceField({ label, groups, value, onChoose, picking, classN
       disabled={disabled}
       autoHighlight
     >
-      <Combobox.Trigger {...aria}
+      <Combobox.Trigger {...aria} aria-invalid={problem !== undefined || undefined}
+          aria-describedby={problem ? problemId : undefined}
           className={clsx(fieldFrame, 'h-control min-w-0 flex-1 cursor-default select-none items-center gap-1 pr-control-inline',
             !value?.glyph && 'pl-control-inline',
-            'hover:[&:not([data-disabled])]:bg-shell-hover data-[popup-open]:bg-shell-hover', focusRing, glyph, disabledLook)}>
+            'hover:[&:not([data-disabled])]:bg-shell-hover data-[popup-open]:bg-shell-hover aria-[invalid=true]:border-shell-status-failure',
+            focusRing, glyph, disabledLook)}>
           {value?.glyph && <span aria-hidden="true" className={leadingSlot}>{value.glyph}</span>}
           <span className="min-w-0 flex-1 truncate text-left">{value?.label ?? '—'}</span>
+          {problem && <FieldProblem reason={problem} id={problemId} />}
           <ChevronDown aria-hidden="true" className="text-shell-muted" />
         </Combobox.Trigger>
       <Combobox.Portal container={usePopupLayer()}>

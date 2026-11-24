@@ -176,3 +176,15 @@ it("titles the inspector by step and kind, then by the chosen run's values, and 
     { ...selectStep(emptyPipelineSelection, "eval"), selection: { kind: "rows", stepId: "eval", runIds: ["a"] } }));
   expect(screen.getByRole("heading").textContent).toBe("Test reach");
 });
+
+// Catches Made From rows repeating, for a selected step, what its input fields already show.
+it("lists what a step's runs are made from only when runs are chosen; what uses them in both cases", () => {
+  const inspect = (state: PipelineSelectionState) =>
+    <StudioStepInspector plan={plan} step={evaluate} state={state} onChooseStep={() => {}} />;
+  const { rerender } = render(inspect(selectStep(emptyPipelineSelection, "eval")));
+  expect(screen.queryByRole("button", { name: /^Select Made From/ })).toBeNull();
+  rerender(inspect({ ...selectStep(emptyPipelineSelection, "eval"), selection: { kind: "rows", stepId: "eval", runIds: ["a"] } }));
+  expect(screen.getByRole("button", { name: "Select Made From Train arm 1 of 3" })).toBeDefined();
+  render(<StudioStepInspector plan={plan} step={train} state={selectStep(emptyPipelineSelection, "train")} onChooseStep={() => {}} />);
+  expect(screen.getByRole("button", { name: "Select Used By Test reach 1 of 1" })).toBeDefined();
+});
