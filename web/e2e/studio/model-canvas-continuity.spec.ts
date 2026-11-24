@@ -75,6 +75,7 @@ test('a Model card added from the Library moves and redraws no other card', asyn
     (body as { command?: { operation?: { op?: string } } }).command?.operation?.op === 'add_component');
   const model = await openModel(page, snapshot.project_id);
   await expect(model.locator('.react-flow__node[data-id="cell"]')).toHaveClass(/\bdraggable\b/);
+  await expect(model.locator('.react-flow__node[data-id="@inputs"] .studio-model-port[data-hollow="true"]').first()).toBeVisible();
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
   await drawer.getByRole('textbox', { name: 'Search Library', exact: true }).fill('GRU');
   const before = await model.locator('.react-flow__node').evaluateAll((nodes) => nodes.map((node) => (node as HTMLElement).dataset.id!));
