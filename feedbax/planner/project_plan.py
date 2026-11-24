@@ -1144,6 +1144,21 @@ def _integer_train_site(
     return annotation is int
 
 
+def _integer_subject_task_site(
+    path: str, tasks: Iterable[TaskDocument | PythonTaskSelection | None], python_tasks: PythonTaskRegistry,
+) -> bool:
+    """Whether ``path`` names an integer parameter of the Python Task an Evaluate runs from every subject."""
+    from feedbax.tasks.registry import python_task_parameter_site
+
+    sites = {
+        site is not None and site.expected.base is ValueBase.INTEGER and not site.expected.shape
+        for task in tasks
+        for site in (python_task_parameter_site(path, {"python_task": task.model_dump(mode="json")}, python_tasks)
+                     if isinstance(task, PythonTaskSelection) else None,)
+    }
+    return sites == {True}
+
+
 @dataclass(frozen=True)
 class _RowLoweringStamp:
     kind: StepKind
@@ -1858,6 +1873,10 @@ class _Compiler:
             for item, _ in members.get("subject", ())
             for key in item.sources
         ) if kind == "evaluate" else ()
+        subject_tasks = tuple(
+            producer.train.task for _, producer in members.get("subject", ())
+            if producer is not None and producer.train is not None
+        )
 
         def expand(read_document=None, _previous=None):
             @cache
@@ -1894,6 +1913,8 @@ class _Compiler:
             def integer_site(path: str) -> bool:
                 target = model_field_target(path)
                 if target is None:
+                    if kind == "evaluate":
+                        return _integer_subject_task_site(path, subject_tasks, self.python_tasks)
                     if kind != "train":
                         return False
                     resolved = resolved_definition()

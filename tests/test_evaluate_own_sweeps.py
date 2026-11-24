@@ -183,3 +183,17 @@ def test_a_list_typed_in_an_evaluate_s_trials_sweeps_them_across_its_subjects(tm
         for run in after.runs if run.kind == "evaluate"
     )
     assert counts == [1, 1, 1, 4, 4, 4]
+
+
+def test_a_range_on_an_integer_task_parameter_plans_whole_values():
+    """Catches an Evaluate's range over an integer Task parameter planned as fractional or refused values."""
+    plan = _compile(_project([], {"length": {
+        "path": "trial_documents.python_task.params.n_steps", "range": {"start": 5, "stop": 9, "count": 3},
+    }}))
+    assert plan.diagnostics == ()
+    values = sorted(
+        decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec.params["variation"]
+        ["task-params-n_steps"]["value"]
+        for run in plan.runs if run.kind == "evaluate"
+    )
+    assert values == [5, 7, 9] and all(type(value) is int for value in values)
