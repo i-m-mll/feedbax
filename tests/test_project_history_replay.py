@@ -87,6 +87,39 @@ def _replay(client, current, desired, *addresses):
     return response.json()
 
 
+def test_settings_patch_and_inverse_write_the_declaration_without_changing_its_sweep(study):
+    root, client = study
+    sweep = {"sweep": {}, "variants": ["baseline"]}
+    _write(root, "variants/baseline.json", {"label": "Baseline"})
+    _write(root, DECLARATION_FILE, MANIFEST | sweep)
+    before = _snapshot(client)
+    body = {
+        "revision": before["revision"],
+        "address": dict(zip(("kind", "id"), DECLARATION)),
+        "patches": [
+            {"op": "add", "path": "/settings/keep_superseded", "value": 7},
+            {"op": "add", "path": "/settings/run_only_on_request", "value": ["fit"]},
+        ],
+    }
+    saved = client.patch(URL, json=body)
+    assert saved.status_code == 200, saved.text
+    settings = {"keep_superseded": 7, "run_only_on_request": ["fit"]}
+    assert saved.json()["settings"] == settings
+    assert client.get(f"{URL}/open").json()["configuration"]["settings"] == settings
+    assert json.loads((root / DECLARATION_FILE).read_bytes()) == MANIFEST | sweep | {"settings": settings}
+    assert client.patch(URL, json=body).status_code == 409
+
+    revision = saved.json()["revision"]
+    undone = client.patch(URL, json=body | {
+        "revision": revision,
+        "patches": [{"op": "replace", "path": "/settings", "value": {}}],
+    })
+    assert undone.status_code == 200, undone.text
+    assert undone.json()["settings"] == {}
+    assert undone.json()["file_revisions"] == before["file_revisions"]
+    assert undone.json()["declaration"]["authored_revision"] == before["declaration"]["authored_revision"]
+
+
 def test_replay_restores_exact_model_bytes_and_emits_one_revision(study, monkeypatch):
     root, client = study
     path = root / "documents/model.json"

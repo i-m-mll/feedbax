@@ -78,6 +78,9 @@
           "run",
           "trial"
         ]
+      },
+      "weights": {
+        "absent": null
       }
     },
     "feedbax.contracts.expression_values.LiteralValue": {
@@ -500,6 +503,11 @@
       "window": {
         "absent": null
       }
+    },
+    "feedbax.contracts.model_document.InterventionWindow": {
+      "duration": {},
+      "epoch": {},
+      "offsets": {}
     },
     "feedbax.contracts.model_document.LeafComponent": {
       "attachments": {

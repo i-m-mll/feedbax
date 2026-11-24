@@ -22,7 +22,7 @@ from feedbax.contracts._request_codec import same_typed_value
 from feedbax.contracts.analysis_document import AnalyzeDatasetInput, AnalyzeInput, AnalyzeModelInput, AnalyzeTaskInput
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.expression_values import Problem, ValueBase
+from feedbax.contracts.expression_values import Problem, UnresolvedValue, ValueBase
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, FigureDocument, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.graph import GraphSpec
@@ -834,6 +834,8 @@ def _checkpoint(rule: CheckpointRule | None, *, horizon: int | None = None) -> P
             return UpdateSeriesMember(rule=rule, updates=rule.coordinates(horizon))
         case BarrierCheckpoint(barrier=name):
             return BarrierMember(name=name)
+        case UnresolvedValue():
+            raise ValueError("Expected a checkpoint rule.")
 
 
 def _update_outside_run(rule: CheckpointRule | None, origin: int, total: int) -> int | None:

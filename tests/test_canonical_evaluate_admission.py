@@ -302,10 +302,10 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
             hidden = dataset.select(carry, labels={"trial": trial_ids[0]})[0, 0, :3]
         assert selected == [carry]
         selected.clear()
-        replay = outcomes[baseline].replay_trial(trial_ids[0], anchor_id="effector")
+        replay = outcomes[baseline].replay(trial_ids[0])
         assert selected == ["checkpoint", "state_time", position]
-        assert replay.identity.stable_id == trial_ids[0]
-        np.testing.assert_array_equal(np.asarray(replay.tracks[0].samples[:3], dtype=first.dtype), first)
+        assert replay.drawn.trials[0].id == trial_ids[0]
+        np.testing.assert_array_equal(np.asarray(replay.drawn.trials[0].states[replay.position].samples[:3], dtype=first.dtype), first)
     np.testing.assert_allclose(first, reference.history[position][0, :3], atol=1e-7)
     np.testing.assert_allclose(hidden, reference.history[carry][0, :3], atol=1e-7)
     subset = fresh.execution.evaluate(

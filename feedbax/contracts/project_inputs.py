@@ -13,6 +13,7 @@ from pydantic import (
 )
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.expression_values import UnresolvedValue
 from feedbax.contracts.request_refs import CheckpointBatches, CheckpointCadence, Name, UpdateRule
 from feedbax.contracts.run_rule import RuleRefusal, SweepCoordinate, choose, parse
 from feedbax.contracts.expression_text import RuleBest
@@ -185,7 +186,7 @@ class BarrierCheckpoint(StrictModel):
 
 type CheckpointRule = (
     Literal["last"] | BestCheckpoint | BatchCheckpoint | BarrierCheckpoint
-    | CheckpointBatches | CheckpointCadence | UpdateRule
+    | CheckpointBatches | CheckpointCadence | UpdateRule | UnresolvedValue
 )
 
 class StepReference(StrictModel):

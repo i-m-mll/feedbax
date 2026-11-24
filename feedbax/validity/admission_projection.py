@@ -56,9 +56,19 @@ class AdmissionProjection(StrictModel):
         )
 
     def current(self, traces: tuple[CodeTrace, ...]) -> bool:
-        distributions = {binding.distribution for trace in traces for binding in trace.registry}
-        current = plugin_entrypoints(self.search_paths)
-        if self.entrypoints != current:
+        distributions = {"feedbax", *(binding.distribution for trace in traces for binding in trace.registry)}
+        for trace in traces:
+            paths = (
+                *(source.path for source in trace.sources), *(file.path for file in trace.files),
+                *trace.indeterminate, *trace.indeterminate_files,
+            )
+            distributions.update(
+                path.scope.removeprefix("plugin:").partition(":")[0]
+                for path in paths if path.scope.startswith("plugin:")
+            )
+        expected = tuple(entry for entry in self.entrypoints if entry[0] in distributions)
+        current = tuple(entry for entry in plugin_entrypoints(self.search_paths) if entry[0] in distributions)
+        if expected != current:
             return False
         return all(
             file.current()

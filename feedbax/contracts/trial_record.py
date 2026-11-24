@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field, JsonValue
 
 from feedbax.contracts.expression_values import Problem
+from feedbax.contracts.jobs import JobReceipt
 
 
 class TaskTimelineCue(BaseModel):
@@ -23,6 +24,12 @@ class TrialTerm(BaseModel):
     """The weighted measure at each step, when recorded."""
 
 
+class TrialStateTrack(BaseModel):
+    samples: list[list[float]]
+    units: str | None
+    frame: str
+
+
 class TrialRecord(BaseModel):
     id: str
     inits: dict[str, JsonValue]
@@ -32,8 +39,10 @@ class TrialRecord(BaseModel):
     variable_defined: dict[str, JsonValue]
     timeline: list[TaskTimelineCue]
     terms: dict[str, TrialTerm] = Field(default_factory=dict)
-    states: dict[str, JsonValue] = Field(default_factory=dict)
-    """Recorded state tracks, keyed by Model address."""
+    states: dict[str, TrialStateTrack] = Field(default_factory=dict)
+    """Recorded world-frame state tracks, keyed by state Model address."""
+    configurations: dict[str, JsonValue] = Field(default_factory=dict)
+    """Recorded configuration state histories, keyed by state Model address."""
 
 
 class TrialRecords(BaseModel):
@@ -84,3 +93,13 @@ class TrialUnavailable(BaseModel):
 
 
 type TrialDisplay = Annotated[TrialRecords | TrialAggregate | TrialUnavailable, Field(discriminator="kind")]
+
+
+class StudioTrialReplayResponse(BaseModel):
+    n_steps: int
+    state_time: list[float]
+    """Recorded state times in seconds, including the reset state at time zero."""
+    position: str | None
+    """Model address of the declared primary position, if available."""
+    receipt: JobReceipt
+    drawn: Annotated[TrialRecords | TrialAggregate, Field(discriminator="kind")]
