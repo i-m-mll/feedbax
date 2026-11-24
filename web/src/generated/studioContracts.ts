@@ -709,11 +709,16 @@ export interface ModelPosition {
 export interface AddComponent {
   op: "add_component";
   graph: ModelAddress;
-  component: LeafComponent | CompositeComponent;
+  component: LeafComponent | CompositeComponent | RegisteredComponent;
   position: ModelPosition;
   id?: string | null;
   connect_from?: ComponentPortEnd | InputBoundaryEnd | null;
   connect_to_port?: string | null;
+}
+
+export interface RegisteredComponent {
+  kind: "definition";
+  definition: string;
 }
 
 export interface DeleteElements {
@@ -1030,6 +1035,11 @@ export interface ModelGraphProblem {
   reason: string;
 }
 
+export interface ModelUngroupEligibility {
+  address: ModelAddress;
+  reason: string | null;
+}
+
 export interface ModelLibraryConnection {
   component: string;
   target_port: string;
@@ -1074,6 +1084,7 @@ export interface ModelProjection {
   base_differences?: Array<ModelAddedElement | ModelRemovedElement | ModelRewiredElement>;
   value_differences?: Array<ModelAddedElement | ModelRemovedElement | ModelRewiredElement>;
   problems?: ModelGraphProblem[];
+  ungroup?: ModelUngroupEligibility[];
 }
 
 export interface ModelProjectionRequest {
@@ -1990,46 +2001,6 @@ export interface DomainDiagnostic {
   details?: Record<string, unknown>;
 }
 
-export interface ScenePlanarLink {
-  body_id: string;
-  joint_id: string;
-  parent_frame: string;
-  child_frame: string;
-  qpos_index: number;
-  parent_pivot: [number, number];
-  body_pivot: [number, number];
-  reference_angle: number;
-  length: number;
-}
-
-export interface ScenePlanarMuscle {
-  node_id: string;
-  points: RepresentationMusclePathPointSpec[] | null;
-}
-
-export interface ScenePlanarModel {
-  model_identity: string;
-  world_frame: string;
-  links: ScenePlanarLink[];
-  reference_qpos: number[];
-  muscles: ScenePlanarMuscle[];
-}
-
-export interface StudioPlanarSceneRequest {
-  revision: string;
-  document_id: string;
-  node_path: string[];
-}
-
-export interface StudioPlanarSceneResponse {
-  revision: string;
-  document_id: string;
-  node_path: string[];
-  project_id: string;
-  model: ScenePlanarModel | null;
-  diagnostics: DomainDiagnostic[];
-}
-
 export interface SceneLinkGeometry {
   body: ModelAddress;
   body_name: string;
@@ -2062,18 +2033,22 @@ export interface ScenePointGeometry {
   position: [number, number];
 }
 
+export interface StudioSceneGeometryFrame {
+  mechanisms: Array<ScenePointGeometry | ScenePlanarGeometry>;
+  diagnostics: DomainDiagnostic[];
+}
+
 export interface StudioSceneGeometryRequest {
   revision: string;
   document_id: string;
-  state_values?: Record<string, JsonValue>;
+  poses: Record<string, JsonValue>[];
 }
 
 export interface StudioSceneGeometryResponse {
   revision: string;
   document_id: string;
   project_id: string;
-  mechanisms: Array<ScenePointGeometry | ScenePlanarGeometry>;
-  diagnostics: DomainDiagnostic[];
+  frames: StudioSceneGeometryFrame[];
 }
 
 export interface DomainRegistryPayload {
@@ -2112,6 +2087,7 @@ export interface ComponentDefinition {
   schema_id?: "feedbax.spec.component_definition";
   schema_version?: "feedbax.spec.component_definition.v4";
   name: string;
+  headline: ComponentHeadline;
   category: string;
   description: string;
   param_schema?: ParamSchema[];
@@ -2195,6 +2171,7 @@ export interface TrialRecords {
 }
 
 export interface TrialTerm {
+  problems?: Problem[];
   steps: boolean[];
   weights?: Array<number | null> | null;
   covered: boolean;
@@ -2203,6 +2180,7 @@ export interface TrialTerm {
 }
 
 export interface TrialTermAggregate {
+  problems?: Problem[];
   steps: number[];
   covered: number;
   value?: number | null;
@@ -2751,6 +2729,11 @@ export type CodeReason = {
 };
 
 export type Combination = "cross" | "zip" | ManualCombination | GroupCombination;
+
+export type ComponentHeadline = {
+  "name": string;
+  "field"?: string | null;
+};
 
 export type ComputationChange = DriverChanged | StartsChanged | ProgramsChanged | StepCountChanged;
 
@@ -4094,6 +4077,11 @@ export type StudioProjectCreateFile = {
   "file": NamedFileCreation;
 };
 
+export type StudioProjectCreateFiles = {
+  "revision": Sha256;
+  "files": Array<NamedFileCreation>;
+};
+
 export type StudioProjectDocument = {
   "configuration": ProjectConfiguration;
   "snapshot": StudioProjectSnapshot;
@@ -4161,7 +4149,6 @@ export type StudioProjectWindowMap = {
   "evaluations"?: Array<StudioSavedEvaluationRow>;
   "analysis_elements"?: Array<StudioProjectWindowMapElement>;
   "analysis_figures"?: Array<StudioProjectWindowMapFigure>;
-  "detach_refused"?: Array<string>;
   "regroup_refused"?: Array<string>;
 };
 
@@ -4552,6 +4539,7 @@ export type StudioTrialAuthoring = {
   "variables": Array<ScopedValue>;
   "signals": Array<ScopedValue>;
   "epochs": Array<StudioTrialEpoch>;
+  "epoch_instances"?: Array<StudioTrialEpochInstance>;
   "period_seconds": number | null;
   "n_steps": number | null;
   "batch_size": number | null;
@@ -4596,6 +4584,13 @@ export type StudioTrialEpoch = {
   "id": string;
   "name": string;
   "steps": EpochSteps | null;
+};
+
+export type StudioTrialEpochInstance = {
+  "id": string;
+  "name": string;
+  "steps": EpochSteps;
+  "occurrence": number;
 };
 
 export type StudioTrialExpressionEdit = {
@@ -6722,7 +6717,7 @@ export const AddComponentSchema: z.ZodType<AddComponent> = z.lazy(() =>
     .object({
       "op": z.literal("add_component"),
       "graph": ModelAddressSchema,
-      "component": z.union([LeafComponentSchema, CompositeComponentSchema]),
+      "component": z.union([LeafComponentSchema, CompositeComponentSchema, RegisteredComponentSchema]),
       "position": ModelPositionSchema,
       "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")).nullable().optional(),
       "connect_from": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]).nullable().optional(),
@@ -6730,6 +6725,15 @@ export const AddComponentSchema: z.ZodType<AddComponent> = z.lazy(() =>
     })
     .strict()
 ) as unknown as z.ZodType<AddComponent>;
+
+export const RegisteredComponentSchema: z.ZodType<RegisteredComponent> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("definition"),
+      "definition": z.string().min(1),
+    })
+    .strict()
+) as unknown as z.ZodType<RegisteredComponent>;
 
 export const DeleteElementsSchema: z.ZodType<DeleteElements> = z.lazy(() =>
   z
@@ -7280,6 +7284,15 @@ export const ModelGraphProblemSchema: z.ZodType<ModelGraphProblem> = z.lazy(() =
     .strict()
 ) as unknown as z.ZodType<ModelGraphProblem>;
 
+export const ModelUngroupEligibilitySchema: z.ZodType<ModelUngroupEligibility> = z.lazy(() =>
+  z
+    .object({
+      "address": ModelAddressSchema,
+      "reason": z.string().nullable(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelUngroupEligibility>;
+
 export const ModelLibraryConnectionSchema: z.ZodType<ModelLibraryConnection> = z.lazy(() =>
   z
     .object({
@@ -7350,6 +7363,7 @@ export const ModelProjectionSchema: z.ZodType<ModelProjection> = z.lazy(() =>
       "base_differences": z.array(z.union([ModelAddedElementSchema, ModelRemovedElementSchema, ModelRewiredElementSchema])).optional(),
       "value_differences": z.array(z.union([ModelAddedElementSchema, ModelRemovedElementSchema, ModelRewiredElementSchema])).optional(),
       "problems": z.array(ModelGraphProblemSchema).optional(),
+      "ungroup": z.array(ModelUngroupEligibilitySchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelProjection>;
@@ -8994,66 +9008,6 @@ export const DomainDiagnosticSchema: z.ZodType<DomainDiagnostic> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<DomainDiagnostic>;
 
-export const ScenePlanarLinkSchema: z.ZodType<ScenePlanarLink> = z.lazy(() =>
-  z
-    .object({
-      "body_id": z.string(),
-      "joint_id": z.string(),
-      "parent_frame": z.string(),
-      "child_frame": z.string(),
-      "qpos_index": z.number().int().safe().gte(0),
-      "parent_pivot": z.tuple([z.number().finite(), z.number().finite()]),
-      "body_pivot": z.tuple([z.number().finite(), z.number().finite()]),
-      "reference_angle": z.number().finite(),
-      "length": z.number().finite().gt(0),
-    })
-    .strict()
-) as unknown as z.ZodType<ScenePlanarLink>;
-
-export const ScenePlanarMuscleSchema: z.ZodType<ScenePlanarMuscle> = z.lazy(() =>
-  z
-    .object({
-      "node_id": z.string(),
-      "points": z.array(RepresentationMusclePathPointSpecSchema).min(2).nullable(),
-    })
-    .strict()
-) as unknown as z.ZodType<ScenePlanarMuscle>;
-
-export const ScenePlanarModelSchema: z.ZodType<ScenePlanarModel> = z.lazy(() =>
-  z
-    .object({
-      "model_identity": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
-      "world_frame": z.string(),
-      "links": z.array(ScenePlanarLinkSchema).min(1),
-      "reference_qpos": z.array(z.number().finite()).min(1),
-      "muscles": z.array(ScenePlanarMuscleSchema),
-    })
-    .strict()
-) as unknown as z.ZodType<ScenePlanarModel>;
-
-export const StudioPlanarSceneRequestSchema: z.ZodType<StudioPlanarSceneRequest> = z.lazy(() =>
-  z
-    .object({
-      "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
-      "document_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-      "node_path": z.array(z.string()).min(1),
-    })
-    .strict()
-) as unknown as z.ZodType<StudioPlanarSceneRequest>;
-
-export const StudioPlanarSceneResponseSchema: z.ZodType<StudioPlanarSceneResponse> = z.lazy(() =>
-  z
-    .object({
-      "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
-      "document_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-      "node_path": z.array(z.string()).min(1),
-      "project_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-      "model": ScenePlanarModelSchema.nullable(),
-      "diagnostics": z.array(DomainDiagnosticSchema),
-    })
-    .strict()
-) as unknown as z.ZodType<StudioPlanarSceneResponse>;
-
 export const SceneLinkGeometrySchema: z.ZodType<SceneLinkGeometry> = z.lazy(() =>
   z
     .object({
@@ -9102,12 +9056,21 @@ export const ScenePointGeometrySchema: z.ZodType<ScenePointGeometry> = z.lazy(()
     .strict()
 ) as unknown as z.ZodType<ScenePointGeometry>;
 
+export const StudioSceneGeometryFrameSchema: z.ZodType<StudioSceneGeometryFrame> = z.lazy(() =>
+  z
+    .object({
+      "mechanisms": z.array(z.union([ScenePointGeometrySchema, ScenePlanarGeometrySchema])),
+      "diagnostics": z.array(DomainDiagnosticSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSceneGeometryFrame>;
+
 export const StudioSceneGeometryRequestSchema: z.ZodType<StudioSceneGeometryRequest> = z.lazy(() =>
   z
     .object({
       "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
       "document_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-      "state_values": z.record(z.string(), jsonValueSchema).optional(),
+      "poses": z.array(z.record(z.string(), jsonValueSchema)).min(1),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSceneGeometryRequest>;
@@ -9118,8 +9081,7 @@ export const StudioSceneGeometryResponseSchema: z.ZodType<StudioSceneGeometryRes
       "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
       "document_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
       "project_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-      "mechanisms": z.array(z.union([ScenePointGeometrySchema, ScenePlanarGeometrySchema])),
-      "diagnostics": z.array(DomainDiagnosticSchema),
+      "frames": z.array(StudioSceneGeometryFrameSchema).min(1),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSceneGeometryResponse>;
@@ -9183,6 +9145,7 @@ export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(
       "schema_id": z.literal("feedbax.spec.component_definition").optional(),
       "schema_version": z.literal("feedbax.spec.component_definition.v4").optional(),
       "name": z.string(),
+      "headline": ComponentHeadlineSchema,
       "category": z.string(),
       "description": z.string(),
       "param_schema": z.array(ParamSchemaSchema).optional(),
@@ -9298,6 +9261,7 @@ export const TrialRecordsSchema: z.ZodType<TrialRecords> = z.lazy(() =>
 export const TrialTermSchema: z.ZodType<TrialTerm> = z.lazy(() =>
   z
     .object({
+      "problems": z.array(ProblemSchema).optional(),
       "steps": z.array(z.boolean()),
       "weights": z.array(z.number().finite().nullable()).nullable().optional(),
       "covered": z.boolean(),
@@ -9310,6 +9274,7 @@ export const TrialTermSchema: z.ZodType<TrialTerm> = z.lazy(() =>
 export const TrialTermAggregateSchema: z.ZodType<TrialTermAggregate> = z.lazy(() =>
   z
     .object({
+      "problems": z.array(ProblemSchema).optional(),
       "steps": z.array(z.number().finite()),
       "covered": z.number().finite(),
       "value": z.number().finite().nullable().optional(),
@@ -10158,6 +10123,13 @@ export const CodeReasonSchema: z.ZodType<CodeReason> = z.lazy(() =>
 export const CombinationSchema: z.ZodType<Combination> = z.lazy(() =>
   z.union([z.union([z.literal("cross"), z.literal("zip")]), ManualCombinationSchema, GroupCombinationSchema])
 ) as unknown as z.ZodType<Combination>;
+
+export const ComponentHeadlineSchema: z.ZodType<ComponentHeadline> = z.lazy(() =>
+  z.object({
+    "name": z.string(),
+    "field": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<ComponentHeadline>;
 
 export const ComputationChangeSchema: z.ZodType<ComputationChange> = z.lazy(() =>
   z.union([DriverChangedSchema, StartsChangedSchema, ProgramsChangedSchema, StepCountChangedSchema])
@@ -11961,6 +11933,13 @@ export const StudioProjectCreateFileSchema: z.ZodType<StudioProjectCreateFile> =
   }).strict()
 ) as unknown as z.ZodType<StudioProjectCreateFile>;
 
+export const StudioProjectCreateFilesSchema: z.ZodType<StudioProjectCreateFiles> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "files": z.array(NamedFileCreationSchema).min(1),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectCreateFiles>;
+
 export const StudioProjectDocumentSchema: z.ZodType<StudioProjectDocument> = z.lazy(() =>
   z.object({
     "configuration": ProjectConfigurationSchema,
@@ -12045,7 +12024,6 @@ export const StudioProjectWindowMapSchema: z.ZodType<StudioProjectWindowMap> = z
     "evaluations": z.array(StudioSavedEvaluationRowSchema).optional(),
     "analysis_elements": z.array(StudioProjectWindowMapElementSchema).optional(),
     "analysis_figures": z.array(StudioProjectWindowMapFigureSchema).optional(),
-    "detach_refused": z.array(z.string()).optional(),
     "regroup_refused": z.array(z.string()).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMap>;
@@ -12534,6 +12512,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "variables": z.array(ScopedValueSchema),
     "signals": z.array(ScopedValueSchema),
     "epochs": z.array(StudioTrialEpochSchema),
+    "epoch_instances": z.array(StudioTrialEpochInstanceSchema).optional(),
     "period_seconds": z.union([z.number().finite(), z.null()]),
     "n_steps": z.union([z.number().int().safe(), z.null()]),
     "batch_size": z.union([z.number().int().safe(), z.null()]),
@@ -12590,6 +12569,15 @@ export const StudioTrialEpochSchema: z.ZodType<StudioTrialEpoch> = z.lazy(() =>
     "steps": z.union([EpochStepsSchema, z.null()]),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialEpoch>;
+
+export const StudioTrialEpochInstanceSchema: z.ZodType<StudioTrialEpochInstance> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "name": z.string(),
+    "steps": EpochStepsSchema,
+    "occurrence": z.number().int().safe().min(0),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialEpochInstance>;
 
 export const StudioTrialExpressionEditSchema: z.ZodType<StudioTrialExpressionEdit> = z.lazy(() =>
   z.object({
@@ -13071,6 +13059,7 @@ export const contractSchemas = {
   StudioMemberCommandResult: StudioMemberCommandResultSchema,
   StudioPresentationWrite: StudioPresentationWriteSchema,
   StudioProjectCreateFile: StudioProjectCreateFileSchema,
+  StudioProjectCreateFiles: StudioProjectCreateFilesSchema,
   StudioProjectDocument: StudioProjectDocumentSchema,
   StudioProjectWindowMap: StudioProjectWindowMapSchema,
   StudioProjectPatch: StudioProjectPatchSchema,
@@ -13085,8 +13074,6 @@ export const contractSchemas = {
   ComponentDetailResponse: ComponentDetailResponseSchema,
   DomainListResponse: DomainListResponseSchema,
   DomainCompileReport: DomainCompileReportSchema,
-  StudioPlanarSceneRequest: StudioPlanarSceneRequestSchema,
-  StudioPlanarSceneResponse: StudioPlanarSceneResponseSchema,
   StudioSceneGeometryRequest: StudioSceneGeometryRequestSchema,
   StudioSceneGeometryResponse: StudioSceneGeometryResponseSchema,
   StudioErrorReport: StudioErrorReportSchema,
@@ -13237,6 +13224,7 @@ export interface ContractTypeMap {
   StudioMemberCommandResult: StudioMemberCommandResult;
   StudioPresentationWrite: StudioPresentationWrite;
   StudioProjectCreateFile: StudioProjectCreateFile;
+  StudioProjectCreateFiles: StudioProjectCreateFiles;
   StudioProjectDocument: StudioProjectDocument;
   StudioProjectWindowMap: StudioProjectWindowMap;
   StudioProjectPatch: StudioProjectPatch;
@@ -13251,8 +13239,6 @@ export interface ContractTypeMap {
   ComponentDetailResponse: ComponentDetailResponse;
   DomainListResponse: DomainListResponse;
   DomainCompileReport: DomainCompileReport;
-  StudioPlanarSceneRequest: StudioPlanarSceneRequest;
-  StudioPlanarSceneResponse: StudioPlanarSceneResponse;
   StudioSceneGeometryRequest: StudioSceneGeometryRequest;
   StudioSceneGeometryResponse: StudioSceneGeometryResponse;
   StudioErrorReport: StudioErrorReport;

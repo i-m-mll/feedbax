@@ -15,6 +15,7 @@ class PresentationOverride:
     icon: str | None = None
     template_ui_state: GraphUIState | None = None
     representation: RepresentationSpec | None = None
+    headline_field: str | None = None
     source: Path | None = field(default=None, compare=False)
 
     def __post_init__(self):

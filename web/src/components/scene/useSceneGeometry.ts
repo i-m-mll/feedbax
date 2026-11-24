@@ -1,13 +1,13 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { fetchProjectSceneGeometry } from '@/api/projectScene';
-import type { StudioSceneGeometryRequest, StudioSceneGeometryResponse } from '@/generated/studioContracts';
-import type { StateValues } from './trialScene';
+import type { StudioSceneGeometryRequest } from '@/generated/studioContracts';
+import type { SceneModelGeometry, StateValues } from './trialScene';
 
 /** The Model's geometry in one pose, as last read: nothing yet, the answer, or why it could not be read. */
 export type SceneGeometry =
   | { readonly kind: 'loading' }
-  | { readonly kind: 'ready'; readonly geometry: StudioSceneGeometryResponse }
+  | { readonly kind: 'ready'; readonly geometry: SceneModelGeometry }
   | { readonly kind: 'failed'; readonly error: unknown; readonly retry: () => void };
 
 type Read = { readonly key: string; readonly source: string; readonly result: SceneGeometry };
@@ -20,7 +20,7 @@ type Read = { readonly key: string; readonly source: string; readonly result: Sc
 export function useSceneGeometry(projectId: string, source: Pick<StudioSceneGeometryRequest, 'revision' | 'document_id'> | null, values: StateValues | undefined): SceneGeometry | undefined {
   const client = useQueryClient();
   const model = source && JSON.stringify([projectId, source.document_id, source.revision]);
-  const request = source && values ? { ...source, state_values: { ...values } } : null;
+  const request = source && values ? { ...source, poses: [values] } : null;
   const key = request && JSON.stringify([projectId, request]);
   const [read, setRead] = useState<Read>();
   const [inFlight, setInFlight] = useState(false);
@@ -32,7 +32,9 @@ export function useSceneGeometry(projectId: string, source: Pick<StudioSceneGeom
       queryFn: ({ signal }) => fetchProjectSceneGeometry(projectId, request, signal),
       staleTime: Infinity,
     }).then(
-      (geometry): SceneGeometry => ({ kind: 'ready', geometry }),
+      ({ document_id, frames }): SceneGeometry => ({
+        kind: 'ready', geometry: { document_id, ...frames[0] },
+      }),
       (error): SceneGeometry => ({ kind: 'failed', error, retry: () => setRead(undefined) }),
     ).then((result) => {
       setRead({ key, source: model, result });

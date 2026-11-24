@@ -305,6 +305,7 @@ class ComponentStudioFacet:
     icon: str = "box"
     template_ui_state: GraphUIState | None = None
     representation: RepresentationSpec | None = None
+    headline_field: str | None = None
     source: Path | None = field(default=None, compare=False)
 
     def __post_init__(self):
@@ -364,6 +365,10 @@ class DeclaredComponent:
     @property
     def icon(self) -> str:
         return self.studio.icon if self.studio is not None else "box"
+
+    @property
+    def headline_field(self) -> str | None:
+        return self.studio.headline_field if self.studio is not None else None
 
     @property
     def param_schema(self) -> list[ParamSchema]:
