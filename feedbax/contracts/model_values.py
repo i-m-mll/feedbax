@@ -34,6 +34,8 @@ class StateValue:
     reset: StateReset | None = None
     configuration: bool = False
     space: Literal["point"] | None = None
+    subtree: bool = False
+    """Use the runtime signal's array leaves and axes below this storage path."""
 
 
 @dataclass(frozen=True)
@@ -48,6 +50,8 @@ class TrialParameter:
     name: str
     kind: Literal["real", "boolean"]
     units: str = "1"
+    dtype_from: str | None = None
+    """Output port whose array dtype the configuration scalar uses."""
 
 
 @dataclass(frozen=True)

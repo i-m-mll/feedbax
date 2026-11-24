@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from math import isfinite
 from collections.abc import Mapping
@@ -23,13 +23,13 @@ from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.expression_values import Level, LiteralValue, NameValue, ScopedValue, UnresolvedValue, ValueBase, ValueType
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioTaskBinding, StudioTaskBindingSpec, WireSpec
 from feedbax.contracts.model_address import (
-    ComponentPortEnd, FieldElement, ModelAddress, PhysicalEnd, PortElement, SignalSource,
+    ComponentPortEnd, FieldElement, ModelAddress, PhysicalEnd, PortElement, SignalSource, SignalTarget,
 )
 from feedbax.contracts.model_delay import ModelDelayCarry
 from feedbax.contracts.model_edit import ModelGraphProblem
 from feedbax.contracts.model_document import (
     DelayAttachment, GraphInterior, InterventionAttachment, ModelDocument, ModelPorts,
-    PhysicalInterior, ProbeAttachment, SignalInput,
+    PhysicalInterior, ProbeAttachment, SignalInput, SignalType,
 )
 from feedbax.contracts.project import json_pointer_parts
 from feedbax.runtime.task_data_roles import task_data_role
@@ -154,6 +154,22 @@ class _Lower:
                 if quantity == "velocity":
                     return _Signal((2,), units="m/s")
         return _Signal(shape, component.fields.get("dtype", "float32"), units)
+
+    def destination_shape(
+        self, interior: GraphInterior, ports: ModelPorts, end: SignalTarget,
+    ) -> tuple[int, ...] | None:
+        """Read the input contract when the wire's source does not state a reset shape."""
+        if end.owner == "outputs":
+            declared = next((port.type for port in ports.outputs if port.id == end.port), None)
+        elif (component := interior.components.get(end.component)) is None:
+            return None
+        elif component.kind == "composite":
+            declared = next((port.type for port in component.ports.inputs if port.id == end.port), None)
+        else:
+            port = ModelRegistryPorts(self.components).port(component.model_dump(mode="json"), "input", end.port)
+            declared = port.type if port is not None else None
+        shape = declared.shape if isinstance(declared, SignalType) else None
+        return tuple(shape) if shape is not None and all(type(size) is int for size in shape) else None
 
     def has_reset_output(self, node: ComponentSpec, child, port: str) -> bool:
         if isinstance(child, AcausalGraphSpec):
@@ -592,6 +608,8 @@ class _Lower:
                 self.source_signal(interior, ports, a)
                 if any(isinstance(item, DelayAttachment) for item in wire.attachments) else None
             )
+            if signal is not None and signal.shape is None:
+                signal = replace(signal, shape=self.destination_shape(interior, ports, b))
             if b.owner == "outputs":
                 external = output_names.get(b.port)
                 if external is None:

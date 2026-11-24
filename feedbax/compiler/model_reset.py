@@ -253,8 +253,12 @@ def resolve_model_reset(
 
             states = (owner.states or ()) if owner.has_state(node) else ()
             for state in states:
+                if state.subtree and state.reset is None:
+                    continue
                 port, *prototype_path = state.prototype
                 sample = _read_path(resolved.node_outputs[name, port], prototype_path)
+                if state.subtree and not hasattr(sample, "dtype"):
+                    continue
                 add(
                     ModelAddress.at_state(scope, name, state.symbol), sample.dtype, sample.shape, state.units,
                     state.fields, state.aliases, required=state.reset is not None and state.reset.required,
@@ -268,7 +272,10 @@ def resolve_model_reset(
                 path = _state_path(config_paths[parameter.name])
                 if path[0] not in owner.configuration_slots:
                     raise ValueError("Trial parameter must belong to a declared configuration slot")
-                dtype = jnp.dtype(jnp.bool_ if parameter.kind == "boolean" else jnp.float32)
+                dtype = (
+                    resolved.node_outputs[name, parameter.dtype_from].dtype if parameter.dtype_from else
+                    jnp.dtype(jnp.bool_ if parameter.kind == "boolean" else jnp.float32)
+                )
                 address = ModelAddress(
                     composites=scope, element=FieldElement(
                         kind="field", parent=ComponentElement(kind="component", id=name), path=("fields", parameter.name),
