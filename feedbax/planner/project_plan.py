@@ -22,7 +22,7 @@ from feedbax.contracts._request_codec import same_typed_value
 from feedbax.contracts.analysis_document import AnalyzeDatasetInput, AnalyzeInput, AnalyzeModelInput, AnalyzeTaskInput
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.expression_values import Problem, ValueBase
+from feedbax.contracts.expression_values import Problem, TextSpan, UnresolvedValue, ValueBase
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, FigureDocument, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.graph import GraphSpec
@@ -101,6 +101,7 @@ from feedbax.contracts.project_sweep import (
     SweepInputMember,
     axis_coordinates,
     checkpoint_rule_write,
+    checkpoint_sweep_refusal,
     coordinate_text,
     expand_sweep,
     model_field_target,
@@ -513,6 +514,7 @@ class PlannedStep:
     inputs: Mapping[str, InputBinding] | None = None
     sweep: Sweep | None = field(default=None, compare=False)
     label: str | None = None
+    can_sweep_checkpoint: bool = False
 
 
 @dataclass(frozen=True)
@@ -834,6 +836,8 @@ def _checkpoint(rule: CheckpointRule | None, *, horizon: int | None = None) -> P
             return UpdateSeriesMember(rule=rule, updates=rule.coordinates(horizon))
         case BarrierCheckpoint(barrier=name):
             return BarrierMember(name=name)
+        case UnresolvedValue():
+            raise ValueError("Expected a checkpoint rule.")
 
 
 def _update_outside_run(rule: CheckpointRule | None, origin: int, total: int) -> int | None:
@@ -1102,7 +1106,7 @@ def _sweep_problem(
             pass  # The sweep diagnostic already reports the malformed target.
     return ProjectDiagnostic(
         ResolutionCode.INVALID_SWEEP, error.path, error.detail, step=step, variant=variant,
-        document=document if address is not None else None, model_address=address,
+        document=document if address is not None else None, model_address=address, span=error.span,
     )
 
 
@@ -2859,6 +2863,9 @@ class _Compiler:
             return ()
         self.steps[variant, name] = replace(
             step, inputs=MappingProxyType(deepcopy(dict(template.inputs))), sweep=template.sweep,
+            can_sweep_checkpoint=kind == "evaluate" and checkpoint_sweep_refusal(
+                authored.inputs.get("subject"), template.sweep, project_swept=self.project.sweep is not None,
+            ) is None,
         )
         sweep = template.sweep
         if sweep is not None:
@@ -3028,6 +3035,26 @@ class _Compiler:
     ) -> ProductSelector | None | ProjectDiagnostic:
         """The selector an Evaluate row's checkpoint rule makes, or why the rule does not parse or asks for an update
         outside its producer's run. Both need only the rule and the producer's extent, so a blocked row has them too."""
+        path = f"{_selection_path(subject, 'subject', chosen.selection)}.checkpoint"
+        origin = row.patch_origins.get(CHECKPOINT_RULE_TARGET)
+        authored_path = None
+        if origin is not None:
+            match origin:
+                case ("sweep_value", axis, value):
+                    authored_path = pointer(("sweep", "axes", axis, "values", value, "patches", CHECKPOINT_RULE_TARGET, "value"))
+                case ("exception", exception):
+                    authored_path = pointer(("sweep", "exceptions", exception, "patches", CHECKPOINT_RULE_TARGET, "value"))
+                case ("row", row_id):
+                    authored_path = pointer(("sweep", "rows", row_id, "patches", CHECKPOINT_RULE_TARGET, "value"))
+        author = row.patch_authors.get(CHECKPOINT_RULE_TARGET, name)
+
+        def problem(detail: str, span: TextSpan | None = None) -> ProjectDiagnostic:
+            return ProjectDiagnostic(
+                ResolutionCode.BAD_REFERENCE, path, detail, name, row=row.id, variant=variant, span=span,
+                authored_file=f"steps/{author}.json",
+                authored_path=authored_path or pointer(tuple(path.split("."))),
+            )
+
         try:
             write = row.patches.get(CHECKPOINT_RULE_TARGET)
             chosen_subject = chosen.selection if chosen.selection is not None else subject
@@ -3038,27 +3065,23 @@ class _Compiler:
             )
             if rule is None and has_checkpoint_axis:
                 raise ValueError("The selected row has no checkpoint rule")
+            if isinstance(rule, UnresolvedValue):
+                return problem("Expected a checkpoint rule.", TextSpan(start=0, end=len(rule.text)))
             horizon = None
             if isinstance(rule, UpdateCadence) and chosen.producer is not None:
                 facts = self.rows[chosen.producer].train
                 horizon = facts.target_total if facts is not None else None
             selector = _checkpoint(rule, horizon=horizon)
         except (OSError, ValueError) as error:
-            return ProjectDiagnostic(
-                ResolutionCode.BAD_REFERENCE, "inputs.subject.checkpoint", str(error),
-                name, row=row.id, variant=variant,
-            )
+            return problem(str(error))
         facts = self.rows[chosen.producer].train if chosen.producer is not None else None
         if facts is not None and facts.origin is not None and facts.target_total is not None and (
             outside := _update_outside_run(rule, facts.origin, facts.target_total)
         ) is not None:
             assert chosen.producer is not None
-            return ProjectDiagnostic(
-                ResolutionCode.BAD_REFERENCE,
-                f"{_selection_path(subject, 'subject', chosen.selection)}.checkpoint",
+            return problem(
                 f"Update {outside} is outside {chosen.producer.step!r}, "
                 f"which runs updates {facts.origin + 1} to {facts.target_total}.",
-                name, row=row.id, variant=variant,
             )
         return selector
 
@@ -3420,7 +3443,7 @@ class _Compiler:
             if members else None
 
         def refusal(detail: str, field: str = path) -> ProjectDiagnostic:
-            return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, field, detail, name)
+            return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, field, detail, name, span=best.span)
 
         axes = tuple(sorted(best.per))
         if len(set(axes)) != len(axes):
@@ -3811,7 +3834,13 @@ class _Compiler:
             )
         except RuleRefusal as error:
             return ProjectDiagnostic(
-                ResolutionCode.BAD_REFERENCE, f"{path}.where.{error.path}", error.detail, name
+                ResolutionCode.BAD_REFERENCE, f"{path}.where.{error.path}", error.detail, name, span=error.span,
+                document=subset_document,
+                document_path=f"/{error.path}" if subset_document is not None else None,
+                authored_file=f"documents/{subset_document}.json" if subset_document is not None else None,
+                authored_path=f"/payload/{error.path}" if subset_document is not None else pointer(
+                    (*path.split("."), "where", error.path),
+                ),
             )
         expands_input = template.sweep is not None and any(
             isinstance(axis, InputAxis) and axis.input == role.name
