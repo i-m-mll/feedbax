@@ -610,7 +610,7 @@ def test_scalar_distance_initializes_both_coordinates(functions, paired_model):
     })
     task = compile_task(
         doc.model_copy(update={"variables": (start, target)}), functions,
-        model=interface, input_overrides={"reach_target": "target_pos"},
+        model=interface, input_bindings={"task-input": "target_pos"},
     )
     assert isinstance(task, DocumentTask), task
     key = jr.key(0)

@@ -15,6 +15,7 @@ import pytest
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.code_validity import ComputationUnavailable
 from feedbax.contracts.computation_validity import ComputationDifferent, ComputationEqual, EvaluatePrefix
+from feedbax.contracts.expression_values import LiteralValue
 from feedbax.contracts.live_evaluate import EVALUATE_DRIVER, ScoredEvaluationPoint, require_evaluation_coverage
 from feedbax.contracts.model_input import InitialModelSource, encode_document_input
 from feedbax.contracts.receipt_validity import CheckOutcome, CodeReason, ValidityAssessment, ValidityCheckEvidence
@@ -62,6 +63,9 @@ def test_evaluate_driver_transcript():
 @pytest.fixture
 def initial_rollout(tmp_path):
     _, model, task, objective = authored_documents()
+    objective = objective.model_copy(update={
+        "terms": tuple(term.model_copy(update={"weight": LiteralValue(value=2)}) for term in objective.terms),
+    })
     store = ImmutableArtifactBlobProvider(tmp_path / "store")
     definition = {
         "subject": InitialModelSource(document=model, seed=19),
@@ -81,6 +85,62 @@ def initial_rollout(tmp_path):
         return _prepare_initial_rollout(refs, params, registry=load_application().bundle, store=store)
 
     return store, params, prepare
+
+
+def test_recorded_trial_matches_preview_and_its_weighted_steps_reduce(initial_rollout, tmp_path):
+    """A saved shelf and plot reconstruct the same sampled trial and reported value."""
+    from fastapi.testclient import TestClient
+
+    from feedbax.contracts.trial_record import TrialRecord
+    from feedbax.execution.trial_record import aggregate_trials
+    from feedbax.persistence.dataset import open_stored_dataset
+    from feedbax.persistence.evaluation_trial_records import RecordedTrialLayout, read_trial_record
+    from feedbax.web.app import create_app
+
+    store, params, prepare = initial_rollout
+    _, model, task, objective = authored_documents()
+    result = _rollouts(
+        prepare(), params, lambda: False, update_axis=None,
+        computation=EvaluationComputation(store), executables=RolloutExecutables(),
+    )
+    assert result is not None
+    dataset, _, *_ = result
+    saved = publish_dataset(store, dataset)
+    with TestClient(create_app(projects_dir=tmp_path / "projects")) as client:
+        response = client.post("/api/execution/task-trials/sample", json={
+            "model": model.model_dump(mode="json"),
+            "task": task.model_dump(mode="json"),
+            "objective": objective.model_dump(mode="json"),
+            "input_bindings": params.input_bindings,
+            "seed": params.seed,
+            "evaluation_trials": list(params.trials),
+        })
+    assert response.status_code == 200, response.text
+    previews = [TrialRecord.model_validate(row) for row in response.json()["drawn"]["trials"]]
+    with open_stored_dataset(store, saved, verify=True) as recorded:
+        layout = RecordedTrialLayout.model_validate(recorded.descriptor.attrs["trial_record"])
+        values, trials = [], []
+        for index, trial in enumerate(previews):
+            selection = (0, index)
+            restored = read_trial_record(recorded, trial.id, selection, layout)
+            assert restored.timeline == trial.timeline
+            assert restored.variables == trial.variables
+            assert restored.present == trial.present
+            terms = restored.terms["effort"]
+            assert terms.covered and any(terms.steps) and not all(terms.steps)
+            assert terms.values is not None
+            measured = np.asarray(terms.values)[terms.steps].mean()
+            expected = recorded.data("objective/trial_values/effort", selection).item()
+            assert measured == pytest.approx(expected)
+            assert terms.value == pytest.approx(expected)
+            values.append(measured)
+            trials.append(restored)
+        expected = recorded.data("objective/terms/effort").item()
+        assert np.mean(values) == pytest.approx(expected)
+    combined = aggregate_trials(trials, dataset.descriptor.dimensions["transition"]).terms["effort"]
+    assert combined.value == pytest.approx(expected)
+    assert combined.covered == 1.0 and combined.percentiles is not None
+    assert any(band is None for band in combined.percentiles)
 
 
 def test_managed_rollout_relowers_without_compiling_and_detects_changed_scoring(initial_rollout, monkeypatch):

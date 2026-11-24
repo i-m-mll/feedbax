@@ -2179,11 +2179,14 @@ export interface TrialTerm {
   weights?: Array<number | null> | null;
   covered: boolean;
   values?: number[] | null;
+  value?: number | null;
 }
 
 export interface TrialTermAggregate {
   steps: number[];
   covered: number;
+  value?: number | null;
+  percentiles?: Array<number[] | null> | null;
 }
 
 export interface TrialUnavailable {
@@ -9245,6 +9248,7 @@ export const TrialTermSchema: z.ZodType<TrialTerm> = z.lazy(() =>
       "weights": z.array(z.number().finite().nullable()).nullable().optional(),
       "covered": z.boolean(),
       "values": z.array(z.number().finite()).nullable().optional(),
+      "value": z.number().finite().nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TrialTerm>;
@@ -9254,6 +9258,8 @@ export const TrialTermAggregateSchema: z.ZodType<TrialTermAggregate> = z.lazy(()
     .object({
       "steps": z.array(z.number().finite()),
       "covered": z.number().finite(),
+      "value": z.number().finite().nullable().optional(),
+      "percentiles": z.array(z.array(z.number().finite()).nullable()).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TrialTermAggregate>;
