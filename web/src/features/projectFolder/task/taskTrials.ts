@@ -2,7 +2,6 @@ import { useQuery } from '@tanstack/react-query';
 import { sampleTaskTrials } from '@/api/studioAuthoring';
 import { studioAccessibleName } from '@/components/activity/studioVocabulary';
 import type { ModelDocument, StudioTrialAuthoring, TaskDocument, TaskTrialSampleRequest, TaskTrialSampleResponse } from '@/generated/studioContracts';
-import { epochInstances } from './repeats';
 import type { EpochBounds } from './taskModel';
 import type { ShelfTask } from './shelfRows';
 import type { TrialsUnavailable } from './trialSample';
@@ -20,22 +19,22 @@ export function shelfTask(view: StudioTrialAuthoring, document: string, objectiv
   const period = view.period_seconds;
   if (!task || view.n_steps === null || period === null) return undefined;
   const ends = new Map(task.epochs.map((epoch) => [epoch.id, epoch.end]));
-  const epochs: EpochBounds[] = [];
-  for (const { id, name, steps } of view.epochs) {
-    if (!steps) return undefined;
+  const instances = view.epoch_instances ?? [];
+  if (!instances.length) return undefined;
+  const epochs = instances.map(({ id, name, steps }): EpochBounds => {
     const end = ends.get(id);
-    epochs.push({
+    return {
       id, name,
       ends: end?.kind === 'rest' ? 'rest' : steps.least < steps.greatest ? 'drawn' : 'length',
       least: steps.least * period, nominal: steps.nominal * period, greatest: steps.greatest * period,
-    });
-  }
+    };
+  });
   const order = task.epochs.map(({ id }) => id);
   const terms = (view.objective?.terms ?? []).flatMap(({ id, name, enabled }, index) =>
     enabled === false ? [] : [{ id, name: name ?? studioAccessibleName('term', index + 1) }]);
   return {
     document, duration: view.n_steps * period,
-    epochs: epochInstances(epochs, task.repeats ?? [], task.variables).map(({ epoch }) => epoch),
+    epochs,
     ...objectiveDocument && { objective: { document: objectiveDocument, terms } },
     signals: task.signals.map(({ id, name, cells }) => ({
       id, name, covers: cells.flatMap(({ first_epoch, last_epoch }) => order.slice(order.indexOf(first_epoch), order.indexOf(last_epoch) + 1)),

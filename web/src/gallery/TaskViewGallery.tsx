@@ -12,8 +12,7 @@ import { TaskVariables } from '@/features/projectFolder/task/TaskVariables';
 import type { TaskDocumentView, TaskSelection } from '@/features/projectFolder/task/taskModel';
 import type { FieldModel } from '@/components/values/fieldModel';
 import type { TrialShown } from '@/features/projectFolder/task/trialSample';
-import { epochInstances } from '@/features/projectFolder/task/repeats';
-import { aggregate, documentView, fixtures, pythonView, templates, type DocumentSpec, type PythonSpec } from './taskFixtures';
+import { aggregate, documentView, instancesOf, fixtures, pythonView, templates, type DocumentSpec, type PythonSpec } from './taskFixtures';
 
 /** Trials the stepper steps through, and the batch size All aggregates. */
 const stepped = 8;
@@ -57,7 +56,7 @@ function shelfTask(view: TaskDocumentView, spec: DocumentSpec): ShelfTask {
   const order = view.epochs.map(({ id }) => id);
   return {
     document: 'gallery', duration: view.duration,
-    epochs: epochInstances(view.epochs, spec.repeats, []).map(({ epoch }) => epoch.bounds),
+    epochs: instancesOf(spec).map((id) => view.epochs.find((epoch) => epoch.id === id)!.bounds),
     signals: view.signals.map(({ id, name, cells }) => ({
       id, name, covers: cells.flatMap((cell) => cell.kind === 'value'
         ? order.slice(order.indexOf(cell.first), order.indexOf(cell.last) + 1) : []),
