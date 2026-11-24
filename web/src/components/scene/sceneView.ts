@@ -1,16 +1,12 @@
 import type { LiveTrainingFrame } from '@/features/scenario/liveTraining';
 import type { ResolvedScene, ResolvedSceneEntity } from '@/features/scenario/projections';
-import {
-  workspaceReplayFrameTimes,
-  workspaceReplayTrialRef,
-} from '@/features/scenario/workspaceReplay';
-import type { WorkspaceReplayTrial } from '@/generated/studioContracts';
+import type { TrialRecord } from '@/generated/studioContracts';
 import type { StudioRegionIssue } from '@/components/activity/StudioRegion';
 
 export type SceneDrawing =
   | { kind: 'geometry'; scene: ResolvedScene }
   | { kind: 'live'; scene: ResolvedScene; frame: LiveTrainingFrame | null }
-  | { kind: 'replay'; scene: ResolvedScene; trial: WorkspaceReplayTrial; sceneAt?: (time: number) => ResolvedScene };
+  | { kind: 'replay'; scene: ResolvedScene; trial: TrialRecord; stateTime: number[]; position: string | null; sceneAt?: (time: number) => ResolvedScene };
 
 export type SceneView =
   | SceneDrawing
@@ -43,15 +39,14 @@ export function sceneEntityOverlay(entity: ResolvedSceneEntity): SceneOverlay | 
 
 export function sceneTimeline(view: SceneView) {
   if (view.kind !== 'replay') return null;
-  const { trial } = view;
-  const frameTimes = workspaceReplayFrameTimes(trial);
+  const { trial, stateTime: frameTimes } = view;
   const duration = frameTimes[frameTimes.length - 1];
   if (frameTimes.length < 2 || !(duration > 0)) return null;
   return {
-    id: workspaceReplayTrialRef(trial),
+    id: `trial:${trial.id}`,
     frameTimes,
     duration,
-    units: trial.time.units,
+    units: 's',
   };
 }
 

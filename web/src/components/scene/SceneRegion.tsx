@@ -26,7 +26,7 @@ interface SceneSelection {
 }
 
 function sceneTrack(view: SceneDrawing) {
-  if (view.kind === 'replay') return primaryWorkspaceReplayTrack(view.trial);
+  if (view.kind === 'replay') return primaryWorkspaceReplayTrack(view.trial, view.position);
   if (view.kind === 'live') return liveTrainingEffectorTrack(view.frame);
   return null;
 }
@@ -75,11 +75,9 @@ function SceneDrawingCanvas({
   const scene = sceneGeometry(view, time);
   const track = sceneTrack(view);
   const path = useMemo(() => workspaceReplayPolyline(track), [track]);
-  const frameIndex = view.kind === 'replay' ? workspaceReplayFrameIndex(view.trial, time) : null;
+  const frameIndex = view.kind === 'replay' ? workspaceReplayFrameIndex(view.stateTime, time) : null;
   const cursor = frameIndex == null ? path[path.length - 1] : workspaceReplaySampleAt(track, frameIndex);
-  const goalTrack = view.kind === 'replay'
-    ? view.trial.tracks?.find((track) => track.selector.role === 'target')
-    : view.kind === 'live' ? liveTrainingTargetTrack(view.frame) : null;
+  const goalTrack = view.kind === 'live' ? liveTrainingTargetTrack(view.frame) : null;
   const goal = goalTrack && workspaceReplaySampleAt(goalTrack, frameIndex ?? goalTrack.samples.length - 1);
   const bounds = useMemo(() => {
     const bounds = sceneBounds(view.scene);

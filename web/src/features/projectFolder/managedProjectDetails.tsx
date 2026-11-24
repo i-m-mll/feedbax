@@ -22,7 +22,7 @@ import { primaryWorkspaceReplayTrack, workspaceReplayFrameIndex, workspaceReplay
 import {
   DocumentReferenceSchema, ModelDocumentSchema,
   type EvaluateModelRequest, type ModelDocument, type StudioSavedEvaluationRow,
-  type StudioSavedTrainKey, type WorkspaceReplayTrial, type StudioProjectWindowMapProblem, type ModelAddress,
+  type StudioSavedTrainKey, type StudioTrialReplayResponse, type StudioProjectWindowMapProblem, type ModelAddress,
 } from '@/generated/studioContracts';
 import { modelDocumentId, ownDefinition } from './authoredEdits';
 import { placeMember, type Reveal } from './projectWindowProblems';
@@ -102,15 +102,20 @@ const emptyReplayScene: ResolvedScene = {
   required_selectors: [], validation: [],
 };
 
-function evaluationScene(trial: WorkspaceReplayTrial): SceneDrawing {
-  const track = primaryWorkspaceReplayTrack(trial);
-  if (!track) return { kind: 'replay', trial, scene: emptyReplayScene };
+function evaluationScene(replay: StudioTrialReplayResponse): SceneDrawing | undefined {
+  if (replay.drawn.kind !== 'trials') return undefined;
+  const [trial] = replay.drawn.trials;
+  if (!trial) return undefined;
+  const { state_time: stateTime, position } = replay;
+  const track = primaryWorkspaceReplayTrack(trial, position);
+  const drawing = { kind: 'replay' as const, trial, stateTime, position };
+  if (!track) return { ...drawing, scene: emptyReplayScene };
   const id = track.anchor_id;
   const anchorId = `${id}:position`;
   const label = studioName('effector');
   const frame = track.frame ?? emptyReplayScene.frame;
   const sceneAt = (time: number): ResolvedScene => {
-    const position = workspaceReplaySampleAt(track, workspaceReplayFrameIndex(trial, time));
+    const position = workspaceReplaySampleAt(track, workspaceReplayFrameIndex(stateTime, time));
     return {
       ...emptyReplayScene, frame, units: track.units ?? emptyReplayScene.units,
       entities: [{
@@ -129,7 +134,7 @@ function evaluationScene(trial: WorkspaceReplayTrial): SceneDrawing {
       }],
     };
   };
-  return { kind: 'replay', trial, scene: sceneAt(0), sceneAt };
+  return { ...drawing, scene: sceneAt(0), sceneAt };
 }
 
 /** The trials a saved evaluation recorded, which the clock's picker lists, with each one's condition. */

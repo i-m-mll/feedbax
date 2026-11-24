@@ -7,7 +7,6 @@ import type { DrawerSections } from '@/features/projectWindow/DrawerForms';
 import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
 import { normalizeTrainingTrajectoryPayload } from '@/features/scenario/liveTraining';
 import type { ResolvedScene } from '@/features/scenario/projections';
-import { WORKSPACE_REPLAY_FIXTURE } from '@/test/workspaceReplay.fixture';
 import { SceneClockControls } from './SceneClockControls';
 import { SceneCanvas, SceneDrawer, SceneElementInspector, SceneLayers, sceneLayers } from './SceneRegion';
 import { fittedCamera, sceneTimeline, type SceneOverlay, type SceneView } from './sceneView';
@@ -80,7 +79,11 @@ describe('Scene regions', () => {
   });
 
   it('scrubs a replay and a separate view on the same clock, with no clock for geometry', () => {
-    const replay = WORKSPACE_REPLAY_FIXTURE.trials![0];
+    const position = 'arm/effector';
+    const trial = {
+      id: 'trial-a', inits: {}, inputs: {}, present: {}, variables: {}, variable_defined: {}, timeline: [],
+      states: { [position]: { samples: [[0, 0], [0.1, 0.1], [0.2, 0.2]], units: 'm', frame: 'world' } },
+    };
     const onSelect = vi.fn();
     function View({ view }: { view: SceneView }) {
       const [time, onTimeChange] = useState(0);
@@ -94,7 +97,7 @@ describe('Scene regions', () => {
         </>
       );
     }
-    const { container, rerender } = render(<View view={{ kind: 'replay', scene, trial: replay }} />);
+    const { container, rerender } = render(<View view={{ kind: 'replay', scene, trial, position, stateTime: [0, 0.6, 1.2] }} />);
     const initialX = container.querySelector('[data-scene-cursor]')?.getAttribute('cx');
     expect(initialX).toBeDefined();
     fireEvent.change(screen.getByRole('slider'), { target: { value: '0.60' } });
