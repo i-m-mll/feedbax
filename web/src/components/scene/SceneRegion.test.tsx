@@ -7,7 +7,7 @@ import type { DrawerSections } from '@/features/projectWindow/DrawerForms';
 import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
 import { elementKey, type ElementAddress } from '@/features/projectWindow/elementSelection';
 import { SceneCanvas, SceneDrawer, SceneElementInspector, SceneLayers, sceneContents } from './SceneRegion';
-import { emptyScene, fittedCamera, sceneTimeline, type Scene, type SceneElement, type SceneLayer, type SceneView } from './sceneView';
+import { fittedCamera, type Scene, type SceneElement, type SceneLayer, type SceneView } from './sceneView';
 
 afterEach(cleanup);
 beforeEach(() => {
@@ -31,7 +31,7 @@ const scene: Scene = { groups: [{ key: elementKey(mechanism), address: mechanism
   element('upper', 'bodies', { kind: 'segment', points: [[0, 0], [0.2, 0.4]] }),
   element('shoulder', 'joints', { kind: 'point', point: [0, 0] }),
   element('flexor', 'muscles', { kind: 'path', points: [[0.05, 0], [0.15, 0.3]] }),
-] }] };
+] }], rest: [], tracks: [] };
 
 const noLayersHidden = new Set<SceneLayer>();
 
@@ -42,11 +42,11 @@ describe('Scene regions', () => {
       const onSelect = (address: ElementAddress | null) => select(address && elementKey(address));
       const [hidden, setHidden] = useState<ReadonlySet<SceneLayer>>(noLayersHidden);
       const [camera, onCameraChange] = useState(fittedCamera);
-      const view: SceneView = { kind: 'geometry', scene };
+      const view: SceneView = { kind: 'drawn', scene };
       return (
         <>
           <SceneLayers layers={sceneContents(view).layers} hidden={hidden} onToggle={(layer) => setHidden(new Set([layer]))} />
-          <SceneCanvas view={view} time={0} selected={selected} onSelect={onSelect}
+          <SceneCanvas view={view} selected={selected} onSelect={onSelect}
             camera={camera} onCameraChange={onCameraChange} hiddenLayers={hidden} />
           <SceneDrawer sections={sections} scene={scene} selected={selected} onSelect={onSelect} />
           <SceneElementInspector scene={scene} selected={selected} />
@@ -68,28 +68,10 @@ describe('Scene regions', () => {
     expect(select('shoulder')?.getAttribute('aria-pressed')).toBe('true');
   });
 
-  it('draws a replay at the time it is given, and no cursor for geometry', () => {
-    const position = 'arm/effector';
-    const trial = {
-      id: 'trial-a', inits: {}, inputs: {}, present: {}, variables: {}, variable_defined: {}, timeline: [],
-      states: { [position]: { samples: [[0, 0], [0.1, 0.1], [0.2, 0.2]], units: 'm', frame: 'world' } },
-    };
-    const replay: SceneView = { kind: 'replay', scene: emptyScene, trial, position, stateTime: [0, 0.6, 1.2] };
-    const canvas = (view: SceneView, time: number) => <SceneCanvas view={view} time={time} selected={null} onSelect={vi.fn()}
-      camera={fittedCamera} onCameraChange={vi.fn()} hiddenLayers={noLayersHidden} />;
-    const { container, rerender } = render(canvas(replay, 0));
-    const initialX = container.querySelector('[data-scene-cursor]')?.getAttribute('cx');
-    expect(initialX).toBeDefined();
-    rerender(canvas(replay, 0.6));
-    expect(container.querySelector('[data-scene-cursor]')?.getAttribute('cx')).not.toBe(initialX);
-    rerender(canvas({ kind: 'geometry', scene: emptyScene }, 0.6));
-    expect(container.querySelector('[data-scene-cursor]')).toBeNull();
-  });
-
   it('exposes a failed replay and retries through the input command', () => {
     const retry = vi.fn();
     render(<SceneCanvas view={{ kind: 'failed', issue: { reason: 'Replay unavailable', detail: 'The selected output could not be read.' }, retry }}
-      time={0} selected={null} onSelect={vi.fn()} camera={fittedCamera}
+      selected={null} onSelect={vi.fn()} camera={fittedCamera}
       onCameraChange={vi.fn()} hiddenLayers={noLayersHidden} />);
     expect(screen.getByRole('alert')).toBeDefined();
     expect(screen.queryByRole('group', { name: studioName('scene') })).toBeNull();

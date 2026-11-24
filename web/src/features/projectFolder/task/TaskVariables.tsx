@@ -7,11 +7,12 @@ import { FieldProblem } from '@/components/ui/FieldProblem';
 import { InlineEdit } from '@/components/ui/InlineEdit';
 import { MenuCheckboxItem, MenuItem } from '@/components/ui/Menu';
 import {
-  Table, TableCell, TableFieldCell, TableHeaderCell, TableHeaderRow, TableRow, type TableColumn,
+  Table, TableCell, TableFieldCell, TableHeaderCell, TableHeaderRow, TableRow, TableRowHeader, type TableColumn,
 } from '@/components/ui/Table';
 import { TreeChoice } from '@/components/ui/TreeChoice';
 import { changeTip, ValueField } from '@/components/values/ValueField';
-import type { TaskSelection, TaskVariable, UninitializedStart, VariableInitializes } from './taskModel';
+import type { StudioCommand } from '@/features/projectWindow/studioCommands';
+import type { TaskSelection, TaskSetVariable, TaskVariable, UninitializedStart, VariableInitializes } from './taskModel';
 
 /** A refusal of a variable's edit, or nothing once it is made. */
 type Made = Promise<string | undefined> | void;
@@ -67,8 +68,10 @@ function Initializes({ variable, initializes }: { variable: string; initializes?
  * Variables as a table of Name, Type and Value. A name is edited by clicking into it; a variable is added at the foot
  * of the Name column once it has a name, removed by its row's menu, and moved by dragging its handle.
  */
-export function TaskVariables({ variables, starts = [], selected, select, edits, drawn }: {
+export function TaskVariables({ variables, sets = [], starts = [], selected, select, edits, drawn }: {
   variables: readonly TaskVariable[];
+  /** The Sets the step's trials apply, each a row after the variables with To Sweep in its menu. */
+  sets?: readonly (TaskSetVariable & { readonly toSweep?: StudioCommand })[];
   /** The paired Model's values no variable initializes, each a row with its name empty. */
   starts?: readonly UninitializedStart[];
   selected?: TaskSelection;
@@ -109,7 +112,7 @@ export function TaskVariables({ variables, starts = [], selected, select, edits,
           <MenuItem disabled={index === 0 || !move} onClick={() => move?.(variable.id, index - 1)}>{studioName('moveEarlier')}</MenuItem>
           <MenuItem disabled={index === variables.length - 1 || !move}
             onClick={() => move?.(variable.id, index + 1)}>{studioName('moveLater')}</MenuItem>
-          <MenuCheckboxItem checked={!!variable.count} disabled={!edits.list}
+          <MenuCheckboxItem checked={!!variable.count} disabled={!edits.list} closes
             onCheckedChange={(list) => settle(variable.id, edits.list?.(variable.id, list))}>{studioName('list')}</MenuCheckboxItem>
           <MenuItem onClick={() => settle(variable.id, edits.remove?.(variable.id))}>{studioName('remove')}</MenuItem>
         </> }}>
@@ -135,10 +138,31 @@ export function TaskVariables({ variables, starts = [], selected, select, edits,
         <TableFieldCell><Initializes variable={variable.name} initializes={variable.initializes} /></TableFieldCell>
       </TableRow>;
     })}
+    {sets.map((set) => <SetRow key={set.axis} set={set} drawn={!!drawn} />)}
     {starts.map((start) => <StartRow key={start.id} start={start} add={edits.add} drawn={!!drawn} />)}
     {adding && edits.add && <NewVariable add={edits.add} done={() => setAdding(false)} drawn={!!drawn} />}
     </tbody>
   </Table>;
+}
+
+/** A Set the trials apply, named as its sweep's label names it, with its entries and their weights in parts. */
+function SetRow({ set, drawn }: { set: TaskSetVariable & { readonly toSweep?: StudioCommand }; drawn: boolean }) {
+  const { toSweep } = set;
+  return <TableRow menu={toSweep && { label: studioAccessibleName('variable', set.set), items:
+    <MenuItem disabled={!toSweep.enabled} onClick={() => toSweep.invoke()}>{toSweep.title}</MenuItem> }}>
+    <TableRowHeader className="font-mono">{set.set}</TableRowHeader>
+    <TableCell className="text-shell-muted">{studioName('set')}</TableCell>
+    <TableCell>
+      <ul aria-label={studioAccessibleName('values', set.set)} className="flex min-w-0 flex-wrap gap-x-3">
+        {set.entries.map(({ id, label, parts }) => <li key={id ?? ''} className="flex items-baseline gap-1">
+          <span>{label}</span>
+          {parts && <span className="font-mono tabular-nums text-shell-muted">{parts}</span>}
+        </li>)}
+      </ul>
+    </TableCell>
+    {drawn && <TableCell />}
+    <TableCell />
+  </TableRow>;
 }
 
 /** A variable being added: its name, which writes the variable when it is given. */

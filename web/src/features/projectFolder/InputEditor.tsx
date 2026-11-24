@@ -74,6 +74,11 @@ function documentOf(binding: InputBinding | null | undefined) {
   return typeof source === 'string' ? source : undefined;
 }
 
+/** A reference kept at a spelling another member later took: it names no choice, so picking that member repairs it. */
+function unresolvedChoice(spelling: string): ReferenceChoice {
+  return { id: `unresolved:${spelling}`, label: spelling };
+}
+
 /**
  * Any step input, drawn from the planner's entry for it: a header, with the add control where it takes several
  * selections; a row per selection with its picker; under each its Runs and, for a checkpoint product, its
@@ -120,6 +125,8 @@ export function InputEditor({ label, role, binding, self, steps, project, output
     return output && { step: output.step, element: output.element, product: output.product };
   };
   const shown = (reference: StepReference): ReferenceChoice => {
+    if (reference.unresolved) return unresolvedChoice(reference.element != null && reference.product != null
+      ? `${reference.step}/${reference.element}.${reference.product}` : reference.step);
     if (reference.element != null && reference.product != null) {
       const output = { step: reference.step, element: reference.element, product: reference.product };
       return outputChoice(offered.find((item) => outputChoiceId(item) === outputChoiceId(output))

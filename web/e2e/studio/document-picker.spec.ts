@@ -161,6 +161,10 @@ test('the slot header switches, creates, duplicates, renames and re-keys a step\
   await page.keyboard.press('Enter');
   await expect(rename).toBeFocused();
   await expect(rename).toHaveValue('point-mass');
+  await page.keyboard.type((await uses('train'))!.task.document);
+  await expect(rename).toHaveAttribute('aria-invalid', 'true');
+  await page.keyboard.press('Enter');
+  await expect(rename).toBeFocused();
   await page.keyboard.type('arm-model');
   await page.keyboard.press('Enter');
   await expect(picker('Model')).toHaveText('arm');
@@ -267,12 +271,21 @@ test('a Train step keeps a new Model with its Problems and a duplicated Model wi
   }
 
   await page.getByRole('tab', { name: 'Objective', exact: true }).click();
-  const objectiveBefore = (await saved()).project.documents;
-  const measure = primary.getByRole('textbox', { name: 'Measure', exact: true }).first();
+  const base = (await saved()).project.steps?.train?.base;
+  const objective = base && 'inline' in base
+    ? (base.inline as { trial_documents: { objective: { document: string } } }).trial_documents.objective.document : undefined;
+  const measure = page.getByRole('complementary', { name: 'Inspector', exact: true })
+    .getByRole('textbox', { name: 'Measure', exact: true });
+  await primary.getByRole('textbox', { name: 'Measure', exact: true }).first().click();
   await measure.fill('sqnorm(absent)');
   await measure.press('Enter');
-  await expect(primary.locator('[data-field-term]')).toHaveText('absent');
-  expect((await saved()).project.documents).toEqual(objectiveBefore);
+  // `sibling` shares the Objective, so the edit asks where it applies.
+  await page.getByRole('menuitem', { name: 'All 2 Steps', exact: true }).click();
+  // A measure that names no signal is stored as typed, and its Problem keeps the step from running.
+  await expect.poll(async () => (rootPayload((await saved()).project.documents?.[objective!]) as {
+    terms: { measure: unknown }[];
+  }).terms[0].measure).toEqual({ kind: 'unresolved', text: 'sqnorm(absent)' });
+  expect((await trainProblems()).status).toBe('cannot_run');
 });
 
 test('New in the Document header gives an empty report that cannot run', async ({ page, request, studio }) => {
@@ -496,4 +509,60 @@ test('a narrowed edit in the Model view makes a document based on the shown one,
   await page.keyboard.press('Meta+Z');
   await expect.poll(async () => (await saved()).project).toEqual(files);
   await expect(picker).toHaveText('Point mass1 of 2');
+});
+
+test('Change Key takes a key only a dangling reference spells: its bound reader follows and the dangling reader keeps its Problem', async ({ page, request }) => {
+  const { snapshot, projectPath } = await seedManagedProject(request, await fixture('history-files'));
+  const primary = page.locator('[data-slot="primary"]').getByRole('tabpanel');
+  const header = primary.locator('.studio-window-slot__header');
+  const picker = (label: string) => header.getByRole('button', { name: new RegExp(`^${label} Document `) });
+  const key = header.getByRole('textbox');
+  async function saved() {
+    const response = await request.get(projectPath);
+    expect(response.ok()).toBe(true);
+    return await response.json() as StudioProjectSnapshot;
+  }
+  async function objectiveOf(step: string) {
+    const base = (await saved()).project.steps?.[step]?.base;
+    return base && 'inline' in base ? (base.inline as { trial_documents: { objective: unknown } }).trial_documents.objective : undefined;
+  }
+  async function problems(step: string) {
+    const { revision } = await saved();
+    const response = await request.get(`${projectPath}/train-runs?window_map=true&revision=${revision}`);
+    expect(response.ok(), await response.text()).toBe(true);
+    return (await response.json() as StudioSavedTrainRuns).window_map!.problems.filter((problem) => problem.step === step);
+  }
+  const { document: objective } = await objectiveOf('train') as { document: string };
+  const dangling = await request.patch(projectPath, { data: { revision: snapshot.revision, files: [{
+    address: { kind: 'step', id: 'sibling' },
+    patches: [{ op: 'replace', path: '/base/inline/trial_documents/objective', value: { document: 'missing' } }],
+  }] } });
+  expect(dangling.ok(), await dangling.text()).toBe(true);
+  expect(await problems('sibling')).not.toEqual([]);
+  expect(await problems('train')).toEqual([]);
+
+  await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
+  await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Objective', exact: true }).click();
+  await picker('Objective').click();
+  await page.getByRole('menu', { name: 'Objective Document', exact: true })
+    .getByRole('menuitem', { name: 'Change Key', exact: true }).click();
+  await expect(key).toHaveValue(objective);
+  await key.fill('missing');
+  await expect(key).not.toHaveAttribute('aria-invalid', 'true');
+  await key.press('Enter');
+  await expect.poll(() => objectiveOf('train')).toEqual({ document: 'missing' });
+  expect(await objectiveOf('sibling')).toEqual({ document: 'missing', unresolved: true });
+  expect(await problems('train')).toEqual([]);
+  expect(await problems('sibling')).not.toEqual([]);
+
+  await expect(page.getByRole('button', { name: /^Problems [1-9]/ })).toBeVisible();
+  await expect(picker('Objective')).toHaveText('Simple reaches');
+  await mapStep(page, 'sibling').click();
+  await expect(page.getByRole('tab', { name: 'Objective', exact: true })).toHaveAttribute('aria-disabled', 'true');
+
+  await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: /^Undo\b/ }).click();
+  await expect.poll(() => objectiveOf('train')).toEqual({ document: objective });
+  expect(await objectiveOf('sibling')).toEqual({ document: 'missing' });
 });
