@@ -271,6 +271,8 @@ class ProjectPlanRead:
         document_ids: dict[tuple[str, str], dict[str, str]] = {}
         document_uses: dict[tuple[str, str], set[str]] = defaultdict(set)
         for row in plan.rows:
+            if not row.resolved:
+                continue
             key = row.key.variant, row.key.step
             document_uses[key].update(row.document_uses - row.followed_documents)
             shared = document_ids.get(key)
@@ -394,6 +396,7 @@ class ProjectPlanRead:
                     evaluation_conditions=task_conditions(row),
                     origin=row.train.origin if row.train is not None else None,
                     target_total=row.train.target_total if row.train is not None else None,
+                    resolved=row.resolved,
                     member_key=producer_member_key(row.key.variant, row.key.row, gathers_variants=False)
                     if row.kind in {"train", "evaluate"} else None,
                     coordinates={
