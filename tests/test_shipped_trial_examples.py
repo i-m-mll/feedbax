@@ -22,6 +22,7 @@ from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.runtime._graph_key_schedule import model_initialization_key
 from feedbax.tasks.document import TaskParameters
 from feedbax.training.method_runtime import TrainingLoop, initialize_method, replica_value
+from feedbax.host.method_checkpoint import validate_method_extra
 from feedbax.host.model_checkpoint import SemanticModelSlot, SemanticModelWriter
 
 
@@ -75,6 +76,7 @@ def test_shipped_trial_examples_plan_train_and_score_validation(tmp_path):
         initial_model = paired.executable.graph
         ids = ("0",)
         state = initialize_method(method, settings, models=(initial_model,), seed=seed, replica_ids=ids)
+        validate_method_extra(state.extra, replicas=len(ids))
         trained = TrainingLoop(
             method, settings, execution=paired.execution, objective=paired.objective,
             batch_size=request.training_config.batch_size, seed=seed, replica_ids=ids,
