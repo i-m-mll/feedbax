@@ -684,8 +684,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     });
   }
   function add(definition: ComponentDefinition, point?: ModelPosition, from?: Port, to?: string) {
-    const occupied = [...objects.map(([id], index) => cardPosition(at(graph, { kind: 'component', id }), () => positionAt(index))),
-      ...placed.map((item) => item.position)];
+    const occupied = nodes.map((node) => node.position);
     let index = 0;
     let available = positionAt(index);
     while (occupied.some(({ x, y }) => Math.abs(x - available.x) < 196 && Math.abs(y - available.y) < 150)) {
@@ -905,7 +904,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         } }),
       },
       position: cardPosition(address, () => ghost && wasAt ? wasAt : definition ? positionAt(index)
-        : { x: id === inputCard ? 18 : 245 + 235 * Math.max(1, Math.min(objects.length, 4)), y: 38 }),
+        : { x: id === inputCard ? 18 : 245 + 235 * 4, y: 38 }),
       selected: !!definition && selectedIds.has(key),
       draggable: !ghost && editTopology && !locked && !pick,
       selectable: !!definition && !pick,
