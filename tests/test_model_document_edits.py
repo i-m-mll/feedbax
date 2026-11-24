@@ -193,6 +193,41 @@ def test_a_kept_sweep_value_is_stored_in_a_document_based_on_the_shared_one(tmp_
         assert project.ids()["other"] == other
 
 
+@pytest.mark.parametrize("conditioned", [False, True])
+def test_model_range_to_list_persists_an_identity_preserving_step_edit(tmp_path, conditioned):
+    first, last = 1.000123456789, 2.000987654321
+    data = _data()
+    del data["steps"]["check"]
+    data["steps"]["fee"]["sweep"] = {"axes": {"mass": {
+        "path": _MASS_TEXT, "range": {"start": first, "stop": last, "count": 3},
+    }}}
+    axes = data["steps"]["fee"]["sweep"]["axes"]
+    if conditioned:
+        axes["scenario"] = {"values": {"simple": {}}}
+        axes["mass"]["where"] = {"rule": "scenario=simple"}
+    project = _Project(tmp_path, data)
+
+    with project.client:
+        revision = project.snapshot()["revision"]
+        before = project.plan()
+        rows = [(run.key, run.coordinates, run.request_id) for run in before.runs]
+        assert len(rows) == 3
+        response = project.fields("fee", {"kind": "to_list"}, rows=[], chosen_steps=["fee"])
+        assert not response["problems"] and response["store_choices"] is None
+        (file,) = response["files"]
+        assert file["address"] == {"kind": "step", "id": "fee"}
+        saved = project.client.patch(_URL, json={"revision": revision, "files": [file]})
+        assert saved.status_code == 200 and saved.json()["revision"] != revision, saved.text
+
+        axis = project.project().steps["fee"].sweep.axes["mass"]
+        assert (axis.where.rule if axis.where is not None else None) == ("scenario=simple" if conditioned else None)
+        assert list(axis.values) == [coordinates["mass"].value_id for _, coordinates, _ in rows]
+        assert [entry.value for entry in axis.values.values()] == [first, (first + last) / 2, last]
+        assert [(run.key, run.coordinates, run.request_id) for run in project.plan().runs] == rows
+        (field,) = [field for field in project.fields("fee", None)["fields"] if field["address"] == MASS]
+        assert field["sweep"]["kind"] == "list"
+
+
 def test_connection_review_reads_the_topology_on_the_selected_sweep_value(tmp_path):
     data = _data()
     data["steps"]["fee"]["sweep"] = {"axes": {"wiring": {"values": {

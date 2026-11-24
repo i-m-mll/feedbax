@@ -99,7 +99,9 @@ def choose_prepared_edit(
     preferred: tuple[StoreKind, str, str, StoredEdit],
     alternatives: Sequence[tuple[StoreKind, str, str, StoredEdit]] = (),
     *, reader_steps: Collection[str] = (), copies_selection: bool = False,
+    retain_equivalent: bool = False,
 ) -> StoredEdit | list[StudioStoreChoice]:
+    """Resolve the stores by their effect on runs. Authored conversions can retain an equivalent plan."""
     from feedbax.web.services.trial_scope import reached_steps
 
     if not selected:
@@ -131,7 +133,7 @@ def choose_prepared_edit(
         )
         options.append(EditStore(kind, label, source, reach, stored))
     if choice is None and not any(option.runs for option in options):
-        return StoredEdit([])
+        return options[0].value if retain_equivalent else StoredEdit([])
     answer = choose_authored_store(revision, intent, selected, options[0], options[1:], choice)
     return answer if isinstance(answer, list) else answer.value
 
