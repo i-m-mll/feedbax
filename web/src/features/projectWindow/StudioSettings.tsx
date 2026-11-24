@@ -82,11 +82,9 @@ function Specimen() {
       <StepCard step={sampleStep} selection={null} presentation={{}} applySelection={none} chooseStep={none}
         compact={false} dimmed={false} />
       <div className="grid gap-1">
-        <FieldRow label={studioName('learningRate')} htmlFor={`${id}-rate`}>
-          <ValueField model={rawField({
-            id: `${id}-rate`, label: studioName('learningRate'), type: { kind: 'number' }, value: 0.003, change: none,
-          })} />
-        </FieldRow>
+        <ValueField model={rawField({
+          id: `${id}-rate`, label: studioName('learningRate'), type: { kind: 'number' }, value: 0.003, change: none,
+        })} />
         <FieldRow label={studioName('seed')}>
           <SegmentedControl aria-label={studioName('seed')} value="0" onValueChange={none}
             items={seeds.values.map(({ id, label }) => ({ value: id, label }))} />
@@ -191,7 +189,7 @@ export function ProjectSettingRows({ settings, steps, change }: {
           }} />
         <span className="text-shell-muted">{studioUnit('day')}</span>
       </SettingRow>
-      <SettingRow label={holdLabel} search={steps.map(({ label }) => label).join(' ')}>
+      {steps.length > 0 && <SettingRow label={holdLabel} search={steps.map(({ label }) => label).join(' ')}>
         <div role="group" aria-label={studioName('manualSteps')} className="grid gap-1">
           {steps.map(({ id, label }) => (
             <Checkbox key={id} label={label} checked={held.has(id)} onCheckedChange={(checked) => {
@@ -200,7 +198,7 @@ export function ProjectSettingRows({ settings, steps, change }: {
             }} />
           ))}
         </div>
-      </SettingRow>
+      </SettingRow>}
     </>
   );
 }
