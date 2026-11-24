@@ -64,6 +64,8 @@ from feedbax.contracts.studio_scene import (
     ScenePlanarMuscle,
     StudioPlanarSceneRequest,
     StudioPlanarSceneResponse,
+    StudioSceneGeometryRequest,
+    StudioSceneGeometryResponse,
 )
 from feedbax.contracts.representation import (
     RepresentationAnchorSpec,
@@ -727,6 +729,8 @@ MODEL_TYPES: list[type[BaseModel]] = [
     ScenePlanarModel,
     StudioPlanarSceneRequest,
     StudioPlanarSceneResponse,
+    StudioSceneGeometryRequest,
+    StudioSceneGeometryResponse,
     DomainRegistryPayload,
     StudioErrorReport,
     DomainCompileReport,
@@ -898,6 +902,8 @@ CONTRACT_MODEL_NAMES = [
     "DomainCompileReport",
     "StudioPlanarSceneRequest",
     "StudioPlanarSceneResponse",
+    "StudioSceneGeometryRequest",
+    "StudioSceneGeometryResponse",
     "StudioErrorReport",
     "WorkspaceReplayTrial",
     "PenzaiBuilderListResponse",
