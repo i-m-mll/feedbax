@@ -119,7 +119,7 @@ export function useTrialAuthoring(
         result = await readStudioTrialAuthoring(saved.project_id, { ...request, store_choice: choice }, editor.signal);
         if (result.store_choices) throw new Error('The chosen store was offered again.');
       }
-      if (result.files.length) {
+      if (result.files.length || result.created?.length) {
         if (removes && !await confirmRemoval(filesRemoval(saved.project_id, saved.revision, result.files, editor.signal))) return;
         const documents = [result.model, result.task_document, result.objective_document];
         const stored = editor.storeEdit(name, result, {
