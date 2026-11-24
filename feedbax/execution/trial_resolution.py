@@ -24,7 +24,9 @@ from feedbax.compiler.resolution import ParameterResolutionError, ParameterResol
 from feedbax.contracts.graph import GraphSpec
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.artifact_custody import ArtifactBlobProvider
-from feedbax.contracts.expression_values import Problem, ProblemCode, Site, ValueBase
+from feedbax.contracts.expression_values import Level, Problem, ProblemCode, ScopedValue, Site, ValueBase, ValueType
+from feedbax.contracts.expression_units import UNITS
+from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import GraphInterior, ModelDocument
 from feedbax.contracts.project import json_pointer_parts
 from feedbax.contracts.task_document import PythonTaskSelection
@@ -178,20 +180,89 @@ def pair_trial_source(
         ))
     if reset_fields is not None:
         reset_fields.extend(interface.reset.fields)
+    links: list[Problem] = []
     if isinstance(task, TaskDocument):
-        compiled = compile_task(task, functions, model=replace(interface, inputs=()), sites=task_sites)
+        compiled = compile_task(
+            task, functions, model=replace(interface, inputs=()), sites=task_sites, link_problems=links,
+        )
     else:
         assert template is not None
         compiled = template.prepare(interface, functions)
     if isinstance(compiled, tuple):
-        return compiled
+        return (*compiled, *links)
     if template is not None and template.condition_ids != compiled.condition_ids:
         return (Problem(
             code=ProblemCode.STRUCTURE, path=("python_task", "type"),
             reason="The prepared Task's conditions differ from its registry declaration.",
         ),)
     bindings, problems = bind_task_inputs(interface, compiled.interface.signals, overrides)
-    return TrialPair(interface, compiled, lowered, prototypes, bindings, problems, task)
+    return TrialPair(interface, compiled, lowered, prototypes, bindings, (*links, *problems), task)
+
+
+def declared_model_outputs(model: ModelDocument) -> tuple[ScopedValue, ...]:
+    """Outputs whose authored types are known without resolving the model's graph."""
+    outputs = []
+    for port in model.ports.outputs:
+        shape = port.type.shape
+        unit = UNITS.get(port.type.unit or "")
+        if shape is None or unit is None or any(type(size) is not int or size <= 0 for size in shape):
+            continue
+        base = port.type.base
+        kind = (
+            ValueBase.BOOLEAN if base in ("bool", "boolean") else
+            ValueBase.INTEGER if base in ("int", "int32", "integer") else ValueBase.REAL
+        )
+        address = ModelAddress.model_validate({
+            "composites": [], "element": {"kind": "port", "end": {"owner": "outputs", "port": port.id}},
+        })
+        outputs.append(ScopedValue(
+            id=address.to_text(), name=port.name, level=Level.STEP,
+            type=ValueType(base=kind, shape=shape, dimensions=unit.dimensions),
+        ))
+    return tuple(outputs)
+
+
+@dataclass(frozen=True)
+class PreviewTrialSource:
+    task: TrialSource
+    outputs: tuple[ScopedValue, ...]
+
+
+def preview_trial_source(
+    model: ModelDocument,
+    task: TaskDocument | PythonTaskSelection,
+    components: ComponentRegistry,
+    functions: FunctionRegistry,
+    *,
+    python_tasks: PythonTaskRegistry,
+    input_overrides: Mapping[str, str],
+) -> PreviewTrialSource | tuple[Problem, ...]:
+    """Compile the Task's trial, including each Model link that can be resolved."""
+    paired = pair_trial_source(
+        model, task, components, functions, python_tasks=python_tasks, input_overrides=input_overrides,
+    )
+    if isinstance(paired, TrialPair):
+        return PreviewTrialSource(paired.task, paired.model.outputs)
+    if any(problem.path[:1] != ("model",) for problem in paired):
+        return tuple(problem for problem in paired if problem.path[:1] != ("links",))
+    return compile_unpaired_task(model, task, functions, python_tasks=python_tasks)
+
+
+def compile_unpaired_task(
+    model: ModelDocument, task: TaskDocument | PythonTaskSelection, functions: FunctionRegistry,
+    *, python_tasks: PythonTaskRegistry, sites: dict[tuple[str | int, ...], Site] | None = None,
+) -> PreviewTrialSource | tuple[Problem, ...]:
+    """Compile values that need only the authored Model period and output declarations."""
+    outputs = declared_model_outputs(model)
+    interface = ResolvedModelInterface(model.step_seconds, (), outputs, (), ())
+    if isinstance(task, TaskDocument):
+        compiled = compile_task(task, functions, model=interface, sites=sites, link_problems=[])
+    else:
+        template = resolve_python_task(task, python_tasks)
+        if isinstance(template, tuple):
+            return template
+        compiled = template.prepare(interface, functions)
+    return compiled if isinstance(compiled, tuple) else PreviewTrialSource(compiled, outputs)
 
 
 def _parameter_problem(lowered: LoweredModelDocument, error: ParameterResolutionError) -> Problem:

@@ -2243,7 +2243,7 @@ export interface TrialAggregate {
 }
 
 export interface TaskTrialSampleRequest {
-  model: ModelDocument;
+  model?: ModelDocument | null;
   task?: TaskDocument | null;
   python_task?: PythonTaskSelection | null;
   input_overrides?: Record<string, string>;
@@ -9239,7 +9239,7 @@ export const TrialAggregateSchema: z.ZodType<TrialAggregate> = z.lazy(() =>
 export const TaskTrialSampleRequestSchema: z.ZodType<TaskTrialSampleRequest> = z.lazy(() =>
   z
     .object({
-      "model": ModelDocumentSchema,
+      "model": ModelDocumentSchema.nullable().optional(),
       "task": TaskDocumentSchema.nullable().optional(),
       "python_task": PythonTaskSelectionSchema.nullable().optional(),
       "input_overrides": z.record(z.string(), z.string()).optional(),

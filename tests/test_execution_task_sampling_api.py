@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
 from feedbax.web.app import create_app
 from tests.test_document_task_parity import _model_payload, _pair_model, example
+from feedbax.contracts.expression_values import LENGTH, CallValue, NameValue, ValueBase, ValueType
+from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.objective_document import ObjectiveDocument, ObjectiveTerm
 from feedbax.expression_builtins import register_builtins
 from feedbax.contracts.expression_registry import FunctionRegistry
 
@@ -74,11 +78,55 @@ def test_aggregate_of_delayed_reaches_shares_the_drawn_epoch(client, expression_
     assert (catch["least"], catch["greatest"]) == (False, True)
 
 
-def test_sample_task_trials_reports_model_pairing_problem(client, expression_functions):
+def test_a_binding_problem_does_not_hide_the_trial(client, expression_functions):
     payload = authored_preview("simple", expression_functions)
     payload["input_overrides"] = {"reach_target": "target_vel"}
     response = client.post("/api/execution/task-trials/sample", json=payload)
-    assert response.status_code == 422
-    (problem,) = response.json()["detail"]
-    assert problem["path"][:2] == ["model", "inputs"]
-    assert problem["code"] == "type_mismatch"
+    assert response.status_code == 200, response.text
+    trial = response.json()["drawn"]["trials"][0]
+    assert trial["inputs"]["target_pos"]
+
+
+def test_a_link_to_a_missing_model_field_does_not_hide_the_trial(client, expression_functions):
+    payload = authored_preview("delayed", expression_functions)
+    missing = ModelAddress.model_validate({
+        "composites": [],
+        "element": {"kind": "field", "parent": {"kind": "component", "id": "missing"}, "path": ["position"]},
+    }).to_text()
+    payload["task"]["links"].append({"model_field": missing, "variable": "start"})
+    response = client.post("/api/execution/task-trials/sample", json=payload)
+    assert response.status_code == 200, response.text
+    trial = response.json()["drawn"]["trials"][0]
+    assert list(trial["inits"].values()) == [trial["variables"]["start"]]
+    assert missing not in trial["inits"]
+
+
+def test_preview_marks_the_model_period_without_an_http_error(client, expression_functions):
+    payload = authored_preview("delayed", expression_functions)
+    del payload["model"]["step_seconds"]
+    response = client.post("/api/execution/task-trials/sample", json=payload)
+    assert response.status_code == 200, response.text
+    drawn = response.json()["drawn"]
+    assert drawn["kind"] == "problems"
+    assert drawn["problems"][0]["path"] == ["model", "step_seconds"]
+
+
+def test_delayed_reaches_term_applies_where_move_and_target_overlap(client, expression_functions):
+    payload = authored_preview("delayed", expression_functions)
+    measure = CallValue(function="sqnorm", args=(NameValue(reference="target_pos"),))
+    measure_type = ValueType(base=ValueBase.REAL, dimensions=LENGTH.raised(2))
+    payload["objective"] = ObjectiveDocument(id="reach", terms=(
+        ObjectiveTerm(id="target", measure=measure, measure_type=measure_type, epochs=("move",)),
+        ObjectiveTerm(id="absent", measure=measure, measure_type=measure_type, epochs=("hold",)),
+    )).model_dump(mode="json")
+    response = client.post("/api/execution/task-trials/sample", json=payload)
+    assert response.status_code == 200, response.text
+    trial = response.json()["drawn"]["trials"][0]
+    (move,) = [cue for cue in trial["timeline"] if cue["epoch"] == "move"]
+    expected = [present and move["start"] <= step < move["end"]
+                for step, present in enumerate(trial["present"]["target_pos"])]
+    assert any(expected) and not all(expected)
+    np.testing.assert_array_equal(trial["terms"]["target"]["steps"], expected)
+    assert trial["terms"]["target"]["covered"]
+    assert not any(trial["terms"]["absent"]["steps"])
+    assert not trial["terms"]["absent"]["covered"]
