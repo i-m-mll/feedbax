@@ -116,3 +116,33 @@ test('a Library template places one composite', async ({ page }) => {
   await placed.locator('header').dblclick();
   await expect(model.getByRole('navigation', { name: 'Model Path' })).toBeVisible();
 });
+
+/** A template the Service refuses to place is dimmed with its reason, and placing it from the Library sends nothing. */
+test('a refused Library template is dimmed with its reason and places nothing', async ({ page }) => {
+  const reason = 'Its recurrent history cannot be stored.';
+  await page.route('**/api/components', async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    for (const component of body.data.components) {
+      if (component.name === 'feedbax.CDEDecay') component.placement_reason = reason;
+    }
+    await route.fulfill({ response, json: body });
+  });
+  const edits: string[] = [];
+  page.on('request', (request) => { if (request.url().endsWith('/model/edit')) edits.push(request.url()); });
+  const model = await newModel(page);
+  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+  await drawer.getByRole('textbox', { name: 'Search Library', exact: true }).fill('CDE');
+  const templates = drawer.getByRole('listbox', { name: 'Templates', exact: true });
+  const refused = templates.getByRole('option', { name: 'CDEDecay', exact: true });
+  await expect(refused).toHaveAttribute('aria-disabled', 'true');
+  await expect(refused).toHaveAccessibleDescription(reason);
+  await refused.hover();
+  await expect(page.getByRole('status').filter({ hasText: reason })).toBeVisible();
+  await expect(templates.getByRole('option', { name: 'CDEStandard', exact: true })).not.toHaveAttribute('aria-disabled', 'true');
+  const cards = await model.locator('.react-flow__node').count();
+  await refused.dblclick({ force: true });
+  await refused.press('Enter');
+  await expect(model.locator('.react-flow__node')).toHaveCount(cards);
+  expect(edits).toEqual([]);
+});
