@@ -29,6 +29,7 @@ import { useDrawerSections, useFieldFocus, type FieldFocusRequest } from '@/feat
 import { FieldIntent } from '@/components/values/fieldIntent';
 import { X } from 'lucide-react';
 import { Button, IconButton } from '@/components/ui/Button';
+import { ChoiceMenuContext, useChoiceMenu } from '@/components/ui/ChoiceMenu';
 import { Dialog } from '@/components/ui/Dialog';
 import { Select } from '@/components/ui/Select';
 import { TextField } from '@/components/ui/TextField';
@@ -89,6 +90,7 @@ import { documentsOfRole } from './useProjectDocuments';
 import { StudioEvaluationAttemptDetails } from './StudioEvaluationResults';
 import { focusedResult, SavedResults } from './SavedResults';
 import { filesRemoval, RunRemovalContext, useRunRemovalDialog } from './runRemoval';
+import { askStoreWith } from './storeChoice';
 import {
   jsonPointerPath, StudioStepField, StudioTrainAuthoringForm, SweepFieldItems, useTrainClassFields, useTrainFieldLabels,
 } from './StudioTrainAuthoringForm';
@@ -308,6 +310,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     return [...validity.commands(runs, anchor), ...owner ? [sets.duplicateRun(owner, runs)] : []];
   };
   const runRemoval = useRunRemovalDialog(plans.read);
+  const choiceMenu = useChoiceMenu();
   const sets = setAuthoring({
     editor, project: saved.project, applies: !outside && reachable && variantApplies,
     perform, state: () => latestState.current, select: (next) => selection.select(next),
@@ -633,7 +636,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   };
   // A run whose own definition is refused has no Task or Objective to read; its views are dimmed by its problems.
   const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, trialStep && namedRow?.resolved !== false,
-    trialEditable, trialChangeScope, runRemoval.confirm);
+    trialEditable, trialChangeScope, runRemoval.confirm, askStoreWith(choiceMenu.ask, {
+      step: stepLabel,
+      run: (key) => shown?.window_map?.rows.find((row) => savedRunId(row.key) === savedRunId(key))?.label ?? key.row,
+    }));
   const trialClock = useTrialClock({
     windowState, setWindowState, projectId: saved.project_id, revision: saved.revision, view: trial.view,
     taskDocument: trial.view && (trial.view.task_document ?? step?.id), stored, evaluation: selectedEvaluation,
@@ -1670,7 +1676,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   ].filter((command): command is StudioCommand => !!command);
 
   return (
-    <RunRemovalContext.Provider value={runRemoval.confirm}>
+    <RunRemovalContext.Provider value={runRemoval.confirm}><ChoiceMenuContext.Provider value={choiceMenu.ask}>
       <ProjectWindow
         state={windowState} onStateChange={setWindowState} projectName={configuration.project}
         saveStatus={pending || snapshot.error ? studioName('edited') : undefined}
@@ -1945,7 +1951,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         }}
       />
       {runRemoval.dialog}
-    </RunRemovalContext.Provider>
+      {choiceMenu.menu}
+    </ChoiceMenuContext.Provider></RunRemovalContext.Provider>
   );
 }
 
