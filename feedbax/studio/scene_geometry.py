@@ -36,7 +36,6 @@ from feedbax.contracts.studio_scene import (
     ScenePlanarMuscle,
     ScenePoint,
     ScenePointGeometry,
-    StudioSceneGeometryRequest,
 )
 from feedbax.mechanics.authored_model import compile_planar_model
 from feedbax.mechanics.compiled_model import CompiledPhysicalModel
@@ -196,10 +195,10 @@ def _geometry_address(path: tuple[str, ...], field: FieldPath) -> ModelAddress:
 
 
 def _state_value(
-    path: tuple[str, ...], state: StateValue, request: StudioSceneGeometryRequest,
+    path: tuple[str, ...], state: StateValue, state_values: dict[str, JsonValue],
 ) -> JsonValue:
     address = ModelAddress.at_state(path[:-1], path[-1], state.symbol)
-    return request.state_values.get(address.to_text())
+    return state_values.get(address.to_text())
 
 
 def _point(value: Iterable[float]) -> ScenePoint:
@@ -217,7 +216,7 @@ def _pose_value(value: JsonValue, target: jax.Array) -> jax.Array:
 def _portable_geometry(
     component: LeafComponent,
     path: tuple[str, ...],
-    request: StudioSceneGeometryRequest,
+    state_values: dict[str, JsonValue],
     registry: ComponentRegistry,
 ) -> SceneMechanismGeometry | None:
     declaration = registry.get(component.type)
@@ -250,12 +249,12 @@ def _portable_geometry(
     state = init_state_from_component(owner)
     rest = owner.state_view(state)
     address = _component_address(path)
-    supplied_position = _state_value(path, position, request) if position is not None else None
+    supplied_position = _state_value(path, position, state_values) if position is not None else None
     if not planar and position is not None:
         if supplied_position is None:
             supplied_position = next(
                 (value for companion in points if position.fields in companion.aliases
-                 and (value := _state_value(path, companion, request)) is not None),
+                 and (value := _state_value(path, companion, state_values)) is not None),
                 None,
             )
         reference = attrgetter(".".join(position.fields))(rest)
@@ -269,7 +268,7 @@ def _portable_geometry(
         raise ValueError("Planar chain geometry requires a mechanics owner with declared configuration.")
     supplied_configuration = [
         (leaf, value) for leaf in configurations
-        if (value := _state_value(path, leaf, request)) is not None
+        if (value := _state_value(path, leaf, state_values)) is not None
     ]
     if supplied_configuration:
         for leaf, value in supplied_configuration:
@@ -340,12 +339,13 @@ def _native_geometry(
 
 def prepare_scene_geometry(
     project: Project,
-    request: StudioSceneGeometryRequest,
+    document_id: str,
+    state_values: dict[str, JsonValue],
     registry: ComponentRegistry,
 ) -> tuple[list[SceneMechanismGeometry], list[DomainDiagnostic]]:
     """Project the Model's drawable occurrences without realizing the surrounding graph."""
     try:
-        model = _read_model(project, request.document_id)
+        model = _read_model(project, document_id)
     except ValueError as exc:
         return [], [_invalid_model(exc)]
 
@@ -357,7 +357,7 @@ def prepare_scene_geometry(
             path = (*scope, name)
             if isinstance(component, LeafComponent):
                 try:
-                    geometry = _portable_geometry(component, path, request, registry)
+                    geometry = _portable_geometry(component, path, state_values, registry)
                 except ValueError as exc:
                     diagnostics.append(_invalid_model(exc, path))
                 else:

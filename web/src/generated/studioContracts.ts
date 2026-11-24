@@ -2058,18 +2058,22 @@ export interface ScenePointGeometry {
   position: [number, number];
 }
 
+export interface StudioSceneGeometryFrame {
+  mechanisms: Array<ScenePointGeometry | ScenePlanarGeometry>;
+  diagnostics: DomainDiagnostic[];
+}
+
 export interface StudioSceneGeometryRequest {
   revision: string;
   document_id: string;
-  state_values?: Record<string, JsonValue>;
+  poses: Record<string, JsonValue>[];
 }
 
 export interface StudioSceneGeometryResponse {
   revision: string;
   document_id: string;
   project_id: string;
-  mechanisms: Array<ScenePointGeometry | ScenePlanarGeometry>;
-  diagnostics: DomainDiagnostic[];
+  frames: StudioSceneGeometryFrame[];
 }
 
 export interface DomainRegistryPayload {
@@ -9094,12 +9098,21 @@ export const ScenePointGeometrySchema: z.ZodType<ScenePointGeometry> = z.lazy(()
     .strict()
 ) as unknown as z.ZodType<ScenePointGeometry>;
 
+export const StudioSceneGeometryFrameSchema: z.ZodType<StudioSceneGeometryFrame> = z.lazy(() =>
+  z
+    .object({
+      "mechanisms": z.array(z.union([ScenePointGeometrySchema, ScenePlanarGeometrySchema])),
+      "diagnostics": z.array(DomainDiagnosticSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSceneGeometryFrame>;
+
 export const StudioSceneGeometryRequestSchema: z.ZodType<StudioSceneGeometryRequest> = z.lazy(() =>
   z
     .object({
       "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
       "document_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-      "state_values": z.record(z.string(), jsonValueSchema).optional(),
+      "poses": z.array(z.record(z.string(), jsonValueSchema)).min(1),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSceneGeometryRequest>;
@@ -9110,8 +9123,7 @@ export const StudioSceneGeometryResponseSchema: z.ZodType<StudioSceneGeometryRes
       "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
       "document_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
       "project_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-      "mechanisms": z.array(z.union([ScenePointGeometrySchema, ScenePlanarGeometrySchema])),
-      "diagnostics": z.array(DomainDiagnosticSchema),
+      "frames": z.array(StudioSceneGeometryFrameSchema).min(1),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSceneGeometryResponse>;
