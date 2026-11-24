@@ -32,7 +32,7 @@ type Direction = Literal["input", "output", "physical"]
 
 @dataclass(frozen=True)
 class Port:
-    type: SignalType | str
+    type: SignalType | str | None
     reads_state_only: bool = False
 
 
@@ -72,7 +72,9 @@ def _signal(source: Record, target: Record, attachments: list | None = None) -> 
     return {"source": source, "target": target, "attachments": attachments or []}
 
 
-def _same_port(left: SignalType | str, right: SignalType | str) -> bool:
+def _same_port(left: SignalType | str | None, right: SignalType | str | None) -> bool:
+    if left is None or right is None:
+        return True
     if isinstance(left, str) or isinstance(right, str):
         return left == right
     if left.unit is not None and right.unit is not None and left.unit != right.unit:
@@ -112,7 +114,9 @@ def _signal_mismatch(output: Port, input_port: Port) -> str | None:
     if _same_port(output.type, input_port.type):
         return None
 
-    def describe(value: SignalType | str) -> str:
+    def describe(value: SignalType | str | None) -> str:
+        if value is None:
+            return ""
         if isinstance(value, str):
             return value
         return " ".join(part for part in (
@@ -154,7 +158,7 @@ def _new_port(owner: Record, direction: Direction, name: str, port: Port) -> Rec
         suffix += 1
         name = f"{base} {suffix}"
     value = {"id": uuid4().hex, "name": name, "type": (
-        port.type if isinstance(port.type, str) else port.type.model_dump(mode="json")
+        port.type.model_dump(mode="json") if isinstance(port.type, SignalType) else port.type
     )}
     _port_list(owner, direction).append(value)
     return value
@@ -225,7 +229,13 @@ class ModelEditDraft:
             if component is None:
                 return None
             if component["kind"] == "leaf":
-                return self.leaf_ports(component, direction, end["port"])
+                port = self.leaf_ports(component, direction, end["port"])
+                domain = graph["physical_domain"]
+                if port is not None and port.type is None and direction == "physical" and domain in {
+                    "translational", "rotational",
+                }:
+                    return Port(domain)
+                return port
         port = _listed_port(component, direction, end["port"])
         if port is None:
             return None
@@ -1020,7 +1030,7 @@ class ModelEditDraft:
             right_known, b = port(right, "physical", at)
             if left == right or (left_known and a is None) or (right_known and b is None):
                 yield problem(at, "Physical endpoints must be distinct local ports")
-            elif a is not None and b is not None and a.type != b.type:
+            elif a is not None and b is not None and not _same_port(a.type, b.type):
                 yield problem(at, f"Physical port types differ: {a.type} and {b.type}")
             if ends[frozenset((_target_key(left), _target_key(right)))] > 1:
                 yield problem(at, "These physical ports are connected more than once")

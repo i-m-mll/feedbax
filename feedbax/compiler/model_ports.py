@@ -91,8 +91,7 @@ class ModelRegistryPorts:
             for port in ports:
                 spec = type_map.get(port)
                 if spec and spec.kind == "conserving":
-                    if spec.physical_domain:
-                        result["physical", port] = Port(spec.physical_domain)
+                    result["physical", port] = Port(spec.physical_domain)
                     continue
                 result[direction, port] = Port(
                     SignalType(
