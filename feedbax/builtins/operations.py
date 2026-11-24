@@ -1,4 +1,4 @@
-"""The saved reaching evaluation's first two dataset operations."""
+"""Built-in operations over saved reaching evaluations."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ _STATE_AXES = (*_MEMBER_AXES, "state_time")
 _SUMMARY_AXES = ("checkpoint", "condition", "state_time")
 _REACH_FRAME = "reach-aligned"
 _VELOCITY_SCHEMA = "feedbax.analysis.aligned_velocity.v1"
+_SPEED_SCHEMA = "feedbax.analysis.trial_speed.v1"
 _SUMMARY_SCHEMA = "feedbax.analysis.velocity_summary.v1"
 _VELOCITY_FIELDS = ("parallel_velocity", "lateral_velocity")
 
@@ -35,11 +36,12 @@ def _coordinate(name: str, *, units: str | None = None) -> FieldDescriptor:
 
 _STATE_COORDS = {name: _coordinate(name) for name in _MEMBER_AXES}
 _STATE_COORDS["state_time"] = _coordinate("state_time", units="s")
+_RECORDED_VELOCITY = FieldDescriptor(dims=(*_STATE_AXES, "xy"), units="m/s", frame="world")
 _STATES = DatasetPort(
     schema_ids=(RAW_STATES_SCHEMA, STATES_SCHEMA),
     selected_variables={
         "position": FieldDescriptor(dims=(*_STATE_AXES, "xy"), units="m", frame="world"),
-        "velocity": FieldDescriptor(dims=(*_STATE_AXES, "xy"), units="m/s", frame="world"),
+        "velocity": _RECORDED_VELOCITY,
         "target": FieldDescriptor(dims=(*_MEMBER_AXES, "transition", "xy"), units="m", frame="world"),
     },
     coordinates={
@@ -54,6 +56,16 @@ _VELOCITY = DatasetPort(
         name: FieldDescriptor(dims=_STATE_AXES, units="m/s", frame=_REACH_FRAME)
         for name in _VELOCITY_FIELDS
     },
+    coordinates=_STATE_COORDS,
+)
+_SPEED_STATES = DatasetPort(
+    schema_ids=_STATES.schema_ids,
+    selected_variables={"velocity": _RECORDED_VELOCITY},
+    coordinates=_STATE_COORDS,
+)
+_SPEED = DatasetPort(
+    schema_ids=(_SPEED_SCHEMA,),
+    variables={"speed": FieldDescriptor(dims=_STATE_AXES, units="m/s", frame="world")},
     coordinates=_STATE_COORDS,
 )
 _SUMMARY = DatasetPort(
@@ -88,6 +100,14 @@ class AlignedVelocityParameters(StrictModel):
     target_transition: int = Field(
         default=-1, strict=True, ge=-1,
         description="Reference target transition, zero-based. Use -1 for the final target.",
+        json_schema_extra={"feedbax": {"static": True}},
+    )
+
+
+class TrialSpeedParameters(StrictModel):
+    velocity: str = Field(
+        strict=True, min_length=1,
+        description="Retained reset-inclusive world velocity variable.",
         json_schema_extra={"feedbax": {"static": True}},
     )
 
@@ -161,6 +181,19 @@ def aligned_velocity(
         _VELOCITY, states, stacking,
         {"parallel_velocity": projected[..., 0], "lateral_velocity": projected[..., 1]},
     )
+
+
+@operation(settings=TrialSpeedParameters, label="Trial speed")
+def trial_speed(
+    states: Annotated[Dataset, _SPEED_STATES],
+    params: TrialSpeedParameters,
+) -> Annotated[Dataset, DatasetOutput("speed", _SPEED)]:
+    """Take the magnitude of each trial's recorded world velocity at each state sample."""
+    stacking = verify_dataset(states, _SPEED_STATES, params)
+    speed = np.linalg.norm(np.asarray(states.data(params.velocity)), axis=-1)
+    if not np.isfinite(speed).all():
+        raise ValueError("Trial speed requires finite velocity magnitudes.")
+    return _product(_SPEED, states, stacking, {"speed": speed})
 
 
 @partial(jax.jit, static_argnums=3)
