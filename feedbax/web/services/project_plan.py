@@ -494,10 +494,14 @@ def row_problems(plan: ProjectPlan, variants: tuple[str, ...] | None = None) -> 
                 parts, row.document_ids.get, member=problem.model_address, variable=problem.variable, start=problem.start,
                 variation=lambda _name, target=problem.variation_target: target,
             )
+            source = problem.sweep_source
             yield StudioProjectWindowMapProblem(
-                code="cannot_run", path=problem.path, detail=problem.detail,
+                code="cannot_run", detail=problem.detail,
+                path=".".join(path_parts(source.path)[:5]) if source is not None else problem.path,
                 variant=row.key.variant, step=row.key.step, row=row.key.row,
-                place=place, document_path=document_path(parts, place), address=f"steps/{row.key.step}.json",
+                place=place, document_path=document_path(parts, place),
+                address=f"steps/{source.step if source is not None else row.key.step}.json",
+                authored_path=source.path if source is not None else None,
             )
 
 

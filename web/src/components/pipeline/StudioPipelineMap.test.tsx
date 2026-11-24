@@ -23,7 +23,6 @@ beforeEach(() => {
     unobserve() {}
     disconnect() {}
   });
-  Element.prototype.scrollIntoView = vi.fn();
 });
 
 afterEach(() => {

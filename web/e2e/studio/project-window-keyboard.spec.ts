@@ -507,7 +507,7 @@ test('the window commands, tab rail and selection history work without a pointer
 
   await page.keyboard.press('Meta+Backslash');
   await expect(region(page, 'secondary')).toBeFocused();
-  await expect(page.locator('[data-slot="secondary"]').getByRole('tabpanel', { name: 'Runs', exact: true })).toBeVisible();
+  await expect(page.locator('[data-slot="secondary"]').getByRole('tabpanel', { name: 'Scene', exact: true })).toBeVisible();
   await page.keyboard.press('Alt+Meta+Backslash');
   await expect(region(page, 'primary')).toBeFocused();
   await page.setViewportSize({ width: 620, height: 860 });

@@ -40,8 +40,8 @@ import { editedElement } from '@/components/ui/ChoiceMenu';
 import { ModelCanvas, type ModelCard, type ModelEdge } from './ModelCanvas';
 import { attachmentFields, componentFields, delayText, initialField, modelFields, sharedFields, type Attachment, type FieldChange } from './ModelInspector';
 import {
-  accepts, addressKey, at, attachmentAddress, boundaryPorts, componentPorts, endKey, fieldAddress, graphKind, modelPath,
-  holds, isTemplate, modelRegistry, portId, portTypeLabel, shortName, wireEnd, withRemoved, type Component, type Port,
+  accepts, addressKey, isTemplate, at, attachmentAddress, boundaryPorts, componentPorts, endKey, fieldAddress, graphKind, modelPath,
+  holds, modelRegistry, portId, portTypeLabel, shortName, wireEnd, withRemoved, type Component, type Port,
 } from './modelGraph';
 import { choosePick, clearSelection, selectElement, useModelSelection, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import { Drawer, DrawerSection, focusInspectorField, type DrawerSections } from '@/features/projectWindow/DrawerForms';
@@ -492,13 +492,17 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     },
   })), [definitions]);
   const persisted = model && positionsOf(saved, model.id);
-  /** Where each card without a saved position was first shown: it stays there, whatever is added or removed. */
+  /**
+   * Where each component without a saved position was first shown: it stays there, whatever is added or removed. A
+   * boundary card's place follows from the components (`outputsAt`), so it is not held.
+   */
   const shownAt = useRef(new Map<string, ModelPosition>());
   function cardPosition(address: ModelAddress, initial: () => ModelPosition) {
     const key = addressKey(address);
     const stored = held?.get(key) ?? persisted?.[key];
     if (stored) return stored;
     const shown = JSON.stringify([saved.project_id, model?.id, key]);
+    if (address.element.kind !== 'component') return initial();
     const first = shownAt.current.get(shown) ?? initial();
     if (interior) shownAt.current.set(shown, first);
     return first;
@@ -508,6 +512,13 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const flipped = presentation?.flipped;
   const waypoints = presentation?.waypoints;
   const objects = Object.entries(interior?.components ?? {});
+  /**
+   * The Outputs card's place when none is stored: right of the grid columns the components without stored places fill.
+   * Added and moved components store theirs, so it does not move as components are added.
+   */
+  const gridColumns = Math.max(0, ...objects.map(([id], index) =>
+    persisted?.[addressKey(at(graph, { kind: 'component', id }))] ? 0 : index + 1));
+  const outputsAt = { x: 245 + 235 * Math.max(1, Math.min(gridColumns, 4)), y: 38 };
   const placed = model ? placing.filter((item) => item.document === model.id && item.graph === graphId && !interior?.components?.[item.id]) : [];
   const mountKey = JSON.stringify([saved.project_id, model?.id, graphId]);
   const handledReveal = useRef<typeof reveal>();
@@ -741,7 +752,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     }
     const position = point ?? available;
     const source = from && wireEnd(from);
-    const component = isTemplate(definition) ? { kind: 'definition', definition: definition.name } as const : leaf(definition);
+    const component = registered(definition);
     void place(drawn(definition), position, false, (id) => apply(studioName('addComponent'), {
       op: 'add_component', graph, position, id,
       ...(source && to && (source.owner === 'inputs' || source.owner === 'component')
@@ -759,6 +770,10 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     } finally {
       setPlacing((prior) => prior.filter((other) => other !== item));
     }
+  }
+  /** The component an add or insert sends for `definition`: a template by its name, for the Service to instantiate. */
+  function registered(definition: ComponentDefinition) {
+    return isTemplate(definition) ? { kind: 'definition', definition: definition.name } as const : leaf(definition);
   }
   /** The card drawn for `definition` while its add is pending: a template is drawn as a composite with its ports. */
   function drawn(definition: ComponentDefinition): Component {
@@ -787,13 +802,9 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   function insert(definition: ComponentDefinition, point: ModelPosition, edge: ModelEdge, flipped: boolean) {
     const address = edge.data?.address;
     if (!model || address?.element.kind !== 'wire') return;
-    if (isTemplate(definition)) {
-      add(definition, point);
-      return;
-    }
     const source = portAt(edge.source, edge.sourceHandle ?? null);
     const target = portAt(edge.target, edge.targetHandle ?? null);
-    const candidate = componentPorts('new', leaf(definition), registry).filter((port) => !port.growing && !port.taskSignal);
+    const candidate = componentPorts('new', drawn(definition), registry).filter((port) => !port.growing && !port.taskSignal);
     const inputs = candidate.filter((port) => port.direction === 'input');
     const outputs = candidate.filter((port) => port.direction === 'output');
     // A port whose type differs still receives the wire, which is stored with its Problem.
@@ -803,8 +814,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       add(definition, point);
       return;
     }
-    const component = leaf(definition);
-    void place(component, point, flipped, (id) => apply(studioName('insertComponent'), {
+    const component = registered(definition);
+    void place(drawn(definition), point, flipped, (id) => apply(studioName('insertComponent'), {
       op: 'insert_component', address, component, position: point, flipped, id,
       input_port: input.end.port, output_port: output.end.port,
     }));
@@ -1009,7 +1020,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         } }),
       },
       position: cardPosition(address, () => ghost && wasAt ? wasAt : definition ? positionAt(index)
-        : id === inputCard ? { x: 18, y: 38 } : positionAt(2)),
+        : id === inputCard ? { x: 18, y: 38 } : outputsAt),
       selected: !!definition && selectedIds.has(key),
       draggable: !ghost && editTopology && !locked && !pick,
       selectable: !!definition && !pick,

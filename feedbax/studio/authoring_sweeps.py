@@ -345,7 +345,7 @@ class FieldSweeps:
         validate_number: Callable[[int | float], int | float],
     ) -> list[SetProjectValue]:
         if edit.kind == "toList" and isinstance(axis, (RangeAxis, SampledAxis, ListedAxis)) and self._can_list(axis):
-            return [self._axis_write(name, self.to_list(axis))]
+            return self.write_axis(self.to_list(axis))
         if not isinstance(axis, NamedAxis) or not self.may_edit_member(axis):
             raise ValueError(f"{self.label} has no editable list")
         values = axis.values

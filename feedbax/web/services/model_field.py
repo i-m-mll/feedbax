@@ -33,7 +33,6 @@ from feedbax.studio.authoring_sweeps import SweepTarget, FieldSweeps
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
 from feedbax.studio.selection import StoredEdit, merged_files
 from feedbax.web.services.authored_scope import choose_prepared_edit, selected_edit_runs
-from feedbax.web.services.axis_values import axis_values
 from feedbax.web.services.evaluate_sources import read_evaluate_model
 from feedbax.web.services.model_projection import selected_model
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
@@ -260,22 +259,26 @@ def _held_values(
 
 def _field_store(
     folders, project_id, project, plan, body, response: ModelFieldResponse,
-    *, kind: StoreKind = "whole_step", label="Whole Step", axis: FieldSweeps | None = None, alternatives=(),
+    *, kind: StoreKind = "whole_step", label="Whole Step", axis: FieldSweeps | None = None,
+    member_id: str | None = None, alternatives=(),
 ) -> ModelFieldResponse:
     if not response.files and not alternatives:
         return response
     selected = selected_edit_runs(plan, body.run.step, body)
-    if not body.rows and axis is not None and len(axis.shown) == 1 and (
-        value := getattr(body.edit, "value_id", None)
-    ) is not None:
-        axis_name, _ = axis.shown[0]
-        ids = axis_values(item for item in plan.rows if item.key in selected)
-        selected = frozenset(item for item in selected if ids.get((item, axis_name)) == value)
+    member_id = member_id or getattr(body.edit, "value_id", None)
+    if not body.rows and member_id is not None and axis is not None and len(axis.covering) == 1:
+        axis_name, _ = axis.covering[0]
+        selected = frozenset(
+            row.key for row in plan.rows
+            if row.key in selected and (coordinate := row.coordinates.get(axis_name)) is not None
+            and coordinate.value_id == member_id
+        )
         kind, label = "sweep_value", "Sweep Value"
     choice = choose_prepared_edit(
         folders, project_id, body.revision, project, selected,
         body.model_dump(mode="json", exclude={"store_choice"}), body.store_choice,
         (kind, label, body.address.to_text(), StoredEdit(response.files, tuple(response.created))), alternatives,
+        retain_equivalent=body.edit is not None and body.edit.kind == "to_list",
     )
     if isinstance(choice, list):
         return ModelFieldResponse(fields=response.fields, store_choices=choice)
@@ -447,10 +450,16 @@ def model_fields(
             raise ProjectFolderInvalid(result[0].reason)
         problems = _address_problems(field, result)
         result = UnresolvedValue(text=edit.text).model_dump(mode="json")
-        if edit.value_id is not None:
+        member_id = edit.value_id
+        if member_id is None and scope is None and selected is not None and axis is not None and len(axis.covering) == 1:
+            axis_name, sweep = axis.covering[0]
+            coordinate = selected.coordinates.get(axis_name)
+            if isinstance(sweep, NamedAxis) and coordinate is not None and sweep.values.get(coordinate.value_id) is not None:
+                member_id = coordinate.value_id
+        if member_id is not None:
             return _field_store(
                 folders, project_id, project, plan, body,
-                _hold_sweep_member(axis, edit.value_id, result, step_file, problems), axis=axis,
+                _hold_sweep_member(axis, member_id, result, step_file, problems), axis=axis, member_id=member_id,
             )
     if isinstance(result, list):
         assert body.run is not None

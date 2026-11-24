@@ -219,10 +219,10 @@ test('an Evaluate step pointed at a Model document unrelated to its subject\'s c
     .map(({ place }) => place)).toEqual([expect.objectContaining({ document: key })]);
   expect((await runs()).window_map?.rows.find(({ key }) => key.step === 'check')?.status).toBe('cannot_run');
   await page.getByRole('button', { name: /^Problems \d+$/ }).click();
-  await expect(page.getByRole('listitem').filter({ hasText: 'Shares no document with point-mass.' })).toContainText('check');
+  await expect(page.getByRole('listitem').filter({ hasText: 'Shares no document with Point mass.' })).toContainText('check');
   // The view's refused read is on the document's picker, not a failed view.
   const header = page.locator('[data-slot="primary"]').getByRole('tabpanel').locator('.studio-window-slot__header');
-  await expect(header.getByRole('alert')).toContainText(`${created} shares no document with point-mass.`);
+  await expect(header.getByRole('alert')).toHaveText('Shares no document with Point mass.');
   await expect(page.locator('[data-slot="primary"]').getByRole('button', { name: 'Retry', exact: true })).toHaveCount(0);
 });
 

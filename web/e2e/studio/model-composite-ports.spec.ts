@@ -117,6 +117,34 @@ test('a Library template places one composite', async ({ page }) => {
   await expect(model.getByRole('navigation', { name: 'Model Path' })).toBeVisible();
 });
 
+/** A Library template dropped on a wire is placed on it as one composite, wired in between the wire's two ends. */
+test('a Library template dropped on a wire is inserted into it', async ({ page }) => {
+  const model = await newModel(page);
+  const linear = await addFromLibrary(page, model, 'Linear');
+  const outputs = model.locator('.react-flow__node[data-id="@outputs"]');
+  await edited(page, async () => {
+    await linear.locator('[data-handleid="output:output"]').hover();
+    await page.mouse.down();
+    await outputs.locator('[data-handleid="input:__new_port__"]').hover();
+    await page.mouse.up();
+  });
+  const wires = model.locator('.react-flow__edge');
+  await expect(wires).toHaveCount(1);
+  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+  await drawer.getByRole('textbox', { name: 'Search Library', exact: true }).fill('CDEStandard');
+  const template = drawer.getByRole('listbox', { name: 'Templates', exact: true }).getByRole('option', { name: 'CDEStandard', exact: true });
+  const saved = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/model/edit'));
+  await template.dragTo(wires.first().locator('path.react-flow__edge-path'), { force: true });
+  const response = await saved;
+  expect(response.request().postDataJSON().command.operation).toMatchObject({
+    op: 'insert_component', component: { kind: 'definition', definition: 'feedbax.CDEStandard' },
+  });
+  const { result } = await response.json();
+  expect(result.status, result.problem?.detail).toBe('applied');
+  await expect(model.locator('.studio-model-card[data-stacked="true"]')).toHaveCount(1);
+  await expect(wires).toHaveCount(2);
+});
+
 /** A template the Service refuses to place is dimmed with its reason, and placing it from the Library sends nothing. */
 test('a refused Library template is dimmed with its reason and places nothing', async ({ page }) => {
   const reason = 'Its recurrent history cannot be stored.';

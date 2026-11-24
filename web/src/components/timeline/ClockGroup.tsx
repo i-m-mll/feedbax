@@ -61,9 +61,9 @@ export function ClockGroup({ timeline, time, onTimeChange, axis, shelfOpen, onSh
       <Slider min={0} max={duration} step={duration / 1000 || 1} value={transport.bounded} disabled={still}
         aria-label={studioName('playbackPosition')} onValueChange={transport.seek} />
     </div>
-    <output className="shrink-0 whitespace-nowrap text-xs tabular-nums text-shell-muted">
+    <span className="shrink-0 whitespace-nowrap text-xs tabular-nums text-shell-muted">
       {seconds(transport.bounded)} / {seconds(duration)}
-    </output>
+    </span>
     <div className="flex shrink-0 items-center gap-1">
       <ClockButton name="loop" icon={Repeat} onClick={transport.toggleLoop} pressed={transport.looping} />
       <Select items={speedItems} value={String(speed)} onValueChange={(value) => setSpeed(Number(value))}

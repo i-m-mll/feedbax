@@ -58,9 +58,12 @@ export function shortName(type: string) {
   return type.split('.').at(-1) ?? type;
 }
 
-/** Whether `definition` is placed as a composite of its registered graph; a leaf with a template stays a leaf. */
+/**
+ * Whether `definition` is a template that places a composite. A leaf can carry a template too, its own expansion, and is
+ * still placed as a leaf.
+ */
 export function isTemplate(definition: ComponentDefinition) {
-  return definition.is_composite && !!definition.template_kind;
+  return !!definition.is_composite && !!definition.template_kind;
 }
 
 /** Whether the Library offers `definition` in a graph of `domain`; of the composites, only templates, in a causal graph. */
