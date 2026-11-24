@@ -997,8 +997,8 @@ def trial_authoring(
                 else:
                     task_field_sources[target[-1]] = source
     row = next((item for item in plan.rows if item.key == key), None)
-    output_paths = {address.to_text(): address for port in documents.model.ports.outputs
-                    for address in (_output_address(port.id),)}
+    output_paths = {_output_address(port.id).to_text(): (port.name,)
+                    for port in documents.model.ports.outputs}
 
     def expression(path):
         document = _field_document(documents, path[0])

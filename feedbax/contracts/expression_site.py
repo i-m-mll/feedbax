@@ -30,7 +30,6 @@ from feedbax.contracts.expression_values import (
 from feedbax.contracts.expression_check import Checked, check
 from feedbax.contracts.expression_registry import FunctionClass, FunctionInfo, FunctionRegistry
 from feedbax.contracts.expression_text import ParsedField, parse
-from feedbax.contracts.model_address import ModelAddress
 
 
 class FieldKind(StrEnum):
@@ -55,7 +54,8 @@ class SiteProjection(ValueRecord):
     functions: tuple[FunctionInfo, ...]
     parts: tuple[ExpressionPartSite, ...]
     """The allowed function and name IDs at each expression path."""
-    name_paths: dict[str, ModelAddress] = Field(default_factory=dict)
+    name_paths: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+    """Display levels for scoped names that belong to a tree, indexed by opaque ID."""
 
 
 def project_site(
@@ -63,7 +63,7 @@ def project_site(
     functions: FunctionRegistry,
     value: Expression | None = None,
     *,
-    name_paths: Mapping[str, ModelAddress] = MappingProxyType({}),
+    name_paths: Mapping[str, tuple[str, ...]] = MappingProxyType({}),
 ) -> SiteProjection:
     """Derive the editor's menu and completion from the same declarations as check."""
     scope = {name.name for name in site.names}
