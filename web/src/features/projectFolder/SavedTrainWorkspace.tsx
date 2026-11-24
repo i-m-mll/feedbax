@@ -220,7 +220,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   }, [armedPick, elements]);
   const selectedElements = useStore(elements, (current) => current.selection);
   const mapViewport = useRef<CanvasViewport>(null);
-  const selection = useProjectWindowSelection(Object.keys(saved.project.steps ?? {})[0] ?? null);
+  const jobsVersion = `${jobs.data?.cursor}:${jobs.data?.remote_version}`;
+  const plans = useSavedPlan(editor, jobsVersion);
+  const selection = useProjectWindowSelection(Object.keys(saved.project.steps ?? {})[0] ?? null, plans.inTurn);
   /** The failure of the last gesture that has no object of its own to land on. */
   const [commandError, setCommandError] = useState<unknown>();
   /** The last refused gesture, shown on the object it acted on. */
@@ -272,8 +274,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const [reportChoices, setReportChoices] = useState<{ revision: string; figures: ReportFigureSource[] }>();
   const [sweepStep, setSweepStep] = useState<string>();
   const submission = useRef<{ intent: string; token: string }>();
-  const jobsVersion = `${jobs.data?.cursor}:${jobs.data?.remote_version}`;
-  const plans = useSavedPlan(editor, jobsVersion);
   const { shown } = plans;
   /** The plan shown is of an earlier revision while the shown revision's plan is read, which its regions mark. */
   const planPending = !!shown && !plans.current;
@@ -1094,7 +1094,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const subjectRole = stepInputs?.evaluate?.subject;
   const startSelections = stepSelections(authored?.inputs?.checkpoint);
   const startCheckpoints = startSelections && selectionCheckpoints(startSelections);
-  const inputEditor = step && (trainStart && startRole ? <InputEditor label={studioName('start')} role={startRole}
+  /** An input's drafts belong to the runs they were made on, so its editor is remade for another selection. */
+  const inputEditorKey = JSON.stringify([variant, selection.pipeline]);
+  const inputEditor = step && (trainStart && startRole ? <InputEditor key={inputEditorKey} label={studioName('start')} role={startRole}
     binding={authored?.inputs?.checkpoint} self={step.id} steps={plan.steps} project={saved.project} picking={elements}
     absent={documentChoice('model', trainStart)} refusal={refusedAt('input')}
     onReveal={(source) => selection.select(selectStep(state, source))}
@@ -1109,7 +1111,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       onSave: (rule) => onCurrentPlan('startTrain')({ ...startSelections[0], checkpoint: rule }, 'checkpoint'),
     }}
     onChange={applies ? onCurrentPlan('changeTrainStart') : undefined} />
-    : evaluateInputs && subjectRole ? <InputEditor label={studioName('subject')} role={subjectRole}
+    : evaluateInputs && subjectRole ? <InputEditor key={inputEditorKey} label={studioName('subject')} role={subjectRole}
       binding={evaluateInputs.inputs?.subject} self={step.id} steps={plan.steps} project={saved.project} picking={elements}
       refusal={refusedAt('input')} onReveal={(source) => selection.select(selectStep(state, source))}
       selection={(index, reference) => {

@@ -11,6 +11,7 @@ import { captureStudioWindow, chooseSweepValue, drawnRunLabel, enter, mapStep, r
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { expectStudioMapContrast, scanStudio } from './fixtures/studioAccessibility';
 import { pick, reveal } from './fixtures/controls';
+import { hold } from './fixtures/heldRequest';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -810,6 +811,49 @@ test('edits a checkpoint axis value and one sibling row through saved Plan', asy
   await expect(every).toHaveValue('2');
 });
 
+/** An edit left while the plan of the one before it is read saves on the run it was made on, not on the run chosen next. */
+test('a checkpoint edit left for another run while the plan is read saves on its own run', async ({ page, request }) => {
+  const files = JSON.parse(await runProjectFixture(fixture, 'scoped-series-files'));
+  const { snapshot, projectPath } = await seedManagedProject(request, files);
+  async function evaluations(revision: string) {
+    const response = await request.get(projectPath + '/train-runs', { params: { revision, window_map: true } });
+    expect(response.ok(), await response.text()).toBe(true);
+    const { window_map } = await response.json() as StudioSavedTrainRuns;
+    const [left, right] = ['left', 'right'].map((value) =>
+      window_map!.evaluations!.find(({ key }) => key.row.includes(`replicate=${value}`))!);
+    return { left, right };
+  }
+  const before = await evaluations(snapshot.revision);
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await chooseStep(page, 'evaluate');
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  await reveal(page, 'Inspector');
+  const kind = inspector.getByRole('combobox', { name: 'Checkpoint', exact: true });
+  const updates = inspector.getByRole('textbox', { name: 'Updates', exact: true });
+  await chooseSweepValue(page.getByRole('article', { name: 'Evaluate evaluate', exact: true }), 'replicate', 'left');
+  await expect(inspector.getByRole('textbox', { name: 'Every', exact: true })).toHaveValue('2');
+  await pick(kind, 'List');
+  const patches: StudioProjectSnapshot[] = [];
+  page.on('response', async (response) => {
+    if (response.request().method() === 'PATCH' && new URL(response.url()).pathname === projectPath) {
+      patches.push(await response.json() as StudioProjectSnapshot);
+    }
+  });
+  const plan = await hold(page, projectPath + '/train-runs', (_, sent) => sent.method() === 'GET');
+  await updates.fill('3');
+  await updates.press('Enter');
+  await plan.sent;
+  await updates.fill('4');
+  await plans(page).getByRole('button', { name: /replicate=right/ }).click();
+  plan.release();
+  await expect(inspector.getByRole('heading', { name: /replicate right/ })).toBeVisible();
+  await expect(inspector.getByRole('textbox', { name: 'Every', exact: true })).toHaveValue('2');
+  await expect.poll(() => patches.length).toBe(2);
+  const after = await evaluations(patches[1].revision);
+  expect(after.left.checkpoint_series?.requested).toEqual([4]);
+  expect(after.right.request_id).toBe(before.right.request_id);
+});
+
 test('authors and replays Evaluate from the selected stopped Train checkpoint', { tag: '@round' }, async ({ page, request }, info) => {
   test.setTimeout(58_000);
   const files = JSON.parse(await runProjectFixture(fixture, 'walkthrough-files', '1200'));
@@ -933,7 +977,7 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
   await expect(page.getByRole('tabpanel', { name: 'Task', exact: true }).getByText('Trained by train', { exact: true })).toBeVisible();
   await scanStudio(page, info, 'evaluate-task');
   await chooseStep(page, 'finite');
-  await footer(page).getByRole('button', { name: 'Activity', exact: true }).click();
+  await footer(page).getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   const activity = page.getByRole('region', { name: 'Activity', exact: true });
   // Activity lists every project's runs, grouped by project, with this window's project first.
   await expect(activity.getByRole('region').first()).toHaveAccessibleName('saved-evaluate');

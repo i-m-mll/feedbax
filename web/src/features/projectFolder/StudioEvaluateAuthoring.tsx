@@ -61,10 +61,15 @@ export function CheckpointEditor({ initial, step, kinds = checkpointKinds, range
   const fixed = disabled || readOnly;
   const reason = (field: CheckpointDraftField) => !('rule' in held) && held.field === field ? held.reason
     : field === firstMember[draft.kind] ? problem : undefined;
+  /** The rule last saved from this editor, and the rule it replaced: until the saved rule changes, it is not saved again. */
+  const sent = useRef<{ initial: EditableCheckpointRule; rule: EditableCheckpointRule }>();
   function commit(next: CheckpointDraft) {
     setDraft(next);
     const result = checkpointDraftRule(next, range);
-    if (!fixed && 'rule' in result && !same(result.rule, initial)) onSave(result.rule);
+    if (fixed || !('rule' in result) || same(result.rule, initial)) return;
+    if (sent.current && same(sent.current.initial, initial) && same(sent.current.rule, result.rule)) return;
+    sent.current = { initial, rule: result.rule };
+    onSave(result.rule);
   }
   function number(field: 'at' | 'every' | 'from' | 'through', value: number | null, next: (value: number | null) => CheckpointDraft) {
     const why = reason(field);

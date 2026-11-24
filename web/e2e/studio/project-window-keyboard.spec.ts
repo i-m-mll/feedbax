@@ -204,7 +204,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
 
   await page.reload();
   await expect(mapStep(page, 'train')).toBeVisible();
-  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   const activity = page.getByRole('region', { name: 'Activity', exact: true });
   const resumed = post(page, `/api/jobs/${initial.job_id}/resume`);
   await activity.getByRole('button', { name: 'Resume', exact: true }).click();
@@ -226,7 +226,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   });
   expect(trained.attempts.map(({ job_id }) => job_id)).toEqual([initial.job_id, continued.job_id]);
 
-  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   await page.keyboard.press('Control+Meta+2');
   await activate(page, mapStep(page, 'train'));
   await activate(page, sweepLabel(train, 'learning-rate'));
