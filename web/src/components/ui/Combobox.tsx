@@ -31,12 +31,10 @@ export type ComboboxProps<Value extends string> = ComboboxSelection<Value> & {
   /** A control at the box's trailing end, before the list's glyph: the changed mark. */
   trailing?: ReactNode;
   inputRef?: Ref<HTMLInputElement>;
-  /** The list is open when the box is first drawn. */
-  defaultOpen?: boolean;
 };
 
 export function Combobox<Value extends string>(props: ComboboxProps<Value>) {
-  const { items, placeholder, disabled, invalid, id, inline, className, leading, trailing, inputRef, defaultOpen } = props;
+  const { items, placeholder, disabled, invalid, id, inline, className, leading, trailing, inputRef } = props;
   const aria = { 'aria-label': props['aria-label'], 'aria-labelledby': props['aria-labelledby'] };
   const value = props.checked ? null : props.value;
   const selected = useMemo(() => items.find((item) => item.value === value) ?? null, [items, value]);
@@ -54,7 +52,6 @@ export function Combobox<Value extends string>(props: ComboboxProps<Value>) {
       }}
       isItemEqualToValue={(item: Option<Value>, current: Option<Value>) => item.value === current.value}
       disabled={disabled}
-      defaultOpen={defaultOpen}
       autoHighlight
     >
       <BaseCombobox.InputGroup data-field-box={inline ? undefined : ''} className={clsx(inline ? 'flex h-full min-w-0 items-center' : fieldBox, 'overflow-hidden', className)}>

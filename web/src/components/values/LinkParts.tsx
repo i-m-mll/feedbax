@@ -1,25 +1,21 @@
-import { useId } from 'react';
-import { studioName } from '@/components/activity/studioVocabulary';
-import { Combobox } from '@/components/ui/Combobox';
+import { studioName, studioParameterLabel } from '@/components/activity/studioVocabulary';
 import { FieldRow } from '@/components/ui/FieldRow';
+import { TreeChoice } from '@/components/ui/TreeChoice';
 import { linkNames, nameText, type FieldModel } from './fieldModel';
 import { setPartDraft } from './partDrafts';
 
 /**
- * A Link's part: the name it reads, a choice over the names the site can read, each shown with its path where it has
- * one. `opened` draws the list open, for a Link just chosen as the field's kind.
+ * A Link's part: the name it reads, a choice over the names the site can read, by their paths where they have them.
+ * `opened` draws the list open, for a Link just chosen as the field's kind.
  */
 export function LinkParts({ model, reference, opened }: { model: FieldModel; reference?: string; opened: boolean }) {
-  const labelId = useId();
   const names = linkNames(model);
   const commit = model.commit;
-  return <FieldRow label={studioName('name')} labelId={labelId}>
-    <Combobox aria-labelledby={labelId} className="w-full" disabled={!commit} defaultOpen={opened}
-      value={reference ?? null} placeholder={studioName('name')}
-      items={names.map(({ id, name }) => {
+  return <FieldRow label={studioName('name')}>
+    <TreeChoice aria-label={studioParameterLabel(model.label, studioName('name'))} className="w-full" disabled={!commit} defaultOpen={opened} value={reference ?? null}
+      options={names.map(({ id, name }) => {
         const path = model.namePaths?.[id] ?? [];
-        const levels = path.at(-1) === name ? path.slice(0, -1) : path;
-        return { value: id, label: name, detail: levels.length ? levels.join(' / ') : undefined };
+        return { value: id, path: path.at(-1) === name ? path : [...path, name] };
       })}
       onValueChange={async (id) => {
         const chosen = names.find((name) => name.id === id);

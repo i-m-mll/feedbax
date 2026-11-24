@@ -1,14 +1,14 @@
 import { expect, test } from './fixtures/studio';
 import type { APIRequestContext, Page } from '@playwright/test';
 import type { StudioProjectSnapshot } from '../../src/generated/studioContracts';
-import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
 interface Term { id: string; measure: unknown; weight: unknown; name?: string }
 
-/** The ordinary Train project open on its Objective view, whose one term measures `sqnorm(hand - goal)`. */
+/** The ordinary Train project open on its Objective view, whose one term penalises a quantity's squared size. */
 async function open(page: Page, request: APIRequestContext) {
   const files = await fixture('ordinary-files', '2');
   const { snapshot, projectPath } = await seedManagedProject(request, files);
@@ -31,19 +31,21 @@ test("a Measure's outer penalty is chosen in its parts, and a kind is left as it
   const { table, inspector, terms } = await open(page, request);
   const [before] = await terms();
   const measure = table.getByRole('textbox', { name: 'Measure', exact: true });
-  await expect(measure).toHaveValue(/^sqnorm\(hand - goal\)$/);
+  await expect(measure).toHaveValue(/^sqnorm\(.+\)$/);
+  const operand = (await measure.inputValue()).slice('sqnorm('.length, -1);
   await measure.click();
   await inspector.getByRole('combobox', { name: 'Function', exact: true }).click();
   await expect(page.getByRole('option')).not.toContainText(['sub']);
   await page.getByRole('option', { name: 'huber', exact: true }).click();
-  await expect(measure).toHaveValue('huber(hand - goal)');
+  await expect(measure).toHaveValue(`huber(${operand})`);
   await expect.poll(async () => (await terms())[0].measure).toMatchObject({ function: 'huber', args: [(before.measure as { args: unknown[] }).args[0]] });
   const [after] = await terms();
   expect({ ...after, measure: undefined }).toEqual({ ...before, measure: undefined });
 
   const weight = table.getByRole('textbox', { name: 'Weight', exact: true });
-  const formula = await weight.inputValue();
-  await weight.click();
+  const formula = '2 * 0.5';
+  await enter(weight, formula);
+  await expect.poll(async () => (await terms())[0].weight).toMatchObject({ kind: 'call', function: 'mul' });
   await table.getByRole('button', { name: 'Weight kind: Formula', exact: true }).click();
   await page.getByRole('menuitemradio', { name: 'Draw', exact: true }).click();
   await expect(inspector.getByRole('textbox', { name: 'Mean', exact: true })).toHaveValue(formula);

@@ -436,6 +436,7 @@ export function TrialObjectiveTable({ view, commit, selected, select, runs }: {
                 if (next.trim() !== term.name) void save(studioAccessibleName('set', studioName('name')),
                   [write(termPath(index) + '/name', next.trim(), has(term, 'name'))]);
               }} />
+            <FieldChange change={fields.name.change} id={`${term.id}-name-change`} />
           </span>
         </TableFieldCell>
         <TableFieldCell {...cell('measure')}><ValueField model={fields.measure} form="cell" /></TableFieldCell>
