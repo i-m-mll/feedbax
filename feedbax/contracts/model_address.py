@@ -117,6 +117,16 @@ class ModelAddress(StrictModel):
     composites: tuple[ModelElementId, ...]
     element: AddressedElement
 
+    @classmethod
+    def at_state(cls, composites: tuple[str, ...], component: str, symbol: str) -> ModelAddress:
+        """Address a component's declared state by its semantic symbol."""
+        return cls(
+            composites=composites,
+            element=FieldElement(
+                kind="field", parent=ComponentElement(kind="component", id=component), path=("state", symbol),
+            ),
+        )
+
     def stored_path(self) -> tuple[str, ...]:
         """Locate the addressed member in the stored tree when it has a keyed path."""
         scope = tuple(token for owner in self.composites for token in ("interior", "components", owner))

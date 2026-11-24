@@ -33,7 +33,11 @@ def task_start_path(model: ModelDocument, address: ModelAddress) -> tuple[str, .
         component = interior.components.get(id)
         names.append(component.name if component is not None else id)
         interior = getattr(component, "interior", interior)
-    return (*names, *map(str, address.element.path[1:]))
+    kind, *members = address.element.path
+    if kind == "state":
+        (symbol,) = members
+        return (*names, *str(symbol).split("/"))
+    return (*names, *map(str, members))
 
 
 def task_start(model: ModelDocument, address: ModelAddress) -> StudioTaskStart:
