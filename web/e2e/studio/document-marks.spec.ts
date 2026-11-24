@@ -199,7 +199,7 @@ test('a Train step put in an Evaluate step\'s Model view takes the edit, and no 
 
 test('an Evaluate step pointed at a Model document unrelated to its subject\'s cannot run, for that document', async ({ page, request }) => {
   test.setTimeout(60_000);
-  const { snapshot, runs } = await project(request, [evaluation('check', 'train')]);
+  const { snapshot, runs, documents } = await project(request, [evaluation('check', 'train')]);
   const { picker, menu } = modelView(page);
 
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
@@ -212,8 +212,9 @@ test('an Evaluate step pointed at a Model document unrelated to its subject\'s c
   const created = await rename.inputValue();
   await page.keyboard.press('Escape');
   await expect(picker).toHaveText(created);
+  const [key] = Object.entries(await documents()).find(([, file]) => file.label === created)!;
   await expect.poll(async () => (await runs()).window_map?.problems.filter(({ step }) => step === 'check')
-    .map(({ place }) => place)).toEqual([expect.objectContaining({ document: created })]);
+    .map(({ place }) => place)).toEqual([expect.objectContaining({ document: key })]);
   expect((await runs()).window_map?.rows.find(({ key }) => key.step === 'check')?.status).toBe('cannot_run');
   await page.getByRole('button', { name: /^Problems \d+$/ }).click();
   await expect(page.getByRole('listitem').filter({ hasText: 'Shares no document with point-mass.' })).toContainText('check');
@@ -323,7 +324,7 @@ test('a based Training document marks the value it changes inside its field, and
   const revision = (await saved()).revision;
   await batches.fill('9');
   await batches.press('Enter');
-  await expect(picker).toHaveText('training-2');
+  await expect(picker).toHaveText('training 2');
   await expect.poll(async () => (await saved()).revision).not.toBe(revision);
   await expect(batches).toHaveAccessibleDescription('Changed from training');
   // The mark is inside the field's box: the changed field is as tall as an unchanged one and draws no line under it.

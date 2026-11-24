@@ -315,9 +315,10 @@ test('New in the Document header gives an empty report that cannot run', async (
   const created = await rename.inputValue();
   await page.keyboard.press('Escape');
   await expect(header.getByRole('button', { name: /^Report Document / })).toHaveText(created);
+  const [key] = Object.entries((await saved()).project.documents ?? {}).find(([, file]) => file.label === created)!;
   const base = (await saved()).project.steps?.report?.base;
-  expect(base && 'document' in base ? base.document : undefined).toBe(created);
-  expect(rootPayload((await saved()).project.documents?.[created])).toMatchObject({ blocks: [] });
+  expect(base && 'document' in base ? base.document : undefined).toBe(key);
+  expect(rootPayload((await saved()).project.documents?.[key])).toMatchObject({ blocks: [] });
   await expect(document.getByRole('listitem')).toHaveCount(0);
   await expect(document.getByRole('button', { name: 'Add Text', exact: true })).toBeEnabled();
   await expect(document.getByRole('status')).toContainText("Can't run");
