@@ -3,6 +3,7 @@ import { studioName } from '@/components/activity/studioVocabulary';
 import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import type {
   AuthoredFileAddress,
+  CreateNamedDocument,
   ModelEditCommand,
   ModelEditRequest,
   ModelEditResponse,
@@ -45,7 +46,7 @@ type NamedFileCreation = StudioProjectCreateFile['file'];
 /** An edit as a route returns it: the documents it creates, and the patches that follow their creation. */
 export interface StoredEdit {
   readonly files: readonly StudioProjectFilePatch[];
-  readonly created?: readonly NamedFileCreation[];
+  readonly created?: readonly CreateNamedDocument[];
 }
 type FollowingEdits = (snapshot: StudioProjectSnapshot) => Promise<readonly StudioProjectFilePatch[]>;
 
@@ -561,8 +562,7 @@ export class ProjectEditController {
   }
 
   /**
-   * Store an edit a route computed: its patches, after the documents it creates when it creates any, as one Undo
-   * entry. A refused save settles as refused; any other failure of a creating edit is thrown.
+   * Store an edit a route computed, including any new documents and file patches, as one Undo entry.
    */
   async storeEdit(name: string, edit: StoredEdit, options: {
     reviewedRevision: string; validate?: ProjectEditValidation; dependencies?: readonly AuthoredFileAddress[];
@@ -570,7 +570,22 @@ export class ProjectEditController {
     const created = edit.created ?? [];
     if (!created.length) return this.editFiles(name, edit.files, options);
     try {
-      await this.createFiles(name, created, options.reviewedRevision, async () => edit.files);
+      if (!edit.files.length) {
+        await this.createFiles(name, created, options.reviewedRevision);
+      } else {
+        await this.exclusiveTransaction(async (before) => {
+          if (before.revision !== options.reviewedRevision) throw new ProjectEditConflictError();
+          const latest = await this.transport.write(before.project_id, {
+            revision: before.revision,
+            presentation_revision: before.presentation_revision,
+            created: [...created],
+            files: [...edit.files],
+          }, this.signal);
+          const gesture = changedFiles(name, before, latest, true);
+          if (!gesture) throw new ProjectEditConflictError();
+          this.adopt({ ...this.document, snapshot: latest }, moveHistory(this.savedHistory, gesture, 'edit'));
+        });
+      }
       return savedEdit;
     } catch (error) {
       if (isRefusal(error)) return { status: 'refused', error };

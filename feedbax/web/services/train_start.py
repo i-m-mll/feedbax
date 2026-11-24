@@ -4,9 +4,11 @@ as that step's continuation. Which runs and which checkpoint are the selection's
 from dataclasses import dataclass
 from typing import Any
 
+from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.project import Project, RemoveProjectValue, SetProjectValue, Step
 from feedbax.contracts.project_inputs import StepReference
-from feedbax.contracts.project_resolution import StepTemplate, compose_step
+from feedbax.contracts.project_io import project_declaration_name
+from feedbax.contracts.project_resolution import ProjectDiagnostic, StepTemplate, compose_step
 from feedbax.contracts.project_sweep import Sweep
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.studio_authoring import StudioTrainStartEdit, StudioTrainStartRequest
@@ -26,11 +28,11 @@ class _Definition:
     requires: tuple[str, ...]
 
 
-def _definition(project: Project, step_id: str) -> _Definition:
+def _definition(project: Project, step_id: str) -> _Definition | ProjectDiagnostic:
     """The step's composed definition."""
     template = compose_step(project, step_id)
     if not isinstance(template, StepTemplate):
-        raise ProjectFolderInvalid(template.detail)
+        return template
     return _Definition(
         template.authored_payload(),
         template.sweep.model_dump(mode="json", by_alias=True) if template.sweep is not None else None,
@@ -76,7 +78,7 @@ def _sweep_difference(parent: dict[str, Any] | None, own: dict[str, Any] | None)
     return difference or None
 
 
-def _started(own: _Definition, payload: dict[str, Any], source: StepReference | None, project: Project):
+def _started(own: _Definition, payload: dict[str, Any], source: StepReference | None, parent: _Definition | None):
     """The step's authored fields that give it ``payload``, its sweep, inputs and requirements from ``source``."""
     inputs = {name: binding for name, binding in own.inputs.items() if name != "checkpoint"}
     if source is None:
@@ -84,7 +86,7 @@ def _started(own: _Definition, payload: dict[str, Any], source: StepReference | 
             "base": {"inline": payload}, "sweep": own.sweep, "inputs": inputs or None,
             "requires": list(own.requires) or None, "deltas": None,
         }
-    parent = _definition(project, source.step)
+    assert parent is not None
     patches = difference_patches(parent.payload, payload)
     layer = MatrixCompositionDelta(
         layer_id=_LAYER, patches=patches, acknowledges_ancestor_paths=[patch.path for patch in patches],
@@ -118,17 +120,32 @@ def prepare_train_start(
         (parent := project.steps.get(source.step)) is None or parent.kind != "train" or source.step == step_id
     ):
         raise ProjectFolderInvalid("A Train step starts from another Train step's checkpoint.")
+
+    def problem(diagnostic: ProjectDiagnostic) -> StudioTrainStartEdit:
+        return StudioTrainStartEdit(
+            revision=snapshot.revision, files=[], problems=[StudioProjectWindowMapProblem.from_diagnostic(
+                diagnostic, declaration=project_declaration_name(project_id),
+            )],
+        )
+
     own = _definition(project, step_id)
+    if isinstance(own, ProjectDiagnostic):
+        return problem(own)
+    parent_definition = _definition(project, source.step) if source is not None else None
+    if isinstance(parent_definition, ProjectDiagnostic):
+        return problem(parent_definition)
     payload = {key: value for key, value in own.payload.items() if key != _POLICY}
     if source is not None:
         payload[_POLICY] = "initialize_from"
     raw = step.model_dump(mode="json", by_alias=True, exclude_unset=True)
-    fields = _started(own, payload, source, project)
+    fields = _started(own, payload, source, parent_definition)
     authored = {key: value for key, value in raw.items() if key not in fields} | {
         key: value for key, value in fields.items() if value is not None
     }
     started = project.model_copy(update={"steps": project.steps | {step_id: Step.model_validate(authored)}})
     result = _definition(started, step_id)
+    if isinstance(result, ProjectDiagnostic):
+        return problem(result)
     intended = {key: value for key, value in own.inputs.items() if key != "checkpoint"} | (
         {"checkpoint": source.model_dump(mode="json", by_alias=True)} if source is not None else {}
     )

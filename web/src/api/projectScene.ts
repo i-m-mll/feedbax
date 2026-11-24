@@ -18,4 +18,3 @@ export async function fetchProjectPlanarScene(id: string, source: StudioPlanarSc
     throw asApiRequestError(error, path);
   }
 }
-

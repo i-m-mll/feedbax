@@ -9,11 +9,14 @@ from equinox.nn import State
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 import pytest
 
 from feedbax.builtins.runtime.feedback import SelectState
 from feedbax.builtins.runtime.channel import Channel, toggle_channel_noise
 from feedbax.component_registry import ComponentRegistry
+from feedbax.compiler.model_document import ResolvedModelInterface
+from feedbax.compiler.model_reset import ModelResetError, resolve_model_reset
 from feedbax.builtins.runtime.affine_composer import AffineValueComposer
 from feedbax.builtins.runtime.components import Demux, ElementwiseAffineModulator
 from feedbax.contracts.graph import (
@@ -22,6 +25,11 @@ from feedbax.contracts.graph import (
     StudioTaskBindingSpec,
     WireSpec,
 )
+from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.expression_registry import FunctionRegistry
+from feedbax.contracts.expression_values import ANGLE, CallValue, LiteralValue, ValueType
+from feedbax.contracts.task_document import Epoch, Length, Link, TaskDocument, Variable
+from feedbax.expression_builtins import register_builtins
 from feedbax.runtime._graph_key_schedule import derive_key, step_key
 from feedbax.runtime.graph import GraphTraceRequest, init_state_from_component
 from feedbax.runtime.iteration import run_component
@@ -50,6 +58,7 @@ from feedbax.compiler.prototypes import output_prototypes_for_node
 from feedbax.compiler.prototypes import infer_node_input_prototypes
 from feedbax.compiler.resolution import resolve_graph_parameters
 from feedbax.runtime.state import CartesianState
+from feedbax.tasks.document import DocumentTask, TaskParameters, compile_task
 
 
 def _components() -> ComponentRegistry:
@@ -778,6 +787,147 @@ def test_point_mass_feedback_rejects_invalid_selector_path_at_compile_time() -> 
 
     with pytest.raises(GraphCompilationError, match=r"feedback.*plant\.skeleton\.missing"):
         spec_to_graph(spec, component_registry=_components())
+
+
+def _feedback_reset_graph(component_type):
+    nested = _point_mass_feedback_spec(["effector.pos"], delay=2, add_noise=False)
+    feedback = nested.subgraphs["feedback"]
+    mechanics = nested.nodes["mechanics"].model_copy(update={"type": component_type, "params": {"dt": 0.01}})
+    spec = nested.model_copy(update={
+        "nodes": {"mechanics": mechanics, **feedback.nodes},
+        "subgraphs": {},
+        "wires": [*feedback.wires, WireSpec(
+            source_node="mechanics", source_port="state", target_node="select", target_port="state",
+            temporality="recurrent", recurrent_initializer={"kind": "state_output", "seed_channel_history": True},
+        )],
+        "output_bindings": nested.output_bindings | feedback.output_bindings,
+    })
+    registry = _components()
+    plan = resolve_model_reset(resolve_graph_parameters(spec, {}, registry), registry)
+    graph = spec_to_graph(spec, component_registry=registry)
+    return graph, plan
+
+
+def test_direct_point_mass_state_reaches_effector_and_feedback_history():
+    graph, plan = _feedback_reset_graph("feedbax.PointMass")
+    skeleton = ModelAddress.at_state((), "mechanics", "skeleton/position").to_text()
+    effector = ModelAddress.at_state((), "mechanics", "effector/position").to_text()
+    key = jr.key(0)
+
+    for inits, expected_effector in (({skeleton: 0.25}, 0.25), ({skeleton: 0.25, effector: 0.5}, 0.5)):
+        result = plan.prepare(graph, inits, key=key)
+        assert jnp.array_equal(graph.nodes["mechanics"].state_view(result.state).plant.skeleton.pos, jnp.full((2,), 0.25))
+        expected = jnp.full((2,), expected_effector)
+        assert jnp.array_equal(result.outputs["effector"].pos, expected)
+        carry = result.cycle_init["select", "state"]
+        assert jnp.array_equal(carry.effector.pos, expected)
+        channel = graph.nodes["channel"].state_view(result.state)
+        assert all(jnp.array_equal(sample, expected) for sample in channel.queue)
+
+
+def _arm_address(symbol):
+    return ModelAddress.at_state((), "mechanics", symbol).to_text()
+
+
+def test_linked_arm_angles_set_time_zero_effector_and_feedback():
+    graph, plan = _feedback_reset_graph("feedbax.TwoLinkArm")
+    angle = _arm_address("skeleton/angle")
+    task = TaskDocument(
+        id="arm-reset",
+        variables=(Variable(
+            id="angle", name="angle", type=ValueType(base="real", dimensions=ANGLE, shape=(2,)),
+            value=CallValue(function="vector", args=(
+                LiteralValue(value=0.35, unit="rad"), LiteralValue(value=0.65, unit="rad"),
+            )),
+        ),),
+        epochs=(Epoch(id="move", name="move", end=Length(length=LiteralValue(value=2, unit="st"))),),
+        signals=(),
+        links=(Link(model_field=angle, variable="angle"),),
+    )
+    functions = FunctionRegistry()
+    register_builtins(functions)
+    functions.seal()
+    compiled = compile_task(task, functions, model=ResolvedModelInterface(0.01, (), (), (), (), reset=plan))
+    assert isinstance(compiled, DocumentTask), compiled
+    key = jr.key(4)
+    trial = compiled.ahead(TaskParameters(), key, key)
+    reset = plan.prepare(graph, trial.inits, key=key)
+    state = graph.nodes["mechanics"].state_view(reset.state)
+    np.testing.assert_allclose(state.plant.skeleton.angle, [0.35, 0.65], atol=1e-6)
+    carry = reset.cycle_init["select", "state"]
+    channel = graph.nodes["channel"].state_view(reset.state)
+    for observed in (state.effector.pos, reset.outputs["effector"].pos, carry.effector.pos, *channel.queue):
+        np.testing.assert_allclose(observed, [0.4601116, 0.3805548], atol=1e-6)
+
+
+def test_arm_mixed_and_conflicting_initializers_preserve_explicit_leaves():
+    graph, plan = _feedback_reset_graph("feedbax.TwoLinkArm")
+    mechanics = graph.nodes["mechanics"]
+    arm = mechanics.plant.skeleton
+    key = jr.key(0)
+    angle = _arm_address("skeleton/angle")
+    rate = _arm_address("skeleton/angular_velocity")
+    position = _arm_address("effector/position")
+    velocity = _arm_address("effector/velocity")
+
+    opposite = jnp.array([0.6, -0.9])
+    expected_rate = jnp.array([0.27, -0.41])
+    requested_velocity = arm.effector_jac(opposite) @ expected_rate
+    mixed = plan.prepare(graph, {angle: opposite, velocity: requested_velocity}, key=key)
+    state = mechanics.state_view(mixed.state)
+    np.testing.assert_array_equal(state.plant.skeleton.angle, opposite)
+    np.testing.assert_allclose(state.plant.skeleton.d_angle, expected_rate, atol=1e-6)
+    np.testing.assert_array_equal(state.effector.vel, requested_velocity)
+
+    requested_position = jnp.array([0.4601116, 0.3805548])
+    mixed = plan.prepare(graph, {position: requested_position, rate: expected_rate}, key=key)
+    state = mechanics.state_view(mixed.state)
+    np.testing.assert_allclose(state.plant.skeleton.angle, [0.35, 0.65], atol=1e-6)
+    np.testing.assert_array_equal(state.plant.skeleton.d_angle, expected_rate)
+    np.testing.assert_allclose(state.effector.vel, arm.effector_jac(jnp.array([0.35, 0.65])) @ expected_rate, atol=1e-6)
+
+    torque = _arm_address("skeleton/torque")
+    load = _arm_address("skeleton/effector_force")
+    force = _arm_address("effector/force")
+    conflicting = plan.prepare(graph, {
+        angle: opposite, position: [9., -2.], rate: expected_rate, velocity: [-2., 3.],
+        torque: [3., 5.], load: [7., 11.], force: [13., 17.],
+    }, key=key)
+    state = mechanics.state_view(conflicting.state)
+    joints = state.plant.skeleton
+    for observed, expected in (
+        (joints.angle, opposite), (joints.d_angle, expected_rate), (state.effector.pos, [9., -2.]),
+        (state.effector.vel, [-2., 3.]), (joints.torque, [3., 5.]),
+        (joints.effector_force, [7., 11.]), (state.effector.force, [13., 17.]),
+    ):
+        np.testing.assert_array_equal(observed, expected)
+
+
+def test_arm_unattainable_initializers_are_addressed_in_eager_and_compiled_resets():
+    graph, plan = _feedback_reset_graph("feedbax.TwoLinkArm")
+    key = jr.key(0)
+    position = _arm_address("effector/position")
+    velocity = _arm_address("effector/velocity")
+    with pytest.raises(ModelResetError) as failure:
+        plan.prepare(graph, {position: [1., 0.], velocity: [1., 0.]}, key=key)
+    assert failure.value.problem.model_address == ModelAddress.from_text(position)
+    assert failure.value.problem.path == ("links", position)
+    with pytest.raises(ModelResetError, match="cannot attain") as failure:
+        plan.prepare(graph, {velocity: [1., 0.]}, key=key)
+    assert failure.value.problem.model_address == ModelAddress.from_text(velocity)
+
+    def carry_rates(v):
+        reset = plan.prepare(graph, {velocity: v}, key=key)
+        return reset.cycle_init["select", "state"].plant.skeleton.d_angle
+
+    batched = jax.jit(jax.vmap(carry_rates))
+    tangent = np.array([0.63, 0.33])
+    minimum_norm = 0.25 * tangent / (tangent @ tangent)
+    valid = batched(jnp.array([[0., 0.25], [0., 0.]]))
+    np.testing.assert_allclose(valid, [minimum_norm, [0., 0.]], atol=1e-6)
+    with pytest.raises((ValueError, jax.errors.JaxRuntimeError)) as failure:
+        batched(jnp.array([[0., 0.25], [1., 0.]])).block_until_ready()
+    assert velocity in str(failure.value)
 
 
 def test_nested_feedback_rollout_preserves_mixed_state_dtypes() -> None:
