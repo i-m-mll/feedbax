@@ -90,10 +90,11 @@ class StudioTrialExpressionEdit(StrictModel):
 
 
 class StudioTrialStructureEdit(StrictModel):
-    """A change to the structure of the step's task document."""
+    """Changes to the structure of the step's task document, made in order as one edit: all of them, or none when one
+    is refused."""
 
     kind: Literal["structure"]
-    change: TaskStructureChange
+    changes: list[TaskStructureChange] = Field(min_length=1)
 
 
 class StudioTrialStepScope(StrictModel):

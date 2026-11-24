@@ -30,7 +30,7 @@ function variables(view: TrialView, task: TaskDocument, types: readonly StudioNa
         const type = types.find((item) => item.name === chosen)?.type;
         if (!type) return undefined;
         return reasonOf(await commit(studioAccessibleName('set', studioName('type')),
-          { kind: 'structure', change: { op: 'set_type', member: 'variable', id: variable.id, type } }));
+          { kind: 'structure', changes: [{ op: 'set_type', member: 'variable', id: variable.id, type }] }));
       }),
     });
     const path = authoredPointer(['task', 'variables', variable.id, 'value']);
@@ -60,13 +60,13 @@ function variableEdits(task: TaskDocument, commit?: Commit): VariableEdits {
     reasonOf(await commit(name, change, removes));
   const named = (id: string) => task.variables.find((variable) => variable.id === id)?.name;
   return {
-    add: (name) => structure(studioName('addVariable'), { kind: 'structure', change: { op: 'add', member: 'variable', name } }),
+    add: (name) => structure(studioName('addVariable'), { kind: 'structure', changes: [{ op: 'add', member: 'variable', name }] }),
     rename: (id, name) => structure(studioAccessibleName('rename', named(id)),
-      { kind: 'structure', change: { op: 'rename', member: 'variable', id, name } }),
+      { kind: 'structure', changes: [{ op: 'rename', member: 'variable', id, name }] }),
     remove: (id) => structure(studioAccessibleName('remove', named(id)),
-      { kind: 'structure', change: { op: 'remove', member: 'variable', id } }, true),
+      { kind: 'structure', changes: [{ op: 'remove', member: 'variable', id }] }, true),
     move: (id, index) => structure(studioAccessibleName('move', named(id)),
-      { kind: 'structure', change: { op: 'move', member: 'variable', id, index } }),
+      { kind: 'structure', changes: [{ op: 'move', member: 'variable', id, index }] }),
   };
 }
 

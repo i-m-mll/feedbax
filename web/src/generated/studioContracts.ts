@@ -4431,7 +4431,7 @@ export type StudioTrialStepScope = {
 
 export type StudioTrialStructureEdit = {
   "kind": "structure";
-  "change": TaskStructureChange;
+  "changes": Array<TaskStructureChange>;
 };
 
 export type StudioValueStructure = {
@@ -12137,7 +12137,7 @@ export const StudioTrialStepScopeSchema: z.ZodType<StudioTrialStepScope> = z.laz
 export const StudioTrialStructureEditSchema: z.ZodType<StudioTrialStructureEdit> = z.lazy(() =>
   z.object({
     "kind": z.literal("structure"),
-    "change": TaskStructureChangeSchema,
+    "changes": z.array(TaskStructureChangeSchema).min(1),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialStructureEdit>;
 
