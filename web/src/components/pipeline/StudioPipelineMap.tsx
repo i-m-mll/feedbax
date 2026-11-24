@@ -278,7 +278,7 @@ function NewSweep({ command, menu }: { command: StudioCommand; menu?: SweepMenu 
   return (
     <Menu open={!!menu} onOpenChange={(open) => { if (open) command.invoke(); else menu?.close(); }}>
       <MenuTrigger render={<IconButton variant="default" size="mark" label={command.label} icon={<Plus aria-hidden="true" />}
-        {...commandAttributes(command)} disabled={!command.enabled} />} />
+        className="studio-map-attention" {...commandAttributes(command)} disabled={!command.enabled} />} />
       <MenuContent aria-label={studioName('newSweep')}>{items.current}</MenuContent>
     </Menu>
   );
@@ -388,7 +388,7 @@ const StepCard = memo(function StepCard({
         <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'in')} className="pointer-events-none absolute -left-px top-1/2" />
         <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'out')} className="pointer-events-none absolute -right-px top-1/2" />
         {connectable && <span aria-hidden="true" data-map-handle={step.id}
-          className="studio-map-handle nopan absolute -right-1.5 top-1/2 z-10 size-3 -translate-y-1/2 cursor-crosshair rounded-full border border-shell-muted bg-shell-chrome" />}
+          className="studio-map-attention nopan absolute -right-1.5 top-1/2 z-10 size-3 -translate-y-1/2 cursor-crosshair rounded-full border border-shell-muted bg-shell-chrome" />}
         {renamingStep(rename, step.id, 'card') ? (
           <div className="studio-map-card__head flex w-full px-3 py-2"><StepName step={step} rename={rename} /></div>
         ) : <CommandContextMenu commands={stepMenu && (() => stepMenu(step, { start: () => rename?.setEditing({ stepId: step.id, surface: 'card' }), surface: 'card' }))}
@@ -448,7 +448,7 @@ const StepCard = memo(function StepCard({
       )}
       {newStep && (
         <IconButton variant="default" size="mark" label={newStep.label} icon={<Plus aria-hidden="true" />}
-          className="studio-card__attached"
+          className="studio-card__attached studio-map-attention"
           {...commandAttributes(newStep)} disabled={!newStep.enabled} onClick={newStep.invoke} />
       )}
       </>}

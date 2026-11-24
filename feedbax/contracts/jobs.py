@@ -248,9 +248,13 @@ class StudioSavedTrainRow(StrictModel):
 
 
 class StudioProjectWindowMapCoordinate(StrictModel):
+    """A row's value on one axis: its stored key, label and value, and the step's axis value it is."""
+
     value_id: str
     label: str | None
     value: JsonValue
+    axis_value: str
+    """The ID of the value of the step's axis that this coordinate is."""
 
 
 class StudioProjectWindowMapInputAxis(StrictModel):
@@ -259,6 +263,8 @@ class StudioProjectWindowMapInputAxis(StrictModel):
     value_id: str
     label: str | None
     carries: list[str]
+    axis_value: str
+    """The ID of the value of the step's axis that this member is."""
 
 
 class StudioSavedLightResult(StrictModel):
@@ -294,6 +300,8 @@ class StudioProjectWindowMapRow(StrictModel):
     target_total: int | None = Field(default=None, exclude_if=lambda value: value is None)
     """A Train row's completed-update count at its end, which bounds the checkpoints its readers select."""
     light: StudioSavedLightHistory | None = Field(default=None, exclude_if=lambda value: value is None)
+    resolved: bool = Field(default=True, exclude_if=lambda value: value)
+    """Whether the row has a definition; a row whose own patches or documents are refused has none to show."""
 
 
 class StudioBestRankGroup(StrictModel):
@@ -325,6 +333,25 @@ class StudioProjectWindowMapException(StrictModel):
     rule: SweepException
 
 
+class StudioProjectWindowMapAxisValue(StrictModel):
+    """One value of a step's axis, gathering its runs' coordinates that are the same value: a number by number, a
+    named value by name, an input's member by its key. Its ID is the coordinates' stored key when that key names this
+    value alone in the step; otherwise, as when two producers store the same value under different keys, it is ``=``
+    and the value, which no stored key can be."""
+
+    id: str
+    label: str
+    rule: str
+    """The value as a run rule writes it."""
+
+
+class StudioProjectWindowMapAxis(StrictModel):
+    """An axis a step's runs carry, with its values in order: numbers by number, other values as the runs give them."""
+
+    id: str
+    values: list[StudioProjectWindowMapAxisValue]
+
+
 class StudioProjectWindowMapStep(StrictModel):
     variant: str
     step_id: str
@@ -335,8 +362,8 @@ class StudioProjectWindowMapStep(StrictModel):
     document_uses: list[str] = Field(default_factory=list)
     exceptions: list[StudioProjectWindowMapException] = Field(default_factory=list, exclude_if=lambda value: not value)
     status_counts: dict[str, int]
-    rule_axes: dict[str, dict[str, str]] = Field(default_factory=dict, exclude_if=lambda value: not value)
-    """Each axis the step's runs carry, with each value, by its ID, as a run rule writes it."""
+    axes: list[StudioProjectWindowMapAxis] = Field(default_factory=list, exclude_if=lambda value: not value)
+    """Each axis the step's runs carry, in the order the runs first carry them."""
     rule_metrics: list[str] = Field(default_factory=list, exclude_if=lambda value: not value)
     """The metrics the step's finished Train runs report, which a lowest or highest term ranks by."""
 
