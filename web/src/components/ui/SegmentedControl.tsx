@@ -45,7 +45,7 @@ export function SegmentedControl<Value extends string>(
             'inline-flex select-none items-center justify-center gap-1.5 rounded-row border border-transparent text-shell-muted',
             item.icon ? 'aspect-square' : 'px-control-inline',
             'hover:[&:not([data-disabled])]:text-shell-foreground',
-            'data-[pressed]:border-shell-edge data-[pressed]:bg-[var(--segment-raised)] data-[pressed]:font-medium data-[pressed]:text-shell-foreground data-[pressed]:shadow-segment',
+            'data-[pressed]:border-[var(--segment-edge)] data-[pressed]:bg-[var(--segment-raised)] data-[pressed]:font-medium data-[pressed]:text-shell-foreground data-[pressed]:shadow-segment',
             focusRing, glyph, disabledLook,
           )}
         >

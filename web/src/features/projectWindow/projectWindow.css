@@ -188,10 +188,6 @@
   outline: none;
 }
 
-.studio-window-slot__view[data-focused] > .studio-window-slot__header {
-  box-shadow: inset 0 2px var(--studio-shell-accent);
-}
-
 .studio-window-slot__view:focus-visible > .studio-window-slot__header {
   outline: 2px solid var(--shell-focus-color);
   outline-offset: -2px;

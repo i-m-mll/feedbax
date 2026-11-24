@@ -3952,10 +3952,22 @@ export type StudioProjectWindowMap = {
   "regroup_refused"?: Array<string>;
 };
 
+export type StudioProjectWindowMapAxis = {
+  "id": string;
+  "values": Array<StudioProjectWindowMapAxisValue>;
+};
+
+export type StudioProjectWindowMapAxisValue = {
+  "id": string;
+  "label": string;
+  "rule": string;
+};
+
 export type StudioProjectWindowMapCoordinate = {
   "value_id": string;
   "label": string | null;
   "value": JsonValue;
+  "axis_value": string;
 };
 
 export type StudioProjectWindowMapEdge = {
@@ -3998,6 +4010,7 @@ export type StudioProjectWindowMapInputAxis = {
   "value_id": string;
   "label": string | null;
   "carries": Array<string>;
+  "axis_value": string;
 };
 
 export type StudioProjectWindowMapProblem = {
@@ -4052,7 +4065,7 @@ export type StudioProjectWindowMapStep = {
   "document_uses"?: Array<string>;
   "exceptions"?: Array<StudioProjectWindowMapException>;
   "status_counts": Record<string, number>;
-  "rule_axes"?: Record<string, Record<string, string>>;
+  "axes"?: Array<StudioProjectWindowMapAxis>;
   "rule_metrics"?: Array<string>;
 };
 
@@ -10937,11 +10950,27 @@ export const StudioProjectWindowMapSchema: z.ZodType<StudioProjectWindowMap> = z
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMap>;
 
+export const StudioProjectWindowMapAxisSchema: z.ZodType<StudioProjectWindowMapAxis> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "values": z.array(StudioProjectWindowMapAxisValueSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMapAxis>;
+
+export const StudioProjectWindowMapAxisValueSchema: z.ZodType<StudioProjectWindowMapAxisValue> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "label": z.string(),
+    "rule": z.string(),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMapAxisValue>;
+
 export const StudioProjectWindowMapCoordinateSchema: z.ZodType<StudioProjectWindowMapCoordinate> = z.lazy(() =>
   z.object({
     "value_id": z.string(),
     "label": z.union([z.string(), z.null()]),
     "value": jsonValueSchema,
+    "axis_value": z.string(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapCoordinate>;
 
@@ -10996,6 +11025,7 @@ export const StudioProjectWindowMapInputAxisSchema: z.ZodType<StudioProjectWindo
     "value_id": z.string(),
     "label": z.union([z.string(), z.null()]),
     "carries": z.array(z.string()),
+    "axis_value": z.string(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapInputAxis>;
 
@@ -11058,7 +11088,7 @@ export const StudioProjectWindowMapStepSchema: z.ZodType<StudioProjectWindowMapS
     "document_uses": z.array(z.string()).optional(),
     "exceptions": z.array(StudioProjectWindowMapExceptionSchema).optional(),
     "status_counts": z.record(z.string(), z.number().int().safe()),
-    "rule_axes": z.record(z.string(), z.record(z.string(), z.string())).optional(),
+    "axes": z.array(StudioProjectWindowMapAxisSchema).optional(),
     "rule_metrics": z.array(z.string()).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapStep>;
