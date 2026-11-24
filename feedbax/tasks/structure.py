@@ -4,6 +4,8 @@ Members are addressed by id, and expressions refer to variables by id, so a rena
 variable stays referenced where it was read: the document still compiles to Problems there, and is returned.
 """
 
+from typing import assert_never
+
 from feedbax.contracts.expression_values import LiteralValue, Problem, ProblemCode, ValueBase, ValueType
 from feedbax.contracts.task_document import Cell, Epoch, Length, Link, Signal, TaskDocument, Variable
 from feedbax.contracts.task_structure import (
@@ -76,7 +78,9 @@ def _add(document: TaskDocument, change: AddMember) -> TaskDocument:
     return document.model_copy(update={field: (*members[:index], added, *members[index:])})
 
 
-def _edit_member(document, change, members, index) -> TaskDocument:
+def _edit_member(
+    document: TaskDocument, change: RemoveMember | RenameMember | MoveMember | SetType, members: tuple, index: int,
+) -> TaskDocument:
     field = _FIELDS[change.member]
     item = members[index]
     rest = (*members[:index], *members[index + 1:])
@@ -103,6 +107,8 @@ def _edit_member(document, change, members, index) -> TaskDocument:
                     for trial in document.validation_trials
                 )
             return document.model_copy(update=update)
+        case _:
+            assert_never(change)
 
 
 def _covered(order: tuple[str, ...], cell: Cell) -> list[str]:
@@ -137,7 +143,7 @@ def _respanned(document: TaskDocument, epochs: tuple[Epoch, ...], epoch: str) ->
     return tuple(signals)
 
 
-def _cells(document: TaskDocument, signal: Signal, change) -> tuple[Cell, ...] | Problem:
+def _cells(document: TaskDocument, signal: Signal, change: SetSpan | MakeAbsent | MakePresent) -> tuple[Cell, ...] | Problem:
     order = tuple(item.id for item in document.epochs)
     match change:
         case MakeAbsent():
@@ -170,3 +176,5 @@ def _cells(document: TaskDocument, signal: Signal, change) -> tuple[Cell, ...] |
                 if kept:
                     cells.append(cell.model_copy(update={"first_epoch": order[kept[0]], "last_epoch": order[kept[-1]]}))
             return tuple(sorted(cells, key=lambda item: order.index(item.first_epoch)))
+        case _:
+            assert_never(change)
