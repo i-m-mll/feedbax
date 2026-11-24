@@ -2882,6 +2882,12 @@ export type EpochSteps = {
 
 export type Expression = LiteralValue | NameValue | CallValue | DrawValue;
 
+export type ExpressionPartSite = {
+  "path": Array<string | number>;
+  "functions": Array<string>;
+  "names": Array<string>;
+};
+
 export type ExternalBase = {
   "path": string;
   "sha256": Sha256;
@@ -3525,6 +3531,8 @@ export type SiteProjection = {
   "site": Site;
   "kinds": Array<FieldKind>;
   "functions": Array<FunctionInfo>;
+  "parts": Array<ExpressionPartSite>;
+  "name_paths"?: Record<string, ModelAddress>;
 };
 
 export type SourceDifference = {
@@ -10150,6 +10158,14 @@ export const ExpressionSchema: z.ZodType<Expression> = z.lazy(() =>
   z.union([LiteralValueSchema, NameValueSchema, CallValueSchema, DrawValueSchema])
 ) as unknown as z.ZodType<Expression>;
 
+export const ExpressionPartSiteSchema: z.ZodType<ExpressionPartSite> = z.lazy(() =>
+  z.object({
+    "path": z.array(z.union([z.string(), z.number().int().safe()])),
+    "functions": z.array(z.string()),
+    "names": z.array(z.string()),
+  }).strict()
+) as unknown as z.ZodType<ExpressionPartSite>;
+
 export const ExternalBaseSchema: z.ZodType<ExternalBase> = z.lazy(() =>
   z.object({
     "path": z.string().min(1),
@@ -11022,6 +11038,8 @@ export const SiteProjectionSchema: z.ZodType<SiteProjection> = z.lazy(() =>
     "site": SiteSchema,
     "kinds": z.array(FieldKindSchema),
     "functions": z.array(FunctionInfoSchema),
+    "parts": z.array(ExpressionPartSiteSchema),
+    "name_paths": z.record(z.string(), ModelAddressSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<SiteProjection>;
 
