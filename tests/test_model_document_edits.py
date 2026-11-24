@@ -190,6 +190,31 @@ def test_a_kept_sweep_value_is_stored_in_a_document_based_on_the_shared_one(tmp_
         assert project.ids()["other"] == other
 
 
+def test_connection_review_reads_the_topology_on_the_selected_sweep_value(tmp_path):
+    data = _data()
+    data["steps"]["fee"]["sweep"] = {"axes": {"wiring": {"values": {
+        "base": {},
+        "expanded": {"patches": {"documents.model.payload.interior.components.added": {
+            "op": "add", "value": _model(data)["interior"]["components"]["readout"],
+        }}},
+    }}}}
+    project = _Project(tmp_path, data)
+    endpoint = {"owner": "component", "component": "readout", "port": "output"}
+    with project.client:
+        context = {"revision": project.snapshot()["revision"], "document": "model", "graph": {
+            "composites": [], "element": {"kind": "graph"},
+        }, "source": endpoint}
+        base = project.client.post(f"{_URL}/model/connections", json=context)
+        assert base.status_code == 200, base.text
+        assert all(target["target"].get("component") != "added" for target in base.json()["targets"])
+        selected = project.client.post(f"{_URL}/model/connections", json=context | {
+            "run": {"variant": "default", "step": "fee", "row": "wiring=expanded"},
+            "rows": ["wiring=expanded"], "axes": {"wiring": ["expanded"]},
+        })
+        assert selected.status_code == 200, selected.text
+        assert any(target["target"].get("component") == "added" for target in selected.json()["targets"])
+
+
 def test_an_evaluation_task_edit_makes_a_document_based_on_its_subjects(tmp_path):
     project = _Project(tmp_path, _data())
     with project.client:
