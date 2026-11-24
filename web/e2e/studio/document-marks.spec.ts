@@ -349,7 +349,6 @@ test('a based Training document marks the class it changes, and Reset gives it t
 
 test('an Evaluate step\'s Task edit marks the value its document changes, and Reset gives it the base\'s', async ({ page, request }) => {
   test.setTimeout(60_000);
-  test.fixme(true, 'The Task view edits task documents in T2+: an Evaluate\'s Task tab shows no fields yet.');
   const files = (JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.evaluate_authoring')) as { kind: string; id: string }[])
     .filter(({ id }) => id !== 'conditions');
   const { snapshot, projectPath } = await seedManagedProject(request, [...files, evaluation('check', 'train')]);
@@ -359,14 +358,16 @@ test('an Evaluate step\'s Task edit marks the value its document changes, and Re
   };
   const before = Object.keys(await documents());
   const task = page.getByRole('tabpanel', { name: 'Task', exact: true });
-  const target = task.getByRole('textbox', { name: 'Target x (m)', exact: true });
+  const target = task.getByRole('table', { name: 'Variables', exact: true }).getByRole('row')
+    .filter({ has: page.getByRole('textbox', { name: 'Rename target', exact: true }) })
+    .getByRole('textbox', { name: 'Value', exact: true });
 
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await mapStep(page, 'check').click();
   await page.getByRole('tab', { name: 'Task', exact: true }).click();
   await expect(target).toBeEditable();
   const base = await target.inputValue();
-  await target.fill('0.24');
+  await target.fill('[0.24 m, 0.05 m]');
   await target.press('Enter');
   await expect(target).toHaveAccessibleDescription('Changed by check');
   const created = Object.keys(await documents()).filter((name) => !before.includes(name));
