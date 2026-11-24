@@ -1083,6 +1083,11 @@ def test_create_named_file_uses_project_cas_and_never_replaces_an_entry(tmp_path
     assert duplicate.status_code == 409
     assert duplicate.json()["detail"]["code"] == "authored_file_exists"
     assert json.loads(step_file.read_bytes()) == train["step"]
+    duplicate_batch = client.post(url, json={
+        "revision": document["snapshot"]["revision"], "files": [task | {"id": "new-task"}, train],
+    })
+    assert duplicate_batch.status_code == 409
+    assert not (root / "documents/new-task.json").exists()
     assert TestClient(create_app(projects_dir=projects)).get(f"/api/projects/{project_id}/open").json() == document
 
 

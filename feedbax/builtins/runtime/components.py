@@ -21,6 +21,7 @@ from pydantic import Field as ConfigField
 
 from feedbax.contracts.component_history import Change, History
 from feedbax.contracts.component import DynamicPortPolicy, PortType
+from feedbax.contracts.component_presentation import PresentationOverride
 from feedbax.contracts.model_values import ModelFacts, ModelValue, StateReset, StateValue
 from feedbax.contracts.portable import (
     ComponentOptions,
@@ -1260,6 +1261,7 @@ class LinearLayer(GraphNode):
 class Linear(LinearLayer, Component):
     """Affine layer followed by a named elementwise activation."""
 
+    component_presentation = PresentationOverride(headline_field="output_size")
     component_history = History(Change(2, migrate=lambda params: {**params, "initialization": "random"}))
     model_facts = ModelFacts(values=(
         ModelValue("kernel", "layer.weight", "learned"),
@@ -1388,6 +1390,7 @@ class _GRUConfig(BaseModel):
 class GRU(Component):
     """Standalone GRU cell."""
 
+    component_presentation = PresentationOverride(headline_field="hidden_size")
     model_facts = ModelFacts(
         values=(
             ModelValue("input_kernel", "cell.weight_ih", "learned"),

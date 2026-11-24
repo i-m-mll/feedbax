@@ -65,6 +65,7 @@ def _aggregate_term(terms: Sequence[TrialTerm]) -> TrialTermAggregate:
         if bands is not None:
             percentiles = [band[0] if band is not None else None for band in bands]
     return TrialTermAggregate(
+        problems=terms[0].problems,
         steps=steps.mean(axis=0).tolist(),
         covered=float(np.mean([term.covered for term in terms])),
         value=float(np.mean(reduced)) if reduced else None,

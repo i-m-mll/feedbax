@@ -20,7 +20,7 @@ test('renaming a term two Trains read asks at its cell where the name applies, a
   };
   const primary = page.locator('[data-slot="primary"]').getByRole('tabpanel');
   const table = primary.getByRole('table', { name: 'Objective Terms', exact: true });
-  const name = table.getByRole('textbox', { name: 'Name', exact: true }).first();
+  const name = table.getByRole('textbox', { name: /^Rename / }).first();
   const menu = page.getByRole('menu', { name: 'Apply To', exact: true });
 
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
@@ -34,10 +34,11 @@ test('renaming a term two Trains read asks at its cell where the name applies, a
   const before = await name.inputValue();
   const stored = await names();
 
+  await name.click();
   await name.fill('Effort');
   await name.press('Enter');
   await expect(menu).toBeVisible();
-  const cell = await name.locator('xpath=ancestor::td').boundingBox();
+  const cell = await table.getByRole('rowheader').first().boundingBox();
   const shown = await menu.boundingBox();
   expect(Math.abs(shown!.x - cell!.x)).toBeLessThan(8);
   expect(shown!.y).toBeGreaterThanOrEqual(cell!.y + cell!.height - 1);
@@ -47,6 +48,7 @@ test('renaming a term two Trains read asks at its cell where the name applies, a
   await expect(name).toHaveValue(before);
   expect(await names()).toEqual(stored);
 
+  await name.click();
   await name.fill('Effort');
   await name.press('Enter');
   await menu.getByRole('menuitem', { name: 'All 2 Steps', exact: true }).click();
