@@ -582,7 +582,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   const rowless = page.getByRole('article', { name: 'Train rowless' });
   await rowless.getByRole('button', { name: "Can't run", exact: true }).click();
   await expect(list.getByRole('listitem')).toHaveCount(1);
-  await list.getByRole('button', { name: /absent-base/ }).click();
+  await list.getByRole('button', { name: 'Base · Absent base', exact: true }).click();
   await expect(mapStep(page, 'rowless')).toHaveAttribute('aria-pressed', 'true');
 
   await problemButton.click();
