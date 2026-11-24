@@ -49,8 +49,7 @@
 
 /*
  * A field in a table cell is the cell (P35): its box has no border, radius or fill of its own and fills the cell,
- * its text inset as a text cell's. Hovering an editable field mutes the cell; focusing or selecting it draws the
- * cell's border in the foreground colour over the cell's own fill.
+ * its text inset as a text cell's. Hovering an editable field mutes the cell.
  */
 .studio-table-field-cell [data-field-box] {
   height: calc(var(--row-height) - 1px);
@@ -67,15 +66,3 @@
 .studio-table-field-cell [data-field-box]:hover:not(:has(input:read-only, input:disabled), [data-disabled]) {
   background: var(--surface-hover);
 }
-
-.studio-table-field-cell:focus-within,
-.studio-table-field-cell[data-selected] {
-  outline: 1px solid var(--text-primary);
-  outline-offset: -1px;
-}
-
-.studio-table-field-cell[data-selected] {
-  --cell-fill: transparent;
-  background-color: transparent;
-}
-

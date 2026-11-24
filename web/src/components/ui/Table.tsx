@@ -163,7 +163,11 @@ export function TableRowHeader({ selected, className, ...props }: ThHTMLAttribut
     {...props} />;
 }
 
-/** A cell holding a field, which is the cell (P35): the field fills it, and the cell's lines are its border. */
-export function TableFieldCell({ className, ...props }: TableCellProps) {
-  return <TableCell className={clsx('studio-table-field-cell overflow-visible px-0', className)} {...props} />;
+/**
+ * A cell holding a field or a name's input, which is the cell (P35): the field fills it, and the cell's lines are its
+ * border. A `header` cell is its row's name.
+ */
+export function TableFieldCell({ header, className, ...props }: TableCellProps & { header?: boolean }) {
+  const classes = clsx('studio-table-field-cell overflow-visible', className);
+  return header ? <TableRowHeader className={classes} {...props} /> : <TableCell className={classes} {...props} />;
 }

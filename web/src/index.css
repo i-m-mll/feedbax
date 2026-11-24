@@ -215,11 +215,20 @@
   box-shadow: inset -1px 0 var(--border-muted);
 }
 
-/* A name in a cell is the cell's input (P35): hovering mutes the cell; editing draws the cell's border. */
+/* A field or a name's input in a cell is the cell (P35); the cell keeps no inset of its own. */
+.studio-table .studio-table-field-cell { padding-inline: 0; }
 .studio-cell-input:hover:not(:focus) { background: var(--surface-hover); }
-.studio-table :is(td, th):has(.studio-cell-input:focus) {
+
+/* Focusing or selecting a field's cell draws the cell's border in the foreground colour over the cell's own fill. */
+.studio-table-field-cell:focus-within,
+.studio-table-field-cell[data-selected] {
   outline: 1px solid var(--text-primary);
   outline-offset: -1px;
+}
+
+.studio-table-field-cell[data-selected] {
+  --cell-fill: transparent;
+  background-color: transparent;
 }
 
 /* The potential row draws no lines. */

@@ -28,7 +28,9 @@ import { SegmentedControl } from '@/components/ui/SegmentedControl';
 import { Slider } from '@/components/ui/Slider';
 import { Select, type Option } from '@/components/ui/Select';
 import { StatusMark, type StatusMarkStatus } from '@/components/ui/StatusMark';
-import { Table, TableCell, TableHeaderCell, TableRow } from '@/components/ui/Table';
+import { Table, TableCell, TableFieldCell, TableHeaderCell, TableRow } from '@/components/ui/Table';
+import { ValueField } from '@/components/values/ValueField';
+import { rawField } from '@/components/values/adapters/raw';
 import { TextField } from '@/components/ui/TextField';
 import { ValueFieldGallery } from './ValueFieldGallery';
 import { RunGridGallery } from './RunGridGallery';
@@ -250,6 +252,42 @@ function State({ name, children }: { name: string; children: ReactNode }) {
       <span className="text-xs text-shell-muted">{name}</span>
     </div>
   );
+}
+
+const runs = [['run-1', 1, 0.412], ['run-2', 2, 0.388], ['run-3', 2, 0.401]] as const;
+
+/** The same table in a box narrower than its least width, which scrolls on its own, and in one wide enough. */
+function TableDemo() {
+  const [rates, setRates] = useState<Record<string, number>>({ 'run-1': 0.001, 'run-2': 0.003, 'run-3': 0.01 });
+  const [names, setNames] = useState<string[]>(runs.map(([name]) => name));
+  const [renaming, setRenaming] = useState<number>();
+  const table = (label: string) => <Table aria-label={label} held={1}
+    columns={[{ least: '7rem', fixed: true }, { least: '5rem' }, { least: '7rem' }, { least: '6rem' }]}
+    addRow={{ label: 'Add Run', onAdd: () => setNames([...names, `run-${names.length + 1}`]) }}
+    box={{ className: 'rounded-control border border-shell-divider' }}>
+    <thead><tr>
+      <TableHeaderCell scope="col">Run</TableHeaderCell><TableHeaderCell scope="col">Seed</TableHeaderCell>
+      <TableHeaderCell scope="col">Learning rate</TableHeaderCell><TableHeaderCell scope="col">Loss</TableHeaderCell>
+    </tr></thead>
+    <tbody>{names.map((_, index) => [`run-${index + 1}`, ...runs[index % runs.length].slice(1)] as const).map(([run, seed, loss], index) =>
+      <TableRow key={run} tabIndex={0} selected={index === 1} related={index === 2}>
+      <TableFieldCell header>
+        <InlineEdit form="cell" aria-label={`Rename ${names[index]}`} value={names[index]} editing={renaming === index}
+          onEditingChange={(editing) => setRenaming(editing ? index : undefined)}
+          onCommit={(name) => setNames(names.map((old, at) => at === index ? name : old))} />
+      </TableFieldCell>
+      <TableCell>{seed}</TableCell>
+      <TableFieldCell><ValueField form="cell" model={rawField({
+        id: run, label: `Learning rate ${run}`, type: { kind: 'number' }, value: rates[run] ?? 0.001,
+        change: (value) => setRates({ ...rates, [run]: value as number }),
+      })} /></TableFieldCell>
+      <TableCell className="tabular-nums">{loss}</TableCell>
+    </TableRow>)}</tbody>
+  </Table>;
+  return <div className="grid w-full gap-3">
+    <div className="w-64" data-gallery-box="narrow">{table('Runs, narrow')}</div>
+    <div className="w-full max-w-xl" data-gallery-box="wide">{table('Runs, wide')}</div>
+  </div>;
 }
 
 function CommandBarDemo() {
@@ -516,16 +554,7 @@ export function Gallery() {
 
 
         <Group name="Table">
-          <div className="w-full max-w-xl overflow-hidden rounded-control border border-shell-divider">
-            <Table>
-              <thead><tr><TableHeaderCell>Run</TableHeaderCell><TableHeaderCell>Seed</TableHeaderCell><TableHeaderCell>Loss</TableHeaderCell></tr></thead>
-              <tbody>
-                <TableRow tabIndex={0}><TableCell>run-1</TableCell><TableCell>1</TableCell><TableCell className="tabular-nums">0.412</TableCell></TableRow>
-                <TableRow tabIndex={0} selected><TableCell>run-2</TableCell><TableCell>2</TableCell><TableCell className="tabular-nums">0.388</TableCell></TableRow>
-                <TableRow tabIndex={0} related><TableCell>run-3</TableCell><TableCell>2</TableCell><TableCell className="tabular-nums">0.401</TableCell></TableRow>
-              </tbody>
-            </Table>
-          </div>
+          <TableDemo />
         </Group>
 
 
