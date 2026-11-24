@@ -172,9 +172,14 @@ export function unboundStudioCommand<Id extends StudioCommandId>(id: Id): Studio
   return studioCommand(id, () => {}, { enabled: false }, false);
 }
 
+const keyGlyphs: Record<string, string> = {
+  ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→', Backspace: '⌫', Escape: 'Esc',
+};
+
 export function shortcutLabel(shortcut: Shortcut) {
   return [
-    shortcut.control && '⌃', shortcut.alt && '⌥', shortcut.shift && '⇧', shortcut.primary && '⌘', shortcut.key,
+    shortcut.control && '⌃', shortcut.alt && '⌥', shortcut.shift && '⇧', shortcut.primary && '⌘',
+    keyGlyphs[shortcut.key] ?? shortcut.key,
   ].filter(Boolean).join('');
 }
 
