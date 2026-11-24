@@ -224,13 +224,6 @@ class TaskSignalSource(StrictModel):
     signal: str
 
 
-class ModelConnectionReviewRequest(StrictModel):
-    revision: Sha256
-    document: ProjectName
-    graph: ModelAddress
-    source: Annotated[SignalSource | TaskSignalSource, Field(discriminator="owner")]
-
-
 class ModelWireReplacement(StrictModel):
     address: ModelAddress
     attachments: tuple[ModelAddress, ...]
@@ -258,10 +251,16 @@ class ModelProjectionRequest(StrictModel):
     entry, the projection gives that value's differences from the step's Model."""
 
     revision: Sha256
-    run: StudioSavedTrainKey
+    run: StudioSavedTrainKey | None = None
     document: ProjectName
     rows: list[RowKey] = Field(default_factory=list)
     axes: dict[ProjectName, list[Name]] = Field(default_factory=dict)
+
+
+class ModelConnectionReviewRequest(ModelProjectionRequest):
+    graph: ModelAddress
+    source: Annotated[SignalSource | TaskSignalSource, Field(discriminator="owner")]
+    evaluate_scope: SelectedRuns | None = None
 
 
 class ModelPortProjection(StrictModel):
@@ -331,8 +330,10 @@ class ModelEditState(ModelLayout):
 
 class ModelEditResult(StrictModel):
     state: ModelEditState
+    relocations: dict[str, ModelAddress] = Field(default_factory=dict)
     changed: tuple[ModelAddress, ...] = ()
     clipboard: ModelClipboard | None = None
+    problems: tuple[ModelGraphProblem, ...] = ()
 
 
 class ModelEditRequest(StrictModel):
@@ -441,6 +442,7 @@ class ModelEditApplied(StrictModel):
     undo_token: ModelUndoToken | None = None
     created: tuple[ProjectName, ...] = ()
     problems: tuple[ModelGraphProblem, ...] = ()
+    sweep_problems: tuple[StudioProjectWindowMapProblem, ...] = ()
 
 
 class ModelEditRefused(StrictModel):

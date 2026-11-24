@@ -3,37 +3,25 @@ import type {
   StudioProjectFilePatch, StudioProjectWindowMapRow, StudioSavedTrainKey, StudioSavedTrainRuns, AttemptProvenance,
 } from '@/generated/studioContracts';
 import { reviewRemovedRuns } from '@/api/studioAuthoring';
+import { readSettings, subscribeSettings, writeSetting } from '@/appearance/appSettings';
 import { studioFormat, studioName } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
 
-const thresholdKey = 'feedbax.studio.removal-threshold';
-const thresholdEvent = 'feedbax-removal-threshold';
 const defaultThreshold = 30;
 
 /** Seconds a removed run's result must have taken for its removal to be confirmed. Train results always are. */
-export function removalThreshold(view: Pick<Window, 'localStorage'> = window) {
-  const stored = view.localStorage.getItem(thresholdKey);
-  const seconds = stored === null ? NaN : Number(stored);
-  return Number.isFinite(seconds) && seconds >= 0 ? seconds : defaultThreshold;
+export function removalThreshold(view: Window = window) {
+  const seconds = readSettings(view).removalThreshold;
+  return typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 0 ? seconds : defaultThreshold;
 }
 
 export function setRemovalThreshold(seconds: number, view: Window = window) {
-  view.localStorage.setItem(thresholdKey, String(seconds));
-  view.dispatchEvent(new Event(thresholdEvent));
-}
-
-function subscribe(listener: () => void) {
-  window.addEventListener(thresholdEvent, listener);
-  window.addEventListener('storage', listener);
-  return () => {
-    window.removeEventListener(thresholdEvent, listener);
-    window.removeEventListener('storage', listener);
-  };
+  void writeSetting(view, 'removalThreshold', seconds);
 }
 
 export function useRemovalThreshold() {
-  return useSyncExternalStore(subscribe, () => removalThreshold());
+  return useSyncExternalStore((notify) => subscribeSettings(window, notify), () => removalThreshold());
 }
 
 /** Selects the window-map rows a command removes. */

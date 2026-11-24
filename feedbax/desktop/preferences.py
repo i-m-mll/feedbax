@@ -1,4 +1,4 @@
-"""App-local window preferences served only by the desktop service."""
+"""App-local settings and window preferences served only by the desktop service."""
 
 import json
 from collections.abc import Callable
@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException
-from pydantic import Field, FiniteFloat
+from pydantic import Field, FiniteFloat, JsonValue
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.model_address import ModelElementId
@@ -86,6 +86,16 @@ def register_preferences(app: FastAPI, path: Path) -> Callable[[str, ProjectFold
         if bindings and all(folder == expected for folder in bindings):
             windows.setdefault(project_id, windows.pop(alias))
             save(preferences)
+
+    @app.get("/api/desktop/preferences/app")
+    async def get_settings() -> dict[str, JsonValue]:
+        return read().get("app", {})
+
+    @app.put("/api/desktop/preferences/app", status_code=204)
+    async def set_settings(settings: dict[str, JsonValue]) -> None:
+        preferences = read()
+        preferences["app"] = settings
+        save(preferences)
 
     @app.get("/api/desktop/preferences/windows/{project_id}")
     async def get_arrangement(project_id: ProjectName) -> WindowArrangement | None:

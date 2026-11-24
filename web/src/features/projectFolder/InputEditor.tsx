@@ -60,7 +60,7 @@ function BlockedMark({ blockedBy, steps, onReveal }: {
   const source = steps.find(({ id }) => id === first.step);
   const step = source?.label ?? first.step;
   const label = blockedBy.length === 1
-    ? studioFormat('blockedRun', { step, run: source?.runs.find(({ id }) => id === savedRunId(first))?.label ?? first.row })
+    ? studioFormat('stepRun', { step, run: source?.runs.find(({ id }) => id === savedRunId(first))?.label ?? first.row })
     : step;
   return <span className="inline-flex shrink-0 items-center gap-1.5">
     <StatusMark status="cannot_run" label={studioRunStatus('cannot_run')} />
@@ -72,6 +72,11 @@ function BlockedMark({ blockedBy, steps, onReveal }: {
 function documentOf(binding: InputBinding | null | undefined) {
   const source = (binding as { source?: { document?: unknown } } | null | undefined)?.source?.document;
   return typeof source === 'string' ? source : undefined;
+}
+
+/** A reference kept at a spelling another member later took: it names no choice, so picking that member repairs it. */
+function unresolvedChoice(spelling: string): ReferenceChoice {
+  return { id: `unresolved:${spelling}`, label: spelling };
 }
 
 /**
@@ -120,6 +125,8 @@ export function InputEditor({ label, role, binding, self, steps, project, output
     return output && { step: output.step, element: output.element, product: output.product };
   };
   const shown = (reference: StepReference): ReferenceChoice => {
+    if (reference.unresolved) return unresolvedChoice(reference.element != null && reference.product != null
+      ? `${reference.step}/${reference.element}.${reference.product}` : reference.step);
     if (reference.element != null && reference.product != null) {
       const output = { step: reference.step, element: reference.element, product: reference.product };
       return outputChoice(offered.find((item) => outputChoiceId(item) === outputChoiceId(output))

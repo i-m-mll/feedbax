@@ -6,7 +6,7 @@ from math import isfinite
 
 from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.expression_values import (
-    FieldValue, LiteralValue, Problem, ProblemCode, Site, SweepList, SweepRange, SweepSample,
+    FieldValue, LiteralValue, Problem, ProblemCode, Site, SweepList, SweepRange, SweepSample, UnresolvedValue,
 )
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.project import SetProjectValue
@@ -33,7 +33,7 @@ _STORED_KINDS = (FieldKind.VALUE, FieldKind.SWEEP)
 class NumericField:
     key: tuple[str, ...]
     label: str
-    value: int | float
+    value: int | float | UnresolvedValue
     site: Site
     stored: bool
     validate: Callable[[int | float], int | float]
@@ -172,11 +172,11 @@ def project_numeric_field[View: StudioFieldView](
     view = axis.view() if axis else None
     coordinate = selected.coordinates.get(view.id) if selected and view else None
     source = axis.shown[0][1] if axis and len(axis.covering) == 1 and len(axis.shown) == 1 else None
-    shown: FieldValue = field.literal(field.value)
-    if isinstance(source, RangeAxis):
+    shown: FieldValue = field.value if isinstance(field.value, UnresolvedValue) else field.literal(field.value)
+    if isinstance(source, RangeAxis) and not isinstance(shown, UnresolvedValue):
         rule = source.range
         shown = SweepRange(first=field.literal(rule.start), last=field.literal(rule.stop), count=rule.count, spacing=rule.scale)
-    elif isinstance(source, SampledAxis) and not isinstance(source.sampler.distribution, str):
+    elif isinstance(source, SampledAxis) and not isinstance(shown, UnresolvedValue) and not isinstance(source.sampler.distribution, str):
         shown = SweepSample(draw=source.sampler.distribution, count=source.sampler.count)
     members = []
     if isinstance(source, RangeAxis | SampledAxis) and view is not None and view.kind != "list" and view.can_list:
@@ -201,7 +201,7 @@ def project_numeric_field[View: StudioFieldView](
         if type(effective) in (int, float) and effective != field.value else None,
         mixed=len(held) > 1,
         site=site, sweep=view, selected_value=coordinate.value_id if coordinate else None,
-        can_sweep=bool(own and axis and axis.can_sweep and field.stored),
+        can_sweep=bool(own and axis and axis.can_sweep and field.stored and not isinstance(field.value, UnresolvedValue)),
         can_change_axis=bool(own and axis and axis.simple and view and (
             view.editable if view.kind == "list" else view.can_list
         )),

@@ -1,5 +1,5 @@
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { baseChain, baseOf, documentPayload } from './documentPayload';
+import { baseChain, baseOf, documentPayload, stepDocument } from './documentPayload';
 import { ChartLine, Database, Sigma } from 'lucide-react';
 import { useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
@@ -31,7 +31,7 @@ import {
 } from '@/features/projectWindow/elementSelection';
 import { shownName, type PlanStepView } from '@/features/pipeline/planView';
 import { heldElementKeys } from './analysisElements';
-import { isMemberName } from './projectMemberName';
+import { keyUnavailable } from './projectMemberName';
 import { AnalyzeElementInputs } from './AnalyzeReferences';
 import { SelectionRule } from './SelectionRule';
 import { changedSelections, stepSelections } from './selectionEdits';
@@ -78,7 +78,7 @@ export function useManagedAnalyze({
   const { saved, draft, outside } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const step = key ? draft.steps?.[key.step] : undefined;
   const base = step?.kind === 'analyze' && step.base;
-  const document = base && 'document' in base && !base.pointer ? base.document : undefined;
+  const document = stepDocument(base);
   const authored = document ? documentPayload(draft.documents, saved.composed, document) : undefined;
   const parsed = document ? AnalysisDocumentSchema.safeParse(authored) : undefined;
   const analysis = parsed?.success ? parsed.data : undefined;
@@ -148,7 +148,7 @@ export function useManagedAnalyze({
   /** The Analysis document a card reads, when it reads one of its own. */
   function cardAnalysis(card: string) {
     const read = draft.steps?.[card];
-    const source = read?.kind === 'analyze' && 'document' in read.base && !read.base.pointer ? read.base.document : undefined;
+    const source = read?.kind === 'analyze' ? stepDocument(read.base) : undefined;
     const parsed = source ? AnalysisDocumentSchema.safeParse(documentPayload(draft.documents, saved.composed, source)) : undefined;
     return parsed?.success ? parsed.data : undefined;
   }
@@ -175,7 +175,13 @@ export function useManagedAnalyze({
     accepts: (id: string) => armed.accepts({ kind: 'element', address: { document, element: { kind: 'named', id } } }),
     choose: (id: string) => { choosePick(selection, { kind: 'element', address: { document, element: { kind: 'named', id } } }); },
   } : null, [armed, document, selection]);
-  const diagnostics = (projection?.window_map?.problems ?? []).filter((problem) => id &&
+  /** The plan's Problems, with those the card's own read adds, such as a states input that reads no Evaluate runs. */
+  const cardProblems = useMemo(() => {
+    const planned = projection?.window_map?.problems ?? [];
+    const seen = new Set(planned.map((problem) => JSON.stringify(problem)));
+    return [...planned, ...(catalog?.problems ?? []).filter((problem) => !seen.has(JSON.stringify(problem)))];
+  }, [projection?.window_map?.problems, catalog?.problems]);
+  const diagnostics = cardProblems.filter((problem) => id &&
     problem.variant === key?.variant && problem.step === key?.step && problem.row === key?.row);
   const planned = new Map(projection?.window_map?.analysis_elements?.filter(({ key }) => savedRunId(key) === id)
     .map((item) => [item.name, item]));
@@ -291,7 +297,7 @@ export function useManagedAnalyze({
     }, canName);
   }
   function changeElementKey(name: string, key: string) {
-    if (!document || !isMemberName(key)) return false;
+    if (!document) return false;
     void perform(async () => {
       await editor.memberCommand(studioAccessibleName('changeKey', shown(name)),
         { kind: 'change_key', family: 'elements', document, member: name, key }, editor.getSnapshot().saved);
@@ -373,6 +379,7 @@ export function useManagedAnalyze({
       editing={namingNow?.field === 'key' && namingNow.element === selected}
       onEditingChange={(editing) => setNaming(editing ? { scope, element: selected, field: 'key' } : undefined)}
       onCommit={(key) => changeElementKey(selected, key)}
+      unavailable={(key) => keyUnavailable(key, (key) => heldElementKeys(draft.documents, saved.composed).has(key))}
       refusal={landed && typeof landed.at === 'object' && 'key' in landed.at && landed.at.key === selected ? landed.reason : undefined} />}
     {selected && selectedInput && key && inputRole && <InputEditor label={humanizeLabel(selected)} role={inputRole}
       binding={step?.inputs?.[selected]} self={key.step} project={saved.project} steps={steps} picking={selection}
@@ -383,7 +390,7 @@ export function useManagedAnalyze({
         const subset = steps.find(({ id }) => id === key.step)?.inputs.find(({ id }) => id === (listed ? `${selected}.${index}` : selected))?.subset;
         const source = steps.find(({ id }) => id === reference.step);
         const where = reference.where ?? {};
-        const problems = selectionProblems(projection?.window_map?.problems ?? [], key.step, key.variant, selected, index, listed);
+        const problems = selectionProblems(cardProblems, key.step, key.variant, selected, index, listed);
         const write = (terms: SubsetTerms) => {
           const next = { ...reference, where: terms };
           bind(selected, listed ? changedSelections(stepSelections(binding)!, { kind: 'replace', index, reference: next }) : next);

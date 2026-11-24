@@ -13,6 +13,7 @@ import {
   Table, TableAddColumn, TableFieldCell, TableHeaderCell, TableHeaderRow, TableMarginCell, TableRow, TableRowHeader,
   type TableColumn, type TableMenu,
 } from '@/components/ui/Table';
+import type { FieldModel } from '@/components/values/fieldModel';
 import { ValueField } from '@/components/values/ValueField';
 import { withAttention } from './attention';
 import {
@@ -36,8 +37,12 @@ export interface GridEdits {
   /** The cell spans its first epoch alone; the others it spanned are absent. */
   split?(signal: string, cell: TaskCell): Made;
   absent?(signal: string, cells: readonly string[]): Made;
-  /** A cell over each of `epochs`, which no cell of the signal spans. */
-  present?(signal: string, epochs: readonly string[]): Made;
+  /** A cell over each of `epochs`, which no cell of the signal spans, holding `text` or else the absent value. */
+  present?(signal: string, epochs: readonly string[], text?: string): Made;
+  /** Repeats the adjacent epochs from `first` through `last`. */
+  repeat?(first: string, last: string): Made;
+  /** Removes the repeat; its epochs stay. */
+  removeRepeat?(id: string): Made;
 }
 
 /**
@@ -56,12 +61,25 @@ function cellsOver(signal: TaskSignal, epochs: readonly TaskEpoch[], a: number, 
   return { cells, first: index(cells[0].first), last: index(cells.at(-1)!.last) };
 }
 
-/** An absent cell: the signal's absent value, muted over the hatch, which fills the cell. */
-function AbsentCell({ text }: { text: string }) {
-  return <span role="img" aria-label={studioAccessibleName('absent', text)}
-    className="flex h-[calc(var(--row-height)-1px)] min-w-0 items-center truncate px-row-inline font-mono text-xs text-shell-muted bg-[repeating-linear-gradient(135deg,var(--studio-control-border)_0_1px,transparent_1px_5px)]">
-    {text}
-  </span>;
+/**
+ * An absent cell: the signal's absent value, muted over the hatch, which fills the cell. It takes a caret as any cell
+ * does; the text it commits makes it present with that value.
+ */
+function AbsentCell({ text, present }: { text: string; present?: (text: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  return <InlineEdit form="cell" value="" empty={text} editing={editing} onEditingChange={setEditing}
+    aria-label={studioAccessibleName('absent', text)} onCommit={present ?? (() => false)}
+    className="font-mono text-xs placeholder:text-shell-muted bg-[repeating-linear-gradient(135deg,var(--studio-control-border)_0_1px,transparent_1px_5px)]" />;
+}
+
+/** A present cell's field, whose text committed empty makes the cell absent. */
+function emptiedAbsent(field: FieldModel, absent: (() => Made) | undefined): FieldModel {
+  const { commit } = field;
+  if (!commit || !absent) return field;
+  return {
+    ...field,
+    commit: async (edit) => edit.kind === 'text' && !edit.text.trim() ? (await absent()) || undefined : commit(edit),
+  };
 }
 
 const stop = (event: SyntheticEvent) => event.stopPropagation();
@@ -195,7 +213,7 @@ export function TaskGrid({ epochs, repeats, signals, selected, select, edits }: 
       items: <>
         <MenuItem disabled={!merge} onClick={merge}>{studioName('merge')}</MenuItem>
         <MenuItem disabled={!split} onClick={split}>{studioName('split')}</MenuItem>
-        <MenuCheckboxItem checked={allAbsent} disabled={!toggle} onCheckedChange={() => toggle?.()}>{studioName('absent')}</MenuCheckboxItem>
+        <MenuCheckboxItem checked={allAbsent} disabled={!toggle} closes onCheckedChange={() => toggle?.()}>{studioName('absent')}</MenuCheckboxItem>
       </>,
     };
   };
@@ -204,6 +222,8 @@ export function TaskGrid({ epochs, repeats, signals, selected, select, edits }: 
       ? ids.slice(columns.first, columns.last + 1) : [epoch.id];
     const remove = edits.removeEpochs && chosen.length < epochs.length
       ? () => settle(chosen[0], edits.removeEpochs!(chosen)) : undefined;
+    const bracketed = repeats.some(({ first, last }) => index(first) <= index(chosen.at(-1)!) && index(last) >= index(chosen[0]));
+    const repeat = edits.repeat && !bracketed ? () => settle(chosen[0], edits.repeat!(chosen[0], chosen.at(-1)!)) : undefined;
     return {
       on: 'epoch', of: epoch.name,
       items: <>
@@ -211,10 +231,17 @@ export function TaskGrid({ epochs, repeats, signals, selected, select, edits }: 
         <MenuItem disabled={!edits.addEpoch} onClick={() => setAdding({ kind: 'epoch', at: index(epoch.id) })}>
           {studioName('insertEpoch')}
         </MenuItem>
+        <MenuItem disabled={!repeat} onClick={repeat}>{studioName('repeat')}</MenuItem>
         <MenuItem disabled={!remove} onClick={remove}>{studioName('remove')}</MenuItem>
       </>,
     };
   };
+  const repeatCommands = (repeat: TaskRepeat): Commands => ({
+    on: 'repeat', of: `${epochs[index(repeat.first)]?.name}–${epochs[index(repeat.last)]?.name}`,
+    items: <MenuItem disabled={!edits.removeRepeat} onClick={() => settle(repeat.id, edits.removeRepeat?.(repeat.id))}>
+      {studioName('remove')}
+    </MenuItem>,
+  });
   const signalCommands = (signal: TaskSignal, row: number, rename: () => void): Commands => ({
     on: 'signal', of: signal.name,
     items: <>
@@ -252,7 +279,8 @@ export function TaskGrid({ epochs, repeats, signals, selected, select, edits }: 
       disabled: !!adding }}
     addRow={edits.addSignal && { label: studioName('addSignal'), onAdd: () => setAdding({ kind: 'signal' }), disabled: !!adding }}>
     <thead>
-      {repeats.length > 0 && <RepeatLane epochs={epochs} repeats={repeats} selected={selected} select={select} />}
+      {repeats.length > 0 && <RepeatLane epochs={epochs} repeats={repeats} selected={selected} select={select}
+        commands={repeatCommands} refusal={refusal} />}
       <TableHeaderRow>
         <TableHeaderCell aria-hidden="true" />
         {epochs.flatMap((epoch, column) => [
@@ -311,7 +339,11 @@ export function TaskGrid({ epochs, repeats, signals, selected, select, edits }: 
                   if (!pressed.current && !inSpan) choose(false);
                   pressed.current = false;
                 }}>
-                {cell.kind === 'absent' ? <AbsentCell text={signal.absent.text ?? ''} /> : <ValueField form="cell" model={cell.value} />}
+                {cell.kind === 'absent'
+                  ? <AbsentCell text={signal.absent.text ?? ''}
+                    present={edits.present && ((text) => settle(cell.id, edits.present!(signal.id, [cell.first], text)))} />
+                  : <ValueField form="cell" model={emptiedAbsent(cell.value,
+                    edits.absent && (() => edits.absent!(signal.id, [cell.id])))} />}
                 {refusal?.at === cell.id && <span className="absolute inset-y-0 right-6 flex items-center"><FieldProblem reason={refusal.reason} /></span>}
                 {inSpan && cell === span.cells.at(-1) && <SelectionMenu commands={commands}
                   className="absolute right-0.5 top-1/2 z-10 -translate-y-1/2" />}
@@ -390,29 +422,39 @@ function NewMember({ name, add, done, header }: { name: StudioNameId; add(name: 
     : <TableFieldCell header>{input}</TableFieldCell>;
 }
 
-/** The repeats over the columns, as a lane above them: a bracket over each, its count a field at its end. */
-function RepeatLane({ epochs, repeats, selected, select }: {
+/**
+ * The repeats over the columns, as a lane above them: a bracket over each, its count a field at its end. A bracket is
+ * selected by a click and removed from its menu, which keeps its epochs.
+ */
+function RepeatLane({ epochs, repeats, selected, select, commands, refusal }: {
   epochs: readonly TaskEpoch[]; repeats: readonly TaskRepeat[]; selected?: TaskSelection; select(selection: TaskSelection): void;
+  commands(repeat: TaskRepeat): Commands; refusal?: { readonly at: string; readonly reason: string };
 }) {
   const cells: ReactNode[] = [];
   for (let index = 0; index < epochs.length;) {
     const repeat = repeats.find(({ first }) => first === epochs[index].id);
-    if (!repeat) {
+    const last = repeat ? epochs.findIndex(({ id }) => id === repeat.last) : -1;
+    if (!repeat || last < index) {
       cells.push(<th key={epochs[index].id} aria-hidden="true" />);
       index += 1;
       continue;
     }
-    const last = epochs.findIndex(({ id }) => id === repeat.last);
     const span = last - index + 1;
     const selection = { kind: 'repeat', id: repeat.id } as const;
     const chosen = sameSelection(selection, selected);
-    cells.push(<th key={repeat.id} colSpan={span} scope="colgroup" aria-label={studioName('repeat')}
-      className="px-1 pb-0.5 pt-1 font-normal" onPointerDown={() => { if (!chosen) select(selection); }}>
-      <span className={clsx('flex items-end gap-1', chosen && 'text-shell-foreground')}>
-        <span aria-hidden="true" className={clsx('h-2 grow border-x border-t', chosen ? 'border-shell-foreground' : 'border-shell-muted')} />
-        <span className="flex w-16 shrink-0 items-center gap-0.5 text-xs text-shell-muted">×<ValueField form="cell" model={repeat.count} /></span>
-      </span>
-    </th>);
+    const own = commands(repeat);
+    const reason = refusal?.at === repeat.id ? refusal.reason : repeat.reason;
+    cells.push(<WithContextMenu key={repeat.id} commands={own} onOpen={() => { if (!chosen) select(selection); }} trigger={
+      <th colSpan={span} scope="colgroup" aria-label={studioAccessibleName('repeat', own.of)} data-repeat={repeat.id}
+        className="group/owner relative px-1 pb-0.5 pt-1 font-normal"
+        onPointerDown={(event) => { if (!onControl(event) && !chosen) select(selection); }}>
+        <span className={clsx('flex items-end gap-1', chosen && 'text-shell-foreground')}>
+          <span aria-hidden="true" className={clsx('h-2 grow border-x border-t', chosen ? 'border-shell-foreground' : 'border-shell-muted')} />
+          {reason && <FieldProblem reason={reason} />}
+          <span className="flex w-16 shrink-0 items-center gap-0.5 text-xs text-shell-muted">×<ValueField form="cell" model={repeat.count} /></span>
+          {chosen && <SelectionMenu commands={own} />}
+        </span>
+      </th>} />);
     index = last + 1;
   }
   return <tr><TableMarginCell header /><th aria-hidden="true" />{cells}</tr>;

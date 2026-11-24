@@ -7,8 +7,8 @@ test.use({ viewport: { width: 1440, height: 900 } });
 // Catches a New that gives anything but a one-epoch task, a variable that is not written once named, a type or value
 // that does not stay on its row, a rename that breaks the names reading it, completion that misses the task's
 // variables, a value naming what is not yet declared that is refused rather than stored and marked on its term (an
-// edit the user cannot leave half-done), a mark that declaring the name does not clear, and a table that a reload
-// does not give back.
+// edit the user cannot leave half-done), a mark that declaring the name does not clear, Escape during a save or the
+// read after it showing the replaced value, and a table that a reload does not give back.
 test('the Variables table names, types and values a new task\'s variables, and stores a name that does not resolve with its mark', async ({ page, request }) => {
   test.setTimeout(60_000);
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
@@ -96,11 +96,31 @@ test('the Variables table names, types and values a new task\'s variables, and s
   await expect(term).toHaveText('offset');
   await expect(term).toHaveCSS('color', problemColour);
 
+  // Escape while the committed value saves, and the read of the stored view, leave it shown, not the value it replaces.
+  let holding: 'save' | 'read' | undefined = 'save';
+  let release!: () => void;
+  let held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route('**/authoring/trials', async (route) => {
+    const body = route.request().postData() ?? '';
+    if (holding === 'save' && body.includes('/task/variables/offset/value') || holding === 'read' && !body.includes('"change"')) await held;
+    await route.fallback();
+  });
   await add('offset', 'Point', '[0.1 m, 0 m]');
+  await page.keyboard.press('Escape');
+  await expect(value('offset')).toHaveValue('[0.1 m, 0 m]');
+  const releaseSave = release;
+  held = new Promise<void>((resolve) => { release = resolve; });
+  holding = 'read';
+  releaseSave();
+  const stored = async (name: string) => JSON.stringify(((await task())?.payload as unknown as { variables: { name: string; value: unknown }[] })
+    .variables.find((variable) => variable.name === name)?.value);
+  await expect.poll(() => stored('offset')).toContain('"value":0.1,');
+  await expect(value('offset')).toHaveValue('[0.1 m, 0 m]');
+  holding = undefined;
+  release();
   await expect(row('target').locator('[data-field-problem], [data-field-term]')).toHaveCount(0);
 
   const shown = async () => Promise.all(['start', 'direction', 'radius', 'offset', 'target'].map((name) => value(name).inputValue()));
-  await page.keyboard.press('Escape');
   const before = await shown();
   expect(before).toEqual(['[0 m, 0 m]', '0.5', '0.15 m', '[0.1 m, 0 m]', 'start + offset']);
   await reopen();

@@ -17,6 +17,6 @@ test('draws the Task view mockup and the shelf for both fixtures without a conso
   const window = page.locator('.studio-project-window');
   await window.getByRole('button', { name: 'Task Delayed reaches' }).click();
   await page.getByRole('menuitemradio', { name: 'Three reaches' }).click();
-  await expect(window.getByRole('table', { name: 'Epochs' }).getByRole('img', { name: /^Absent / })).toHaveCount(2);
+  await expect(window.getByRole('table', { name: 'Epochs' }).getByRole('textbox', { name: /^Absent / })).toHaveCount(2);
   expect(errors).toEqual([]);
 });

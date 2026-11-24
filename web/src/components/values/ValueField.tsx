@@ -14,17 +14,23 @@ import { Checkbox } from '@/components/ui/Checkbox';
 import { Combobox } from '@/components/ui/Combobox';
 import { FieldProblem, FieldProblemReason } from '@/components/ui/FieldProblem';
 import { FieldRow } from '@/components/ui/FieldRow';
-import { Menu, MenuContent, MenuItem, MenuTrigger } from '@/components/ui/Menu';
+import { Menu, MenuContent, MenuRadioGroup, MenuRadioItem, MenuTrigger } from '@/components/ui/Menu';
 import { usePopupLayer } from '@/components/ui/popupLayer';
 import { Select } from '@/components/ui/Select';
 import { Section } from '@/components/ui/Section';
 import { popupItem, popupSurface, primaryText, secondaryText } from '@/components/ui/styles';
 import { TextField, type TextTerm } from '@/components/ui/TextField';
 import {
-  completions, hasMark, kindEdit, kindOffers, type ChangeMark as FieldChangeMark, type ChangeSource, type Completion,
-  type FieldEdit, type FieldModel, type FieldOption, type FieldRefusal, type ValueKind,
+  callOf, callText, completions, drawCentre, drawOf, hasMark, kindEdit, kindOffers, shapeFrom, valueKind,
+  type ChangeMark as FieldChangeMark, type ChangeSource, type Completion, type FieldEdit, type FieldModel, type FieldOption,
+  type FieldRefusal, type ValueKind,
 } from './fieldModel';
-import { clearDraw, DrawParts, startDraw, useDrawDraft, useShownDraw } from './DrawParts';
+import { DrawParts, startDraw } from './DrawParts';
+import { FormulaParts } from './FormulaParts';
+import { ItemParts, listRead } from './ItemParts';
+import { LinkParts } from './LinkParts';
+import { partDraft, setPartDraft, usePartDraft, type PartDraft } from './partDrafts';
+import { ShapeParts } from './ShapeParts';
 import { FieldIntent } from './fieldIntent';
 import { useFieldGroup } from './fieldGroups';
 import './valueField.css';
@@ -200,8 +206,8 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
   })();
 
   const textual = textualKind(type.kind);
-  const shownDraw = useShownDraw(model);
-  const draw = textual ? shownDraw : undefined;
+  const drafted = usePartDraft(model.id);
+  const valueParts = textual && model.kind !== 'sweep' ? partsOf(model, drafted) : undefined;
   if (form === 'cell') {
     return <div className="value-field value-field-cell grid min-w-0 gap-0.5 tabular-nums" role="group"
       aria-label={studioFieldLabel('field', label)}>
@@ -210,8 +216,8 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
     </div>;
   }
 
-  const parts = (indented: boolean) => (indented || model.members || model.canList || draw) && <div className="value-field-parts grid gap-1">
-    {draw && <DrawParts model={model} draw={draw} />}
+  const parts = (indented: boolean) => (indented || model.members || model.canList || valueParts) && <div className="value-field-parts grid gap-1">
+    {valueParts}
     {model.members && <Members model={model} />}
     {indented && model.parts!.map((part) => <ValueField key={part.id} model={part} />)}
     {model.canList && <Button variant="ghost" className="justify-self-start" disabled={readOnly}
@@ -248,6 +254,31 @@ const optionIndex = (options: readonly FieldOption[], value: unknown) =>
 
 const textualKind = (kind: FieldModel['type']['kind']) =>
   !['boolean', 'choice', 'class', 'vector', 'group', 'list'].includes(kind);
+
+/**
+ * The parts of the field's value, or of its unfilled draft: a Draw's, a list item's (a root that reads a list), a
+ * Formula's, a Shape's or a Link's.
+ */
+function partsOf(model: FieldModel, draft: PartDraft | undefined) {
+  switch (draft?.kind) {
+    case 'draw': return <DrawParts model={model} draw={draft.draw} />;
+    case 'formula': return <FormulaParts model={model} call={draft.call} />;
+    case 'shape': return <ShapeParts model={model} call={draft.call} />;
+    case 'link': return <LinkParts model={model} opened />;
+  }
+  const value = model.structure?.value;
+  if (!value) return undefined;
+  const read = listRead(model);
+  if (read) return <ItemParts model={model} read={read} />;
+  const call = callOf(model);
+  switch (valueKind(value, model.functions)) {
+    case 'draw': return <DrawParts model={model} draw={drawOf(model)!} />;
+    case 'formula': return call && <FormulaParts model={model} call={call} />;
+    case 'shape': return call && <ShapeParts model={model} call={call} />;
+    case 'link': return value.kind === 'name' && <LinkParts model={model} reference={value.reference} opened={false} />;
+    default: return undefined;
+  }
+}
 
 /**
  * A field whose value is a group of fields: a folding header in the label style, its changed mark at the header's end;
@@ -322,6 +353,8 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
   const { label } = model;
   const input = useRef<HTMLInputElement>(null);
   const [draft, setDraft] = useState<string>();
+  /** The text the field committed and is saving; Escape does not take it back. */
+  const saving = useRef<string>();
   const [menu, setMenu] = useState(false);
   const [caret, setCaret] = useState<number>();
   const [highlight, setHighlight] = useState(0);
@@ -340,15 +373,48 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
   }, [intent?.key]);
   /** A kind chosen in the kind menu that the field takes when the menu gives the keyboard back to it. */
   const chosen = useRef<ValueKind>();
-  /** Sweep and Until are made by the text the field commits, Draw by its parts, Rest by its text, another kind by its own edit. */
-  function choose(kind: ValueKind) {
-    if (kind === 'sweep' || kind === 'until') chosen.current = kind;
-    else if (kind === 'draw') startDraw(model);
-    else if (kind === 'rest') void submit({ kind: 'text', text: 'rest' });
-    else chooseKind(kind);
-  }
-  const drafted = useDrawDraft(model.id);
+  const drafted = usePartDraft(model.id);
   const text = draft ?? model.text ?? '';
+  const shownKind = pending ?? drafted?.kind ?? model.kind;
+  /**
+   * Replaces the value with `kind`'s form made from it: a Draw around it, a Formula holding its text with the caret in
+   * it, a Shape of it, a Link's choice opened, a Draw's centre as the Value. Sweep and Until are made by the text the
+   * field commits, Rest by its text, a sweep's Value by its own edit.
+   */
+  function choose(kind: ValueKind) {
+    if (kind === shownKind) return;
+    const held = partDraft(model.id);
+    const shownDraw = held?.kind === 'draw' ? held.draw : drawOf(model);
+    const centre = shownDraw && drawCentre(model, shownDraw);
+    const present = centre ?? text;
+    if (kind !== 'until' && kind !== 'sweep') {
+      setPartDraft(model.id, undefined);
+      setDraft(undefined);
+      setPending(undefined);
+    }
+    switch (kind) {
+      case 'sweep': case 'until': chosen.current = kind; return;
+      case 'rest': void submit({ kind: 'text', text: 'rest' }); return;
+      case 'draw': startDraw(model, present); return;
+      case 'link': setPartDraft(model.id, { kind: 'link' }); return;
+      case 'shape': {
+        const call = shapeFrom(model, present);
+        const written = call && callText({ ...model, structure: undefined }, call);
+        if (written) void submit({ kind: 'text', text: written });
+        else if (call) setPartDraft(model.id, { kind: 'shape', call });
+        return;
+      }
+      case 'value':
+        if (kindEdit(model, kind)) { chooseKind(kind); return; }
+        if (centre !== undefined && !held) { void submit({ kind: 'text', text: centre }); return; }
+        setDraft(present);
+        chosen.current = kind;
+        return;
+      case 'formula':
+        setDraft(present);
+        chosen.current = kind;
+    }
+  }
   const offered = draft !== undefined && !dismissed && caret !== undefined
     ? completions(model, text.slice(0, caret)) : { token: '', items: [] };
   const open = offered.items.length > 0;
@@ -392,16 +458,18 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
     if (event.key === 'Escape') {
       event.stopPropagation();
       if (open) { setDismissed(true); return; }
-      setDraft(undefined);
+      setDraft((current) => current === saving.current ? current : undefined);
       setPending(undefined);
-      clearDraw(model.id);
+      setPartDraft(model.id, undefined);
       clearReason();
       setMenu(false);
     }
     if (event.key === 'Enter' && draft !== undefined) {
       event.preventDefault();
       const committed = draft;
+      saving.current = committed;
       void submit({ kind: 'text', text: committed }).then((done) => {
+        if (saving.current === committed) saving.current = undefined;
         if (!done) return;
         setDraft((current) => current === committed ? undefined : current);
         setPending(undefined);
@@ -409,7 +477,7 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
     }
   }
 
-  const markMenu = mark ? <KindMark model={model} kind={pending ?? (drafted ? 'draw' : model.kind)} readOnly={readOnly} open={menu}
+  const markMenu = mark ? <KindMark model={model} kind={shownKind} readOnly={readOnly} open={menu}
     onOpenChange={setMenu} finalFocus={input} onChoose={choose} /> : undefined;
   return <>
     <TextField ref={input} id={id} type="text" value={text} leading={markMenu} trailing={changeMark} end={end} className="min-w-0"
@@ -437,15 +505,15 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
 }
 
 /**
- * A field's kind as a glyph that opens the menu of the kinds an edit converts it to. With none, the glyph is only
- * the kind: a Formula, Draw or Link is read from the field's text.
+ * A field's kind as a glyph that opens the menu of every kind its site takes, the present one checked. With one, the
+ * glyph is only the kind.
  */
 function KindMark({ model, kind = model.kind, label = model.label, readOnly, open, onOpenChange, finalFocus, onChoose }: {
   model: FieldModel; kind?: ValueKind; label?: string; readOnly: boolean; open: boolean; onOpenChange(open: boolean): void;
   finalFocus: RefObject<HTMLInputElement>; onChoose(kind: ValueKind): void;
 }) {
   const offers = kindOffers(model);
-  if (!offers.length) {
+  if (offers.length < 2) {
     return <span role="img" aria-label={studioFieldKindLabel(label, kind)} {...appTip(studioFieldKindLabel(label, kind))}
       className="flex size-full items-center justify-center text-shell-muted">
       {kindGlyphs[kind]}
@@ -456,9 +524,10 @@ function KindMark({ model, kind = model.kind, label = model.label, readOnly, ope
       className="flex size-full items-center rounded-control data-[popup-open]:bg-shell-hover"
       icon={kindGlyphs[kind]} />} />
     <MenuContent aria-label={studioFieldLabel('kinds', label)} finalFocus={finalFocus}>
-      {offers.map((offer) => <MenuItem key={offer.kind} disabled={readOnly || !offer.enabled}
-        glyph={<span className="flex text-shell-muted">{kindGlyphs[offer.kind]}</span>}
-        onClick={() => { onOpenChange(false); onChoose(offer.kind); }}>{studioName(offer.kind)}</MenuItem>)}
+      <MenuRadioGroup value={kind} onValueChange={(chosen: ValueKind) => { onOpenChange(false); onChoose(chosen); }}>
+        {offers.map((offer) => <MenuRadioItem key={offer.kind} value={offer.kind} disabled={readOnly || !offer.enabled}
+          glyph={<span className="flex text-shell-muted">{kindGlyphs[offer.kind]}</span>}>{studioName(offer.kind)}</MenuRadioItem>)}
+      </MenuRadioGroup>
     </MenuContent>
   </Menu>;
 }

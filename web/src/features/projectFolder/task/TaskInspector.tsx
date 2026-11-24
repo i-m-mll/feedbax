@@ -6,7 +6,7 @@ import { ValueField } from '@/components/values/ValueField';
 import { BatchTrace, TrialTrace } from './SignalTrace';
 import { LevelMark, variableType } from './TaskVariables';
 import type { TaskDocumentView, TaskSelection, TaskVariable } from './taskModel';
-import type { TrialShown } from './trialSample';
+import { drawnVariables, epochBoundaries, signalAggregate, signalSteps, type TrialShown } from './trialSample';
 
 function Fact({ label, children }: { label: string; children: ReactNode }) {
   return <FieldRow label={label}><span className="flex h-control items-center tabular-nums text-shell-muted">{children}</span></FieldRow>;
@@ -14,23 +14,21 @@ function Fact({ label, children }: { label: string; children: ReactNode }) {
 
 const round = (value: number) => Number(value.toPrecision(3));
 
-/** A signal's trace over the shown trial or batch, with the trial's epoch boundaries. */
-function Trace({ view, signal, shown }: { view: TaskDocumentView; signal: string; shown: TrialShown }) {
+/** A signal's trace over the shown trial or trials, with one trial's epoch boundaries. */
+function Trace({ view, signal, shown }: { view: TaskDocumentView; signal: string; shown?: TrialShown }) {
   const name = view.signals.find(({ id }) => id === signal)?.name ?? signal;
-  if (shown.kind === 'trial') {
-    const steps = shown.trial.signals[signal];
-    const step = view.stepSeconds ?? view.duration / steps.length;
-    const boundaries = shown.trial.intervals.slice(1).map(({ start }) => Math.round(start / step));
-    return <section aria-label={studioName('plot')} className="grid gap-1">
-      <TrialTrace label={name} steps={steps} boundaries={boundaries} duration={view.duration} />
+  if (!shown) return null;
+  switch (shown.kind) {
+    case 'one': return <section aria-label={studioName('plot')} className="grid gap-1">
+      <TrialTrace label={name} steps={signalSteps(shown.record, signal)} boundaries={epochBoundaries(shown.record)} duration={view.duration} />
     </section>;
+    case 'all': {
+      const aggregate = signalAggregate(shown.aggregate, signal);
+      return aggregate ? <section aria-label={studioName('plot')} className="grid gap-1">
+        <BatchTrace label={name} aggregate={aggregate} boundaries={[]} duration={view.duration} />
+      </section> : null;
+    }
   }
-  if (shown.kind === 'batch') {
-    return <section aria-label={studioName('plot')} className="grid gap-1">
-      <BatchTrace label={name} aggregate={shown.batch.signals[signal]} boundaries={[]} duration={view.duration} />
-    </section>;
-  }
-  return null;
 }
 
 /** A variable in the Inspector: its value with the value's parts, and its type. */
@@ -44,15 +42,15 @@ export function VariableInspector({ variable, children }: { variable: TaskVariab
 }
 
 /** The Inspector for what is selected in the Task view: its fields with their parts, and, with a trial shown, what it drew. */
-export function TaskInspector({ view, selected, shown }: { view: TaskDocumentView; selected?: TaskSelection; shown: TrialShown }) {
+export function TaskInspector({ view, selected, shown }: { view: TaskDocumentView; selected?: TaskSelection; shown?: TrialShown }) {
   if (!selected) return null;
-  const drawn = shown.kind === 'trial' ? shown.trial.variables : shown.kind === 'batch' ? shown.batch.variables : undefined;
+  const drawn = drawnVariables(shown);
   switch (selected.kind) {
     case 'variable': {
       const variable = view.variables.find(({ id }) => id === selected.id);
       if (!variable) return null;
       return <VariableInspector variable={variable}>
-        {drawn && <Fact label={shown.kind === 'batch' ? studioName('allTrials') : studioName('trial')}>{drawn[variable.id]}</Fact>}
+        {drawn && <Fact label={shown?.kind === 'all' ? studioName('allTrials') : studioName('trial')}>{drawn[variable.id]}</Fact>}
       </VariableInspector>;
     }
     case 'epoch': case 'end': {
