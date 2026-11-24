@@ -24,7 +24,7 @@ function themedLayout(layout: Fields | undefined): Fields {
   return {
     ...sized,
     autosize: true,
-    showlegend: false,
+    legend: { ...(sized.legend as Fields | undefined), orientation: 'h', x: 0, xanchor: 'left', y: -0.2, yanchor: 'top' },
     template: {
       ...template,
       layout: {

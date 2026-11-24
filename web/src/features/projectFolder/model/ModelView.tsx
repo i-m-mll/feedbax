@@ -514,9 +514,10 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const objects = Object.entries(interior?.components ?? {});
   /**
    * The Outputs card's place when none is stored: right of the grid columns the components without stored places fill.
-   * Added and moved components store theirs, so it does not move as components are added.
+   * Added and moved components store theirs, so it does not move as components are added. Ghosts count, so it does
+   * not move when a selected value removes a component.
    */
-  const gridColumns = Math.max(0, ...objects.map(([id], index) =>
+  const gridColumns = Math.max(0, ...Object.keys(drawnInterior?.components ?? {}).map((id, index) =>
     persisted?.[addressKey(at(graph, { kind: 'component', id }))] ? 0 : index + 1));
   const outputsAt = { x: 245 + 235 * Math.max(1, Math.min(gridColumns, 4)), y: 38 };
   const placed = model ? placing.filter((item) => item.document === model.id && item.graph === graphId && !interior?.components?.[item.id]) : [];

@@ -19,7 +19,7 @@ test('one clock plays every picked trial, its scrubber on the shelf\'s axis, and
   const picker = clock.getByRole('button', { name: /^Trial / });
   const shelf = page.getByRole('region', { name: 'Shelf', exact: true });
   const shelfSwitch = clock.getByRole('button', { name: 'Shelf', exact: true });
-  const readout = clock.locator('output');
+  const readout = clock.getByText(/^\d+\.\d\d s \/ \d+\.\d\d s$/);
   const tab = (name: string) => page.getByRole('tab', { name, exact: true });
 
   await page.goto(`/?project=${snapshot.project_id}`);
