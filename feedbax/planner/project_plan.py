@@ -389,6 +389,8 @@ class PlannedRow:
     # The Model document an Evaluate row names, and its subject run's Model document.
     evaluated_model: tuple[str, str] | None = field(default=None, kw_only=True)
     train: TrainFacts | None = field(default=None, kw_only=True)
+    resolved: bool = field(default=True, kw_only=True)
+    """Whether the row's definition resolves; one whose own patches or documents are refused has none."""
 
 
 @dataclass(frozen=True)
@@ -1161,6 +1163,7 @@ class _LoweredRow:
     model_source: _ModelSource | None = None
     train: TrainFacts | None = None
     encoded_spec: RequestSpec | None = None
+    resolved: bool = True
 
 
 @dataclass(frozen=True)
@@ -2126,7 +2129,7 @@ class _Compiler:
                     trial_resolution=train_rows.resolution if train_rows is not None else None,
                 )
                 if isinstance(resolved, ProjectDiagnostic):
-                    return _LoweredRow(None, (replace(resolved, variant=key.variant),))
+                    return _LoweredRow(None, (replace(resolved, variant=key.variant),), resolved=False)
                 payload = resolved.payload
                 document_ids = MappingProxyType(resolved.document_ids)
                 document_uses = resolved.document_uses
@@ -2432,7 +2435,7 @@ class _Compiler:
 
         resolved = self.resolve_row(template, key, row, None)
         if isinstance(resolved, ProjectDiagnostic):
-            return _LoweredRow(None, (replace(resolved, variant=key.variant),)), {}
+            return _LoweredRow(None, (replace(resolved, variant=key.variant),), resolved=False), {}
         path = "inputs.subject"
         try:
             if resolved.payload.get("evaluation_type") != ROLLOUT_TYPE:
@@ -2955,6 +2958,7 @@ class _Compiler:
         self.rows[key] = BlockedRow(
             planned.key, planned.kind, planned.label, planned.coordinates, MappingProxyType(dict(inputs)), producer,
             axis_keys=planned.axis_keys, input_axes=planned.input_axes,
+            resolved=not isinstance(resolved, ProjectDiagnostic),
             **({} if isinstance(resolved, ProjectDiagnostic) else {
                 "document_ids": MappingProxyType(dict(resolved.document_ids)),
                 "document_uses": resolved.document_uses,
@@ -3021,6 +3025,7 @@ class _Compiler:
             self.rows[key] = replace(
                 row, document_ids=lowered.document_ids, document_uses=lowered.document_uses,
                 followed_documents=followed, evaluated_model=evaluated, train=lowered.train,
+                resolved=lowered.resolved,
             )
             return None
         self.requests[encoded.id] = encoded.data

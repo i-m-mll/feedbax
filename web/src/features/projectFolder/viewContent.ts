@@ -19,8 +19,9 @@ export interface ViewSubject {
   readonly trainingForm: boolean;
   /** Whether the plan has been read; until it has, the views drawn from it are loading. */
   readonly planRead: boolean;
-  /** Whether the step has a run, which its Task and Objective are read through. */
-  readonly run: boolean;
+  /** The step's run its Task and Objective are read through: none, one with a definition, or one whose own definition
+   * is refused, for which the definition views are dimmed by its problems. */
+  readonly run: 'none' | 'resolved' | 'unresolved';
   /** The stored Model the step's Model and Scene show. */
   readonly model: ModelDocument | undefined;
   /** The Evaluate run whose trials the Scene replays. */
@@ -49,12 +50,15 @@ export function viewAbsence(view: ProjectWindowView, subject: ViewSubject): stri
   const { step } = subject;
   if (!subject.planRead && (view === 'task' || view === 'objective' || view === 'results' ||
     view === 'scene' && step.kind === 'evaluate')) return undefined;
+  if (subject.run === 'unresolved' && (view === 'task' || view === 'objective' || view === 'training')) {
+    return studioRunReason({ problems: subject.runProblems });
+  }
   switch (view) {
     case 'model':
       return subject.model ? undefined : studioReason('definitionUnavailable', studioName('model'));
     case 'task':
     case 'objective':
-      return subject.run ? undefined : studioReason('noRuns', step.label);
+      return subject.run === 'none' ? studioReason('noRuns', step.label) : undefined;
     case 'training':
       return subject.trainingForm ? undefined : studioReason('definitionUnavailable', studioName('training'));
     case 'scene':

@@ -1,11 +1,12 @@
 import { BarChart3, FileText, FlaskConical, PlayCircle } from 'lucide-react';
 import type { ResultStatus } from '@/components/ui/StatusMark';
 import type {
-  ComputationChange, DriverChanged, EnvironmentDifference, ProgramsChanged, StepCountChanged, EnvironmentNotice, FieldKind, RegistryBinding, StudioActivityJob, StudioEvaluateValueSource,
+  ComputationChange, DriverChanged, EnvironmentDifference, ProgramsChanged, StepCountChanged, EnvironmentNotice, RegistryBinding, StudioActivityJob, StudioEvaluateValueSource,
   StudioDefinitionChange, StudioPlanReviewSource, StudioProjectWindowMapProblem, StudioSavedEvaluationResult,
   StudioSavedTrainChange, StudioSweptParameterMissing, ValidityReason,
 } from '@/generated/studioContracts';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
+import type { ValueKind } from '@/components/values/fieldModel';
 import vocabulary from './vocabulary.json';
 
 export type StudioNameId = keyof typeof vocabulary.name;
@@ -53,7 +54,7 @@ export function studioSweptParameterMissing({ class_label, parameter_label }: St
   return studioFormat('sweptParameterMissing', { class: class_label, parameter: parameter_label });
 }
 
-export function studioFieldKindLabel(label: string, kind: FieldKind) {
+export function studioFieldKindLabel(label: string, kind: ValueKind) {
   return studioFormat('fieldKind', { label, name: studioName('kind').toLowerCase(), value: studioName(kind) });
 }
 

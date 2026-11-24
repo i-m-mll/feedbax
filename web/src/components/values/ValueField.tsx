@@ -1,8 +1,7 @@
 import clsx from 'clsx';
-import { Dices, Link, Sigma, Spline } from 'lucide-react';
+import { ArrowRightToLine, Dices, Hourglass, Link, Sigma, Spline } from 'lucide-react';
 import { useContext, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
-import type { FieldKind } from '@/generated/studioContracts';
 import { appTip } from '@window-shell/browser/tooltip';
 import {
   studioAccessibleName, studioEvaluateValueSource, studioFieldKindLabel, studioFieldLabel, studioFormat, studioName,
@@ -23,7 +22,7 @@ import { popupItem, popupSurface, primaryText, secondaryText } from '@/component
 import { TextField } from '@/components/ui/TextField';
 import {
   completions, hasMark, kindEdit, kindOffers, type ChangeMark as FieldChangeMark, type ChangeSource, type Completion,
-  type FieldEdit, type FieldModel, type FieldOption,
+  type FieldEdit, type FieldModel, type FieldOption, type ValueKind,
 } from './fieldModel';
 import { clearDraw, DrawParts, startDraw, useDrawDraft, useShownDraw } from './DrawParts';
 import { FieldIntent } from './fieldIntent';
@@ -65,13 +64,15 @@ function Outline({ children }: { children: ReactNode }) {
     strokeLinecap="round" strokeLinejoin="round">{children}</svg>;
 }
 
-const kindGlyphs: Record<FieldKind, ReactNode> = {
+const kindGlyphs: Record<ValueKind, ReactNode> = {
   value: <Outline><circle cx="12" cy="12" r="2.5" /></Outline>,
   sweep: <Outline><circle cx="3.5" cy="12" r="2.5" /><circle cx="12" cy="12" r="2.5" /><circle cx="20.5" cy="12" r="2.5" /></Outline>,
   draw: <Dices aria-hidden="true" />,
   formula: <Sigma aria-hidden="true" />,
   shape: <Spline aria-hidden="true" />,
   link: <Link aria-hidden="true" />,
+  until: <Hourglass aria-hidden="true" />,
+  rest: <ArrowRightToLine aria-hidden="true" />,
 };
 
 /**
@@ -137,7 +138,7 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
   const marks = (problem || change) && <>{problem}{change}</>;
   const below = model.origin && <Origin id={originId} text={model.origin} reveal={model.revealOrigin} />;
 
-  function chooseKind(kind: FieldKind) {
+  function chooseKind(kind: ValueKind) {
     const edit = kindEdit(model, kind);
     if (edit) void submit(edit);
   }
@@ -259,7 +260,7 @@ function ClassValue({ model, parameter, labelId, picker, pickReason }: {
     : model.commit ? () => void model.commit!({ kind: 'reset' }).then(setReason) : undefined;
   const describedBy = [change && changeId, origin && originId, shown && reasonId].filter(Boolean).join(' ') || undefined;
   const problem = shown && <FieldProblem reason={shown} id={reasonId} />;
-  function chooseKind(kind: FieldKind) {
+  function chooseKind(kind: ValueKind) {
     const edit = kindEdit(parameter, kind);
     if (edit) void submit(edit);
   }
@@ -285,7 +286,7 @@ function ClassValue({ model, parameter, labelId, picker, pickReason }: {
 function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearReason, chooseKind, changeMark, end, parameterOf }: {
   model: FieldModel; id: string; readOnly: boolean; describedBy?: string; invalid: boolean;
   submit(edit: FieldEdit): Promise<boolean>; clearReason(): void;
-  chooseKind(kind: FieldKind): void;
+  chooseKind(kind: ValueKind): void;
   /** The field's problem and changed marks, at the box's trailing end. */
   changeMark?: ReactNode;
   end?: ReactNode;
@@ -302,8 +303,8 @@ function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearRea
   const listId = useId();
   const intent = useContext(FieldIntent);
   /** A kind a command put the field in that no edit has made yet: it is made by the text the field commits. */
-  const [pending, setPending] = useState<FieldKind>();
-  function enter(kind: FieldKind) {
+  const [pending, setPending] = useState<ValueKind>();
+  function enter(kind: ValueKind) {
     setPending(kind);
     const end = input.current?.value.length ?? 0;
     input.current?.setSelectionRange(end, end);
@@ -312,11 +313,12 @@ function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearRea
     if (intent && intent.target === model.anchor) enter(intent.kind);
   }, [intent?.key]);
   /** A kind chosen in the kind menu that the field takes when the menu gives the keyboard back to it. */
-  const chosen = useRef<FieldKind>();
-  /** Sweep is made by the text the field commits, Draw by its parts, another kind by its own edit. */
-  function choose(kind: FieldKind) {
-    if (kind === 'sweep') chosen.current = kind;
+  const chosen = useRef<ValueKind>();
+  /** Sweep and Until are made by the text the field commits, Draw by its parts, Rest by its text, another kind by its own edit. */
+  function choose(kind: ValueKind) {
+    if (kind === 'sweep' || kind === 'until') chosen.current = kind;
     else if (kind === 'draw') startDraw(model);
+    else if (kind === 'rest') void submit({ kind: 'text', text: 'rest' });
     else chooseKind(kind);
   }
   const drafted = useDrawDraft(model.id);
@@ -405,8 +407,8 @@ function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearRea
  * the kind: a Formula, Draw or Link is read from the field's text.
  */
 function KindMark({ model, kind = model.kind, label = model.label, readOnly, open, onOpenChange, finalFocus, onChoose }: {
-  model: FieldModel; kind?: FieldKind; label?: string; readOnly: boolean; open: boolean; onOpenChange(open: boolean): void;
-  finalFocus: RefObject<HTMLInputElement>; onChoose(kind: FieldKind): void;
+  model: FieldModel; kind?: ValueKind; label?: string; readOnly: boolean; open: boolean; onOpenChange(open: boolean): void;
+  finalFocus: RefObject<HTMLInputElement>; onChoose(kind: ValueKind): void;
 }) {
   const offers = kindOffers(model);
   if (!offers.length) {
@@ -433,7 +435,7 @@ function KindMark({ model, kind = model.kind, label = model.label, readOnly, ope
  */
 function ClassPicker({ model, labelId, inline, readOnly, submit, chooseKind, mark, describedBy }: {
   model: FieldModel; labelId: string; inline: boolean; readOnly: boolean;
-  submit(edit: FieldEdit): Promise<boolean>; chooseKind(kind: FieldKind): void;
+  submit(edit: FieldEdit): Promise<boolean>; chooseKind(kind: ValueKind): void;
   /** The class's problem and changed marks, at the box's trailing end. */
   mark?: ReactNode;
   describedBy?: string;

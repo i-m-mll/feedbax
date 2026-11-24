@@ -74,7 +74,7 @@ from feedbax.planner.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.result_address import parse_labels
 from feedbax.contracts.project_sweep import CheckpointRuleAxis, axis_coordinates
-from feedbax.contracts.run_rule import RuleRefusal, choose, value_text
+from feedbax.contracts.run_rule import RuleRefusal, choose
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import (
     BatchMember, BatchSetMember, BestRank, LastMember, ProductRef, UpdateSeriesMember,
@@ -105,6 +105,7 @@ from feedbax.host.live_evaluate import live_objective_series
 from feedbax.contracts.rollout import CannotRun
 from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
 from feedbax.tasks.registry import PythonTaskRegistry
+from feedbax.web.services.axis_values import gather_axes
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, SettledProjectPlan
 
 
@@ -269,6 +270,8 @@ class ProjectPlanRead:
         document_ids: dict[tuple[str, str], dict[str, str]] = {}
         document_uses: dict[tuple[str, str], set[str]] = defaultdict(set)
         for row in plan.rows:
+            if not row.resolved:
+                continue
             key = row.key.variant, row.key.step
             document_uses[key].update(row.document_uses - row.followed_documents)
             shared = document_ids.get(key)
@@ -344,14 +347,17 @@ class ProjectPlanRead:
         def includes(variant: str | None) -> bool:
             return variants is None or variant is None or variant in variants
 
-        rule_axes: dict[tuple[str, str], dict[str, dict[str, str]]] = defaultdict(dict)
         rule_metrics: dict[tuple[str, str], set[str]] = defaultdict(set)
+        step_rows: dict[tuple[str, str], list[PlannedRow]] = defaultdict(list)
         for row in plan.rows:
             at = row.key.variant, row.key.step
-            for axis, coordinate in axis_coordinates(row.coordinates, row.input_axes).items():
-                rule_axes[at].setdefault(axis, {}).setdefault(coordinate.value_id, value_text(coordinate))
+            step_rows[at].append(row)
             for attempt in self.attempts_by_run.get(row.key, ()):
                 rule_metrics[at].update(attempt.metric_names)
+        gathered = {at: gather_axes(rows) for at, rows in step_rows.items()}
+        axis_values = {
+            at: value for _, values in gathered.values() for at, value in values.items()
+        }
 
         return StudioProjectWindowMap(
             variants=[variant for variant in plan.variants if includes(variant)],
@@ -368,7 +374,7 @@ class ProjectPlanRead:
                         for name, rows in plan.exception_matches.get((variant, step_id), {}).items()
                     ],
                     status_counts=dict(counts[variant, step_id]),
-                    rule_axes=rule_axes[variant, step_id],
+                    axes=gathered[variant, step_id][0] if (variant, step_id) in gathered else [],
                     rule_metrics=sorted(rule_metrics[variant, step_id]),
                 )
                 for (variant, step_id), step in plan.steps.items() if includes(variant)
@@ -389,15 +395,20 @@ class ProjectPlanRead:
                     evaluation_conditions=task_conditions(row),
                     origin=row.train.origin if row.train is not None else None,
                     target_total=row.train.target_total if row.train is not None else None,
+                    resolved=row.resolved,
                     member_key=producer_member_key(row.key.variant, row.key.row, gathers_variants=False)
                     if row.kind in {"train", "evaluate"} else None,
                     coordinates={
-                        axis: StudioProjectWindowMapCoordinate.model_validate(coordinate, from_attributes=True)
+                        axis: StudioProjectWindowMapCoordinate(
+                            value_id=coordinate.value_id, label=coordinate.label, value=coordinate.value,
+                            axis_value=axis_values[row.key, axis],
+                        )
                         for axis, coordinate in row.coordinates.items()
                     },
                     input_axes={
                         axis: StudioProjectWindowMapInputAxis(
                             value_id=member.value_id, label=member.label, carries=list(member.carries),
+                            axis_value=axis_values[row.key, axis],
                         )
                         for axis, member in row.input_axes.items()
                     },

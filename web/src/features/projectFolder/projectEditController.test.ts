@@ -258,7 +258,7 @@ it('does not widen a selected Train row to an unselected variant', async () => {
         document_ids: {}, status_counts: { not_run: 1 },
       })),
       rows: rows.map(({ key, label, status }) => ({
-        key, label, status, coordinates: { seed: { value_id: 'a', label: 'Replicate A', value: 1 } },
+        key, label, status, coordinates: { seed: { value_id: 'a', label: 'Replicate A', value: 1, axis_value: 'a' } },
       })),
       edges: [],
       problems: [],
