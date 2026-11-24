@@ -140,6 +140,7 @@ def test_an_evaluation_keeps_its_subjects_swept_value_under_its_documents_change
 
 def test_a_model_document_that_shares_none_with_the_subjects_is_the_evaluations_problem():
     data = _data()
+    data["documents"]["model"]["label"] = "Point mass"
     data["documents"]["unrelated"] = deepcopy(data["documents"]["model"])
     _reads(data, "check", "model", "unrelated")
     plan = _plan(data)
@@ -147,6 +148,7 @@ def test_a_model_document_that_shares_none_with_the_subjects_is_the_evaluations_
     assert [(problem.code, problem.step, problem.document, problem.path) for problem in plan.diagnostics] == [
         (ResolutionCode.BAD_REFERENCE, "check", "unrelated", "payload.trial_documents.model"),
     ]
+    assert plan.diagnostics[0].detail == "Shares no document with Point mass."
 
 
 def test_an_evaluation_reads_its_documents_differences_from_the_nearest_shared_document():

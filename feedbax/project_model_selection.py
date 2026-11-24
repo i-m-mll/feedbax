@@ -76,5 +76,4 @@ def selected_task_signal(folders: ProjectFolder, project_id: str, body: ModelPro
     item = next((item for item in task.exposed_data if item.bindable and item.id == signal), None)
     if item is None:
         raise ProjectFolderInvalid("The selected task does not expose this signal")
-    projected = task_signal(item)
-    return projected.model_copy(update={"type": projected.type.model_copy(update={"base": None})})
+    return task_signal(item)

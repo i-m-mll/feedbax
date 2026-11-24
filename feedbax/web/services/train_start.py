@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
-from feedbax.contracts.project import Project, RemoveProjectValue, SetProjectValue, Step
+from feedbax.contracts.project import Project, RemoveProjectValue, SetProjectValue, Step, member_name
 from feedbax.contracts.project_inputs import StepReference
 from feedbax.contracts.project_io import project_declaration_name
 from feedbax.contracts.project_resolution import ProjectDiagnostic, StepTemplate, compose_step
@@ -153,7 +153,7 @@ def prepare_train_start(
         (result.payload, result.sweep, result.requires) != (payload, own.sweep, own.requires)
         or result.inputs != intended
     ):
-        raise ProjectFolderInvalid(f"Train step {step_id!r} cannot keep its definition with this start.")
+        raise ProjectFolderInvalid(f"{member_name(project.steps, step_id)} cannot keep its definition with this start.")
     order = list(raw)
     removed = sorted((key for key in fields if key in raw and fields[key] is None), key=order.index, reverse=True)
     patches: list[SetProjectValue | RemoveProjectValue] = [
