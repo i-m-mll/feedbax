@@ -17,6 +17,7 @@ test('the Variables table names, types and values a new task\'s variables, and m
   const table = primary.getByRole('tabpanel').getByRole('table', { name: 'Variables', exact: true });
   const row = (name: string) => table.getByRole('row').filter({ has: page.getByRole('textbox', { name: `Rename ${name}`, exact: true }) });
   const value = (name: string) => row(name).getByRole('textbox', { name: 'Value', exact: true });
+  const variables = table.getByRole('row').filter({ has: page.getByRole('textbox', { name: /^Rename / }) });
 
   await page.goto(`/?project=${snapshot.project_id}`);
   await mapStep(page, 'train').click();
@@ -31,7 +32,7 @@ test('the Variables table names, types and values a new task\'s variables, and m
     return entry?.[1] as { payload: { epochs: unknown[] } } | undefined;
   };
   await expect.poll(async () => (await task())?.payload.epochs.length).toBe(1);
-  await expect(table.getByRole('row')).toHaveCount(2);
+  await expect(variables).toHaveCount(0);
 
   const add = async (name: string, type: string, text: string) => {
     await table.getByRole('button', { name: 'Add Variable', exact: true }).click();
@@ -61,7 +62,7 @@ test('the Variables table names, types and values a new task\'s variables, and m
   await page.keyboard.press('Enter');
   await expect(value('target')).toHaveValue(/polar\(reach, 0\.5 rad\)/);
   await expect(row('target').locator('[data-field-problem], [data-field-term]')).toHaveCount(0);
-  await expect(table.getByRole('row')).toHaveCount(6);
+  await expect(variables).toHaveCount(4);
 
   const name = table.getByRole('textbox', { name: 'Rename reach', exact: true });
   await name.click();

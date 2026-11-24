@@ -403,7 +403,6 @@
     "epoch": "Epoch",
     "addVariable": "Add Variable",
     "initializes": "Initializes",
-    "neededAtStart": "The Model needs this value at the start of each trial.",
     "addEpoch": "Add Epoch",
     "addSignal": "Add Signal",
     "insertEpoch": "Insert Epoch",
@@ -512,6 +511,7 @@
     }
   },
   "reason": {
+    "neededAtStart": "The Model needs {value} at the start of each trial",
     "observed": "{value}",
     "unavailable": "{value} unavailable",
     "unreachable": "{value} unreachable",

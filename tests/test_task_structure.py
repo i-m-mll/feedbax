@@ -1,5 +1,6 @@
 """A task document's structure is changed by the service, and the document it leaves compiles."""
 
+from feedbax.contracts.expression_values import ValueType
 from feedbax.contracts.studio_trials import StudioTrialAuthoring
 from feedbax.contracts.task_document import BLANK_TASK
 from tests.support.managed_train_fixture import managed_train_project
@@ -71,6 +72,17 @@ def test_each_structural_change_leaves_a_document_that_compiles(tmp_path):
         assert [item["id"] for item in task["variables"]] == ["start", "target", "catch"]
         assert [item["id"] for item in task["epochs"]] == ["hold", "cue", "move"]
         assert task["links"] == [{"model_field": LINKED, "variable": "target"}]
+
+
+def test_a_variable_added_for_a_model_start_initializes_it_in_the_same_edit(tmp_path):
+    """Catches naming a Model start that writes the variable without its link, or leaves the start linked twice."""
+    project = _project(tmp_path)
+    with project.client:
+        change = {"op": "add", "member": "variable", "name": "origin", "type": POINT, "initializes": [LINKED]}
+        assert _made(project, change) == []
+        task = project.composed(TASK)
+        assert ValueType.model_validate(task["variables"][-1]["type"]) == ValueType.model_validate(POINT)
+        assert task["links"] == [{"model_field": LINKED, "variable": "origin"}]
 
 
 def test_a_value_is_stored_in_a_task_that_already_has_problems(tmp_path):
