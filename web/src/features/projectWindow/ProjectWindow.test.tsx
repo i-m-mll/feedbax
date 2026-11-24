@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -27,7 +28,8 @@ it('covers the main area with Settings while the rail and gear keep working', ()
     disconnect() {}
   });
   const zoom = vi.fn();
-  render(<ProjectWindowPalette><Window zoom={zoom} /></ProjectWindowPalette>);
+  vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
+  render(<QueryClientProvider client={new QueryClient()}><ProjectWindowPalette><Window zoom={zoom} /></ProjectWindowPalette></QueryClientProvider>);
   const gear = screen.getByRole('button', { name: 'Settings' });
   const runs = screen.getByRole('tab', { name: 'Runs' });
   expect(runs.getAttribute('aria-selected')).toBe('true');

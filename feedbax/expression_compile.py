@@ -160,7 +160,12 @@ def compile_expression(
 
             def evaluate(inputs, _values, _slots):
                 defined = inputs.defined.get(node.reference, True) if inputs.defined else True
-                return Evaluation(inputs.values[node.reference], defined)
+                value = inputs.values[node.reference]
+                if node_type.implicit_item:
+                    value = value[inputs.repeat]
+                    if inputs.defined and node.reference in inputs.defined:
+                        defined = defined[inputs.repeat]
+                return Evaluation(value, defined)
         else:
             key = node.family if isinstance(node, DrawValue) else node.function
             function = functions.resolve(key)
@@ -191,6 +196,10 @@ def compile_expression(
             elif function.info.random:
                 stream = ("call", str(random_call_ordinal))
                 random_call_ordinal += 1
+            list_index = (
+                key == "index" and isinstance(node.args[0], NameValue)
+                and any(name.id == node.args[0].reference and name.list_count is not None for name in site.names)
+            )
             args = tuple(visit(child, (*at, "args", i)) for i, child in enumerate(node.args))
             kwargs = {
                 name: visit(child, (*at, "kwargs", name))
@@ -228,6 +237,8 @@ def compile_expression(
                 positional = tuple(argument(inputs, values, state) for argument in args)
                 named = {name: arg(inputs, values, state) for name, arg in kwargs.items()}
                 defined = tuple(arg.defined for arg in positional)
+                if list_index and jnp.ndim(defined[0]):
+                    defined = (jnp.take(defined[0], positional[1].value), *defined[1:])
                 context = CallContext(
                     {name: inputs.values[ref] for name, ref in implicit.items()},
                     key_value,

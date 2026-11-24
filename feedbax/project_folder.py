@@ -102,7 +102,7 @@ if TYPE_CHECKING:
     from feedbax.plot.templates import FigureTemplateRegistry
     from feedbax.component_registry import ComponentRegistry
     from feedbax.contracts.model_edit import (
-        ModelClipboard, ModelEditProblem, ModelEditRequest,
+        ModelClipboard, ModelEditProblem, ModelEditRequest, ModelGraphProblem,
     )
 
 
@@ -853,6 +853,7 @@ class AppliedModelEdit:
     clipboard: ModelClipboard | None
     change: ModelEditChange | None
     created: tuple[str, ...] = ()
+    problems: tuple[ModelGraphProblem, ...] = ()
 
 
 class ProjectFolder:
@@ -1452,7 +1453,7 @@ class ProjectFolder:
                 ), model_operation=True, created=stored.created)
             if alone:
                 change = ModelEditChange(before, (payload, layout), model_edit_source(snapshot, body.document))
-        return AppliedModelEdit(snapshot, result.changed, result.clipboard, change, created)
+        return AppliedModelEdit(snapshot, result.changed, result.clipboard, change, created, result.problems)
 
     def _write_model_change(
         self, snapshot: StudioProjectSnapshot, document: ProjectName,

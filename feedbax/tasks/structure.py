@@ -7,10 +7,10 @@ variable stays referenced where it was read: the document still compiles to Prob
 from typing import assert_never
 
 from feedbax.contracts.expression_values import LiteralValue, Problem, ProblemCode, UnresolvedValue, ValueBase, ValueType
-from feedbax.contracts.task_document import Cell, Epoch, Length, Link, Signal, TaskDocument, Variable
+from feedbax.contracts.task_document import Cell, Epoch, Length, Link, Repeat, Signal, TaskDocument, Variable
 from feedbax.contracts.task_structure import (
     AddMember, MakeAbsent, MakePresent, MoveMember, RemoveMember, RenameMember, SetLink, SetSpan, SetType,
-    TaskStructureChange,
+    RemoveRepeat, RepeatEpochs, SetRepeatCount, SetVariableCount, TaskStructureChange,
 )
 from feedbax.tasks.document import zero
 
@@ -51,6 +51,35 @@ def restructure(document: TaskDocument, change: TaskStructureChange) -> TaskDocu
             if change.variable is not None:
                 links = (*links, Link(model_field=change.model_field, variable=change.variable))
             return document.model_copy(update={"links": links})
+        case RepeatEpochs():
+            order = tuple(epoch.id for epoch in document.epochs)
+            for endpoint in (change.first_epoch, change.last_epoch):
+                if endpoint not in order:
+                    return _missing("epoch", endpoint)
+            first, last = sorted((order.index(change.first_epoch), order.index(change.last_epoch)))
+            repeat = Repeat(
+                id=_fresh("repeat", {item.id for item in document.repeats}),
+                first_epoch=order[first], last_epoch=order[last], count=change.count,
+            )
+            return document.model_copy(update={"repeats": (*document.repeats, repeat)})
+        case SetRepeatCount() | RemoveRepeat():
+            if all(item.id != change.id for item in document.repeats):
+                return _missing("repeat", change.id)
+            repeats = tuple(
+                item.model_copy(update={"count": change.count}) if item.id == change.id else item
+                for item in document.repeats
+                if not isinstance(change, RemoveRepeat) or item.id != change.id
+            )
+            return document.model_copy(update={"repeats": repeats})
+        case SetVariableCount():
+            if all(item.id != change.id for item in document.variables):
+                return _missing("variable", change.id)
+            return document.model_copy(update={"variables": tuple(
+                item.model_copy(update={"count": change.count}) if item.id == change.id else item
+                for item in document.variables
+            )})
+        case _:
+            assert_never(change)
 
 
 def _missing(member: str, id: str) -> Problem:
@@ -107,11 +136,15 @@ def _edit_member(
             moved = (*rest[:change.index], item, *rest[change.index:])
             if change.member != "epoch":
                 return document.model_copy(update={field: moved})
-            return document.model_copy(update={"epochs": moved, "signals": _respanned(document, moved, change.id)})
+            return document.model_copy(update={
+                "epochs": moved, "signals": _respanned(document, moved, change.id),
+                "repeats": _repeated_after_epoch_edit(document, moved, change.id),
+            })
         case RemoveMember():
             update = {field: rest}
             if change.member == "epoch":
                 update["signals"] = _respanned(document, rest, change.id)
+                update["repeats"] = _repeated_after_epoch_edit(document, rest, change.id)
             if change.member in ("variable", "epoch"):
                 key = "variables" if change.member == "variable" else "epoch_steps"
                 update["validation_trials"] = tuple(
@@ -123,9 +156,29 @@ def _edit_member(
             assert_never(change)
 
 
-def _covered(order: tuple[str, ...], cell: Cell) -> list[str]:
+def _covered(order: tuple[str, ...], cell: Cell | Repeat) -> list[str]:
     first, last = order.index(cell.first_epoch), order.index(cell.last_epoch)
     return list(order[first:last + 1])
+
+
+def _repeated_after_epoch_edit(
+    document: TaskDocument, epochs: tuple[Epoch, ...], epoch: str,
+) -> tuple[Repeat, ...]:
+    before = tuple(item.id for item in document.epochs)
+    after = tuple(item.id for item in epochs)
+    repeats = []
+    for repeat in document.repeats:
+        if repeat.first_epoch not in before or repeat.last_epoch not in before:
+            repeats.append(repeat)
+            continue
+        remaining = set(_covered(before, repeat)) - {epoch}
+        ordered = [key for key in after if key in remaining]
+        if ordered:
+            repeat = repeat.model_copy(update={"first_epoch": ordered[0], "last_epoch": ordered[-1]})
+        elif epoch not in after and repeat.first_epoch == repeat.last_epoch == epoch:
+            continue
+        repeats.append(repeat)
+    return tuple(repeats)
 
 
 def _respanned(document: TaskDocument, epochs: tuple[Epoch, ...], epoch: str) -> tuple[Signal, ...]:

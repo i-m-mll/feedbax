@@ -287,7 +287,7 @@ function NewSweep({ command, menu }: { command: StudioCommand; menu?: SweepMenu 
 /** A press on a card that lands on none of its own controls is a press on its head. */
 const cardControl = 'button, a, input, select, textarea, [role="button"], [role="menuitem"], [role="menu"], [role="dialog"]';
 
-const StepCard = memo(function StepCard({
+export const StepCard = memo(function StepCard({
   step,
   selection,
   presentation,
