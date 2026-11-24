@@ -63,8 +63,8 @@ export function AnalyzeElementInputs({ document, element, roles, inputs, declara
     ]);
     const label = humanizeLabel(name);
     const refused = refusal?.(name);
-    return <FieldRow key={name} label={label} labelId={`${labelId}-${name}`} below={refused && <p role="alert">{refused}</p>}>
-      <ReferenceField label={label} aria-labelledby={`${labelId}-${name}`} picking={picking}
+    return <FieldRow key={name} label={label} labelId={`${labelId}-${name}`}>
+      <ReferenceField label={label} aria-labelledby={`${labelId}-${name}`} picking={picking} problem={refused}
         groups={[
           { label: studioName('inputs'), choices: documentInputs },
           { label: studioName('operations'), choices: products },
