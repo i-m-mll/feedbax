@@ -3,6 +3,7 @@ import type { Page } from '@playwright/test';
 import type { StepReference, StudioProjectSnapshot } from '../../src/generated/studioContracts';
 import { mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
+import { hold } from './fixtures/heldRequest';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -73,4 +74,41 @@ test('a run rule narrows an Evaluate subject and a Train Start, and a name that 
   expect((await started).ok()).toBe(true);
   await expect.poll(async () => (await reads('train-2', 'checkpoint')).where).toEqual({ rule: 'seed=3' });
   await expect(runRows(page)).toHaveCount(1);
+});
+
+// Catches the new step's first field taking the keyboard when its form lands after the user has started writing the
+// Train Start rule: the rule is then saved on that blur, or dropped, and Enter saves nothing.
+test('a rule written before the new step\'s form lands keeps the keyboard and saves on Enter', async ({ page, request }) => {
+  const files = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'walkthrough-files'));
+  const train = files.at(-1).step;
+  train.base.inline.seed = 0;
+  train.sweep = { axes: { seed: { path: 'seed', values: [0, 1, 2, 3] } } };
+  const { snapshot, projectPath } = await seedManagedProject(request, files);
+  const reads = async (step: string, role: string) =>
+    ((await (await request.get(projectPath)).json() as StudioProjectSnapshot).project.steps![step].inputs![role] as StepReference);
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  const rule = inspector.getByRole('combobox', { name: 'Runs', exact: true });
+  const card = page.getByRole('article', { name: 'Train train', exact: true });
+  const form = `${projectPath}/authoring/train/train-2`;
+
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await select(page, 'train');
+  const held = await hold(page, form, (_, sent) => sent.method() === 'POST');
+  await card.getByRole('button', { name: 'New Step train', exact: true }).click();
+  await chooseStepKind(page, 'Train');
+  await held.sent;
+  await rule.fill('seed=3');
+  await expect(rule.locator('..')).toContainText('1/4');
+  const landed = page.waitForResponse((response) => new URL(response.url()).pathname === form);
+  held.release();
+  await landed;
+  await expect(inspector.getByRole('combobox', { name: 'Method', exact: true })).toBeVisible();
+  await expect(rule).toBeFocused();
+  await expect(rule).toHaveValue('seed=3');
+  expect((await reads('train-2', 'checkpoint')).where).toBeUndefined();
+  const started = page.waitForResponse((response) => response.request().method() === 'PATCH'
+    && new URL(response.url()).pathname === projectPath);
+  await rule.press('Enter');
+  expect((await started).ok()).toBe(true);
+  await expect.poll(async () => (await reads('train-2', 'checkpoint')).where).toEqual({ rule: 'seed=3' });
 });
