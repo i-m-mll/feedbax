@@ -631,7 +631,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       : change.kind === 'objective' || change.kind === 'expression' ? documentScopes.objective?.lit : undefined;
     return chosen && { kind: 'step', chosen_steps: [...chosen] };
   };
-  const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, trialStep,
+  // A run whose own definition is refused has no Task or Objective to read; its views are dimmed by its problems.
+  const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, trialStep && namedRow?.resolved !== false,
     trialEditable, trialChangeScope, runRemoval.confirm);
   const trialClock = useTrialClock({
     windowState, setWindowState, projectId: saved.project_id, revision: saved.revision, view: trial.view,
