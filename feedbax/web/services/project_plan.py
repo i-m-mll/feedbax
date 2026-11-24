@@ -29,8 +29,6 @@ from feedbax.contracts.jobs import (
     StudioBestRankGroup,
     StudioPlanRequest,
     StudioProjectWindowMap,
-    StudioProjectWindowMapAxis,
-    StudioProjectWindowMapAxisValue,
     StudioProjectWindowMapCoordinate,
     StudioProjectWindowMapInputAxis,
     StudioProjectWindowMapEdge,
@@ -75,8 +73,8 @@ from feedbax.planner.project_plan import (
 from feedbax.planner.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.result_address import parse_labels
-from feedbax.contracts.project_sweep import CheckpointRuleAxis, SweepCoordinate, axis_coordinates, coordinate_text
-from feedbax.contracts.run_rule import RuleRefusal, choose, value_text
+from feedbax.contracts.project_sweep import CheckpointRuleAxis, axis_coordinates
+from feedbax.contracts.run_rule import RuleRefusal, choose
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import (
     BatchMember, BatchSetMember, BestRank, LastMember, ProductRef, UpdateSeriesMember,
@@ -107,6 +105,7 @@ from feedbax.host.live_evaluate import live_objective_series
 from feedbax.contracts.rollout import CannotRun
 from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
 from feedbax.tasks.registry import PythonTaskRegistry
+from feedbax.web.services.axis_values import gather_axes
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, SettledProjectPlan
 
 
@@ -505,61 +504,6 @@ def _step_references(
     elif isinstance(binding, list):
         for index, reference in enumerate(binding):
             yield f"{role}.{index}", reference
-
-
-type _ValueIdentity = tuple[str, object]
-
-
-def _value_identity(coordinate: SweepCoordinate, *, member: bool) -> _ValueIdentity:
-    """What makes two coordinates one value: a member is its key; a number is its number; otherwise its name."""
-    value = coordinate.value
-    if member:
-        return "member", coordinate.value_id
-    if isinstance(value, bool):
-        return "bool", value
-    if isinstance(value, int | float):
-        return "number", value
-    if isinstance(value, str):
-        return "name", value
-    return "name", coordinate.label if coordinate.label is not None else coordinate.value_id
-
-
-def gather_axes(
-    rows: Sequence[PlannedRow],
-) -> tuple[list[StudioProjectWindowMapAxis], dict[tuple[RunKey, str], str]]:
-    """The axes one step's ``rows`` carry, each value gathered from the coordinates that are that value, and the ID of
-    the value each row has on each axis."""
-    gathered: dict[str, dict[_ValueIdentity, list[SweepCoordinate]]] = {}
-    identities: dict[tuple[RunKey, str], _ValueIdentity] = {}
-    for row in rows:
-        for member, axes in ((False, row.coordinates), (True, row.input_axes)):
-            for axis, coordinate in axes.items():
-                identity = _value_identity(coordinate, member=member)
-                gathered.setdefault(axis, {}).setdefault(identity, []).append(coordinate)
-                identities[row.key, axis] = identity
-    axes: list[StudioProjectWindowMapAxis] = []
-    ids: dict[tuple[str, _ValueIdentity], str] = {}
-    for axis, values in gathered.items():
-        order = list(values)
-        if all(kind == "number" for kind, _ in order):
-            order.sort(key=lambda identity: identity[1])
-        keys = Counter(key for coordinates in values.values() for key in {item.value_id for item in coordinates})
-        for identity in order:
-            stored = {item.value_id for item in values[identity]}
-            (key,) = stored if len(stored) == 1 else (None,)
-            ids[axis, identity] = key if key is not None and keys[key] == 1 else _gathered_id(identity)
-        axes.append(StudioProjectWindowMapAxis(id=axis, values=[
-            StudioProjectWindowMapAxisValue(
-                id=ids[axis, identity], label=coordinate_text(values[identity][0]), rule=value_text(values[identity][0]),
-            )
-            for identity in order
-        ]))
-    return axes, {at: ids[at[1], identity] for at, identity in identities.items()}
-
-
-def _gathered_id(identity: _ValueIdentity) -> str:
-    """A value's ID when no stored key names it alone: ``=`` and the value, which no stored key can be."""
-    return "=" + json.dumps(identity[1])
 
 
 def _planned_status(

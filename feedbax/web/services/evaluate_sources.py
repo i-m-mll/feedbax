@@ -17,6 +17,7 @@ from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_docu
 from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.project_folder import ProjectFolderInvalid
 from feedbax.project_model_selection import selected_model
+from feedbax.web.services.axis_values import axis_values
 
 
 def evaluate_subject(definition: SelectedRunDefinition | None) -> tuple[RunKey, ValueSource] | None:
@@ -124,10 +125,8 @@ def _editable(plan: ProjectPlan, key: RunKey, body: EvaluateModelRequest) -> boo
     rows = {row.key: row for row in plan.rows if row.key.step == key.step}
     editable = True
     if isinstance(scope, AxisValueRuns):
-        selected = {
-            item for item, row in rows.items()
-            if (coordinate := row.coordinates.get(scope.axis)) is not None and coordinate.value_id == scope.value
-        }
+        ids = axis_values(rows.values())
+        selected = {item for item in rows if ids.get((item, scope.axis)) == scope.value}
     elif isinstance(scope, ListedRuns):
         editable = all(item.variant == key.variant for item in rows)
         selected = {item for item in rows if item.variant == key.variant and item.row in scope.rows}

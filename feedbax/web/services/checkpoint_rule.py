@@ -11,6 +11,7 @@ from feedbax.contracts.studio_checkpoint_rule import (
     StudioCheckpointRuleEdit, StudioCheckpointRuleRequest, StudioCheckpointRuleToSweep,
 )
 from feedbax.contracts.studio_project import AuthoredFileAddress
+from feedbax.web.services.axis_values import axis_values
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, preview_authored_files
 from feedbax.web.services.trial_scope import file_value, row_exception_file, sweep_value_file
 
@@ -55,10 +56,8 @@ def prepare_checkpoint_rule_edit(
         rule = edit.model_dump(mode="json", by_alias=True, exclude_none=True)["rule"]
         writes = [OverridePatch(path=CHECKPOINT_RULE_TARGET, op="replace", value=rule)]
         if isinstance(scope, AxisValueRuns):
-            selected = {
-                row_key for row_key, row in rows.items()
-                if (coordinate := row.coordinates.get(scope.axis)) is not None and coordinate.value_id == scope.value
-            }
+            ids = axis_values(rows.values())
+            selected = {row_key for row_key in rows if ids.get((row_key, scope.axis)) == scope.value}
             axis = step.sweep.axes.get(scope.axis) if step.sweep else None
             if isinstance(axis, NamedAxis) and axis.values.get(scope.value) is not None:
                 file = sweep_value_file(address, raw, scope.axis, scope.value, writes)
