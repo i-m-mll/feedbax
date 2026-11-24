@@ -152,3 +152,34 @@ def test_a_set_applies_to_an_evaluate_that_runs_its_subjects_model():
     del raw["steps"]["baseline"]["sweep"]
     (plain,) = (run.request_id for run in _plan(raw).runs if run.key.step == "baseline")
     assert len({plain, *runs.values()}) == 4
+
+
+def test_a_list_typed_in_an_evaluate_s_trials_sweeps_them_across_its_subjects(tmp_path):
+    """Catches an Evaluate's Trials field that offers no Sweep, or whose sweep is not crossed with the subject's runs."""
+    from fastapi.testclient import TestClient
+
+    from feedbax.web.app import create_app
+
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, "trials", _project([0, 1, 2], {}))
+    before = folders.read_plan("trials", revision=None)
+    assert sum(run.kind == "evaluate" for run in before.plan.runs) == 3
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        url = "/api/projects/trials/authoring/train/baseline/fields"
+        shown = client.post(url, json={"revision": before.revision})
+        assert shown.status_code == 200, shown.text
+        trials = next(field for field in shown.json()["fields"] if field["id"] == "/params/trial_set/count")
+        assert "sweep" in trials["site"]["kinds"]
+        reply = client.post(url, json={
+            "revision": before.revision, "field": "/params/trial_set/count", "edit": {"kind": "text", "text": "1, 4"},
+        })
+        assert reply.status_code == 200, reply.text
+        assert not reply.json().get("problems"), reply.json()["problems"]
+        saved = client.patch("/api/projects/trials", json={"revision": before.revision, "files": reply.json()["files"]})
+        assert saved.status_code == 200, saved.text
+    after = folders.read_plan("trials", revision=None).plan
+    counts = sorted(
+        len(decode_request(after.requests[run.request_id], after.documents.__getitem__).spec.params["trials"])
+        for run in after.runs if run.kind == "evaluate"
+    )
+    assert counts == [1, 1, 1, 4, 4, 4]
