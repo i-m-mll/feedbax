@@ -161,6 +161,7 @@
   --fade-right: 0px;
   /* Content scrolled into view stops clear of the fades. */
   scroll-padding-block: calc(var(--fade-inset-top) + var(--studio-scroll-fade)) var(--studio-scroll-fade);
+  scroll-padding-inline: calc(var(--fade-inset-left) + var(--studio-scroll-fade)) var(--studio-scroll-fade);
   -webkit-mask-image:
     linear-gradient(to bottom, #000 var(--fade-inset-top), transparent var(--fade-inset-top), #000 calc(var(--fade-inset-top) + var(--fade-top)), #000 calc(100% - var(--fade-bottom)), transparent),
     linear-gradient(to right, #000 var(--fade-inset-left), transparent var(--fade-inset-left), #000 calc(var(--fade-inset-left) + var(--fade-left)), #000 calc(100% - var(--fade-right)), transparent);

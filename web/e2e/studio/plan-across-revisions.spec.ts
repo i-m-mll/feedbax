@@ -115,6 +115,9 @@ test('a new revision\'s plan, while read, changes no control and holds a gesture
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const every = inspector.getByRole('textbox', { name: 'Every', exact: true });
   await expect(every).toHaveValue('2');
+  // The window has drawn what its first reads give: the Evaluate's Seed and the clock of its trials.
+  await expect(inspector.getByRole('button', { name: 'Seed kind: Value', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Play', exact: true })).toBeVisible();
   await every.fill('3');
   const evaluate = await heldEdit(snapshot.revision, () => every.press('Enter'), () => page.keyboard.press('Meta+Z'));
   expect(evaluate.changes).toEqual([]);

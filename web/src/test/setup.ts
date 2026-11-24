@@ -16,3 +16,8 @@ if (typeof Range !== 'undefined' && !Range.prototype.getBoundingClientRect) {
 if (typeof window !== 'undefined' && globalThis.localStorage === undefined && 'jsdom' in window) {
   Object.defineProperty(globalThis, 'localStorage', { value: (window as unknown as { jsdom: { window: Window } }).jsdom.window.localStorage, configurable: true });
 }
+
+// jsdom scrolls nothing, and does not define scrollIntoView.
+if (typeof Element !== 'undefined' && !Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}

@@ -16,7 +16,6 @@ beforeEach(() => {
     unobserve() {}
     disconnect() {}
   });
-  Element.prototype.scrollIntoView = vi.fn();
 });
 
 const sections: DrawerSections = { isOpen: (_, initially = true) => initially, setOpen: () => {} };
