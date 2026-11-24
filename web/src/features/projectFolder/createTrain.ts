@@ -1,7 +1,7 @@
 import { studioName } from '@/components/activity/studioVocabulary';
 import { firstTrainTask, type Document, type StudioProjectCreateFile } from '@/generated/studioContracts';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
-import { blankDocuments } from './useProjectDocuments';
+import { blankDocuments, namedDocument } from './useProjectDocuments';
 import { trainingDocumentKeys } from './trainingDocument';
 import { generatedName, holds } from './generatedName';
 
@@ -17,19 +17,19 @@ export async function createTrain(editor: ProjectEditController, reviewedRevisio
   const files: StudioProjectCreateFile['file'][] = [];
   const documents = saved.project.documents ?? {};
   const documentNames = Object.keys(documents).sort();
-  function bindDocument(name: string, document: Document, schemas = [document.schema]) {
+  function bindDocument(document: Document, schemas = [document.schema]) {
     const existing = documentNames.find((id) => schemas.includes(documents[id].schema));
     if (existing !== undefined) return existing;
 
-    const id = generatedName(name, holds(documents));
-    files.push({ kind: 'document', id, document });
-    return id;
+    const named = namedDocument(documents, document);
+    files.push({ kind: 'document', ...named });
+    return named.id;
   }
-  const graph = bindDocument('model', model);
-  const taskDocument = bindDocument('task', firstTrainTask, [task.schema, pythonTaskSchema]);
+  const graph = bindDocument(model);
+  const taskDocument = bindDocument(firstTrainTask, [task.schema, pythonTaskSchema]);
   const taskField = documents[taskDocument]?.schema === pythonTaskSchema ? 'python_task' : 'task';
-  const objectiveDocument = bindDocument('objective', objective);
-  const trainingDocument = bindDocument('training', training);
+  const objectiveDocument = bindDocument(objective);
+  const trainingDocument = bindDocument(training);
   const id = generatedName('train', holds(saved.project.steps));
   files.push({
     kind: 'step', id,

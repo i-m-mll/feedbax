@@ -34,11 +34,12 @@ import { Select } from '@/components/ui/Select';
 import { TextField } from '@/components/ui/TextField';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type { PipelineCardPresentation } from '@/components/pipeline/pipelineMapLayout';
-import type { PlanRunView, PlanStepView, PlanView } from '@/features/pipeline/planView';
+import { shownName, type PlanRunView, type PlanStepView, type PlanView } from '@/features/pipeline/planView';
 import {
   emptyPipelineSelection, selectRun, selectStep, selectSweepValue, selectedRuns, type PipelineSelection, type PipelineSelectionState,
 } from '@/features/pipeline/selection';
 import { ProjectWindow } from '@/features/projectWindow/ProjectWindow';
+import { ProjectSettingRows } from '@/features/projectWindow/StudioSettings';
 import { useHeldGestures } from '@/features/projectWindow/heldGestures';
 import { StatusMark } from '@/components/ui/StatusMark';
 import { ProblemRow, StudioProblems, problemEntries, type ProblemEntry } from '@/features/projectWindow/StudioProblems';
@@ -56,7 +57,7 @@ import {
 } from '@/generated/studioContracts';
 import { useConnection } from '@/api/connection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
-import { authoredPointer, ownDefinition, modelDocumentId } from './authoredEdits';
+import { authoredPointer, declarationAddress, ownDefinition, modelDocumentId } from './authoredEdits';
 import { withBaseDescendants } from './baseDescendants';
 import { useManagedProjectDetails, useStoredModel, type NamedDocumentScope } from './managedProjectDetails';
 import { useTrialClock } from './useTrialClock';
@@ -1656,9 +1657,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     activity, problemCommand, failure && !isStudioDefect(failureCause) && retryCommand,
   ].filter((command): command is StudioCommand => !!command);
 
+  const projectSettings = <ProjectSettingRows settings={configuration.settings ?? {}}
+    steps={Object.entries(saved.project.steps ?? {}).map(([id, step]) => ({ id, label: shownName(id, step) }))}
+    change={(name, setting, value) => editor.edit(declarationAddress, name, [{ op: 'add', path: `/settings/${setting}`, value }])} />;
+
   return (
     <RunRemovalContext.Provider value={runRemoval.confirm}>
       <ProjectWindow
+        projectSettings={projectSettings}
         state={windowState} onStateChange={setWindowState} projectName={configuration.project}
         saveStatus={pending || snapshot.error ? studioName('edited') : undefined}
         views={views}
