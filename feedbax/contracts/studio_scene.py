@@ -54,7 +54,9 @@ type ScenePoint = tuple[FiniteFloat, FiniteFloat]
 
 class SceneLinkGeometry(StrictModel):
     body: ModelAddress
+    body_name: str
     joint: ModelAddress
+    joint_name: str
     start: ScenePoint
     end: ScenePoint
     pivot: ScenePoint
@@ -62,12 +64,14 @@ class SceneLinkGeometry(StrictModel):
 
 class SceneMuscleGeometry(StrictModel):
     address: ModelAddress
+    name: str
     points: Annotated[list[ScenePoint], Field(min_length=2)]
 
 
 class ScenePointGeometry(StrictModel):
     kind: Literal["point"]
     address: ModelAddress
+    name: str
     point: ModelAddress
     position: ScenePoint
 
@@ -75,6 +79,7 @@ class ScenePointGeometry(StrictModel):
 class ScenePlanarGeometry(StrictModel):
     kind: Literal["planar"]
     address: ModelAddress
+    name: str
     links: Annotated[list[SceneLinkGeometry], Field(min_length=1)]
     muscles: list[SceneMuscleGeometry]
 

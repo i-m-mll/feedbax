@@ -1995,7 +1995,9 @@ export interface StudioPlanarSceneResponse {
 
 export interface SceneLinkGeometry {
   body: ModelAddress;
+  body_name: string;
   joint: ModelAddress;
+  joint_name: string;
   start: [number, number];
   end: [number, number];
   pivot: [number, number];
@@ -2003,12 +2005,14 @@ export interface SceneLinkGeometry {
 
 export interface SceneMuscleGeometry {
   address: ModelAddress;
+  name: string;
   points: [number, number][];
 }
 
 export interface ScenePlanarGeometry {
   kind: "planar";
   address: ModelAddress;
+  name: string;
   links: SceneLinkGeometry[];
   muscles: SceneMuscleGeometry[];
 }
@@ -2016,6 +2020,7 @@ export interface ScenePlanarGeometry {
 export interface ScenePointGeometry {
   kind: "point";
   address: ModelAddress;
+  name: string;
   point: ModelAddress;
   position: [number, number];
 }
@@ -8995,7 +9000,9 @@ export const SceneLinkGeometrySchema: z.ZodType<SceneLinkGeometry> = z.lazy(() =
   z
     .object({
       "body": ModelAddressSchema,
+      "body_name": z.string(),
       "joint": ModelAddressSchema,
+      "joint_name": z.string(),
       "start": z.tuple([z.number().finite(), z.number().finite()]),
       "end": z.tuple([z.number().finite(), z.number().finite()]),
       "pivot": z.tuple([z.number().finite(), z.number().finite()]),
@@ -9007,6 +9014,7 @@ export const SceneMuscleGeometrySchema: z.ZodType<SceneMuscleGeometry> = z.lazy(
   z
     .object({
       "address": ModelAddressSchema,
+      "name": z.string(),
       "points": z.array(z.tuple([z.number().finite(), z.number().finite()])).min(2),
     })
     .strict()
@@ -9017,6 +9025,7 @@ export const ScenePlanarGeometrySchema: z.ZodType<ScenePlanarGeometry> = z.lazy(
     .object({
       "kind": z.literal("planar"),
       "address": ModelAddressSchema,
+      "name": z.string(),
       "links": z.array(SceneLinkGeometrySchema).min(1),
       "muscles": z.array(SceneMuscleGeometrySchema),
     })
@@ -9028,6 +9037,7 @@ export const ScenePointGeometrySchema: z.ZodType<ScenePointGeometry> = z.lazy(()
     .object({
       "kind": z.literal("point"),
       "address": ModelAddressSchema,
+      "name": z.string(),
       "point": ModelAddressSchema,
       "position": z.tuple([z.number().finite(), z.number().finite()]),
     })

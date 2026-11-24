@@ -42,7 +42,12 @@ from feedbax.contracts.studio_checkpoint_rule import StudioCheckpointRuleEdit, S
 from feedbax.contracts.studio_subset import (
     StudioRunRuleCheck, StudioRunRuleRequest, StudioSubsetToRowsEdit, StudioSubsetToRowsRequest,
 )
-from feedbax.contracts.studio_scene import StudioPlanarSceneRequest, StudioPlanarSceneResponse
+from feedbax.contracts.studio_scene import (
+    StudioPlanarSceneRequest,
+    StudioPlanarSceneResponse,
+    StudioSceneGeometryRequest,
+    StudioSceneGeometryResponse,
+)
 from feedbax.contracts.studio_field import ModelFieldRequest, ModelFieldResponse, TrainFieldRequest, TrainFieldResponse
 from feedbax.web.services.project_folder import (
     ProjectFileExists,
@@ -271,6 +276,27 @@ def read_planar_scene(
         )
         return StudioPlanarSceneResponse(
             project_id=project_id, **body.model_dump(), model=model, diagnostics=diagnostics,
+        )
+
+    return _project_response(response, prepare)
+
+
+@router.post("/{project_id}/scene/geometry")
+def read_scene_geometry(
+    project_id: ProjectName, body: StudioSceneGeometryRequest, request: Request, response: Response,
+) -> StudioSceneGeometryResponse:
+    from feedbax.studio.scene_geometry import prepare_scene_geometry
+
+    def prepare() -> StudioSceneGeometryResponse:
+        snapshot = request.app.state.project_folders.read(project_id)
+        if snapshot.revision != body.revision:
+            raise ProjectRevisionConflict("project", snapshot.revision)
+        mechanisms, diagnostics = prepare_scene_geometry(
+            snapshot.project, body, request.app.state.bootstrap_state.bundle.components,
+        )
+        return StudioSceneGeometryResponse(
+            project_id=project_id, revision=body.revision, document_id=body.document_id,
+            mechanisms=mechanisms, diagnostics=diagnostics,
         )
 
     return _project_response(response, prepare)
