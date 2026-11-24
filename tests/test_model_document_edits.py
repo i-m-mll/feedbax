@@ -163,7 +163,7 @@ def test_deleting_a_component_for_one_reader_makes_a_document_without_it(tmp_pat
         choices = {option["kind"]: option for option in ask.json()["result"]["store_choices"]}
         assert {"fee", "other"} <= set(choices["all_readers"]["steps"])
         assert choices["all_readers"]["label"] == f"All {len(choices['all_readers']['steps'])} Steps"
-        assert choices["selected_readers"]["steps"] == ["check", "fee"]
+        assert choices["selected_readers"]["steps"] == ["fee"]
         choice = choices["selected_readers"]["id"]
         stale = project.model_edit(operation, step="fee", chosen=["other"], choice=choice)
         assert stale.status_code == 409, stale.text
@@ -226,6 +226,57 @@ def test_model_range_to_list_persists_an_identity_preserving_step_edit(tmp_path,
         assert [(run.key, run.coordinates, run.request_id) for run in project.plan().runs] == rows
         (field,) = [field for field in project.fields("fee", None)["fields"] if field["address"] == MASS]
         assert field["sweep"]["kind"] == "list"
+
+
+@pytest.mark.parametrize("shared_variant", [False, True])
+def test_model_sweep_edit_reaches_its_authors_and_excludes_result_readers(tmp_path, shared_variant):
+    from web.e2e.studio.fixtures.canonical_evaluate import task_pivot_files
+
+    data = {"documents": {}, "steps": {}}
+    for file in task_pivot_files():
+        family = f"{file['kind']}s"
+        data[family][file["id"]] = file[file["kind"]]
+    if shared_variant:
+        data["sweep"] = {"rows": {"base": {}, "compare": {"from": "base"}}}
+    project = _Project(tmp_path, data)
+
+    with project.client:
+        before = project.plan()
+        variant = before.variants[0]
+        selected = [
+            row.key.row for row in before.rows if row.key.step == "train" and row.key.variant == variant
+            and row.coordinates["learning-rate"].value_id == "Fast"
+        ]
+        assert len(selected) == 2
+        snapshot = project.snapshot()
+        payload = {
+            "revision": snapshot["revision"], "presentation_revision": snapshot["presentation_revision"],
+            "document": "reach-model", "step": "train", "rows": selected, "axes": {"learning-rate": ["Fast"]},
+            "command": {"operation": _mass(2)},
+        }
+        response = project.client.post(f"{_URL}/model/edit", json=payload)
+        assert response.status_code == 200, response.text
+        result = response.json()["result"]
+        if shared_variant:
+            assert result["status"] == "asked", result
+            (choice,) = result["store_choices"]
+            assert choice["steps"] == ["train"]
+            assert {(run["variant"], run["row"]) for run in choice["runs"]} == {
+                (variant, row) for variant in before.variants for row in selected
+            }
+            assert project.snapshot()["revision"] == snapshot["revision"]
+        else:
+            assert result["status"] == "applied", result
+            after = project.plan()
+            request_ids = {run.key: run.request_id for run in before.runs}
+            changed_train = {
+                run.key.row for run in after.runs if run.key.step == "train"
+                and run.request_id != request_ids[run.key]
+            }
+            assert changed_train == set(selected)
+            assert [row.key for row in after.rows if row.key.step == "evaluate"] == [
+                row.key for row in before.rows if row.key.step == "evaluate"
+            ]
 
 
 def test_connection_review_reads_the_topology_on_the_selected_sweep_value(tmp_path):

@@ -2730,12 +2730,12 @@ class _Compiler:
             problems = (*refusals, *narrowed.problems) if narrowed.request is not None else narrowed.problems
             return replace(
                 narrowed, document_ids=resolved.document_ids, document_uses=resolved.document_uses,
-                problems=self.locate_sweep_run_problems(problems, template.composition, key, row),
+                problems=self.locate_sweep_run_problems(problems, template, key, row),
             ), inputs
         except ModelCompilationProblem as error:
             problems = _trial_problems(model_compilation_problems(error), None, initial=True)
             return _LoweredRow(
-                None, (), problems=self.locate_sweep_run_problems(problems, template.composition, key, row),
+                None, (), problems=self.locate_sweep_run_problems(problems, template, key, row),
                 document_ids=resolved.document_ids, document_uses=resolved.document_uses,
             ), {}
         except (KeyError, ValueError) as error:
