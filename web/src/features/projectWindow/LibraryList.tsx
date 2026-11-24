@@ -1,7 +1,9 @@
 import { Search } from 'lucide-react';
 import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { HoverCard, HoverCardTrigger, createHoverCardHandle } from '@/components/ui/HoverCard';
+import { CarryChip, carry, type CarryKind } from '@/components/ui/carry';
 import { ListRow } from '@/components/ui/ListRow';
+import { popupSurface } from '@/components/ui/styles';
 import { TextField } from '@/components/ui/TextField';
 import { StudioRegion, type StudioRegionState } from '@/components/activity/StudioRegion';
 import { studioName, type StudioNameId } from '@/components/activity/studioVocabulary';
@@ -43,8 +45,8 @@ export interface LibraryListProps {
   onInspect: (id: string) => void;
   /** Return or a double-click places the item. */
   onPlace?: (id: string) => void;
-  /** The drag's data type; an item is dragged with its id. */
-  dragType?: string;
+  /** What a drag of an item carries it as; without it, items are not dragged. */
+  carried?: CarryKind<LibraryItem>;
 }
 
 function AboutCard({ item: { name, about, refusal } }: { item: LibraryItem & { about: LibraryAbout } }) {
@@ -68,7 +70,7 @@ function matches(item: LibraryItem, query: string) {
 
 /** A drawer section holding a catalog: a search field over groups of rows, folded until opened or searched. */
 export function LibraryList({
-  state, items, sections, section, name, searchName, selected, onInspect, onPlace, dragType,
+  state, items, sections, section, name, searchName, selected, onInspect, onPlace, carried,
 }: LibraryListProps) {
   const [query, setQuery] = useState('');
   const names = useId();
@@ -122,8 +124,7 @@ export function LibraryList({
                 else rows.current.delete(item.id);
               }}
               tabIndex={item.id === current ? 0 : -1} selected={item.id === selected}
-              draggable={!!dragType && placeable}
-              onDragStart={dragType && placeable ? (event) => event.dataTransfer.setData(dragType, item.id) : undefined}
+              onPointerDown={carried && placeable ? (event) => carry(event, carried, item) : undefined}
               onFocus={() => setFocused(item.id)}
               onClick={() => onInspect(item.id)}
               onDoubleClick={onPlace && placeable ? () => onPlace(item.id) : undefined}
@@ -135,6 +136,9 @@ export function LibraryList({
         </div>
       </DrawerSection>)}
     </StudioRegion>
+    <CarryChip kind={carried}>
+      {(item) => <ListRow name={item.name} glyph={item.glyph} className={popupSurface} />}
+    </CarryChip>
     <HoverCard handle={card} beside={(trigger) => trigger.closest('[data-section-stack]')}>
       {(item) => <AboutCard item={item} />}
     </HoverCard>

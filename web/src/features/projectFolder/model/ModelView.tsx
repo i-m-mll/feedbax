@@ -13,6 +13,7 @@ import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import { Box, Crosshair, House, Search, TriangleAlert, X } from 'lucide-react';
 import clsx from 'clsx';
 import { Button, IconButton } from '@/components/ui/Button';
+import { carryKind } from '@/components/ui/carry';
 import { focusRing } from '@/components/ui/styles';
 import { Dialog } from '@/components/ui/Dialog';
 import { Menu, MenuContent, MenuGroup, MenuGroupLabel, MenuItem } from '@/components/ui/Menu';
@@ -89,7 +90,9 @@ type Props = {
   exceptions?: ExceptionMentions;
 };
 const sourceAttachment = '@source';
-const componentDragType = 'application/x-feedbax-component';
+const componentCarry = carryKind<LibraryItem>('component');
+/** The id of the card a Library drag draws where it would be placed. */
+const carriedCard = 'carried:library';
 const emptyPath: string[] = [];
 const inputCard = '@inputs';
 const outputCard = '@outputs';
@@ -569,8 +572,11 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           const shown = follow(result);
           if (result.clipboard) clipboard = result.clipboard;
           if (choose && result.changed.length) {
+            // A copy is selected as its cards, not the wires it brings between them.
             const selection = operation.op === 'delete' || operation.op === 'cut' || operation.op === 'ungroup' ? []
-              : operation.op === 'group' ? result.changed.slice(-1) : result.changed;
+              : operation.op === 'group' ? result.changed.slice(-1)
+                : operation.op === 'duplicate' || operation.op === 'paste'
+                  ? result.changed.filter(({ element }) => element.kind === 'component') : result.changed;
             setSelection(selection, shown);
           }
           return null;
@@ -800,21 +806,27 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     return !shape || !target?.shape || (shape.length === target.shape.length &&
       shape.every((axis, index) => typeof axis !== 'number' || axis === target.shape?.[index]));
   }
-  function insert(definition: ComponentDefinition, point: ModelPosition, edge: ModelEdge, flipped: boolean) {
-    const address = edge.data?.address;
-    if (!model || address?.element.kind !== 'wire') return;
+  /** The ports of a new `definition` that `edge` would run into and out of when it is split by one, or none if it cannot be. */
+  function insertion(definition: ComponentDefinition, edge: ModelEdge, id = 'new') {
     const source = portAt(edge.source, edge.sourceHandle ?? null);
     const target = portAt(edge.target, edge.targetHandle ?? null);
-    const candidate = componentPorts('new', drawn(definition), registry).filter((port) => !port.growing && !port.taskSignal);
+    const candidate = componentPorts(id, drawn(definition), registry).filter((port) => !port.growing && !port.taskSignal);
     const inputs = candidate.filter((port) => port.direction === 'input');
     const outputs = candidate.filter((port) => port.direction === 'output');
     // A port whose type differs still receives the wire, which is stored with its Problem.
     const input = inputs.find((port) => source && matchesSource(definition, port.end.port, source)) ?? inputs[0];
     const output = outputs.find((port) => target && signalFits(port, target)) ?? outputs[0];
-    if (!input || !output) {
+    return input && output ? { input, output } : undefined;
+  }
+  function insert(definition: ComponentDefinition, point: ModelPosition, edge: ModelEdge, flipped: boolean) {
+    const address = edge.data?.address;
+    if (!model || address?.element.kind !== 'wire') return;
+    const ports = insertion(definition, edge);
+    if (!ports) {
       add(definition, point);
       return;
     }
+    const { input, output } = ports;
     const component = registered(definition);
     void place(drawn(definition), point, flipped, (id) => apply(studioName('insertComponent'), {
       op: 'insert_component', address, component, position: point, flipped, id,
@@ -1542,26 +1554,34 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
             setPreviewTarget(undefined);
             if (searching) openSearch(point, dragSource.current);
             dragSource.current = undefined;
-          }} onLibraryDrop={(type, point, edge, reversed) => {
+          }} libraryCarry={editTopology && !locked ? componentCarry : undefined}
+          previewLibrary={(type, point, edge, reversed) => {
+            const definition = registry.get(type);
+            if (!model || !definition || !definitions.includes(definition)) return undefined;
+            const ports = edge?.data?.address.element.kind === 'wire' ? insertion(definition, edge, carriedCard) : undefined;
+            const card = placingCard({ document: model.id, graph: graphId, id: carriedCard, component: drawn(definition), position: point,
+              flipped: !!ports && reversed });
+            if (!edge || !ports) return { cards: [card], wires: [] };
+            const into = (id: string, source: string, sourceHandle: string | null | undefined, target: string,
+              targetHandle: string | null | undefined): ModelEdge => ({
+              id, source, sourceHandle, target, targetHandle, type: 'signal', markerEnd: edge.markerEnd,
+              data: { address: edge.data!.address },
+            });
+            return { cards: [card], wires: [
+              into('carried:into', edge.source, edge.sourceHandle, carriedCard, portId(ports.input)),
+              into('carried:out', carriedCard, portId(ports.output), edge.target, edge.targetHandle),
+            ] };
+          }}
+          onLibraryDrop={(type, point, edge, reversed) => {
             if (locked) return;
             const definition = registry.get(type);
             if (!definition || !definitions.includes(definition)) return;
             if (edge) insert(definition, point, edge, reversed);
             else add(definition, point);
-          }} onAttachmentDrop={(raw, edge) => {
-            if (!editTopology || locked || !edge.data) return;
-            let value: unknown;
-            try {
-              value = JSON.parse(raw);
-            } catch (error) {
-              if (error instanceof SyntaxError) return;
-              throw error;
-            }
-            if (typeof value !== 'object' || !value || !('document' in value) || value.document !== model.id || !('address' in value)) return;
-            const parsed = ModelAddressSchema.safeParse(value.address);
-            if (!parsed.success || parsed.data.element.kind !== 'attachment' || !inGraph(parsed.data, graph)) return;
-            const address = parsed.data;
-            const id = parsed.data.element.id;
+          }} onAttachmentDrop={(location, edge) => {
+            const address = location.address;
+            if (!editTopology || locked || !edge.data || location.document !== model.id || address.element.kind !== 'attachment' || !inGraph(address, graph)) return;
+            const id = address.element.id;
             const destination = edge.data.address;
             const after = effective.get(addressKey(destination))?.filter((item) => item.id !== id).at(-1)?.id ?? null;
             void apply(studioName('moveAttachment'), { op: 'move_wire_attachment', address, destination, after })
@@ -1572,7 +1592,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     drawer: model && <Drawer>
       <LibraryList sections={sections} section="model.library" name={studioName('library')} searchName="searchLibrary"
         state={studioReadState('library', registryQuery.data, registryQuery.error, () => { void registryQuery.refetch(); })}
-        items={libraryItems} selected={libraryItem?.name} dragType={editTopology ? componentDragType : undefined}
+        items={libraryItems} selected={libraryItem?.name} carried={editTopology ? componentCarry : undefined}
         onInspect={(name) => setLibraryItem(registry.get(name))}
         onPlace={editTopology ? (name) => { const item = registry.get(name); if (item) add(item); } : undefined} />
       <DrawerSection sections={sections} id="model.outline" name={studioName('outline')}>
