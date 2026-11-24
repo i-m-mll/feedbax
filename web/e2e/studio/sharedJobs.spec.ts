@@ -118,7 +118,8 @@ test('shares live Jobs across windows and observes the four-slot queue', { tag: 
 
     await page.reload();
     const activity = page.getByRole('region', { name: 'Activity', exact: true });
-    await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
+    // With runs live, the button's name is what it reads: its name and their count.
+    await page.getByRole('button', { name: /^Activity \d+$/ }).click();
     const selected = activity.getByRole('region', { name: configuration.project, exact: true })
       .getByRole('listitem').filter({ hasText: first.label });
     const stopping = post(page, '/api/jobs/stop');
