@@ -36,9 +36,10 @@ from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.web.services.project_plan import ProjectPlanService
+from feedbax.web.services.remote_runs import StudioRemoteRuns, StudioVenue, StudioVenueQuote
 from tests.support.session_venue import ENVIRONMENT, LocalVenueProvider, evidence, verify_authorization
 from tests.test_canonical_evaluate_admission import managed_evaluation_definition
-from tests.support.host import until_exists, wait_until
+from tests.support.host import HELD_UNTIL_STOPPED, admit, run_job, until_exists, wait_until
 from tests.support.hang import HANG_SECONDS
 
 
@@ -117,6 +118,84 @@ def _terminal_without_rpc(database: Path):
     with closing(sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)) as db:
         rows = db.execute("SELECT id, state, outcome FROM jobs ORDER BY seq").fetchall()
     return rows if len(rows) == 2 and all(row[2] is not None for row in rows) else None
+
+
+def test_remote_stop_accepts_before_contacting_the_venue(host, tmp_path, monkeypatch):
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    provider = LocalVenueProvider(tmp_path / "provider")
+    driver = _driver(tmp_path / "controller", provider)
+    profile = SessionTargetProfile(
+        kind="session", id="cpu-rehearsal", label="CPU rehearsal", driver=provider.target,
+        resources={"compute": 1}, lifecycle=KeepOpen(), maximum_microusd=120_000,
+    )
+    request = TargetRegistry((profile,), (provider,)).session_request(
+        profile.id, session_id=uuid4(), environment=ENVIRONMENT,
+    )
+    accepting = False
+    deliveries = []
+
+    def jobs(driver, session_id):
+        assert not accepting, "The stop endpoint contacted the venue before acknowledging the request."
+        session = SessionJobs(driver, session_id, _jobs)
+        send = session.host.stop
+
+        def deliver(job_ids, mode):
+            deliveries.append((tuple(job_ids), mode))
+            return send(job_ids, mode)
+
+        session.host.stop = deliver
+        return session
+
+    remote = StudioRemoteRuns(
+        (profile,), (StudioVenue(driver, ENVIRONMENT, jobs, 90, lambda req: StudioVenueQuote(provider.rate)),),
+        attest=lambda _, req: _authorization(req),
+    )
+    venue = None
+    ids = []
+    try:
+        driver.open(request, _authorization(request), adoption_token=secrets.token_urlsafe())
+        venue = driver.attach(request.id)
+        held = []
+        for index in range(3):
+            name = f"remote-stop-{index}"
+            job = run_job(name, HELD_UNTIL_STOPPED, project=PROJECT, request=f"train:{name}")
+            held.append(replace(job, data={
+                "run_key": name, "stage_id": "train", "scenario_id": "default", "label": name, "coordinates": {},
+            }))
+        ids = [job.id for job in held]
+        admit(venue, "remote-stop", *held)
+
+        # Advance the same observer the app runs in the background, at deterministic boundaries.
+        with TestClient(create_app(projects_dir=tmp_path / "projects")) as client:
+            app = client.app
+            app.state.remote_runs = remote
+            remote.observe(app.state.project_folders, app.state.job_service)
+            assert {row["job_id"] for row in client.get("/api/jobs").json()["jobs"]} >= set(ids)
+            accepting = True
+            body = {"job_ids": ids, "mode": "force"}
+            for _ in range(2):
+                response = client.post("/api/jobs/stop", json=body)
+                assert response.status_code == 202, response.text
+                assert [(item["job_id"], item["error"]) for item in response.json()] == [(id_, None) for id_ in ids]
+            assert not deliveries
+
+            accepting = False
+            remote.observe(app.state.project_folders, app.state.job_service)
+            assert deliveries == [(tuple(ids), "force")]
+            wait_until(lambda: all(row["state"] == "stopped" for row in venue.jobs()))
+            remote.observe(app.state.project_folders, app.state.job_service)
+            assert deliveries == [(tuple(ids), "force")]
+            assert {
+                row["job_id"]: row["status"] for row in client.get("/api/jobs").json()["jobs"] if row["job_id"] in ids
+            } == dict.fromkeys(ids, "stopped")
+    finally:
+        remote.stop_collection()
+        if venue is not None:
+            venue.stop(ids, "force")
+            wait_until(lambda: not venue.session_status()["live_jobs"])
+            driver.close(request.id)
+        for resource in provider.inventory():
+            provider.remove(resource)
 
 
 @pytest.mark.round(
