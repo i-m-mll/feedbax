@@ -54,7 +54,7 @@ test('edits a conserving connection only inside its physical interior', async ({
       new URL(response.url()).pathname === `${projectPath}/model/${kind}`, { timeout: 6_000 }), action()]);
     expect(response.ok(), await response.text()).toBe(true);
     const { result } = await response.json() as ModelEditResponse;
-    if (result.status !== 'applied') throw new Error(result.problem.detail);
+    if (result.status !== 'applied') throw new Error(JSON.stringify(result));
     return result;
   }
   async function enterEquations() {

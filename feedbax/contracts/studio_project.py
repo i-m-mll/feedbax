@@ -79,6 +79,7 @@ class StudioProjectSnapshot(StudioProjectRevision):
     file_revisions: list[StudioAuthoredFileRevision]
     declaration: StudioAuthoredDeclaration | None = None
     settings: dict[str, JsonValue] = Field(default_factory=dict)
+    default_keep_superseded_days: int | None = Field(default=None, ge=0)
     composed: dict[str, JsonValue] = Field(default_factory=dict)
     """The composed payload of each based document whose base chain composes."""
     problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
@@ -98,6 +99,8 @@ class StudioProjectPatchBatch(StrictModel):
     revision: Sha256
     presentation_revision: Sha256 | None = None
     files: list[StudioProjectFilePatch] = Field(min_length=1)
+    created: list[CreateNamedDocument] = Field(default_factory=list)
+    """Documents created in the same transaction as the file patches."""
 
 
 class ReplayFileAddress(StrictModel):

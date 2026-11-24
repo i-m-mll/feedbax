@@ -176,6 +176,7 @@ class ModelEditDraft:
         self.collapsed = state.collapsed.copy()
         self.waypoints = state.waypoints.copy()
         self.changed: list[ModelAddress] = []
+        self.relocations: dict[str, ModelAddress] = {}
         self.leaf_ports = ports
         self.accepts_component = accepts
 
@@ -574,6 +575,9 @@ class ModelEditDraft:
             return
         self.remove(address)
         self.set_attachment(AddModelAttachment(op="add", owner=destination, attachment=item, after=command.after))
+        self.relocations[address.to_text()] = address.model_copy(update={
+            "element": element.model_copy(update={"parent": destination.element}),
+        })
 
     def insert_component(self, command: edits.InsertComponentOnWire) -> None:
         address = command.address
@@ -788,25 +792,21 @@ class ModelEditDraft:
     def relocate_layout(
         self, source: tuple[str, ...], destination: tuple[str, ...], ids: dict[str, str], wires: dict[str, str],
     ) -> None:
+        moves = {
+            _address(source, kind, id=old).to_text(): _address(destination, kind, id=new)
+            for kind, pairs in (("component", ids), ("wire", wires)) for old, new in pairs.items()
+        }
+        self.relocations.update(moves)
         for entries in self.layout().values():
             for key, value in tuple(entries.items()):
                 try:
                     old = ModelAddress.from_text(key)
                 except ValueError:
                     continue
-                if old.composites[:len(source)] != source:
-                    continue
-                rest = old.composites[len(source):]
-                if rest and rest[0] in ids:
-                    new = old.model_copy(update={"composites": (*destination, ids[rest[0]], *rest[1:])})
-                elif not rest and old.element.kind == "component" and old.element.id in ids:
-                    new = _address(destination, "component", id=ids[old.element.id])
-                elif not rest and old.element.kind == "wire" and old.element.id in wires:
-                    new = _address(destination, "wire", id=wires[old.element.id])
-                else:
-                    continue
-                del entries[key]
-                entries[new.to_text()] = value
+                new = old.relocated(moves)
+                if new != old:
+                    del entries[key]
+                    entries[new.to_text()] = value
 
     def group(self, command: edits.GroupComponents) -> None:
         graph, ids = self.select(command.selection)
@@ -881,6 +881,11 @@ class ModelEditDraft:
                             "Ungroup would remove a port that has attachments",
                         )
         parent_wires, child_wires = graph["wires"], inner["wires"]
+        attachment_owners = {
+            id(item): _address(location, "attachment", parent={"kind": "wire", "id": wire_id}, id=item["id"])
+            for location, wires in ((scope, parent_wires), (inner_scope, child_wires))
+            for wire_id, wire in wires.items() for item in wire["attachments"]
+        }
 
         def boundary_wires(wires, selects, location):
             found = {}
@@ -974,6 +979,12 @@ class ModelEditDraft:
             )
             moved_wires[id_] = assigned
         self.relocate_layout(inner_scope, scope, ids, moved_wires)
+        for wire_id, wire in parent_wires.items():
+            for item in wire["attachments"]:
+                if (old := attachment_owners.get(id(item))) is not None:
+                    new = _address(scope, "attachment", parent={"kind": "wire", "id": wire_id}, id=item["id"])
+                    if new != old:
+                        self.relocations[old.to_text()] = new
         self.changed.append(address)
         self.changed.extend(_address(scope, "component", id=id_) for id_ in ids.values())
 
@@ -1231,7 +1242,21 @@ def apply_model_edit(
                 for address in selection:
                     if address.composites != primary.composites:
                         raise _Refusal(address, "select elements of one graph")
-                    edit.remove(address)
+                _, graph = edit.context(primary)
+                deleted = {address.element.id for address in selection if address.element.kind == "component"}
+                with_components = {
+                    (collection, key)
+                    for collection, ends in (("wires", ("source", "target")), ("connections", ("a", "b")))
+                    for key, edge in graph.get(collection, {}).items()
+                    if any(edge[end].get("component") in deleted for end in ends)
+                }
+                for address in selection:
+                    kind = address.element.kind
+                    collection = {"wire": "wires", "physical_connection": "connections"}.get(kind)
+                    if collection and (collection, address.element.id) in with_components:
+                        edit.changed.append(address)
+                    else:
+                        edit.remove(address)
             case edits.ConnectSignal(graph=primary, source=source, target=target):
                 if operation.grow_target:
                     _, graph = edit.graph(primary)
@@ -1304,6 +1329,7 @@ def apply_model_edit(
         result = ModelDocument.model_validate(edit.document)
         return edits.ModelEditResult(
             state=edits.ModelEditState(document=result, **edit.layout()),
+            relocations=edit.relocations,
             changed=tuple(edit.changed), clipboard=clipboard, problems=tuple(edit.graph_problems()),
         )
     except _Refusal as error:

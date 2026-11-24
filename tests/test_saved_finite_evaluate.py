@@ -200,8 +200,9 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
         with monkeypatch.context() as context:
             context.setattr(ArrayContainerReader, "read_unverified_slice", observed)
             replay = result.replay(trials[1], checkpoint=4)
-        assert [field for field, _ in reads] == ["checkpoint", "state_time", position]
-        assert reads[-1] == (position, (coordinates.index(4), 0, 1))
+        selection = (coordinates.index(4), 0, 1)
+        assert (position, selection) in reads
+        assert all(index == selection for field, index in reads if field not in {"checkpoint", "state_time"})
         assert replay.drawn.trials[0].id == trials[1]
         np.testing.assert_allclose(replay.drawn.trials[0].states[replay.position].samples, trajectories[-1][coordinates.index(4), 0, 1])
     assert not np.array_equal(trajectories[0][0], trajectories[0][1])

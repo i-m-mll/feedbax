@@ -136,6 +136,7 @@ export function sharedFields(lists: readonly (readonly FieldModel[])[]): FieldMo
     const same = sameValue(all);
     return [{
       ...model, commit, members: undefined, parts: same ? model.parts : undefined,
+      reason: all.find(({ reason }) => reason)?.reason, span: same ? model.span : undefined,
       ...(same ? {} : { text: null, value: undefined }),
     }];
   });

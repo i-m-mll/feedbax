@@ -45,7 +45,7 @@ test("a Weight cell's sweep is an axis on the Train step, listed in the Inspecto
   const outline = page.getByRole('complementary', { name: 'Details Drawer' }).getByRole('tree', { name: 'Objective Terms' });
   await outline.getByRole('treeitem', { name: 'Speed', exact: true }).click({ button: 'right' });
   await page.getByRole('menuitem', { name: 'Move Earlier', exact: true }).click();
-  await expect(table.getByRole('row').nth(1).getByRole('textbox', { name: 'Name', exact: true })).toHaveValue('Speed');
+  await expect(table.getByRole('row').nth(1).getByRole('textbox', { name: /^Rename / })).toHaveValue('Speed');
   await expect(card.locator('[data-status-mark="not_run"]')).toHaveCount(3);
   await expect(weight(1)).toHaveValue('1');
   await weight(0).click();

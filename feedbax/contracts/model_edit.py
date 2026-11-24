@@ -16,6 +16,7 @@ from feedbax.contracts.model_document import (
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem, StudioSavedTrainKey
 from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import AxisValueId, ProjectName, RowKey
+from feedbax.contracts.studio_scope import StudioStoreChoice
 from feedbax.contracts.request_refs import Name
 from feedbax.contracts.studio_project import StudioProjectSnapshot
 from feedbax.contracts.studio_project import StudioProjectFilePatch
@@ -223,13 +224,6 @@ class TaskSignalSource(StrictModel):
     signal: str
 
 
-class ModelConnectionReviewRequest(StrictModel):
-    revision: Sha256
-    document: ProjectName
-    graph: ModelAddress
-    source: Annotated[SignalSource | TaskSignalSource, Field(discriminator="owner")]
-
-
 class ModelWireReplacement(StrictModel):
     address: ModelAddress
     attachments: tuple[ModelAddress, ...]
@@ -261,6 +255,12 @@ class ModelProjectionRequest(StrictModel):
     document: ProjectName
     rows: list[RowKey] = Field(default_factory=list)
     axes: dict[ProjectName, list[Name]] = Field(default_factory=dict)
+
+
+class ModelConnectionReviewRequest(ModelProjectionRequest):
+    graph: ModelAddress
+    source: Annotated[SignalSource | TaskSignalSource, Field(discriminator="owner")]
+    evaluate_scope: SelectedRuns | None = None
 
 
 class ModelPortProjection(StrictModel):
@@ -330,6 +330,7 @@ class ModelEditState(ModelLayout):
 
 class ModelEditResult(StrictModel):
     state: ModelEditState
+    relocations: dict[str, ModelAddress] = Field(default_factory=dict)
     changed: tuple[ModelAddress, ...] = ()
     clipboard: ModelClipboard | None = None
     problems: tuple[ModelGraphProblem, ...] = ()
@@ -358,6 +359,7 @@ class ModelEditRequest(StrictModel):
     rows: list[RowKey] = Field(default_factory=list)
     axes: dict[ProjectName, list[Name]] = Field(default_factory=dict)
     files: list[StudioProjectFilePatch] = Field(default_factory=list)
+    store_choice: Sha256 | None = None
 
     @model_validator(mode="after")
     def _variant_has_step(self) -> ModelEditRequest:
@@ -440,6 +442,7 @@ class ModelEditApplied(StrictModel):
     undo_token: ModelUndoToken | None = None
     created: tuple[ProjectName, ...] = ()
     problems: tuple[ModelGraphProblem, ...] = ()
+    sweep_problems: tuple[StudioProjectWindowMapProblem, ...] = ()
 
 
 class ModelEditRefused(StrictModel):
@@ -447,5 +450,10 @@ class ModelEditRefused(StrictModel):
     problem: ModelEditProblem
 
 
+class ModelEditAsked(StrictModel):
+    status: Literal["asked"]
+    store_choices: list[StudioStoreChoice] = Field(min_length=1)
+
+
 class ModelEditResponse(StrictModel):
-    result: Annotated[ModelEditApplied | ModelEditRefused, Field(discriminator="status")]
+    result: Annotated[ModelEditApplied | ModelEditRefused | ModelEditAsked, Field(discriminator="status")]

@@ -36,6 +36,12 @@ def trial_record(
     )
 
 
+def trial_weight_values(values: np.ndarray, defined: np.ndarray) -> list[float | None]:
+    """Project a weight trace onto its valid trial steps for transport."""
+    valid = defined & np.isfinite(values)
+    return [value if keep else None for value, keep in zip(values.tolist(), valid.tolist(), strict=True)]
+
+
 def _aggregate_signal(values: np.ndarray, present: np.ndarray) -> TaskSignalAggregate:
     percentiles = None
     if np.issubdtype(values.dtype, np.number):
@@ -47,6 +53,23 @@ def _aggregate_signal(values: np.ndarray, present: np.ndarray) -> TaskSignalAggr
         at = iter(np.moveaxis(quantiles, 0, -1).tolist() if quantiles is not None else ())
         percentiles = [next(at) if here else None for here in any_present]
     return TaskSignalAggregate(presence=present.mean(axis=0).tolist(), percentiles=percentiles)
+
+
+def _aggregate_term(terms: Sequence[TrialTerm]) -> TrialTermAggregate:
+    steps = np.asarray([term.steps for term in terms], dtype=bool)
+    reduced = [term.value for term in terms if term.value is not None]
+    samples = [term.values for term in terms]
+    percentiles = None
+    if all(value is not None for value in samples):
+        bands = _aggregate_signal(np.asarray(samples), steps).percentiles
+        if bands is not None:
+            percentiles = [band[0] if band is not None else None for band in bands]
+    return TrialTermAggregate(
+        steps=steps.mean(axis=0).tolist(),
+        covered=float(np.mean([term.covered for term in terms])),
+        value=float(np.mean(reduced)) if reduced else None,
+        percentiles=percentiles,
+    )
 
 
 def aggregate_trials(trials: Sequence[TrialRecord], n_steps: int) -> TrialAggregate:
@@ -76,10 +99,7 @@ def aggregate_trials(trials: Sequence[TrialRecord], n_steps: int) -> TrialAggreg
             for values in (np.asarray([trial.variables[name] for trial in trials]),)
         },
         terms={
-            name: TrialTermAggregate(
-                steps=np.mean([trial.terms[name].steps for trial in trials], axis=0).tolist(),
-                covered=float(np.mean([trial.terms[name].covered for trial in trials])),
-            )
+            name: _aggregate_term([trial.terms[name] for trial in trials])
             for name in trials[0].terms
         },
     )
