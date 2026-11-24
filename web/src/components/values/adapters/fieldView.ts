@@ -3,7 +3,7 @@ import type {
   StudioPlanReviewSource,
 } from '@/generated/studioContracts';
 import { studioEvaluateValueSource, studioName, studioPlanValueSource, studioReason } from '@/components/activity/studioVocabulary';
-import { evaluateChange, withReset, type ChangeMark, type FieldModel, type FieldRefusal } from '../fieldModel';
+import { evaluateChange, valueKind, withReset, type ChangeMark, type FieldModel, type FieldRefusal } from '../fieldModel';
 
 export type ProjectedEdit = FieldTextEdit | FieldKindEdit | FieldNameEdit;
 
@@ -18,7 +18,7 @@ export type ExceptionMentions = (source: StudioPlanReviewSource) => ExceptionMen
 export interface FieldViewOptions {
   id: string;
   commit?: (edit: ProjectedEdit) => Promise<FieldRefusal | undefined>;
-  /** The kind of a value that is not a sweep, where the source knows it. */
+  /** The kind of a value that is not a sweep, where the source knows it and the field has no structure to read it from. */
   kind?: FieldKind;
   /** The field shows the value on a selection of rows rather than the document's. */
   rowSelection?: boolean;
@@ -55,7 +55,7 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
     ? Promise.resolve(undefined) : project(edit.kind === 'set' ? { kind: 'text', text: String(edit.value) } : edit)), options.changed);
   const readOnly = !commit;
   const rule = readOnly || !field.can_change_axis ? undefined : commit;
-  const kind = sweep ? 'sweep' : options.kind ?? 'value';
+  const kind = sweep ? 'sweep' : field.structure ? valueKind(field.structure.value, field.site.functions) : options.kind ?? 'value';
   const list = sweep?.kind === 'list' ? sweep : undefined;
   const choices = list?.values ?? field.members ?? [];
   const authored = list ? list.values.map(({ value }) => value).join(', ') + (list.values.length === 1 ? ',' : '')
@@ -128,6 +128,8 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
     finest: field.site.site.finest,
     names: field.site.site.names ?? [],
     functions: field.site.functions,
+    sites: field.site.parts,
+    namePaths: field.site.name_paths,
     commit,
   };
 }
