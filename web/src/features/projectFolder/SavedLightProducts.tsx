@@ -20,7 +20,7 @@ function themedLayout(layout: Fields | undefined): Fields {
   const axis = (key: string) => ({
     ...(base[key] as Fields | undefined), color: muted, gridcolor: divider, linecolor: divider, zerolinecolor: divider,
   });
-  const { width: _width, height: _height, ...sized } = layout ?? {};
+  const { width: _width, height: _height, title: _title, annotations: _annotations, ...sized } = layout ?? {};
   return {
     ...sized,
     autosize: true,
