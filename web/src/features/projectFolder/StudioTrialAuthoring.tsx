@@ -15,7 +15,7 @@ import {
   evaluateChange, reasonOf, type ChangeMark, type ChangeSource, type FieldModel, type FieldRefusal,
 } from '@/components/values/fieldModel';
 import { Drawer, DrawerSection, type DrawerSections } from '@/features/projectWindow/DrawerForms';
-import { Table, TableFieldCell, TableHeaderCell, type TableColumn } from '@/components/ui/Table';
+import { Table, TableFieldCell, TableHeaderCell, TableRow, type TableColumn } from '@/components/ui/Table';
 import { CatalogPicker } from '@/components/ui/CatalogPicker';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { SettingsForm } from '@/components/values/SettingsForm';
@@ -29,7 +29,7 @@ import type {
   StudioTrialField,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
-import { BatchTrace, TrialTrace } from './task/SignalTrace';
+import { BatchTrace, TermTrace, TrialTrace } from './task/SignalTrace';
 import { epochBoundaries, signalAggregate, signalSteps, type TrialShown } from './task/trialSample';
 import { baseOf } from './documentPayload';
 import type { ProjectEditController } from './projectEditController';
@@ -381,7 +381,7 @@ export function TrialObjectiveTable({ view, commit, selected, select, runs }: {
     </tr></thead>
     <tbody>{terms.map((term, index) => {
       const fields = termFields(view, term, index, commit, runs);
-      return <tr key={term.id}>
+      return <TableRow key={term.id} selected={selected?.term === term.id && !selected.field}>
         {columns.map((field) => {
           const chosenCell = selected?.term === term.id && selected.field === field;
           return <TableFieldCell key={field} selected={chosenCell}
@@ -390,7 +390,7 @@ export function TrialObjectiveTable({ view, commit, selected, select, runs }: {
             <ValueField model={fields[field]} form="cell" />
           </TableFieldCell>;
         })}
-      </tr>;
+      </TableRow>;
     })}</tbody>
   </Table>;
 }
@@ -434,8 +434,9 @@ export function TrialObjectiveOutline({ sections, view, commit, selected, select
   </Drawer>;
 }
 
-export function TrialObjectiveInspector({ view, commit, selected, runs }: {
-  view: TrialView; commit?: Commit; selected?: TermSelection; runs?: TrialRuns;
+/** The Inspector of the selected term: its fields and, where what is shown recorded its value per step, its plot. */
+export function TrialObjectiveInspector({ view, commit, selected, runs, shown }: {
+  view: TrialView; commit?: Commit; selected?: TermSelection; runs?: TrialRuns; shown?: TrialShown;
 }) {
   const index = view.objective?.terms?.findIndex(({ id }) => id === selected?.term) ?? -1;
   const term = view.objective?.terms?.[index];
@@ -443,7 +444,12 @@ export function TrialObjectiveInspector({ view, commit, selected, runs }: {
   const fields = termFields(view, term, index, commit, runs);
   const first = (Object.keys(fields) as TermField[]).find((field) => field === selected?.field);
   const order = [...first ? [first] : [], ...(Object.keys(fields) as TermField[]).filter((field) => field !== first)];
-  return <Inspector name={term.name ?? studioAccessibleName('term', index + 1)} type={term.name ? studioName('term') : undefined}>
+  const name = term.name ?? studioAccessibleName('term', index + 1);
+  const period = view.period_seconds;
+  return <Inspector name={name} type={term.name ? studioName('term') : undefined}>
+    {shown && period != null && <section aria-label={studioName('plot')} className="grid gap-1 empty:hidden">
+      <TermTrace label={name} term={term.id} shown={shown} stepSeconds={period} />
+    </section>}
     {order.map((field) => <ValueField key={term.id + field + JSON.stringify(fields[field].value ?? fields[field].text)}
       model={fields[field]} />)}
   </Inspector>;

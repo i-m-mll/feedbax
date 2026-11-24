@@ -1,9 +1,11 @@
+import { createElement } from 'react';
 import { studioName } from '@/components/activity/studioVocabulary';
 import type { ShelfBar, ShelfRow, ShelfSegment } from '@/components/timeline/Shelf';
 import type { NamedElementAddress } from '@/features/projectWindow/elementSelection';
+import { viewGlyphs } from '@/features/projectWindow/ProjectWindow';
 import type { EpochBounds } from './taskModel';
 import type { TrialAggregate, TrialRecord } from '@/generated/studioContracts';
-import { signalSteps, type SignalSteps } from './trialSample';
+import { signalSteps } from './trialSample';
 
 /** What the shelf draws of a task document: its epochs' bounds in order, and the epochs each signal's cells cover. */
 export interface ShelfTask {
@@ -17,6 +19,11 @@ export interface ShelfTask {
   }[];
   /** The trial's length, in seconds. */
   readonly duration: number;
+  /** The Objective's terms that are on, in order, and the document whose elements their rows select. */
+  readonly objective?: {
+    readonly document: string;
+    readonly terms: readonly { readonly id: string; readonly name: string }[];
+  };
 }
 
 const named = (document: string, id: string): NamedElementAddress => ({ document, element: { kind: 'named', id } });
@@ -67,8 +74,8 @@ export function nominalRows(task: ShelfTask): ShelfRow[] {
   ];
 }
 
-/** Where a signal is present in one trial: its runs of steps with a value. */
-function presence(steps: SignalSteps, stepSeconds: number): ShelfBar[] {
+/** Where a signal is present, or a term applies, in one trial: its runs of steps that hold. */
+function presence(steps: readonly unknown[], stepSeconds: number): ShelfBar[] {
   const bars: ShelfBar[] = [];
   let start: number | undefined;
   steps.forEach((value, step) => {
@@ -79,7 +86,24 @@ function presence(steps: SignalSteps, stepSeconds: number): ShelfBar[] {
   return bars;
 }
 
-/** One trial's rows: each epoch instance where it began and ended, each signal present where the trial has it. */
+/** One row per term that is on, with `bars` of the term's id: none where the term applies nowhere. */
+function termRows(task: ShelfTask, bars: (term: string) => ShelfBar[]): ShelfRow[] {
+  const objective = task.objective;
+  if (!objective) return [];
+  const glyph = createElement(viewGlyphs.objective, { 'aria-hidden': true, className: 'size-3 shrink-0' });
+  return objective.terms.map(({ id, name }): ShelfRow => ({
+    kind: 'bars', key: `term:${id}`, name, glyph, selects: named(objective.document, id), bars: bars(id),
+  }));
+}
+
+/** The terms' rows for one trial: each term where `record` has it apply. */
+export const trialTermRows = (task: ShelfTask, record: TrialRecord, stepSeconds: number) =>
+  termRows(task, (term) => presence(record.terms?.[term]?.steps ?? [], stepSeconds));
+
+/**
+ * One trial's rows: each epoch instance where it began and ended, each signal present where the trial has it, each term
+ * where it applies.
+ */
 export function trialRows(task: ShelfTask, record: TrialRecord, stepSeconds: number): ShelfRow[] {
   return [
     {
@@ -93,6 +117,7 @@ export function trialRows(task: ShelfTask, record: TrialRecord, stepSeconds: num
       kind: 'bars', key: `signal:${signal.id}`, name: signal.name, selects: named(task.document, `signal:${signal.id}`),
       bars: presence(signalSteps(record, signal.id), stepSeconds),
     })),
+    ...trialTermRows(task, record, stepSeconds),
   ];
 }
 
@@ -110,8 +135,8 @@ function shareBars(share: readonly number[], stepSeconds: number): ShelfBar[] {
 }
 
 /**
- * A batch of trials' rows: one per epoch, since epochs of different trials overlap in time, and one per signal; each
- * heavy where every trial is in the epoch or has the signal, light where some do.
+ * A batch of trials' rows: one per epoch, since epochs of different trials overlap in time, one per signal and one per
+ * term; each heavy where every trial is in the epoch, has the signal or has the term apply, light where some do.
  */
 export function batchRows(task: ShelfTask, aggregate: TrialAggregate, stepSeconds: number): ShelfRow[] {
   return [
@@ -122,5 +147,6 @@ export function batchRows(task: ShelfTask, aggregate: TrialAggregate, stepSecond
       kind: 'bars', key: `signal:${signal.id}`, name: signal.name, selects: named(task.document, `signal:${signal.id}`),
       bars: shareBars(aggregate.signals[signal.id]?.presence ?? [], stepSeconds),
     })),
+    ...termRows(task, (term) => shareBars(aggregate.terms?.[term]?.steps ?? [], stepSeconds)),
   ];
 }

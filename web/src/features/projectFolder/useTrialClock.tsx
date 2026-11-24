@@ -17,7 +17,7 @@ import { selectElement, type ElementSelectionStore } from '@/features/projectWin
 import { showProjectWindowView, type ProjectWindowState, type ProjectWindowView } from '@/features/projectWindow/projectWindowState';
 import { recordedTrials, useSavedEvaluationScene, type StoredModel } from './managedProjectDetails';
 import type { TrialView } from './StudioTrialAuthoring';
-import { batchRows, nominalRows, trialRows, type ShelfTask } from './task/shelfRows';
+import { batchRows, nominalRows, trialRows, trialTermRows, type ShelfTask } from './task/shelfRows';
 import { shelfTask, taskDocumentOf, useNominalTrial, useTaskBatch, useTaskSamples } from './task/taskTrials';
 import type { TrialShown, TrialsUnavailable } from './task/trialSample';
 
@@ -30,6 +30,8 @@ interface TrialClockInputs {
   readonly view: TrialView | undefined;
   /** The task document the view reads, whose elements the shelf's rows select. */
   readonly taskDocument: string | undefined;
+  /** The Objective document the view reads, whose terms the shelf's term rows select. */
+  readonly objectiveDocument: string | undefined;
   readonly stored: StoredModel | undefined;
   readonly evaluation: StudioSavedEvaluationRow | undefined;
   readonly sceneVisible: boolean;
@@ -89,11 +91,15 @@ function useShown(pick: TrialPick | undefined, clock: TrialClock, offer: TrialOf
 }
 
 /**
- * The shelf's rows for what is shown: the nominal trial as its definition draws it, with each drawn length's spread;
- * one trial as its record has it; the aggregate's shares.
+ * The shelf's rows for what is shown: the nominal trial as its definition draws it, with each drawn length's spread, and
+ * its terms as its record has them once it is read; one trial as its record has it; the aggregate's shares.
  */
-function rowsOf(task: ShelfTask, pick: TrialPick, shown: TrialShown | TrialsUnavailable, stepSeconds: number): ShelfRow[] {
-  if (pick.trials === 'nominal' || shown.kind === 'problems') return nominalRows(task);
+function rowsOf(task: ShelfTask, pick: TrialPick, shown: TrialShown | TrialsUnavailable | undefined, stepSeconds: number): ShelfRow[] | undefined {
+  if (pick.trials === 'nominal') {
+    return [...nominalRows(task), ...shown?.kind === 'one' ? trialTermRows(task, shown.record, stepSeconds) : []];
+  }
+  if (!shown) return undefined;
+  if (shown.kind === 'problems') return nominalRows(task);
   switch (shown.kind) {
     case 'one': return trialRows(task, shown.record, stepSeconds);
     case 'all': return batchRows(task, shown.aggregate, stepSeconds);
@@ -108,8 +114,8 @@ const frames = (steps: number, stepSeconds: number) => Array.from({ length: step
  * the time; with the bottom bar's clock group and the shelf on that time.
  */
 export function useTrialClock({
-  windowState, setWindowState, projectId, revision, view, taskDocument, stored, evaluation, sceneVisible, shelfView, elements,
-  playhead,
+  windowState, setWindowState, projectId, revision, view, taskDocument, objectiveDocument, stored, evaluation, sceneVisible,
+  shelfView, elements, playhead,
 }: TrialClockInputs) {
   const clock = windowState.clock ?? defaultTrialClock;
   const recorded = recordedTrials(evaluation);
@@ -124,8 +130,8 @@ export function useTrialClock({
     pick?.trials === 'recorded' ? index : undefined, playhead);
   const recordedTrial = replay.view.kind === 'replay' ? replay.view.trial : undefined;
   const { shown, query } = useShown(pick, clock, offer, view, stored, recordedTrial);
-  const drawn = view && taskDocument ? shelfTask(view, taskDocument) : undefined;
-  const rows = pick?.trials === 'nominal' && drawn ? nominalRows(drawn) : pick && shown && (drawn && period != null ? rowsOf(drawn, pick, shown, period) : []);
+  const drawn = view && taskDocument ? shelfTask(view, taskDocument, objectiveDocument) : undefined;
+  const rows = pick && (drawn && period != null ? rowsOf(drawn, pick, shown, period) : shown && []);
   const [taskTime, setTaskTime] = usePlayhead(playhead, JSON.stringify(['task', taskDocument, pick, clock.seed]));
   const [time, setTime] = pick?.trials === 'recorded' ? [replay.time, replay.setTime] : [taskTime, setTaskTime];
   const replayTimeline = pick?.trials === 'recorded' ? sceneTimeline(replay.view) : null;

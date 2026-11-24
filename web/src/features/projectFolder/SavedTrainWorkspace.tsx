@@ -625,7 +625,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     trialEditable, trialChangeScope, runRemoval.confirm);
   const trialClock = useTrialClock({
     windowState, setWindowState, projectId: saved.project_id, revision: saved.revision, view: trial.view,
-    taskDocument: trial.view && (trial.view.task_document ?? step?.id), stored, evaluation: selectedEvaluation,
+    taskDocument: trial.view && (trial.view.task_document ?? step?.id),
+    objectiveDocument: trial.view && (trial.view.objective_document ?? step?.id), stored, evaluation: selectedEvaluation,
     sceneVisible: windowState.mode !== 'map' && [primaryView, secondaryView].includes('scene'), elements, playhead,
     shelfView: windowState.mode === 'map' ? undefined : primaryView ?? undefined,
   });
@@ -1785,9 +1786,15 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                 ? selectedRuns(step, state.selection).map((row) => row.values[sweep]).filter(Boolean) : []),
               choose: authoring?.onChooseSweepValue,
             };
+            const objectiveDocument = value.objective_document ?? step?.id ?? '';
+            const termElement = named(objectiveDocument);
+            const term = termElement && value.objective?.terms?.some(({ id }) => id === termElement.id)
+              ? { term: termElement.id, field: termElement.field } : undefined;
+            const termInspector = term && <TrialObjectiveInspector view={value} commit={commit} selected={term} runs={runs}
+              shown={trialClock.trial} />;
             if (view === 'task') {
               const document = value.task_document ?? step?.id ?? '';
-              const selected = named(document)?.id;
+              const selected = term ? undefined : named(document)?.id;
               const picker = pickDocument('task', value.task_document ?? undefined, documentScopes.task);
               const unfed = unfedTasks(value);
               const variable = selectedVariable(selected);
@@ -1802,24 +1809,21 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                   </FocusedFields>
                   : <TrialTaskForm view={value} commit={commit} />),
                 drawer: <TrialTaskOutline sections={drawerSections} view={value} selected={selected} select={choose(document)} />,
-                inspector: variable ? <TrialVariableInspector view={value} commit={commit} runs={runs} id={variable.id} />
+                inspector: termInspector || (variable ? <TrialVariableInspector view={value} commit={commit} runs={runs} id={variable.id} />
                   : selected && 'variables' in value.task && inGrid(selected)
                     ? <TrialGridInspector view={value} commit={commit} runs={runs} selected={selected} shown={trialClock.trial} />
-                    : selected && <TrialTaskInspector view={value} commit={commit} selected={selected} shown={trialClock.trial} />,
+                    : selected && <TrialTaskInspector view={value} commit={commit} selected={selected} shown={trialClock.trial} />),
               };
             }
-            const document = value.objective_document ?? step?.id ?? '';
-            const element = named(document);
-            const selected = element && { term: element.id, field: element.field };
             return {
               picker: pickDocument('objective', value.objective_document ?? undefined, documentScopes.objective),
-              header: <TrialObjectiveAdd view={value} commit={commit} select={choose(document)} />,
+              header: <TrialObjectiveAdd view={value} commit={commit} select={choose(objectiveDocument)} />,
               body: withProblem(<FocusedFields className="contents" request={fieldFocus?.step === step?.id && fieldFocus?.target?.startsWith('objective:') ? fieldFocus : undefined}
                 onFocused={() => setFieldFocus(undefined)}>
-                <TrialObjectiveTable view={value} commit={commit} selected={selected} select={choose(document)} runs={runs} />
+                <TrialObjectiveTable view={value} commit={commit} selected={term} select={choose(objectiveDocument)} runs={runs} />
               </FocusedFields>),
-              drawer: <TrialObjectiveOutline sections={drawerSections} view={value} commit={commit} selected={selected?.term} select={choose(document)} />,
-              inspector: <TrialObjectiveInspector view={value} commit={commit} selected={selected} runs={runs} />,
+              drawer: <TrialObjectiveOutline sections={drawerSections} view={value} commit={commit} selected={term?.term} select={choose(objectiveDocument)} />,
+              inspector: termInspector,
             };
           }
           if (view === 'training') {
