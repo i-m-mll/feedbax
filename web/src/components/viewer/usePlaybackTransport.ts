@@ -7,11 +7,6 @@ function boundedPosition(position: number, duration: number): number {
   return Math.max(0, Math.min(Math.max(duration, 0), position));
 }
 
-export function timelineOffset(value: number, duration: number): string {
-  if (!Number.isFinite(value) || !Number.isFinite(duration) || duration <= 0) return '0%';
-  return `${Math.max(0, Math.min(1, value / duration)) * 100}%`;
-}
-
 function nextFramePosition(frameTimes: readonly number[], position: number, direction: -1 | 1): number {
   if (frameTimes.length === 0) return 0;
   const sorted = [...frameTimes].sort((left, right) => left - right);

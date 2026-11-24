@@ -34,6 +34,7 @@ import type { ConfirmRunRemoval } from './runRemoval';
 import { modelSchema } from './model/modelGraph';
 import { elementKey, isModelAddress, type ElementSelectionStore, type ModelLocation } from '@/features/projectWindow/elementSelection';
 import { useStore } from 'zustand';
+import { usePlayhead, type PlayheadStore } from '@/components/timeline/trialClock';
 import { Select } from '@/components/ui/Select';
 
 type DetailName = 'model' | 'scene';
@@ -131,15 +132,23 @@ function evaluationScene(trial: WorkspaceReplayTrial): SceneDrawing {
   return { kind: 'replay', trial, scene: sceneAt(0), sceneAt };
 }
 
-export function useSavedEvaluationScene(projectId: string, revision: string, evaluation: StudioSavedEvaluationRow | undefined, visible: boolean) {
+/** The trials a saved evaluation recorded, which the clock's picker lists, with each one's condition. */
+export function recordedTrials(evaluation: StudioSavedEvaluationRow | undefined) {
+  if (!evaluation?.result?.job_id) return { ids: [], labels: [] };
+  const labels = conditionLabels(evaluation.trials);
+  return { ids: evaluation.trials, labels: evaluation.trials.map((id) => labels.get(id) ?? id) };
+}
+
+/** The replay of the `recorded`-th trial the saved evaluation recorded, on the window's playhead. */
+export function useSavedEvaluationScene(projectId: string, revision: string, evaluation: StudioSavedEvaluationRow | undefined,
+  visible: boolean, recorded: number | undefined, playhead: PlayheadStore) {
   const result = evaluation?.result;
   const jobId = result?.job_id;
   const coordinates = result?.checkpoint_sources?.map(({ completed_updates }) => completed_updates);
   const [chosenCheckpoint, setCheckpoint] = useState<{ jobId: string; coordinate: number }>();
   const chosen = chosenCheckpoint?.jobId === jobId ? chosenCheckpoint?.coordinate : undefined;
   const checkpoint = chosen !== undefined && coordinates?.includes(chosen) ? chosen : coordinates?.[0];
-  const [chosenTrial, setTrial] = useState<{ jobId: string; trial: string }>();
-  const trial = jobId && (chosenTrial?.jobId === jobId ? chosenTrial.trial : evaluation?.trials[0]);
+  const trial = jobId && recorded !== undefined ? evaluation?.trials[recorded] : undefined;
   const replay = useQuery({
     queryKey: ['saved-evaluation-replay', projectId, revision, evaluation?.key, jobId, trial, checkpoint],
     queryFn: ({ signal }) => {
@@ -152,23 +161,11 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
   const view: SceneView = replay.error
     ? { kind: 'failed', issue: studioRegionIssue('scene', replay.error), retry: () => { void replay.refetch(); } }
     : replayDrawing ?? { kind: trial && (!evaluation?.checkpoint_series || checkpoint !== undefined) ? 'loading' : 'empty' };
-  const timeScope = JSON.stringify([jobId, trial, checkpoint]);
-  const [clock, setClock] = useState<{ scope: string; time: number }>();
+  const timeScope = JSON.stringify(['recorded', jobId, trial, checkpoint]);
+  const [time, setTime] = usePlayhead(playhead, timeScope);
   const [speed, setSpeed] = useState(1);
-  const time = clock?.scope === timeScope ? clock.time : 0;
-  const trials = jobId && trial && evaluation ? {
-    choices: [...conditionLabels(evaluation.trials)].map(([id, label]) => ({ id, label })),
-    selectedId: trial,
-    onSelect: (value: string) => {
-      setTrial({ jobId, trial: value });
-      setClock(undefined);
-    },
-  } : undefined;
   const chooseCheckpoint = (coordinate: number) => {
-    if (jobId && coordinates?.includes(coordinate)) {
-      setCheckpoint({ jobId, coordinate });
-      setClock(undefined);
-    }
+    if (jobId && coordinates?.includes(coordinate)) setCheckpoint({ jobId, coordinate });
   };
   const checkpoints = jobId && coordinates && coordinates.length > 1 && checkpoint !== undefined ? {
     choices: coordinates,
@@ -176,9 +173,9 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
     onSelect: chooseCheckpoint,
   } : undefined;
   return {
-    view, time, trials, checkpoints, chooseCheckpoint,
-    clock: visible && view.kind === 'replay' && <SceneClockControls key={timeScope} timeline={sceneTimeline(view)} time={time}
-      speed={speed} onSpeedChange={setSpeed} onTimeChange={(value) => setClock({ scope: timeScope, time: value })} />,
+    view, time, checkpoints, chooseCheckpoint,
+    transport: visible && view.kind === 'replay' && <SceneClockControls key={timeScope} timeline={sceneTimeline(view)} time={time}
+      speed={speed} onSpeedChange={setSpeed} onTimeChange={setTime} />,
   };
 }
 
@@ -240,7 +237,6 @@ function useSceneDetail({
   const evaluating = step?.kind === 'evaluate';
   const view = evaluating ? evaluationReplay.view : geometry;
   const time = evaluating ? evaluationReplay.time : 0;
-  const trials = evaluating ? evaluationReplay.trials : undefined;
   const checkpoints = evaluating ? evaluationReplay.checkpoints : undefined;
   const sceneScope = JSON.stringify([scope, path, evaluation?.result?.job_id]);
   const [cameraState, setCamera] = useState<{ scope: string; value: SceneCamera }>();
@@ -273,7 +269,7 @@ function useSceneDetail({
         <SceneCanvas view={view} time={time} camera={camera} onCameraChange={onCameraChange} hiddenOverlays={hiddenOverlays} fitToSlot {...selection} />
       </div>
     </CanvasStrip> : null,
-    drawer: (scene || trials) && <SceneDrawer sections={drawerSections} scene={scene ?? emptyReplayScene} trials={trials} checkpoints={checkpoints} {...selection} />,
+    drawer: (scene || checkpoints) && <SceneDrawer sections={drawerSections} scene={scene ?? emptyReplayScene} checkpoints={checkpoints} {...selection} />,
     inspector: scene && selection.selectedId ? <SceneElementInspector scene={scene} selectedId={selection.selectedId} /> : null,
   };
 }

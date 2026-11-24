@@ -67,6 +67,8 @@ export interface ProjectWindowProps {
   variant?: ReactNode;
   overlay?: ReactNode;
   clock?: ReactNode;
+  /** The rows that open above the clock, which take their height from the details. */
+  shelf?: ReactNode;
   failure?: ReactNode;
   problems?: ReactNode;
   activity?: ReactNode;
@@ -146,7 +148,7 @@ function usePaletteState() {
 
 export function ProjectWindow({
   state, onStateChange, projectName, saveStatus, views, renderView, map, mapDrawer, compactMap,
-  onBack, onForward, commands, mapCommands, focusRequest, variant, overlay, clock, failure, problems, activity,
+  onBack, onForward, commands, mapCommands, focusRequest, variant, overlay, clock, shelf, failure, problems, activity,
 }: ProjectWindowProps) {
   const id = useId();
   const ids = {
@@ -399,11 +401,11 @@ export function ProjectWindow({
     '--shell-rail-width': `${projectRailWidth}px`,
     '--studio-map-drawer-edge': `${projectRailWidth + (mapDrawerVisible ? fit.mapDrawer.size : 0)}px`,
   } as CSSProperties;
-  const panelRows = mode === 'map'
+  const panelRows = `${mode === 'map'
     ? 'minmax(0, 1fr) 0px 0px'
     : mode === 'details'
       ? `${compactMapHeight}px 0px minmax(0, 1fr)`
-      : `${fit.mapHeight.size}px 1px minmax(0, 1fr)`;
+      : `${fit.mapHeight.size}px 1px minmax(0, 1fr)`} auto`;
   const resizeProps = (key: PreferredWindowSize) => ({
     onPreview: (size: number | null) => previewSize(key, size),
     onResize: (size: number) => resize(key, size),
@@ -593,6 +595,7 @@ export function ProjectWindow({
             )}
           </aside>
         </section>
+        <div className="studio-window-shelf" hidden={!shelf}>{shelf}</div>
         {settingsOpen && (
           <section ref={settingsRegion} className="studio-window-settings" aria-label={studioName('settings')}
             data-studio-focus-region="settings" tabIndex={-1}

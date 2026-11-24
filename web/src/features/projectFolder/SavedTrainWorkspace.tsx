@@ -58,7 +58,9 @@ import { useConnection } from '@/api/connection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { authoredPointer, directTrainStep, modelDocumentId } from './authoredEdits';
 import { withBaseDescendants } from './baseDescendants';
-import { useManagedProjectDetails, useSavedEvaluationScene, useStoredModel, type NamedDocumentScope } from './managedProjectDetails';
+import { useManagedProjectDetails, useStoredModel, type NamedDocumentScope } from './managedProjectDetails';
+import { useTrialClock } from './useTrialClock';
+import { usePlayheadStore } from '@/components/timeline/trialClock';
 import { viewOffer, viewsByKind } from './viewContent';
 import {
   choosePick, clearSelection, isModelAddress, selectElement, useChoosing, useElementSelectionStore, usePick, type PickTarget,
@@ -214,6 +216,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const [windowState, setWindowState] = useProjectWindowState(saved.project_id);
   const drawerSections = useDrawerSections(windowState, setWindowState);
   const elements = useElementSelectionStore();
+  const playhead = usePlayheadStore();
   const armedPick = usePick(elements);
   const choosing = useChoosing(elements);
   const mapPick = useMemo(() => armedPick && {
@@ -584,11 +587,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   }
   const exactSources = selectedEvaluation?.result?.checkpoint_sources;
   const exactSource = subjectCheckpoint !== undefined && exactSources?.length === 1 ? exactSources[0] : undefined;
-  const evaluationReplay = useSavedEvaluationScene(saved.project_id, saved.revision, selectedEvaluation,
-    windowState.mode !== 'map' && [primaryView, secondaryView].includes('scene'));
   const trialStep = step?.kind === 'train' || step?.kind === 'evaluate';
-  const trialVisible = windowState.mode !== 'map' &&
-    [primaryView, secondaryView].some((view) => view === 'task' || view === 'objective');
   const selectedSweepValues = new Map<string, Set<string>>();
   if (state.selection && state.selection.kind !== 'steps') {
     for (const row of selectedDefinitionRows) {
@@ -629,8 +628,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       : change.kind === 'objective' || change.kind === 'expression' ? documentScopes.objective?.lit : undefined;
     return chosen && { kind: 'step', chosen_steps: [...chosen] };
   };
-  const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, trialStep && trialVisible,
+  const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, trialStep,
     trialEditable, trialChangeScope, runRemoval.confirm);
+  const trialClock = useTrialClock({
+    windowState, setWindowState, projectId: saved.project_id, revision: saved.revision, view: trial.view,
+    taskDocument: trial.view && (trial.view.task_document ?? step?.id), stored, evaluation: selectedEvaluation,
+    sceneVisible: windowState.mode !== 'map' && [primaryView, secondaryView].includes('scene'), elements, playhead,
+  });
+  const evaluationReplay = trialClock.replay;
   const documentBase = authored && 'document' in authored.base && !authored.base.pointer ? authored.base.document : undefined;
   const pickDocument = useProjectDocuments({
     editor, stepId: step?.id, run: namedRun, scope: trialEditScope,
@@ -1725,7 +1730,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
           {insertMenu.menu}
           {validity.popover}
         </>}
-        clock={evaluationReplay.clock}
+        clock={trialClock.clock}
+        shelf={trialClock.shelf}
         failure={failure && <div role="alert" className="flex min-w-0 items-center gap-1">
           <span className="min-w-0 break-words">{failure}</span>
           {!isStudioDefect(failureCause) &&
@@ -1792,12 +1798,13 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                 body: withProblem('variables' in value.task
                   ? <FocusedFields className="contents" request={fieldFocus?.step === step?.id && fieldFocus?.target?.startsWith('task:') ? fieldFocus : undefined}
                     onFocused={() => setFieldFocus(undefined)}>
-                    <TrialTaskDocument view={value} commit={commit} runs={runs} selected={selected} select={choose(document)} />
+                    <TrialTaskDocument view={value} commit={commit} runs={runs} selected={selected} select={choose(document)}
+                      drawn={trialClock.sample?.variables} />
                   </FocusedFields>
                   : <TrialTaskForm view={value} commit={commit} />),
                 drawer: <TrialTaskOutline sections={drawerSections} view={value} selected={selected} select={choose(document)} />,
                 inspector: variable ? <TrialVariableInspector view={value} commit={commit} runs={runs} id={variable.id} />
-                  : selected && <TrialTaskInspector view={value} commit={commit} selected={selected} />,
+                  : selected && <TrialTaskInspector view={value} commit={commit} selected={selected} trial={trialClock.sample} />,
               };
             }
             const document = value.objective_document ?? step?.id ?? '';

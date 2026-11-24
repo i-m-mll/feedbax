@@ -1,23 +1,5 @@
 import type { WorkspaceReplayTrack, WorkspaceReplayTrial } from '@/generated/studioContracts';
 
-export interface WorkspaceReplayTimelineBand {
-  id: string;
-  label: string;
-  start: number;
-  end: number;
-  kind: 'epoch' | 'loss_window';
-}
-
-export interface WorkspaceReplayEventTick {
-  id: string;
-  label: string;
-  time: number;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
-}
-
 export function workspaceReplayTrialRef(trial: WorkspaceReplayTrial): string {
   if (trial.identity.stable_id) return `trial:${trial.identity.stable_id}`;
   return `trial:index:${trial.identity.index}`;
@@ -78,49 +60,4 @@ export function workspaceReplayPolyline(track: WorkspaceReplayTrack | null | und
       return Number.isFinite(x) && Number.isFinite(y) ? ([x, y] as [number, number]) : null;
     })
     .filter((point): point is [number, number] => point !== null);
-}
-
-function numberFromRecord(record: Record<string, unknown>, keys: string[]): number | null {
-  for (const key of keys) {
-    const value = Number(record[key]);
-    if (Number.isFinite(value)) return value;
-  }
-  return null;
-}
-
-export function workspaceReplayTimelineBands(trial: WorkspaceReplayTrial | null | undefined): WorkspaceReplayTimelineBand[] {
-  const timeline = trial?.trial_spec?.timeline;
-  if (!isRecord(timeline) || !Array.isArray(timeline.epochs)) return [];
-  let cursor = 0;
-  return timeline.epochs.flatMap((epoch, index) => {
-    if (!isRecord(epoch)) return [];
-    const start = numberFromRecord(epoch, ['start', 'start_time', 'start_s']) ?? cursor;
-    const explicitEnd = numberFromRecord(epoch, ['end', 'end_time', 'end_s']);
-    const length = numberFromRecord(epoch, ['length', 'duration', 'duration_s']);
-    const end = explicitEnd ?? start + (length ?? 0);
-    cursor = end;
-    if (end <= start) return [];
-    return [{
-      id: String(epoch.id ?? `epoch:${index}`),
-      label: String(epoch.label ?? epoch.id ?? `Epoch ${index + 1}`),
-      start,
-      end,
-      kind: 'epoch' as const,
-    }];
-  });
-}
-
-export function workspaceReplayEventTicks(trial: WorkspaceReplayTrial | null | undefined): WorkspaceReplayEventTick[] {
-  const timeline = trial?.trial_spec?.timeline;
-  if (!isRecord(timeline) || !Array.isArray(timeline.events)) return [];
-  return timeline.events.flatMap((event, index) => {
-    if (!isRecord(event)) return [];
-    const time = numberFromRecord(event, ['time', 'at', 'start', 'step']);
-    if (time === null) return [];
-    return [{
-      id: String(event.id ?? `event:${index}`),
-      label: String(event.label ?? event.id ?? `Event ${index + 1}`),
-      time,
-    }];
-  });
 }
