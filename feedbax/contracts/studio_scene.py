@@ -95,11 +95,16 @@ class StudioSceneModelSource(StrictModel):
 
 
 class StudioSceneGeometryRequest(StudioSceneModelSource):
-    state_values: dict[str, JsonValue] = Field(default_factory=dict)
-    """Trial initial values or one recorded step, including configuration, by state Model address."""
+    poses: Annotated[list[dict[str, JsonValue]], Field(min_length=1)]
+    """State values by Model address for each frame. An empty map requests the rest pose."""
+
+
+class StudioSceneGeometryFrame(StrictModel):
+    mechanisms: list[SceneMechanismGeometry]
+    diagnostics: list[DomainDiagnostic]
 
 
 class StudioSceneGeometryResponse(StudioSceneModelSource):
     project_id: ProjectName
-    mechanisms: list[SceneMechanismGeometry]
-    diagnostics: list[DomainDiagnostic]
+    frames: Annotated[list[StudioSceneGeometryFrame], Field(min_length=1)]
+    """Geometry in the input pose order."""

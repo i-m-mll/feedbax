@@ -68,6 +68,7 @@ from feedbax.contracts.studio_scene import (
     SceneMuscleGeometry,
     ScenePlanarGeometry,
     ScenePointGeometry,
+    StudioSceneGeometryFrame,
     StudioSceneGeometryRequest,
     StudioSceneGeometryResponse,
 )
@@ -733,6 +734,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     SceneMuscleGeometry,
     ScenePlanarGeometry,
     ScenePointGeometry,
+    StudioSceneGeometryFrame,
     StudioSceneGeometryRequest,
     StudioSceneGeometryResponse,
     DomainRegistryPayload,

@@ -133,11 +133,11 @@ def test_project_geometry_matches_the_recorded_arm_tip_and_poses_every_mechanism
         source = {"revision": client.get(_PROJECT).json()["revision"], "document_id": "single"}
         route = f"{_PROJECT}/scene/geometry"
         response = client.post(route, json={
-            **source, "state_values": {arm_angles: angles, mass_position: [0.2, -0.1]},
+            **source, "poses": [{arm_angles: angles, mass_position: [0.2, -0.1]}],
         })
         assert response.is_success, response.text
         assert response.headers["Cache-Control"] == "no-store"
-        result = response.json()
+        result = response.json()["frames"][0]
         assert result["diagnostics"] == []
         geometries = {item["address"]["element"]["id"]: item for item in result["mechanisms"]}
         assert geometries.keys() == {"mechanics", "arm", "mass"}
@@ -150,9 +150,9 @@ def test_project_geometry_matches_the_recorded_arm_tip_and_poses_every_mechanism
         assert geometries["mechanics"]["links"][0]["body_name"] == "Upper arm"
 
         preview = client.post(route, json={
-            **source, "state_values": {arm_position: [0.3, 0.2], mass_skeleton: 0.25},
+            **source, "poses": [{arm_position: [0.3, 0.2], mass_skeleton: 0.25}],
         })
         assert preview.is_success, preview.text
-        sampled = {item["address"]["element"]["id"]: item for item in preview.json()["mechanisms"]}
+        sampled = {item["address"]["element"]["id"]: item for item in preview.json()["frames"][0]["mechanisms"]}
         assert sampled["arm"]["links"][-1]["end"] == pytest.approx([0.3, 0.2])
         assert sampled["mass"]["position"] == pytest.approx([0.25, 0.25])

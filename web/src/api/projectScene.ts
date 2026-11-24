@@ -10,6 +10,9 @@ export async function fetchProjectSceneGeometry(id: string, source: StudioSceneG
     if (result.project_id !== id || result.revision !== source.revision || result.document_id !== source.document_id) {
       throw new Error('Scene response refers to a different authored model.');
     }
+    if (result.frames.length !== source.poses.length) {
+      throw new Error('Scene response has a different frame count from the request.');
+    }
     return result;
   } catch (error) {
     throw asApiRequestError(error, path);

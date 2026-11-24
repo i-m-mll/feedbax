@@ -45,6 +45,7 @@ from feedbax.contracts.studio_subset import (
 from feedbax.contracts.studio_scene import (
     StudioPlanarSceneRequest,
     StudioPlanarSceneResponse,
+    StudioSceneGeometryFrame,
     StudioSceneGeometryRequest,
     StudioSceneGeometryResponse,
 )
@@ -314,12 +315,15 @@ def read_scene_geometry(
         snapshot = request.app.state.project_folders.read(project_id)
         if snapshot.revision != body.revision:
             raise ProjectRevisionConflict("project", snapshot.revision)
-        mechanisms, diagnostics = prepare_scene_geometry(
-            snapshot.project, body, request.app.state.bootstrap_state.bundle.components,
-        )
+        registry = request.app.state.bootstrap_state.bundle.components
+        frames = []
+        for pose in body.poses:
+            mechanisms, diagnostics = prepare_scene_geometry(
+                snapshot.project, body.document_id, pose, registry,
+            )
+            frames.append(StudioSceneGeometryFrame(mechanisms=mechanisms, diagnostics=diagnostics))
         return StudioSceneGeometryResponse(
-            project_id=project_id, revision=body.revision, document_id=body.document_id,
-            mechanisms=mechanisms, diagnostics=diagnostics,
+            project_id=project_id, revision=body.revision, document_id=body.document_id, frames=frames,
         )
 
     return _project_response(response, prepare)
