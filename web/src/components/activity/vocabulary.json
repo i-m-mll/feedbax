@@ -330,7 +330,6 @@
     "removed": "Removed",
     "variables": "Variables",
     "signals": "Signals",
-    "perTrial": "Per Trial",
     "modelInputs": "Model Inputs",
     "outputs": "Outputs",
     "addTerm": "Add Term",
@@ -403,6 +402,7 @@
     "signal": "Signal",
     "epoch": "Epoch",
     "addVariable": "Add Variable",
+    "initializes": "Initializes",
     "addEpoch": "Add Epoch",
     "addSignal": "Add Signal",
     "insertEpoch": "Insert Epoch",
@@ -514,6 +514,7 @@
     }
   },
   "reason": {
+    "neededAtStart": "The Model needs {value} at the start of each trial",
     "observed": "{value}",
     "unavailable": "{value} unavailable",
     "unreachable": "{value} unreachable",

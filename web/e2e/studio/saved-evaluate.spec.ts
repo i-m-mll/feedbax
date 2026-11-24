@@ -920,8 +920,10 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
   expect(new Set(descriptions).size).toBe(descriptions.length);
   await scanStudio(page, info, 'evaluate-model');
   await tab(page, 'Task').click();
-  // The Evaluate reads its Task from the Train it evaluates, so the view names that source instead of a document.
-  await expect(page.getByRole('tabpanel', { name: 'Task', exact: true }).getByText('Trained by train', { exact: true })).toBeVisible();
+  // The Evaluate reads its Task from the Train it evaluates, so a variable's value names that source.
+  await page.getByRole('tabpanel', { name: 'Task', exact: true }).getByRole('table', { name: 'Variables', exact: true })
+    .getByRole('img', { name: /^Move / }).first().click();
+  await expect(page.getByRole('complementary', { name: 'Inspector', exact: true }).getByText('Trained by train', { exact: true })).toBeVisible();
   await scanStudio(page, info, 'evaluate-task');
   await chooseStep(page, 'finite');
   await footer(page).getByRole('button', { name: /^Activity( \d+)?$/ }).click();
