@@ -17,6 +17,8 @@ async function openShell(page: Page) {
     },
   }}));
   await page.goto('/?project=shell');
+  // The window drawn while the project opens is replaced by the opened project's.
+  await expect(page.getByRole('heading', { level: 1, name: 'Shell' })).toBeVisible();
 }
 
 test('uses the pinned shell surfaces, Studio’s accent and the shell’s title bar', async ({ page }) => {
