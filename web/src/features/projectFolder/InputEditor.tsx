@@ -178,7 +178,7 @@ export function InputEditor({ label, role, binding, self, steps, project, output
   /** A refusal with no picker to land on: the input's own, at its label's end. */
   const unplaced = !rows.length && !adding && refusal !== undefined;
   const removable = (count: number) => onChange && (role.gathers ? count > 1 : !role.required && !absent);
-  return <FieldRow label={label} labelId={labelId}
+  return <div data-field="input" className="contents"><FieldRow label={label} labelId={labelId}
     actions={(unplaced || addable) && <>
       {unplaced && <FieldProblem reason={refusal} id={`${labelId}-problem`} />}
       {addable && <IconButton size="mark" label={studioAccessibleName('add', label)}
@@ -213,5 +213,5 @@ export function InputEditor({ label, role, binding, self, steps, project, output
           onClick={() => setAdding(false)} />
       </li>}
     </ul>
-  </FieldRow>;
+  </FieldRow></div>;
 }

@@ -1,4 +1,4 @@
-import { useId, useRef } from 'react';
+import { useId, useRef, type ReactNode } from 'react';
 import { useDraft } from '@/hooks/useDraft';
 import { studioAccessibleName, studioName, studioReason } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
@@ -142,10 +142,10 @@ function toggle(ids: readonly string[], id: string, checked: boolean) {
 
 /**
  * Which trials the Evaluate runs: every condition, chosen conditions, or a number sampled from the task. A choice
- * saves once it names some trials.
+ * saves once it names some trials. A saved sample's number is `count`, the step's own field, which takes a sweep.
  */
-export function TrialsEditor({ initial, domain, disabled, refusal, onSave }: {
-  initial: TrialSet; domain: TrialDomain; disabled: boolean; refusal?: string; onSave(rule: TrialSet): void;
+export function TrialsEditor({ initial, domain, disabled, refusal, count: savedCount, onSave }: {
+  initial: TrialSet; domain: TrialDomain; disabled: boolean; refusal?: string; count?: ReactNode; onSave(rule: TrialSet): void;
 }) {
   const [rule, setRule] = useDraft(initial);
   const count = useId();
@@ -185,14 +185,14 @@ export function TrialsEditor({ initial, domain, disabled, refusal, onSave }: {
       <Checkboxes options={[...conditionLabels(domain.conditions)].map(([id, label]) => ({ id, label }))} selected={rule.ids} disabled={disabled}
         onToggle={(id, checked) => commit({ kind: 'conditions', ids: toggle(rule.ids, id, checked) })} />
     </fieldset>}
-    {sampling && <FieldRow label={studioName('count')} htmlFor={count}>
+    {sampling && (initial.kind === 'sample' && savedCount || <FieldRow label={studioName('count')} htmlFor={count}>
       <NumberField ref={first} id={count} min={1} max={10_000} step={1} disabled={disabled} invalid={refusal !== undefined}
         aria-describedby={refusal ? `${count}-problem` : undefined}
         trailing={refusal && <FieldProblem reason={refusal} id={`${count}-problem`} />}
         value={Number.isNaN(rule.count) ? null : rule.count}
         onValueChange={(next) => setRule({ kind: 'sample', count: next ?? Number.NaN })}
         onValueCommitted={(next) => commit({ kind: 'sample', count: next ?? Number.NaN })} />
-    </FieldRow>}
+    </FieldRow>)}
   </Section>;
 }
 

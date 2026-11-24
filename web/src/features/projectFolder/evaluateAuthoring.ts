@@ -220,10 +220,14 @@ export function validTrialSet(rule: TrialSet, domain: TrialDomain | undefined): 
     (rule.ids.length > 0 && rule.ids.every((id) => domain.conditions.includes(id))));
 }
 
-function addressedModelAxis(axis: Axis) {
+/** A path of the Evaluate's own fields: its Model's by address, its Task's, its Seed and its sampled Trials. */
+const ownField = (path: string) => path.startsWith('{') || path.startsWith('trial_documents.') ||
+  path === 'params.seed' || path === 'params.trial_set.count';
+
+function ownFieldAxis(axis: Axis) {
   const paths = 'path' in axis ? (axis.path === undefined ? [] : [axis.path]) : 'values' in axis && !Array.isArray(axis.values)
     ? Object.values(axis.values).flatMap((value) => Object.keys(value?.patches ?? {})) : [];
-  return paths.length > 0 && paths.every((path) => path.startsWith('{'));
+  return paths.length > 0 && paths.every(ownField);
 }
 
 /** A selection of an Evaluate subject that Studio edits: its reference, its restriction, and where that is written. */
@@ -252,7 +256,7 @@ export function ordinaryEvaluation(step: Step): { subjects: EvaluationSubject[];
   const sweep = step.sweep;
   const axis = sweep?.axes?.subject;
   if (!axis || !('input' in axis) || axis.input !== 'subject' ||
-      axes.some((axis) => !('input' in axis) && !('checkpoint_rule' in axis) && !addressedModelAxis(axis)) ||
+      axes.some((axis) => !('input' in axis) && !('checkpoint_rule' in axis) && !ownFieldAxis(axis)) ||
       sweep?.rows || sweep?.combination) return undefined;
   const { evaluation_type, params } = step.base.inline;
   if (evaluation_type !== rollout || !params || typeof params !== 'object' || Array.isArray(params) ||

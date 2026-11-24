@@ -24,7 +24,7 @@ import {
   type EvaluateModelRequest, type ModelDocument, type StudioSavedEvaluationRow,
   type StudioSavedTrainKey, type WorkspaceReplayTrial, type StudioProjectWindowMapProblem, type ModelAddress,
 } from '@/generated/studioContracts';
-import { modelDocumentId, directTrainStep } from './authoredEdits';
+import { modelDocumentId, ownDefinition } from './authoredEdits';
 import { placeMember, type Reveal } from './projectWindowProblems';
 import { planarInteriors } from './viewContent';
 import type { ProjectEditController } from './projectEditController';
@@ -281,7 +281,7 @@ function useSceneDetail({
 /** The stored Model a step shows: its own, the Model its Evaluate subject trains, or the one its Train step names. */
 export function useStoredModel(editor: ProjectEditController, step: PlanStepView | undefined, modelSource: string | undefined) {
   const { saved, draft } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
-  const base = step ? directTrainStep(draft, step.id) : null;
+  const base = step ? ownDefinition(draft, step.id) : null;
   const trial = base?.trial_documents;
   const managedModel = trial && typeof trial === 'object' && !Array.isArray(trial) ? trial.model : undefined;
   const direct = DocumentReferenceSchema.safeParse(managedModel);
