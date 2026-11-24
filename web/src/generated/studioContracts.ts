@@ -3610,6 +3610,11 @@ export type SetValue = {
   "op"?: "add" | "replace";
 };
 
+export type SetVariableChoices = {
+  "set": string;
+  "entries": Array<string | null>;
+};
+
 export type SetVariableCount = {
   "op": "set_variable_count";
   "id": string;
@@ -4100,6 +4105,7 @@ export type StudioProjectPatchBatch = {
   "revision": Sha256;
   "presentation_revision"?: Sha256 | null;
   "files": Array<StudioProjectFilePatch>;
+  "created"?: Array<CreateNamedDocument>;
 };
 
 export type StudioProjectRename = {
@@ -4130,6 +4136,7 @@ export type StudioProjectSnapshot = {
   "file_revisions": Array<StudioAuthoredFileRevision>;
   "declaration"?: StudioAuthoredDeclaration | null;
   "settings"?: Record<string, JsonValue>;
+  "default_keep_superseded_days"?: number | null;
   "composed"?: Record<string, JsonValue>;
   "problems"?: Array<StudioProjectWindowMapProblem>;
 };
@@ -4818,6 +4825,7 @@ export type Variable = {
   "type": ValueType;
   "value": Expression;
   "count"?: Expression | null;
+  "set_choices"?: SetVariableChoices | null;
 };
 
 export type VariableBinding = {
@@ -11316,6 +11324,13 @@ export const SetValueSchema: z.ZodType<SetValue> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<SetValue>;
 
+export const SetVariableChoicesSchema: z.ZodType<SetVariableChoices> = z.lazy(() =>
+  z.object({
+    "set": z.string(),
+    "entries": z.array(z.union([z.string(), z.null()])),
+  }).strict()
+) as unknown as z.ZodType<SetVariableChoices>;
+
 export const SetVariableCountSchema: z.ZodType<SetVariableCount> = z.lazy(() =>
   z.object({
     "op": z.literal("set_variable_count"),
@@ -11961,6 +11976,7 @@ export const StudioProjectPatchBatchSchema: z.ZodType<StudioProjectPatchBatch> =
     "revision": Sha256Schema,
     "presentation_revision": z.union([Sha256Schema, z.null()]).optional(),
     "files": z.array(StudioProjectFilePatchSchema).min(1),
+    "created": z.array(CreateNamedDocumentSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectPatchBatch>;
 
@@ -11999,6 +12015,7 @@ export const StudioProjectSnapshotSchema: z.ZodType<StudioProjectSnapshot> = z.l
     "file_revisions": z.array(StudioAuthoredFileRevisionSchema),
     "declaration": z.union([StudioAuthoredDeclarationSchema, z.null()]).optional(),
     "settings": z.record(z.string(), jsonValueSchema).optional(),
+    "default_keep_superseded_days": z.union([z.number().int().safe().min(0), z.null()]).optional(),
     "composed": z.record(z.string(), jsonValueSchema).optional(),
     "problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
   }).strict()
@@ -12723,7 +12740,7 @@ export const SweepSampleSchema: z.ZodType<SweepSample> = z.lazy(() =>
 ) as unknown as z.ZodType<SweepSample>;
 
 export const SweepTargetSchema: z.ZodType<SweepTarget> = z.lazy(() =>
-  z.string().regex(new RegExp("^(?:(?:(?:steps|documents)\\.[A-Za-z0-9_][A-Za-z0-9_-]*\\.)?\\{[\\s\\S]+\\}|[^.]+(?:\\.[^.]+)*)$"))
+  z.string().regex(new RegExp("^(?:(?:(?:steps|documents)\\.\\??[A-Za-z0-9_][A-Za-z0-9_-]*\\.)?\\{[\\s\\S]+\\}|[^.]+(?:\\.[^.]+)*)$"))
 ) as unknown as z.ZodType<SweepTarget>;
 
 export const TakesSchema: z.ZodType<Takes> = z.lazy(() =>
@@ -12879,6 +12896,7 @@ export const VariableSchema: z.ZodType<Variable> = z.lazy(() =>
     "type": ValueTypeSchema,
     "value": ExpressionSchema,
     "count": z.union([ExpressionSchema, z.null()]).optional(),
+    "set_choices": z.union([SetVariableChoicesSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<Variable>;
 

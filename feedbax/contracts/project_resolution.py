@@ -302,7 +302,7 @@ def _read_external(
 def _pack(value: Any, path: str, step: str | None) -> Any:
     """Treat document references as leaves for the shared patch engine."""
     if isinstance(value, dict):
-        if "document" in value and value.keys() <= {"document", "pointer"}:
+        if "document" in value and value.keys() <= DocumentReference.model_fields.keys():
             try:
                 return DocumentReference.model_validate(value)
             except ValidationError as error:
@@ -321,10 +321,13 @@ def reference_write_target(value: Any, parts: Sequence[str]) -> tuple[str, str] 
     replaces the reference, and a path that meets no reference stays where it is: both are ``None``.
     """
     for index, part in enumerate(parts):
-        if isinstance(value, dict) and "document" in value and value.keys() <= {"document", "pointer"}:
+        if isinstance(value, dict) and "document" in value and value.keys() <= DocumentReference.model_fields.keys():
             value = DocumentReference.model_validate(value)
         if isinstance(value, DocumentReference):
-            return value.document, ".".join((*json_pointer_parts(value.pointer), *parts[index:]))
+            return (
+                None if value.unresolved
+                else (value.document, ".".join((*json_pointer_parts(value.pointer), *parts[index:])))
+            )
         if (key := resolve_segment(value, part, path=".".join(parts))) is None:
             return None
         value = value[key]
@@ -473,6 +476,8 @@ class _Documents:
             return _Problem(code, path, detail, step=self.step, document=name, document_path=document_path)
 
         base_name = document.base.document
+        if document.base.unresolved:
+            raise problem(ResolutionCode.MISSING_DOCUMENT, "base.document", base_name)
         if base_name in (*active, name):
             raise problem(ResolutionCode.DOCUMENT_CYCLE, "base.document", " -> ".join((*active, name, base_name)))
         base = self.read_document(base_name)
@@ -521,7 +526,7 @@ class _Documents:
         return self.shapes[name]
 
     def select(self, reference: DocumentReference, path: str) -> Any:
-        document = self.read_document(reference.document)
+        document = None if reference.unresolved else self.read_document(reference.document)
         if document is None:
             raise _Problem(
                 ResolutionCode.MISSING_DOCUMENT,
@@ -843,6 +848,8 @@ class _Resolver:
             )
         base = step.base
         if isinstance(base, StepBase):
+            if base.unresolved:
+                raise _Problem(ResolutionCode.MISSING_STEP, "base.step", base.step, step=name)
             parent = self.state(base.step, (*active, name))
             if base.row is not None:
                 parent = self.select_row(name, base, parent)
@@ -1201,17 +1208,29 @@ class _Resolver:
                 state.payload, "payload", document_ids=document_ids, document_pointers=document_pointers,
             )
         input_documents = {}
+        input_problems = []
         for role, value in state.inputs.items():
             if not isinstance(value, (InitialModelReference, TaskDocumentReference, ObjectiveDocumentReference)):
                 continue
             reference = value.source
             path = f"inputs.{role}"
-            selected = documents.select(reference, path)
-            document = self.project.documents[reference.document]
             try:
+                selected = documents.select(reference, path)
+                document = self.project.documents[reference.document]
                 input_documents[role] = RootDocument.model_validate({"schema": document.schema_id, "payload": selected})
+            except _Problem as error:
+                if not partial_figures:
+                    raise
+                input_problems.append(error.diagnostic)
+                continue
             except ValidationError as error:
-                raise _Problem(ResolutionCode.INVALID_DOCUMENT, path, str(error), step=name, document=reference.document) from error
+                diagnostic = _Problem(
+                    ResolutionCode.INVALID_DOCUMENT, path, str(error), step=name, document=reference.document,
+                )
+                if not partial_figures:
+                    raise diagnostic from error
+                input_problems.append(diagnostic.diagnostic)
+                continue
             document_ids[path] = reference.document
             if reference.pointer is not None:
                 document_pointers[path] = reference.pointer
@@ -1257,7 +1276,7 @@ class _Resolver:
             document_ids,
             state.document_uses.union(documents.used),
             document_pointers,
-            tuple(documents.figure_problems.values()),
+            (*documents.figure_problems.values(), *input_problems),
             input_documents,
         )
 
