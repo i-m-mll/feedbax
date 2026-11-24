@@ -2599,7 +2599,7 @@ export type AttemptProvenance = {
 };
 
 export type AuthoredFileAddress = {
-  "kind": "document" | "step" | "variant" | "presentation";
+  "kind": "document" | "step" | "variant" | "presentation" | "declaration";
   "id": string;
 };
 
@@ -4065,6 +4065,7 @@ export type StudioProjectSnapshot = {
   "presentation_error"?: "unreadable_presentation" | null;
   "file_revisions": Array<StudioAuthoredFileRevision>;
   "declaration"?: StudioAuthoredDeclaration | null;
+  "settings"?: Record<string, JsonValue>;
   "composed"?: Record<string, JsonValue>;
 };
 
@@ -9842,7 +9843,7 @@ export const AttemptProvenanceSchema: z.ZodType<AttemptProvenance> = z.lazy(() =
 
 export const AuthoredFileAddressSchema: z.ZodType<AuthoredFileAddress> = z.lazy(() =>
   z.object({
-    "kind": z.union([z.literal("document"), z.literal("step"), z.literal("variant"), z.literal("presentation")]),
+    "kind": z.union([z.literal("document"), z.literal("step"), z.literal("variant"), z.literal("presentation"), z.literal("declaration")]),
     "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
   }).strict()
 ) as unknown as z.ZodType<AuthoredFileAddress>;
@@ -11816,6 +11817,7 @@ export const StudioProjectSnapshotSchema: z.ZodType<StudioProjectSnapshot> = z.l
     "presentation_error": z.union([z.literal("unreadable_presentation"), z.null()]).optional(),
     "file_revisions": z.array(StudioAuthoredFileRevisionSchema),
     "declaration": z.union([StudioAuthoredDeclarationSchema, z.null()]).optional(),
+    "settings": z.record(z.string(), jsonValueSchema).optional(),
     "composed": z.record(z.string(), jsonValueSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectSnapshot>;
