@@ -258,10 +258,14 @@ export function modelDocumentId(ids?: Readonly<Record<string, string>>) {
   return ids?.['payload.trial_documents.model'];
 }
 
-export function directTrainStep(project: AuthoredProject, stepId: string, includeRowEdits = false) {
+/**
+ * The inline definition of a Train or Evaluate step whose fields are its own: a Train that reads no input, or an
+ * Evaluate, with no deltas; with `includeRowEdits`, also when its sweep has rows or exceptions.
+ */
+export function ownDefinition(project: AuthoredProject, stepId: string, includeRowEdits = false) {
   const step = project.steps?.[stepId];
-  if (step?.kind !== 'train' || !('inline' in step.base) ||
-      step.deltas?.length || Object.keys(step.inputs ?? {}).length ||
+  if (step?.kind !== 'train' && step?.kind !== 'evaluate' || !('inline' in step.base) || step.deltas?.length ||
+      step.kind === 'train' && Object.keys(step.inputs ?? {}).length ||
       !includeRowEdits && (Object.keys(step.sweep?.rows ?? {}).length || Object.keys(step.sweep?.exceptions ?? {}).length)) return null;
   return step.base.inline;
 }
