@@ -127,6 +127,7 @@ def test_project_geometry_matches_the_recorded_arm_tip_and_poses_every_mechanism
     arm_angles = ModelAddress.at_state(("plants",), "arm", "skeleton/angle").to_text()
     arm_position = ModelAddress.at_state(("plants",), "arm", "effector/position").to_text()
     mass_position = ModelAddress.at_state(("plants",), "mass", "effector/position").to_text()
+    mass_skeleton = ModelAddress.at_state(("plants",), "mass", "skeleton/position").to_text()
 
     with TestClient(create_app(projects_dir=tmp_path)) as client:
         source = {"revision": client.get(_PROJECT).json()["revision"], "document_id": "single"}
@@ -148,9 +149,10 @@ def test_project_geometry_matches_the_recorded_arm_tip_and_poses_every_mechanism
         assert geometries["mechanics"]["links"][0]["body"]["composites"] == ["mechanics"]
         assert geometries["mechanics"]["links"][0]["body_name"] == "Upper arm"
 
-        preview = client.post(route, json={**source, "state_values": {arm_position: [0.3, 0.2]}})
+        preview = client.post(route, json={
+            **source, "state_values": {arm_position: [0.3, 0.2], mass_skeleton: 0.25},
+        })
         assert preview.is_success, preview.text
-        arm_preview = next(
-            item for item in preview.json()["mechanisms"] if item["address"]["element"]["id"] == "arm"
-        )
-        assert arm_preview["links"][-1]["end"] == pytest.approx([0.3, 0.2])
+        sampled = {item["address"]["element"]["id"]: item for item in preview.json()["mechanisms"]}
+        assert sampled["arm"]["links"][-1]["end"] == pytest.approx([0.3, 0.2])
+        assert sampled["mass"]["position"] == pytest.approx([0.25, 0.25])
