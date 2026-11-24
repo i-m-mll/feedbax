@@ -110,12 +110,14 @@ export interface MenuCheckboxItemProps {
   checked: boolean;
   onCheckedChange: (checked: boolean) => void;
   disabled?: boolean;
+  /** The item is a command on one thing, so choosing it closes the menu; one of several toggles keeps it open. */
+  closes?: boolean;
   children: ReactNode;
 }
 
-export function MenuCheckboxItem({ checked, onCheckedChange, disabled, children }: MenuCheckboxItemProps) {
+export function MenuCheckboxItem({ checked, onCheckedChange, disabled, closes = false, children }: MenuCheckboxItemProps) {
   return (
-    <BaseMenu.CheckboxItem className={popupItem} checked={checked} disabled={disabled} closeOnClick={false}
+    <BaseMenu.CheckboxItem className={popupItem} checked={checked} disabled={disabled} closeOnClick={closes}
       onCheckedChange={(next) => onCheckedChange(next)}>
       <span className="flex size-[1em] shrink-0 items-center justify-center">
         <BaseMenu.CheckboxItemIndicator keepMounted={false}><Check /></BaseMenu.CheckboxItemIndicator>
@@ -137,9 +139,11 @@ export const MenuGroup = BaseMenu.Group;
 
 export const MenuRadioGroup = BaseMenu.RadioGroup;
 
-export function MenuRadioItem({ value, disabled, mark, children }: {
+export function MenuRadioItem({ value, disabled, glyph, mark, children }: {
   value: string;
   disabled?: boolean;
+  /** A glyph after the check, such as a kind's. */
+  glyph?: ReactNode;
   /** A mark after the label, such as a machine's state. */
   mark?: ReactNode;
   children: ReactNode;
@@ -149,6 +153,7 @@ export function MenuRadioItem({ value, disabled, mark, children }: {
       <span className="flex size-[1em] shrink-0 items-center justify-center">
         <BaseMenu.RadioItemIndicator keepMounted={false}><Check /></BaseMenu.RadioItemIndicator>
       </span>
+      {glyph}
       <span className={primaryText}>{children}</span>
       {mark}
     </BaseMenu.RadioItem>

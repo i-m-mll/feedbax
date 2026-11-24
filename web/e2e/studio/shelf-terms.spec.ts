@@ -47,5 +47,5 @@ test('each term that is on has a row on the shelf, barred where it applies, and 
   await page.getByRole('tab', { name: 'Objective', exact: true }).click();
   const terms = page.locator('[data-slot="primary"]').getByRole('table', { name: 'Objective Terms', exact: true });
   await expect(terms.locator('tbody tr[aria-selected="true"]')).toHaveCount(1);
-  await expect(terms.locator('tbody tr[aria-selected="true"] input').first()).toHaveValue('reach');
+  await expect(terms.locator('tbody tr[aria-selected="true"] th, tbody tr[aria-selected="true"] td').first()).toHaveText('reach');
 });
