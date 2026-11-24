@@ -152,3 +152,18 @@ test('a Task from an example shows its label, and typing into an absent cell mak
   await expect.poll(spans).toEqual([['cue', 'move']]);
   await expect(cells.nth(0).getByRole('textbox', { name: /^Absent/ })).toBeVisible();
 });
+
+// Catches a signal rename that leaves the Model input it fed unfed, and an Outline that does not say what feeds it.
+test('renaming a signal in the grid keeps the Model input it feeds', async ({ page, request }) => {
+  const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Task', exact: true }).click();
+  const grid = page.locator('[data-slot="primary"]').getByRole('tabpanel').getByRole('table', { name: 'Epochs', exact: true });
+  await enter(grid.getByRole('textbox', { name: 'Rename target_pos', exact: true }), 'aim');
+  await expect(grid.getByRole('textbox', { name: 'Rename aim', exact: true })).toBeVisible();
+  const input = page.getByRole('complementary', { name: 'Details Drawer', exact: true })
+    .getByRole('tree', { name: 'Model Inputs', exact: true }).getByRole('treeitem').filter({ hasText: 'target_pos' });
+  await expect(input).toContainText('aim');
+  await expect(input.locator('[data-status-mark]')).toHaveCount(0);
+});

@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { documentPayload } from './documentPayload';
+import { documentPayload, stepDocument } from './documentPayload';
 import { studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
 import { ChangeRow, ProblemRow } from '@/features/projectWindow/StudioProblems';
 import { Button } from '@/components/ui/Button';
@@ -37,7 +37,7 @@ type Place = 'title' | 'completeness' | `block:${number}` | 'dialog';
 export function stepReport({ draft, saved }: Pick<ProjectEditSnapshot, 'draft' | 'saved'>, stepId: string | undefined) {
   const step = stepId ? draft.steps?.[stepId] : undefined;
   const base = step?.kind === 'report' ? step.base : undefined;
-  const document = base && 'document' in base && !base.pointer ? base.document : undefined;
+  const document = stepDocument(base);
   const authored = document ? draft.documents?.[document] : undefined;
   const parsed = authored?.schema === 'feedbax.report_document.v1'
     ? ReportDocumentSchema.safeParse(documentPayload(draft.documents, saved.composed, document!)) : undefined;

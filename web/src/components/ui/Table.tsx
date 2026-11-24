@@ -28,11 +28,26 @@ export interface TableColumn {
   sortable?: TableMember;
 }
 
-/** A control that adds a row or a column, with the name it is read by. */
+/**
+ * A control that adds a row or a column, with the name it is read by: it adds by `onAdd`, or opens the menu of
+ * `items`, each of which adds one kind of row.
+ */
 export interface TableAdd {
   label: string;
-  onAdd(): void;
+  onAdd?(): void;
+  items?: ReactNode;
   disabled?: boolean;
+}
+
+/** The plus of an add control, opening its menu where it has items. */
+function AddControl({ add }: { add: TableAdd }) {
+  const button = <IconButton variant="ghost" size="mark" label={add.label} icon={<Plus aria-hidden="true" strokeWidth={3} />}
+    disabled={add.disabled} onClick={add.onAdd} />;
+  if (!add.items) return button;
+  return <Menu>
+    <MenuTrigger render={button} />
+    <MenuContent aria-label={add.label}>{add.items}</MenuContent>
+  </Menu>;
 }
 
 /** A row's or a column's menu: the button's name and the menu's items. `shown` draws the button without attention. */
@@ -308,8 +323,7 @@ export function TableAddColumn() {
   const { addColumn } = useContext(Shape);
   if (!addColumn) throw new Error('TableAddColumn is in a table without addColumn.');
   return <th className="studio-table-add-column h-row px-0.5 text-center align-middle">
-    <IconButton variant="ghost" size="mark" label={addColumn.label} icon={<Plus aria-hidden="true" strokeWidth={3} />}
-      disabled={addColumn.disabled} onClick={addColumn.onAdd} />
+    <AddControl add={addColumn} />
   </th>;
 }
 
@@ -323,8 +337,7 @@ function AddRow({ add }: { add: TableAdd }) {
       {margin && <td />}
       {at > 0 && <td colSpan={at} />}
       <td className="text-center">
-        <IconButton variant="ghost" size="mark" label={add.label} icon={<Plus aria-hidden="true" strokeWidth={3} />}
-          disabled={add.disabled} onClick={add.onAdd} />
+        <AddControl add={add} />
       </td>
       {columns.length - at - 1 > 0 && <td colSpan={columns.length - at - 1} />}
     </tr>

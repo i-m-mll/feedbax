@@ -30,7 +30,7 @@ export interface TextTerm {
  * The input's text drawn again over it, glyph for glyph, with the term in the problem colour; the input's own glyphs
  * are transparent beneath. The term takes the pointer for its tip and gives the keyboard to the input at its start.
  */
-function TermText({ input, text, term }: { input: HTMLInputElement; text: string; term: TextTerm }) {
+export function TermText({ input, text, term }: { input: HTMLInputElement; text: string; term: TextTerm }) {
   const [style, setStyle] = useState<CSSProperties>();
   const layer = useRef<HTMLSpanElement>(null);
   useLayoutEffect(() => {

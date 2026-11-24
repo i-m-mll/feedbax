@@ -1,6 +1,6 @@
 import type {
-  FieldKind, FieldKindEdit, FieldNameEdit, FieldTextEdit, FunctionInfo, JsonValue, Level, ScopedValue, StudioEvaluateValueSource,
-  StudioAddClassMember, StudioRemoveClassMember, StudioValueStructure, TextSpan, ValueType,
+  ExpressionPartSite, FieldKind, FieldKindEdit, FieldNameEdit, FieldTextEdit, FieldValue, FunctionInfo, JsonValue, Level, ScopedValue,
+  StudioEvaluateValueSource, StudioAddClassMember, StudioRemoveClassMember, StudioValueStructure, TextSpan, ValueType,
 } from '@/generated/studioContracts';
 
 /**
@@ -121,10 +121,19 @@ export interface FieldModel {
   readonly span?: TextSpan;
   /** What the text reads as, where the source sends it: the value's tree, its root's arguments' texts, a draw's density. */
   readonly structure?: StudioValueStructure;
+  /**
+   * The value at each step of the trial the clock shows, null at a step where it is not read (outside a term's
+   * window); a Shape's parts draw it as its curve.
+   */
+  readonly curve?: readonly (number | null)[];
   /** How often the site's consumer reads the value again. */
   readonly finest?: Level;
   readonly names: readonly ScopedValue[];
   readonly functions: readonly FunctionInfo[];
+  /** The functions and names that fit at each node of the value: its root, `['args', 0]` and so on. */
+  readonly sites?: readonly ExpressionPartSite[];
+  /** The levels of a name that belongs to a tree (a Model's states under its components), by the name's id. */
+  readonly namePaths?: Readonly<Record<string, readonly string[]>>;
   readonly commit?: FieldCommit;
 }
 
@@ -132,23 +141,33 @@ export function hasMark(model: FieldModel) {
   return model.kinds.length > 1 || model.kinds.some(({ kind }) => kind !== 'value');
 }
 
-/**
- * The edit that turns the field into `kind`, where one does. Formula, Draw, Shape and Link have none: the kind is
- * read from the text, so the mark shows them and no command makes them.
- */
+/** The edit that turns the field into `kind`, where an edit of the kind's own does: a sweep, and a sweep's Value. */
 export function kindEdit(model: FieldModel, kind: ValueKind): FieldKindEdit | undefined {
   if (kind === 'sweep' && model.kind !== 'sweep') return { kind: 'to_sweep' };
   if (kind === 'value' && model.kind === 'sweep' && model.keeps) return { kind: 'to_value', value_id: model.keeps };
   return undefined;
 }
 
-/**
- * The kinds the field's kind menu offers: those an edit converts it to; Draw, whose parts make the edit; Rest, whose
- * text is `rest`; and Until, made by the text it commits.
- */
-export function kindOffers(model: FieldModel) {
-  return model.kinds.filter(({ kind }) => kindEdit(model, kind) ||
-    (kind === 'draw' || kind === 'rest' || kind === 'until') && model.kind !== kind);
+/** The kinds the field's kind menu lists: every kind its site takes. A kind the value's type does not fit gives a Problem. */
+export const kindOffers = (model: FieldModel) => model.kinds;
+
+const literalVector = (value: FieldValue): boolean => value.kind === 'literal' ||
+  value.kind === 'call' && value.function === 'vector' && !Object.keys(value.kwargs ?? {}).length && !!value.args?.length &&
+  value.args.every(literalVector);
+
+/** The kind a value reads as: a call is a Shape when its function is one, and a vector of numbers is a Value. */
+export function valueKind(value: FieldValue, functions: readonly FunctionInfo[]): FieldKind {
+  switch (value.kind) {
+    case 'list': case 'range': case 'sample': return 'sweep';
+    case 'draw': return 'draw';
+    case 'name': return 'link';
+    case 'unresolved': return 'formula';
+    case 'call': {
+      if (literalVector(value)) return 'value';
+      return functions.find(({ id }) => id === value.function)?.display_class === 'shape' ? 'shape' : 'formula';
+    }
+    default: return 'value';
+  }
 }
 
 /** A draw as its parts: a family, the text of each argument (undefined while unfilled), and when it is drawn. */
@@ -156,6 +175,15 @@ export interface DrawDraft {
   readonly family: string;
   readonly args: readonly (string | undefined)[];
   readonly per: 'run' | 'trial';
+}
+
+/** A family whose first parameter is the draw's centre (a mean, a region's centre). */
+export const centred = (family: FunctionInfo) => ['mean', 'centre'].includes(family.parameters?.[0]?.name ?? '');
+
+/** The centre of a draw whose family has one. */
+export function drawCentre(model: FieldModel, draw: DrawDraft) {
+  const family = drawFamilies(model).find(({ id }) => id === draw.family);
+  return family && centred(family) ? draw.args[0] : undefined;
 }
 
 export const drawFamilies = (model: FieldModel) => model.functions.filter(({ display_class }) => display_class === 'draw');
@@ -204,15 +232,97 @@ export interface Completion {
 
 /**
  * Names and functions whose names start with the identifier ending at the caret. An identifier written after a
- * number is that number's unit, as in `0.02 s` or `5 ms`, so it is offered nothing.
+ * number is that number's unit, as in `0.02 s` or `5 ms`, so it is offered nothing. Inside a bracket, where `i` is
+ * the repetition, a list is inserted reading the repetition's item.
  */
 export function completions(model: FieldModel, before: string): { token: string; items: readonly Completion[] } {
   const token = before.match(/[A-Za-z_][A-Za-z0-9_]*$/)?.[0] ?? '';
   if (!token || /(?:^|[^A-Za-z0-9_.])(?:\d+\.?\d*|\.\d+)\s*[A-Za-z_][A-Za-z0-9_]*$/.test(before)) return { token, items: [] };
   const lower = token.toLowerCase();
+  const repeated = model.names.some(({ id }) => id === 'i');
   const names = model.names.filter(({ name }) => name.toLowerCase().startsWith(lower) && name !== token)
-    .map(({ id, name, type }) => ({ id: 'name:' + id, insert: name, label: name, detail: typeText(type) }));
+    .map(({ id, name, type, list_count }) => ({
+      id: 'name:' + id, insert: repeated && list_count ? `${name}[i]` : name, label: name, detail: typeText(type),
+    }));
   const functions = model.functions.filter(({ id }) => id.toLowerCase().startsWith(lower))
     .map(({ id, signature }) => ({ id: 'function:' + id, insert: id + '(', label: id, detail: signature }));
   return { token, items: [...names, ...functions] };
 }
+
+/** A call as its parts: its function, and the text of each positional argument (undefined while unfilled). */
+export interface CallDraft {
+  readonly function: string;
+  readonly args: readonly (string | undefined)[];
+}
+
+/** The call the field's value is, as its parts. */
+export function callOf(model: FieldModel): CallDraft | undefined {
+  const value = model.structure?.value;
+  if (value?.kind !== 'call') return undefined;
+  return { function: value.function, args: model.structure!.arguments ?? [] };
+}
+
+/** The names of a function's positional parameters, from its signature (`x[, delta]`, `start, stop, over=T`). */
+export function parameterNames(info: FunctionInfo) {
+  if (info.parameters?.length) return info.parameters.map(({ label }) => label);
+  const inner = info.signature.includes('(') ? info.signature.slice(info.signature.indexOf('(') + 1, info.signature.lastIndexOf(')'))
+    : info.signature;
+  return inner.split(',').map((part) => part.replace(/[[\]]/g, '').trim()).filter((part) => part && !part.includes('='));
+}
+
+/**
+ * `draft` as a call of `info`: its arguments kept, those past the function's last dropped, and those it needs beyond
+ * them unfilled.
+ */
+export function withFunction(draft: CallDraft, info: FunctionInfo): CallDraft {
+  const kept = info.max_args === null ? draft.args : draft.args.slice(0, info.max_args);
+  const needed = Math.max(info.min_args, 1);
+  return { function: info.id, args: kept.length >= needed ? kept : [...kept, ...Array.from({ length: needed - kept.length }, () => undefined)] };
+}
+
+/**
+ * The text a filled call writes; undefined while an argument is empty. The stored call's keyword arguments are kept
+ * where the new function takes them.
+ */
+export function callText(model: FieldModel, draft: CallDraft) {
+  if (draft.args.some((arg) => !arg?.trim())) return undefined;
+  const stored = callOf(model);
+  const value = model.structure?.value;
+  const keywords = value?.kind === 'call' ? Object.keys(value.kwargs ?? {}) : [];
+  const info = model.functions.find(({ id }) => id === draft.function);
+  const prefix = stored && `${stored.function}(${stored.args.join(', ')}`;
+  const text = model.text ?? '';
+  const tail = prefix && text.startsWith(prefix) && keywords.every((key) => info?.keywords?.includes(key)) ? text.slice(prefix.length) : ')';
+  return `${draft.function}(${draft.args.map((arg) => arg!.trim()).join(', ')}${tail}`;
+}
+
+/**
+ * The functions a Formula's root may be: `shown`, and those that fit where the stored value's root is; only penalties
+ * where the stored function is one.
+ */
+export function rootFunctions(model: FieldModel, shown: string) {
+  const root = model.sites?.find(({ path }) => !path.length);
+  const stored = callOf(model)?.function ?? shown;
+  const fitting = model.functions.filter(({ id, display_class }) => id === shown || id === stored ||
+    root?.functions.includes(id) && display_class !== 'draw' && display_class !== 'shape' && display_class !== 'sweep_rule');
+  const penalty = model.functions.find(({ id }) => id === stored)?.display_class === 'penalty';
+  return penalty ? fitting.filter(({ id, display_class }) => display_class === 'penalty' || id === shown) : fitting;
+}
+
+export const shapeFunctions = (model: FieldModel) => model.functions.filter(({ display_class }) => display_class === 'shape');
+
+/** The Shape a value becomes: the site's first shape of one argument, or else its first, starting from `text`. */
+export function shapeFrom(model: FieldModel, text: string): CallDraft | undefined {
+  const shapes = shapeFunctions(model);
+  const shape = shapes.find(({ min_args }) => min_args <= 1) ?? shapes[0];
+  return shape && withFunction({ function: shape.id, args: text.trim() ? [text] : [] }, shape);
+}
+
+/** The names a Link may read: those that fit at the value's root. */
+export function linkNames(model: FieldModel) {
+  const root = model.sites?.find(({ path }) => !path.length);
+  return root ? model.names.filter(({ id }) => root.names.includes(id)) : model.names;
+}
+
+/** A name as text: an identifier as itself, another name quoted. */
+export const nameText = (name: string) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : JSON.stringify(name);
