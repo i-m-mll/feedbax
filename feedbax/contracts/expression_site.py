@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+from pydantic import Field
+
 from feedbax.contracts.expression_values import (
     CallValue,
     DrawValue,
@@ -24,6 +26,7 @@ from feedbax.contracts.expression_values import (
 from feedbax.contracts.expression_check import Checked, check
 from feedbax.contracts.expression_registry import FunctionClass, FunctionInfo, FunctionRegistry
 from feedbax.contracts.expression_text import ParsedField, parse
+from feedbax.contracts.model_address import ModelAddress
 
 
 class FieldKind(StrEnum):
@@ -35,10 +38,20 @@ class FieldKind(StrEnum):
     LINK = "link"
 
 
+class ExpressionPartSite(ValueRecord):
+    path: tuple[str | int, ...]
+    """The expression root or an argument, addressed within the field value."""
+    functions: tuple[str, ...]
+    names: tuple[str, ...]
+
+
 class SiteProjection(ValueRecord):
     site: Site
     kinds: tuple[FieldKind, ...]
     functions: tuple[FunctionInfo, ...]
+    parts: tuple[ExpressionPartSite, ...]
+    """The allowed function and name IDs at each expression path."""
+    name_paths: dict[str, ModelAddress] = Field(default_factory=dict)
 
 
 def project_site(site: Site, functions: FunctionRegistry) -> SiteProjection:
@@ -60,7 +73,18 @@ def project_site(site: Site, functions: FunctionRegistry) -> SiteProjection:
         kinds.append(FieldKind.SHAPE)
     if any(item.level <= site.finest and site.expected.accepts(item.type) for item in site.names):
         kinds.append(FieldKind.LINK)
-    return SiteProjection(site=site, kinds=tuple(kinds), functions=offered)
+    return SiteProjection(
+        site=site,
+        kinds=tuple(kinds),
+        functions=offered,
+        parts=(
+            ExpressionPartSite(
+                path=(),
+                functions=tuple(entry.id for entry in offered),
+                names=tuple(name.id for name in site.names if name.level <= site.finest),
+            ),
+        ),
+    )
 
 
 def _literal_vector(value: Expression) -> bool:
