@@ -4,7 +4,7 @@ import {
   runResultState, shownName, type PlanResultView, type PlanRunView, type PlanStepView, type PlanSweepView, type PlanView,
 } from '@/features/pipeline/planView';
 import type {
-  Project, SelectedRow, StudioSavedLightResult, StudioBestRankGroup, StudioBoundBestSubject, StudioProjectWindowMapSubset, StudioSavedTrainRuns,
+  Project, SelectedRow, StudioProjectWindowMapProblem, StudioSavedLightResult, StudioBestRankGroup, StudioBoundBestSubject, StudioProjectWindowMapSubset, StudioSavedTrainRuns,
   SubsetTerms,
 } from '@/generated/studioContracts';
 
@@ -149,6 +149,15 @@ export function drawnAxes(axes: readonly StepAxis[], runs: readonly PlanRunView[
       }),
     }];
   });
+}
+
+/** The Problems the plan reports at a step's authored sweep axis or anything in it, such as its Set or a value's target. */
+export function axisProblems(
+  map: StudioSavedTrainRuns['window_map'], step: string, axis: string, variant: string | null,
+): StudioProjectWindowMapProblem[] {
+  const at = `sweep.axes.${axis}`;
+  return map?.problems.filter((problem) => problem.step === step && (problem.variant === null || problem.variant === variant) &&
+    (problem.path === at || problem.path.startsWith(at + '.'))) ?? [];
 }
 
 /** The axis naming the Train step that made each run's model, for an Evaluate step whose subject gathers several. */
@@ -304,7 +313,7 @@ export function projectWindowPlan(
     addRun(row.key.step, {
       id, values, label: rowName(producer ? savedRunId(producer.key) : id, row.label), status: row.status, reason, variant: row.key.variant,
       problems,
-      blockedBy: blocking ? { stepId: blocking.step, label: studioFormat('blockedRun', {
+      blockedBy: blocking ? { stepId: blocking.step, label: studioFormat('stepRun', {
         step: shownName(blocking.step, project.steps?.[blocking.step]),
         run: sourceRows.get(savedRunId(blocking))?.label ?? blocking.row,
       }) } : undefined,
@@ -324,6 +333,15 @@ export function projectWindowPlan(
     : Object.entries(project.steps ?? {}).map(([id, step]) => ({
       id, kind: step.kind, group: step.group, projected: undefined,
     }));
+  /**
+   * The authored axes of a step that no planned run has a value on and that have a Problem, such as a required Set left
+   * with no entries: each is drawn with no values, where its Problem is marked and repaired.
+   */
+  function unplannedAxes(step: string): [string, Map<string, string>][] {
+    const planned = sweepsByStep.get(step);
+    return Object.keys(project.steps?.[step]?.sweep?.axes ?? {}).flatMap((axis): [string, Map<string, string>][] =>
+      planned?.has(axis) || !axisProblems(map, step, axis, scope).length ? [] : [[axis, new Map()]]);
+  }
   const steps = source.map(({ id, kind, group, projected }): PlanStepView => {
     const inputs = projected?.inputs.map((input): PlanStepView['inputs'][number] => ({
       id: input.id, label: input.id, sourceStepId: input.source_step_id,
@@ -357,6 +375,7 @@ export function projectWindowPlan(
       inputs,
       sweeps: drawnAxes([
         ...modelAxis ? [[gatheredModelAxis, modelAxis] as const] : [], ...sweepsByStep.get(id) ?? [],
+        ...unplannedAxes(id),
       ].map(([axis, values]): StepAxis => {
         const read = project.steps?.[id]?.sweep?.axes?.[axis];
         const view = { id: axis, label: read && 'set' in read ? read.set : axis, values: [...values].map(([id, label]) => ({ id, label })) };

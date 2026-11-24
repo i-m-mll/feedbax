@@ -110,7 +110,9 @@ test('an edit in an Evaluate step\'s Model view makes a document for the evaluat
 
   await picker.click();
   await expect(menu.getByRole('menuitemradio')).toHaveText(['Point mass', 'point-mass-2']);
-  await expect(menu.getByRole('menuitem', { name: 'Detach', exact: true })).toHaveCount(0);
+  await page.keyboard.press('Escape');
+
+  await picker.click();
   await menu.getByRole('menuitem', { name: 'Duplicate', exact: true }).click();
   const rename = page.locator('[data-slot="primary"]').getByRole('tabpanel').locator('.studio-window-slot__header').getByRole('textbox');
   await expect(rename).toBeFocused();
@@ -122,6 +124,31 @@ test('an edit in an Evaluate step\'s Model view makes a document for the evaluat
   const third = menu.getByRole('menuitemradio', { name: 'point-mass-3', exact: true }).locator('span').last();
   expect(await third.evaluate((element) => getComputedStyle(element).paddingInlineStart)).toBe('0px');
   await page.keyboard.press('Escape');
+});
+
+test('Detach of an evaluation\'s based Model is stored, marks the Evaluate\'s Model and leaves its Task readable', async ({ page, request }) => {
+  const narrowed = { kind: 'document', id: 'point-mass-2', document: {
+    schema: 'feedbax.spec.model', base: { document: 'point-mass' }, differences: {},
+  } };
+  const check = evaluation('check', 'train');
+  (check.step.base.inline as Record<string, unknown>).trial_documents = { model: { document: 'point-mass-2' } };
+  const { snapshot, documents } = await project(request, [narrowed, check]);
+  const { primary, picker, menu } = modelView(page);
+  const header = primary.locator('.studio-window-slot__header');
+
+  await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
+  await mapStep(page, 'check').click();
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  await expect(picker).toHaveText('point-mass-2');
+  await expect(header.getByRole('alert')).toHaveCount(0);
+  await picker.click();
+  await menu.getByRole('menuitem', { name: 'Detach', exact: true }).click();
+  await expect.poll(async () => (await documents())['point-mass-2']).not.toHaveProperty('base');
+  await expect(header.getByRole('alert')).toHaveCount(1);
+  await expect(primary.locator('.react-flow__node').filter({ hasText: 'Point mass' })).toBeVisible();
+  await page.getByRole('tab', { name: 'Task', exact: true }).click();
+  await expect(primary.getByRole('table', { name: 'Variables', exact: true }).getByRole('rowheader')).not.toHaveCount(0);
+  await expect(header.getByRole('alert')).toHaveCount(0);
 });
 
 test('a second Evaluate step and a new Train step can each pick the evaluation\'s document', async ({ page, request }) => {
@@ -202,7 +229,7 @@ test('a based Objective document marks the term value it changes, and Reset give
   const primary = page.locator('[data-slot="primary"]').getByRole('tabpanel');
   const picker = primary.locator('.studio-window-slot__header').getByRole('button', { name: /^Objective Document / });
   const table = primary.getByRole('table', { name: 'Objective Terms', exact: true });
-  const name = table.getByRole('textbox', { name: 'Name', exact: true });
+  const name = table.getByRole('textbox', { name: /^Rename / });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const inspected = inspector.getByRole('textbox', { name: 'Name', exact: true });
 
@@ -215,7 +242,8 @@ test('a based Objective document marks the term value it changes, and Reset give
   await mapStep(page, 'sibling').click({ modifiers: ['Shift'] });
   await name.fill('Effort');
   await name.press('Enter');
-  await expect(picker).toHaveText('simple-reaches-objective-2');
+  await page.getByRole('menu', { name: 'Apply To', exact: true }).getByRole('menuitem', { name: 'Only This Step', exact: true }).click();
+  await expect(picker).toHaveText('Simple reaches 2');
   await name.click();
   await expect(inspected).toHaveValue('Effort');
   await expect(inspected).toHaveAccessibleDescription('Changed from simple-reaches-objective');

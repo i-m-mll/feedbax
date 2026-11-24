@@ -55,6 +55,9 @@ def _model(count: int) -> dict:
             ],
         )
 
+    for name, value in nodes.items():
+        value["name"] = name
+
     def end(component, port):
         return {"owner": "component", "component": component, "port": port}
 

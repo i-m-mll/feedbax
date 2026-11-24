@@ -44,7 +44,7 @@ test('the inspector edits the saved values for the step and its selected runs, a
   const optimizer = page.getByRole('region', { name: 'Optimizer', exact: true });
   await expect(optimizer.getByRole('region', { name: 'Learning Rate field', exact: true })).toBeVisible();
   await rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true }).click();
-  await expect(page.getByRole('menuitem', { name: 'Sweep', exact: true })).toBeEnabled();
+  await expect(page.getByRole('menuitemradio', { name: 'Sweep', exact: true })).toBeEnabled();
   await page.keyboard.press('Escape');
   await pick(optimizer.getByRole('combobox', { name: 'Optimizer', exact: true }), 'SGD');
   await expect.poll(async () => {
