@@ -2122,6 +2122,7 @@ export interface ComponentDefinition {
   schema_id?: "feedbax.spec.component_definition";
   schema_version?: "feedbax.spec.component_definition.v4";
   name: string;
+  headline: ComponentHeadline;
   category: string;
   description: string;
   param_schema?: ParamSchema[];
@@ -2763,6 +2764,11 @@ export type CodeReason = {
 };
 
 export type Combination = "cross" | "zip" | ManualCombination | GroupCombination;
+
+export type ComponentHeadline = {
+  "name": string;
+  "field"?: string | null;
+};
 
 export type ComputationChange = DriverChanged | StartsChanged | ProgramsChanged | StepCountChanged;
 
@@ -9220,6 +9226,7 @@ export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(
       "schema_id": z.literal("feedbax.spec.component_definition").optional(),
       "schema_version": z.literal("feedbax.spec.component_definition.v4").optional(),
       "name": z.string(),
+      "headline": ComponentHeadlineSchema,
       "category": z.string(),
       "description": z.string(),
       "param_schema": z.array(ParamSchemaSchema).optional(),
@@ -10197,6 +10204,13 @@ export const CodeReasonSchema: z.ZodType<CodeReason> = z.lazy(() =>
 export const CombinationSchema: z.ZodType<Combination> = z.lazy(() =>
   z.union([z.union([z.literal("cross"), z.literal("zip")]), ManualCombinationSchema, GroupCombinationSchema])
 ) as unknown as z.ZodType<Combination>;
+
+export const ComponentHeadlineSchema: z.ZodType<ComponentHeadline> = z.lazy(() =>
+  z.object({
+    "name": z.string(),
+    "field": z.union([z.string(), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<ComponentHeadline>;
 
 export const ComputationChangeSchema: z.ZodType<ComputationChange> = z.lazy(() =>
   z.union([DriverChangedSchema, StartsChangedSchema, ProgramsChangedSchema, StepCountChangedSchema])
