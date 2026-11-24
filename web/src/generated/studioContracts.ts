@@ -4077,6 +4077,11 @@ export type StudioProjectCreateFile = {
   "file": NamedFileCreation;
 };
 
+export type StudioProjectCreateFiles = {
+  "revision": Sha256;
+  "files": Array<NamedFileCreation>;
+};
+
 export type StudioProjectDocument = {
   "configuration": ProjectConfiguration;
   "snapshot": StudioProjectSnapshot;
@@ -11928,6 +11933,13 @@ export const StudioProjectCreateFileSchema: z.ZodType<StudioProjectCreateFile> =
   }).strict()
 ) as unknown as z.ZodType<StudioProjectCreateFile>;
 
+export const StudioProjectCreateFilesSchema: z.ZodType<StudioProjectCreateFiles> = z.lazy(() =>
+  z.object({
+    "revision": Sha256Schema,
+    "files": z.array(NamedFileCreationSchema).min(1),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectCreateFiles>;
+
 export const StudioProjectDocumentSchema: z.ZodType<StudioProjectDocument> = z.lazy(() =>
   z.object({
     "configuration": ProjectConfigurationSchema,
@@ -13047,6 +13059,7 @@ export const contractSchemas = {
   StudioMemberCommandResult: StudioMemberCommandResultSchema,
   StudioPresentationWrite: StudioPresentationWriteSchema,
   StudioProjectCreateFile: StudioProjectCreateFileSchema,
+  StudioProjectCreateFiles: StudioProjectCreateFilesSchema,
   StudioProjectDocument: StudioProjectDocumentSchema,
   StudioProjectWindowMap: StudioProjectWindowMapSchema,
   StudioProjectPatch: StudioProjectPatchSchema,
@@ -13211,6 +13224,7 @@ export interface ContractTypeMap {
   StudioMemberCommandResult: StudioMemberCommandResult;
   StudioPresentationWrite: StudioPresentationWrite;
   StudioProjectCreateFile: StudioProjectCreateFile;
+  StudioProjectCreateFiles: StudioProjectCreateFiles;
   StudioProjectDocument: StudioProjectDocument;
   StudioProjectWindowMap: StudioProjectWindowMap;
   StudioProjectPatch: StudioProjectPatch;

@@ -301,6 +301,51 @@ def test_addressed_route_settles_document_and_position_and_rejects_raw_patch(tmp
         assert client.get(url).json() == replacement
 
 
+def test_batch_created_model_recovers_its_original_file_revision_after_undo(tmp_path):
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        response = client.post("/api/projects")
+        assert response.is_success, response.text
+        empty = response.json()["snapshot"]
+        url = f"/api/projects/{empty['project_id']}"
+        response = client.post(url + "/files", json={
+            "revision": empty["revision"],
+            "files": [
+                {"kind": "document", "id": "model", "document": {
+                    "schema": "feedbax.spec.model",
+                    "payload": {"step_seconds": 0.01, "ports": {}, "interior": {}},
+                    "label": "Model",
+                }},
+                {"kind": "step", "id": "fit", "step": {
+                    "kind": "train", "base": {"inline": {"trial_documents": {"model": {"document": "model"}}}},
+                }},
+            ],
+        })
+        assert response.status_code == 201, response.text
+        original = response.json()["snapshot"]
+        response = client.post(url + "/model/edit", json={
+            "revision": original["revision"], "presentation_revision": original["presentation_revision"],
+            "document": "model",
+            "command": {"operation": {
+                "op": "add_component", "graph": _address(()),
+                "component": {"kind": "leaf", "name": "Scale", "type": "feedbax.Scale"},
+                "position": {"x": 2, "y": 3},
+            }},
+        })
+        assert response.is_success, response.text
+        result = response.json()["result"]
+        assert result["status"] == "applied", result
+        edited = result["snapshot"]
+        assert edited["revision"] != original["revision"]
+        response = client.post(url + "/model/undo", json={
+            "revision": edited["revision"], "presentation_revision": edited["presentation_revision"],
+            "token": result["undo_token"],
+        })
+        assert response.is_success, response.text
+        restored = response.json()["result"]["snapshot"]
+        assert restored["file_revisions"] == original["file_revisions"]
+        assert restored["revision"] == original["revision"]
+
+
 @pytest.mark.parametrize("ambiguous", [False, True])
 def test_connection_review_edit_and_undo_keep_the_addressed_model(tmp_path, ambiguous):
     """Catch lost wire annotations, arbitrary selection among ambiguous wires, and refusal of invalid authored edits."""
