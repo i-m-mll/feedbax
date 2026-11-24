@@ -1,7 +1,7 @@
 import {
   Background, BaseEdge, ConnectionMode, EdgeLabelRenderer, Handle, Position, ReactFlowProvider,
   getBezierPath, getSmoothStepPath, useReactFlow, useStore, useUpdateNodeInternals,
-  type Edge, type EdgeProps, type Node, type NodeProps, type OnConnectStart,
+  type Edge, type EdgeProps, type Node, type NodeProps, type OnConnectStart, type OnSelectionChangeParams,
 } from '@xyflow/react';
 import {
   createContext, memo, useCallback, useContext, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState,
@@ -328,7 +328,13 @@ function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdi
     zoomOut: () => viewport.current?.zoomOut(),
   }), []);
   const [initial] = useState(() => ({ nodes, edges }));
-  const [boxSelecting, setBoxSelecting] = useState(false);
+  /** React Flow answers every new selection handler with the current selection, so the handler stays one function. */
+  const boxing = useRef(false);
+  const boxed = useRef(onBox);
+  boxed.current = onBox;
+  const boxChange = useCallback((selection: OnSelectionChangeParams) => {
+    if (boxing.current) boxed.current(selection.nodes as ModelCard[]);
+  }, []);
   const point = (event: { clientX: number; clientY: number }) => screenToFlowPosition({ x: event.clientX, y: event.clientY });
   /** The cards follow their props before the browser paints, so a card added by a gesture is drawn in the next frame. */
   useLayoutEffect(() => {
@@ -379,8 +385,8 @@ function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdi
         zoomOnDoubleClick={false} nodesDraggable={canEdit && !locked} nodesConnectable={canEdit && !locked}
         connectionMode={physical ? ConnectionMode.Loose : ConnectionMode.Strict}
         multiSelectionKeyCode="Shift" selectionKeyCode="Shift"
-        onSelectionStart={() => setBoxSelecting(true)} onSelectionEnd={() => setBoxSelecting(false)}
-        onSelectionChange={boxSelecting ? (selection) => onBox(selection.nodes as ModelCard[]) : undefined}
+        onSelectionStart={() => { boxing.current = true; }} onSelectionEnd={() => { boxing.current = false; }}
+        onSelectionChange={boxChange}
         onNodeClick={(event, node) => onNode(node as ModelCard, event.shiftKey)}
         onNodeDoubleClick={(_, node) => (node as ModelCard).data.enter?.()}
         onNodeContextMenu={(event, node) => onContext(event, (node as ModelCard).data.address, point(event))}

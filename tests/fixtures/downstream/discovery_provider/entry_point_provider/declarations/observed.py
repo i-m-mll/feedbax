@@ -4,7 +4,7 @@ from equinox.nn import StateIndex
 import jax.numpy as jnp
 
 from feedbax.builtins.runtime.components import Linear
-from feedbax.contracts.model_values import ModelFacts, ModelValue, StateReset, StateValue
+from feedbax.contracts.model_values import ModelFacts, ModelValue, StateValue
 
 
 class ObservedReadout(Linear):
@@ -14,7 +14,7 @@ class ObservedReadout(Linear):
             ModelValue("transform", "layer.weight", "learned"),
             ModelValue("offset", "layer.bias", "learned"),
         ),
-        states=(StateValue("last", (), "1", "unit", reset=StateReset("output")),),
+        states=(StateValue("last", (), "1", "unit", ("output",)),),
     )
 
     state_index: StateIndex

@@ -20,7 +20,7 @@ from feedbax.contracts.acausal_interface import is_acausal_type
 from feedbax.contracts.domain import DomainDiagnostic
 from feedbax.contracts.model_address import ComponentElement, FieldElement, FieldPath, ModelAddress
 from feedbax.contracts.model_document import (
-    MODEL_DOCUMENT_SCHEMA_ID, GraphInterior, LeafComponent, ModelDocument,
+    MODEL_DOCUMENT_SCHEMA_ID, CompositeComponent, GraphInterior, LeafComponent, ModelDocument,
 )
 from feedbax.contracts.model_values import StateValue
 from feedbax.contracts.project import Project
@@ -207,11 +207,11 @@ def _point(value: Iterable[float]) -> ScenePoint:
     return float(x), float(y)
 
 
-def _pose_value(value: JsonValue, shape: tuple[int, ...]) -> jax.Array:
+def _pose_value(value: JsonValue, target: jax.Array) -> jax.Array:
     pose = np.asarray(value)
-    if pose.shape != shape or pose.dtype.kind not in "iuf" or not np.isfinite(pose).all():
-        raise ValueError(f"Scene pose requires a finite numeric value of shape {shape}.")
-    return jnp.asarray(pose)
+    if pose.dtype.kind not in "iuf" or not np.isfinite(pose).all():
+        raise ValueError("Scene pose requires a finite numeric value.")
+    return jnp.broadcast_to(jnp.asarray(pose, dtype=target.dtype), target.shape)
 
 
 def _portable_geometry(
@@ -229,9 +229,12 @@ def _portable_geometry(
         return None
 
     points = [state for state in facts.states if state.space == "point" and state.frame == "world"]
-    writable_points = [state for state in points if state.reset is not None]
-    preferred_points = writable_points if len(points) > 1 else points
-    position = preferred_points[0] if len(preferred_points) == 1 else None
+    position = next(
+        (point for point in points if all(
+            other is point or other.fields in point.aliases for other in points
+        )),
+        None,
+    )
     configurations = [state for state in facts.states if state.configuration]
     representation = declaration.representation
     planar = representation is not None and any(
@@ -245,16 +248,21 @@ def _portable_geometry(
     )
     owner = resolved.meta.owner_class(**resolved.params)
     state = init_state_from_component(owner)
+    rest = owner.state_view(state)
     address = _component_address(path)
     supplied_position = _state_value(path, position, request) if position is not None else None
     if not planar and position is not None:
-        value = (
-            _pose_value(supplied_position, (2,)) if supplied_position is not None
-            else attrgetter(".".join(position.fields))(owner.state_view(state))
-        )
+        if supplied_position is None:
+            supplied_position = next(
+                (value for companion in points if position.fields in companion.aliases
+                 and (value := _state_value(path, companion, request)) is not None),
+                None,
+            )
+        reference = attrgetter(".".join(position.fields))(rest)
+        value = _pose_value(supplied_position, reference) if supplied_position is not None else reference
         return ScenePointGeometry(
-            kind="point", address=address, point=_geometry_address(path, ("point",)),
-            position=_point(value),
+            kind="point", address=address, name=component.name,
+            point=_geometry_address(path, ("point",)), position=_point(value),
         )
 
     if not isinstance(owner, Mechanics) or not configurations:
@@ -264,23 +272,24 @@ def _portable_geometry(
         if (value := _state_value(path, leaf, request)) is not None
     ]
     if supplied_configuration:
-        rest = owner.state_view(state)
         for leaf, value in supplied_configuration:
-            original = attrgetter(".".join(leaf.fields))(rest)
-            sample = _pose_value(value, original.shape)
-            state = owner.replace_state_value(state, leaf.fields, sample.astype(original.dtype))
+            reference = attrgetter(".".join(leaf.fields))(rest)
+            state = owner.replace_state_value(state, leaf.fields, _pose_value(value, reference))
     elif position is not None and supplied_position is not None:
-        state = owner.replace_state_value(state, position.fields, _pose_value(supplied_position, (2,)))
+        reference = attrgetter(".".join(position.fields))(rest)
+        state = owner.replace_state_value(state, position.fields, _pose_value(supplied_position, reference))
 
     skeleton = owner.state_view(state).plant.skeleton
     endpoints = owner.plant.skeleton.forward_kinematics(skeleton).pos
     posed_points = [(0.0, 0.0), *map(_point, endpoints)]
     return ScenePlanarGeometry(
-        kind="planar", address=address, muscles=[],
+        kind="planar", address=address, name=component.name, muscles=[],
         links=[
             SceneLinkGeometry(
                 body=_geometry_address(path, ("body", index)),
+                body_name=f"{component.name} link {index + 1}",
                 joint=_geometry_address(path, ("joint", index)),
+                joint_name=f"{component.name} joint {index + 1}",
                 start=start, end=end, pivot=start,
             )
             for index, (start, end) in enumerate(pairwise(posed_points))
@@ -292,10 +301,12 @@ def _native_geometry(
     graph: AcausalGraphSpec,
     compiled: CompiledPhysicalModel,
     path: tuple[str, ...],
+    component: CompositeComponent,
 ) -> tuple[ScenePlanarGeometry, list[DomainDiagnostic]]:
     import mujoco
 
     layout, diagnostics = _compiled_geometry(graph, compiled)
+    children = component.interior.components
     native = compiled.model
     data = mujoco.MjData(native)
     mujoco.mj_kinematics(native, data)
@@ -306,7 +317,9 @@ def _native_geometry(
         end = start + data.xmat[body].reshape(3, 3)[:2, 0] * link.length
         links.append(SceneLinkGeometry(
             body=_component_address((*path, link.body_id)),
+            body_name=children[link.body_id].name,
             joint=_component_address((*path, link.joint_id)),
+            joint_name=children[link.joint_id].name,
             start=_point(start),
             end=_point(end),
             pivot=_point(data.xanchor[compiled.joint_ids[link.joint_id], :2]),
@@ -314,13 +327,14 @@ def _native_geometry(
     muscles = [
         SceneMuscleGeometry(
             address=_component_address((*path, binding.name)),
+            name=children[binding.name].name,
             points=[_point(data.site_xpos[compiled.site_ids[site], :2]) for site in binding.sites],
         )
         for binding, muscle in zip(compiled.paths, layout.muscles, strict=True)
         if muscle.points is not None
     ]
     return ScenePlanarGeometry(
-        kind="planar", address=_component_address(path), links=links, muscles=muscles,
+        kind="planar", address=_component_address(path), name=component.name, links=links, muscles=muscles,
     ), diagnostics
 
 
@@ -355,7 +369,7 @@ def prepare_scene_geometry(
                 compiled, problems = _compile_planar(model, path, registry)
                 diagnostics.extend(problems)
                 if compiled is not None:
-                    geometry, problems = _native_geometry(*compiled, path)
+                    geometry, problems = _native_geometry(*compiled, path, component)
                     mechanisms.append(geometry)
                     diagnostics.extend(problems)
 

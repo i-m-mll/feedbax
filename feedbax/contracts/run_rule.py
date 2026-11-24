@@ -7,6 +7,7 @@ runs it reads each time a plan is made: terms on an axis at once, and a lowest o
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from collections import Counter
 from dataclasses import dataclass
 import operator
 from typing import Any, Protocol
@@ -87,7 +88,7 @@ def _matches(coordinate: SweepCoordinate, value: LiteralValue | NameValue) -> bo
     if isinstance(value, NameValue):
         return value.reference in (coordinate.value_id, _scalar(coordinate))
     scalar = _scalar(coordinate)
-    return type(scalar) is bool if type(value.value) is bool else (
+    return scalar is value.value if type(value.value) is bool else (
         type(scalar) is not bool and isinstance(scalar, int | float) and scalar == value.value
     )
 
@@ -190,8 +191,25 @@ def choose[Row](
         if all(_holds(rule, term, values) for term in terms if not isinstance(term, RuleBest))
     )
     if not picked:
-        raise RuleRefusal("rule", f"{rule.strip()} chooses no run")
-    return Chosen(picked, best[0] if best else None)
+        raise RuleRefusal(
+            "rule", f"{rule.strip()} chooses no run", TextSpan(start=terms[0].span.start, end=terms[-1].span.end),
+        )
+    ranking = best[0] if best else None
+    if ranking is not None:
+        text = _text(rule, ranking.span)
+        if len(set(ranking.per)) != len(ranking.per):
+            raise RuleRefusal("rule", f"{text}: per names an axis twice.", ranking.span)
+        groups: Counter[tuple[str, ...]] = Counter()
+        for row in picked:
+            values = coordinates(row)
+            if missing := next((axis for axis in ranking.per if axis not in values), None):
+                raise RuleRefusal("rule", f"{text}: {missing} is missing on a chosen run.", ranking.span)
+            groups[tuple(values[axis].value_id for axis in ranking.per)] += 1
+        for group, count in groups.items():
+            if count < ranking.count:
+                target = f" in group {dict(zip(ranking.per, group, strict=True))!r}" if group else ""
+                raise RuleRefusal("rule", f"{text}: asks for {ranking.count} of {count} runs{target}.", ranking.span)
+    return Chosen(picked, ranking)
 
 
 def _values(row: Mapping[str, SweepCoordinate]) -> dict[str, Any]:
