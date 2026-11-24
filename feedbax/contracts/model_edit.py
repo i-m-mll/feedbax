@@ -16,6 +16,7 @@ from feedbax.contracts.model_document import (
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem, StudioSavedTrainKey
 from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import AxisValueId, ProjectName, RowKey
+from feedbax.contracts.studio_scope import StudioStoreChoice
 from feedbax.contracts.request_refs import Name
 from feedbax.contracts.studio_project import StudioProjectSnapshot
 from feedbax.contracts.studio_project import StudioProjectFilePatch
@@ -357,6 +358,7 @@ class ModelEditRequest(StrictModel):
     rows: list[RowKey] = Field(default_factory=list)
     axes: dict[ProjectName, list[Name]] = Field(default_factory=dict)
     files: list[StudioProjectFilePatch] = Field(default_factory=list)
+    store_choice: Sha256 | None = None
 
     @model_validator(mode="after")
     def _variant_has_step(self) -> ModelEditRequest:
@@ -446,5 +448,10 @@ class ModelEditRefused(StrictModel):
     problem: ModelEditProblem
 
 
+class ModelEditAsked(StrictModel):
+    status: Literal["asked"]
+    store_choices: list[StudioStoreChoice] = Field(min_length=1)
+
+
 class ModelEditResponse(StrictModel):
-    result: Annotated[ModelEditApplied | ModelEditRefused, Field(discriminator="status")]
+    result: Annotated[ModelEditApplied | ModelEditRefused | ModelEditAsked, Field(discriminator="status")]

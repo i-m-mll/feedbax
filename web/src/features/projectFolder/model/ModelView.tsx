@@ -498,6 +498,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         try {
           const result = await editor.editModel(name, model.id, { operation }, reviewed, scope);
           if (result.status === 'refused') return { address: result.problem.address, reason: result.problem.detail };
+          if (result.status === 'asked') return { reason: 'Choose where to store this edit.' };
           const shown = follow(result);
           if (result.clipboard) clipboard = result.clipboard;
           if (choose && result.changed.length) {
@@ -536,6 +537,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
             step: readBody.run.step, chosen_steps: [...chosenSteps], ...evaluateEditRuns(scope, readBody.run, fieldRows),
           });
           if (applied.status === 'refused') throw new Error(applied.problem.detail);
+          if (applied.status === 'asked') throw new Error('Choose where to store this edit.');
           shown = follow(applied) ?? shown;
           const [first] = applied.changed;
           if (!first) throw new Error('The edit changed nothing.');
