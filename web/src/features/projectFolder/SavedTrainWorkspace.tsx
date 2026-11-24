@@ -34,11 +34,12 @@ import { Select } from '@/components/ui/Select';
 import { TextField } from '@/components/ui/TextField';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type { PipelineCardPresentation } from '@/components/pipeline/pipelineMapLayout';
-import type { PlanRunView, PlanStepView, PlanView } from '@/features/pipeline/planView';
+import { shownName, type PlanRunView, type PlanStepView, type PlanView } from '@/features/pipeline/planView';
 import {
   emptyPipelineSelection, selectRun, selectStep, selectSweepValue, selectedRuns, type PipelineSelection, type PipelineSelectionState,
 } from '@/features/pipeline/selection';
 import { ProjectWindow } from '@/features/projectWindow/ProjectWindow';
+import { ProjectSettingRows } from '@/features/projectWindow/StudioSettings';
 import { useHeldGestures } from '@/features/projectWindow/heldGestures';
 import { StatusMark } from '@/components/ui/StatusMark';
 import { ProblemRow, StudioProblems, problemEntries, type ProblemEntry } from '@/features/projectWindow/StudioProblems';
@@ -109,6 +110,9 @@ import { OfferedSets, setAuthoring } from './setAuthoring';
 type EditorSession = ReturnType<typeof bindProjectEditor>;
 /** The anchor of an Evaluate's sampled number of trials, which the Trials editor draws. */
 const trialCount = '/params/trial_set/count';
+
+/** The project's declaration file, which holds the project's settings. */
+const projectDeclaration = { kind: 'declaration', id: 'declaration' } as const;
 
 function valueText(value: JsonValue) {
   return typeof value === 'string' ? value : JSON.stringify(value);
@@ -1669,9 +1673,16 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     activity, problemCommand, failure && !isStudioDefect(failureCause) && retryCommand,
   ].filter((command): command is StudioCommand => !!command);
 
+  const projectSettings = <ProjectSettingRows settings={configuration.settings ?? {}}
+    steps={Object.entries(saved.project.steps ?? {}).map(([id, step]) => ({ id, label: shownName(id, step) }))}
+    change={(name, settings) => editor.edit(
+      // @ts-expect-error The PATCH contract does not yet take the project declaration's address.
+      projectDeclaration, name, [{ op: 'add', path: '/settings', value: settings as JsonValue }])} />;
+
   return (
     <RunRemovalContext.Provider value={runRemoval.confirm}>
       <ProjectWindow
+        projectSettings={projectSettings}
         state={windowState} onStateChange={setWindowState} projectName={configuration.project}
         saveStatus={pending || snapshot.error ? studioName('edited') : undefined}
         views={views}

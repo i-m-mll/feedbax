@@ -96,6 +96,25 @@ const viewCommands = new Set<StudioCommandId>([
   'fitView', 'zoomIn', 'zoomOut', 'enter', 'leave',
 ]);
 
+function commandShortcut(id: StudioCommandId): Shortcut | undefined {
+  const viewPosition = projectWindowViews.indexOf(id as ProjectWindowView) + 1;
+  return (shortcuts as Partial<Record<StudioCommandId, Shortcut>>)[id] ??
+    (viewPosition > 0 && viewPosition <= 9 ? primary(String(viewPosition)) : undefined);
+}
+
+/** Each command that has a key, by its shown name and key, once each: the views first, then the others. */
+export function studioShortcuts() {
+  const ids = [...projectWindowViews, ...Object.keys(shortcuts) as (keyof typeof shortcuts)[]];
+  const rows = new Map<string, { name: string; keys: string }>();
+  for (const id of ids) {
+    const shortcut = commandShortcut(id);
+    if (!shortcut) continue;
+    const row = { name: studioName(id), keys: shortcutLabel(shortcut) };
+    rows.set(JSON.stringify(row), row);
+  }
+  return [...rows.values()];
+}
+
 export interface StudioCommand {
   readonly id: StudioCommandId;
   readonly name: StudioNameId;
@@ -129,9 +148,7 @@ function studioCommand<Id extends StudioCommandId>(
   id: Id, perform: () => void, options: BindingOptions, bound: boolean,
 ): StudioCommand & { readonly id: Id } {
   const { enabled = true, name = id, subject, keyboard = true, glyph = glyphs[id], instance = '' } = options;
-  const viewPosition = projectWindowViews.indexOf(id as ProjectWindowView) + 1;
-  const shortcut = (shortcuts as Partial<Record<StudioCommandId, Shortcut>>)[id] ??
-    (viewPosition > 0 && viewPosition <= 9 ? primary(String(viewPosition)) : undefined);
+  const shortcut = commandShortcut(id);
   const label = studioAccessibleName(name, subject);
   const command: StudioCommand & { readonly id: Id } = {
     id, name, enabled, selectionScoped: selectionCommands.has(id), shortcut: keyboard ? shortcut : undefined,

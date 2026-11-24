@@ -3,6 +3,7 @@
 @import "@window-shell/browser/tokens.css";
 @import "@window-shell/browser/frame.css";
 @import "@window-shell/browser/titlebar.css";
+@import "@window-shell/browser/settings.css";
 
 @tailwind base;
 @tailwind components;
@@ -148,7 +149,6 @@
   ::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: var(--radius-sm); }
 }
 
-:root[data-section-chevron='edge'] [data-section-disclosure] { margin-inline-start: auto; }
 
 .studio-scroll-fade {
   /* Where the top fade starts, below content pinned to the top such as a table's header. */

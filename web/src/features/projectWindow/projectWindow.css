@@ -322,10 +322,22 @@
   position: absolute;
   inset: 0;
   z-index: 3;
-  overflow: auto;
-  padding: var(--space-4);
+  overflow: hidden;
   border-radius: inherit;
   background: var(--surface-main);
+}
+
+.studio-settings-appearance {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-4);
+  align-items: start;
+}
+
+@container (max-width: 700px) {
+  .studio-settings-appearance {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .studio-window-bottom__clock,
