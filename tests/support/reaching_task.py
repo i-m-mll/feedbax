@@ -1,4 +1,4 @@
-"""A registered reaching task with an authored point and a fixed trial horizon."""
+"""A Python reaching task with an authored point and a fixed trial horizon, which tests install as a plugin."""
 
 
 from dataclasses import replace
@@ -6,28 +6,13 @@ from dataclasses import replace
 from pydantic import Field, FiniteFloat
 
 from feedbax.contracts.expression_values import (
-    LENGTH, CallValue, Level, LiteralValue, NameValue, ScopedValue, Site, ValueBase, ValueRecord, ValueType,
+    LENGTH, CallValue, Level, LiteralValue, NameValue, Site, ValueBase, ValueRecord, ValueType,
 )
-from feedbax.contracts.task_document import Cell, Epoch, PythonTaskSelection, Rest, Signal, TaskDocument, Variable
+from feedbax.contracts.task_document import Cell, Epoch, Rest, Signal, TaskDocument, Variable
 from feedbax.tasks.registry import PythonTask, PythonTaskTemplate
 
 
 _POINT = ValueType(base=ValueBase.REAL, shape=(2,), dimensions=LENGTH)
-
-_TARGET_SIGNALS = {
-    "simple-reaches": "target_pos",
-    "delayed-reaches": "target_pos",
-    "stabilization": "target_pos",
-    "reaching": "reach_target",
-}
-
-
-def is_world_target(task: TaskDocument | PythonTaskSelection, signal: ScopedValue) -> bool:
-    """Identify the qualified reaching target in the existing Task families."""
-    target = "reach_target" if isinstance(task, PythonTaskSelection) and task.type == REACHING_TASK else (
-        _TARGET_SIGNALS.get(task.id) if isinstance(task, TaskDocument) else None
-    )
-    return signal.id == target and signal.type == _POINT
 
 
 class ReachingParameters(ValueRecord):
@@ -80,4 +65,4 @@ class Reaching(PythonTask[ReachingParameters]):
         )
 
 
-REACHING_TASK = f"{__package__.partition(".")[0]}.{Reaching.__name__}"
+REACHING_TASK = "reaching_task.Reaching"

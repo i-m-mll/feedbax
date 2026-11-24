@@ -42,8 +42,16 @@ class EvaluationVariant:
 
     def task_refusal(self, problem: Problem) -> CannotRun:
         """Locate a failed trial pairing at the responsible Task edit when identifiable."""
-        at = ("task", *map(str, problem.path[1:])) if problem.path[:1] in {("task",), ("python_task",)} else ()
-        edits = [target for target in self.edit_origins if len(target) > 1 and target == at[:len(target)]]
+        path = tuple(map(str, problem.path))
+        at = (
+            ("task", *path[1:]) if path[:1] in {("task",), ("python_task",)}
+            else ("task", *path) if isinstance(self.task, TaskDocument) and path[:1] and path[0] in TaskDocument.model_fields
+            else ()
+        )
+        edits = [
+            target for target in self.edit_origins
+            if len(target) > 1 and at and (target == at[:len(target)] or at == target[:len(at)])
+        ]
         if edits:
             return CannotRun(self.edit_origins[max(edits, key=len)], problem.reason)
         if problem.path[:1] in {("task",), ("python_task",)} or problem.path[:2] == ("model", "inputs"):

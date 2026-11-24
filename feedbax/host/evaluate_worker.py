@@ -29,7 +29,9 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.contracts.model_checkpoint import SemanticModelEncoding
 from feedbax.contracts.model_input import CheckpointModelSource, InitialModelSource, read_document_input
+from feedbax.contracts.expression_values import LENGTH, ScopedValue, ValueBase, ValueType
 from feedbax.contracts.objective_document import ObjectiveDocument
+from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.project_sources import pointer as json_pointer
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import ContentRef, LastMember, ProductRef, UpdateSeriesMember
@@ -304,6 +306,15 @@ def _prepare_stored_rollout(
     return _prepare_model_rollout(documents, params, slot, coordinate, seed=seed, registry=registry)
 
 
+_WORLD_TARGETS = {"simple-reaches": "target_pos", "delayed-reaches": "target_pos", "stabilization": "target_pos"}
+_POINT = ValueType(base=ValueBase.REAL, shape=(2,), dimensions=LENGTH)
+
+
+def is_world_target(task: TaskDocument | PythonTaskSelection, signal: ScopedValue) -> bool:
+    """Identify the reaching target of the shipped Task documents."""
+    return isinstance(task, TaskDocument) and signal.id == _WORLD_TARGETS.get(task.id) and signal.type == _POINT
+
+
 def rollout_dataset(
     prepared: PreparedRollout, evaluated: TrialEvaluation, params: RolloutParameters,
     *, update_axis: str | None = "checkpoint",
@@ -314,7 +325,6 @@ def rollout_dataset(
     from feedbax.contracts.authored_canonical import canonical_sha256
     from feedbax.dataset import Dataset, Variable
     from feedbax.runtime.raw_state import scene_position_key
-    from feedbax.builtins.reaching import is_world_target
 
     paired, variant, graph = prepared.paired, prepared.variant, prepared.graph
     effective_graph = paired.executable.resolved.graph

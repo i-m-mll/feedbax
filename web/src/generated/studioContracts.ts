@@ -4351,8 +4351,7 @@ export type StudioTrialEpoch = {
 
 export type StudioTrialExpressionEdit = {
   "kind": "expression";
-  "term": string;
-  "field": "measure" | "weight";
+  "path": Pointer;
   "edit": FieldTextEdit | FieldKindEdit | FieldNameEdit;
 };
 
@@ -4626,6 +4625,35 @@ export const acausalReportDefaults = {
     "law_revision": null,
     "parameters": {}
   }
+};
+
+export const blankTask = {
+  "id": "task",
+  "variables": [],
+  "epochs": [
+    {
+      "id": "epoch",
+      "name": "epoch",
+      "end": {
+        "kind": "length",
+        "length": {
+          "kind": "literal",
+          "value": 1,
+          "unit": "s"
+        },
+        "max_steps": null
+      }
+    }
+  ],
+  "signals": [],
+  "links": [],
+  "fixed_steps": null,
+  "validation_trials": [
+    {
+      "variables": {},
+      "epoch_steps": {}
+    }
+  ]
 };
 
 function hasDuplicate(values: readonly unknown[]): boolean {
@@ -11480,8 +11508,7 @@ export const StudioTrialEpochSchema: z.ZodType<StudioTrialEpoch> = z.lazy(() =>
 export const StudioTrialExpressionEditSchema: z.ZodType<StudioTrialExpressionEdit> = z.lazy(() =>
   z.object({
     "kind": z.literal("expression"),
-    "term": z.string(),
-    "field": z.union([z.literal("measure"), z.literal("weight")]),
+    "path": PointerSchema,
     "edit": z.union([FieldTextEditSchema, FieldKindEditSchema, FieldNameEditSchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialExpressionEdit>;

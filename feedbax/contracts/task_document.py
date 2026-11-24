@@ -5,7 +5,7 @@ from typing import Annotated, Literal
 from pydantic import Field, JsonValue
 
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.expression_values import Expression, Scalar, ValueRecord, ValueType
+from feedbax.contracts.expression_values import Expression, LiteralValue, Scalar, ValueRecord, ValueType
 
 
 TASK_DOCUMENT_SCHEMA_ID = "feedbax.spec.task_document"
@@ -95,6 +95,13 @@ class TaskDocument(ValueRecord):
         if len(rows) == 1 and not rows[0].variables and not rows[0].epoch_steps:
             return ()
         return tuple(canonical_json_v2_bytes(row.model_dump(mode="json")["variables"]).decode() for row in rows)
+
+
+BLANK_TASK = TaskDocument(
+    id="task", variables=(), signals=(),
+    epochs=(Epoch(id="epoch", name="epoch", end=Length(length=LiteralValue(value=1, unit="s"))),),
+)
+"""What New makes of a task: one epoch, and nothing else."""
 
 
 PYTHON_TASK_SCHEMA_ID = "feedbax.spec.python_task"

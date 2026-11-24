@@ -19,6 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from feedbax.contracts.task_document import BLANK_TASK
 from feedbax.contracts.component import (
     ComponentDefinition,
     ComponentIdentity,
@@ -1368,6 +1369,7 @@ def generate() -> str:
         f"{interfaces}\n\n"
         f"{authored_types}\n\n"
         f"export const acausalReportDefaults = {json.dumps(acausal_report_defaults, indent=2)};\n\n"
+        f"export const blankTask = {json.dumps(BLANK_TASK.model_dump(mode='json'), indent=2)};\n\n"
         f"{REFINEMENT_HELPERS}\n"
         f"{schemas}\n\n"
         f"{authored_schemas}\n\n"
