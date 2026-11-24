@@ -275,14 +275,23 @@ export function studioChange(before: unknown, after: unknown) {
   return `${JSON.stringify(before)} → ${JSON.stringify(after)}`;
 }
 
-/** A typed reason as one line of text: the name of what it names, then what it says. */
-export function studioPlaceReason(place: StudioPlace | null, detail: string) {
-  return `${studioPlaceName(place)} · ${detail}`;
+/** A typed reason as one line of text: the name of what it is about, then what it says. */
+export function studioMentionReason(name: string, detail: string) {
+  return `${name} · ${detail}`;
 }
 
-/** What a problem says, after the member of a document it names. */
-export function studioProblemDetail({ detail, document_path }: StudioProjectWindowMapProblem) {
-  return document_path ? `${document_path} · ${detail}` : detail;
+/**
+ * The name of what a problem is about: the deepest field of its document it points into, labelled as Studio labels a
+ * field, or else its place. A pointer's index or encoded entry key is not a field.
+ */
+export function studioProblemName({ place, document_path }: StudioProjectWindowMapProblem) {
+  const field = document_path?.split('/').slice(1).filter((part) => /^[A-Za-z_]\w*$/.test(part)).at(-1);
+  return field ? humanizeLabel(field) : studioPlaceName(place);
+}
+
+/** A problem as one line of text: the name of what it is about, then what it says. */
+export function studioProblemReason(problem: StudioProjectWindowMapProblem) {
+  return studioMentionReason(studioProblemName(problem), problem.detail);
 }
 
 /** What a definition change says: the values it changed, or the field it changed when it carries none. */
@@ -298,8 +307,8 @@ export function studioRunReason({ openingReason, problems = [], change, reason }
   readonly reason?: string;
 }) {
   if (openingReason) return openingReason;
-  if (problems.length) return problems.map((problem) => studioPlaceReason(problem.place, studioProblemDetail(problem))).join('\n');
-  if (change) return studioPlaceReason(change.place, studioChangeDetail(change));
+  if (problems.length) return problems.map(studioProblemReason).join('\n');
+  if (change) return studioMentionReason(studioPlaceName(change.place), studioChangeDetail(change));
   return reason;
 }
 

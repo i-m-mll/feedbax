@@ -585,10 +585,10 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   await expect(mapStep(page, 'rowless')).toHaveAttribute('aria-pressed', 'true');
 
   await problemButton.click();
-  // The group heading names the document, so the row does not repeat its place.
+  // The group heading names the document; the row names the field the problem is about.
   await list.locator('section').filter({ has: page.getByRole('heading', { name: 'empty-model', exact: true }) })
-    .getByRole('button', { name: /^Model has no components\./ }).click();
-  const emptyReason = page.getByText('Model · Model has no components.', { exact: true });
+    .getByRole('button', { name: /^Components · Model has no components\./ }).click();
+  const emptyReason = page.getByText('Components · Model has no components.', { exact: true });
   const empty = page.getByRole('tabpanel', { name: 'Model', exact: true }).filter({ has: emptyReason });
   await expect(empty.locator(':scope > header')).toContainText('empty-model');
   await expect(emptyReason).toBeFocused();
