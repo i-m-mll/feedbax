@@ -945,7 +945,8 @@ def _step_file(project, step_id, address, raw, authored, writes) -> StudioProjec
 
 
 def train_selection(
-    folders, project_id, revision, project, step_id, run, rows=(), axes=None, chosen_steps=(),
+    folders, project_id, revision, project, step_id, run, rows=(), axes=None, chosen_steps=(), *,
+    defer_scope=False,
 ) -> TrainSelection:
     """The runs a Train edit names, read from the plan of ``revision``, and the write that stores an edit for them.
 
@@ -966,7 +967,7 @@ def train_selection(
         settled = folders.read_plan(project_id, revision=revision)
         view = variant_view(settled.plan, project, scope.variant if variant else None)
         stored = scoped_file(project, step_id, scope, writes, chosen=tuple(chosen_steps), users=users, view=view)
-        if stored.files or stored.created:
+        if not defer_scope and (stored.files or stored.created):
             candidate = compile_project(
                 preview_stored(project, stored), readers=settled.readers,
                 operations=folders.operations, components=folders.components, functions=folders.functions,

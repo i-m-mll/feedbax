@@ -63,12 +63,21 @@ def _rows(folders, step):
     return {row.key.row: row for row in plan.rows if row.key.step == step}
 
 
-def _set_edit(folders, client, command):
+def _set_edit(folders, client, command, *, store=None):
     """Prepare a set edit and store it as Studio does: its documents, then its files."""
     revision = folders.read(PROJECT).revision
-    reply = client.post(f"{BASE}/authoring/sets", json={"revision": revision, "command": command})
+    body = {"revision": revision, "command": command}
+    reply = client.post(f"{BASE}/authoring/sets", json=body)
     assert reply.status_code == 200, reply.text
     edit = reply.json()
+    if store is not None:
+        assert edit["files"] == [] and folders.read(PROJECT).revision == revision
+        choice = next(option for option in edit["store_choices"] if option["kind"] == store)
+        reply = client.post(f"{BASE}/authoring/sets", json=body | {"store_choice": choice["id"]})
+        assert reply.status_code == 200, reply.text
+        edit = reply.json()
+    else:
+        assert not edit.get("store_choices"), edit
     for created in edit.get("created", []):
         made = client.post(f"{BASE}/files", json={"revision": revision, "file": created})
         assert made.status_code == 201, made.text
@@ -79,21 +88,28 @@ def _set_edit(folders, client, command):
     return edit
 
 
-def _duplicate(folders, client, step, rows=(), axes=None):
+def _duplicate(folders, client, step, rows=(), axes=None, *, store=None):
     row = next(iter(rows), None) or next(iter(_rows(folders, step)))
     command = {"kind": "duplicate_run", "run": {"variant": "default", "step": step, "row": row}, "rows": list(rows)}
-    return _set_edit(folders, client, command | ({"axes": axes} if axes else {}))["selected"]
+    return _set_edit(folders, client, command | ({"axes": axes} if axes else {}), store=store)["selected"]
 
 
-def _model_edit(folders, client, step, document, operation, rows, axes=None, chosen=()):
+def _model_edit(folders, client, step, document, operation, rows, axes=None, chosen=(), *, store=None):
     snapshot = folders.read(PROJECT)
-    reply = client.post(f"{BASE}/model/edit", json={
+    body = {
         "revision": snapshot.revision, "presentation_revision": snapshot.presentation_revision,
         "document": document, "command": {"operation": operation}, "step": step, "rows": list(rows),
         "chosen_steps": list(chosen),
-    } | ({"axes": axes} if axes else {}))
+    } | ({"axes": axes} if axes else {})
+    reply = client.post(f"{BASE}/model/edit", json=body)
     assert reply.status_code == 200, reply.text
     result = reply.json()["result"]
+    if store is not None:
+        assert result["status"] == "asked" and folders.read(PROJECT).revision == snapshot.revision
+        choice = next(option for option in result["store_choices"] if option["kind"] == store)
+        reply = client.post(f"{BASE}/model/edit", json=body | {"store_choice": choice["id"]})
+        assert reply.status_code == 200, reply.text
+        result = reply.json()["result"]
     assert result["status"] == "applied", result
     return result
 
@@ -186,7 +202,9 @@ def test_a_set_made_by_duplicate_run_is_edited_saved_applied_narrowed_and_inline
     field = {"op": "set_field", "address": {"composites": [], "element": {
         "kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"],
     }}, "value": 2.5}
-    result = _model_edit(folders, client, "other", "reach-model", field, ["set=run-2"], {"set": ["run-2"]})
+    result = _model_edit(
+        folders, client, "other", "reach-model", field, ["set=run-2"], {"set": ["run-2"]}, store="selected_readers",
+    )
     project = folders.read(PROJECT).project
     assert project.documents["set-2"].base.document == "set"
     assert project.steps["other"].sweep.axes["set"].set == "set-2"
@@ -222,7 +240,7 @@ def test_a_copied_set_entry_keeps_its_originals_request_id_on_every_step_reading
     assert written.status_code == 200, written.text
     assert _runs(folders, "other")["set=run-2"] != unexcepted
 
-    copy = _duplicate(folders, client, "other", ["set=run-2"], {"set": ["run-2"]})
+    copy = _duplicate(folders, client, "other", ["set=run-2"], {"set": ["run-2"]}, store="set_entry")
     assert copy == {"axis": "set", "value": "run-4"}
     other, baseline = _runs(folders, "other"), _runs(folders, "baseline")
     assert other["set=run-4"] == other["set=run-2"] != other["set=run-3"]

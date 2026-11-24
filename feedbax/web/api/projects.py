@@ -119,6 +119,7 @@ def read_train_authoring(
     response: Response,
 ) -> StudioTrainAuthoring:
     from feedbax.studio.authoring import project_train_fields
+    from feedbax.web.services.authored_scope import train_edit_store
     from feedbax.web.services.trial_scope import train_selection
 
     def project_fields() -> StudioTrainAuthoring:
@@ -127,7 +128,7 @@ def read_train_authoring(
         bundle = request.app.state.bootstrap_state.bundle
         selection = train_selection(
             folders, project_id, snapshot.revision, snapshot.project, step_id, body.run, body.rows, body.axes,
-            body.chosen_steps,
+            body.chosen_steps, defer_scope=True,
         )
         try:
             projection = project_train_fields(
@@ -137,10 +138,12 @@ def read_train_authoring(
             )
         except ValueError as error:
             raise ProjectFolderInvalid(str(error)) from error
+        stored = train_edit_store(folders, project_id, snapshot.project, step_id, body, projection.stored)
         return StudioTrainAuthoring(
             project_id=project_id, step_id=step_id, revision=snapshot.revision, fields=projection.fields,
-            settings=projection.settings, mixed=projection.mixed, files=projection.stored.files,
-            created=list(projection.stored.created),
+            settings=projection.settings, mixed=projection.mixed, files=[] if isinstance(stored, list) else stored.files,
+            created=[] if isinstance(stored, list) else list(stored.created),
+            store_choices=stored if isinstance(stored, list) else None,
             documents=projection.documents, refusal=projection.refusal, classes=projection.classes,
             removed_values=projection.removed, changed=projection.changed,
         )
@@ -164,6 +167,8 @@ def project_train_numeric_fields(
     project_id: ProjectName, step_id: ProjectName, body: TrainFieldRequest, request: Request, response: Response,
 ) -> TrainFieldResponse:
     from feedbax.studio.authoring import project_numeric_fields
+    from feedbax.studio.selection import StoredEdit
+    from feedbax.web.services.authored_scope import train_edit_store
     from feedbax.web.services.trial_scope import train_selection
 
     def project_fields() -> TrainFieldResponse:
@@ -172,15 +177,21 @@ def project_train_numeric_fields(
         bundle = request.app.state.bootstrap_state.bundle
         selection = train_selection(
             folders, project_id, body.revision, snapshot.project, step_id, body.run, body.rows, body.axes,
-            body.chosen_steps,
+            body.chosen_steps, defer_scope=True,
         )
         try:
-            return project_numeric_fields(
+            projection = project_numeric_fields(
                 snapshot.project, step_id, bundle.training_methods, bundle.expression_functions, body, selection,
                 lambda keys: folders.read_plan(project_id, revision=body.revision, source_runs=keys).plan,
             )
         except ValueError as error:
             raise ProjectFolderInvalid(str(error)) from error
+        stored = train_edit_store(
+            folders, project_id, snapshot.project, step_id, body, StoredEdit(projection.files, tuple(projection.created)),
+        )
+        if isinstance(stored, list):
+            return projection.model_copy(update={"files": [], "created": [], "store_choices": stored})
+        return projection.model_copy(update={"files": stored.files, "created": list(stored.created)})
 
     return _project_response(response, project_fields)
 

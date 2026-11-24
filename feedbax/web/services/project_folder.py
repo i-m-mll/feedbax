@@ -5,7 +5,6 @@ from __future__ import annotations
 from base64 import b64decode, urlsafe_b64encode
 from binascii import Error as Base64Error
 from copy import deepcopy
-from functools import partial
 from hmac import compare_digest, digest
 import os
 from pathlib import Path

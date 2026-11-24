@@ -21,7 +21,8 @@ from feedbax.contracts.studio_checkpoint_rule import (
 )
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
 from feedbax.contracts.studio_scope import StudioStoreChoice
-from feedbax.web.services.authored_scope import choose_authored_store, preview_plan
+from feedbax.studio.selection import StoredEdit
+from feedbax.web.services.authored_scope import choose_authored_store, choose_prepared_edit, preview_plan
 from feedbax.web.services.axis_values import axis_values
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, preview_authored_files
 from feedbax.web.services.store_choice import EditStore
@@ -170,7 +171,7 @@ def _choose_checkpoint_store(
             "sweep_value", "Sweep Value", f"{source.owner}:{source.parts}", reached, source.file(project, rule),
         )
         options = [option for option in options if option.value != preferred.value]
-    elif isinstance(scope, ListedRuns) and base_reads:
+    elif base_reads and (isinstance(scope, ListedRuns) or preferred.runs != selected):
         keys = [item.row for item in base_reads]
         step = project.steps[key.step]
         raw = step.model_dump(mode="json", by_alias=True, exclude_unset=True)
@@ -182,10 +183,12 @@ def _choose_checkpoint_store(
             and owner is not None and owner.kind in ("step", "variant")
         )
         selected_rows = EditStore("other_runs", "Selected Runs", f"{key.step}:{sorted(keys)}", reached, file)
-        if base_reads == selected:
+        if isinstance(scope, ListedRuns) and base_reads == selected:
             preferred = selected_rows
         else:
             options.append(selected_rows)
+    if not preferred.runs and len(options) == 1 and options[0].runs == selected:
+        preferred, options = options[0], []
     return choose_authored_store(
         body.revision, body.model_dump(mode="json", exclude={"store_choice"}), selected, preferred, options,
         body.store_choice,
@@ -223,6 +226,13 @@ def prepare_checkpoint_rule_edit(
         file = file_value(address, raw, ("sweep",), authored_sweep | {"axes": axes})
         file.patches.append(RemoveProjectValue(op="remove", path="/inputs/subject/checkpoint"))
         selected = set(rows)
+        store = choose_prepared_edit(
+            folders, project_id, body.revision, project, frozenset(selected),
+            body.model_dump(mode="json", exclude={"store_choice"}), body.store_choice,
+            ("whole_step", "Whole Step", key.step, StoredEdit([file])),
+        )
+        if isinstance(store, list):
+            return StudioCheckpointRuleEdit(revision=body.revision, files=[], store_choices=store)
     else:
         decision = _choose_checkpoint_store(project, plan, key, body, edit)
         if isinstance(decision, list):

@@ -1404,6 +1404,8 @@ class ProjectFolder:
         )
         if isinstance(result, ModelEditProblem):
             return result
+        if body.store_choice is not None and result.state.document == state.document and not body.files:
+            raise ProjectRevisionConflict("project", body.revision)
         if any(file.address.kind != "step" for file in body.files):
             raise ProjectFolderInvalid("A Model edit writes step files alongside its command.")
         change = None

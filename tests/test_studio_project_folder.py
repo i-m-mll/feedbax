@@ -610,11 +610,15 @@ def test_variant_model_authoring_preserves_sweeps_and_request_scope(study):
         mass = next(item for item in inspection.json()["fields"] if item["label"] == "Mass")
         assert ModelAddress.model_validate(mass["address"]) == field
         narrowed = review(**(change | {"chosen_steps": ["fit"]}))
-        assert narrowed.status_code == 422, narrowed.text
-        assert "steps that use this Model" in narrowed.text
+        assert narrowed.status_code == 200, narrowed.text
+        assert narrowed.json()["files"] == []
+        choices = {item["kind"]: item for item in narrowed.json()["store_choices"]}
+        assert set(choices["variant"]["steps"]) == {"fit", "other"}
+        assert choices["selected_readers"]["steps"] == ["fit"]
         parent = review(**(change | {"run": {**key, "variant": "parent"}}))
-        assert parent.status_code == 422, parent.text
-        assert "inherited" in parent.text
+        assert parent.status_code == 200, parent.text
+        assert parent.json()["files"] == []
+        assert {run["variant"] for run in parent.json()["store_choices"][0]["runs"]} == {"parent", "compare"}
         reviewed = review(**change)
         assert reviewed.status_code == 200, reviewed.text
         recipe, = reviewed.json()["files"]

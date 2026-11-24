@@ -18,12 +18,13 @@ from feedbax.contracts.studio_sets import (
 )
 from feedbax.contracts.model_edit import ListedRuns
 from feedbax.project_members import generated_name
-from feedbax.web.services.authored_scope import choose_prepared_edit, selected_edit_runs
+from feedbax.web.services.authored_scope import choose_authored_store, choose_prepared_edit, selected_edit_runs
 from feedbax.web.services.axis_values import axis_values
 from feedbax.web.services.project_folder import ProjectFolderInvalid
+from feedbax.web.services.store_choice import EditStore
 from feedbax.web.services.trial_scope import (
     StoredEdit, SweepValuesRuns, _composed, content_edits, file_value, selected_value, selection_scope,
-    preview_stored, set_document_write, set_readers,
+    preview_stored, reached_steps, set_document_write, set_readers,
 )
 
 
@@ -64,6 +65,17 @@ def _set_store(folders, project_id: str, project: Project, step: str, body: Stud
     plan = folders.read_plan(project_id, revision=body.revision).plan
     scope = body.selection or (command if isinstance(command, DuplicateRun) else None)
     selected = selected_edit_runs(plan, step, scope)
+    intent = body.model_dump(mode="json", exclude={"store_choice"})
+    if isinstance(command, SaveSet | InlineSet):
+        attached = reached_steps(project, {step})
+        reached = frozenset(row.key for row in plan.rows if row.key.step in attached)
+        if not selected and body.store_choice is None:
+            return stored
+        result = choose_authored_store(
+            body.revision, intent, selected, EditStore("whole_step", "Whole Step", step, reached, stored),
+            (), body.store_choice,
+        )
+        return result if isinstance(result, list) else result.value
     if isinstance(command, RemoveAxisValue) and (body.selection is None or not body.selection.rows):
         values = axis_values(row for row in plan.rows if row.key in selected)
         selected = frozenset(key for key in selected if values.get((key, command.axis)) == command.value)
@@ -95,8 +107,10 @@ def _set_store(folders, project_id: str, project: Project, step: str, body: Stud
     kind, label = ("set_entry", "Set Entry") if names else ("whole_step", "Whole Step")
     return choose_prepared_edit(
         folders, project_id, body.revision, project, selected,
-        body.model_dump(mode="json", exclude={"store_choice"}), body.store_choice,
+        intent, body.store_choice,
         (kind, label, ",".join(sorted(names)) or step, stored), alternatives,
+        reader_steps=frozenset().union(*(set_readers(project, name) for name in names)),
+        copies_selection=isinstance(command, DuplicateRun),
     )
 
 

@@ -9,7 +9,9 @@ from feedbax.contracts.request_refs import UpdateSeriesMember
 from feedbax.contracts.studio_checkpoint_rule import StudioCheckpointRuleRequest
 from feedbax.web.app import create_app
 from feedbax.web.services.checkpoint_rule import prepare_checkpoint_rule_edit
-from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, preview_authored_files
+from feedbax.web.services.project_folder import (
+    ProjectFolderInvalid, ProjectFolderService, ProjectRevisionConflict, preview_authored_files,
+)
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_saved_update_series import definition
 
@@ -126,11 +128,12 @@ def test_checkpoint_rule_sweep_keeps_subject_fanout_and_replans_horizons(tmp_pat
     def plan():
         return folders.read_plan("series", revision=None)
 
-    def prepare(settled, row, edit):
+    def prepare(settled, row, edit, choice=None):
         return prepare_checkpoint_rule_edit(folders, "series", StudioCheckpointRuleRequest.model_validate({
             "revision": settled.revision,
             "run": {"variant": row.key.variant, "step": row.key.step, "row": row.key.row},
             "edit": edit,
+            "store_choice": choice,
         }))
 
     before = plan()
@@ -158,10 +161,30 @@ def test_checkpoint_rule_sweep_keeps_subject_fanout_and_replans_horizons(tmp_pat
     assert {
         row.key for row in plan().plan.runs if row.request_id != axis_rows[row.key].request_id
     } == {control.key}
-    with pytest.raises(ProjectFolderInvalid, match="already writes"):
-        prepare(plan(), axis_rows[test_row.key], {
-            "kind": "set", "scope": {"kind": "rows", "rows": [test_row.key.row]}, "rule": [{"at": 7}],
-        })
+    after_row = plan()
+    change = {
+        "kind": "set", "scope": {"kind": "rows", "rows": [test_row.key.row]}, "rule": [{"at": 1}],
+    }
+    review = prepare(after_row, test_row, change)
+    assert review.files == []
+    assert plan().revision == after_row.revision
+    option, = review.store_choices
+    assert option.kind == "sweep_value"
+    assert {(key.variant, key.step, key.row) for key in option.runs} == {
+        (key.variant, key.step, key.row) for key, run in axis_rows.items()
+        if key.step == "baseline" and run.coordinates["replicate"].value_id == "test"
+    }
+    with pytest.raises(ProjectRevisionConflict):
+        prepare(after_row, test_row, change | {"rule": "last"}, option.id)
+    assert plan().revision == after_row.revision
+    chosen = prepare(after_row, test_row, change, option.id)
+    saved = folders.read("series", revision=after_row.revision)
+    _save_project(folders, "series", preview_authored_files(saved.project, chosen.files))
+    original_requests = {run.key: run.request_id for run in after_row.plan.runs}
+    assert {
+        (run.key.variant, run.key.step, run.key.row) for run in plan().plan.runs
+        if run.request_id != original_requests[run.key]
+    } == {(key.variant, key.step, key.row) for key in option.runs}
 
     _save_project(folders, "series", project)
     conversion = prepare(plan(), test_row, {"kind": "to_sweep"})

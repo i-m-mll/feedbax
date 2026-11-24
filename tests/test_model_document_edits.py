@@ -55,15 +55,24 @@ class _Project:
     def composed(self, name):
         return compose_document(self.project().documents.get, name).payload
 
-    def edit(self, operation, *, step=None, chosen=(), files=(), document="model"):
+    def model_edit(self, operation, *, step=None, chosen=(), files=(), document="model", choice=None):
         snapshot = self.snapshot()
-        response = self.client.post(f"{_URL}/model/edit", json={
+        return self.client.post(f"{_URL}/model/edit", json={
             "revision": snapshot["revision"], "presentation_revision": snapshot["presentation_revision"],
             "document": document, "command": {"operation": operation}, "chosen_steps": list(chosen),
-            "files": list(files), **({"step": step} if step else {}),
+            "files": list(files), "store_choice": choice, **({"step": step} if step else {}),
         })
+
+    def edit(self, operation, *, store=None, **scope):
+        response = self.model_edit(operation, **scope)
         assert response.status_code == 200, response.text
         result = response.json()["result"]
+        if store is not None:
+            assert result["status"] == "asked", result
+            selected = next(option for option in result["store_choices"] if option["kind"] == store)
+            response = self.model_edit(operation, **scope, choice=selected["id"])
+            assert response.status_code == 200, response.text
+            result = response.json()["result"]
         assert result["status"] == "applied", result
         return result
 
@@ -91,7 +100,7 @@ def test_an_evaluation_field_edit_makes_a_document_based_on_its_subjects(tmp_pat
     with project.client:
         reply = project.fields("check", {"kind": "text", "text": "2"}, evaluate_scope={"kind": "step"})
         assert reply["command"]["operation"]["address"] == MASS and not reply.get("files")
-        result = project.edit(_mass(2.0), step="check")
+        result = project.edit(_mass(2.0), step="check", store="selected_readers")
         assert result["created"] == ["model-2"] and result.get("undo_token") is None
         documents = project.project().documents
         assert isinstance(documents["model-2"], BasedDocument) and documents["model-2"].base.document == "model"
@@ -122,7 +131,22 @@ def test_deleting_a_component_for_one_reader_makes_a_document_without_it(tmp_pat
     with project.client:
         other = project.ids()["other"]
         readout = {"composites": [], "element": {"kind": "component", "id": "readout"}}
-        result = project.edit({"op": "delete", "selection": [readout]}, step="fee")
+        operation = {"op": "delete", "selection": [readout]}
+        before = project.snapshot()
+        ask = project.model_edit(operation, step="fee")
+        assert ask.status_code == 200, ask.text
+        assert ask.json()["result"]["status"] == "asked"
+        assert project.snapshot()["revision"] == before["revision"]
+        choices = {option["kind"]: option for option in ask.json()["result"]["store_choices"]}
+        assert {"fee", "other"} <= set(choices["all_readers"]["steps"])
+        assert choices["selected_readers"]["steps"] == ["check", "fee"]
+        choice = choices["selected_readers"]["id"]
+        stale = project.model_edit(operation, step="fee", chosen=["other"], choice=choice)
+        assert stale.status_code == 409, stale.text
+        assert project.snapshot()["revision"] == before["revision"]
+        reply = project.model_edit(operation, step="fee", choice=choice)
+        assert reply.status_code == 200, reply.text
+        result = reply.json()["result"]
         assert result["created"] == ["model-2"]
         assert "readout" not in project.composed("model-2")["interior"]["components"]
         assert "readout" in project.composed("model")["interior"]["components"]
@@ -137,7 +161,7 @@ def test_a_kept_sweep_value_is_stored_in_a_document_based_on_the_shared_one(tmp_
         other = project.ids()["other"]
         reply = project.fields("fee", {"kind": "text", "text": "4"})
         assert reply["command"]["operation"]["address"] == MASS and reply["files"]
-        project.edit(reply["command"]["operation"], step="fee", files=reply["files"])
+        project.edit(reply["command"]["operation"], step="fee", files=reply["files"], store="selected_readers")
         fee = project.project().steps["fee"]
         assert fee.sweep is None or all(axis is None for axis in fee.sweep.axes.values())
         assert project.reads("fee") == "model-2"
@@ -230,7 +254,7 @@ def test_reset_of_the_only_changed_value_leaves_the_based_document_without_diffe
     project = _Project(tmp_path, _two_readers(_data()))
     with project.client:
         before = project.ids()
-        project.edit(_mass(2.0), step="fee", chosen=("fee",))
+        project.edit(_mass(2.0), step="fee", chosen=("fee", "check"), store="selected_readers")
         assert project.reads("fee") == "model-2" and project.ids()["fee"] != before["fee"]
 
         def mass(document):
@@ -239,7 +263,7 @@ def test_reset_of_the_only_changed_value_leaves_the_based_document_without_diffe
 
         assert mass("model-2")["changed"] and not mass("model")["changed"]
         reply = project.fields("fee", {"kind": "reset"}, document="model-2")
-        project.edit(reply["command"]["operation"], step="fee", chosen=("fee",), document="model-2")
+        project.edit(reply["command"]["operation"], step="fee", chosen=("fee", "check"), document="model-2")
         assert project.project().documents["model-2"].differences == {}
         assert not mass("model-2")["changed"]
         assert project.ids() == before
@@ -249,7 +273,7 @@ def test_an_evaluation_marks_the_values_its_document_changes(tmp_path):
     project = _Project(tmp_path, _data())
     with project.client:
         before = project.ids()
-        project.edit(_mass(2.0), step="check")
+        project.edit(_mass(2.0), step="check", store="selected_readers")
         fields = project.fields("check", None, document="model-2", evaluate_scope={"kind": "step"})["fields"]
         assert [field["address"] == MASS for field in fields] == [field["changed"] for field in fields]
         reply = project.fields("check", {"kind": "reset"}, document="model-2", evaluate_scope={"kind": "step"})

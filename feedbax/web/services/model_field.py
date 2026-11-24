@@ -16,26 +16,28 @@ from feedbax.contracts.model_edit import (
     EvaluateModelRequest, ListedRuns, StepRuns, ModelEditCommand, SetField,
 )
 from feedbax.contracts.manifest import OverridePatch
-from feedbax.contracts.project import BasedDocument, InlineBase, SetProjectValue, base_chain
+from feedbax.contracts.project import BasedDocument, InlineBase, SetProjectValue
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.jobs import StudioPlanReviewSource
-from feedbax.contracts.project_sources import pointer
-from feedbax.contracts.project_sweep import _paths_overlap, authored_row
+from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.contracts.studio_field import (
     FieldResetEdit, FieldTextEdit, ModelFieldRequest, ModelFieldResponse, ModelFieldView,
 )
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
+from feedbax.contracts.studio_scope import StoreKind
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.contracts.expression_text import print_field
 from feedbax.studio.authoring_sweeps import SweepTarget, FieldSweeps
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
-from feedbax.studio.selection import merged_files
+from feedbax.studio.selection import StoredEdit, merged_files
+from feedbax.web.services.authored_scope import choose_prepared_edit, selected_edit_runs
+from feedbax.web.services.axis_values import axis_values
 from feedbax.web.services.evaluate_sources import read_evaluate_model
 from feedbax.web.services.model_projection import selected_model
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
 from feedbax.web.services.trial_scope import (
-    reached_steps, scoped_file, selected_value, selection_scope, variant_file,
+    evaluation_document_write, scoped_file, selected_value, selection_scope, source_value_file, variant_file,
 )
 
 
@@ -239,6 +241,30 @@ def _held_values(
     return held
 
 
+def _field_store(
+    folders, project_id, project, plan, body, response: ModelFieldResponse,
+    *, kind: StoreKind = "whole_step", label="Whole Step", axis: FieldSweeps | None = None, alternatives=(),
+) -> ModelFieldResponse:
+    if not response.files and not alternatives:
+        return response
+    selected = selected_edit_runs(plan, body.run.step, body)
+    if not body.rows and axis is not None and len(axis.shown) == 1 and (
+        value := getattr(body.edit, "value_id", None)
+    ) is not None:
+        axis_name, _ = axis.shown[0]
+        ids = axis_values(item for item in plan.rows if item.key in selected)
+        selected = frozenset(item for item in selected if ids.get((item, axis_name)) == value)
+        kind, label = "sweep_value", "Sweep Value"
+    choice = choose_prepared_edit(
+        folders, project_id, body.revision, project, selected,
+        body.model_dump(mode="json", exclude={"store_choice"}), body.store_choice,
+        (kind, label, body.address.to_text(), StoredEdit(response.files, tuple(response.created))), alternatives,
+    )
+    if isinstance(choice, list):
+        return ModelFieldResponse(fields=response.fields, store_choices=choice)
+    return response.model_copy(update={"files": choice.files, "created": list(choice.created)})
+
+
 def model_fields(
     folders: ProjectFolderService, project_id: str, body: ModelFieldRequest,
     components: ComponentRegistry, functions: FunctionRegistry,
@@ -347,12 +373,6 @@ def model_fields(
     if (body.rows or body.axes) and evaluate is None:
         key = RunKey(body.run.variant, body.run.step, body.run.row)
         scope = selection_scope(project, plan, key, tuple(body.rows), body.axes)
-        if isinstance(scope, ListedRuns) and axis is not None and any(
-            source.kind == "sweep_value"
-            for field_view in fields if field_view.address == body.address
-            for source in field_view.sources
-        ):
-            raise ProjectFolderInvalid("A selected row already writes this field through a sweep value.")
     edit = body.edit
     if isinstance(edit, FieldResetEdit):
         reset = _reset_text(project, restored, body.owner, field.address, components)
@@ -371,9 +391,12 @@ def model_fields(
         if isinstance(kept, Problem):
             return ModelFieldResponse(problems=[kept])
         files, field_value = kept
-        return ModelFieldResponse(
+        response = ModelFieldResponse(
             files=merged_files([*files, step_file(result)]), removed_values=prepared.removed,
             command=ModelEditCommand(operation=field_value) if field_value is not None else None,
+        )
+        return response if response.command is not None else _field_store(
+            folders, project_id, project, plan, body, response, axis=axis,
         )
     if scope is not None and selected_value(project, body.run.step, scope) is None:
         if axis is None or axis.target.patch_path is None:
@@ -381,7 +404,37 @@ def model_fields(
                 code=ProblemCode.STRUCTURE, reason="This field has no writable sweep destination.",
             )])
         write = OverridePatch(op="replace", path=axis.target.patch_path, value=result)
-        return ModelFieldResponse(files=scoped_file(project, body.run.step, scope, [write]).files)
+        relative = pointer(field.address.stored_path())
+        selected = selected_edit_runs(plan, body.run.step, body)
+        alternatives = []
+        writable = []
+        sources = {}
+        for run in selected:
+            definition = plan.selected_definitions.get(run)
+            source = definition.sources.get(f"/payload/trial_documents/model{relative}") if definition is not None else None
+            if isinstance(scope, ListedRuns) and isinstance(source, ValueSource) and source.kind in {
+                "sweep_value", "exception", "variant",
+            }:
+                sources[source] = definition
+            else:
+                writable.append(run.row)
+        for source, definition in sources.items():
+            held = selected_model(definition, owner_name)
+            for part in field.address.stored_path():
+                held = held.get(part) if isinstance(held, dict) else None
+            file = source_value_file(project, source, held, result)
+            if file is not None:
+                kind, label = {
+                    "sweep_value": ("sweep_value", "Sweep Value"), "exception": ("row_exception", "Row Exception"),
+                    "variant": ("variant", "Variant"),
+                }[source.kind]
+                alternatives.append((kind, label, f"{source.name}:{source.path}", StoredEdit([file])))
+        destination = ListedRuns(kind="rows", rows=tuple(sorted(writable))) if sources and writable else scope
+        files = scoped_file(project, body.run.step, destination, [write]).files if writable else []
+        return _field_store(
+            folders, project_id, project, plan, body, ModelFieldResponse(files=files), kind="other_runs",
+            label="Other Runs", alternatives=alternatives,
+        )
     value = result
     if isinstance(result, LiteralValue):
         if field.address.element.parent.kind == "attachment":
@@ -396,45 +449,21 @@ def model_fields(
     if evaluate is not None:
         return ModelFieldResponse(command=ModelEditCommand(operation=difference))
     if variant is not None:
-        if body.rows or plan is None or not plan.document_users(variant, owner_name) <= reached_steps(
-            project, set(body.chosen_steps) or {body.run.step},
-        ):
-            raise ProjectFolderInvalid("Select the steps that use this Model in the authored variant.")
-        sweep = project.sweep
-        assert sweep is not None
-        if any(row is not None and row.source == variant for row in sweep.rows.values()):
-            raise ProjectFolderInvalid("This variant supplies inherited patches to another variant.")
         field_key = difference.address.to_text()
         path = f"documents.{owner_name}.{field_key}"
-        expanded = authored_row(sweep, variant)
-        if expanded is None or any(
-            _paths_overlap(other, path) and (other != path or origin[0] != "row")
-            for other, origin in expanded.patch_origins.items()
-        ):
-            raise ProjectFolderInvalid("The Model field has no local variant write destination.")
         if field_key not in authored_fields or isinstance(difference.address.element.parent, AttachmentElement):
             raise ProjectFolderInvalid("This Model field is not part of the named document.")
-        keys = [
-            row.key for row in plan.rows
-            if row.key.variant == variant and owner_name in row.document_uses - row.followed_documents
-        ]
-        if key not in keys:
-            raise ProjectFolderInvalid("The selected run no longer uses this Model.")
-        definitions = folders.read_plan(project_id, revision=body.revision, source_runs=keys).plan.selected_definitions
-        relative = pointer(difference.address.stored_path())
-        for selected_key in keys:
-            definition = definitions.get(selected_key)
-            if definition is None or selected_model(definition, owner_name) is None:
-                raise ProjectFolderInvalid("A selected run no longer uses this Model directly.")
-            source = definition.sources.get(f"/payload/trial_documents/model{relative}")
-            if source is None:
-                raise ProjectFolderInvalid("The Model field has no authored source in every selected run.")
-            if not (
-                source.kind == "document" and source.name in base_chain(project.documents, owner_name)
-                and source.path == relative
-                or source.kind == "variant" and source.variant == variant and source.path == pointer(("sweep", path))
-            ):
-                raise ProjectFolderInvalid("The Model field is controlled by a different authored source.")
         write = OverridePatch(op="replace", path=path, value=value)
-        return ModelFieldResponse(files=[variant_file(project, variant, [write])])
+        chosen_steps = {body.run.step, *body.chosen_steps}
+        alternatives = []
+        if chosen_steps < plan.document_users(variant, owner_name):
+            narrowed = evaluation_document_write(project, plan, owner_name, [
+                SetProjectValue(op="replace", path=pointer(difference.address.stored_path()), value=value),
+            ], chosen_steps, "model", variant)
+            alternatives.append(("selected_readers", "Selected Readers", variant, narrowed))
+        return _field_store(
+            folders, project_id, project, plan, body,
+            ModelFieldResponse(files=[variant_file(project, variant, [write])]), kind="variant", label="Variant",
+            alternatives=alternatives,
+        )
     return ModelFieldResponse(command=ModelEditCommand(operation=difference))

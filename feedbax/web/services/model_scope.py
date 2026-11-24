@@ -1,17 +1,24 @@
 """Select the authored store of a Model command."""
 
 from collections.abc import Collection
+from dataclasses import replace
 
-from feedbax.contracts.model_edit import ModelEditAsked, ModelEditRequest
-from feedbax.contracts.project import Project
+from pydantic import JsonValue
+
+from feedbax.contracts.model_edit import ListedRuns, ModelEditAsked, ModelEditRequest, SetField
+from feedbax.contracts.project import Project, SetDocumentValue
 from feedbax.contracts.project_resolution import ProjectDiagnostic, RunKey, compose_document
+from feedbax.contracts.project_sources import ValueSource, pointer
+from feedbax.contracts.set_document import read_set
+from feedbax.contracts.studio_scope import StoreKind
 from feedbax.planner.project_plan import ProjectPlan
 from feedbax.studio.selection import StoredEdit
 from feedbax.web.services.authored_scope import choose_authored_store, preview_plan
-from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
+from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, ProjectRevisionConflict
 from feedbax.web.services.store_choice import EditStore
 from feedbax.web.services.trial_scope import (
-    RowModel, model_document_store, preview_stored, scoped_model_store, selected_value, set_readers,
+    RowModel, model_document_store, preview_stored, scoped_model_store, selected_value, set_entry_write,
+    set_readers, source_value_file,
 )
 
 
@@ -47,16 +54,60 @@ def _selected(plan: ProjectPlan, body: ModelEditRequest, variant: str) -> frozen
     return frozenset(row.key for row in plan.rows if row.key.variant == variant and row.key.step in steps)
 
 
+def _read_field(model: object, parts: tuple[str, ...]) -> JsonValue:
+    value = model
+    for part in parts:
+        value = value.get(part) if isinstance(value, dict) else None
+    return value
+
+
+def _overridden_fields(
+    project: Project, plan: ProjectPlan, body: ModelEditRequest, selected: frozenset[RunKey], operation: SetField,
+) -> tuple[frozenset[RunKey], list[tuple[StoreKind, str, str, StoredEdit]]]:
+    parts = operation.address.stored_path()
+    path = pointer(parts)
+    field = f"/payload/trial_documents/model{path}"
+    remaining = set(selected)
+    sources: dict[ValueSource, JsonValue] = {}
+    for key in sorted(selected, key=lambda item: item.row):
+        definition = plan.selected_definitions.get(key)
+        origin = definition.sources.get(field) if definition is not None else None
+        if origin is not None and (
+            origin.kind in ("sweep_value", "exception", "variant")
+            or origin.kind == "document" and origin.axis is not None and origin.value is not None
+        ):
+            remaining.discard(key)
+            sources[origin] = _read_field(_observed_model(plan, project, key, body.document), parts)
+    alternatives = []
+    for source, before in sources.items():
+        if source.kind == "document":
+            entry = read_set(project.documents.get, source.name).entries[source.value]
+            stored = set_entry_write(
+                project, source.name, source.value,
+                entry.differences | {path: SetDocumentValue(value=operation.value)}, set_readers(project, source.name),
+            )
+            alternatives.append(("set_entry", "Set Entry", f"{source.name}:{source.value}", stored))
+        elif (file := source_value_file(project, source, before, operation.value)) is not None:
+            kind, label = {
+                "sweep_value": ("sweep_value", "Sweep Value"), "exception": ("row_exception", "Row Exception"),
+                "variant": ("variant", "Variant"),
+            }[source.kind]
+            alternatives.append((kind, label, f"{source.name}:{source.path}", StoredEdit([file])))
+    return frozenset(remaining), alternatives
+
+
 def model_edit_store(
     folders: ProjectFolderService, project_id: str, project: Project, body: ModelEditRequest,
     before: dict, after: dict, row: RowModel | None = None,
 ) -> StoredEdit | ModelEditAsked:
     if body.step is None:
+        if body.store_choice is not None:
+            raise ProjectRevisionConflict("project", body.revision)
         return model_document_store(folders, project_id, project, body, before, after)
     settled = folders.read_plan(project_id, revision=body.revision)
     plan = settled.plan
     selected = _selected(plan, body, body.variant or plan.variants[0])
-    if not selected:
+    if not selected and (body.rows or body.step not in project.steps or body.variant is not None):
         raise ProjectFolderInvalid("The selected Model runs changed.")
     observed = frozenset(
         item.key for item in plan.rows
@@ -110,9 +161,21 @@ def model_edit_store(
                 preferred = EditStore("sweep_value", "Sweep Value", f"{body.step}:{named.axis}:{named.value}", reach(stored), stored)
                 options = []
         else:
-            stored = scoped_model_store(project, body, row, after)
-            preferred = EditStore("row_exception", "Row Exception", body.step, reach(stored), stored)
-            options = []
+            remaining = selected
+            alternatives = []
+            if isinstance(body.command.operation, SetField) and isinstance(row.scope, ListedRuns):
+                remaining, alternatives = _overridden_fields(project, tracked, body, selected, body.command.operation)
+            recipient = (
+                replace(row, scope=ListedRuns(kind="rows", rows=tuple(sorted(key.row for key in remaining))))
+                if remaining and remaining != selected else row
+            )
+            stored = scoped_model_store(project, body, recipient, after) if remaining else StoredEdit([])
+            preferred = EditStore("other_runs", "Other Runs", body.step, reach(stored), stored)
+            options = [EditStore(kind, label, source, reach(edit), edit) for kind, label, source, edit in alternatives]
+            if not preferred.runs and len(options) == 1 and options[0].runs == selected:
+                preferred, options = options[0], []
+    if not selected and not preferred.runs and body.store_choice is None:
+        return preferred.value
     chosen = choose_authored_store(
         body.revision, body.model_dump(mode="json", exclude={"store_choice"}), selected, preferred, options, body.store_choice,
     )
