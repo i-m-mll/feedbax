@@ -16,7 +16,7 @@ from feedbax.contracts.studio_refinements import validate_cross_field_refinement
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.trial_record import TrialDisplay, TrialRecords, TrialTerm, TrialUnavailable
 from feedbax.execution.trial_execution import sample_evaluation_trials
-from feedbax.execution.trial_record import aggregate_trials, trial_record
+from feedbax.execution.trial_record import aggregate_trials, trial_record, trial_weight_values
 from feedbax.execution.trial_resolution import preview_trial_source
 from feedbax.objectives.document import ObjectiveExecutor, ObjectiveUse, compile_objective
 from feedbax.runtime._graph_key_schedule import map_trial_samples, sample_training_trials
@@ -80,6 +80,7 @@ async def sample_task_trials(
         len(payload.evaluation_trials) if payload.evaluation_trials is not None else payload.count
     )
     seed = 0 if payload.nominal else payload.seed
+    aggregate = payload.aggregate and not payload.nominal
 
     def unavailable(*problems: Problem):
         return TaskTrialSampleResponse(
@@ -133,7 +134,8 @@ async def sample_task_trials(
             if output.level == Level.STEP and output in preview.outputs
         }
         term_traces = map_trial_samples(
-            lambda item: scorer.trial_terms(outputs, item[0], key, item[1]), (samples, keys), keys,
+            lambda item: scorer.trial_terms(outputs, item[0], key, item[1], unobserved=outputs.keys()),
+            (samples, keys), keys,
         )
 
     samples, term_traces = jax.device_get((samples, term_traces))
@@ -142,11 +144,16 @@ async def sample_task_trials(
         trial_record(
             jax.tree.map(lambda values: values[index], samples),
             id=id, epoch_ids=task.epochs, epoch_labels=labels,
-            terms={name: TrialTerm(steps=trace.steps[index].tolist(), covered=bool(trace.covered[index]))
-                   for name, trace in term_traces.items()},
+            terms={
+                name: TrialTerm(
+                    steps=trace.steps[index].tolist(), covered=bool(trace.covered[index]),
+                    weights=trial_weight_values(trace.weight.value[index], trace.weight.defined[index])
+                    if trace.weight is not None and not aggregate else None,
+                )
+                for name, trace in term_traces.items()
+            },
         )
         for index, id in enumerate(ids)
     ]
-    drawn = (aggregate_trials(trials, task.n_steps) if payload.aggregate and not payload.nominal
-             else TrialRecords(kind="trials", trials=trials))
+    drawn = aggregate_trials(trials, task.n_steps) if aggregate else TrialRecords(kind="trials", trials=trials)
     return TaskTrialSampleResponse(task=task_id, seed=seed, count=count, n_steps=task.n_steps, drawn=drawn)

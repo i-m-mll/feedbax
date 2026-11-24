@@ -5,35 +5,59 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 import json
+import re
 from typing import Any, Literal
+import unicodedata
 
 from pydantic import JsonValue
 
-from feedbax.contracts.project import (
-    BasedDocument, Document, Project, RootDocument, diff, json_pointer_parts, nearest_shared_base,
-)
-from feedbax.contracts.project_inputs import DocumentReference
-from feedbax.planner.project_plan import ProjectPlan
+from feedbax.contracts.project import BasedDocument, Document, Project, diff, json_pointer_parts
+from feedbax.contracts.project_inputs import DocumentReference, NamedSubset, StepReference
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.result_address import (
-    ANALYSIS_SCHEMA, ELEMENT_FAMILIES, family_documents, payload_elements, project_holders,
+    ANALYSIS_SCHEMA, ELEMENT_FAMILIES, ElementHolders, family_documents, payload_elements, project_holders,
 )
 from feedbax.contracts.studio_project import KeyedFamily, MemberFamily
+from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID
 
 type _Json = Any
 type _Rename = Callable[[str], str]
 
 
-def generated_name(base: str, taken: Callable[[str], bool]) -> str:
-    """The name Studio gives a member it creates: ``base`` while it is free, then the first free ``base-2``, ``base-3``.
+def generated_name(base: str, taken: Callable[[str], bool], separator: str = "-") -> str:
+    """The name Studio gives a member it creates: ``base`` while it is free, then the first free numbered name.
 
     The rule of the interface's ``generatedName`` (``web/src/features/projectFolder/generatedName.ts``).
     """
     name, number = base, 2
     while taken(name):
-        name, number = f"{base}-{number}", number + 1
+        name, number = f"{base}{separator}{number}", number + 1
     return name
+
+
+def duplicate_document_name(documents: Mapping[str, Document], member: str, key: str | None) -> tuple[str, str]:
+    """Number the source's display name and derive the new key as Studio does for a named document."""
+    source = documents[member]
+
+    def display(name: str) -> str:
+        return re.sub(r"[-_]+", " ", name).capitalize()
+
+    stem = re.sub(r"-[0-9]+$", "", member)
+    base = source.label or display(stem)
+    task_schemas = {TASK_DOCUMENT_SCHEMA_ID, PYTHON_TASK_SCHEMA_ID}
+    family = task_schemas if source.schema_id in task_schemas else {source.schema_id}
+    shown = {
+        document.label or display(name)
+        for name, document in documents.items() if document.schema_id in family
+    }
+    label = generated_name(base, lambda name: name == base or name in shown, " ")
+    normalized = "".join(
+        symbol for symbol in unicodedata.normalize("NFKD", label)
+        if not unicodedata.category(symbol).startswith("M")
+    )
+    normalized = re.sub(r"[^a-z0-9_]+", "-", normalized.lower()).strip("-")
+    return key or generated_name(normalized or stem, documents.__contains__), label
 
 
 def _renamed_prefix(family: str, old: str, new: str) -> _Rename:
@@ -100,27 +124,47 @@ def _renamed_sweeps(project: dict[str, JsonValue], rename: _Rename) -> dict[str,
     return project
 
 
-def _renamed_document_references(value: _Json, old: str, new: str) -> _Json:
-    """Rewrite every `DocumentReference` to the document, at any depth of a binding."""
-    if isinstance(value, dict):
-        if value.get("document") == old and value.keys() <= DocumentReference.model_fields.keys():
-            return {**value, "document": new}
-        return {key: _renamed_document_references(item, old, new) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_renamed_document_references(item, old, new) for item in value]
-    return value
+def _member_references(
+    project: dict[str, JsonValue], family: MemberFamily, old: str, new: str | None,
+) -> dict[str, JsonValue]:
+    """Rewrite named references, or hold the spelling when an unused key would capture them."""
+    holders: ElementHolders | None = None
+    references = (
+        (("document", DocumentReference), ("subset", NamedSubset))
+        if family == "documents" else (("step", StepReference),)
+    )
+
+    def rewrite(value: _Json) -> _Json:
+        nonlocal holders
+        if isinstance(value, dict):
+            if not value.get("unresolved"):
+                for field, reference in references:
+                    if value.get(field) != old or not value.keys() <= reference.model_fields.keys():
+                        continue
+                    if field == "step" and (element := value.get("element")) is not None:
+                        if holders is None:
+                            holders = project_holders(Project.model_validate(project))
+                        resolved = holders.card_of(old, element)
+                        if isinstance(resolved, str):
+                            return value | {field: new if resolved == old and new is not None else resolved}
+                        return value | {"unresolved": True}
+                    return value | ({field: new} if new is not None else {"unresolved": True})
+            return {key: rewrite(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [rewrite(item) for item in value]
+        return value
+
+    return _renamed_sweeps(
+        rewrite(project),
+        _renamed_prefix(family, old, f"?{old}" if new is None else new),
+    )
 
 
-def _renamed_step_references(value: _Json, old: str, new: str) -> _Json:
-    """Rewrite `StepBase.step` and `StepReference.step`, at any depth of a binding."""
-    if isinstance(value, dict):
-        return {
-            key: new if key == "step" and item == old else _renamed_step_references(item, old, new)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_renamed_step_references(item, old, new) for item in value]
-    return value
+def preserve_dangling_member(
+    project: dict[str, JsonValue], family: MemberFamily, key: str,
+) -> dict[str, JsonValue]:
+    """Keep references to a missing member unresolved when its spelling becomes a valid key."""
+    return _member_references(project, family, key, None)
 
 
 def _rekey(mapping: dict[str, _Json], old: str, new: str) -> dict[str, _Json]:
@@ -130,13 +174,8 @@ def _rekey(mapping: dict[str, _Json], old: str, new: str) -> dict[str, _Json]:
 def _rename_document(
     project: dict[str, JsonValue], presentation: dict[str, JsonValue], old: str, new: str,
 ) -> tuple[dict[str, JsonValue], dict[str, JsonValue]]:
-    renamed = _renamed_document_references({key: value for key, value in project.items() if key != "documents"}, old, new)
-    renamed = _renamed_sweeps(renamed, _renamed_prefix("documents", old, new))
-    documents = {
-        name: {**document, "base": {"document": new}} if document.get("base") == {"document": old} else document
-        for name, document in project.get("documents", {}).items()
-    }
-    renamed = {"documents": _rekey(documents, old, new), **renamed}
+    renamed = _member_references(project, "documents", old, new)
+    renamed["documents"] = _rekey(renamed["documents"], old, new)
     shown = dict(presentation)
     if "documents" in shown:
         shown["documents"] = _rekey(shown["documents"], old, new)
@@ -152,16 +191,8 @@ def _rename_document(
 def _rename_step(
     project: dict[str, JsonValue], presentation: dict[str, JsonValue], old: str, new: str,
 ) -> tuple[dict[str, JsonValue], dict[str, JsonValue]]:
-    renamed = _renamed_sweeps(project, _renamed_prefix("steps", old, new))
-    steps = {}
-    for name, step in renamed.get("steps", {}).items():
-        step = dict(step)
-        for field in ("base", "inputs"):
-            if field in step:
-                step[field] = _renamed_step_references(step[field], old, new)
-        steps[new if name == old else name] = step
-    if "steps" in renamed:
-        renamed["steps"] = steps
+    renamed = _member_references(project, "steps", old, new)
+    renamed["steps"] = _rekey(renamed["steps"], old, new)
     shown = dict(presentation)
     if "steps" in shown:
         shown["steps"] = _rekey(shown["steps"], old, new)
@@ -175,21 +206,21 @@ def change_key(
     """Return the project and presentation with the document or step keyed ``new`` and its references rewritten.
 
     A document is referred to by the project's `DocumentReference`s, the `base` of the
-    documents based on it, and `documents.<name>...` sweep targets. Documents' content is left byte for byte, Model
+    documents based on it, and `documents.<name>...` sweep targets. Model
     addresses are relative to their document and carry no name, and Model difference batches are named by their
     author. A step is referred to by `StepBase.step`, `StepReference.step` in other
     steps' inputs, and `steps.<name>...` targets in the project's and steps' sweeps. A step's group membership is its own `group`
     field, so it moves with the step. The presentation is keyed by member name.
     """
     rename = _rename_document if family == "documents" else _rename_step
-    return rename(project, presentation, old, new)
+    return rename(preserve_dangling_member(project, family, new), presentation, old, new)
 
 
-def _wires_renamed(value: _Json, old: str, new: str) -> _Json:
+def _wires_renamed(value: _Json, old: str, new: str | None) -> _Json:
     """Rewrite every operation dataset wire `{element, product}` from ``old`` at any depth."""
     if isinstance(value, dict):
         if value.keys() == {"element", "product"} and value["element"] == old:
-            return {**value, "element": new}
+            return value | ({"element": new} if new is not None else {"unresolved": True})
         return {key: _wires_renamed(item, old, new) for key, item in value.items()}
     if isinstance(value, list):
         return [_wires_renamed(item, old, new) for item in value]
@@ -204,10 +235,20 @@ def _analysis_value_renamed(parts: tuple[str, ...], value: _Json, old: str, new:
             for key, item in value.items()
         }
     if len(parts) == 1 and isinstance(value, dict):
-        return {new if key == old else key: _wires_renamed(item, old, new) for key, item in value.items()}
+        return {
+            new if key == old else key: _analysis_value_renamed((*parts, key), item, old, new)
+            for key, item in value.items()
+        }
+    if len(parts) == 2 and isinstance(value, dict):
+        return {
+            key: _analysis_value_renamed((*parts, key), item, old, new) if key == "inputs" else item
+            for key, item in value.items()
+        }
+    if parts[2:3] != ("inputs",):
+        return value
     if len(parts) >= 4 and parts[2] == "inputs" and parts[-1] == "element" and value == old:
         return new
-    return _wires_renamed(value, old, new)
+    return _wires_renamed(_wires_renamed(value, new, None), old, new)
 
 
 def _analysis_pointer_renamed(path: str, old: str, new: str) -> str:
@@ -238,6 +279,8 @@ def _reads(steps: dict[str, _Json], name: str, documents: frozenset[str]) -> boo
     while name in steps and name not in seen:
         seen.add(name)
         base = steps[name].get("base", {})
+        if base.get("unresolved"):
+            return False
         if base.get("document") in documents:
             return True
         name = base.get("step")
@@ -271,16 +314,24 @@ def _change_element_key(
 
     def references(value: _Json) -> _Json:
         if isinstance(value, dict):
-            if value.get("element") == old and "product" in value and "step" in value:
-                card = holders.card_of(value["step"], old)
-                if card in readers:
-                    return {**value, "step": card, "element": new}
+            if not value.get("unresolved") and "product" in value and "step" in value:
+                if value.get("element") == new:
+                    return {**value, "unresolved": True}
+                if value.get("element") == old:
+                    card = holders.card_of(value["step"], old)
+                    if card in readers:
+                        return {**value, "step": card, "element": new}
             return {key: references(item) for key, item in value.items()}
         if isinstance(value, list):
             return [references(item) for item in value]
         return value
 
-    own = _renamed_prefixes([""], old, new)
+    def retarget(prefixes: list[str]) -> _Rename:
+        hold = _renamed_prefixes(prefixes, new, f"?{new}")
+        rename = _renamed_prefixes(prefixes, old, new)
+        return lambda path: rename(hold(path))
+
+    own = retarget([""])
     for name, step in steps.items():
         step = {**step, "inputs": references(step["inputs"])} if "inputs" in step else dict(step)
         if name in readers:
@@ -299,7 +350,7 @@ def _change_element_key(
     renamed = {**project, "documents": documents, "steps": steps}
     if "sweep" in renamed:
         prefixes = [f"steps.{name}." for name in readers] + [f"documents.{name}." for name in sorted(family)]
-        renamed["sweep"] = _renamed_sweep(renamed["sweep"], _renamed_prefixes(prefixes, old, new))
+        renamed["sweep"] = _renamed_sweep(references(renamed["sweep"]), retarget(prefixes))
     shown = dict(presentation)
     if "documents" in shown:
         shown["documents"] = {
@@ -410,22 +461,12 @@ def duplicate_step(
     return copied, shown
 
 
-def references_member(project: dict[str, JsonValue], family: MemberFamily, name: str) -> bool:
-    """Whether any authored reference names the member, whether or not it exists."""
-    others = {**project, family: {key: value for key, value in project.get(family, {}).items() if key != name}}
-    return change_key(others, {}, family, name, name + "-")[0] != others
-
-
-def detach_refusals(plan: ProjectPlan, documents: Mapping[str, Document]) -> frozenset[str]:
-    """The based documents whose Detach would leave an Evaluate step's Model document sharing no document with its subject's."""
-    related = [pair for pair in plan.evaluated_models if nearest_shared_base(documents, *pair) is not None]
-    refused = set()
-    for name, document in documents.items():
-        if isinstance(document, BasedDocument):
-            detached = {**documents, name: RootDocument.model_construct(schema_id=document.schema_id, payload={})}
-            if any(nearest_shared_base(detached, *pair) is None for pair in related):
-                refused.add(name)
-    return frozenset(refused)
+def detach_refusals(documents: Mapping[str, Document]) -> frozenset[str]:
+    """A based document needs a composed payload before it can be detached."""
+    return frozenset(
+        name for name, document in documents.items()
+        if isinstance(document, BasedDocument) and isinstance(compose_document(documents.get, name), ProjectDiagnostic)
+    )
 
 
 def regroup_refusal(project: dict[str, JsonValue], step: str) -> str | None:
@@ -477,7 +518,8 @@ def _references_retargeted(project: dict[str, JsonValue], elements: set[str], ca
 
     def rewrite(value: _Json) -> _Json:
         if isinstance(value, dict):
-            if value.get("element") in elements and "product" in value and "step" in value:
+            if (not value.get("unresolved") and value.get("element") in elements
+                and "product" in value and "step" in value):
                 if holders.card_of(value["step"], value["element"]) in cards:
                     return {**value, "step": card}
                 return value
@@ -539,7 +581,7 @@ def split_card(
     declarations = payload.get("inputs", {})
     bindings = project["steps"][step].get("inputs", {})
 
-    def side(names: set[str], other: str) -> tuple[dict[str, _Json], dict[str, _Json], dict[str, _Json]]:
+    def side(names: set[str], other: str) -> tuple[dict[str, _Json], dict[str, _Json], dict[str, _Json], set[str]]:
         """One side's elements, declarations and bindings; a wire from the other side becomes a role."""
         roles: dict[str, _Json] = {}
         bound: dict[str, _Json] = {}
@@ -549,18 +591,19 @@ def split_card(
             if name in names for source in element.get("inputs", {}).values() if "input" in source
         }
         for role in sorted(read):
-            if role not in declarations:
-                raise ValueError(f"The card's document does not declare its input {role}.")
-            roles[role] = deepcopy(declarations[role])
+            if role in declarations:
+                roles[role] = deepcopy(declarations[role])
             if role in bindings:
                 bound[role] = deepcopy(bindings[role])
 
         def wire(_: str, source: _Json) -> _Json:
-            if "element" not in source or source["element"] in names:
+            if source.get("unresolved") or source.get("element") not in held - names:
                 return source
             edge = source["element"], source["product"]
             if edge not in cut:
-                role = generated_name(source["product"], lambda name: name in roles or name in declarations)
+                role = generated_name(
+                    source["product"], lambda name: name in roles or name in declarations or name in bindings or name in read,
+                )
                 cut[edge] = role
                 roles[role] = {"kind": "dataset", "cardinality": "one"}
                 bound[role] = {"step": other, "element": edge[0], "product": edge[1]}
@@ -573,17 +616,20 @@ def split_card(
             }
             for family in ELEMENT_FAMILIES
         }
-        return {family: members for family, members in sections.items() if members}, roles, bound
+        return {family: members for family, members in sections.items() if members}, roles, bound, read
 
-    moved, moved_roles, moved_bound = side(elements, step)
-    kept, kept_roles, kept_bound = side(held - elements, card)
+    moved, moved_roles, moved_bound, moved_reads = side(elements, step)
+    kept, kept_roles, kept_bound, kept_reads = side(held - elements, card)
     # A role no element reads stays where it is.
     unread = {
         role: declaration for role, declaration in declarations.items()
-        if role not in kept_roles and role not in moved_roles
+        if role not in kept_reads and role not in moved_reads
     }
     kept_roles = {**unread, **kept_roles}
-    kept_bound = {**{role: bindings[role] for role in unread if role in bindings}, **kept_bound}
+    kept_bound = {
+        **{role: binding for role, binding in bindings.items() if role not in kept_reads and role not in moved_reads},
+        **kept_bound,
+    }
     old = {**payload, **kept, "inputs": kept_roles}
     for family in ELEMENT_FAMILIES:
         if family not in kept:
@@ -630,39 +676,50 @@ def merge_cards(
     payload = deepcopy(project["documents"][target]["payload"])
     roles: dict[str, _Json] = {}
     bound: dict[str, _Json] = {}
+    role_names: set[str] = set()
     sections: dict[str, dict[str, _Json]] = {family: {} for family in ELEMENT_FAMILIES}
     moved: set[str] = set()
     shown = dict(presentation)
     documents = dict(project["documents"])
     merged_presentation: dict[str, _Json] = dict(shown.get("documents", {}).get(target, {}))
+
+    def joins(binding: _Json) -> bool:
+        return (
+            isinstance(binding, dict) and not binding.get("unresolved")
+            and "element" in binding and holders.card_of(binding.get("step"), binding["element"]) in joined
+        )
+
+    def held_selection(binding: _Json) -> _Json:
+        if isinstance(binding, list):
+            return [held_selection(item) for item in binding]
+        return binding | {"unresolved": True} if joins(binding) else binding
+
     for name in cards:
         document = project["steps"][name]["base"]["document"]
         own = project["documents"][document]["payload"]
         declarations = own.get("inputs", {})
         bindings = project["steps"][name].get("inputs", {})
+        used = {
+            wire["input"] for family in ELEMENT_FAMILIES for item in own.get(family, {}).values()
+            for wire in item.get("inputs", {}).values() if "input" in wire
+        }
         renamed: dict[str, _Json] = {}
-        for role, declaration in declarations.items():
+        for role in dict.fromkeys((*declarations, *bindings, *sorted(used))):
+            declaration = declarations.get(role)
             binding = bindings.get(role)
-            if isinstance(binding, dict) and "element" in binding and (
-                holders.card_of(binding.get("step"), binding["element"]) in joined
-            ):
-                if binding.keys() != {"step", "element", "product"}:
-                    raise ValueError(f"{name}'s input {role} selects from a joined card; only a whole output joins.")
+            if declaration is not None and joins(binding) and binding.keys() == {"step", "element", "product"}:
                 renamed[role] = {"element": binding["element"], "product": binding["product"]}
                 continue
-            if isinstance(binding, list) and any(
-                isinstance(item, dict) and "element" in item
-                and holders.card_of(item.get("step"), item["element"]) in joined
-                for item in binding
-            ):
-                raise ValueError(f"{name}'s input {role} lists a joined card's output.")
+            binding = held_selection(binding)
             same = next((
                 existing for existing, prior in roles.items()
                 if prior == declaration and bound.get(existing) == binding
             ), None)
             if same is None:
-                same = generated_name(role, lambda taken: taken in roles)
-                roles[same] = deepcopy(declaration)
+                same = generated_name(role, role_names.__contains__)
+                role_names.add(same)
+                if declaration is not None:
+                    roles[same] = deepcopy(declaration)
                 if binding is not None or role in bindings:
                     bound[same] = deepcopy(binding)
             renamed[role] = {"input": same}
@@ -672,6 +729,8 @@ def merge_cards(
 
         for family in ELEMENT_FAMILIES:
             for element, value in own.get(family, {}).items():
+                if any(element in members for members in sections.values()):
+                    raise ValueError(f"The joined cards both contain {element!r}.")
                 sections[family][element] = _wired(value, wire)
                 if name != card:
                     moved.add(element)
@@ -688,8 +747,8 @@ def merge_cards(
     steps[card] = {**steps[card], "inputs": bound}
     merged = {**project, "documents": documents, "steps": steps}
     for name in others:
-        if references_member(merged, "steps", name):
-            raise ValueError(f"A reference still names {name}.")
+        merged = preserve_dangling_member(merged, "steps", name)
+        merged = preserve_dangling_member(merged, "documents", project["steps"][name]["base"]["document"])
     if "documents" in shown:
         removed = {project["steps"][name]["base"]["document"] for name in others}
         shown["documents"] = {

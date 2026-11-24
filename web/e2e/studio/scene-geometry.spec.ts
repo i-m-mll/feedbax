@@ -66,7 +66,7 @@ async function setFields(request: APIRequestContext, projectUrl: string, revisio
     } });
     expect(response.ok(), await response.text()).toBe(true);
     const { result } = await response.json() as ModelEditResponse;
-    if (result.status !== 'applied') throw new Error(`Model edit refused: ${JSON.stringify(result.problem)}`);
+    if (result.status !== 'applied') throw new Error(JSON.stringify(result));
     revisions = { revision: result.snapshot.revision, presentation_revision: result.snapshot.presentation_revision };
   }
   return revisions;

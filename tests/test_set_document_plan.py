@@ -114,4 +114,4 @@ def test_a_set_that_does_not_fit_is_a_diagnostic_on_the_axis(pointer):
     assert all("'heavy'" in problem.detail and pointer in problem.detail for problem in plan.diagnostics)
     assert not any(run.key.step in ("train", "baseline") for run in plan.runs)
     raw["documents"]["fits"] = {"schema": SET_DOCUMENT_SCHEMA_ID, "payload": {"entries": {"heavy": _entries()["heavy"]}}}
-    assert sets_offered(Project.model_validate(raw), "train") == ("fits",)
+    assert sets_offered(Project.model_validate(raw), "train") == ("alterations", "fits")

@@ -29,8 +29,9 @@ import type {
   StudioTrialField,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
+import { addressKey } from './model/modelGraph';
 import { BatchTrace, TrialTrace } from './task/SignalTrace';
-import type { TrialShown } from './task/trialSample';
+import { epochBoundaries, signalAggregate, signalSteps, type TrialShown } from './task/trialSample';
 import { baseOf } from './documentPayload';
 import type { ProjectEditController } from './projectEditController';
 import { filesRemoval, type ConfirmRunRemoval } from './runRemoval';
@@ -205,7 +206,11 @@ export function TrialTaskOutline({ sections, view, selected, select }: {
     variables: task && entries('variables', task.variables),
     epochs: task && entries('epochs', task.epochs),
     signals: task ? entries('signals', task.signals) : view.signals.map(({ id, name }) => ({ id, name: humanizeLabel(name) })),
-    modelInputs: view.inputs.map(({ id, name, signal_id }) => ({ id, name, muted: !signal_id })),
+    modelInputs: view.inputs.map(({ id, name, address, signal_id }) => {
+      const signal = view.signals.find((item) => item.id === signal_id)?.name;
+      const reason = view.problems.find(({ model_address }) => model_address && addressKey(model_address) === addressKey(address))?.reason;
+      return { id, name, muted: !signal_id, reason, detail: signal === name ? undefined : signal };
+    }),
   };
   const [kind, ...rest] = selected?.split(':') ?? [];
   const group = (Object.keys(outlineKinds) as OutlineGroup[]).find((key) => outlineKinds[key] === kind);
@@ -225,16 +230,16 @@ export function TrialTaskInspector({ view, commit, selected, shown }: {
   const key = rest.join(':');
   if (kind === 'signal') {
     const value = view.signals.find(({ id }) => id === key);
-    const trial = shown?.kind === 'trial' ? shown.trial : undefined;
-    const steps = trial?.signals[key];
-    const aggregate = shown?.kind === 'batch' ? shown.batch.signals[key] : undefined;
+    const record = shown?.kind === 'one' ? shown.record : undefined;
+    const steps = record && value && signalSteps(record, value.id);
+    const aggregate = shown?.kind === 'all' && value ? signalAggregate(shown.aggregate, value.id) : undefined;
+    const period = view.period_seconds;
     return value ? <Inspector name={humanizeLabel(value.name)} type={value.type.shape?.join(' × ') || value.type.base}>
-      {trial && steps && <section aria-label={studioName('plot')} className="grid gap-1">
-        <TrialTrace label={value.name} steps={steps} duration={steps.length * view.period_seconds}
-          boundaries={trial.intervals.slice(1).map(({ start }) => Math.round(start / view.period_seconds))} />
+      {period != null && record && steps && <section aria-label={studioName('plot')} className="grid gap-1">
+        <TrialTrace label={value.name} steps={steps} duration={steps.length * period} boundaries={epochBoundaries(record)} />
       </section>}
-      {aggregate && <section aria-label={studioName('plot')} className="grid gap-1">
-        <BatchTrace label={value.name} aggregate={aggregate} duration={aggregate.presence.length * view.period_seconds} boundaries={[]} />
+      {period != null && aggregate && <section aria-label={studioName('plot')} className="grid gap-1">
+        <BatchTrace label={value.name} aggregate={aggregate} duration={aggregate.presence.length * period} boundaries={[]} />
       </section>}
     </Inspector> : null;
   }
