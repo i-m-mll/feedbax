@@ -3,7 +3,7 @@ import { catalogEntries, readStudioTrialAuthoring, useAuthoringCatalog } from '@
 import { landsOnGesture } from '@/api/request';
 import { shownError } from '@/api/shownErrors';
 import {
-  studioAccessibleName, studioName, studioSweptParameterMissing, type StudioNameId,
+  studioAccessibleName, studioName, type StudioNameId,
 } from '@/components/activity/studioVocabulary';
 import { shownName } from '@/features/pipeline/planView';
 import type { DocumentPickerModel, PickerTemplate } from '@/features/projectWindow/DocumentPicker';
@@ -12,7 +12,7 @@ import type {
   Document, StudioProjectFilePatch, StudioSavedTrainKey, StudioTrialAuthoringRequest,
 } from '@/generated/studioContracts';
 import type { ProjectEditController } from './projectEditController';
-import { generatedName, holds } from './generatedName';
+import { generatedName, holds, keyOfLabel } from './generatedName';
 
 export type DocumentRole = 'model' | 'task' | 'objective' | 'training' | 'analysis' | 'report';
 
@@ -71,6 +71,25 @@ export interface ProjectDocumentInputs {
   readonly onError: (error: unknown) => void;
 }
 
+/** The role whose documents `document` is among. */
+export function roleOf(document: Document) {
+  return (Object.keys(schemas) as DocumentRole[]).find((role) => schemas[role].includes(document.schema));
+}
+
+/**
+ * `document` as a file of a project that holds `documents`: labelled with its own label, or its role's name, numbered
+ * while another document of its role shows that label, and keyed by that label.
+ */
+export function namedDocument(documents: Readonly<Record<string, Document>> | null | undefined, document: Document) {
+  const role = roleOf(document);
+  if (!role) throw new Error(`No role reads documents of schema ${document.schema}.`);
+  const all = documents ?? {};
+  const shown = new Set(documentsOfRole({ documents: all }, role).map((key) => shownName(key, all[key])));
+  const label = generatedName(document.label ?? studioName(role), (label) => shown.has(label), ' ');
+  const id = generatedName(keyOfLabel(label) || role, holds(all));
+  return { id, document: { ...document, label } as Document };
+}
+
 /** The project's documents a step can read in `role`, by name. */
 export function documentsOfRole(project: { documents?: Readonly<Record<string, Document>> | null }, role: DocumentRole) {
   const all = project.documents ?? {};
@@ -126,7 +145,7 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
     }] as const),
     ...catalogEntries(catalog, 'python_tasks').map(({ key, label }) => [`python:${key}`, {
       template: { key: `python:${key}`, name: label, python: true },
-      document: { schema: pythonTask, payload: { type: key, params: {} } } as Document,
+      document: { schema: pythonTask, label, payload: { type: key, params: {} } } as Document,
     }] as const),
   ]);
   /** The document a step did not take in a role, and why: it lacks a parameter the step sweeps. */
@@ -142,7 +161,6 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
     const result = await readStudioTrialAuthoring(projectId, {
       revision, run, scope, change: { kind: 'select_document', role, document },
     }, editor.signal);
-    refuse(role, result.refusal ? studioSweptParameterMissing(result.refusal) : undefined);
     return result.files;
   }
 
@@ -182,8 +200,8 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
       templates: role === 'task' && taskTemplates.size ? [...taskTemplates.values()].map(({ template }) => template) : undefined,
       create: repoint ? (template) => attempt(role, async () => {
         const { saved } = editor.getSnapshot();
-        const id = generatedName(role, holds(saved.project.documents));
-        const document = (template && taskTemplates.get(template)?.document) || blankDocuments[role];
+        const { id, document } = namedDocument(saved.project.documents,
+          (template && taskTemplates.get(template)?.document) || blankDocuments[role]);
         await editor.createFiles(studioAccessibleName('new', kind), [{ kind: 'document', id, document }],
           saved.revision, (snapshot) => use(role, id, snapshot.revision));
         return id;

@@ -28,7 +28,7 @@ from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.planner.project_plan import RunKey, compile_project
 from feedbax.contracts.studio_place import definition_place, path_parts
 from feedbax.contracts.project_resolution import ResolutionCode
-from feedbax.contracts.studio_authoring import StudioAuthoringChange, StudioSweptParameterMissing
+from feedbax.contracts.studio_authoring import StudioAuthoringChange
 from feedbax.contracts.task_document import BLANK_TASK
 from feedbax.host import HostError
 from feedbax.application.bundle import new_application_registry_bundle
@@ -295,7 +295,7 @@ def _written(project, writes):
 
 def _train_fields(project, registry, change=None):
     projection = project_train_fields(project, "train", registry, change, _WHOLE_STEP)
-    return projection.fields, projection.settings, projection.refusal or projection.stored.files, projection.documents
+    return projection.fields, projection.settings, projection.stored.files, projection.documents
 
 
 def test_an_invalid_training_setting_keeps_every_training_field_in_place():
@@ -365,7 +365,7 @@ def test_a_swept_train_with_an_exception_projects_and_writes_its_settings():
             _train_fields(project, registry, StudioAuthoringChange(field=field, value=3))
 
 
-def test_a_class_without_a_swept_parameter_is_refused_and_one_with_it_keeps_the_sweep():
+def test_a_class_change_is_written_even_when_it_lacks_a_swept_parameter():
     registry = new_application_registry_bundle().training_methods
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     raw["steps"]["train"]["base"]["inline"]["settings"]["optimizer"]["learning_rate"] = {
@@ -383,9 +383,8 @@ def test_a_class_without_a_swept_parameter_is_refused_and_one_with_it_keeps_the_
         ))
         return patches
 
-    assert choose("constant_schedule") == StudioSweptParameterMissing(
-        class_label="Constant", parameter_label="Peak Value",
-    )
+    changed = _written(project, choose("constant_schedule"))
+    assert changed["settings"]["optimizer"]["learning_rate"]["type"] == "constant_schedule"
     assert _written(project, choose("warmup_constant_schedule"))["settings"]["optimizer"]["learning_rate"] == {
         "type": "warmup_constant_schedule", "init_value": 0.001, "peak_value": 0.001, "warmup_steps": 100,
     }
@@ -417,7 +416,7 @@ def _three_methods() -> TrainingMethodRegistry:
     return registry
 
 
-def test_a_method_change_keeps_the_settings_both_methods_declare_and_refuses_one_without_a_swept_parameter():
+def test_a_method_change_keeps_shared_settings_and_stores_a_method_without_a_swept_parameter():
     registry = _three_methods()
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     settings = raw["steps"]["train"]["base"]["inline"]["settings"]
@@ -440,9 +439,8 @@ def test_a_method_change_keeps_the_settings_both_methods_declare_and_refuses_one
     fields, _, _, _ = _train_fields(swept, registry)
     assert next(field for field in fields if field.id == "/method").control is not None
     assert _written(swept, choose(swept, "probe.penalized"))["settings"]["optimizer"] == settings["optimizer"]
-    assert choose(swept, "probe.adversarial") == StudioSweptParameterMissing(
-        class_label="probe.adversarial", parameter_label="Learning Rate",
-    )
+    changed = _written(swept, choose(swept, "probe.adversarial"))
+    assert changed["method"] == "probe.adversarial" and "optimizer" not in changed["settings"]
 
 
 def test_each_required_setting_of_a_method_saves_alone_and_the_plan_names_the_ones_still_missing():
@@ -610,11 +608,15 @@ def test_variant_model_authoring_preserves_sweeps_and_request_scope(study):
         mass = next(item for item in inspection.json()["fields"] if item["label"] == "Mass")
         assert ModelAddress.model_validate(mass["address"]) == field
         narrowed = review(**(change | {"chosen_steps": ["fit"]}))
-        assert narrowed.status_code == 422, narrowed.text
-        assert "steps that use this Model" in narrowed.text
+        assert narrowed.status_code == 200, narrowed.text
+        assert narrowed.json()["files"] == []
+        choices = {item["kind"]: item for item in narrowed.json()["store_choices"]}
+        assert set(choices["variant"]["steps"]) == {"fit", "other"}
+        assert choices["selected_readers"]["steps"] == ["fit"]
         parent = review(**(change | {"run": {**key, "variant": "parent"}}))
-        assert parent.status_code == 422, parent.text
-        assert "inherited" in parent.text
+        assert parent.status_code == 200, parent.text
+        assert parent.json()["files"] == []
+        assert {run["variant"] for run in parent.json()["store_choices"][0]["runs"]} == {"parent", "compare"}
         reviewed = review(**change)
         assert reviewed.status_code == 200, reviewed.text
         recipe, = reviewed.json()["files"]

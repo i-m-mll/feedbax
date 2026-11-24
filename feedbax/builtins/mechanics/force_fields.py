@@ -286,7 +286,6 @@ class CurlField(Component):
 
     component_history = History(Change(2, migrate=_drop_label))
     model_facts = ModelFacts(
-        checkpointable=False,
         configuration_slots=("params_index",),
         trial_parameters=(
             TrialParameter("active", "boolean"), TrialParameter("scale", "real"),

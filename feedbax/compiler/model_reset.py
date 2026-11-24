@@ -9,12 +9,14 @@ from operator import attrgetter
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+import equinox as eqx
+import jax
 import jax.numpy as jnp
 from equinox.nn import State, StateIndex
 from jaxtyping import PRNGKeyArray, PyTree
 
 from feedbax.contracts.expression_units import UNITS
-from feedbax.contracts.expression_values import Level, ValueBase, ValueType
+from feedbax.contracts.expression_values import Level, Problem, ProblemCode, ValueBase, ValueType
 from feedbax.contracts.model_address import ComponentElement, FieldElement, ModelAddress
 from feedbax.runtime._graph_key_schedule import reset_key
 from feedbax.runtime._signal_schedule import ScopedPort, resolve_signal_schedule
@@ -29,9 +31,13 @@ if TYPE_CHECKING:
 class ModelResetError(ValueError):
     """An unavailable or incompatible trial initializer."""
 
-    def __init__(self, address: str, detail: str):
+    def __init__(self, address: str | ModelAddress, detail: str):
         super().__init__(detail)
-        self.address = address
+        self.address = address.to_text() if isinstance(address, ModelAddress) else address
+        self.problem = Problem(
+            code=ProblemCode.STRUCTURE, path=("links", self.address), reason=detail,
+            model_address=address if isinstance(address, ModelAddress) else None,
+        )
 
 
 @dataclass(frozen=True)
@@ -44,6 +50,17 @@ class ModelResetField:
     finest: Level = Level.TRIAL
     required: bool = False
 
+    def accepts(self, actual: ValueType) -> bool:
+        return _broadcasts_to(actual.shape, self.type.shape) and self.type.accepts(
+            actual.model_copy(update={"shape": self.type.shape}),
+        )
+
+
+def _broadcasts_to(source: tuple[int, ...], target: tuple[int, ...]) -> bool:
+    return len(source) <= len(target) and all(
+        actual in (1, expected) for actual, expected in zip(reversed(source), reversed(target))
+    )
+
 
 @dataclass(frozen=True)
 class _ResetBinding:
@@ -51,7 +68,8 @@ class _ResetBinding:
     type_id: str
     revision: int
     owner_class: type[GraphNode]
-    paths: tuple[tuple[str, ...], ...]
+    path: tuple[str, ...]
+    aliases: tuple[tuple[str, ...], ...]
     override_port: str | None
 
     def component(self, graph: Graph) -> GraphNode:
@@ -154,13 +172,21 @@ class ModelResetPlan:
             compatible = actual == expected.base or (
                 expected.base == ValueBase.REAL and actual == ValueBase.INTEGER
             )
-            if not compatible or value.shape != expected.shape:
-                raise ModelResetError(address, f"Expected {expected.base} sample of shape {expected.shape}")
-            writes.append((address, binding, component, value))
+            if not compatible or not _broadcasts_to(value.shape, expected.shape):
+                raise ModelResetError(
+                    address, f"Expected {expected.base} sample broadcastable to shape {expected.shape}",
+                )
+            writes.append((address, binding, component, jnp.broadcast_to(value, expected.shape)))
 
         state = graph.init_state(key=key)
+        owners = {}
+        for _, binding, component, _ in writes:
+            _, explicit = owners.setdefault(id(component), (component, {}))
+            explicit[binding.path] = binding.field.address
         for address, binding, component, value in writes:
-            for path in binding.paths:
+            _, explicit = owners[id(component)]
+            paths = (binding.path, *(path for path in binding.aliases if path not in explicit))
+            for path in paths:
                 try:
                     current = _storage(component, state, path)
                     if (
@@ -168,14 +194,19 @@ class ModelResetPlan:
                         or current.dtype.name != binding.field.dtype
                     ):
                         raise ValueError("The runtime reset slot differs from the resolved shape or dtype")
-                    state = component.replace_state_value(
-                        state, path, jnp.asarray(value, dtype=current.dtype),
+                    state = GraphNode.replace_state_value(
+                        component, state, path, jnp.asarray(value, dtype=current.dtype),
                     )
                 except (AttributeError, TypeError, ValueError) as error:
                     raise ModelResetError(address, str(error)) from error
-        touched = {id(component): component for _, _, component, _ in writes}
-        for component in touched.values():
-            state = component.state_consistency_update(state)
+        for component, explicit in owners.values():
+            state, problems = component.finalize_trial_state(state, frozenset(explicit))
+            for path, invalid, reason in problems:
+                address = explicit[path]
+                if isinstance(invalid, jax.core.Tracer):
+                    state = eqx.error_if(state, invalid, f"{address.to_text()}: {reason}", on_error="raise")
+                elif bool(invalid):
+                    raise ModelResetError(address, reason)
         state = graph.state_consistency_update(state)
         return PreparedModelReset(
             state, graph.initial_outputs(graph.state_view(state)),
@@ -204,15 +235,12 @@ def resolve_model_reset(
                 continue
 
             def add(
-                path: tuple[str, ...], dtype, shape: tuple[int, ...], unit: str,
-                paths: tuple[tuple[str, ...], ...], override_port: str | None, required: bool = False,
+                address: ModelAddress, dtype, shape: tuple[int, ...], unit: str,
+                path: tuple[str, ...], aliases: tuple[tuple[str, ...], ...] = (),
+                override_port: str | None = None, required: bool = False,
             ) -> None:
                 if override_port is not None and ScopedPort((*scope, name), override_port) in driven:
                     return
-                address = ModelAddress(
-                    composites=scope,
-                    element=FieldElement(kind="field", parent=ComponentElement(kind="component", id=name), path=path),
-                )
                 base = _base(dtype)
                 if base is None:
                     raise ModelResetError(address.to_text(), "Reset storage needs a real, integer or boolean dtype")
@@ -220,18 +248,16 @@ def resolve_model_reset(
                     base=base, shape=shape, dimensions=UNITS[unit].dimensions,
                 ), dtype.name, required=required)
                 bindings.append(_ResetBinding(
-                    field, node.type, node.revision, owner_class, paths, override_port,
+                    field, node.type, node.revision, owner_class, path, aliases, override_port,
                 ))
 
-            for state in owner.states or ():
-                reset = state.reset
-                if reset is None or not owner.has_state(node):
-                    continue
-                prototype = resolved.node_outputs[(name, reset.output_port)]
-                sample = _read_path(prototype, reset.output_path)
+            states = (owner.states or ()) if owner.has_state(node) else ()
+            for state in states:
+                port, *prototype_path = state.prototype
+                sample = _read_path(resolved.node_outputs[name, port], prototype_path)
                 add(
-                    ("reset", *state.symbol.split("/")), sample.dtype, sample.shape, state.units,
-                    (state.fields, *reset.aliases), reset.override_port, reset.required,
+                    ModelAddress.at_state(scope, name, state.symbol), sample.dtype, sample.shape, state.units,
+                    state.fields, state.aliases, required=state.reset is not None and state.reset.required,
                 )
 
             config_paths = {
@@ -243,9 +269,13 @@ def resolve_model_reset(
                 if path[0] not in owner.configuration_slots:
                     raise ValueError("Trial parameter must belong to a declared configuration slot")
                 dtype = jnp.dtype(jnp.bool_ if parameter.kind == "boolean" else jnp.float32)
+                address = ModelAddress(
+                    composites=scope, element=FieldElement(
+                        kind="field", parent=ComponentElement(kind="component", id=name), path=("fields", parameter.name),
+                    ),
+                )
                 add(
-                    ("fields", parameter.name), dtype, (), parameter.units,
-                    (path,), owner.trial_parameter_override_port,
+                    address, dtype, (), parameter.units, path, override_port=owner.trial_parameter_override_port,
                 )
 
     project((), resolution)

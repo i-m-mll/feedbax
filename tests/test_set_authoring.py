@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from feedbax.contracts.project import Project
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
+from tests.support.managed_train_fixture import managed_train_project
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored_documents, document_project
 
@@ -63,37 +64,51 @@ def _rows(folders, step):
     return {row.key.row: row for row in plan.rows if row.key.step == step}
 
 
-def _set_edit(folders, client, command):
+def _set_edit(folders, client, command, *, store=None):
     """Prepare a set edit and store it as Studio does: its documents, then its files."""
     revision = folders.read(PROJECT).revision
-    reply = client.post(f"{BASE}/authoring/sets", json={"revision": revision, "command": command})
+    body = {"revision": revision, "command": command}
+    reply = client.post(f"{BASE}/authoring/sets", json=body)
     assert reply.status_code == 200, reply.text
     edit = reply.json()
-    for created in edit.get("created", []):
-        made = client.post(f"{BASE}/files", json={"revision": revision, "file": created})
-        assert made.status_code == 201, made.text
-        revision = made.json()["snapshot"]["revision"]
-    if edit["files"]:
-        written = client.patch(BASE, json={"revision": revision, "files": edit["files"]})
+    if store is not None:
+        assert edit["files"] == [] and folders.read(PROJECT).revision == revision
+        choice = next(option for option in edit["store_choices"] if option["kind"] == store)
+        reply = client.post(f"{BASE}/authoring/sets", json=body | {"store_choice": choice["id"]})
+        assert reply.status_code == 200, reply.text
+        edit = reply.json()
+    else:
+        assert not edit.get("store_choices"), edit
+    if edit.get("created") or edit["files"]:
+        written = client.patch(BASE, json={
+            "revision": revision, "created": edit.get("created", []), "files": edit["files"],
+        })
         assert written.status_code == 200, written.text
     return edit
 
 
-def _duplicate(folders, client, step, rows=(), axes=None):
+def _duplicate(folders, client, step, rows=(), axes=None, *, store=None):
     row = next(iter(rows), None) or next(iter(_rows(folders, step)))
     command = {"kind": "duplicate_run", "run": {"variant": "default", "step": step, "row": row}, "rows": list(rows)}
-    return _set_edit(folders, client, command | ({"axes": axes} if axes else {}))["selected"]
+    return _set_edit(folders, client, command | ({"axes": axes} if axes else {}), store=store)["selected"]
 
 
-def _model_edit(folders, client, step, document, operation, rows, axes=None, chosen=()):
+def _model_edit(folders, client, step, document, operation, rows, axes=None, chosen=(), *, store=None):
     snapshot = folders.read(PROJECT)
-    reply = client.post(f"{BASE}/model/edit", json={
+    body = {
         "revision": snapshot.revision, "presentation_revision": snapshot.presentation_revision,
         "document": document, "command": {"operation": operation}, "step": step, "rows": list(rows),
         "chosen_steps": list(chosen),
-    } | ({"axes": axes} if axes else {}))
+    } | ({"axes": axes} if axes else {})
+    reply = client.post(f"{BASE}/model/edit", json=body)
     assert reply.status_code == 200, reply.text
     result = reply.json()["result"]
+    if store is not None:
+        assert result["status"] == "asked" and folders.read(PROJECT).revision == snapshot.revision
+        choice = next(option for option in result["store_choices"] if option["kind"] == store)
+        reply = client.post(f"{BASE}/model/edit", json=body | {"store_choice": choice["id"]})
+        assert reply.status_code == 200, reply.text
+        result = reply.json()["result"]
     assert result["status"] == "applied", result
     return result
 
@@ -186,7 +201,9 @@ def test_a_set_made_by_duplicate_run_is_edited_saved_applied_narrowed_and_inline
     field = {"op": "set_field", "address": {"composites": [], "element": {
         "kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"],
     }}, "value": 2.5}
-    result = _model_edit(folders, client, "other", "reach-model", field, ["set=run-2"], {"set": ["run-2"]})
+    result = _model_edit(
+        folders, client, "other", "reach-model", field, ["set=run-2"], {"set": ["run-2"]}, store="selected_readers",
+    )
     project = folders.read(PROJECT).project
     assert project.documents["set-2"].base.document == "set"
     assert project.steps["other"].sweep.axes["set"].set == "set-2"
@@ -222,7 +239,7 @@ def test_a_copied_set_entry_keeps_its_originals_request_id_on_every_step_reading
     assert written.status_code == 200, written.text
     assert _runs(folders, "other")["set=run-2"] != unexcepted
 
-    copy = _duplicate(folders, client, "other", ["set=run-2"], {"set": ["run-2"]})
+    copy = _duplicate(folders, client, "other", ["set=run-2"], {"set": ["run-2"]}, store="set_entry")
     assert copy == {"axis": "set", "value": "run-4"}
     other, baseline = _runs(folders, "other"), _runs(folders, "baseline")
     assert other["set=run-4"] == other["set=run-2"] != other["set=run-3"]
@@ -238,3 +255,74 @@ def test_removing_the_last_copy_removes_the_axis(studio):
     assert folders.read(PROJECT).project.steps["baseline"].sweep is None or not folders.read(
         PROJECT).project.steps["baseline"].sweep.axes
     assert _runs(folders, "baseline") == before
+
+
+def test_to_field_moves_the_set_into_one_train_and_to_sweep_restores_it(studio):
+    folders, client = studio
+    train_before = _runs(folders, "train")
+    for _ in range(3):
+        _duplicate(folders, client, "other", ["default"])
+    _set_edit(folders, client, {"kind": "save_set", "step": "other", "axis": "run"})
+    before = folders.read(PROJECT).project.steps["other"].sweep.axes["run"]
+    sweep = _runs(folders, "other")
+    assert len(sweep) == 4
+
+    _set_edit(folders, client, {"kind": "set_to_field", "step": "other", "axis": "run"})
+    assert list(_runs(folders, "other")) == ["default"]
+    revision = folders.read(PROJECT).revision
+    reply = client.post(f"{BASE}/authoring/trials", json={
+        "revision": revision, "run": {"variant": "default", "step": "other", "row": "default"},
+    })
+    assert reply.status_code == 200, reply.text
+    (field,) = reply.json()["set_fields"]
+    assert field["axis"] == "run" and field["set"] == before.set
+    assert field["entries"][0]["entry"] is None
+    assert all(item["weight"] == 1 for item in field["entries"])
+    assert _runs(folders, "train") == train_before
+
+    _set_edit(folders, client, {"kind": "set_to_sweep", "step": "other", "axis": "run"})
+    assert _runs(folders, "other") == sweep
+    assert not folders.read(PROJECT).project.steps["other"].set_fields
+
+
+def test_required_set_can_be_emptied_and_repaired(tmp_path):
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    raw["documents"]["draft"] = {"schema": "feedbax.set_document.v1", "payload": {"entries": {"one": {}}}}
+    raw["steps"]["train"]["sweep"] = {"axes": {"draft": {"set": "draft"}}}
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, PROJECT, Project.model_validate(raw))
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        emptied = _set_edit(folders, client, {"kind": "remove_value", "step": "train", "axis": "draft", "value": "one"})
+        assert emptied["files"] and emptied["problems"][0]["address"] == "documents/draft.json"
+        assert emptied["problems"][0]["authored_path"] == "/payload/entries"
+        snapshot = folders.read(PROJECT)
+        assert snapshot.project.documents["draft"].payload["entries"] == {}
+        assert snapshot.project.steps["train"].sweep.axes["draft"].set == "draft"
+        assert any(problem.authored_path == "/payload/entries"
+                   for problem in folders.read_plan(PROJECT, revision=None).plan.diagnostics)
+        repaired = _set_edit(folders, client, {"kind": "add_set_entry", "step": "train", "axis": "draft"})
+        assert repaired["files"] and not repaired["problems"] and _runs(folders, "train")
+
+
+def test_applying_an_inapplicable_set_stores_the_reference_and_marks_the_difference(tmp_path):
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    pointer = "/interior/components/removed/fields/mass"
+    raw["documents"]["draft"] = {"schema": "feedbax.set_document.v1", "payload": {
+        "entries": {"heavy": {"differences": {pointer: {"value": 2.0}}}},
+    }}
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, PROJECT, Project.model_validate(raw))
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        applied = _set_edit(folders, client, {"kind": "apply_set", "step": "train", "set": "draft"})
+        assert applied["files"] and applied["problems"][0]["address"] == "documents/draft.json"
+        assert applied["problems"][0]["authored_path"].startswith("/payload/entries/heavy/differences/")
+        assert folders.read(PROJECT).project.steps["train"].sweep.axes["draft"].set == "draft"
+        plan = folders.read_plan(PROJECT, revision=None).plan
+        assert any(problem.document == "draft" and pointer in problem.detail for problem in plan.diagnostics)
+
+        inlined = _set_edit(folders, client, {"kind": "inline_set", "step": "train", "axis": "draft"})
+        assert inlined["files"] and inlined["problems"][0]["address"] == "steps/train.json"
+        path = inlined["problems"][0]["authored_path"]
+        assert path.startswith("/sweep/axes/draft/values/heavy/patches/")
+        assert any(problem.authored_path.startswith(path) for problem in folders.read_plan(PROJECT, revision=None).plan.diagnostics
+                   if problem.authored_path is not None)
