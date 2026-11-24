@@ -278,6 +278,7 @@ def _field_store(
         folders, project_id, body.revision, project, selected,
         body.model_dump(mode="json", exclude={"store_choice"}), body.store_choice,
         (kind, label, body.address.to_text(), StoredEdit(response.files, tuple(response.created))), alternatives,
+        retain_equivalent=body.edit is not None and body.edit.kind == "to_list",
     )
     if isinstance(choice, list):
         return ModelFieldResponse(fields=response.fields, store_choices=choice)
