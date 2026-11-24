@@ -10,6 +10,7 @@ from feedbax.contracts.expression_values import (
     ValueBase, ValueType,
 )
 from feedbax.tasks.registry import resolve_python_task_instance
+from feedbax.tasks.structure import restructure
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.matrix_core import stored_parts
 from feedbax.contracts.model_address import ModelAddress
@@ -30,7 +31,7 @@ from feedbax.contracts.studio_trials import (
     StudioTaskChoice, StudioTaskType, StudioTrialAuthoring, StudioTrialAuthoringRequest, StudioTrialBindingEdit,
     StudioTrialDocumentEdit, StudioTrialDocumentReset, StudioTrialEpoch, StudioTrialExpressionEdit, StudioTrialField,
     StudioTrialInput,
-    StudioTrialOutput, StudioTrialReset, StudioTrialSelectDocument, StudioTrialStepScope,
+    StudioTrialOutput, StudioTrialReset, StudioTrialSelectDocument, StudioTrialStepScope, StudioTrialStructureEdit,
 )
 from feedbax.contracts.task_document import (
     PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, TaskDocument,
@@ -520,6 +521,11 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
         change = _expression_edit(expression, documents, projected, bundle)
         if not isinstance(change, StudioTrialDocumentEdit):
             return [], change
+    structural = isinstance(change, StudioTrialStructureEdit)
+    if structural:
+        change = _structure_edit(change, documents, definition)
+        if not isinstance(change, StudioTrialDocumentEdit):
+            return [], change
     document = None
     if step.kind == "train" and isinstance(change, StudioTrialDocumentEdit | StudioTrialDocumentReset):
         field, _ = _changed_value(
@@ -605,8 +611,27 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
     reach = reached_runs(plan, variants, selected, stored.reached - {key.step})
     return _validate_files(
         stored, project, settled, selected, reach, key.step, folders, bundle, change, expression,
-        evaluate_field=evaluate_field and not isinstance(scope, StudioTrialStepScope),
+        evaluate_field=evaluate_field and not isinstance(scope, StudioTrialStepScope), structural=structural,
     )
+
+
+def _structure_edit(change, documents, definition) -> StudioTrialDocumentEdit | tuple[Problem, ...]:
+    """The task document edit that makes a structural change: each top-level field it changes, written whole."""
+    task = documents.task_source
+    if not isinstance(task, TaskDocument):
+        raise ProjectFolderInvalid("A Python task has no structure to change.")
+    changed = restructure(task, change.change)
+    if isinstance(changed, Problem):
+        return (changed,)
+    _, raw = _changed_value(documents, definition, "task")
+    before, after = task.model_dump(mode="json"), changed.model_dump(mode="json")
+    edits = [
+        SetProjectValue(op="replace" if field in raw else "add", path=pointer((field,)), value=after[field])
+        for field in after if after[field] != before[field]
+    ]
+    if not edits:
+        raise ProjectFolderInvalid("The change leaves the task as it is.")
+    return StudioTrialDocumentEdit(kind="task", edits=edits)
 
 
 def _reordered(terms: list, change) -> list | None:
@@ -704,9 +729,10 @@ def _evaluate_field_files(project, key, scope, change, documents):
 
 def _validate_files(
     stored, project, settled, selected, reach, named, folders, bundle, change, expression, *, evaluate_field,
+    structural=False,
 ):
     plan = settled.plan
-    choosing = isinstance(change, StudioTrialSelectDocument)
+    keeps_problems = isinstance(change, StudioTrialSelectDocument) or structural
     authored = preview_stored(project, stored)
     compare_names = isinstance(change, StudioTrialDocumentEdit) and change.kind == "objective" and any(
         "name" in json_pointer_parts(edit.path) or len(json_pointer_parts(edit.path)) <= 2 for edit in change.edits
@@ -750,7 +776,7 @@ def _validate_files(
             if parent is None or not change.edits[0].path.startswith(parent + "/"):
                 raise ProjectFolderInvalid("The selected runs order this field's members differently.")
         introduced = tuple(problem for problem in after.problems if problem not in before.problems)
-        if introduced and not evaluate_field and not choosing:
+        if introduced and not evaluate_field and not keeps_problems:
             return StoredEdit([]), introduced
         if evaluate_field and introduced and key in current:
             return StoredEdit([]), introduced
@@ -788,7 +814,7 @@ def _validate_files(
                 expected[binding.name] = change.signal
             if expected != new.input_overrides:
                 raise ProjectFolderInvalid("A selected input is controlled by a different authored source.")
-        if not evaluate_field and not choosing and key in previous and key not in current:
+        if not evaluate_field and not keeps_problems and key in previous and key not in current:
             diagnostic = next((
                 item for item in candidate.diagnostics if item not in before_diagnostics
                 and item.step == key.step and item.variant == key.variant and item.row == key.row

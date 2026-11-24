@@ -18,6 +18,7 @@ from feedbax.contracts.studio_authoring import StudioSweptParameterMissing
 from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioFieldView
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
 from feedbax.contracts.task_document import EpochSteps, PythonTaskSelection, TaskDocument
+from feedbax.contracts.task_structure import TaskStructureChange
 
 
 class StudioTrialField(StudioFieldView):
@@ -86,6 +87,13 @@ class StudioTrialExpressionEdit(StrictModel):
     edit: Annotated[FieldTextEdit | FieldKindEdit | FieldNameEdit, Field(discriminator="kind")]
 
 
+class StudioTrialStructureEdit(StrictModel):
+    """A change to the structure of the step's task document."""
+
+    kind: Literal["structure"]
+    change: TaskStructureChange
+
+
 class StudioTrialStepScope(StrictModel):
     kind: Literal["step"]
     chosen_steps: list[ProjectName] = Field(default_factory=list)
@@ -96,7 +104,7 @@ class StudioTrialAuthoringRequest(StrictModel):
     run: StudioSavedTrainKey
     change: Annotated[
         StudioTrialDocumentEdit | StudioTrialDocumentReset | StudioTrialBindingEdit | StudioTrialSelectDocument
-        | StudioTrialExpressionEdit,
+        | StudioTrialExpressionEdit | StudioTrialStructureEdit,
         Field(discriminator="kind"),
     ] | None = None
     scope: Annotated[

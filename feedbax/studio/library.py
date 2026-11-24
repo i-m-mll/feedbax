@@ -53,5 +53,20 @@ def library_sources(packages: tuple[DistributionSource, ...]) -> tuple[LibrarySo
     return tuple(sources)
 
 
+FIRST_TRAIN_TASK = ("point-mass-reaching", "simple-reaches-task")
+"""The library and name of the task document a project's first Train reads: feedbax's simple reaches."""
+
+
+def first_train_task() -> RootDocument:
+    library, name = FIRST_TRAIN_TASK
+    (source,) = (
+        source for source in installed_library_sources() if source.distribution == "feedbax" and source.name == library
+    )
+    document = source.documents()[name]
+    if isinstance(document, ProjectDiagnostic):
+        raise ValueError(document.detail)
+    return document
+
+
 def installed_library_sources() -> tuple[LibrarySource, ...]:
     return library_sources(installed_packages())

@@ -23,7 +23,7 @@ from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.persistence.canonical_evaluate import RAW_STATES_SCHEMA, decode_rollout_request
 from feedbax.contracts.rollout import CannotRun
 from feedbax.examples import load_shipped_projects
-from tests.support.reaching_task import REACHING_TASK
+from tests.support.plugins.reaching_task import REACHING_TASK
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project, managed_evaluation_definition

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from pydantic import TypeAdapter, ValidationError
 
 from feedbax.contracts.expression_values import Problem
-from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioEpochValueSpec, WireSpec
+from feedbax.contracts.graph import ComponentSpec, GraphSpec, WireSpec
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.model_attachment import is_generated_attachment_node
 from feedbax.contracts.matrix_core import apply_override_patch_in_place

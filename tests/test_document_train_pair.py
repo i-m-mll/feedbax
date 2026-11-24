@@ -169,7 +169,7 @@ def test_plan_refuses_each_row_with_an_unwired_linear_input(authored, prepared_t
     }}
     _two_optimizer_rates(raw)
     plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
-    assert not plan.runs
+    assert plan.runs and all(run.admission_problem is not None for run in plan.runs)
     assert len(prepared_trials) == 2
     original = controller["interior"]["components"]["readout"]["name"]
     assert {
@@ -220,7 +220,7 @@ def test_trial_refusals_keep_the_model_address_for_each_step(authored, prepared_
     raw["steps"]["other"] = other
 
     plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
-    assert not plan.runs
+    assert plan.runs and all(run.admission_problem is not None for run in plan.runs)
     assert len(prepared_trials) == 1
     assert len(plan.diagnostics) == 4
     for issue in plan.diagnostics:
@@ -420,7 +420,8 @@ def test_trial_preparation_distinguishes_effective_scientific_inputs(authored, p
         (original_mass, "delayed-reaches", 2, "target_pos"),
         (original_mass, "delayed-reaches", 1, "missing-signal"),
     }
-    assert len(plan.requests) == len(plan.runs) == 8
+    assert len(plan.requests) == len(plan.runs) == 10
+    assert {run.key.variant for run in plan.runs if run.admission_problem is not None} == {"bad-binding"}
     assert len(plan.diagnostics) == 2
     assert {(issue.variant, issue.row) for issue in plan.diagnostics} == {
         ("bad-binding", "rate=low"), ("bad-binding", "rate=high"),
