@@ -4,6 +4,7 @@ import type { StepReference, StudioProjectSnapshot, SubsetTerms } from '../../sr
 import { chooseSweepValue, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { hold } from './fixtures/heldRequest';
+import { pick } from './fixtures/controls';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -16,8 +17,10 @@ async function select(page: Page, step: string) {
 }
 
 // Catches a rule field that saves while it is written, a count or boxes drawn from the saved rule rather than the one
-// being written, a refused rule that is stored anyway, and a field for Evaluate subjects that Train Start lacks.
-test('a run rule narrows an Evaluate subject and a Train Start, and a name that is not swept is refused on the field', async ({ page, request }) => {
+// being written, a rule the check cannot read that Enter drops instead of saving, its Problem lost on reopening or
+// left after its repair, checkpoint text that is dropped or offered To Sweep, To Rows offered on an unranked rule, and
+// a field for Evaluate subjects that Train Start lacks.
+test('a run rule narrows an Evaluate subject and a Train Start, and a rule naming a name that is not swept is kept with its Problem', async ({ page, request }) => {
   const files = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'walkthrough-files'));
   const train = files.at(-1).step;
   train.base.inline.seed = 0;
@@ -28,6 +31,7 @@ test('a run rule narrows an Evaluate subject and a Train Start, and a name that 
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const rule = inspector.getByRole('combobox', { name: 'Runs', exact: true });
   const ruleRow = rule.locator('..');
+  const problem = ruleRow.getByRole('img', { name: 'Problem', exact: true });
   const card = page.getByRole('article', { name: 'Train train', exact: true });
   const saving = () => page.waitForResponse((response) => response.request().method() === 'PATCH'
     && new URL(response.url()).pathname === projectPath);
@@ -54,14 +58,53 @@ test('a run rule narrows an Evaluate subject and a Train Start, and a name that 
   await expect(rule).toHaveValue('seed=0..1');
   await expect(ruleRow).toContainText('2/4');
   await rule.fill('sed=0');
+  const kept = saving();
   await rule.press('Enter');
-  await expect(rule).toHaveAccessibleDescription(/sed is not swept/);
+  expect((await kept).ok()).toBe(true);
+  await expect.poll(async () => (await reads('evaluate', 'subject')).where).toEqual({ rule: 'sed=0' });
   await expect(rule).toHaveAttribute('aria-invalid', 'true');
-  await expect(ruleRow.getByRole('img', { name: 'Problem', exact: true })).toHaveAttribute('data-app-tip', /sed is not swept/);
-  expect((await reads('evaluate', 'subject')).where).toEqual({ rule: 'seed=0..1' });
+  await expect(problem).toHaveAttribute('data-app-tip', /sed is not swept/);
+
+  await select(page, 'train');
+  await page.reload();
+  await select(page, 'evaluate');
+  await expect(rule).toHaveValue('sed=0');
+  await expect(rule).toHaveAccessibleDescription(/sed is not swept/);
+  await expect(problem).toHaveAttribute('data-app-tip', /sed is not swept/);
+  await rule.fill('seed=0..1');
+  const repaired = saving();
+  await rule.press('Enter');
+  expect((await repaired).ok()).toBe(true);
+  await expect(problem).toHaveCount(0);
+  await expect(rule).not.toHaveAttribute('aria-invalid', 'true');
+  await expect(ruleRow).toContainText('2/4');
   await expect(runRows(page)).toHaveCount(2);
+
+  const checkpoint = inspector.getByRole('region', { name: 'Checkpoint', exact: true });
+  const updates = checkpoint.getByRole('textbox', { name: 'Updates', exact: true });
+  await pick(checkpoint.getByRole('combobox', { name: 'Checkpoint', exact: true }), 'List');
+  await updates.fill('2 x');
+  const held = saving();
+  await updates.press('Enter');
+  expect((await held).ok()).toBe(true);
+  await expect.poll(async () => (await reads('evaluate', 'subject')).checkpoint).toEqual({ kind: 'unresolved', text: '2 x' });
+  await page.reload();
+  await select(page, 'evaluate');
+  const toSweep = checkpoint.getByRole('button', { name: 'To Sweep', exact: true });
+  await expect(updates).toHaveValue('2 x');
+  await expect(updates).toHaveAttribute('aria-invalid', 'true');
+  await expect(toSweep).toHaveCount(0);
+  await updates.fill('2');
+  const fixed = saving();
+  await updates.press('Enter');
+  expect((await fixed).ok()).toBe(true);
+  await expect.poll(async () => (await reads('evaluate', 'subject')).checkpoint).toEqual([{ at: 2 }]);
+  await expect(updates).not.toHaveAttribute('aria-invalid', 'true');
+  await expect(toSweep).toBeEnabled();
+  await rule.click({ button: 'right' });
+  await expect(page.getByRole('menuitem', { name: 'Pick Runs', exact: true })).toBeVisible();
+  await expect(page.getByRole('menuitem', { name: 'To Rows', exact: true })).toHaveCount(0);
   await page.keyboard.press('Escape');
-  await expect(rule).toHaveValue('seed=0..1');
 
   await select(page, 'train');
   await card.getByRole('button', { name: 'New Step train', exact: true }).click();

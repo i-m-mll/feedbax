@@ -131,12 +131,15 @@ export function useTrialClock({
   const recordedTrial = replay.read.kind === 'read' ? replay.read : undefined;
   const { shown, query, possible } = useShown(pick, clock, offer, view, stored, recordedTrial?.record, sceneVisible);
   const drawn = view && taskDocument ? shelfTask(view, taskDocument) : undefined;
-  const rows = pick?.trials === 'nominal' && drawn ? nominalRows(drawn) : pick && shown && (drawn && period != null ? rowsOf(drawn, pick, shown, period) : []);
   const [taskTime, setTaskTime] = usePlayhead(playhead, JSON.stringify(['task', taskDocument, pick, clock.seed]));
   const [time, setTime] = pick?.trials === 'recorded' ? [replay.time, replay.setTime] : [taskTime, setTaskTime];
   const stateTime = pick?.trials === 'recorded' ? recordedTrial?.stateTime : undefined;
   const replayTimeline = stateTime && stateTime.length > 1 && stateTime[stateTime.length - 1] > 0
     ? { duration: stateTime[stateTime.length - 1], frameTimes: [...stateTime] } : null;
+  /** A recorded trial's step is its run's; any other trial's is the step's Model's. */
+  const step = replayTimeline ? replayTimeline.frameTimes[1] : period;
+  const rows = pick?.trials === 'nominal' && drawn ? nominalRows(drawn)
+    : pick && shown && (drawn && step != null ? rowsOf(drawn, pick, shown, step) : []);
   const epochs = rows?.find((row) => row.kind === 'segments');
   const timeline: ClockTimeline = replayTimeline
     ? { duration: replayTimeline.duration, frameTimes: replayTimeline.frameTimes, bands: [] }
