@@ -230,7 +230,7 @@ export function useStoredModel(editor: ProjectEditController, step: PlanStepView
   const trial = base?.trial_documents;
   const managedModel = trial && typeof trial === 'object' && !Array.isArray(trial) ? trial.model : undefined;
   const direct = DocumentReferenceSchema.safeParse(managedModel);
-  const storedId = modelDocumentId(step?.documentIds) ?? modelSource ?? (direct.success ? direct.data.document : undefined);
+  const storedId = modelDocumentId(step?.documentIds) ?? modelSource ?? (direct.success && !direct.data.unresolved ? direct.data.document : undefined);
   const storedDocument = storedId ? saved.project.documents?.[storedId] : undefined;
   const storedPayload = storedId ? documentPayload(saved.project.documents, saved.composed, storedId) : undefined;
   return useMemo((): StoredModel | undefined => {

@@ -13,7 +13,7 @@ import { HeaderActivity } from '@/components/layout/HeaderActivity';
 import {
   StudioPipelineMap, StudioPipelineMapDrawer, type MapStepRename, type PipelineMapStepSource,
 } from '@/components/pipeline/StudioPipelineMap';
-import { isMemberName } from './projectMemberName';
+import { keyUnavailable } from './projectMemberName';
 import { KeyField } from '@/components/ui/KeyField';
 import { stepElementName } from './analysisElements';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
@@ -60,6 +60,7 @@ import { useConnection } from '@/api/connection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { authoredPointer, declarationAddress, ownDefinition, modelDocumentId } from './authoredEdits';
 import { withBaseDescendants } from './baseDescendants';
+import { stepDocument } from './documentPayload';
 import { useManagedProjectDetails, useRecordedTerms, useStoredModel, type NamedDocumentScope } from './managedProjectDetails';
 import { useTrialClock } from './useTrialClock';
 import { drawnVariables } from './task/trialSample';
@@ -650,7 +651,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     }));
   const trialClock = useTrialClock({
     windowState, setWindowState, projectId: saved.project_id, revision: saved.revision, view: trial.view,
-    taskDocument: trial.view && (trial.view.task_document ?? step?.id), stored, evaluation: selectedEvaluation,
+    taskDocument: trial.view && (trial.view.task_document ?? step?.id),
+    objectiveDocument: trial.view && (trial.view.objective_document ?? step?.id), stored, evaluation: selectedEvaluation,
     sceneVisible: windowState.mode !== 'map' && [primaryView, secondaryView].includes('scene'), elements, playhead,
     shelfView: windowState.mode === 'map' ? undefined : primaryView ?? undefined,
   });
@@ -658,11 +660,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const scoredEvaluation = step?.kind === 'evaluate' && selectedEvaluation?.status === 'succeeded' ? selectedEvaluation : undefined;
   const recordedTerms = useRecordedTerms(saved.project_id, saved.revision, scoredEvaluation, evaluationReplay.checkpoint,
     windowState.mode !== 'map' && [primaryView, secondaryView].includes('objective'));
-  const documentBase = authored && 'document' in authored.base && !authored.base.pointer ? authored.base.document : undefined;
+  const documentBase = authored && stepDocument(authored.base);
   const pickDocument = useProjectDocuments({
     editor, stepId: step?.id, run: namedRun, scope: trialEditScope,
     editable: documentEditable,
-    detachRefused: shown?.window_map?.detach_refused,
     selectable: new Set<DocumentRole>([
       ...!trialEditable ? [] : step?.kind === 'train' ? ['model', 'task', 'objective', 'training'] as const : ['model', 'task'] as const,
       ...documentEditable && wholeStep ? ['analysis', 'report'] as const : [],
@@ -1535,7 +1536,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     focused: () => setStepFocus(null),
   } : undefined;
   const changeStepKey = documentEditable ? (from: string, key: string) => {
-    if (!isMemberName(key)) return false;
     void perform(async () => {
       await editor.memberCommand(studioAccessibleName('changeKey', from),
         { kind: 'change_key', family: 'steps', member: from, key }, editor.getSnapshot().saved);
@@ -1813,9 +1813,18 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                 ? selectedRuns(step, state.selection).map((row) => row.values[sweep]).filter(Boolean) : []),
               choose: authoring?.onChooseSweepValue,
             };
+            const objectiveDocument = value.objective_document ?? step?.id ?? '';
+            const termElement = named(objectiveDocument);
+            const term = termElement && value.objective?.terms?.some(({ id }) => id === termElement.id)
+              ? { term: termElement.id, field: termElement.field } : undefined;
+            // An Evaluate of a checkpoint is scored by the Objective of the Train that made it, which it shows unedited.
+            const train = value.objective_source?.kind === 'train' ? plan.steps.find(({ id }) => id === value.objective_source!.step) : undefined;
+            const scoring = train ? undefined : commit;
+            const termInspector = term && <TrialObjectiveInspector view={value} commit={scoring} selected={term} runs={runs}
+              shown={trialClock.trial} />;
             if (view === 'task') {
               const document = value.task_document ?? step?.id ?? '';
-              const selected = named(document)?.id;
+              const selected = term ? undefined : named(document)?.id;
               const picker = pickDocument('task', value.task_document ?? undefined, documentScopes.task);
               const unfed = unfedTasks(value);
               const variable = selectedVariable(selected);
@@ -1826,22 +1835,17 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                   ? <FocusedFields className="contents" request={fieldFocus?.step === step?.id && fieldFocus?.target?.startsWith('task:') ? fieldFocus : undefined}
                     onFocused={() => setFieldFocus(undefined)}>
                     <TrialTaskDocument view={value} commit={commit} runs={runs} selected={selected} select={choose(document)}
+                      toSweep={step && ((axis) => sets.toSweep(step.id, axis))}
                       drawn={drawnVariables(trialClock.trial)} />
                   </FocusedFields>
                   : <TrialTaskForm view={value} commit={commit} />),
                 drawer: <TrialTaskOutline sections={drawerSections} view={value} selected={selected} select={choose(document)} />,
-                inspector: variable ? <TrialVariableInspector view={value} commit={commit} runs={runs} id={variable.id} />
+                inspector: termInspector || (variable ? <TrialVariableInspector view={value} commit={commit} runs={runs} id={variable.id} />
                   : selected && 'variables' in value.task && inGrid(selected)
                     ? <TrialGridInspector view={value} commit={commit} runs={runs} selected={selected} shown={trialClock.trial} />
-                    : selected && <TrialTaskInspector view={value} commit={commit} selected={selected} shown={trialClock.trial} />,
+                    : selected && <TrialTaskInspector view={value} commit={commit} selected={selected} shown={trialClock.trial} />),
               };
             }
-            const document = value.objective_document ?? step?.id ?? '';
-            const element = named(document);
-            const selected = element && { term: element.id, field: element.field };
-            // An Evaluate of a checkpoint is scored by the Objective of the Train that made it, which it shows unedited.
-            const train = value.objective_source?.kind === 'train' ? plan.steps.find(({ id }) => id === value.objective_source!.step) : undefined;
-            const scoring = train ? undefined : commit;
             const picker = train ? undefined : pickDocument('objective', value.objective_document ?? undefined, documentScopes.objective);
             const scores = scoredEvaluation && recordedTerms
               ? { shown: trialClock.trial, run: recordedTerms, trials: scoredEvaluation.trials.length } : undefined;
@@ -1852,10 +1856,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                 onClick={() => selection.select(selectStep(state, train.id))}>{train.label}</Button>,
               body: withProblem(<FocusedFields className="contents" request={fieldFocus?.step === step?.id && fieldFocus?.target?.startsWith('objective:') ? fieldFocus : undefined}
                 onFocused={() => setFieldFocus(undefined)}>
-                <TrialObjectiveTable view={value} commit={scoring} selected={selected} select={choose(document)} runs={runs} scores={scores} />
+                <TrialObjectiveTable view={value} commit={scoring} selected={term} select={choose(objectiveDocument)} runs={runs} scores={scores} />
               </FocusedFields>),
-              drawer: <TrialObjectiveOutline sections={drawerSections} view={value} commit={scoring} selected={selected?.term} select={choose(document)} />,
-              inspector: <TrialObjectiveInspector view={value} commit={scoring} selected={selected} runs={runs} shown={trialClock.trial} />,
+              drawer: <TrialObjectiveOutline sections={drawerSections} view={value} commit={scoring} selected={term?.term} select={choose(objectiveDocument)} />,
+              inspector: termInspector,
             };
           }
           if (view === 'training') {
@@ -1915,6 +1919,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                 stepKey={<KeyField value={step.id} name={step.label} editing={keyingStep === step.id}
                   onEditingChange={(editing) => setKeyingStep(editing ? step.id : undefined)}
                   onCommit={(key) => changeStepKey?.(step.id, key)}
+                  unavailable={(key) => keyUnavailable(key, (key) => key in (saved.project.steps ?? {}))}
                   refusal={refusal?.kind === 'key' && refusal.step === step.id ? refusal.reason : undefined} />}
                 onChooseStep={(stepId) => selection.select(selectStep(state, stepId))}
                 revealed={fieldReveal?.view === 'runs'
