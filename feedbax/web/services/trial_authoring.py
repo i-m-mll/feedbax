@@ -147,7 +147,7 @@ def _project(
     names = {epoch.id: epoch.name for epoch in epochs}
     epochs = tuple(
         StudioTrialEpoch(id=epoch, name=names.get(epoch, epoch), steps=steps)
-        for epoch, steps in zip(source.epochs, source.step_counts, strict=True)
+        for epoch, steps in dict(zip(source.epochs, source.step_counts, strict=True)).items()
     )
     if documents.objective is not None:
         objective_sites = {} if show_objective else None
@@ -721,8 +721,8 @@ def _structure_edit(change, documents, definition) -> StudioTrialDocumentEdit | 
     _, raw = _changed_value(documents, definition, "task")
     before, after = task.model_dump(mode="json"), changed.model_dump(mode="json")
     edits = [
-        SetProjectValue(op="replace" if field in raw else "add", path=pointer((field,)), value=after[field])
-        for field in after if after[field] != before[field]
+        SetProjectValue(op="replace" if field in raw else "add", path=pointer((field,)), value=after.get(field, []))
+        for field in dict.fromkeys((*after, *before)) if after.get(field) != before.get(field)
     ]
     if not edits:
         raise ProjectFolderInvalid("The change leaves the task as it is.")
