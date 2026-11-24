@@ -6,6 +6,8 @@ import pytest
 from feedbax.contracts.project import Project
 from feedbax.planner.project_plan import BlockedRow, PlannedRun, ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.project_resolution import ResolutionCode
+from feedbax.contracts.project_sources import pointer
+from feedbax.studio.library import first_train_task
 from feedbax.jobs import JobService, PlanJobAttempts, PlanJobReader, _planned_checkpoint_catalogs
 from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.application.composition import application_python_tasks
@@ -38,6 +40,8 @@ def _one_bad_train_row() -> dict:
 def test_one_bad_train_row_blocks_only_the_evaluate_row_that_reads_it():
     plan = compile_project(Project.model_validate(_one_bad_train_row()), memo=ProjectPlanMemo())
     bad = RunKey("default", "train", "rate=low")
+    (train,) = [row for row in plan.rows if row.key == bad]
+    assert isinstance(train, PlannedRun) and train.admission_problem is not None
     evaluations = [row for row in plan.rows if row.key.step == "baseline"]
     assert len(evaluations) == 2
     (sound,) = [row for row in evaluations if isinstance(row, PlannedRun)]
@@ -48,7 +52,6 @@ def test_one_bad_train_row_blocks_only_the_evaluate_row_that_reads_it():
     assert [(problem.code, problem.row, problem.path, problem.blocked_by) for problem in problems] == [
         (ResolutionCode.BLOCKED_INPUT, blocked.key.row, "inputs.subject", bad),
     ]
-
 
 def test_an_evaluate_of_an_unadmissible_train_keeps_its_own_problem():
     raw = document_project(authored_documents(), evaluation=True)
@@ -189,7 +192,7 @@ def test_objective_expressions_stay_editable_when_the_model_does_not_pair(tmp_pa
     _save_project(folders, "unpaired", Project.model_validate(raw))
     settled = folders.read_plan("unpaired", revision=None)
     (row,) = [row for row in settled.plan.rows if row.key.step == "train"]
-    assert not isinstance(row, PlannedRun)
+    assert isinstance(row, PlannedRun) and row.admission_problem is not None
     body = {"revision": settled.revision, "run": {"variant": row.key.variant, "step": row.key.step, "row": row.key.row}}
     with TestClient(create_app(projects_dir=tmp_path)) as client:
         reply = client.post("/api/projects/unpaired/authoring/trials", json=body)
@@ -219,3 +222,31 @@ def test_a_lowered_row_waiting_on_its_producer_cannot_run_and_is_never_submitted
     (item,) = jobs.admit_plan(folders, snapshot, run_keys=(evaluate.key,), token=token("waiting")).items
     assert item.disposition == "rejected" and "inputs.subject" in (item.reason or ""), item
     assert not host.jobs(project=snapshot.project_id)
+
+
+def test_a_first_train_whose_task_does_not_pair_with_its_model_is_planned_and_cannot_run(tmp_path):
+    """A new project's first Train reads simple reaches beside a blank Model, whose plant the Task's link names."""
+    task = first_train_task().model_dump(mode="json", by_alias=True)
+    (link,) = task["payload"]["links"]
+    folders = ProjectFolderService(tmp_path / "projects")
+    _save_project(folders, "first", Project.model_validate({
+        "documents": {
+            "model": {"schema": "feedbax.spec.model", "payload": {"step_seconds": 0.01, "ports": {}, "interior": {}}},
+            "task": task,
+            "objective": {"schema": "feedbax.spec.objective_document", "payload": {"id": "objective", "terms": []}},
+        },
+        "steps": {"train": {"kind": "train", "base": {"inline": {
+            "method": "feedbax.supervised_gradient",
+            "settings": {"optimizer": {"type": "adam", "learning_rate": {"type": "constant_schedule", "value": 0.001}}},
+            "training_config": {"n_batches": 1, "batch_size": 1},
+            "trial_documents": {
+                "model": {"document": "model"}, "task": {"document": "task"}, "objective": {"document": "objective"},
+            },
+        }}}},
+    }))
+    snapshot = folders.read_plan("first", revision=None)
+    (train,) = snapshot.plan.runs
+    assert train.admission_problem is not None
+    assert train.admission_problem.path == pointer(("trial_documents", "task", "links", link["model_field"]))
+    view = window_service.ProjectPlanRead.without_history(snapshot)
+    assert [row.status for row in view.status_rows()] == ["cannot_run"]

@@ -316,10 +316,11 @@ def _validation_expression(value: ValidationValue) -> Expression:
     return LiteralValue(value=value)
 
 
-def _zero(base, shape):
+def zero(base, shape) -> Expression:
+    """The value of a type that is nothing: false, or zero in every entry."""
     if not shape:
         return LiteralValue(value=False if base == ValueBase.BOOLEAN else 0)
-    child = _zero(base, shape[1:])
+    child = zero(base, shape[1:])
     return CallValue(function="vector", args=(child,) * shape[0])
 
 
@@ -526,7 +527,7 @@ def compile_task(
     declared_signals = []
     for signal in document.signals:
         path = ("signals", signal.id)
-        absent_value = signal.absent or _zero(signal.type.base, signal.type.shape)
+        absent_value = signal.absent or zero(signal.type.base, signal.type.shape)
         absent = lower(absent_value, signal.type, Level.TRIAL, scope.values(), (*path, "absent"))
         occupied = set()
         cell_ids = set()

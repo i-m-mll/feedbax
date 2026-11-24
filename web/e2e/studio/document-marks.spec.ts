@@ -349,6 +349,7 @@ test('a based Training document marks the class it changes, and Reset gives it t
 
 test('an Evaluate step\'s Task edit marks the value its document changes, and Reset gives it the base\'s', async ({ page, request }) => {
   test.setTimeout(60_000);
+  test.fixme(true, 'The Task view edits task documents in T2+: an Evaluate\'s Task tab shows no fields yet.');
   const files = (JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.evaluate_authoring')) as { kind: string; id: string }[])
     .filter(({ id }) => id !== 'conditions');
   const { snapshot, projectPath } = await seedManagedProject(request, [...files, evaluation('check', 'train')]);

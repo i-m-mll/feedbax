@@ -210,7 +210,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   await selectElement('aligned_velocity');
   if (!await inspector.isVisible()) await palette(page, 'showInspector', 'Show Inspector');
   for (const [field, label] of [
-    ['Position', /effector~1position$/], ['Velocity', /effector~1velocity$/], ['Target', paired ? /reach_target$/ : /target_pos$/],
+    ['Position', /effector~1position$/], ['Velocity', /effector~1velocity$/], ['Target', /target_pos$/],
   ] as const) {
     const select = inspector.getByRole('combobox', { name: field, exact: true });
     await edit(() => chooseOption(page, select, label));
@@ -248,7 +248,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
     expect(authored.operations).toMatchObject({
       aligned_velocity: {
         operation: 'feedbax.aligned_velocity',
-        params: { position: state + 'effector~1position', velocity: state + 'effector~1velocity', target: '/v1/task/output/reach_target' },
+        params: { position: state + 'effector~1position', velocity: state + 'effector~1velocity', target: '/v1/task/output/target_pos' },
         inputs: { states: { input: 'states' } },
       },
       summarize_velocity: {
@@ -410,11 +410,14 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
     expect(new Set(samples.map(({ name }) => name)).size).toBe(2);
     expect(samples).toEqual(retained.figure_samples);
     const [nominal, heavy] = samples;
-    expect(nominal.x).toHaveLength(13);
+    expect(nominal.x).toHaveLength(first.task.fixed_steps! + 1);
     expect(nominal.x).toEqual(heavy.x);
+    // Softmax pushes (1/2, 1/2) at unit mass, so the speed along the one reach grows by its share of that per second.
+    const [[startX, startY], [targetX, targetY]] = [first.reach.variables!.start, first.reach.variables!.target] as number[][];
+    const along = (targetX - startX + targetY - startY) / (2 * Math.hypot(targetX - startX, targetY - startY));
     for (const [index, time] of nominal.x.entries()) {
-      expect(nominal.y[index]).toBeCloseTo(time * Math.SQRT1_2, 6);
-      expect(heavy.y[index]).toBeCloseTo(time * Math.SQRT1_2 / 2, 6);
+      expect(nominal.y[index]).toBeCloseTo(time * along, 6);
+      expect(heavy.y[index]).toBeCloseTo(time * along / 2, 6);
     }
     expect(heavy.y.at(-1)!).toBeGreaterThan(0.04);
     expect(nominal.y.at(-1)! - heavy.y.at(-1)!).toBeGreaterThan(0.04);
