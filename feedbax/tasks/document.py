@@ -378,6 +378,8 @@ def compile_task(
     model: ResolvedModelInterface,
     input_bindings: Mapping[str, str | None] | None = None,
     sites: dict[tuple[str | int, ...], Site] | None = None,
+    link_problems: list[Problem] | None = None,
+    nominal: bool = False,
 ) -> DocumentTask | tuple[Problem, ...]:
     """Compile a bounded ahead-of-rollout task from resolved model field types, or every independent Problem.
 
@@ -390,7 +392,8 @@ def compile_task(
         return (Problem(code=ProblemCode.STRUCTURE, reason="The model period must be positive."),)
 
     def problem(code, reason, path, variable=None, model_address=None):
-        problems.append(Problem(code=code, reason=reason, path=path, variable=variable, model_address=model_address))
+        target = link_problems if link_problems is not None and path[:1] == ("links",) else problems
+        target.append(Problem(code=code, reason=reason, path=path, variable=variable, model_address=model_address))
 
     def unique(items, section):
         result, names = {}, set()
@@ -430,6 +433,7 @@ def compile_task(
             reset_on_epoch=epoch,
             discrete_uniform=discrete,
             path=address,
+            nominal=nominal,
         )
         marks = [
             Problem(

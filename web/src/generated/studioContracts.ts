@@ -2215,12 +2215,13 @@ export interface TrialAggregate {
 }
 
 export interface TaskTrialSampleRequest {
-  model: ModelDocument;
+  model?: ModelDocument | null;
   task?: TaskDocument | null;
   python_task?: PythonTaskSelection | null;
   input_bindings?: Record<string, string | null>;
   objective?: ObjectiveDocument | null;
   evaluation_trials?: string[] | null;
+  nominal?: boolean;
   seed?: number;
   count?: number;
   aggregate?: boolean;
@@ -9307,19 +9308,20 @@ export const TrialAggregateSchema: z.ZodType<TrialAggregate> = z.lazy(() =>
 export const TaskTrialSampleRequestSchema: z.ZodType<TaskTrialSampleRequest> = z.lazy(() =>
   z
     .object({
-      "model": ModelDocumentSchema,
+      "model": ModelDocumentSchema.nullable().optional(),
       "task": TaskDocumentSchema.nullable().optional(),
       "python_task": PythonTaskSelectionSchema.nullable().optional(),
       "input_bindings": z.record(z.string(), z.string().nullable()).optional(),
       "objective": ObjectiveDocumentSchema.nullable().optional(),
       "evaluation_trials": z.array(z.string()).min(1).nullable().optional(),
+      "nominal": z.boolean().optional(),
       "seed": z.number().int().safe().optional(),
       "count": z.number().int().safe().gte(1).optional(),
       "aggregate": z.boolean().optional(),
     })
     .strict()
     .superRefine((input, ctx) => {
-      const value = { ...{"input_bindings": {}, "seed": 0, "count": 8, "aggregate": false}, ...input };
+      const value = { ...{"input_bindings": {}, "nominal": false, "seed": 0, "count": 8, "aggregate": false}, ...input };
       if ((value.task == null) === (value.python_task == null)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,

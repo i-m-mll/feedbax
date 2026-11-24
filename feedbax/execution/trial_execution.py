@@ -28,6 +28,18 @@ class TrialEvaluation(NamedTuple):
     history: Mapping[str, jax.Array] | None
 
 
+def sample_evaluation_trials(
+    task: TrialSource, parameters: TaskParameters, *, key: jax.Array, trial_ids: tuple[str, ...],
+) -> tuple[Trial, jax.Array]:
+    """Prepare the same trials for a preview or a rollout of the given Evaluate rows."""
+    keys = jnp.stack([derive_key(key, "evaluate-trial", trial) for trial in trial_ids])
+    if task.condition_ids:
+        trials = task.evaluation(parameters, key, trial_ids, keys)
+    else:
+        trials = map_trial_samples(lambda trial_key: task.ahead(parameters, key, trial_key), keys, keys)
+    return trials, keys
+
+
 @dataclass(frozen=True)
 class TrialExecution:
     """Bind the rollout and observation plan independently of the objective."""
@@ -141,11 +153,7 @@ class TrialExecution:
         self, graph: Graph, objective: ObjectiveExecutor | None, parameters: TaskParameters, *,
         key: jax.Array, trial_ids: tuple[str, ...], capture_state: Callable | None = None,
     ) -> TrialEvaluation:
-        keys = jnp.stack([derive_key(key, "evaluate-trial", trial) for trial in trial_ids])
-        if self.task.condition_ids:
-            trials = self.task.evaluation(parameters, key, trial_ids, keys)
-        else:
-            trials = map_trial_samples(lambda trial_key: self.task.ahead(parameters, key, trial_key), keys, keys)
+        trials, keys = sample_evaluation_trials(self.task, parameters, key=key, trial_ids=trial_ids)
         return self.score(
             graph, objective, trials, run_key=key, trial_keys=keys, capture_state=capture_state,
         )

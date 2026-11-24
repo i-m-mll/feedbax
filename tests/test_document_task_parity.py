@@ -743,6 +743,7 @@ def test_document_pair_drives_signed_model_graph_with_real_reset(kind, functions
     term = ObjectiveTerm(
         id="effort",
         measure=expression("sqnorm(command)", (command,)),
+        weight=expression("2.3"),
         reduction=Reduction.SUM,
         epochs=("move",),
     )
@@ -755,9 +756,16 @@ def test_document_pair_drives_signed_model_graph_with_real_reset(kind, functions
     assert isinstance(executor, ObjectiveExecutor), executor
     loss = executor.evaluate({command.id: output}, trials, run_key=run_key, trial_keys=keys)
     mask = jnp.arange(STEPS) >= trials.epochs.starts[:, -1, None]
-    expected = jnp.mean(jnp.sum(jnp.where(mask, jnp.sum(output**2, axis=-1), 0), axis=-1))
+    expected = 2.3 * jnp.mean(jnp.sum(jnp.where(mask, jnp.sum(output**2, axis=-1), 0), axis=-1))
     assert int(loss.terms["effort"].covered) == len(keys)
     assert float(loss.loss) == pytest.approx(float(expected), rel=2e-6)
+    # A plotted term must reduce to the score from the same rollout.
+    trial = jax.tree.map(lambda batch: batch[0], trials)
+    term = executor.trial_terms({command.id: output[0]}, trial, run_key, keys[0])["effort"]
+    scored = executor.evaluate_trial({command.id: output[0]}, trial, run_key, keys[0])["effort"]
+    assert term.values is not None
+    assert jnp.sum(term.values[term.steps]) == pytest.approx(float(scored.value), rel=2e-6)
+    np.testing.assert_array_equal(term.steps, mask[0])
 
 
 @pytest.mark.parametrize("kind", ["simple", "stabilization"])
