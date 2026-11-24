@@ -97,3 +97,31 @@ test('the map drawer meets the main area with the divider, not the chrome edge',
     await expect(drawer).toHaveCSS('border-inline-end-color', tokens.divider);
   }
 });
+
+test('the chrome edge stands out from the chrome in both themes', async ({ page }) => {
+  await openShell(page);
+  const edge = page.locator('.shell-frame.studio-project-window > .shell-frame__content');
+  await expect(edge).toBeVisible();
+
+  for (const theme of ['light', 'dark']) {
+    const { width, contrast } = await edge.evaluate((element, theme) => {
+      document.documentElement.dataset.theme = theme;
+      const pixel = document.createElement('canvas').getContext('2d', { willReadFrequently: true })!;
+      const luminance = (colour: string) => {
+        pixel.fillStyle = colour;
+        pixel.fillRect(0, 0, 1, 1);
+        const [r, g, b] = Array.from(pixel.getImageData(0, 0, 1, 1).data.slice(0, 3), (value) => {
+          const channel = value / 255;
+          return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+        });
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      };
+      const after = getComputedStyle(element, '::after');
+      const line = luminance(after.borderTopColor);
+      const chrome = luminance(getComputedStyle(element.parentElement!).backgroundColor);
+      return { width: after.borderTopWidth, contrast: (Math.max(line, chrome) + 0.05) / (Math.min(line, chrome) + 0.05) };
+    }, theme);
+    expect(width, theme).toBe('1px');
+    expect(contrast, theme).toBeGreaterThanOrEqual(1.25);
+  }
+});
