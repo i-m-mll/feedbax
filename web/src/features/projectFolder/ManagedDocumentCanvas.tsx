@@ -4,10 +4,12 @@ import { memo, useMemo, useRef, type ReactNode, type Ref } from 'react';
 import { studioAccessibleName, studioRunStatus } from '@/components/activity/studioVocabulary';
 import { StudioCanvas, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { CommandContextMenu } from '@/components/pipeline/CommandContextMenu';
+import { useCarryTarget, type CarryKind } from '@/components/ui/carry';
 import { Card, CardHead } from '@/components/ui/Card';
 import { InlineEdit } from '@/components/ui/InlineEdit';
 import { StatusMark } from '@/components/ui/StatusMark';
 import { extendsSelection } from '@/features/pipeline/selection';
+import type { LibraryItem } from '@/features/projectWindow/LibraryList';
 import type { StudioCommand } from '@/features/projectWindow/studioCommands';
 import type { PresentationPosition, StudioProjectWindowMapElement } from '@/generated/studioContracts';
 
@@ -66,8 +68,8 @@ type CanvasProps = {
   viewportRef?: Ref<CanvasViewport>;
   /** An armed reference pick over the items' selection ids: an accepted item fills the reference when clicked. */
   pick?: { accepts(id: string): boolean; choose(id: string): void } | null;
-  /** A library drag of this data type places the dragged item where it is dropped. */
-  drop?: { type: string; place(id: string, point: PresentationPosition): void };
+  /** A library drag of this kind is drawn where it would be placed, and placed where it is dropped. */
+  drop?: { kind: CarryKind<LibraryItem>; place(id: string, point: PresentationPosition): void };
 };
 
 export function ManagedDocumentCanvas(props: CanvasProps) {
@@ -75,12 +77,16 @@ export function ManagedDocumentCanvas(props: CanvasProps) {
 }
 
 const labelPlate: [number, number] = [8, 3];
+/** The id of the card a library drag draws where it would be placed. */
+const carriedNode = 'carried:library';
 const multiSelectionKeys = ['Meta', 'Control', 'Shift'];
 
 function Canvas({ items, connections, positions, selectedIds, onSelect, openAt, rememberPoint, placing, viewportRef, pick, drop }: CanvasProps) {
   const { screenToFlowPosition, getInternalNode } = useReactFlow();
   // A selection change carries no modifiers; the gesture that made it records them.
   const extend = useRef(false);
+  const surface = useRef<HTMLDivElement>(null);
+  const carried = useCarryTarget(surface, drop?.kind, { drop: (item, at) => drop?.place(item.id, screenToFlowPosition(at)) });
   const { nodes, edges } = useMemo(() => {
     const layout = new dagre.graphlib.Graph().setGraph({ rankdir: 'LR', ranksep: 40, nodesep: 24 }).setDefaultEdgeLabel(() => ({}));
     items.forEach(({ id, name }) => layout.setNode(id, { width: cardWidth(name), height: cardHeight }));
@@ -110,32 +116,29 @@ function Canvas({ items, connections, positions, selectedIds, onSelect, openAt, 
       domAttributes: { 'data-pick': pick.accepts(node.data.selectionId) ? 'allowed' : 'refused' } as Node['domAttributes'],
     },
   })), [nodes, selectedIds, pick, getInternalNode]);
+  const carriedAt = carried && screenToFlowPosition(carried.at);
+  const drawnNodes = carried && carriedAt ? [...shownNodes, {
+    id: carriedNode, type: 'element', position: carriedAt, className: 'studio-carried', selectable: false, draggable: false,
+    focusable: false, initialWidth: cardWidth(carried.value.name), initialHeight: cardHeight,
+    data: { id: carriedNode, selectionId: carriedNode, name: carried.value.name, glyph: carried.value.glyph, selected: false },
+  } satisfies Node<ElementData>] : shownNodes;
   // A label sits on a canvas-coloured plate wide enough that the edge visibly stops short of the text.
   const shownEdges = useMemo(() => edges.map((edge) => ({
     ...edge, selected: selectedIds.includes(edge.id), labelBgPadding: labelPlate,
   })), [edges, selectedIds]);
-  return <div className="h-full min-h-0"
+  return <div ref={surface} className="h-full min-h-0"
     onPointerDownCapture={(event) => { extend.current = extendsSelection(event); }}
     onKeyDownCapture={(event) => { extend.current = extendsSelection(event); }}
     onPointerMove={(event) => {
       if (openAt) rememberPoint?.(screenToFlowPosition({ x: event.clientX, y: event.clientY }));
     }}
     onPointerLeave={() => rememberPoint?.(null)}
-    onDragOver={(event) => {
-      if (drop && event.dataTransfer.types.includes(drop.type)) event.preventDefault();
-    }}
-    onDrop={(event) => {
-      const id = drop && event.dataTransfer.getData(drop.type);
-      if (!drop || !id) return;
-      event.preventDefault();
-      drop.place(id, screenToFlowPosition({ x: event.clientX, y: event.clientY }));
-    }}
     onDoubleClick={(event) => {
       if (openAt && event.target instanceof Element && event.target.classList.contains('react-flow__pane')) {
         openAt(screenToFlowPosition({ x: event.clientX, y: event.clientY }));
       }
     }}>
-    <StudioCanvas nodes={shownNodes} nodeTypes={nodeTypes} edges={shownEdges} fitNewContent lockAutoFit={placing} viewportRef={viewportRef}
+    <StudioCanvas nodes={drawnNodes} nodeTypes={nodeTypes} edges={shownEdges} fitNewContent lockAutoFit={placing || !!carried} viewportRef={viewportRef}
       zoomOnDoubleClick={!openAt} multiSelectionKeyCode={multiSelectionKeys}
       onNodeClick={pick ? (_, node) => {
         const id = nodes.find((item) => item.id === node.id)?.data.selectionId;

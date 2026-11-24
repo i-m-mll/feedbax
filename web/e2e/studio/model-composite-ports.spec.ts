@@ -117,7 +117,10 @@ test('a Library template places one composite', async ({ page }) => {
   await expect(model.getByRole('navigation', { name: 'Model Path' })).toBeVisible();
 });
 
-/** A Library template dropped on a wire is placed on it as one composite, wired in between the wire's two ends. */
+/**
+ * A Library template dropped on a wire is placed on it as one composite, wired in between the wire's two ends; the drag
+ * draws that before the drop (catches a drag that shows nothing until release).
+ */
 test('a Library template dropped on a wire is inserted into it', async ({ page }) => {
   const model = await newModel(page);
   const linear = await addFromLibrary(page, model, 'Linear');
@@ -134,7 +137,14 @@ test('a Library template dropped on a wire is inserted into it', async ({ page }
   await drawer.getByRole('textbox', { name: 'Search Library', exact: true }).fill('CDEStandard');
   const template = drawer.getByRole('listbox', { name: 'Templates', exact: true }).getByRole('option', { name: 'CDEStandard', exact: true });
   const saved = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/model/edit'));
-  await template.dragTo(wires.first().locator('path.react-flow__edge-path'), { force: true });
+  // While it is dragged over the wire, the card is drawn where it will land, with the wire drawn into and out of it.
+  const box = (await wires.first().locator('path.react-flow__edge-path').boundingBox())!;
+  await template.hover();
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 6 });
+  await expect(model.locator('.studio-model-card[data-stacked="true"]')).toHaveCount(1);
+  await expect(model.locator('.react-flow__edge.studio-carried')).toHaveCount(2);
+  await page.mouse.up();
   const response = await saved;
   expect(response.request().postDataJSON().command.operation).toMatchObject({
     op: 'insert_component', component: { kind: 'definition', definition: 'feedbax.CDEStandard' },

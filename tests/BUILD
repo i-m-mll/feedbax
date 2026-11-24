@@ -5,6 +5,7 @@ resources(
 resources(name="request_corpus", sources=["fixtures/request_identity_corpus.json"])
 resources(name="runpod_errors", sources=["fixtures/runpod_provider_errors/*.json"])
 resources(name="derivative_references", sources=["fixtures/derivative_fixed_points.json"])
+resources(name="stab10_matrices", sources=["fixtures/stab10_matrices.json"])
 
 python_tests(
     name="tests",
@@ -15,6 +16,7 @@ python_tests(
         "test_request_identity.py": {"dependencies": [":request_corpus"]},
         "test_runpod_transport.py": {"dependencies": [":runpod_errors"]},
         "test_managed_derivative_operations.py": {"dependencies": [":derivative_references"]},
+        "test_l2_stab10.py": {"dependencies": [":stab10_matrices"]},
         "test_project_analyze_plan.py": {
             "dependencies": ["web/e2e/studio/fixtures:velocity_analysis"],
         },

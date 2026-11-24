@@ -8,7 +8,7 @@ import { appendManagedFiles, authorLearningRateSweep, chooseSweepValue, enter, f
 import { runPythonProcess } from './fixtures/python';
 import { pick } from './fixtures/controls';
 import { conditionLabels } from '../../src/features/projectFolder/evaluateAuthoring';
-import { chooseStepKind, palette } from './fixtures/studioKeyboard';
+import { chooseStepKind, palette, startProject } from './fixtures/studioKeyboard';
 
 const primary = (page: Page) => page.locator('[data-studio-focus-region="primary"]');
 const runs = (page: Page) => primary(page).getByRole('table', { name: 'Runs', exact: true });
@@ -64,7 +64,7 @@ test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from A
       if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/projects') creates += 1;
     });
     const creating = responseFor(page, '/api/projects');
-    await page.goto('/');
+    await startProject(page);
     const created = await creating;
     expect(created.status()).toBe(201);
     const { snapshot, configuration } = await created.json() as StudioProjectDocument;

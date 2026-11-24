@@ -5,7 +5,7 @@ import {
 } from '../../../src/generated/studioContracts';
 import { mapStep } from './canonicalTrain';
 import { pick } from './controls';
-import { activate, activateMenuItem, number, palette, post, readSaved } from './studioKeyboard';
+import { activate, activateMenuItem, number, palette, post, readSaved, startProject } from './studioKeyboard';
 import { rootPayload } from './rootPayload';
 
 /** The Task document a first Train creates: simple reaches, named by its label. */
@@ -16,7 +16,7 @@ export async function authorFirstTrain(
   forceComparison?: { activation: 'softmax' },
 ) {
   const creation = post(page, '/api/projects');
-  await page.goto('/');
+  await startProject(page);
   const created = await creation;
   expect(created.status()).toBe(201);
   const { snapshot } = await created.json() as StudioProjectDocument;

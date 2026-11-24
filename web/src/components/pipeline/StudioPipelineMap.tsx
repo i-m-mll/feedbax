@@ -110,7 +110,7 @@ export interface StudioPipelineMapProps {
   mode?: 'map' | 'line';
   drawerOpen?: boolean;
   presentation?: Readonly<Record<string, PipelineCardPresentation>>;
-  onPresentationChange?: (stepId: string, presentation: PipelineCardPresentation) => void;
+  onPresentationChange?: (stepId: string, presentation: PipelineCardPresentation) => void | Promise<unknown>;
   newStepCommand?: (source?: PipelineMapStepSource, subject?: string) => StudioCommand | undefined;
   newSweepCommand?: (stepId: string, subject?: string) => StudioCommand | undefined;
   /** The open menu of a step's sweepable fields, anchored at Add Sweep in its card's head. */

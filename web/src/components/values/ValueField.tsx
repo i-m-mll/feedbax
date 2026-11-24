@@ -466,15 +466,17 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
     }
     if (event.key === 'Enter' && draft !== undefined) {
       event.preventDefault();
-      const committed = draft;
-      saving.current = committed;
-      void submit({ kind: 'text', text: committed }).then((done) => {
-        if (saving.current === committed) saving.current = undefined;
-        if (!done) return;
-        setDraft((current) => current === committed ? undefined : current);
-        setPending(undefined);
-      });
+      commit(draft);
     }
+  }
+  function commit(committed: string) {
+    saving.current = committed;
+    void submit({ kind: 'text', text: committed }).then((done) => {
+      if (saving.current === committed) saving.current = undefined;
+      if (!done) return;
+      setDraft((current) => current === committed ? undefined : current);
+      setPending(undefined);
+    });
   }
 
   const markMenu = mark ? <KindMark model={model} kind={shownKind} readOnly={readOnly} open={menu}
@@ -495,9 +497,11 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
         if (chosen.current) enter(chosen.current);
         chosen.current = undefined;
       }}
-      onBlur={() => {
+      onBlur={(event) => {
         setDismissed(true);
-        if (draft === undefined) setPending(undefined);
+        if (draft === undefined) { setPending(undefined); return; }
+        const within = event.relatedTarget instanceof Node && event.currentTarget.parentElement?.contains(event.relatedTarget);
+        if (!within && draft !== saving.current) commit(draft);
       }}
       onKeyDown={onKeyDown} />
     {open && <CompletionList id={listId} anchor={input} items={offered.items} highlight={highlight} onChoose={accept} />}

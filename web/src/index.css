@@ -257,6 +257,21 @@
   opacity: 1;
 }
 
+/* While a press drags, nothing is selected as text and the pointer holds what it carries. */
+:root[data-press-drag], :root[data-press-drag] * { user-select: none !important; cursor: grabbing !important; }
+
+/* What a drag carries, at the pointer where no place under it takes it. */
+.studio-carry-chip {
+  position: fixed;
+  z-index: 100;
+  pointer-events: none;
+  translate: 8px 8px;
+}
+
+/* The card a drag onto a canvas would make, drawn under the pointer without taking it from what is beneath. */
+.react-flow__node.studio-carried, .react-flow__node.studio-carried * { pointer-events: none !important; }
+.react-flow__node.studio-carried { opacity: .7; }
+
 /* A dragged row or column is drawn over the others, opaque in its fill. */
 .studio-table tr[data-dragging] {
   position: relative;

@@ -35,6 +35,8 @@ export interface ProjectWindowState {
   secondaryWidth: number;
   modelPaths?: Partial<Record<ProjectWindowSlot, { document: string; path: string[] }>>;
   sections?: Partial<Record<ProjectWindowSection, boolean>>;
+  /** The selected step, which the window opens on when no run is in focus. */
+  stepId?: string;
   /** The run in focus, which the Results show. */
   focus?: RunAddress;
   /** The clock's picked trial, the seed and count it samples with, and whether its shelf is open. */
@@ -152,6 +154,7 @@ function windowArrangement(value: unknown): ProjectWindowState {
     secondaryWidth: preferredSize('secondaryWidth'),
     modelPaths,
     sections,
+    ...(typeof prefs.stepId === 'string' && { stepId: prefs.stepId }),
     ...(focus && { focus }),
     ...(clock && { clock }),
   };

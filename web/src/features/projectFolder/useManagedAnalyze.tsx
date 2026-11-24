@@ -8,6 +8,7 @@ import { studioAccessibleName, studioName, studioRunStatus } from '@/components/
 import { CanvasStrip } from '@/components/canvas/CanvasStrip';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { Button } from '@/components/ui/Button';
+import { carryKind } from '@/components/ui/carry';
 import { Dialog } from '@/components/ui/Dialog';
 import { Inspector } from '@/components/ui/Inspector';
 import { KeyField } from '@/components/ui/KeyField';
@@ -51,7 +52,7 @@ import type { GestureFailures } from './refusals';
 type Source = OperationElement['inputs'][string];
 type RefusalPlace = 'dialog' | readonly [string, string] | { readonly key: string };
 
-const operationDragType = 'application/x-feedbax-operation';
+const operationCarry = carryKind<LibraryItem>('operation');
 const figureItem = 'velocity_summary';
 const summaryTemplate = 'feedbax.VelocitySummary';
 
@@ -487,7 +488,7 @@ export function useManagedAnalyze({
   </Inspector>;
   const drawer = <Drawer>
     <LibraryList sections={sections} section="analysis.library" name={studioName('library')} searchName="searchLibrary"
-      state={catalogState} items={library} selected={shownItem?.id} dragType={canEdit ? operationDragType : undefined}
+      state={catalogState} items={library} selected={shownItem?.id} carried={canEdit ? operationCarry : undefined}
       onInspect={(id) => setInspected({ scope, id })}
       onPlace={canEdit ? (id) => place(id) : undefined} />
   </Drawer>;
@@ -509,7 +510,7 @@ export function useManagedAnalyze({
         <ManagedDocumentCanvas key={scope} selectedIds={element.selectedIds} onSelect={selectElement} items={items} connections={connections} viewportRef={canvas}
           positions={positions} pick={canvasPick}
           openAt={canEdit ? (point) => open('add', point) : undefined} placing={!!opened?.point}
-          drop={canEdit ? { type: operationDragType, place } : undefined}
+          drop={canEdit ? { kind: operationCarry, place } : undefined}
           rememberPoint={(point) => { cursor.current = point ? { scope, point } : undefined; }} />
       </div></CanvasStrip>,
       drawer, inspector: libraryInspector || inspector,

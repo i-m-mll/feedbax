@@ -1,6 +1,6 @@
 import clsx from 'clsx';
 import { Check } from 'lucide-react';
-import { memo, useMemo, useRef, type DragEvent, type KeyboardEvent, type MouseEvent } from 'react';
+import { memo, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type PointerEvent } from 'react';
 import { appTip } from '@window-shell/browser/tooltip';
 import { StatusMark, statusTone } from '@/components/ui/StatusMark';
 import {
@@ -38,6 +38,7 @@ import { useCommandSource } from '@/features/projectWindow/heldGestures';
 import type { StudioCommand } from '@/features/projectWindow/studioCommands';
 import { Button } from '@/components/ui/Button';
 import { Menu, MenuContent, MenuItem, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuSubmenu, MenuTrigger } from '@/components/ui/Menu';
+import { followPress, type Point } from '@/components/ui/pointerPress';
 import { ScrollFade } from '@/components/ui/ScrollFade';
 
 export type ApplyMapSelection = (change: (state: PipelineSelectionState) => PipelineSelectionState) => void;
@@ -64,8 +65,8 @@ function MapAxisLabel({
   selection,
   applySelection,
   placeAt,
+  grab,
   dragging,
-  exchange,
   axisMenu,
   pickRuns,
 }: {
@@ -77,9 +78,11 @@ function MapAxisLabel({
   selection: PipelineSelection | null;
   applySelection: ApplyMapSelection;
   placeAt?: (place: 'rows' | 'columns') => void;
-  dragging: { current: string | null };
-  exchange?: (from: string, to: string) => void;
+  /** Starts dragging the axis onto another's place; `close` closes its menu once the press is a drag. */
+  grab?: (event: PointerEvent, sweep: string, close: () => void) => void;
+  dragging: boolean;
 }) {
+  const [open, setOpen] = useState(false);
   const count = sweep.values.length;
   const folded = place === 'folded';
   const shownCount = folded || count > countedValues ? studioFormat('mapValueCount', { count }) : '';
@@ -97,36 +100,24 @@ function MapAxisLabel({
     const command = authored.removeValue!(value.id, value.label);
     return command ? [{ value, command }] : [];
   }) : [];
-  function drop(event: DragEvent) {
-    const from = dragging.current;
-    if (!from || !exchange) return;
-    event.preventDefault();
-    exchange(from, sweep.id);
-    dragging.current = null;
-  }
   return (
-    <Menu>
+    <Menu open={open} onOpenChange={(next) => setOpen(next)}>
       <MenuTrigger render={
         <Button
           variant="ghost"
           size="mark"
           // The line never wraps: folded names shorten first, their weight keeping an axis name's share of the
           // shrink below one layout unit until they are at their least.
-          className={clsx('studio-map-axis !shrink aria-expanded:bg-shell-selected', folded && '![flex-shrink:1000000]')}
+          className={clsx('studio-map-axis !shrink aria-expanded:bg-shell-selected data-[dragging]:bg-shell-selected',
+            folded && '![flex-shrink:1000000]')}
           data-place={place}
+          data-sweep={sweep.id}
+          data-dragging={dragging || undefined}
           aria-label={studioAccessibleName('sweep', `${sweep.label} ${count}`)}
           aria-description={authored?.refusal}
           {...appTip(authored?.refusal ? studioRunReason({ reason: authored.refusal })
             : studioAccessibleName('sweep', `${sweep.label} ${count}`))}
-          draggable={Boolean(exchange)}
-          onDragStart={(event) => {
-            dragging.current = sweep.id;
-            event.dataTransfer.effectAllowed = 'move';
-            event.dataTransfer.setData('text/plain', sweep.id);
-          }}
-          onDragEnd={() => { dragging.current = null; }}
-          onDragOver={(event) => { if (dragging.current && dragging.current !== sweep.id) event.preventDefault(); }}
-          onDrop={drop}
+          onPointerDown={grab && ((event) => grab(event, sweep.id, () => setOpen(false)))}
         >
           <span className="grid grid-cols-[auto_minmax(1.5em,max-content)_auto] whitespace-pre">
             <span>{parts.slice(0, nameAt)}</span>
@@ -332,7 +323,7 @@ function navigateMarks(event: KeyboardEvent<HTMLDivElement>) {
 /** A step's runs on its card: the label line naming each sweep's place, then one mark per cell on a uniform pitch. */
 export const PipelineRunMarks = memo(function PipelineRunMarks({
   step,
-  sweeps,
+  sweeps: stored,
   selection,
   selected,
   boxed,
@@ -356,9 +347,15 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
   applySelection: ApplyMapSelection;
   runMenu?: RunMenu;
   /** Saves a new sweep order; absent where the card cannot be arranged. */
-  arrange?: (order: string[]) => void;
+  arrange?: (order: string[]) => void | Promise<unknown>;
 }) {
-  const dragging = useRef<string | null>(null);
+  const axesLine = useRef<HTMLDivElement>(null);
+  /** An axis dragged onto another's place, `to`, over the order it was dragged in; it is drawn exchanged until saved. */
+  const [swap, setSwap] = useState<{ base: readonly PlanSweepView[]; from: string; to: string | null }>();
+  const swapped = swap?.base === stored && swap.to ? exchangeMapSweeps(stored, swap.from, swap.to) : undefined;
+  const swappedKey = swapped?.join('\n');
+  const sweeps = useMemo(() => swapped ? swapped.map((id) => stored.find((sweep) => sweep.id === id)!) : stored,
+    [stored, swappedKey]);
   const axes = useMemo(() => mapAxes(sweeps), [sweeps]);
   const grid = useMemo(() => {
     const { cells, rowCount, columnCount } = mapRunCells(step.runs, axes);
@@ -395,21 +392,44 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
   const boxRows = terms.length === 1 && chosenRows !== undefined;
   const boxColumns = terms.length === 1 && chosenColumns !== undefined;
   const boxIntersections = terms.length === 2 && chosenRows !== undefined && chosenColumns !== undefined;
-  const exchange = arrange && sweeps.length > 1
+  const exchange = arrange && stored.length > 1
     ? (from: string, to: string) => {
-      const order = exchangeMapSweeps(sweeps, from, to);
-      if (order) arrange(order);
+      const order = exchangeMapSweeps(stored, from, to);
+      return order && arrange(order);
     }
     : undefined;
+  const grab = exchange && ((event: PointerEvent, from: string, close: () => void) => followPress(event, () => {
+    close();
+    const base = stored;
+    const places = [...axesLine.current?.querySelectorAll<HTMLElement>('[data-sweep]') ?? []]
+      .map((element) => ({ id: element.dataset.sweep!, box: element.getBoundingClientRect() }));
+    // The places are those the axes had when the drag began, so an exchange drawn under the pointer does not move them.
+    const over = ({ x, y }: Point) => {
+      const to = places.find(({ box }) => x >= box.left && x <= box.right && y >= box.top - box.height && y <= box.bottom + box.height)?.id;
+      return to === from ? null : to ?? null;
+    };
+    return {
+      move: (at) => setSwap({ base, from, to: over(at) }),
+      release(at) {
+        const to = over(at);
+        if (!to) return setSwap(undefined);
+        const held = { base, from, to };
+        setSwap(held);
+        void Promise.resolve(exchange(from, to)).finally(() => requestAnimationFrame(() => requestAnimationFrame(() =>
+          setSwap((current) => current === held ? undefined : current))));
+      },
+      cancel: () => setSwap(undefined),
+    };
+  }));
   const label = (sweep: PlanSweepView, place: Place) => (
     <MapAxisLabel key={sweep.id} sweep={sweep} place={place} step={step} selection={selection}
-      applySelection={applySelection} dragging={dragging} exchange={exchange} axisMenu={axisMenu} pickRuns={pickRuns}
+      applySelection={applySelection} grab={grab} dragging={swap?.from === sweep.id} axisMenu={axisMenu} pickRuns={pickRuns}
       placeAt={exchange && rows && columns ? (target) => exchange(sweep.id, (target === 'rows' ? rows : columns).id) : undefined} />
   );
   return (
     <div className="grid gap-1">
       {sweeps.length > 0 && (
-        <div className="studio-map-axes flex min-w-0 items-center gap-1 overflow-hidden text-xs text-shell-muted">
+        <div ref={axesLine} className="studio-map-axes flex min-w-0 items-center gap-1 overflow-hidden text-xs text-shell-muted">
           {rows && label(rows, 'rows')}
           {columns && label(columns, 'columns')}
           {folded.map((sweep) => label(sweep, 'folded'))}

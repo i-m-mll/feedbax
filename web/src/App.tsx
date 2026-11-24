@@ -1,19 +1,20 @@
 import { lazy, Suspense, useLayoutEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { createProjectFolder, openProjectFolder } from '@/api/projectFolders';
+import { openProjectFolder } from '@/api/projectFolders';
 import { shownError } from '@/api/shownErrors';
 import { StudioJobsProvider } from '@/hooks/useStudioJobs';
 import { StudioActivityPane } from '@/components/activity/StudioActivity';
 import { studioName } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
 import { PendingProjectWindow, ProjectWindowPalette } from '@/features/projectWindow/ProjectWindow';
+import { ProjectHome } from '@/features/projectWindow/ProjectHome';
 
 const StudioProjectWorkspace = lazy(() => import('@/features/projectFolder/SavedTrainWorkspace'));
 
-function ProjectEntry({ requestedId }: { requestedId: string | null }) {
+function ProjectEntry({ requestedId }: { requestedId: string }) {
   const project = useQuery({
     queryKey: ['studio-entry-project', requestedId],
-    queryFn: () => requestedId ? openProjectFolder(requestedId) : createProjectFolder(),
+    queryFn: () => openProjectFolder(requestedId),
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
     staleTime: Infinity,
@@ -51,5 +52,6 @@ export default function App({ projectId, activity }: { projectId: string | null;
       </main>
     </StudioJobsProvider>
   );
+  if (projectId === null) return <ProjectHome />;
   return <ProjectWindowPalette><ProjectEntry requestedId={projectId} /></ProjectWindowPalette>;
 }

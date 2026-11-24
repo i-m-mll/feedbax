@@ -27,11 +27,7 @@ def figure_samples(view: SuccessView, figure: str) -> list[dict]:
         mean = np.take(np.asarray(dataset.data("mean")), 0, axis=dims.index("checkpoint"))
         dims.remove("checkpoint")
         rows = np.moveaxis(mean, dims.index("state_time"), -1).reshape(-1, len(time))
-        conditions = np.asarray(dataset.data("condition")).reshape(-1).tolist()
-        return [
-            {"name": condition, "x": time, "y": row.tolist()}
-            for condition, row in zip(conditions, rows, strict=True)
-        ]
+        return [{"x": time, "y": row.tolist()} for row in rows]
 
 
 def main(instance: str, project: str, alignment: str, figure: str) -> None:

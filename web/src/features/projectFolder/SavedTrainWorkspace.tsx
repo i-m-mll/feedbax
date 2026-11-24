@@ -345,12 +345,21 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const latestState = useRef(state);
   latestState.current = state;
   const savedFocus = windowState.focus;
-  const restoredFocus = useRef(false);
+  const savedStep = windowState.stepId;
+  const restoredSelection = useRef(false);
   useEffect(() => {
-    if (restoredFocus.current || !savedFocus) return;
-    restoredFocus.current = true;
-    if (!selection.edited) selection.select(selectRun(emptyPipelineSelection, savedFocus));
-  }, [savedFocus, selection]);
+    if (restoredSelection.current || !savedFocus && !savedStep) return;
+    restoredSelection.current = true;
+    if (selection.edited) return;
+    if (savedFocus) selection.select(selectRun(emptyPipelineSelection, savedFocus));
+    else if (savedStep && saved.project.steps?.[savedStep]) selection.select(selectStep(emptyPipelineSelection, savedStep));
+  }, [savedFocus, savedStep, selection, saved.project.steps]);
+  const selectedStep = selection.stepId;
+  useEffect(() => {
+    if (!selection.edited) return;
+    setWindowState((current) => current.stepId === (selectedStep ?? undefined) ? current
+      : { ...current, stepId: selectedStep ?? undefined });
+  }, [selectedStep, selection.edited, setWindowState]);
   const focusStep = state.focus?.stepId;
   const focusRun = state.focus?.runId;
   useEffect(() => {
