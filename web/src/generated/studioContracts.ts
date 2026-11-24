@@ -4039,6 +4039,7 @@ export type StudioProjectWindowMapRow = {
   "origin"?: number | null;
   "target_total"?: number | null;
   "light"?: StudioSavedLightHistory | null;
+  "resolved"?: boolean;
 };
 
 export type StudioProjectWindowMapStep = {
@@ -11042,6 +11043,7 @@ export const StudioProjectWindowMapRowSchema: z.ZodType<StudioProjectWindowMapRo
     "origin": z.union([z.number().int().safe(), z.null()]).optional(),
     "target_total": z.union([z.number().int().safe(), z.null()]).optional(),
     "light": z.union([StudioSavedLightHistorySchema, z.null()]).optional(),
+    "resolved": z.boolean().optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapRow>;
 

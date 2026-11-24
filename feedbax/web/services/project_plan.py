@@ -389,6 +389,7 @@ class ProjectPlanRead:
                     evaluation_conditions=task_conditions(row),
                     origin=row.train.origin if row.train is not None else None,
                     target_total=row.train.target_total if row.train is not None else None,
+                    resolved=row.resolved,
                     member_key=producer_member_key(row.key.variant, row.key.row, gathers_variants=False)
                     if row.kind in {"train", "evaluate"} else None,
                     coordinates={

@@ -294,6 +294,8 @@ class StudioProjectWindowMapRow(StrictModel):
     target_total: int | None = Field(default=None, exclude_if=lambda value: value is None)
     """A Train row's completed-update count at its end, which bounds the checkpoints its readers select."""
     light: StudioSavedLightHistory | None = Field(default=None, exclude_if=lambda value: value is None)
+    resolved: bool = Field(default=True, exclude_if=lambda value: value)
+    """Whether the row has a definition; a row whose own patches or documents are refused has none to show."""
 
 
 class StudioBestRankGroup(StrictModel):

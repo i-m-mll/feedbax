@@ -358,13 +358,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const { row, scene: sceneRows, evaluation: selectedEvaluation } = shownResult;
   const definitionRows = shown?.window_map?.rows.filter(({ key }) => key.step === step?.id && key.variant === variant) ?? [];
   const selectedDefinitionRows = definitionRows.filter(({ key }) => runIds.has(savedRunId(key)));
-  const namedRun = selectedDefinitionRows.find(({ key }) => savedRunId(key) === state.focus?.runId)?.key ??
-    selectedDefinitionRows[0]?.key ?? definitionRows[0]?.key;
+  const namedRow = selectedDefinitionRows.find(({ key }) => savedRunId(key) === state.focus?.runId) ??
+    selectedDefinitionRows[0] ?? definitionRows[0];
+  const namedRun = namedRow?.key;
   const modelSource = step?.kind === 'evaluate' ? modelDocumentId(plan.steps.find(({ id }) =>
     id === step.inputs.find(({ id }) => id === 'subject')?.sourceStepId)?.documentIds) : undefined;
   const stored = useStoredModel(editor, step, modelSource);
   const views = !step ? noViews : viewOffer({
-    step, trainingForm: !!trainingDocument && !!authoring, planRead: !!shown, run: !!namedRun, model: stored?.value,
+    step, trainingForm: !!trainingDocument && !!authoring, planRead: !!shown, run: !namedRow ? 'none' : namedRow.resolved === false ? 'unresolved' : 'resolved', model: stored?.value,
     evaluation: shownResult.evaluation,
     runProblems: (namedRun && step.runs.find(({ id }) => id === savedRunId(namedRun))?.problems) ?? [],
     results: !!plans.error || !!shownResult.row || !!shownResult.evaluation?.checkpoint_series,
