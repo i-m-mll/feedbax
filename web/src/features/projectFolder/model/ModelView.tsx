@@ -140,6 +140,9 @@ function positionsOf(saved: StudioProjectSnapshot, document: string) {
   return saved.presentation?.documents?.[document]?.positions;
 }
 
+/** The port an empty boundary handle stands for until a wire to it adds the port. */
+const newPort = '__new_port__';
+
 function positionAt(index: number): ModelPosition {
   return { x: 245 + 235 * (index % 4), y: 38 + 160 * Math.floor(index / 4) };
 }
@@ -232,7 +235,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const [searchText, setSearchText] = useState('');
   const [locked, setLocked] = useState(false);
   const [rename, setRename] = useState<string>();
-  const [addPort, setAddPort] = useState<'input' | 'output'>();
+  /** Where the interior Inputs card's empty handle opened the list of signals outside. */
+  const [addPort, setAddPort] = useState<DOMRect>();
   const [menu, setMenu] = useState<{ address: ModelAddress; x: number; y: number; point: ModelPosition }>();
   /** What each target of the connection being drawn would do, by target end. */
   const [review, setReview] = useState<{ source: Port; verdicts: ReadonlyMap<string, ModelConnectionVerdict> }>();
@@ -454,9 +458,13 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       end: { owner: 'inputs', port: `@task:${signal.id}` }, direction: 'output', name: signal.label,
       type: signal.type, taskSignal: signal.id,
     }));
+    /** The empty handles that add a boundary port by wiring to them; an interior's Inputs card lists signals instead. */
+    const grow = (owner: 'inputs' | 'outputs'): Port => ({
+      end: { owner, port: newPort }, direction: owner === 'inputs' ? 'output' : 'input', name: studioName('addPort'), type: {}, growing: true,
+    });
     const map = new Map<string, Port[]>([
-      [inputCard, [...ports.filter((port) => idFor(port.end) === inputCard), ...unused]],
-      [outputCard, ports.filter((port) => idFor(port.end) === outputCard)],
+      [inputCard, [...ports.filter((port) => idFor(port.end) === inputCard), ...unused, ...currentPath.length ? [] : [grow('inputs')]]],
+      [outputCard, [...ports.filter((port) => idFor(port.end) === outputCard), grow('outputs')]],
     ]);
     for (const [id, component] of Object.entries(drawnInterior?.components ?? {})) {
       map.set(id, componentPorts(id, component, registry));
@@ -648,7 +656,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     pendingReview.current?.request.abort();
     const request = new AbortController();
     const reviewed = reviewModelConnections(saved.project_id, {
-      revision: saved.revision, document: model.id, graph, source, ...shownSelection,
+      revision: saved.revision, document: model.id, graph, source, ...shownSelection, ...port.growing ? { grow_source: true } : {},
     }, request.signal);
     const pending = { source: port, reviewed, request };
     pendingReview.current = pending;
@@ -679,9 +687,11 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const { source } = pending;
     const left = wireEnd(source);
     if (source.taskSignal && projectionRun) {
-      void apply(studioName('bindSignal'), { op: 'connect_task_signal', graph, run: projectionRun, signal: source.taskSignal, target: right });
+      void apply(studioName('bindSignal'), { op: 'connect_task_signal', graph, run: projectionRun, signal: source.taskSignal, target: right,
+        ...target.growing ? { grow_target: true } : {} });
     } else if (left.owner === 'component' || left.owner === 'inputs') {
-      void apply(studioName('connectPorts'), { op: 'connect', graph, source: left, target: right, ...(target.growing ? { grow_target: true } : {}) });
+      void apply(studioName('connectPorts'), { op: 'connect', graph, source: left, target: right,
+        ...target.growing ? { grow_target: true } : {}, ...source.growing ? { grow_source: true } : {} });
     }
   }
   function keyboardConnect(port: Port) {
@@ -884,6 +894,43 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       addressKey(at(address, address.element.parent)) === addressKey(owner) ? [definition as Attachment] : []);
   }
 
+  /**
+   * The signals outside the current composite that its Inputs card can bring in, at each level around it. Signals whose
+   * names collide are numbered in the order their cards sit, left to right and top to bottom.
+   */
+  function outsideSignals() {
+    if (!model) return [];
+    const signals = currentPath.flatMap((excluded, depth) => {
+      const outerPath = currentPath.slice(0, depth);
+      const outerGraph = currentGraph(outerPath);
+      const outer = modelPath(model.value, outerPath).owner;
+      const ports = [
+        ...boundaryPorts(outer.ports).filter(({ direction }) => direction === 'output'),
+        ...Object.entries(outer.interior.components ?? {}).filter(([id]) => id !== excluded).flatMap(([id, component]) =>
+          componentPorts(id, component, registry).filter(({ direction }) => direction === 'output')),
+      ];
+      return ports.flatMap((port) => {
+        const source = wireEnd(port);
+        if (source.owner !== 'inputs' && source.owner !== 'component') return [];
+        const owner = source.owner === 'component' ? outer.interior.components?.[source.component]?.name : undefined;
+        const card = at(outerGraph, source.owner === 'component' ? { kind: 'component', id: source.component } : { kind: 'inputs' });
+        return [{
+          key: `${depth}:${endKey(source)}`, source, outerPath, position: positionsOf(saved, model.id)?.[addressKey(card)],
+          label: [...outerPath.map((id, index) => modelPath(model.value, outerPath.slice(0, index)).owner.interior.components?.[id]?.name ?? id),
+            [owner, port.name].filter(Boolean).join('.')].join(' › '),
+        }];
+      });
+    });
+    const named = new Map<string, typeof signals>();
+    for (const signal of signals) named.set(signal.label, [...named.get(signal.label) ?? [], signal]);
+    for (const same of named.values()) {
+      if (same.length < 2) continue;
+      same.sort((a, b) => (a.position?.x ?? Infinity) - (b.position?.x ?? Infinity) || (a.position?.y ?? Infinity) - (b.position?.y ?? Infinity))
+        .forEach((signal, index) => { signal.label = `${signal.label} · ${index + 1}`; });
+    }
+    return signals;
+  }
+
   function move(nodes: ModelCard[]) {
     const placements = nodes.filter((node) => !node.data.locked)
       .map((node) => ({ address: node.data.address, position: node.position }));
@@ -936,7 +983,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         } }),
       },
       position: cardPosition(address, () => ghost && wasAt ? wasAt : definition ? positionAt(index)
-        : { x: id === inputCard ? 18 : 245 + 235 * 4, y: 38 }),
+        : id === inputCard ? { x: 18, y: 38 } : positionAt(2)),
       selected: !!definition && selectedIds.has(key),
       draggable: !ghost && editTopology && !locked && !pick,
       selectable: !!definition && !pick,
@@ -965,7 +1012,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         enter,
         renaming: !ghost && rename === key, endRename: () => setRename(undefined),
         rename: (name) => { void apply(studioName('rename'), { op: 'rename', address, name }).then((ok) => { if (ok) setRename(undefined); }); },
-        addPort: !definition && editTopology ? () => setAddPort(id === inputCard ? 'input' : 'output') : undefined,
+        addPort: !definition && id === inputCard && currentPath.length && editTopology && !locked ? setAddPort : undefined,
       },
     };
   }
@@ -1534,38 +1581,14 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
             onClick={() => add(item, search, searchSource, port)}>{shortName(item.name)} · {port}</Button> : [];
       })
         : <LeafChoices definitions={definitions} query={searchText} choose={(item) => add(item, search)} disabled={!editTopology} />}
-    </Dialog> : addPort ? <Dialog ariaLabel={studioName('addPort')} onClose={() => setAddPort(undefined)} manageFocus
-      panelClassName="grid max-h-[70vh] w-[min(28rem,90vw)] gap-2 overflow-auto">
-      <ValueField model={rawField({
-        id: 'name', label: studioName('name'), type: { kind: 'string' }, value: '',
-        change: async (raw) => {
-          const name = String(raw).trim();
-          if (!name) return studioReason('takesText', studioName('name'));
-          const refusal = await attempt(studioName('addPort'), {
-            op: 'add_port', graph, direction: addPort, port: { id: crypto.randomUUID(), name, type: {} },
-          }, false);
-          if (!refusal) setAddPort(undefined);
-          return refusal?.reason;
-        },
-      })} />
-      {addPort === 'input' && model && currentPath.flatMap((excluded, depth) => {
-        const outerPath = currentPath.slice(0, depth);
-        const outer = modelPath(model.value, outerPath).owner;
-        const candidates = [
-          ...boundaryPorts(outer.ports).filter(({ direction }) => direction === 'output'),
-          ...Object.entries(outer.interior.components ?? {}).filter(([id]) => id !== excluded).flatMap(([id, component]) =>
-            componentPorts(id, component, registry).filter(({ direction }) => direction === 'output')),
-        ];
-        return candidates.map((port) => {
-          const source = wireEnd(port);
-          if (source.owner !== 'inputs' && source.owner !== 'component') return null;
-          return <Button key={`${depth}:${endKey(source)}`} variant="ghost" align="start" onClick={() => {
-            void apply(studioName('bringSignal'), { op: 'bring_signal_in', source_graph: currentGraph(outerPath),
-              source, destination: graph }, false).then((ok) => { if (ok) setAddPort(undefined); });
-          }}>{'name' in outer ? `${outer.name} › ` : ''}{source.owner === 'component' ? `${outer.interior.components?.[source.component]?.name}.` : ''}{port.name}</Button>;
-        });
-      })}
-    </Dialog> : menu && <Menu open onOpenChange={(open) => { if (!open) setMenu(undefined); }}>
+    </Dialog> : addPort && model ? <Menu open onOpenChange={(open) => { if (!open) setAddPort(undefined); }}>
+      <MenuContent aria-label={studioName('addPort')} anchor={{ getBoundingClientRect: () => addPort }}>
+        {outsideSignals().map(({ key, label, source, outerPath }) => <MenuItem key={key} onClick={() => {
+          setAddPort(undefined);
+          void apply(studioName('bringSignal'), { op: 'bring_signal_in', source_graph: currentGraph(outerPath), source, destination: graph }, false);
+        }}>{label}</MenuItem>)}
+      </MenuContent>
+    </Menu> : menu && <Menu open onOpenChange={(open) => { if (!open) setMenu(undefined); }}>
       <MenuContent aria-label={studioName('modelCommands')} anchor={{
         getBoundingClientRect: () => DOMRect.fromRect({ x: menu.x, y: menu.y, width: 0, height: 0 }),
       }}>

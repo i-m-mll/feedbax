@@ -7,7 +7,7 @@ import {
   createContext, memo, useCallback, useContext, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState,
   type MouseEvent as ReactMouseEvent, type ReactNode, type Ref,
 } from 'react';
-import { Lock, Plus, Unlock, ChevronsDownUp } from 'lucide-react';
+import { Lock, Unlock, ChevronsDownUp } from 'lucide-react';
 import { appTip } from '@window-shell/browser/tooltip';
 import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
 import { CanvasStrip } from '@/components/canvas/CanvasStrip';
@@ -56,7 +56,8 @@ export type ModelCardData = {
   rename?: (name: string) => void;
   renaming?: boolean;
   endRename?: () => void;
-  addPort?: () => void;
+  /** Opens, at the empty handle, the list of signals outside that can be brought in as a new port. */
+  addPort?: (anchor: DOMRect) => void;
 };
 export type ModelCard = Node<ModelCardData, 'modelCard'>;
 export type ModelEdgeData = {
@@ -197,8 +198,12 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
         {!data.collapsed && reason && <span className="studio-model-port-reason" role="status">{reason}</span>}
       </div>;
     })}
-    {data.addPort && <IconButton className="nodrag studio-model-add-port" size="mark" label={studioName('addPort')} icon={<Plus />}
-      onClick={(event) => { event.stopPropagation(); data.addPort?.(); }} />}
+    {data.addPort && !data.collapsed && <div className="studio-model-port" data-hollow="true" data-side={data.flipped ? 'left' : 'right'}>
+      <Button variant="bare" size="content" aria-label={studioName('addPort')} aria-haspopup="menu"
+        className={`nodrag react-flow__handle react-flow__handle-${data.flipped ? 'left' : 'right'}`}
+        onClick={(event) => { event.stopPropagation(); data.addPort?.(event.currentTarget.getBoundingClientRect()); }} />
+      <span>{studioName('addPort')}</span>
+    </div>}
   </SurfaceCard>;
 });
 

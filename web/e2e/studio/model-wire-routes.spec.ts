@@ -1,40 +1,10 @@
 import { expect, test } from './fixtures/studio';
 import type { Locator, Page } from '@playwright/test';
-import { palette, post } from './fixtures/studioKeyboard';
+import { addFromLibrary as add, edited, newModel } from './fixtures/newModel';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
 type Point = { x: number; y: number };
-
-async function newModel(page: Page) {
-  const creation = post(page, '/api/projects');
-  await page.goto('/');
-  expect((await creation).status()).toBe(201);
-  await palette(page, 'newStep', 'New Step');
-  await expect(page.getByRole('menu').getByRole('menuitem', { name: 'Train', exact: true })).toBeFocused();
-  await page.keyboard.press('Enter');
-  const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
-  await expect(model).toBeFocused();
-  return model;
-}
-
-/** Adds a `name` card from the Library's Runtime group and returns it. */
-async function add(page: Page, model: Locator, name: string) {
-  const before = await model.locator('.react-flow__node.draggable').evaluateAll((nodes) => nodes.map((node) => (node as HTMLElement).dataset.id!));
-  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
-  await drawer.getByRole('textbox', { name: 'Search Library', exact: true }).fill(name);
-  await drawer.getByRole('listbox', { name: 'Runtime', exact: true }).getByRole('option', { name, exact: true }).dblclick();
-  const cards = model.locator('.react-flow__node.draggable');
-  await expect(cards).toHaveCount(before.length + 1);
-  const ids = await cards.evaluateAll((nodes) => nodes.map((node) => (node as HTMLElement).dataset.id!));
-  return model.locator(`.react-flow__node[data-id="${ids.find((id) => !before.includes(id))}"]`);
-}
-
-async function edited(page: Page, act: () => Promise<void>) {
-  const saved = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/model/edit'));
-  await act();
-  expect((await (await saved).json()).result.status).toBe('applied');
-}
 
 async function wire(page: Page, from: Locator, to: Locator) {
   await edited(page, async () => {
@@ -77,11 +47,14 @@ function crosses(a: readonly Point[], b: readonly Point[]) {
 }
 
 async function wiredPair(page: Page) {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(`${error.message}\n${error.stack}`));
   const model = await newModel(page);
   const first = await add(page, model, 'Linear');
   const second = await add(page, model, 'Linear');
   const handle = (card: Locator, id: string) => card.locator(`[data-handleid="${id}"]`);
   await wire(page, handle(first, 'output:output'), handle(second, 'input:input'));
+  expect(errors).toEqual([]);
   const passesBehind = async () => {
     const points = await route(model, '.output → ');
     const cards = [await inside(first), await inside(second)];
@@ -114,6 +87,8 @@ test('a wire to a card on its source\'s left passes behind no card', async ({ pa
 
 /** Two wires from a card back to itself nest: they do not cross, and the pair of lower ports takes the inner route. */
 test('wires from a card back to itself nest with the lowest ports innermost', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(`${error.message}\n${error.stack}`));
   const model = await newModel(page);
   const gru = await add(page, model, 'GRU');
   const handle = (id: string) => gru.locator(`[data-handleid="${id}"]`);
@@ -126,4 +101,5 @@ test('wires from a card back to itself nest with the lowest ports innermost', as
   expect(hidden.y).toBeGreaterThan(output.y);
   expect(crosses(outer, inner)).toBe(false);
   expect(lowest(inner)).toBeLessThan(lowest(outer));
+  expect(errors).toEqual([]);
 });

@@ -20,10 +20,13 @@ async function openModel(page: Page, projectId: string) {
 
 /** Waits until the Model projection has drawn @inputs' Task-signal rows, which lengthen that card when they land. */
 async function projected(model: Locator) {
-  await expect(model.locator('.react-flow__node[data-id="@inputs"] .studio-model-port[data-hollow="true"]').first()).toBeVisible();
+  await expect(model.locator('.react-flow__node[data-id="@inputs"] [data-handleid^="output:@task:"]').first()).toBeVisible();
 }
 
-/** A card dropped while its move saves stays where, and as it was, dropped: no frame shows it moved, resized or hidden. */
+/**
+ * A card dropped while its move saves stays where, and as it was, dropped: no frame shows it moved, resized or hidden.
+ * Undo then names the move.
+ */
 test('a dragged Model card keeps its place and shape from release until its move has saved', async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const move = await hold(page, `${projectPath}/model/edit`, (body) =>
@@ -66,6 +69,10 @@ test('a dragged Model card keeps its place and shape from release until its move
   const near = (box: Box) => ({ x: Math.round(box.x), y: Math.round(box.y), width: Math.round(box.width), height: Math.round(box.height) });
   expect(frames.length).toBeGreaterThan(1);
   for (const box of frames) expect(near(box)).toEqual(near(dropped));
+  await page.keyboard.press('Meta+K');
+  const palette = page.getByRole('dialog', { name: 'Command Palette' });
+  await page.keyboard.type('Undo');
+  await expect(palette.locator('[data-command-id="undo"]')).toHaveAccessibleName(/^Undo Move Card\b/);
 });
 
 type CardFrames = Window & { addFrames?: Record<string, Box | null>[]; droppedAt?: number; stopAddFrames?: () => void };
