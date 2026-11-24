@@ -28,7 +28,7 @@ export interface DocumentPickerModel {
   readonly create?: (template?: string) => Promise<string | undefined>;
   readonly duplicate?: () => Promise<string | undefined>;
   /** Sets the document's label; its key is the clearing value. */
-  readonly rename?: (label: string | null) => void;
+  readonly rename?: (label: string) => void;
   /** `held` is every key a project document has, which Change Key cannot take. */
   readonly changeKey?: { readonly commit: (key: string) => void; readonly held: ReadonlySet<string> };
   readonly detach?: () => void;
@@ -92,7 +92,7 @@ export function DocumentPicker({ model, editing, setEditing }: {
   if (field === 'name' && rename) {
     return <InlineEdit value={name} editing className="studio-window-slot__document"
       aria-label={studioAccessibleName('rename', name)} onEditingChange={close}
-      onCommit={(next) => rename(next === document ? null : next)} />;
+      onCommit={rename} />;
   }
   if (field === 'key' && changeKey) {
     return <InlineEdit value={document} editing className="studio-window-slot__document font-mono"

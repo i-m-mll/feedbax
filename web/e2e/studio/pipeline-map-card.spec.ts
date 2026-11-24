@@ -51,8 +51,8 @@ test('the map card draws one sweep in a line, its head as glyph and name, and th
   await shoot('map-light');
   await captureStudioWindow(page, info, 'window-light');
   await page.evaluate(() => {
-    localStorage.setItem('feedbax.appearance.theme', 'dark');
-    window.dispatchEvent(new StorageEvent('storage'));
+    localStorage.setItem('feedbax.settings', JSON.stringify({ theme: 'dark' }));
+    window.dispatchEvent(new StorageEvent('storage', { key: 'feedbax.settings' }));
   });
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await shoot('map-dark');

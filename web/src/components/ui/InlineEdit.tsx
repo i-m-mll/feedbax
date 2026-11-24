@@ -19,10 +19,12 @@ export interface InlineEditProps {
    * the input's focus, and `editing` set from outside focuses it with the name selected.
    */
   form?: 'cell';
+  /** Shown while the text is empty, which then commits nothing rather than being refused. */
+  empty?: string;
 }
 
 export function InlineEdit({
-  value, editing, onEditingChange, onCommit, unavailable, children, className, form, ...aria
+  value, editing, onEditingChange, onCommit, unavailable, children, className, form, empty, ...aria
 }: InlineEditProps) {
   const [draft, setDraft] = useState(value);
   const input = useRef<HTMLInputElement>(null);
@@ -48,6 +50,7 @@ export function InlineEdit({
   const commit = () => {
     const next = draft.trim();
     if (next === value) return finish(true);
+    if (!next && empty !== undefined) return finish(true);
     if (!next || reason || onCommit(next) === false) return input.current?.select();
     finish();
   };
@@ -65,7 +68,8 @@ export function InlineEdit({
       ref={input}
       value={draft}
       onValueChange={setDraft}
-      aria-invalid={!typed || !!reason || undefined}
+      placeholder={empty}
+      aria-invalid={(empty === undefined && !typed) || !!reason || undefined}
       {...appTip(reason)}
       className={clsx(
         'w-full min-w-0 text-[length:inherit] font-[inherit] text-shell-foreground outline-none',
