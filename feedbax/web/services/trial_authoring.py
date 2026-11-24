@@ -554,10 +554,20 @@ def _evaluate_documents(plan, key, definition, bundle):
     return documents, replace(paired, task_origins=variant.edit_origins), graph
 
 
-def _pairing(plan, key, bundle):
+def _definition(plan, key):
+    """The run's definition; a run whose own definition is refused is refused with its problem."""
     definition = plan.selected_definitions.get(key)
     if definition is None:
-        raise ProjectFolderInvalid("The selected run has no resolved trial definition.")
+        problem = next(
+            item for item in plan.diagnostics
+            if item.step == key.step and item.row == key.row and item.variant in (None, key.variant)
+        )
+        raise ProjectFolderInvalid(problem.detail)
+    return definition
+
+
+def _pairing(plan, key, bundle):
+    definition = _definition(plan, key)
     step = plan.steps[key.variant, key.step]
     if step.kind == "train":
         documents = TrialDocuments.model_validate(definition.payload.get("trial_documents"))
@@ -904,9 +914,7 @@ def trial_authoring(
     snapshot = folders.read(project_id, revision=body.revision)
     settled = folders.read_plan(project_id, revision=snapshot.revision, source_runs=(key,))
     plan = settled.plan
-    definition = plan.selected_definitions.get(key)
-    if definition is None:
-        raise ProjectFolderInvalid("The selected run has no resolved trial definition.")
+    definition = _definition(plan, key)
     step = plan.steps.get((key.variant, key.step))
     if step is None or step.kind not in ("train", "evaluate"):
         raise ProjectFolderInvalid("The selected run has no authored trial pairing.")

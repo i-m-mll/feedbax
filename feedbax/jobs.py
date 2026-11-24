@@ -239,6 +239,8 @@ class PlanJobAttempts:
     plan_ref: AuthoredTrainPlanRef | None = None
     checkpoint_producers: frozenset[RequestId] = frozenset()
     checkpoint_catalogs: Mapping[RequestId, tuple[int, ...]] = field(default_factory=dict)
+    finished_checkpoints: Mapping[RequestId, tuple[int, ...]] = field(default_factory=dict)
+    """The checkpoint coordinates each Train producer published on its way to success, once no attempt of it is live."""
     light_by_address: Mapping[str, tuple[PlanJobAttempt, ...]] = field(default_factory=dict)
     validity_checks: tuple[dict[str, Any], ...] = ()
 
@@ -438,8 +440,12 @@ class PlanJobReader:
             plan_ref,
             frozenset(catalogs),
             MappingProxyType(catalogs),
-            MappingProxyType({address: tuple(rows) for address, rows in light_attempts.items()}),
-            tuple(job for job in by_id.values() if "validity_check" in job["data"]),
+            finished_checkpoints=MappingProxyType({
+                request: tuple(coordinates)
+                for request, coordinates in snapshot.get("finished_checkpoints", {}).items()
+            }),
+            light_by_address=MappingProxyType({address: tuple(rows) for address, rows in light_attempts.items()}),
+            validity_checks=tuple(job for job in by_id.values() if "validity_check" in job["data"]),
         )
 
 

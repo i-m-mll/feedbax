@@ -1,7 +1,7 @@
 import { NumberField as BaseNumberField } from '@base-ui/react/number-field';
 import clsx from 'clsx';
 import { ChevronDown, ChevronUp } from 'lucide-react';
-import { forwardRef } from 'react';
+import { forwardRef, type ReactNode } from 'react';
 import { fieldBox, fieldInput } from './styles';
 
 export interface NumberFieldProps {
@@ -18,6 +18,9 @@ export interface NumberFieldProps {
   invalid?: boolean;
   placeholder?: string;
   'aria-label'?: string;
+  'aria-describedby'?: string;
+  /** A mark at the box's trailing end, before the steppers: the field's problem. */
+  trailing?: ReactNode;
   id?: string;
   className?: string;
 }
@@ -31,7 +34,7 @@ const stepper = clsx(
 );
 
 export const NumberField = forwardRef<HTMLInputElement, NumberFieldProps>(function NumberField(
-  { value, onValueChange, onValueCommitted, min, max, step, format = exact, disabled, readOnly, invalid, placeholder, id, className, ...aria }, ref,
+  { value, onValueChange, onValueCommitted, min, max, step, format = exact, disabled, readOnly, invalid, placeholder, trailing, id, className, ...aria }, ref,
 ) {
   return (
     <BaseNumberField.Root
@@ -48,6 +51,7 @@ export const NumberField = forwardRef<HTMLInputElement, NumberFieldProps>(functi
           onKeyDown={(event) => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) event.currentTarget.blur(); }}
           {...aria}
         />
+        {trailing ? <span className="flex pr-1">{trailing}</span> : null}
         {readOnly ? null : (
           // Pointer-only steppers; hidden so a wrapping label names just the input.
           <span aria-hidden="true" className="flex h-full w-4 shrink-0 flex-col border-l border-shell-divider">

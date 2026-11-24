@@ -81,7 +81,7 @@ test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from A
     const plot = page.getByRole('img', { name: 'Metric train_loss', exact: true });
     await expect(plot.locator('line title').filter({ hasText: /samples?/ }).first()).toBeAttached({ timeout: 14_000 });
 
-    await page.getByRole('button', { name: 'Activity', exact: true }).click();
+    await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
     const activity = page.getByRole('region', { name: 'Activity', exact: true });
     const attempt = activity.getByRole('region', { name: configuration.project, exact: true }).getByRole('listitem');
     const stopping = responseFor(page, '/api/jobs/stop');
@@ -126,7 +126,7 @@ test('Activity shows the original CLI and Studio clients for a saved Train reque
   const label = 'Batch review';
   await page.goto('/?project=' + project);
   await select(page, 'train');
-  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   const activity = page.getByRole('region', { name: 'Activity', exact: true });
   const entries = activity.getByRole('region', { name: configuration.project, exact: true }).getByRole('listitem');
 
@@ -137,9 +137,9 @@ test('Activity shows the original CLI and Studio clients for a saved Train reque
   await expect(cli.getByText(label, { exact: true })).toBeVisible();
   await expect(cli.getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });
   await expect(runs(page).getByText('Done', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   const studioJob = await admit(page, projectPath);
-  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   const studioEntry = entries.filter({ has: page.getByText('Studio', { exact: true }) });
   await expect(studioEntry.getByText('Client', { exact: true })).toBeVisible();
   await expect(studioEntry.getByText('Label', { exact: true })).toHaveCount(0);

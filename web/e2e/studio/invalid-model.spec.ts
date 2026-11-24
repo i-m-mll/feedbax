@@ -3,6 +3,7 @@ import { type Page } from '@playwright/test';
 import type { StudioProjectSnapshot } from '../../src/generated/studioContracts';
 import { enter, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
 import { pick, reveal } from './fixtures/controls';
+import { openView } from './fixtures/studioKeyboard';
 import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
@@ -11,7 +12,8 @@ const tab = (page: Page, name: string) => page.getByRole('tab', { name, exact: t
 
 // Catches an invalid Model hiding the steps that read it: the Evaluate's fields and runs vanishing, each bad row's
 // problem listed once per row, a listed subject drawing no Checkpoint, an update past a subject's training saved,
-// and an Objective term's Weight locked while the Model does not build.
+// an Objective term's Weight locked while the Model does not build, and an input whose producer cannot run explained by
+// a sentence (a raw run key) rather than the Cannot Run mark and its link.
 test('keeps the steps that read an invalid Model editable and marks them waiting on it', async ({ page, request, studio }) => {
   const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.invalid_model', 'seed', studio.home, 'invalid'));
   const path = '/api/projects/' + project;
@@ -35,6 +37,10 @@ test('keeps the steps that read an invalid Model editable and marks them waiting
   await expect(inspector.getByRole('combobox', { name: 'Trials', exact: true })).toBeVisible();
   await expect(runs.getByRole('row')).toHaveCount(3);
   await expect(runs.getByText("Can't run", { exact: true })).toHaveCount(2);
+  const subjectRow = inspector.getByRole('list', { name: 'Subject', exact: true }).getByRole('listitem');
+  await expect(subjectRow.getByRole('img', { name: "Can't run", exact: true })).toBeVisible();
+  await expect(subjectRow.getByRole('button', { name: 'train', exact: true })).toBeVisible();
+  await expect(inspector.getByRole('alert')).toHaveCount(0);
 
   await page.getByRole('button', { name: /^Problems/ }).click();
   const problems = page.getByRole('dialog', { name: 'Problems', exact: true });
@@ -74,10 +80,19 @@ test('keeps the steps that read an invalid Model editable and marks them waiting
   for (const [value, reason] of [['9000', 'train_b · 1 to 8000'], ['0', 'train · 1 to 8000']]) {
     await update.fill(value);
     await update.press('Enter');
-    await expect(inspector.getByRole('alert').filter({ hasText: reason })).toBeVisible();
+    await expect(update).toHaveAccessibleDescription(new RegExp(reason));
+    await expect(update.locator('..').getByRole('img', { name: 'Problem', exact: true })).toBeVisible();
   }
   const kept = await (await request.get(path)).json() as StudioProjectSnapshot;
   expect(kept.project.steps!.conditions.inputs!.subject).toEqual(at.steps!.conditions.inputs!.subject);
+
+  await mapStep(page, 'analyze').click();
+  await openView(page, 'analysis');
+  await page.getByRole('tabpanel', { name: 'Analysis', exact: true }).getByRole('group', { name: 'Select states', exact: true }).click();
+  const states = inspector.getByRole('list', { name: 'States', exact: true }).getByRole('listitem');
+  await expect(states.getByRole('img', { name: "Can't run", exact: true })).toBeVisible();
+  await states.getByRole('button', { name: /^conditions/ }).click();
+  await expect(mapStep(page, 'conditions')).toHaveAttribute('aria-pressed', 'true');
 
   await mapStep(page, 'train').click();
   await tab(page, 'Objective').click();

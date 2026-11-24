@@ -1,7 +1,7 @@
 import { Activity, X } from 'lucide-react';
 import { useId, useLayoutEffect, useRef } from 'react';
 import { StudioActivityPane, useStudioActivityCount, type ActivityResultState } from '@/components/activity/StudioActivity';
-import { studioName } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
 import { commandAttributes, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import type { StudioActivityJob } from '@/generated/studioContracts';
 import { Button, IconButton } from '@/components/ui/Button';
@@ -43,8 +43,8 @@ export function HeaderActivity({
       <Button
         variant="ghost"
         ref={trigger}
-        aria-label={studioName('activity')}
         {...(command && commandAttributes(command))}
+        aria-label={studioAccessibleName('activity', running || undefined)}
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
         onClick={onToggle}

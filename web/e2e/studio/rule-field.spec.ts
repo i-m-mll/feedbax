@@ -55,8 +55,9 @@ test('a run rule narrows an Evaluate subject and a Train Start, and a name that 
   await expect(ruleRow).toContainText('2/4');
   await rule.fill('sed=0');
   await rule.press('Enter');
-  await expect(inspector.getByRole('alert').filter({ hasText: 'sed is not swept' })).toBeVisible();
+  await expect(rule).toHaveAccessibleDescription(/sed is not swept/);
   await expect(rule).toHaveAttribute('aria-invalid', 'true');
+  await expect(ruleRow.getByRole('img', { name: 'Problem', exact: true })).toHaveAttribute('data-app-tip', /sed is not swept/);
   expect((await reads('evaluate', 'subject')).where).toEqual({ rule: 'seed=0..1' });
   await expect(runRows(page)).toHaveCount(2);
   await page.keyboard.press('Escape');
@@ -111,4 +112,21 @@ test('a rule written before the new step\'s form lands keeps the keyboard and sa
   await rule.press('Enter');
   expect((await started).ok()).toBe(true);
   await expect.poll(async () => (await reads('train-2', 'checkpoint')).where).toEqual({ rule: 'seed=3' });
+});
+
+// Catches a stored rule that chooses no run explained by a sentence under the Subject picker instead of on the rule
+// field, or its text replaced.
+test('a stored rule that asks for a run that does not exist keeps its text and is marked on the field', async ({ page, request }) => {
+  const files = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'missing-run-files'));
+  const { snapshot } = await seedManagedProject(request, files);
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  const rule = inspector.getByRole('combobox', { name: 'Runs', exact: true });
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await select(page, 'evaluate');
+  await expect(rule).toHaveValue('seed=7');
+  await expect(rule).toHaveAttribute('aria-invalid', 'true');
+  const mark = rule.locator('..').getByRole('img', { name: 'Problem', exact: true });
+  await expect(mark).toHaveAttribute('data-app-tip', /seed=7/);
+  await expect(rule).toHaveAccessibleDescription(/seed=7/);
+  await expect(inspector.getByRole('alert')).toHaveCount(0);
 });
