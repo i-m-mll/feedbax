@@ -249,6 +249,9 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const valueRuns = !evaluate && fieldRows?.length && fieldAxes ? { rows: [...fieldRows], axes: fieldAxes } : undefined;
   const projectionBody = model && { ...(projectionRun ? { run: projectionRun } : {}), document: model.id, revision: saved.revision, ...valueRuns };
   const projectionRunId = projectionRun && JSON.stringify(projectionRun);
+  /** The runs whose Model the view shows: a review of a connection reviews that Model. */
+  const shownSelection = evaluate ? { run: evaluate.run, evaluate_scope: evaluate.scope }
+    : { ...(projectionRun ? { run: projectionRun } : {}), ...valueRuns };
   const projection = useQuery({
     queryKey: ['model-projection', saved.project_id, projectionBody],
     queryFn: ({ signal }) => readModelProjection(saved.project_id, projectionBody!, signal),
@@ -644,7 +647,9 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     if (!source || (source.owner !== 'inputs' && source.owner !== 'component' && source.owner !== 'task')) return undefined;
     pendingReview.current?.request.abort();
     const request = new AbortController();
-    const reviewed = reviewModelConnections(saved.project_id, { revision: saved.revision, document: model.id, graph, source }, request.signal);
+    const reviewed = reviewModelConnections(saved.project_id, {
+      revision: saved.revision, document: model.id, graph, source, ...shownSelection,
+    }, request.signal);
     const pending = { source: port, reviewed, request };
     pendingReview.current = pending;
     void reviewed.then(({ targets }) => {
