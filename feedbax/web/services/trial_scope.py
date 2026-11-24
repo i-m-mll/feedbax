@@ -1192,12 +1192,16 @@ def set_document_write(project: Project, name: str, edits: Sequence[DocumentEdit
     for step, mapping in stores.pointing.items():
         authored = view.steps[step]
         raw = authored.model_dump(mode="json", by_alias=True, exclude_unset=True)
+        template = compose_step(view, step)
+        sweep = template.sweep if isinstance(template, StepTemplate) else None
         axes = {
-            axis: mapping[read.set] for axis, read in (authored.sweep.axes.items() if authored.sweep else ())
+            axis: read.model_copy(update={"set": mapping[read.set]}).model_dump(mode="json", exclude_unset=True)
+            for axis, read in (sweep.axes.items() if sweep else ())
             if isinstance(read, SetAxis) and read.set in mapping
         }
         if not axes:
-            raise ProjectFolderInvalid(f"{step} reads the set through the step it is based on.")
+            raise ProjectFolderInvalid(f"{step} no longer reads this Set.")
         address = AuthoredFileAddress(kind="step", id=step)
-        files.extend(file_value(address, raw, ("sweep", "axes", axis, "set"), new) for axis, new in axes.items())
+        local = raw.get("sweep") or {}
+        files.append(file_value(address, raw, ("sweep",), local | {"axes": local.get("axes", {}) | axes}))
     return StoredEdit(merged_files(files), tuple(stores.created), chosen | set_readers(project, name))

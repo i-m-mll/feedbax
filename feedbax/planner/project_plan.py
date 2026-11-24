@@ -595,6 +595,10 @@ class PlanSourceIndex:
         except (KeyError, ValueError) as error:
             raise ValueError(f"Invalid saved source for {run.variant}/{run.step}/{run.row}: {error}") from error
 
+    def expanded_step(self, variant: str, step: str) -> tuple[StepTemplate, Mapping[str, ExpandedRow]]:
+        """The authored template and expanded rows used to resolve the step's sources."""
+        return self._templates(variant, step)
+
     def _model_field_source(
         self, template: StepTemplate, run: RunKey, row: ExpandedRow, parts: tuple[str, ...],
     ) -> ValueSource | None:
