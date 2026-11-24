@@ -50,11 +50,12 @@ class StudioProjectRevision(StrictModel):
 
 
 class AuthoredFileAddress(StrictModel):
-    kind: Literal["document", "step", "variant", "presentation"]
+    kind: Literal["document", "step", "variant", "presentation", "declaration"]
     id: ProjectName
 
 
 PRESENTATION_ADDRESS = AuthoredFileAddress(kind="presentation", id="presentation")
+DECLARATION_ADDRESS = AuthoredFileAddress(kind="declaration", id="declaration")
 
 
 class StudioAuthoredFileRevision(StrictModel):
@@ -76,6 +77,7 @@ class StudioProjectSnapshot(StudioProjectRevision):
     presentation_error: Literal["unreadable_presentation"] | None = None
     file_revisions: list[StudioAuthoredFileRevision]
     declaration: StudioAuthoredDeclaration | None = None
+    settings: dict[str, JsonValue] = Field(default_factory=dict)
     composed: dict[str, JsonValue] = Field(default_factory=dict)
     """The composed payload of each based document whose base chain composes."""
 

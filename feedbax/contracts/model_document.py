@@ -39,12 +39,20 @@ class DelayAttachment(StrictModel):
     initial: JsonValue = 0
 
 
+class InterventionWindow(StrictModel):
+    """A pulse starting a whole number of steps after the named Task epoch begins."""
+
+    epoch: str
+    offsets: tuple[Annotated[int, Field(ge=0)], ...] = Field(min_length=1)
+    duration: Annotated[int, Field(gt=0)]
+
+
 class InterventionAttachment(StrictModel):
     kind: Literal["intervention"]
     id: ModelElementId
     operation: str
     fields: dict[str, JsonValue] = Field(default_factory=dict)
-    window: JsonValue = None
+    window: InterventionWindow | None = None
 
 
 class ProbeAttachment(StrictModel):

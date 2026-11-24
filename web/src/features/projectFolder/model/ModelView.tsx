@@ -411,7 +411,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const portMap = useMemo(() => {
     const ports = owner ? boundaryPorts(owner.ports) : emptyPorts;
     const unused = currentPath.length ? [] : (projection.data?.task_signals ?? []).filter((signal) =>
-      !owner?.ports.inputs?.some((input) => input.name === signal.id)).map((signal): Port => ({
+      !owner?.ports.inputs?.some((input) => input.name === signal.label)).map((signal): Port => ({
       end: { owner: 'inputs', port: `@task:${signal.id}` }, direction: 'output', name: signal.label,
       type: signal.type, taskSignal: signal.id,
     }));

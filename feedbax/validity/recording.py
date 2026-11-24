@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -24,16 +25,17 @@ from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.code_validity import (
     AttemptProvenance, CheckpointComputation, CheckpointEvidence, CheckpointEvidenceRoot, CodeTrace,
     ComputationUnavailable, ExecutionEvidenceRef, FileSnapshot, ObservationGeneration,
-    ReceiptEvidence, SourcePath, SourceSnapshot,
+    ReceiptEvidence, RegistryBinding, SourcePath, SourceSnapshot,
 )
 from feedbax.contracts.computation_validity import ComputationPrograms, ComputationTrace
 from feedbax.host.source_roster import SourceRoster
 from feedbax.revision import resolve_feedbax_provenance
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.plugins.bootstrap import importing_declarations
 from feedbax.plugins.declarations import ResolvedDeclaration, observe_declarations
 from feedbax.validity.environment import EnvironmentMismatch, EnvironmentSnapshot, InstalledInventory, read_environment
 from feedbax.validity.registry import registry_binding
-from feedbax.validity.source import SourceFile, plugin_packages, source_catalog
+from feedbax.validity.source import SourceFile, module_imports, plugin_packages, source_catalog
 
 
 type ComputationSnapshot = Callable[[], ComputationTrace | ComputationUnavailable | None]
@@ -50,6 +52,7 @@ class _Attempt:
     environment: EnvironmentSnapshot
     started: datetime
     excluded: tuple[Path, ...]
+    entered: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
     resolutions: dict[tuple[str, str, int], ResolvedDeclaration] = field(default_factory=dict)
     files: dict[SourcePath, str] = field(default_factory=dict)
     indeterminate_files: set[SourcePath] = field(default_factory=set)
@@ -65,6 +68,13 @@ class _Attempt:
     def observe(self, family: str, key: str, definition: ResolvedDeclaration) -> None:
         self.resolutions[family, key, id(definition.defining_object)] = definition
 
+    def observe_entry(self, filename: str, name: str) -> bool:
+        if importing_declarations.get():
+            return False
+        if filename.endswith(".py"):
+            self.entered[filename].add(name)
+        return True
+
 
 _recorder: WorkerRecorder | None = None
 _audit_installed = False
@@ -77,6 +87,7 @@ def _observe_open(event: str, arguments: tuple[object, ...]) -> None:
 
 @dataclass(frozen=True)
 class ExecutionDependencies:
+    entered: tuple[tuple[str, frozenset[str]], ...]
     resolutions: tuple[tuple[str, str, ResolvedDeclaration], ...]
     files: tuple[tuple[SourcePath, str], ...]
     indeterminate_files: tuple[SourcePath, ...]
@@ -85,7 +96,7 @@ class ExecutionDependencies:
 class WorkerRecorder:
     """Two lifetime rosters and a job-scoped audit over one worker process."""
 
-    def __init__(self, entered: dict[str, set[str]], *, boot_ns: int):
+    def __init__(self, entered: SourceRoster, *, boot_ns: int):
         self.project: Path | None = None
         self._environment_root: Path | None = None
         self.catalog = source_catalog(None)
@@ -151,26 +162,71 @@ class WorkerRecorder:
             name for module in tuple(sys.modules.values()) if isinstance(module, ModuleType)
             and isinstance(name := vars(module).get("__file__"), str)
         }
-        filenames.update(name for name, entered in self.entered.items() if "<module>" in entered)
+        filenames.update(name for name, entered in self.entered.names.items() if "<module>" in entered)
         result: dict[SourcePath, tuple[set[str], set[str]]] = {}
         for name in filenames:
-            if not name.endswith(".py"):
-                continue
-            if name not in self._source_names:
-                named = Path(name)
-                source = self.catalog.locate(named)
-                if source is not None and source.scope == "project" and any(
-                    named.resolve().is_relative_to(root) for root in self._interpreter_roots
-                ):
-                    source = None
-                self._source_names[name] = source
-            source = self._source_names[name]
+            source = self._source_path(name)
             if source is None:
                 continue
             names, host = result.setdefault(source, (set(), set()))
-            names.update(self.entered.get(name, ()))
+            names.update(self.entered.names.get(name, ()))
             host.update(self.host.names.get(name, ()))
         return result
+
+    def _source_path(self, filename: str) -> SourcePath | None:
+        if not filename.endswith(".py"):
+            return None
+        if filename not in self._source_names:
+            named = Path(filename)
+            source = self.catalog.locate(named)
+            if source is not None and source.scope == "project" and any(
+                named.resolve().is_relative_to(root) for root in self._interpreter_roots
+            ):
+                source = None
+            self._source_names[filename] = source
+        return self._source_names[filename]
+
+    def _used_sources(
+        self, attempt: _Attempt, bindings: tuple[RegistryBinding, ...],
+    ) -> dict[SourcePath, SourceFile | None]:
+        modules: dict[str, tuple[SourcePath, str]] = {}
+        aliases: dict[SourcePath, set[str]] = {}
+        for name, module in tuple(sys.modules.items()):
+            if not isinstance(module, ModuleType):
+                continue
+            namespace = vars(module)
+            if not isinstance(filename := namespace.get("__file__"), str):
+                continue
+            if (path := self._source_path(filename)) is not None:
+                modules[name] = path, namespace.get("__package__") or ""
+                aliases.setdefault(path, set()).add(name)
+
+        entered: dict[SourcePath, set[str]] = defaultdict(set)
+        for filename, functions in attempt.entered.items():
+            if (path := self._source_path(filename)) is not None:
+                entered[path].update(functions)
+        pending = set(entered)
+        pending.update(binding.source_path for binding in bindings if binding.source_path is not None)
+        used: dict[SourcePath, SourceFile | None] = {}
+        while pending:
+            path = pending.pop()
+            source = used[path] = self._current_source(path)
+            if source is None:
+                continue
+            names = set()
+            for name in aliases.get(path, ()):
+                _, package = modules[name]
+                names.add(name)
+                try:
+                    names.update(module_imports(source.data, package, frozenset(entered.get(path, ()))))
+                except (SyntaxError, ValueError):
+                    self._indeterminate.add(path)
+            for name in names:
+                while name:
+                    if (module := modules.get(name)) is not None and module[0] not in used:
+                        pending.add(module[0])
+                    name = name.rpartition(".")[0]
+        return used
 
     def observe_new_sources(self) -> bool:
         """Capture newly loaded files and report changes after their witness."""
@@ -234,7 +290,7 @@ class WorkerRecorder:
     def _scope(self, attempt: _Attempt) -> Iterator[None]:
         previous, self.attempt = self.attempt, attempt
         try:
-            with observe_declarations(attempt.observe):
+            with self.entered.collect(attempt.observe_entry), observe_declarations(attempt.observe):
                 yield
         finally:
             self.attempt = previous
@@ -242,7 +298,7 @@ class WorkerRecorder:
     def observe_open(self, filename: object, _mode: object, flags: object) -> None:
         attempt = self.attempt
         if (
-            attempt is None or getattr(self._audit, "reading", False)
+            attempt is None or getattr(self._audit, "reading", False) or importing_declarations.get()
             or not isinstance(filename, (str, bytes)) or not isinstance(flags, int)
             or flags & os.O_ACCMODE == os.O_WRONLY
         ):
@@ -347,9 +403,11 @@ class WorkerRecorder:
         computation = attempt.computation() if attempt.computation is not None else None
 
         initial_roster = self._source_paths()
+        bindings = self._registry_bindings(attempt)
+        used = self._used_sources(attempt, bindings)
         archived = {}
-        for path in sorted(initial_roster.keys() | self.loaded.keys(), key=_source_key):
-            source = self._current_source(path)
+        for path in sorted(used, key=_source_key):
+            source = used[path]
             if source is None:
                 continue
             previous = self._source_records.get(path)
@@ -375,13 +433,10 @@ class WorkerRecorder:
             record = SourceSnapshot(path=path, content=ref, entered=tuple(sorted(entered)), host_product=tuple(sorted(host)))
             sources[path] = self._source_records[path] = record
         observations = {
-            "registry": tuple(sorted({
-                registry_binding(family, key, value, self.catalog)
-                for (family, key, _), value in attempt.resolutions.items()
-            }, key=lambda binding: (binding.family, binding.requested_key, binding.module, binding.qualified_name))),
+            "registry": bindings,
             "files": tuple(FileSnapshot(path=path, sha256=attempt.files[path]) for path in sorted(attempt.files, key=_source_key)),
             "environment": self._loaded_environment(attempt.environment),
-            "indeterminate": tuple(sorted(self._indeterminate, key=_source_key)),
+            "indeterminate": tuple(sorted(self._indeterminate.intersection(used), key=_source_key)),
             "indeterminate_files": tuple(sorted(attempt.indeterminate_files, key=_source_key)),
         }
         provenance = AttemptProvenance(
@@ -390,6 +445,12 @@ class WorkerRecorder:
             started_at=attempt.started, ended_at=datetime.now(UTC),
         )
         return sources, observations, computation, provenance
+
+    def _registry_bindings(self, attempt: _Attempt) -> tuple[RegistryBinding, ...]:
+        return tuple(sorted({
+            registry_binding(family, key, value, self.catalog)
+            for (family, key, _), value in attempt.resolutions.items()
+        }, key=lambda binding: (binding.family, binding.requested_key, binding.module, binding.qualified_name)))
 
     def _archive_source(self, store: ImmutableArtifactBlobProvider, ref: ContentObjectRef, data: bytes) -> None:
         path = store.object_path(ref)
@@ -453,13 +514,13 @@ class WorkerRecorder:
         assert attempt is not None and self.project is not None
         self._audit.reading = True
         try:
-            for path in self._source_paths().keys() | self.loaded.keys():
-                self._current_source(path)
+            self._source_paths()
+            used = self._used_sources(attempt, self._registry_bindings(attempt))
             self._verify_file_reads(attempt)
             self._verify_environment(attempt)
         finally:
             self._audit.reading = False
-        if self._indeterminate or attempt.indeterminate_files:
+        if not self._indeterminate.isdisjoint(used) or attempt.indeterminate_files:
             raise ValueError("Source files or read dependencies changed during the computation check")
 
     def _loaded_environment(self, environment: EnvironmentSnapshot) -> dict[str, str]:
@@ -525,6 +586,7 @@ def execution_dependencies() -> ExecutionDependencies | None:
     if _recorder is None or (attempt := _recorder.attempt) is None:
         return None
     return ExecutionDependencies(
+        tuple((filename, frozenset(functions)) for filename, functions in attempt.entered.items()),
         tuple((family, key, resolved) for (family, key, _), resolved in attempt.resolutions.items()),
         tuple(attempt.files.items()), tuple(attempt.indeterminate_files),
     )
@@ -533,6 +595,8 @@ def execution_dependencies() -> ExecutionDependencies | None:
 def inherit_execution_dependencies(dependencies: ExecutionDependencies | None) -> None:
     if dependencies is None or _recorder is None or (attempt := _recorder.attempt) is None:
         return
+    for filename, functions in dependencies.entered:
+        attempt.entered[filename].update(functions)
     for family, key, definition in dependencies.resolutions:
         attempt.observe(family, key, definition)
     attempt.indeterminate_files.update(dependencies.indeterminate_files)
