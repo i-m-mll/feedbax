@@ -86,8 +86,10 @@ def set_edit(folders, project_id: str, body: StudioSetEditRequest) -> StudioSetE
         stored = _move_set(project, command)
     elif isinstance(command, AddSetEntry):
         stored, selected = _add_set_entry(project, command)
-    else:
+    elif isinstance(command, RemoveAxisValue):
         stored = _remove_value(project, command)
+    else:
+        raise ProjectFolderInvalid("This Set edit is unavailable.")
     result = _set_store(folders, project_id, project, step, body, stored)
     if isinstance(result, list):
         return StudioSetEdit(revision=body.revision, files=[], store_choices=result)
