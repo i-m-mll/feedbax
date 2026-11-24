@@ -11,7 +11,7 @@ import { TaskInspector } from './TaskInspector';
 import type { SampledTrial } from './trialSample';
 import { selectionKey, selectionOf, type TaskCell, type TaskDocumentView, type TaskEpoch, type TaskSignal } from './taskModel';
 
-type Structure = Extract<Parameters<Commit>[1], { kind: 'structure' }>['change'];
+type Structure = Extract<Parameters<Commit>[1], { kind: 'structure' }>['changes'][number];
 
 /**
  * The field the service projects at `parts` of the task document, or an empty read-only one where it projects none
@@ -35,40 +35,20 @@ function projected(view: TrialView, parts: readonly string[], stored: string, op
 }
 
 /**
- * An epoch's End: its length's field, with Rest among its kinds. Choosing Rest, or committing `rest`, makes the epoch
- * Rest; a Rest epoch's text commits a length, which is written as a length the field then holds.
+ * An epoch's End: its length's field, with Rest among its kinds. A Rest End's field shows Rest; committing `rest`
+ * makes an End Rest, and a length's text makes a Rest End that length, each in one edit the service makes.
  */
 function endField(view: TrialView, task: TaskDocument, index: number, commit?: Commit): FieldModel {
   const epoch = task.epochs[index];
-  const id = `end:${epoch.id}`;
   const label = studioName('end');
-  const name = studioAccessibleName('set', `${epoch.name} ${label}`);
-  const write = (end: TaskDocument['epochs'][number]['end']) => commit!(name, {
-    kind: 'task', edits: [{ op: 'replace', path: `/epochs/${index}/end`, value: end as never }],
-  });
   const end = epoch.end;
-  if (!('length' in end)) {
-    return {
-      ...rawField({ id, label, value: 'rest', type: { kind: 'string' } }),
-      kind: 'rest', kinds: [{ kind: 'value', enabled: !!commit }, { kind: 'rest', enabled: !!commit }],
-      commit: commit && (async (edit) => {
-        if (edit.kind !== 'text' || edit.text.trim() === 'rest') return undefined;
-        const made = await write({ kind: 'length', length: { kind: 'literal', value: 0, unit: 's' } });
-        if (made) return made;
-        const refused = await commit(name, { kind: 'expression', path: authoredPointer(['task', 'epochs', epoch.id, 'end', 'length']),
-          edit: { kind: 'text', text: edit.text } });
-        if (refused) await write({ kind: 'rest' });
-        return refused;
-      }),
-    };
-  }
+  const rest = !('length' in end);
   const length = projected(view, ['epochs', epoch.id, 'end', 'length'], `/epochs/${index}/end/length`,
-    { id, label, value: end.length, commit, name });
+    { id: `end:${epoch.id}`, label, value: rest ? undefined : end.length, commit, name: `${epoch.name} ${label}` });
   return {
     ...length,
-    kinds: [...length.kinds, { kind: 'rest', enabled: !!length.commit }],
-    commit: length.commit && ((edit) => edit.kind === 'text' && edit.text.trim() === 'rest'
-      ? write({ kind: 'rest' }) : length.commit!(edit)),
+    ...rest ? { kind: 'rest', text: 'rest', structure: undefined } : {},
+    kinds: [...length.kinds.filter(({ kind }) => !rest || kind !== 'sweep'), { kind: 'rest', enabled: !!length.commit }],
   };
 }
 
@@ -115,40 +95,31 @@ function grid(view: TrialView, task: TaskDocument, types: readonly StudioNamedVa
   return { epochs, signals };
 }
 
-/** Each change in turn, stopping at the first that is refused. */
-async function inTurn(changes: readonly (() => ReturnType<Commit>)[]) {
-  for (const change of changes) {
-    const refusal = await change();
-    if (refusal) return reasonOf(refusal);
-  }
-  return undefined;
-}
-
 function gridEdits(task: TaskDocument, commit?: Commit): GridEdits {
   if (!commit) return {};
-  const change = (name: string, structure: Structure, removes?: boolean) => () =>
-    commit(name, { kind: 'structure', change: structure }, removes);
-  const make = async (name: string, structure: Structure, removes?: boolean) => reasonOf(await change(name, structure, removes)());
+  /** One edit making `changes` in order: all of them, or none when one is refused. */
+  const make = async (name: string, changes: readonly Structure[], removes?: boolean) =>
+    reasonOf(await commit(name, { kind: 'structure', changes: [...changes] }, removes));
   const epoch = (id: string) => task.epochs.find((item) => item.id === id)?.name;
   const signal = (id: string) => task.signals.find((item) => item.id === id)?.name;
   return {
-    addEpoch: (name, index) => make(studioName('addEpoch'), { op: 'add', member: 'epoch', name, index }),
-    renameEpoch: (id, name) => make(studioAccessibleName('rename', epoch(id)), { op: 'rename', member: 'epoch', id, name }),
-    moveEpoch: (id, index) => make(studioAccessibleName('move', epoch(id)), { op: 'move', member: 'epoch', id, index }),
-    removeEpochs: (ids) => inTurn(ids.map((id) =>
-      change(studioAccessibleName('remove', epoch(id)), { op: 'remove', member: 'epoch', id }, true))),
-    addSignal: (name) => make(studioName('addSignal'), { op: 'add', member: 'signal', name }),
-    renameSignal: (id, name) => make(studioAccessibleName('rename', signal(id)), { op: 'rename', member: 'signal', id, name }),
-    moveSignal: (id, index) => make(studioAccessibleName('move', signal(id)), { op: 'move', member: 'signal', id, index }),
-    removeSignal: (id) => make(studioAccessibleName('remove', signal(id)), { op: 'remove', member: 'signal', id }, true),
+    addEpoch: (name, index) => make(studioName('addEpoch'), [{ op: 'add', member: 'epoch', name, index }]),
+    renameEpoch: (id, name) => make(studioAccessibleName('rename', epoch(id)), [{ op: 'rename', member: 'epoch', id, name }]),
+    moveEpoch: (id, index) => make(studioAccessibleName('move', epoch(id)), [{ op: 'move', member: 'epoch', id, index }]),
+    removeEpochs: (ids) => make(studioAccessibleName('remove', ids.map(epoch).join(', ')),
+      ids.map((id) => ({ op: 'remove', member: 'epoch', id })), true),
+    addSignal: (name) => make(studioName('addSignal'), [{ op: 'add', member: 'signal', name }]),
+    renameSignal: (id, name) => make(studioAccessibleName('rename', signal(id)), [{ op: 'rename', member: 'signal', id, name }]),
+    moveSignal: (id, index) => make(studioAccessibleName('move', signal(id)), [{ op: 'move', member: 'signal', id, index }]),
+    removeSignal: (id) => make(studioAccessibleName('remove', signal(id)), [{ op: 'remove', member: 'signal', id }], true),
     merge: (id, cell, first, last) => make(studioAccessibleName('merge', signal(id)),
-      { op: 'set_span', signal: id, cell, first_epoch: first, last_epoch: last }),
+      [{ op: 'set_span', signal: id, cell, first_epoch: first, last_epoch: last }]),
     split: (id, cell) => make(studioAccessibleName('split', signal(id)),
-      { op: 'set_span', signal: id, cell: cell.id, first_epoch: cell.first, last_epoch: cell.first }),
-    absent: (id, cells) => inTurn(cells.map((cell) =>
-      change(studioAccessibleName('absent', signal(id)), { op: 'absent', signal: id, cell }))),
-    present: (id, epochs) => inTurn(epochs.map((at) =>
-      change(studioAccessibleName('set', signal(id)), { op: 'present', signal: id, epoch: at }))),
+      [{ op: 'set_span', signal: id, cell: cell.id, first_epoch: cell.first, last_epoch: cell.first }]),
+    absent: (id, cells) => make(studioAccessibleName('absent', signal(id)),
+      cells.map((cell) => ({ op: 'absent', signal: id, cell }))),
+    present: (id, epochs) => make(studioAccessibleName('set', signal(id)),
+      epochs.map((at) => ({ op: 'present', signal: id, epoch: at }))),
   };
 }
 

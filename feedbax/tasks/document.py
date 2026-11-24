@@ -473,6 +473,9 @@ def compile_task(
         path = ("epochs", epoch.id, "end", "length")
         end = epoch.end
         if not isinstance(end, Length):
+            if sites is not None:
+                # A Rest End is still the site of the length it can be given instead.
+                sites[path] = Site(expected=time_type, finest=Level.TRIAL, names=tuple(scope.values()))
             rest.append(epoch.id)
             lengths.append(None)
             bounds.append(0)
