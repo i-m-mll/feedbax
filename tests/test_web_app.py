@@ -1,7 +1,10 @@
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from feedbax.host import HostClient
 from feedbax.web.app import create_app
 
 
@@ -39,3 +42,29 @@ def test_studio_rejects_retired_training_and_inert_controller_operations(tmp_pat
         targets = client.get("/api/orchestration/targets")
         assert targets.status_code == 200
         assert targets.json()["default"] == "local"
+
+
+def test_target_catalog_reads_inventory_without_starting_the_local_host(tmp_path, monkeypatch):
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(tmp_path / "host"))
+    connected = False
+
+    def exchange(_host, message, *, timeout, start_host):
+        assert not start_host
+        request = json.loads(message)
+        assert request["op"] == "ping"
+        assert request["include_runtime"] is True
+        if not connected:
+            raise FileNotFoundError()
+        return {"value": {"runtime": {"backend": "cpu", "devices": ["Test CPU"]}}}
+
+    monkeypatch.setattr(HostClient, "_exchange", exchange)
+    with TestClient(create_app(projects_dir=tmp_path / "projects")) as client:
+        absent = client.get("/api/orchestration/targets")
+        assert absent.status_code == 200, absent.text
+        assert absent.json()["targets"][0]["profile"] == {"id": "local", "kind": "local", "label": "This Mac"}
+        connected = True
+        present = client.get("/api/orchestration/targets")
+        assert present.status_code == 200, present.text
+        assert present.json()["targets"][0]["profile"] == absent.json()["targets"][0]["profile"] | {
+            "runtime": {"backend": "cpu", "devices": ["Test CPU"]},
+        }

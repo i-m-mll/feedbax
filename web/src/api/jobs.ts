@@ -55,7 +55,7 @@ export function approveSavedRun(project: string, input: StudioMachineApproval) {
 }
 
 export function fetchSavedEvaluationReplay(project: string, input: StudioSavedEvaluationReplayRequest, signal?: AbortSignal) {
-  return readContract(`/api/projects/${encodeURIComponent(project)}/evaluate-replay`, 'WorkspaceReplayTrial', { signal }, { contract: 'StudioSavedEvaluationReplayRequest', body: input });
+  return readContract(`/api/projects/${encodeURIComponent(project)}/evaluate-replay`, 'StudioTrialReplayResponse', { signal }, { contract: 'StudioSavedEvaluationReplayRequest', body: input });
 }
 
 export function fetchSavedEvaluationObjective(project: string, input: StudioSavedEvaluationRead, signal?: AbortSignal) {

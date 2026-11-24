@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import lru_cache
@@ -17,6 +18,7 @@ from packaging.utils import canonicalize_name
 from .declarations import CallableDeclaration, DistributionSource, callable_declaration
 
 PLUGIN_ENTRY_POINT_GROUP = "feedbax.plugins"
+importing_declarations = ContextVar("importing_declarations", default=False)
 
 
 class BootstrapErrorCode(StrEnum):
@@ -100,6 +102,7 @@ def installed_packages() -> tuple[DistributionSource, ...]:
 
 
 def _load_module(name: str, source: DistributionSource) -> ModuleType:
+    token = importing_declarations.set(True)
     try:
         return import_module(name)
     except (Exception, SystemExit) as exc:
@@ -108,6 +111,8 @@ def _load_module(name: str, source: DistributionSource) -> ModuleType:
             f"Cannot import module {name!r} from {source.distribution!r} {source.version}: {exc}",
             plugin_id=source.distribution,
         ) from exc
+    finally:
+        importing_declarations.reset(token)
 
 
 def _package_modules(package: ModuleType, source: DistributionSource) -> Iterator[ModuleType]:

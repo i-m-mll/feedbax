@@ -60,9 +60,9 @@ test('the epochs grid merges cells, draws an absent cell apart from a zero, reor
   await expect(cells('target_pos')).toHaveCount(1);
   await expect(cells('target_pos')).toHaveAttribute('colspan', '3');
 
-  // Dragging cue's grip onto the leading half of hold puts cue first.
+  // Dragging cue's handle onto the leading half of hold puts cue first.
   const hold = await header('hold').boundingBox();
-  await header('cue').getByRole('img', { name: 'Move cue', exact: true }).dragTo(header('hold'), {
+  await grid.getByRole('img', { name: 'Move cue', exact: true }).dragTo(header('hold'), {
     targetPosition: { x: 8, y: hold!.height / 2 },
   });
   await expect.poll(async () => (await task())?.epochs.map(({ name }) => name)).toEqual(['cue', 'hold', 'move']);
@@ -140,6 +140,7 @@ test('a Task from an example shows its label, and typing into an absent cell mak
   await page.keyboard.type('start');
   await page.keyboard.press('Enter');
   await expect.poll(spans).toEqual([['hold', 'hold'], ['cue', 'move']]);
+  await expect(cells.nth(0).getByRole('textbox', { name: 'target_pos', exact: true })).toHaveValue('start');
   await command('Undo');
   await expect.poll(spans).toEqual([['cue', 'move']]);
   await command('Redo');

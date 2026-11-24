@@ -418,6 +418,10 @@ def authored_declaration_revision(manifest: TextProjectManifest) -> str:
     return sha256_bytes(_encode(manifest, exclude=_PROJECT_CONFIGURATION_FIELDS))
 
 
+def text_project_settings_edit(manifest: TextProjectManifest, settings: Payload) -> bytes:
+    return _encode(manifest.model_copy(update={"settings": settings}))
+
+
 def replay_text_project_declaration(current: TextProjectManifest, data: bytes, *, declaration: str) -> bytes:
     """Restore the authored sweep declaration while retaining the current configuration."""
     target = _parse(TextProjectManifest, data, declaration)
