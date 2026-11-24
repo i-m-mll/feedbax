@@ -36,6 +36,12 @@ def trial_record(
     )
 
 
+def trial_weight_values(values: np.ndarray, defined: np.ndarray) -> list[float | None]:
+    """Project a weight trace onto its valid trial steps for transport."""
+    valid = defined & np.isfinite(values)
+    return [value if keep else None for value, keep in zip(values.tolist(), valid.tolist(), strict=True)]
+
+
 def _aggregate_signal(values: np.ndarray, present: np.ndarray) -> TaskSignalAggregate:
     percentiles = None
     if np.issubdtype(values.dtype, np.number):

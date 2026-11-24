@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Set
 from dataclasses import dataclass
 from enum import Enum
 from typing import NamedTuple
@@ -28,7 +28,7 @@ from feedbax.contracts.objective_document import (
 )
 from feedbax.contracts.expression_check import references
 from feedbax.expression_compile import Compiled, Inputs, compile_expression
-from feedbax.contracts.expression_registry import FunctionRegistry
+from feedbax.contracts.expression_registry import Evaluation, FunctionRegistry
 from feedbax.objectives.base import TermTree
 from feedbax.runtime.epoch_windows import whole_window
 from feedbax.tasks.document import Trial, TrialSource
@@ -49,6 +49,7 @@ class TermTrace(NamedTuple):
     values: jax.Array | None
     steps: jax.Array
     reduced: TermValue
+    weight: Evaluation | None
 
     @property
     def covered(self) -> jax.Array:
@@ -76,6 +77,7 @@ class _Term:
     reduction: Reduction
     epochs: tuple[int, ...]
     references: frozenset[str]
+    weight_references: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -150,14 +152,15 @@ class ObjectiveExecutor(eqx.Module):
         trial_key,
         *,
         parameters=None,
+        unobserved: Set[str] = frozenset(),
     ) -> Mapping[str, TermTrace]:
-        """The weighted measure, its covered steps and its reduction for each term."""
+        """The weight, weighted measure, covered steps and reduction of each term."""
         n_steps = self.n_steps
         k = jnp.arange(n_steps)
         results = {}
         uncovered = TermTrace(
             None, jnp.zeros(n_steps, dtype=bool),
-            TermValue(jnp.asarray(0.0), jnp.asarray(False)),
+            TermValue(jnp.asarray(0.0), jnp.asarray(False)), None,
         )
         fixed = {}
         traces = {}
@@ -182,6 +185,7 @@ class ObjectiveExecutor(eqx.Module):
                 results[term.id] = uncovered
                 continue
             selected = whole_window(trial.epochs, n_steps, term.epochs)
+            show_weight = not term.weight_references & unobserved
             weight_is_step = term.weight.checked.root.level == Level.STEP
             measure_is_step = term.measure.checked.root.level == Level.STEP
             authored = {} if parameters is None else parameters.get(term.id, {})
@@ -202,6 +206,7 @@ class ObjectiveExecutor(eqx.Module):
                 results[term.id] = TermTrace(
                     None, jnp.broadcast_to(covered, (n_steps,)),
                     TermValue(measure.value * weight.value, covered),
+                    _weight_trace(weight, selected) if show_weight else None,
                 )
                 continue
             if n_steps == 0:
@@ -222,6 +227,7 @@ class ObjectiveExecutor(eqx.Module):
                 measure, measure_state = term.measure.evaluate_step(
                     measure_inputs._replace(values=values, step=sample, defined=mask), measure_state
                 )
+                weight = None
                 if weight_is_step:
                     weight, weight_state = term.weight.evaluate_step(
                         weight_inputs._replace(
@@ -231,24 +237,23 @@ class ObjectiveExecutor(eqx.Module):
                         ),
                         weight_state,
                     )
-                    measure = measure._replace(
-                        value=measure.value * weight.value,
-                        defined=measure.defined & weight.defined,
-                    )
-                return (measure_state, weight_state), measure
+                return (measure_state, weight_state), (measure, weight)
 
-            _, samples = jax.lax.scan(
+            _, (samples, weight) = jax.lax.scan(
                 step, (measure_state, weight_state), (k, traces, available, t, u)
             )
-            values = samples.value
-            steps = samples.defined & selected
-            if not weight_is_step:
+            if weight is None:
                 weight, _ = term.weight.evaluate_step(weight_inputs, weight_state)
-                values = values * weight.value
-                steps = steps & weight.defined
+            weights = _weight_trace(weight, selected)
+            values = samples.value * weights.value
+            steps = samples.defined & weights.defined
             reduced = _reduce(values, steps, term.reduction)
-            results[term.id] = TermTrace(values, steps, reduced)
+            results[term.id] = TermTrace(values, steps, reduced, weights if show_weight else None)
         return results
+
+
+def _weight_trace(weight: Evaluation, selected: jax.Array) -> Evaluation:
+    return Evaluation(jnp.broadcast_to(weight.value, selected.shape), selected & weight.defined)
 
 
 def _reduce_trials(values):
@@ -386,6 +391,7 @@ def compile_objective(
                 term.reduction,
                 tuple(index for index, epoch in enumerate(task.epochs) if epoch in term.epochs),
                 used,
+                weight_refs,
             )
         )
         referenced.update(used)
