@@ -90,7 +90,7 @@ def test_bounded_train_and_evaluate_share_trial_objective(authored):
         functions,
         python_tasks=application_python_tasks(),
         objective=objective,
-        input_overrides={"reach_target": "target_pos"},
+        input_bindings={"task-input": "target_pos"},
         initialization_key=model_initialization_key(seed),
     )
     assert isinstance(paired, PreparedTrialExecution), paired
@@ -398,7 +398,7 @@ def test_trial_preparation_distinguishes_effective_scientific_inputs(authored, p
     })
     task = "documents.task.payload.id"
     objective = "documents.objective.payload.terms.effort.weight.value"
-    binding = "steps.train.base.inline.trial_documents.input_overrides.reach_target"
+    binding = "steps.train.base.inline.trial_documents.input_bindings.task-input"
     raw["sweep"] = {"rows": {
         "base": {},
         "model": {"patches": {f"documents.reach-model.{mass.to_text()}": {"value": 2.0}}},
@@ -413,7 +413,7 @@ def test_trial_preparation_distinguishes_effective_scientific_inputs(authored, p
     assert {
         (
             model.interior.components["plant"].fields["mass"], task_source.id,
-            kwargs["objective"].terms[0].weight.value, kwargs["input_overrides"]["reach_target"],
+            kwargs["objective"].terms[0].weight.value, kwargs["input_bindings"]["task-input"],
         )
         for (model, task_source, *_), kwargs in prepared_trials
     } == {
@@ -478,7 +478,7 @@ def document_project(authored, *, evaluation=False):
                     "model": {"document": "reach-model"},
                     "task": {"document": "task"},
                     "objective": {"document": "objective"},
-                    "input_overrides": {"reach_target": "target_pos"},
+                    "input_bindings": {"task-input": "target_pos"},
                 },
                 "training_config": {"n_batches": 2, "batch_size": 4},
                 "method": "feedbax.supervised_gradient",
