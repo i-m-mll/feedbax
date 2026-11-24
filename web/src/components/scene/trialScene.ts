@@ -47,11 +47,16 @@ export function recordedState(record: TrialRecord, frame: number): StateValues |
   ]);
 }
 
-/** Each world-frame track `record` recorded, as a path, with where it is at state frame `frame`. */
+/**
+ * Each world-frame path `record` recorded, with where it is at state frame `frame`. States that are one quantity under
+ * two names (a mechanism's effector and its skeleton's position) record the same path, which is drawn once.
+ */
 export function recordedTracks(record: TrialRecord | undefined, frame: number): SceneTrack[] {
-  return Object.values(record?.states ?? {}).filter((track) => track.frame === 'world').map((track) => ({
-    points: track.samples.map(point).filter((place) => place !== undefined),
-    head: point(at(track.samples, frame)),
+  const paths = new Map(Object.values(record?.states ?? {}).filter((track) => track.frame === 'world')
+    .map((track) => [JSON.stringify(track.samples), track.samples]));
+  return [...paths.values()].map((samples) => ({
+    points: samples.map(point).filter((place) => place !== undefined),
+    head: point(at(samples, frame)),
   }));
 }
 

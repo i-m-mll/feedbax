@@ -311,7 +311,8 @@ export function SceneDrawer({ sections, scene, selected, onSelect, checkpoints }
       )}
       {outline.nodes.length > 0 && (
         <DrawerSection sections={sections} id="scene.outline" name={studioName('outline')}>
-          <Tree aria-label={studioName('outline')} nodes={outline.nodes} defaultExpanded={outline.nodes.map(({ id }) => id)}
+          <Tree key={outline.nodes.map(({ id }) => id).join(' ')} aria-label={studioName('outline')} nodes={outline.nodes}
+            defaultExpanded={outline.nodes.map(({ id }) => id)}
             selected={selected && outline.addresses.has(selected) ? [selected] : []}
             onSelectedChange={(ids) => onSelect(outline.addresses.get(ids.at(-1) ?? '') ?? null)} />
         </DrawerSection>
