@@ -1,16 +1,56 @@
-import type { LiveTrainingFrame } from '@/features/scenario/liveTraining';
-import type { ResolvedScene, ResolvedSceneEntity } from '@/features/scenario/projections';
-import {
-  workspaceReplayFrameTimes,
-  workspaceReplayTrialRef,
-} from '@/features/scenario/workspaceReplay';
-import type { WorkspaceReplayTrial } from '@/generated/studioContracts';
 import type { StudioRegionIssue } from '@/components/activity/StudioRegion';
+import type { ElementAddress } from '@/features/projectWindow/elementSelection';
+import { workspaceReplayFrameTimes, workspaceReplayTrialRef } from '@/features/scenario/workspaceReplay';
+import type { WorkspaceReplayTrial } from '@/generated/studioContracts';
+import type { ScenePoint } from './planarProjection';
+
+/** A class of element the Scene draws, in Layers' order; Layers shows or hides each. */
+export const sceneLayers = ['bodies', 'joints', 'muscles'] as const;
+export type SceneLayer = typeof sceneLayers[number];
+
+export type SceneShape =
+  | { kind: 'segment'; points: readonly [ScenePoint, ScenePoint] }
+  | { kind: 'point'; point: ScenePoint }
+  | { kind: 'path'; points: readonly ScenePoint[] };
+
+/** A position the Inspector shows for an element: in the world frame, or authored in the frame it names. */
+export interface SceneValue {
+  readonly label: string;
+  readonly point: ScenePoint;
+}
+
+/** An element the Scene draws, identified by its address in the document that holds it. */
+export interface SceneElement {
+  /** `elementKey(address)`. */
+  readonly key: string;
+  readonly address: ElementAddress;
+  readonly name: string;
+  readonly layer: SceneLayer;
+  /** Absent when the element cannot be placed. */
+  readonly shape?: SceneShape;
+  readonly values: readonly SceneValue[];
+  /** Why the element is not drawn as authored, marked on it. */
+  readonly problem?: string;
+}
+
+/** A mechanism with the elements of it the Scene draws. */
+export interface SceneGroup {
+  readonly key: string;
+  readonly address: ElementAddress;
+  readonly name: string;
+  readonly elements: readonly SceneElement[];
+  readonly problem?: string;
+}
+
+export interface Scene {
+  readonly groups: readonly SceneGroup[];
+}
+
+export const emptyScene: Scene = { groups: [] };
 
 export type SceneDrawing =
-  | { kind: 'geometry'; scene: ResolvedScene }
-  | { kind: 'live'; scene: ResolvedScene; frame: LiveTrainingFrame | null }
-  | { kind: 'replay'; scene: ResolvedScene; trial: WorkspaceReplayTrial; sceneAt?: (time: number) => ResolvedScene };
+  | { kind: 'geometry'; scene: Scene }
+  | { kind: 'replay'; scene: Scene; trial: WorkspaceReplayTrial };
 
 export type SceneView =
   | SceneDrawing
@@ -18,7 +58,9 @@ export type SceneView =
   | { kind: 'empty' }
   | { kind: 'failed'; issue: StudioRegionIssue; retry: () => void };
 
-export type SceneOverlay = 'objectives' | 'observables' | 'overlays';
+export function sceneElements(scene: Scene) {
+  return scene.groups.flatMap((group) => group.elements);
+}
 
 export interface SceneCamera {
   zoom: number;
@@ -29,16 +71,6 @@ export const fittedCamera: SceneCamera = { zoom: 1, pan: { x: 0, y: 0 } };
 
 export function zoomScene(camera: SceneCamera, factor: number): SceneCamera {
   return { ...camera, zoom: Math.max(0.35, Math.min(8, camera.zoom * factor)) };
-}
-
-export function sceneGeometry(view: SceneDrawing, time: number): ResolvedScene {
-  return view.kind === 'replay' && view.sceneAt ? view.sceneAt(time) : view.scene;
-}
-
-export function sceneEntityOverlay(entity: ResolvedSceneEntity): SceneOverlay | undefined {
-  if (entity.kind === 'objective_term') return 'objectives';
-  if (entity.kind === 'retained_observable' || entity.kind === 'probe') return 'observables';
-  if (entity.kind === 'artifact_overlay') return 'overlays';
 }
 
 export function sceneTimeline(view: SceneView) {
