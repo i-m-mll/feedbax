@@ -10,7 +10,7 @@ import { authorAndRecoverTrain } from './fixtures/firstTrainLifecycle';
 import { authorWalkthroughSweep, selectModelComponent, verifyWalkthroughSuccessors, verifyWalkthroughVariant } from './fixtures/managedLightWalkthrough';
 import { activate, chooseOption, chooseStepKind, number, openView, palette, tabTo, typeValue } from './fixtures/studioKeyboard';
 
-import { pick } from './fixtures/controls';
+import { applyTo, pick } from './fixtures/controls';
 import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
@@ -632,6 +632,8 @@ test('authors a paired Analyze and shared successors from the primary variant', 
   const recipe = await prepared;
   expect(recipe.ok(), await recipe.text()).toBe(true);
   expect(recipe.request().postDataJSON()).toMatchObject({ revision: continuation.revision });
+  // The compare variant reads the continuation too, so the edit asks where it applies.
+  await applyTo(page).getByRole('menuitem', { name: 'Whole Step', exact: true }).click();
   const saved = await saving;
   expect(saved.ok(), await saved.text()).toBe(true);
   const edited = await saved.json() as StudioProjectSnapshot;
