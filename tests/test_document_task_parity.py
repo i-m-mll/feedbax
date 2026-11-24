@@ -243,7 +243,7 @@ def example(kind, functions, *, zero=False, interface=PORTLESS, reference_valida
         doc,
         functions,
         model=interface,
-        input_overrides={"reach_target": "target_pos"} if interface.inputs else None,
+        input_bindings={"task-input": "target_pos"} if interface.inputs else None,
     )
     assert isinstance(task, DocumentTask), task
     return doc, task

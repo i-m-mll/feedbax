@@ -48,7 +48,7 @@ def test_weighted_set_switches_real_training_trials_at_the_window_boundaries():
     def prepare(model, task):
         result = compile_trial_execution(
             model, task, registry, functions, python_tasks=application_python_tasks(),
-            objective=objective, input_overrides=document.input_overrides,
+            objective=objective, input_bindings=document.input_bindings,
             initialization_key=model_initialization_key(seed),
         )
         assert isinstance(result, PreparedTrialExecution), result
