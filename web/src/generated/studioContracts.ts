@@ -726,6 +726,7 @@ export interface ConnectSignal {
   graph: ModelAddress;
   source: ComponentPortEnd | InputBoundaryEnd;
   target: ComponentPortEnd | OutputBoundaryEnd;
+  grow_source?: boolean;
   grow_target?: boolean;
 }
 
@@ -735,6 +736,7 @@ export interface ConnectTaskSignal {
   run: StudioSavedTrainKey;
   signal: string;
   target: ComponentPortEnd | OutputBoundaryEnd;
+  grow_target?: boolean;
 }
 
 export interface ConnectPhysical {
@@ -994,9 +996,14 @@ export interface ModelUndoRequest {
 
 export interface ModelConnectionReviewRequest {
   revision: string;
+  run?: StudioSavedTrainKey | null;
   document: string;
+  rows?: string[];
+  axes?: Record<string, string[]>;
   graph: ModelAddress;
   source: ComponentPortEnd | InputBoundaryEnd | TaskSignalSource;
+  evaluate_scope?: StepRuns | AxisValueRuns | ListedRuns | VariantRuns | null;
+  grow_source?: boolean;
 }
 
 export interface TaskSignalSource {
@@ -1010,6 +1017,7 @@ export interface ModelConnectionVerdict {
   reason: string | null;
   problem?: string | null;
   replaced?: ModelWireReplacement[];
+  growing?: boolean;
 }
 
 export interface ModelWireReplacement {
@@ -6739,6 +6747,7 @@ export const ConnectSignalSchema: z.ZodType<ConnectSignal> = z.lazy(() =>
       "graph": ModelAddressSchema,
       "source": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]),
       "target": z.union([ComponentPortEndSchema, OutputBoundaryEndSchema]),
+      "grow_source": z.boolean().optional(),
       "grow_target": z.boolean().optional(),
     })
     .strict()
@@ -6752,6 +6761,7 @@ export const ConnectTaskSignalSchema: z.ZodType<ConnectTaskSignal> = z.lazy(() =
       "run": StudioSavedTrainKeySchema,
       "signal": z.string(),
       "target": z.union([ComponentPortEndSchema, OutputBoundaryEndSchema]),
+      "grow_target": z.boolean().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ConnectTaskSignal>;
@@ -7218,9 +7228,14 @@ export const ModelConnectionReviewRequestSchema: z.ZodType<ModelConnectionReview
   z
     .object({
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+      "run": StudioSavedTrainKeySchema.nullable().optional(),
       "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).optional(),
+      "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1))).optional(),
       "graph": ModelAddressSchema,
       "source": z.union([z.union([ComponentPortEndSchema, InputBoundaryEndSchema]), TaskSignalSourceSchema]),
+      "evaluate_scope": z.union([StepRunsSchema, AxisValueRunsSchema, ListedRunsSchema, VariantRunsSchema]).nullable().optional(),
+      "grow_source": z.boolean().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelConnectionReviewRequest>;
@@ -7242,6 +7257,7 @@ export const ModelConnectionVerdictSchema: z.ZodType<ModelConnectionVerdict> = z
       "reason": z.string().nullable(),
       "problem": z.string().nullable().optional(),
       "replaced": z.array(ModelWireReplacementSchema).optional(),
+      "growing": z.boolean().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelConnectionVerdict>;

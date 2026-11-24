@@ -105,7 +105,7 @@ export async function enter(field: Locator, value: string) {
 export async function authorLearningRateSweep(rate: Locator) {
   const page = rate.page();
   await activate(page, rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true }));
-  await activateMenuItem(page, page.getByRole('menuitem', { name: 'Sweep', exact: true }));
+  await activateMenuItem(page, page.getByRole('menuitemradio', { name: 'Sweep', exact: true }));
   const text = rate.getByRole('textbox', { name: 'Learning Rate Value', exact: true });
   await expect(text).toBeFocused();
   await expect(text).toHaveValue('0.001');

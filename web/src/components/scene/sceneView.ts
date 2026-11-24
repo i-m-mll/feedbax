@@ -1,10 +1,9 @@
 import type { StudioRegionIssue } from '@/components/activity/StudioRegion';
 import type { ElementAddress } from '@/features/projectWindow/elementSelection';
-import type { TrialRecord } from '@/generated/studioContracts';
 import type { ScenePoint } from './planarProjection';
 
 /** A class of element the Scene draws, in Layers' order; Layers shows or hides each. */
-export const sceneLayers = ['bodies', 'joints', 'muscles'] as const;
+export const sceneLayers = ['bodies', 'joints', 'muscles', 'variables', 'signals'] as const;
 export type SceneLayer = typeof sceneLayers[number];
 
 export type SceneShape =
@@ -25,14 +24,16 @@ export interface SceneElement {
   readonly address: ElementAddress;
   readonly name: string;
   readonly layer: SceneLayer;
-  /** Absent when the element cannot be placed. */
+  /** What the element is in the shown trial; absent when it has no place there. */
   readonly shape?: SceneShape;
+  /** The places the element may take, one per trial that may be shown, drawn hollow. */
+  readonly possible?: readonly ScenePoint[];
   readonly values: readonly SceneValue[];
   /** Why the element is not drawn as authored, marked on it. */
   readonly problem?: string;
 }
 
-/** A mechanism with the elements of it the Scene draws. */
+/** A mechanism, or the task, with the elements of it the Scene draws. */
 export interface SceneGroup {
   readonly key: string;
   readonly address: ElementAddress;
@@ -43,16 +44,27 @@ export interface SceneGroup {
 
 export interface Scene {
   readonly groups: readonly SceneGroup[];
+  /** The mechanisms at rest, drawn faint beneath a recorded pose. */
+  readonly rest: readonly SceneShape[];
+  /** Each recorded world-frame track, drawn as a path, the picked trial's last. */
+  readonly tracks: readonly SceneTrack[];
 }
 
-export const emptyScene: Scene = { groups: [] };
+/**
+ * A recorded world-frame track: its whole path, how many of its points are drawn (all of them, or those up to the
+ * playhead under Trails), where it is at the playhead, and whether it is the picked trial's, drawn heavier.
+ */
+export interface SceneTrack {
+  readonly points: readonly ScenePoint[];
+  readonly drawn: number;
+  readonly head?: ScenePoint;
+  readonly picked: boolean;
+}
 
-export type SceneDrawing =
-  | { kind: 'geometry'; scene: Scene }
-  | { kind: 'replay'; scene: Scene; trial: TrialRecord; stateTime: number[]; position: string | null };
+export const emptyScene: Scene = { groups: [], rest: [], tracks: [] };
 
 export type SceneView =
-  | SceneDrawing
+  | { kind: 'drawn'; scene: Scene }
   | { kind: 'loading' }
   | { kind: 'empty' }
   | { kind: 'failed'; issue: StudioRegionIssue; retry: () => void };
@@ -71,18 +83,3 @@ export const fittedCamera: SceneCamera = { zoom: 1, pan: { x: 0, y: 0 } };
 export function zoomScene(camera: SceneCamera, factor: number): SceneCamera {
   return { ...camera, zoom: Math.max(0.35, Math.min(8, camera.zoom * factor)) };
 }
-
-export function sceneTimeline(view: SceneView) {
-  if (view.kind !== 'replay') return null;
-  const { trial, stateTime: frameTimes } = view;
-  const duration = frameTimes[frameTimes.length - 1];
-  if (frameTimes.length < 2 || !(duration > 0)) return null;
-  return {
-    id: `trial:${trial.id}`,
-    frameTimes,
-    duration,
-    units: 's',
-  };
-}
-
-export type SceneTimeline = NonNullable<ReturnType<typeof sceneTimeline>>;

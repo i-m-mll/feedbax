@@ -2,7 +2,7 @@ import clsx from 'clsx';
 import { useRef, type CSSProperties, type PointerEvent, type ReactNode } from 'react';
 import { studioName, studioUnit } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
-import { elementKey, type ElementAddress } from '@/features/projectWindow/elementSelection';
+import { elementKey, isModelAddress, type ElementAddress } from '@/features/projectWindow/elementSelection';
 import { useAxisWithin, type TimeAxisStore } from './timeAxis';
 
 /**
@@ -84,6 +84,10 @@ function Ticks({ duration, stepSeconds }: { duration: number; stepSeconds?: numb
 
 const markAttribute = 'data-shelf-mark';
 
+/** The element an address names, whichever of its fields is selected: a row is chosen while any cell of its element is. */
+const elementOf = (address: ElementAddress) =>
+  elementKey(isModelAddress(address) ? address : { ...address, element: { kind: 'named', id: address.element.id } });
+
 function Segment({ segment, duration, chosen }: { segment: ShelfSegment; duration: number; chosen: boolean }) {
   const { key, name, start, end, spread, dashedFrom, selects } = segment;
   const width = end - start;
@@ -112,14 +116,14 @@ function Segment({ segment, duration, chosen }: { segment: ShelfSegment; duratio
 
 /**
  * Rows on one time axis under the clock, their ends at the scrubber's ends, for one trial: each a name, then named
- * segments or bars. A row, or a segment, selects what it stands for; dragging along the axis moves the playhead,
+ * segments or bars. The rows scroll inside the shelf's height; the axis stays below them. A row, or a segment, selects what it stands for; dragging along the axis moves the playhead,
  * which runs through every row. The shelf knows what its rows select, not what they are.
  */
 export function Shelf({ rows, duration, stepSeconds, time, onTimeChange, selected, onSelect, trailing, axis, unavailable }: ShelfProps) {
   const section = useRef<HTMLElement>(null);
   const span = useAxisWithin(axis, section);
-  const chosen = new Set(selected.map(elementKey));
-  const isChosen = (address?: ElementAddress) => !!address && chosen.has(elementKey(address));
+  const chosen = new Set(selected.map(elementOf));
+  const isChosen = (address?: ElementAddress) => !!address && chosen.has(elementOf(address));
   const selects = new Map(rows.flatMap((row) => row.kind === 'segments'
     ? row.segments.flatMap(({ key, selects }) => selects ? [[`${row.key}:${key}`, selects] as const] : [])
     : row.selects ? [[row.key, row.selects] as const] : []));
@@ -159,7 +163,10 @@ export function Shelf({ rows, duration, stepSeconds, time, onTimeChange, selecte
     : { gridTemplateColumns: '7rem minmax(0,1fr) auto' };
   const nameCell = span ? 'pl-3 pr-2' : 'pl-3';
   return <section ref={section} aria-label={studioName('shelf')} aria-disabled={unavailable ? true : undefined}
-    className={clsx('grid min-w-0 items-start gap-y-1 py-2', !span && 'gap-x-2')} style={columns}>
+    className={clsx('grid max-h-[40vh] min-w-0 grid-rows-[minmax(0,1fr)_auto] items-start gap-y-1 py-2', !span && 'gap-x-2')}
+    style={columns}>
+    <div data-shelf-rows="" className={clsx('col-span-2 col-start-1 row-start-1 grid max-h-full min-h-0 grid-cols-subgrid content-start gap-y-1 overflow-y-auto',
+      !span && 'gap-x-2')}>
     {rows.map((row, index) => {
       const rowChosen = row.kind === 'bars' && isChosen(row.selects);
       const name = <>{row.glyph}<span className="truncate font-mono">{row.name}</span></>;
@@ -186,9 +193,10 @@ export function Shelf({ rows, duration, stepSeconds, time, onTimeChange, selecte
       </div>;
     })}
     {unavailable && <div className="col-start-2 text-xs text-shell-muted" style={{ gridRow: rows.length + 1 }}>{unavailable}</div>}
-    <div className="col-start-2" style={{ gridRow: rows.length + (unavailable ? 2 : 1) }}>
+    </div>
+    <div className="col-start-2 row-start-2">
       <Ticks duration={duration} stepSeconds={stepSeconds} />
     </div>
-    {trailing && <div className="col-start-3 row-start-1 flex justify-end pr-3" style={{ gridRowEnd: 'span 2' }}>{trailing}</div>}
+    {trailing && <div className="col-start-3 row-start-1 flex justify-end pr-3">{trailing}</div>}
   </section>;
 }

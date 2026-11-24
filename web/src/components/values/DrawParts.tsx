@@ -1,46 +1,19 @@
-import { useSyncExternalStore } from 'react';
 import type { StudioDensity } from '@/generated/studioContracts';
 import { studioFieldLabel, studioName } from '@/components/activity/studioVocabulary';
-import { drawFamilies, drawOf, drawText, perIsFree, withFamily, type DrawDraft, type FieldModel } from './fieldModel';
+import { centred, drawFamilies, drawText, perIsFree, withFamily, type DrawDraft, type FieldModel } from './fieldModel';
+import { partDraft, setPartDraft } from './partDrafts';
 import { ValueField } from './ValueField';
 
 /**
- * Draws whose parts are not all filled, by field id: chosen from a field's kind menu or by a family whose parameters
- * the value lacks. Nothing is written for one until its parts are filled. Kept outside the field, since a table
- * cell's kind menu starts the draw whose parts the Inspector shows.
+ * Starts a draw in the field around `centre`: of the site's first family that has a centre, with `centre` as it, or
+ * else of its first family with its parts empty.
  */
-const drafts = new Map<string, DrawDraft>();
-const listeners = new Set<() => void>();
-
-function setDraft(id: string, draft: DrawDraft | undefined) {
-  if (draft) drafts.set(id, draft);
-  else drafts.delete(id);
-  for (const listener of listeners) listener();
-}
-
-function subscribe(listener: () => void) {
-  listeners.add(listener);
-  return () => { listeners.delete(listener); };
-}
-
-export function useDrawDraft(id: string) {
-  return useSyncExternalStore(subscribe, () => drafts.get(id));
-}
-
-/** Leaves the field's unfilled draw, if it has one. */
-export function clearDraw(id: string) {
-  if (drafts.has(id)) setDraft(id, undefined);
-}
-
-/** Starts a draw in the field, of its site's first family, with its parts empty. */
-export function startDraw(model: FieldModel) {
-  const [family] = drawFamilies(model);
-  if (family) setDraft(model.id, withFamily(model, undefined, family));
-}
-
-/** The draw the field shows: its unfilled draft, else its value. */
-export function useShownDraw(model: FieldModel) {
-  return useDrawDraft(model.id) ?? drawOf(model);
+export function startDraw(model: FieldModel, centre?: string) {
+  const families = drawFamilies(model);
+  const family = families.find(centred) ?? families[0];
+  if (!family) return;
+  const draw = withFamily(model, undefined, family);
+  setPartDraft(model.id, { kind: 'draw', draw: { ...draw, args: draw.args.map((arg, index) => index === 0 && centred(family) && centre?.trim() ? centre : arg) } });
 }
 
 /**
@@ -50,16 +23,16 @@ export function useShownDraw(model: FieldModel) {
 export function DrawParts({ model, draw }: { model: FieldModel; draw: DrawDraft }) {
   const families = drawFamilies(model);
   const family = families.find(({ id }) => id === draw.family);
-  const pending = drafts.has(model.id);
+  const pending = partDraft(model.id)?.kind === 'draw';
   const commit = model.commit;
   async function write(next: DrawDraft) {
     const text = drawText(next);
     if (!text || !commit) {
-      setDraft(model.id, next);
+      setPartDraft(model.id, { kind: 'draw', draw: next });
       return undefined;
     }
     const failure = await commit({ kind: 'text', text });
-    setDraft(model.id, failure ? next : undefined);
+    setPartDraft(model.id, failure ? { kind: 'draw', draw: next } : undefined);
     return failure;
   }
   const base = { names: model.names, functions: model.functions, kinds: [], kind: 'value' } as const;

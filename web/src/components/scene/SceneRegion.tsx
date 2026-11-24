@@ -1,5 +1,5 @@
 import { useId, useLayoutEffect, useMemo, useRef, type PointerEvent, type SVGProps } from 'react';
-import { Boxes, Circle, Layers, RectangleHorizontal, Waypoints } from 'lucide-react';
+import { AudioWaveform, Boxes, Circle, Layers, RectangleHorizontal, Variable, Waypoints } from 'lucide-react';
 import { IconButton } from '@/components/ui/Button';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { Inspector } from '@/components/ui/Inspector';
@@ -13,12 +13,11 @@ import { Menu, MenuCheckboxItem, MenuContent, MenuTrigger } from '@/components/u
 import { Select } from '@/components/ui/Select';
 import { StudioRegion, StudioRegionBoundary } from '@/components/activity/StudioRegion';
 import { studioAccessibleName, studioName, studioUnit } from '@/components/activity/studioVocabulary';
-import { primaryWorkspaceReplayTrack, workspaceReplayFrameIndex, workspaceReplayPolyline, workspaceReplaySampleAt } from '@/features/scenario/workspaceReplay';
 import { useElementSize } from '@/hooks/useElementSize';
 import { WORKSPACE_SVG_HEIGHT, WORKSPACE_SVG_WIDTH, fitScale, niceScaleLength, sceneBounds, shapePoints, type ScenePoint } from './planarProjection';
 import {
   fittedCamera, sceneElements, sceneLayers, zoomScene,
-  type Scene, type SceneCamera, type SceneDrawing, type SceneElement, type SceneLayer, type SceneView,
+  type Scene, type SceneCamera, type SceneElement, type SceneLayer, type SceneShape, type SceneView,
 } from './sceneView';
 
 /** The window's selection as the Scene sees it: the key of the selected element, and a choice of one by its address. */
@@ -45,26 +44,49 @@ function selectionHandlers(element: SceneElement, selected: string | null, onSel
   };
 }
 
-/** Bodies under muscles under joints, so that a joint stays pressable where a body or a muscle crosses it. */
-const drawOrder: Record<SceneLayer, number> = { bodies: 0, muscles: 1, joints: 2 };
+/**
+ * Bodies under muscles under joints, so that a joint stays pressable where a body or a muscle crosses it; the task's
+ * places above the mechanisms.
+ */
+const drawOrder: Record<SceneLayer, number> = { bodies: 0, muscles: 1, joints: 2, variables: 3, signals: 4 };
+
+/** Where an element is drawn: its shape in the shown trial, and each place it may take. */
+const elementPoints = (element: SceneElement): readonly ScenePoint[] =>
+  [...element.shape ? shapePoints(element.shape) : [], ...element.possible ?? []];
+
+/** What is drawn faint: the mechanisms at rest beneath a recorded pose. */
+function RestDrawing({ shape, project }: { shape: SceneShape; project: (point: ScenePoint) => ScenePoint }) {
+  if (shape.kind === 'point') {
+    const [x, y] = project(shape.point);
+    return <circle cx={x} cy={y} r={3} fill="var(--studio-scene-grid)" />;
+  }
+  return <polyline points={shape.points.map((point) => project(point).join(',')).join(' ')} fill="none"
+    stroke="var(--studio-scene-grid)" strokeWidth={shape.kind === 'segment' ? 6 : 2} strokeLinecap="round"
+    strokeLinejoin="round" vectorEffect="non-scaling-stroke" />;
+}
 
 function ElementDrawing({ element, active, project }: {
-  element: SceneElement & { shape: NonNullable<SceneElement['shape']> };
+  element: SceneElement;
   active: boolean;
   project: (point: ScenePoint) => ScenePoint;
 }) {
   const stroke = active ? 'var(--text-primary)' : 'var(--studio-scene-outline)';
+  const possible = element.possible?.map(project).map(([x, y], index) => <circle key={index} data-scene-possible cx={x} cy={y}
+    r={active ? 6 : 5} fill="transparent" stroke={stroke} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />);
   const { shape } = element;
+  if (!shape) return <>{possible}</>;
   if (shape.kind === 'point') {
     const [x, y] = project(shape.point);
     return <>
-      <circle cx={x} cy={y} r={active ? 5 : 3} fill={stroke} />
+      {possible}
+      <circle data-scene-solid cx={x} cy={y} r={active ? 5 : 3} fill={stroke} />
       <circle cx={x} cy={y} r={8} fill="transparent" />
     </>;
   }
   const points = shape.points.map(project);
   const body = shape.kind === 'segment';
   return <>
+    {possible}
     <polyline points={points.map((point) => point.join(',')).join(' ')} fill="none" stroke={stroke}
       strokeWidth={body ? active ? 8 : 6 : active ? 3 : 2} strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
     {points.map(([x, y], index) => <circle key={index} cx={x} cy={y} r={body ? 4.5 : 3}
@@ -74,7 +96,6 @@ function ElementDrawing({ element, active, project }: {
 }
 
 type SceneDrawingProps = SceneSelection & {
-  time: number;
   camera: SceneCamera;
   onCameraChange: (camera: SceneCamera) => void;
   hiddenLayers: ReadonlySet<SceneLayer>;
@@ -82,19 +103,18 @@ type SceneDrawingProps = SceneSelection & {
 };
 
 function SceneDrawingCanvas({
-  view, time, camera, onCameraChange, hiddenLayers, selected, onSelect, fitToSlot = false,
-}: SceneDrawingProps & { view: SceneDrawing }) {
+  scene, camera, onCameraChange, hiddenLayers, selected, onSelect, fitToSlot = false,
+}: SceneDrawingProps & { scene: Scene }) {
   const gridId = useId();
   const { ref: canvas, width, height } = useElementSize<SVGSVGElement>(fitToSlot);
   const viewportWidth = fitToSlot && width > 0 ? width : WORKSPACE_SVG_WIDTH;
   const viewportHeight = fitToSlot && height > 0 ? height : WORKSPACE_SVG_HEIGHT;
   const pan = useRef<{ start: ScenePoint; camera: SceneCamera; ratio: number; moved: boolean } | null>(null);
-  const replay = view.kind === 'replay' ? view : null;
-  const track = replay && primaryWorkspaceReplayTrack(replay.trial, replay.position);
-  const path = useMemo(() => workspaceReplayPolyline(track), [track]);
-  const frameIndex = replay ? workspaceReplayFrameIndex(replay.stateTime, time) : null;
-  const cursor = frameIndex === null ? undefined : workspaceReplaySampleAt(track, frameIndex);
-  const bounds = useMemo(() => sceneBounds(view.scene, path), [view.scene, path]);
+  const bounds = useMemo(() => sceneBounds(scene, [
+    ...sceneElements(scene).flatMap((element) => element.possible ?? []),
+    ...scene.rest.flatMap(shapePoints),
+    ...scene.tracks.flatMap((track) => track.points),
+  ]), [scene]);
   const fit = fitScale(bounds, viewportWidth, viewportHeight);
   const autoFit = !fitToSlot || camera === fittedCamera;
   const navigatedFit = useRef<number>();
@@ -109,8 +129,8 @@ function SceneDrawingCanvas({
     viewportHeight / 2 - (y - center[1]) * scale + camera.pan.y,
   ];
   const meters = niceScaleLength(90 / Math.max(scale, 1));
-  const drawn = sceneElements(view.scene)
-    .filter((element): element is SceneElement & { shape: NonNullable<SceneElement['shape']> } => !!element.shape && !hiddenLayers.has(element.layer))
+  const drawn = sceneElements(scene)
+    .filter((element) => elementPoints(element).length > 0 && !hiddenLayers.has(element.layer))
     .sort((left, right) => drawOrder[left.layer] - drawOrder[right.layer]);
 
   const beginPan = (event: PointerEvent<SVGSVGElement>) => {
@@ -159,8 +179,23 @@ function SceneDrawingCanvas({
         </pattern>
       </defs>
       <rect width={viewportWidth} height={viewportHeight} fill={`url(#${gridId})`} />
+      <g pointerEvents="none" aria-hidden="true" data-scene-rest>
+        {scene.rest.map((shape, index) => <RestDrawing key={index} shape={shape} project={project} />)}
+      </g>
+      <g pointerEvents="none" aria-hidden="true">
+        {scene.tracks.map((track, index) => {
+          const stroke = track.picked ? 'var(--text-primary)' : 'var(--studio-scene-outline)';
+          return <g key={index}>
+            {track.drawn > 0 && <polyline data-scene-track={track.picked ? 'picked' : 'other'} fill="none" stroke={stroke}
+              points={track.points.slice(0, track.drawn).map((point) => project(point).join(',')).join(' ')}
+              strokeWidth={track.picked ? 2 : 1} vectorEffect="non-scaling-stroke" />}
+            {track.head && <circle data-scene-cursor cx={project(track.head)[0]} cy={project(track.head)[1]} r={track.picked ? 3 : 1.5}
+              fill={stroke} />}
+          </g>;
+        })}
+      </g>
       {drawn.map((element) => {
-        const mark = element.problem && project(shapePoints(element.shape)[0]);
+        const mark = element.problem && project(elementPoints(element)[0]);
         return (
           <g key={element.key} data-scene-layer={element.layer}>
             <g {...selectionHandlers(element, selected, onSelect)}>
@@ -170,13 +205,6 @@ function SceneDrawingCanvas({
           </g>
         );
       })}
-      <g pointerEvents="none" aria-hidden="true">
-        {path.length > 1 && (
-          <polyline points={path.map((point) => project(point).join(',')).join(' ')} fill="none"
-            stroke="var(--text-primary)" strokeWidth={2.5} vectorEffect="non-scaling-stroke" />
-        )}
-        {cursor && <circle data-scene-cursor cx={project(cursor)[0]} cy={project(cursor)[1]} r={6} fill="var(--text-primary)" stroke="var(--surface-main)" strokeWidth={2} />}
-      </g>
       <g transform={`translate(28 ${viewportHeight - 32})`} pointerEvents="none" aria-hidden="true">
         <path d={`M 0 -5 V 5 M 0 0 H ${meters * scale} M ${meters * scale} -5 V 5`} stroke="var(--text-primary)" strokeWidth={2} />
         <text y={-9} className="fill-shell-muted text-xs font-medium">
@@ -189,11 +217,10 @@ function SceneDrawingCanvas({
 
 export function SceneCanvas({ view, ...drawing }: SceneDrawingProps & { view: SceneView }) {
   switch (view.kind) {
-    case 'geometry':
-    case 'replay':
+    case 'drawn':
       return (
         <StudioRegionBoundary name="scene">
-          <SceneDrawingCanvas view={view} {...drawing} />
+          <SceneDrawingCanvas scene={view.scene} {...drawing} />
         </StudioRegionBoundary>
       );
     case 'loading':
@@ -210,11 +237,13 @@ export function SceneCanvas({ view, ...drawing }: SceneDrawingProps & { view: Sc
 
 /** What a view's strip can act on: whether there is anything to frame, and the layers it draws. */
 export function sceneContents(view: SceneView): { navigable: boolean; layers: readonly SceneLayer[] } {
-  if (view.kind !== 'geometry' && view.kind !== 'replay') return { navigable: false, layers: [] };
-  const placed = sceneElements(view.scene).filter((element) => element.shape);
+  if (view.kind !== 'drawn') return { navigable: false, layers: [] };
+  const placed = sceneElements(view.scene).filter((element) => elementPoints(element).length > 0);
   const present = new Set(placed.map((element) => element.layer));
-  const track = view.kind === 'replay' ? primaryWorkspaceReplayTrack(view.trial, view.position) : null;
-  return { navigable: placed.length > 0 || !!track?.samples.length, layers: sceneLayers.filter((layer) => present.has(layer)) };
+  return {
+    navigable: placed.length > 0 || view.scene.tracks.some((track) => track.points.length > 0),
+    layers: sceneLayers.filter((layer) => present.has(layer)),
+  };
 }
 
 export function SceneLayers({ layers, hidden, onToggle }: {
@@ -237,13 +266,18 @@ export function SceneLayers({ layers, hidden, onToggle }: {
   );
 }
 
-const layerGlyphs = { bodies: <RectangleHorizontal />, joints: <Circle />, muscles: <Waypoints /> } satisfies Record<SceneLayer, unknown>;
+const layerGlyphs = {
+  bodies: <RectangleHorizontal />, joints: <Circle />, muscles: <Waypoints />, variables: <Variable />, signals: <AudioWaveform />,
+} satisfies Record<SceneLayer, unknown>;
 
 function outlineMark(problem: string | undefined) {
   return problem && <StatusMark status="cannot_run" label={problem} />;
 }
 
-/** Each mechanism with its bodies, joints and muscles, in Layers' order, as rows keyed by their element's key. */
+/**
+ * Each mechanism with its bodies, joints and muscles, and the task with its variables and signals that have a place,
+ * in Layers' order, as rows keyed by their element's key.
+ */
 function sceneOutline(scene: Scene) {
   const addresses = new Map<string, ElementAddress>();
   const nodes = scene.groups.map((group): TreeNode => {
@@ -281,7 +315,8 @@ export function SceneDrawer({ sections, scene, selected, onSelect, checkpoints }
       )}
       {outline.nodes.length > 0 && (
         <DrawerSection sections={sections} id="scene.outline" name={studioName('outline')}>
-          <Tree aria-label={studioName('outline')} nodes={outline.nodes} defaultExpanded={outline.nodes.map(({ id }) => id)}
+          <Tree key={outline.nodes.map(({ id }) => id).join(' ')} aria-label={studioName('outline')} nodes={outline.nodes}
+            defaultExpanded={outline.nodes.map(({ id }) => id)}
             selected={selected && outline.addresses.has(selected) ? [selected] : []}
             onSelectedChange={(ids) => onSelect(outline.addresses.get(ids.at(-1) ?? '') ?? null)} />
         </DrawerSection>

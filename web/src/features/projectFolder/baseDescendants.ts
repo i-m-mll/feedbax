@@ -9,7 +9,7 @@ export function withBaseDescendants(project: Pick<Project, 'steps'>, steps: Iter
   for (let size = -1; size !== found.size;) {
     size = found.size;
     for (const [id, step] of Object.entries(project.steps ?? {})) {
-      if (step && 'step' in step.base && found.has(step.base.step)) found.add(id);
+      if (step && 'step' in step.base && !step.base.unresolved && found.has(step.base.step)) found.add(id);
     }
   }
   return found;

@@ -985,6 +985,13 @@ def _validate_files(
     alternatives = [
         store for store in alternatives if store.runs != preferred.runs or store.value[0] != preferred.value[0]
     ]
+    # A whole-step selection covers the rows that the edit creates in those same steps.
+    if body.scope is None or isinstance(body.scope, StudioTrialStepScope):
+        steps = {(run.variant, run.step) for run in selected}
+        selected = selected | {
+            run for store in (preferred, *alternatives) for run in store.runs - possible
+            if (run.variant, run.step) in steps
+        }
     decision = choose_store(
         body.revision, body.model_dump(mode="json", exclude={"store_choice"}), selected,
         preferred, alternatives, choice=body.store_choice,

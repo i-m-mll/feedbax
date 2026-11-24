@@ -300,11 +300,11 @@ function historyFiles(gesture: FileGesture, direction: 'undo' | 'redo', draft: P
   ];
 }
 
-function applyFiles(project: ProjectEditContent, changes: readonly StudioProjectFilePatch[], checkOrder = false) {
+function applyFiles(project: ProjectEditContent, changes: readonly StudioProjectFilePatch[]) {
   const files: StudioProjectFilePatch[] = [];
   const inverse: StudioProjectFilePatch[] = [];
   for (const { address, patches } of changes) {
-    const applied = applyAuthoredEdits(project, address, patches, checkOrder);
+    const applied = applyAuthoredEdits(project, address, patches);
     project = applied.project;
     if (!applied.inverse.length) continue;
     files.push({ address, patches: applied.edits });
@@ -400,7 +400,7 @@ export class ProjectEditController {
         (reviewedPresentationRevision !== this.saved.presentation_revision || this.queued.length)) {
       throw new ProjectEditConflictError();
     }
-    const applied = applyFiles(this.draft, structuredClone(changes), true);
+    const applied = applyFiles(this.draft, structuredClone(changes));
     if (!applied.inverse.length) return Promise.resolve(savedEdit);
     const before = this.draft.presentation;
     const after = applied.project.presentation;
@@ -475,7 +475,7 @@ export class ProjectEditController {
   /** Applies a Model command for `scope`'s steps (every reader when absent), with step files written alongside it. */
   editModel(
     name: string, document: string, command: ModelEditCommand, reviewed: StudioProjectRevision,
-    scope?: Pick<ModelEditRequest, 'step' | 'chosen_steps' | 'variant' | 'rows' | 'axes' | 'files'>,
+    scope?: Pick<ModelEditRequest, 'step' | 'chosen_steps' | 'variant' | 'rows' | 'axes' | 'files' | 'store_choice'>,
   ) {
     return this.exclusiveTransaction(async (before) => {
       const edit = this.transport.editModel;
@@ -787,7 +787,7 @@ export class ProjectEditController {
             continue;
           }
           const base = project;
-          const applied = applyAuthoredEdits(base, address, patches, !sameFile, sameFile ? undefined : pending.base);
+          const applied = applyAuthoredEdits(base, address, patches, sameFile ? undefined : pending.base);
           if (!applied.inverse.length) {
             pending.settle(savedEdit);
             continue;

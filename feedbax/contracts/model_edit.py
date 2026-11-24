@@ -77,6 +77,7 @@ class ConnectSignal(StrictModel):
     graph: ModelAddress
     source: SignalSource
     target: SignalTarget
+    grow_source: bool = False
     grow_target: bool = False
 
 
@@ -86,6 +87,7 @@ class ConnectTaskSignal(StrictModel):
     run: StudioSavedTrainKey
     signal: str
     target: SignalTarget
+    grow_target: bool = False
 
 
 class ConnectPhysical(StrictModel):
@@ -224,13 +226,6 @@ class TaskSignalSource(StrictModel):
     signal: str
 
 
-class ModelConnectionReviewRequest(StrictModel):
-    revision: Sha256
-    document: ProjectName
-    graph: ModelAddress
-    source: Annotated[SignalSource | TaskSignalSource, Field(discriminator="owner")]
-
-
 class ModelWireReplacement(StrictModel):
     address: ModelAddress
     attachments: tuple[ModelAddress, ...]
@@ -241,6 +236,7 @@ class ModelConnectionVerdict(StrictModel):
     reason: str | None
     problem: str | None = None
     replaced: tuple[ModelWireReplacement, ...] = ()
+    growing: bool = False
 
 
 class ModelConnectionReview(StrictModel):
@@ -262,6 +258,13 @@ class ModelProjectionRequest(StrictModel):
     document: ProjectName
     rows: list[RowKey] = Field(default_factory=list)
     axes: dict[ProjectName, list[Name]] = Field(default_factory=dict)
+
+
+class ModelConnectionReviewRequest(ModelProjectionRequest):
+    graph: ModelAddress
+    source: Annotated[SignalSource | TaskSignalSource, Field(discriminator="owner")]
+    evaluate_scope: SelectedRuns | None = None
+    grow_source: bool = False
 
 
 class ModelPortProjection(StrictModel):

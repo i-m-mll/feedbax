@@ -9,6 +9,7 @@ from feedbax.contracts.model_edit import ListedRuns, ModelEditAsked, ModelEditRe
 from feedbax.contracts.project import Project, SetDocumentValue
 from feedbax.contracts.project_resolution import ProjectDiagnostic, RunKey, compose_document
 from feedbax.contracts.project_sources import ValueSource, pointer
+from feedbax.contracts.result_address import family_documents
 from feedbax.contracts.set_document import read_set
 from feedbax.contracts.studio_scope import StoreKind
 from feedbax.planner.project_plan import ProjectPlan
@@ -109,9 +110,14 @@ def model_edit_store(
     selected = _selected(plan, body, body.variant or plan.variants[0])
     if not selected and (body.rows or body.step not in project.steps or body.variant is not None):
         raise ProjectFolderInvalid("The selected Model runs changed.")
+    families = {
+        variant: frozenset(family_documents(view.documents, body.document))
+        for variant, view in plan.variant_projects.items()
+        if body.document in view.documents
+    }
     observed = frozenset(
         item.key for item in plan.rows
-        if body.document in item.document_uses or item.key in selected
+        if item.document_uses & families.get(item.key.variant, {body.document}) or item.key in selected
         or any(file.address.id == item.key.step for file in body.files)
     )
     observed |= frozenset(
@@ -147,7 +153,11 @@ def model_edit_store(
         narrow = model_document_store(folders, project_id, project, body, before, after)
         kind, label = ("all_readers", "All Readers") if body.variant is None else ("variant", "Variant")
         preferred = EditStore(kind, label, body.document, reach(broad), broad)
-        options = [EditStore("selected_readers", "Selected Readers", body.document, reach(narrow), narrow)] if narrow != broad else []
+        narrowed = EditStore("selected_readers", "Selected Readers", body.document, reach(narrow), narrow)
+        if narrow != broad and not narrow.created and narrowed.runs and narrowed.runs <= selected:
+            preferred, options = narrowed, []
+        else:
+            options = [narrowed] if narrow != broad else []
     else:
         named = selected_value(project, body.step, row.scope)
         if named is not None:
