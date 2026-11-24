@@ -154,13 +154,19 @@ function expectPositionSamples(samples: number[][]) {
 
 async function showTrial(page: Page, path: string, row: StudioSavedEvaluationRow, label: string, checkpoint?: number) {
   const trialId = row.trials[trialIndex];
+  // The picked trial is the window's: once picked for one run, the Scene opens the next run on the same trial, so its
+  // replay can be requested as soon as the Scene shows that run.
+  const response = page.waitForResponse((response) => {
+    const request = response.request();
+    return request.method() === 'POST' && new URL(response.url()).pathname === path &&
+      request.postDataJSON()?.trial === trialId && request.postDataJSON()?.job_id === row.result!.job_id;
+  });
   await chooseStep(page, row.key.step);
   await plans(page).getByRole('button', { name: runName(label) }).click();
   await tab(page, 'Scene').click();
   const scene = page.getByRole('tabpanel', { name: 'Scene', exact: true });
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
   await reveal(page, 'Drawer');
-  const response = posted(page, path, trialId);
   await pickRecordedTrial(page, trialIndex);
   const reply = await response;
   expect(reply.ok(), await reply.text()).toBe(true);
