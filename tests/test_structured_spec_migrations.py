@@ -43,10 +43,6 @@ from feedbax.contracts.representation import (
     REPRESENTATION_SCHEMA_VERSION_V1,
     RepresentationSpec,
 )
-from feedbax.contracts.workspace_replay import (
-    WORKSPACE_REPLAY_SCHEMA_ID,
-    WORKSPACE_REPLAY_SCHEMA_VERSION,
-)
 from feedbax.contracts.value_schema import ValueSchema
 
 pytestmark = [pytest.mark.feedbax_contract, pytest.mark.migration_contract]
@@ -287,7 +283,6 @@ def test_manifest_schema_identities_survive_contract_package_move() -> None:
         "SpecPayload": "feedbax.manifest.spec_payload",
         "TrainingRunManifest": "feedbax.manifest.training_run",
         "EvaluationRunManifest": "feedbax.manifest.evaluation_run",
-        "WorkspaceReplayProduct": WORKSPACE_REPLAY_SCHEMA_ID,
     }
 
     for kind, identity in expected_manifest_identities.items():
@@ -336,14 +331,12 @@ def test_default_registry_enforces_spec_and_manifest_namespace_categories() -> N
         "ArrayStorePayload",
         "ArrayRecord",
         "TrainingRunManifest",
-        "WorkspaceReplayProduct",
     }
 
     families = {family.kind: family for family in default_spec_registry.families()}
 
     assert {families[kind].namespace for kind in spec_kinds} == {SchemaNamespaceKind.SPEC}
     assert {families[kind].namespace for kind in manifest_kinds} == {SchemaNamespaceKind.MANIFEST}
-    assert families["WorkspaceReplayProduct"].current_version == WORKSPACE_REPLAY_SCHEMA_VERSION
     assert not any(
         family.namespace == SchemaNamespaceKind.COMPONENT_PARAMS
         for family in default_spec_registry.families()

@@ -108,6 +108,8 @@ class Function:
     result_dimensions: ResultDimensions | None = None
     bind: Callable[[Function, CallValue], tuple[Function, CallValue] | SignatureError] | None = None
     density: Callable[..., Density | None] | None = None
+    nominal: Callable[..., Any] | None = None
+    """A randomized function's representative value for a nominal trial."""
 
     @property
     def positional_names(self) -> tuple[str, ...]:

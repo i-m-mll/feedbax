@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 from pydantic import Field, FiniteFloat, JsonValue, model_validator
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.project import Document, Project, Sha256, Step
 from feedbax.contracts.project import ProjectValueEdit as ProjectValueEdit
 from feedbax.contracts.project import RemoveProjectValue as RemoveProjectValue
@@ -50,11 +51,12 @@ class StudioProjectRevision(StrictModel):
 
 
 class AuthoredFileAddress(StrictModel):
-    kind: Literal["document", "step", "variant", "presentation"]
+    kind: Literal["document", "step", "variant", "presentation", "declaration"]
     id: ProjectName
 
 
 PRESENTATION_ADDRESS = AuthoredFileAddress(kind="presentation", id="presentation")
+DECLARATION_ADDRESS = AuthoredFileAddress(kind="declaration", id="declaration")
 
 
 class StudioAuthoredFileRevision(StrictModel):
@@ -76,8 +78,10 @@ class StudioProjectSnapshot(StudioProjectRevision):
     presentation_error: Literal["unreadable_presentation"] | None = None
     file_revisions: list[StudioAuthoredFileRevision]
     declaration: StudioAuthoredDeclaration | None = None
+    settings: dict[str, JsonValue] = Field(default_factory=dict)
     composed: dict[str, JsonValue] = Field(default_factory=dict)
     """The composed payload of each based document whose base chain composes."""
+    problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
 
 
 class StudioProjectFilePatch(StrictModel):
@@ -223,6 +227,7 @@ class StudioMemberCommand(StrictModel):
 class StudioMemberCommandResult(StrictModel):
     member: ProjectName
     snapshot: StudioProjectSnapshot
+    problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
 
 
 class StudioTrainStep(Step):

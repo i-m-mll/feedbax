@@ -39,7 +39,7 @@ from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.receipt_validity import ReceiptValidity, ValidityAcceptance, ValidityAction
-from feedbax.contracts.workspace_replay import WorkspaceReplayTrial
+from feedbax.contracts.trial_record import StudioTrialReplayResponse
 from feedbax.host import HostError
 from feedbax.jobs import JobConflict, JobNotFound, JobService
 from feedbax.orchestration.session import SessionError
@@ -65,7 +65,7 @@ def _activity_error(exc: FollowerStopped) -> HTTPException:
 
 
 def _host_error(exc: HostError) -> HTTPException:
-    status = 503 if exc.code in {"unavailable", "disconnected", "protocol_version"} else 409
+    status = 503 if exc.code in {"unavailable", "disconnected", "protocol_version", "runtime_unavailable"} else 409
     return HTTPException(status, detail={"code": exc.code, "message": str(exc)})
 
 
@@ -209,7 +209,7 @@ def approve_saved_run(
 @router.post("/projects/{project_id}/evaluate-replay")
 def saved_evaluation_replay(
     project_id: ProjectName, body: StudioSavedEvaluationReplayRequest, request: Request, response: Response,
-) -> WorkspaceReplayTrial:
+) -> StudioTrialReplayResponse:
     return _evaluation_response(
         response, lambda: request.app.state.project_plan.evaluation_replay(project_id, body),
     )
@@ -366,9 +366,24 @@ def close_session(session_id: UUID, request: Request) -> None:
 def list_targets(
     request: Request, kind: Annotated[list[TargetRunKind] | None, Query()] = None,
 ) -> ExecutionTargets:
+    jobs = _jobs(request)
     if request.app.state.remote_runs is not None:
-        return _remote_runs(request).catalog(kind or ())
-    return _jobs(request).targets.catalog(kinds=kind or (), session_submission=False)
+        catalog = _remote_runs(request).catalog(kind or ())
+    else:
+        catalog = jobs.targets.catalog(kinds=kind or (), session_submission=False)
+    try:
+        runtime = jobs.host.runtime_inventory()
+    except HostError as exc:
+        raise _host_error(exc) from exc
+    if runtime is None:
+        return catalog
+    return catalog.model_copy(update={
+        "targets": tuple(
+            target.model_copy(update={"profile": target.profile.model_copy(update={"runtime": runtime})})
+            if target.profile.kind == "local" else target
+            for target in catalog.targets
+        ),
+    })
 
 
 @router.get("/events/history")
