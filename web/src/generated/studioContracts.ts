@@ -5022,7 +5022,7 @@ export const firstTrainTask: Document = {
     ],
     "links": [
       {
-        "model_field": "{\"composites\":[],\"element\":{\"kind\":\"field\",\"parent\":{\"id\":\"plant\",\"kind\":\"component\"},\"path\":[\"reset\",\"effector\",\"position\"]}}",
+        "model_field": "{\"composites\":[],\"element\":{\"kind\":\"field\",\"parent\":{\"id\":\"plant\",\"kind\":\"component\"},\"path\":[\"state\",\"effector/position\"]}}",
         "variable": "start"
       }
     ],

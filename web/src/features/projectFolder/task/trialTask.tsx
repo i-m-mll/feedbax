@@ -20,8 +20,12 @@ const sameType = (a: ValueType, b: ValueType) => studioValueType(a) === studioVa
 
 /** Whether a Model field of type `field` takes a variable of type `variable`, as the service checks a link. */
 const fits = (field: ValueType, variable: ValueType) => {
-  const parts = (type: ValueType) => canonicalJsonV2({ shape: type.shape ?? [], dimensions: type.dimensions ?? {} });
-  return parts(field) === parts(variable) && (field.base === variable.base || field.base === 'real' && variable.base === 'integer');
+  const target = field.shape ?? [];
+  const source = variable.shape ?? [];
+  const offset = target.length - source.length;
+  return offset >= 0 && source.every((size, index) => size === 1 || size === target[offset + index])
+    && canonicalJsonV2(field.dimensions ?? {}) === canonicalJsonV2(variable.dimensions ?? {})
+    && (field.base === variable.base || field.base === 'real' && variable.base === 'integer');
 };
 
 const typeName = (type: ValueType, types: readonly StudioNamedValueType[]) =>
@@ -36,9 +40,10 @@ function startOf(reset: StudioTrialReset): ModelStart {
 /** A linked Model field the paired Model does not have: its component's id and its path. */
 function missingStart(id: string): ModelStart {
   const { element } = ModelAddressSchema.parse(JSON.parse(id));
-  const name = element.kind === 'field' && element.parent.kind === 'component'
-    ? `${element.parent.id} · ${element.path.slice(1).join(' ')}` : id;
-  return { id, name };
+  if (element.kind !== 'field' || element.parent.kind !== 'component') return { id, name: id };
+  const [kind, ...members] = element.path;
+  const label = kind === 'state' ? String(members[0]).replaceAll('/', ' ') : members.join(' ');
+  return { id, name: `${element.parent.id} · ${label}` };
 }
 
 /** The Model values `variable` initializes, the choice of those its type fits, and its links' problem and change. */
