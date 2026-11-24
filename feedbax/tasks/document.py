@@ -31,6 +31,8 @@ from feedbax.contracts.expression_values import (
 from feedbax.contracts.task_document import (
     Cell as Cell,
     Epoch as Epoch,
+    EpochSteps,
+    Length,
     Link as Link,
     Signal as Signal,
     TaskDocument as TaskDocument,
@@ -83,6 +85,8 @@ class TrialSource(Protocol):
     def period(self) -> float: ...
     @property
     def epochs(self) -> tuple[str, ...]: ...
+    @property
+    def step_counts(self) -> tuple[EpochSteps, ...]: ...
     @property
     def reads_model(self) -> bool: ...
     @property
@@ -158,6 +162,7 @@ class DocumentTask:
     validation_rows: tuple[TaskParameters, ...]
     condition_ids: tuple[str, ...]
     input_bindings: tuple[tuple[str, str], ...]
+    step_counts: tuple[EpochSteps, ...]
     reads_model: bool = False
 
     def init(self, parameters, run_key, trial_key):
@@ -444,18 +449,22 @@ def compile_task(
 
     lengths = []
     bounds = []
+    counts: list[EpochSteps | None] = []
     rest = []
     for epoch in document.epochs:
-        path = ("epochs", epoch.id, "length")
-        if epoch.length is None:
+        path = ("epochs", epoch.id, "end", "length")
+        end = epoch.end
+        if not isinstance(end, Length):
             rest.append(epoch.id)
             lengths.append(None)
             bounds.append(0)
+            counts.append(None)
             continue
-        discrete = isinstance(epoch.length, DrawValue) and epoch.length.family == "uniform"
-        field = lower(epoch.length, time_type, Level.TRIAL, scope.values(), path, discrete=discrete)
-        bound = epoch.max_steps
-        if isinstance(epoch.length, LiteralValue) and field is not None:
+        discrete = isinstance(end.length, DrawValue) and end.length.family == "uniform"
+        field = lower(end.length, time_type, Level.TRIAL, scope.values(), path, discrete=discrete)
+        bound = end.max_steps
+        count = None
+        if isinstance(end.length, LiteralValue) and field is not None:
             (seconds,) = field.code.parameters
             steps = round(float(seconds) / period)
             if seconds < 0 or (seconds > 0 and steps == 0):
@@ -468,10 +477,11 @@ def compile_task(
                 bound = steps
             elif steps > bound:
                 problem(ProblemCode.LENGTH_BUDGET, "The length exceeds its step bound.", path)
+            count = EpochSteps(least=max(steps, 0), nominal=max(steps, 0), greatest=max(steps, 0))
         if (
             discrete
             and field is not None
-            and all(isinstance(arg, LiteralValue) for arg in epoch.length.args)
+            and all(isinstance(arg, LiteralValue) for arg in end.length.args)
         ):
             low, high = (round(float(seconds) / period) for seconds in field.code.parameters)
             if not 0 <= low <= high:
@@ -482,10 +492,13 @@ def compile_task(
                 bound = high
             elif high > bound:
                 problem(ProblemCode.LENGTH_BUDGET, "The draw exceeds the epoch bound.", path)
+            else:
+                count = EpochSteps(least=low, nominal=round((low + high) / 2), greatest=high)
         if bound is None:
             problem(ProblemCode.UNBOUNDED_LENGTH, "A variable length needs a step bound.", path)
         lengths.append(field)
         bounds.append(bound)
+        counts.append(count or EpochSteps(least=0, nominal=bound or 0, greatest=bound or 0))
     if len(rest) > 1 or rest and document.fixed_steps is None:
         problem(ProblemCode.STRUCTURE, "One rest epoch requires a fixed trial length.", ("epochs",))
     if (
@@ -516,9 +529,14 @@ def compile_task(
         absent_value = signal.absent or _zero(signal.type.base, signal.type.shape)
         absent = lower(absent_value, signal.type, Level.TRIAL, scope.values(), (*path, "absent"))
         occupied = set()
+        cell_ids = set()
         cells = []
-        for i, cell in enumerate(signal.cells):
-            cell_path = (*path, "cells", i)
+        for cell in signal.cells:
+            cell_path = (*path, "cells", cell.id)
+            if cell.id in cell_ids:
+                problem(ProblemCode.DUPLICATE_NAME, f"Repeated cell id {cell.id!r}.", cell_path)
+                continue
+            cell_ids.add(cell.id)
             first, last = indexes.get(cell.first_epoch), indexes.get(cell.last_epoch)
             if first is None or last is None or first > last:
                 problem(
@@ -537,7 +555,7 @@ def compile_task(
                 signal.type,
                 Level.STEP,
                 (*scope.values(), time, *axes),
-                (*path, "cells", cell.first_epoch, cell.last_epoch, "value"),
+                (*cell_path, "value"),
                 epoch=True,
             )
             if code is not None:
@@ -621,6 +639,14 @@ def compile_task(
     if problems:
         return tuple(problems)
     n_steps = sum(bounds) if document.fixed_steps is None else document.fixed_steps
+    if rest:
+        others = [count for count in counts if count is not None]
+        index = counts.index(None)
+        counts[index] = EpochSteps(
+            least=max(0, n_steps - sum(count.greatest for count in others)),
+            nominal=max(0, n_steps - sum(count.nominal for count in others)),
+            greatest=max(0, n_steps - sum(count.least for count in others)),
+        )
     return DocumentTask(
         TaskInterface(tuple(scope.values()), tuple(declared_signals), tuple(links.items())),
         n_steps,
@@ -633,4 +659,5 @@ def compile_task(
         tuple(rows),
         document.condition_ids,
         tuple(bindings),
+        tuple(counts),
     )

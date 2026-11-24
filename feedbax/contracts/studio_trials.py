@@ -17,7 +17,7 @@ from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_authoring import StudioSweptParameterMissing
 from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioFieldView
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
-from feedbax.contracts.task_document import Epoch, PythonTaskSelection, TaskDocument
+from feedbax.contracts.task_document import EpochSteps, PythonTaskSelection, TaskDocument
 
 
 class StudioTrialField(StudioFieldView):
@@ -104,6 +104,14 @@ class StudioTrialAuthoringRequest(StrictModel):
     ] | None = None
 
 
+class StudioTrialEpoch(StrictModel):
+    """An epoch of the paired task; ``steps`` once the Task pairs with the Model."""
+
+    id: str
+    name: str
+    steps: EpochSteps | None
+
+
 class StudioTaskChoice(StrictModel):
     document: ProjectName
     problems: list[Problem]
@@ -127,7 +135,7 @@ class StudioTrialAuthoring(StrictModel):
     tasks: list[StudioTaskChoice]
     variables: list[ScopedValue]
     signals: list[ScopedValue]
-    epochs: list[Epoch]
+    epochs: list[StudioTrialEpoch]
     period_seconds: float
     n_steps: int | None
     inputs: list[StudioTrialInput]

@@ -6,11 +6,12 @@ import numpy as np
 import pytest
 
 from feedbax.compiler.model_document import lower_model_document
+from feedbax.contracts.expression_values import CallValue
 from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.project import Project
-from feedbax.planner.project_plan import RunKey
+from feedbax.planner.project_plan import RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.rollout import RolloutParameters
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
@@ -413,3 +414,31 @@ def test_saved_task_replacement_and_scale_use_one_exact_trained_checkpoint(host,
             position_samples = states.select(position, labels={"trial": trial})[0, 0]
     assert reads == [(position, (slice(None), slice(None), trial_index))]
     np.testing.assert_array_equal(position_samples, perturbed[position][trial_index])
+
+
+def test_an_evaluate_variation_edits_a_task_document_field_by_id():
+    """An Evaluate changes one field of its subject's Task document, addressed by ids; a variation naming a member
+    the document lacks is refused at that variation."""
+    raw = managed_evaluation_definition()
+    target = {"kind": "call", "function": "vector", "args": [
+        {"kind": "literal", "value": coordinate, "unit": "m"} for coordinate in (0.25, -0.1)
+    ]}
+    evaluate = raw["steps"]["baseline"]
+    evaluate["base"]["inline"]["params"]["variation"] = {"far": _patch("task.variables.target.value", target)}
+    missing = deepcopy(evaluate)
+    missing["base"]["inline"]["params"]["variation"] = {"absent": _patch("task.variables.goal.value", target)}
+    raw["steps"] = {"train": raw["steps"]["train"], "baseline": evaluate, "missing": missing}
+    plan = compile_project(Project.model_validate(raw))
+    assert [(problem.step, problem.path) for problem in plan.diagnostics] == [("missing", "/params/variation/absent")]
+    runs = {run.key: run for run in plan.runs}
+    (evaluated,) = (run for run in plan.runs if run.key.step == "baseline")
+    request = decode_request(plan.requests[evaluated.request_id], plan.documents.__getitem__).spec
+    subject = decode_request(
+        plan.requests[runs[evaluated.inputs["subject"].producer].request_id], plan.documents.__getitem__,
+    ).spec.trial_documents.task
+    variant = resolve_evaluation_variant(
+        GraphSpec(), subject, RolloutParameters.model_validate(request.params).variation,
+        components=new_application_registry_bundle().components,
+    )
+    (variable,) = (item for item in variant.task.variables if item.id == "target")
+    assert variable.value == CallValue.model_validate(target)
