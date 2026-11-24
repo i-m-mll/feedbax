@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
+    from feedbax.contracts.jobs import StudioProjectWindowMapProblem
+    from feedbax.contracts.model_address import ModelAddress
     from feedbax.contracts.project_resolution import ProjectDiagnostic
 
 EXIT_CODES = (
@@ -93,19 +95,30 @@ class CommandOutput:
         from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 
         projected = StudioProjectWindowMapProblem.from_diagnostic(problem, declaration=declaration)
+        self._problem(projected, problem.document, problem.model_address)
+
+    def row_problem(self, problem: StudioProjectWindowMapProblem, *, run: str) -> None:
+        """Write a Problem that keeps a row from running, with the address of its run."""
+        place = problem.place
+        self._problem(problem, getattr(place, "document", None), getattr(place, "member", None), run=run)
+
+    def _problem(
+        self, problem: StudioProjectWindowMapProblem, document: str | None, member: ModelAddress | None,
+        *, run: str | None = None,
+    ) -> None:
         if self.json:
-            print(projected.model_dump_json(exclude_unset=True), file=sys.stderr)
-        else:
-            layer = f" ({problem.layer})" if problem.layer else ""
-            stored_path = f":{projected.authored_path}" if projected.authored_path else ""
-            document_path = f":{problem.document_path}" if problem.document_path else ""
-            document = f" [documents/{problem.document}.json{document_path}]" if problem.document else ""
-            address = f" model={problem.model_address.to_text()}" if problem.model_address else ""
-            print(
-                f"{projected.address}{stored_path}{layer}{document} {problem.path}{address} "
-                f"[{problem.code}]: {problem.detail}",
-                file=sys.stderr,
-            )
+            print(problem.model_dump_json(exclude_unset=True), file=sys.stderr)
+            return
+        layer = f" ({problem.layer})" if problem.layer else ""
+        stored_path = f":{problem.authored_path}" if problem.authored_path else ""
+        document_path = f":{problem.document_path}" if problem.document_path else ""
+        held = f" [documents/{document}.json{document_path}]" if document else ""
+        address = f" model={member.to_text()}" if member else ""
+        on = f" run={run}" if run else ""
+        print(
+            f"{problem.address}{stored_path}{layer}{held} {problem.path}{address}{on} [{problem.code}]: {problem.detail}",
+            file=sys.stderr,
+        )
 
 
 class UsageError(ValueError):

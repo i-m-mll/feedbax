@@ -193,10 +193,10 @@ def test_a_task_document_replaces_the_subjects_task_unless_it_holds_the_same_con
     shorter["validation_trials"] = deepcopy(data["documents"][TASK]["payload"]["validation_trials"])
     shorter["signals"] = [signal for signal in shorter["signals"] if signal["id"] != "target_pos"]
     plan = _plan(data)
-    assert [run.key.step for run in plan.runs] == ["fee"]
-    assert [(problem.step, problem.document, problem.path, problem.detail) for problem in plan.diagnostics] == [
-        ("check", "task-2", "/trial_documents/task", UNPAIRED_TASK),
-    ]
+    assert not plan.diagnostics
+    check = next(run for run in plan.runs if run.key.step == "check")
+    assert check.document_ids["payload.trial_documents.task"] == "task-2"
+    assert [(problem.path, problem.detail) for problem in check.problems] == [("/trial_documents/task", UNPAIRED_TASK)]
 
 
 def test_a_continuation_reads_a_variant_made_in_an_evaluation():
