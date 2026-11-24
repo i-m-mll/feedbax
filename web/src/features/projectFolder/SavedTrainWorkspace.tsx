@@ -94,6 +94,7 @@ import {
   TrialObjectiveAdd, TrialSweepItems, TrialObjectiveInspector, TrialObjectiveOutline, TrialObjectiveTable, type TrialRuns, TrialTaskForm, TrialTaskInspector, TrialTaskOutline, useTrialAuthoring,
   type TrialChangeScope,
 } from './StudioTrialAuthoring';
+import { inGrid, TrialGridInspector } from './task/trialGrid';
 import { selectedVariable, TrialTaskDocument, TrialVariableInspector, unfedTasks } from './task/trialTask';
 import { documentFamily, useProjectDocuments, type DocumentRole } from './useProjectDocuments';
 import { useManagedAnalyze } from './useManagedAnalyze';
@@ -1797,7 +1798,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                   : <TrialTaskForm view={value} commit={commit} />),
                 drawer: <TrialTaskOutline sections={drawerSections} view={value} selected={selected} select={choose(document)} />,
                 inspector: variable ? <TrialVariableInspector view={value} commit={commit} runs={runs} id={variable.id} />
-                  : selected && <TrialTaskInspector view={value} commit={commit} selected={selected} />,
+                  : selected && 'variables' in value.task && inGrid(selected)
+                    ? <TrialGridInspector view={value} commit={commit} runs={runs} selected={selected} />
+                    : selected && <TrialTaskInspector view={value} commit={commit} selected={selected} />,
               };
             }
             const document = value.objective_document ?? step?.id ?? '';

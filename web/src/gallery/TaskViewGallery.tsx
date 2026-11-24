@@ -130,9 +130,8 @@ function TaskWindow() {
                 move: (id, to) => edit((current) => ({ ...current, variables: moved(current.variables, id, to) })),
               }} />}
               grid={<TaskGrid epochs={view.epochs} repeats={view.repeats} signals={view.signals} selected={selected} select={setSelected} edits={{
-                addEpoch: (before) => edit((current) => {
-                  const epoch = { id: fresh('e'), name: 'epoch', end: '0.1 s' };
-                  const at = before ? current.epochs.findIndex(({ id }) => id === before) : current.epochs.length;
+                addEpoch: (name, at) => edit((current) => {
+                  const epoch = { id: fresh('e'), name, end: '0.1 s' };
                   const epochs = [...current.epochs];
                   epochs.splice(at, 0, epoch);
                   return { ...current, epochs, signals: current.signals.map((signal) => ({ ...signal, cells: [...signal.cells,
@@ -140,9 +139,9 @@ function TaskWindow() {
                     epochs.findIndex(({ id }) => id === a.first) - epochs.findIndex(({ id }) => id === b.first)) })) };
                 }),
                 renameEpoch: (id, name) => edit((current) => ({ ...current, epochs: current.epochs.map((item) => item.id === id ? { ...item, name } : item) })),
-                removeEpoch: (id) => edit((current) => withoutEpoch(current, id)),
-                addSignal: () => edit((current) => ({ ...current, signals: [...current.signals, {
-                  id: fresh('s'), name: 'signal', type: 'Number', cells: [{ first: current.epochs[0].id, last: current.epochs.at(-1)!.id, text: null }],
+                removeEpochs: (ids) => edit((current) => ids.reduce(withoutEpoch, current)),
+                addSignal: (name) => edit((current) => ({ ...current, signals: [...current.signals, {
+                  id: fresh('s'), name, type: 'Number', cells: [{ first: current.epochs[0].id, last: current.epochs.at(-1)!.id, text: null }],
                 }] })),
               }} />} />
             : <TaskPythonBody view={view} />,

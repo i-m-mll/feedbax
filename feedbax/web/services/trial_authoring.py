@@ -9,6 +9,7 @@ from feedbax.contracts.expression_values import (
     Level, Problem, ProblemCode, ScopedValue, Site, SweepList, SweepRange, SweepSample,
     ValueBase, ValueType,
 )
+from feedbax.tasks.document import zero
 from feedbax.tasks.registry import resolve_python_task_instance
 from feedbax.tasks.structure import restructure
 from feedbax.contracts.manifest import OverridePatch
@@ -942,7 +943,13 @@ def trial_authoring(
 
     def expression(path):
         document = _field_document(documents, path[0])
-        return site_expression(document, tuple(map(str, path[1:]))) if document is not None else None
+        if document is None:
+            return None
+        found = site_expression(document, tuple(map(str, path[1:])))
+        if found is None and path[0] == "task" and path[1] == "signals" and path[3:] == ("absent",):
+            signal = next(item for item in document.signals if item.id == path[2])
+            return zero(signal.type.base, signal.type.shape)
+        return found
 
     def sweep(path, site, label):
         if paired is None:
