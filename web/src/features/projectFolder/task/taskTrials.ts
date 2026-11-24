@@ -12,8 +12,8 @@ export const taskDocumentOf = (view: StudioTrialAuthoring): TaskDocument | undef
 /** A step's task document as the shelf draws it, once the task is paired with the model and so has steps. */
 export function shelfTask(view: StudioTrialAuthoring, document: string): ShelfTask | undefined {
   const task = taskDocumentOf(view);
-  if (!task || view.n_steps === null) return undefined;
   const period = view.period_seconds;
+  if (!task || view.n_steps === null || period === null) return undefined;
   const ends = new Map(task.epochs.map((epoch) => [epoch.id, epoch.end]));
   const epochs: EpochBounds[] = [];
   for (const { id, name, steps } of view.epochs) {

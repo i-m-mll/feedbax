@@ -331,6 +331,7 @@ class ModelEditState(ModelLayout):
 
 class ModelEditResult(StrictModel):
     state: ModelEditState
+    relocations: dict[str, ModelAddress] = Field(default_factory=dict)
     changed: tuple[ModelAddress, ...] = ()
     clipboard: ModelClipboard | None = None
     problems: tuple[ModelGraphProblem, ...] = ()
@@ -442,6 +443,7 @@ class ModelEditApplied(StrictModel):
     undo_token: ModelUndoToken | None = None
     created: tuple[ProjectName, ...] = ()
     problems: tuple[ModelGraphProblem, ...] = ()
+    sweep_problems: tuple[StudioProjectWindowMapProblem, ...] = ()
 
 
 class ModelEditRefused(StrictModel):
