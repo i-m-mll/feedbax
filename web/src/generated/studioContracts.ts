@@ -1055,7 +1055,7 @@ export interface ModelProjection {
 
 export interface ModelProjectionRequest {
   revision: string;
-  run: StudioSavedTrainKey;
+  run?: StudioSavedTrainKey | null;
   document: string;
   rows?: string[];
   axes?: Record<string, string[]>;
@@ -6430,12 +6430,6 @@ export const ModelPortsSchema: z.ZodType<ModelPorts> = z.lazy(() =>
           message: "port IDs must be unique within a port list",
         });
       }
-      if ([value.inputs ?? [], value.outputs ?? [], value.physical ?? []].some((ports) => new Set(ports.map((port) => port.name)).size !== ports.length)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "port names must be unique in each direction",
-        });
-      }
     })
 ) as unknown as z.ZodType<ModelPorts>;
 
@@ -7211,7 +7205,7 @@ export const ModelProjectionRequestSchema: z.ZodType<ModelProjectionRequest> = z
   z
     .object({
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
-      "run": StudioSavedTrainKeySchema,
+      "run": StudioSavedTrainKeySchema.nullable().optional(),
       "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
       "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).optional(),
       "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1))).optional(),

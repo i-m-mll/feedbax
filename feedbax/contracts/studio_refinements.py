@@ -86,16 +86,6 @@ CROSS_FIELD_REFINEMENTS: dict[str, tuple[CrossFieldRefinement, ...]] = {
               return new Set(ports.map((port) => port.id)).size !== ports.length;
             })()""",
         ),
-        CrossFieldRefinement(
-            "model-ports.unique-names",
-            "port names must be unique in each direction",
-            lambda value: any(
-                len(ports) != len({port.name for port in ports})
-                for ports in (value.inputs, value.outputs, value.physical)
-            ),
-            "[value.inputs ?? [], value.outputs ?? [], value.physical ?? []].some("
-            "(ports) => new Set(ports.map((port) => port.name)).size !== ports.length)",
-        ),
     ),
     "GraphInterior": (_INTERIOR_IDS,),
     "PhysicalInterior": (_INTERIOR_IDS,),

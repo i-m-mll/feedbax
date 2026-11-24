@@ -7,9 +7,9 @@ from functools import cache
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.component import derive_dynamic_port_count, derive_dynamic_port_layout
-from feedbax.contracts.model_document import SignalType
+from feedbax.contracts.model_document import ModelDocument, SignalType
 from feedbax.contracts.strict_json import strict_json_loads
-from feedbax.compiler.model_edit import Direction, Port, Record
+from feedbax.compiler.model_edit import Direction, Port, Record, model_graph_problems
 
 
 class ModelRegistryPorts:
@@ -35,6 +35,9 @@ class ModelRegistryPorts:
 
     def port(self, component: Record, direction: Direction, port: str) -> Port | None:
         return self.layout(component).get((direction, port))
+
+    def problems(self, document: ModelDocument):
+        return model_graph_problems(document, ports=self.port, accepts=self.accepts)
 
     def layout(self, component: Record) -> dict[tuple[Direction, str], Port]:
         return self._layout(
