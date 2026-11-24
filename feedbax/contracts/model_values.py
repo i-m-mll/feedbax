@@ -29,6 +29,7 @@ class StateValue:
     frame: str | None = None
     reset: StateReset | None = None
     configuration: bool = False
+    space: Literal["point"] | None = None
 
 
 @dataclass(frozen=True)

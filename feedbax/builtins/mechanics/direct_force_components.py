@@ -49,7 +49,7 @@ class TwoLinkArm(Mechanics, Component):
             StateValue("skeleton/effector_force", ("plant", "skeleton", "effector_force"), "N", "xy", "world"),
             StateValue(
                 "effector/position", ("effector", "pos"), "m", "xy", "world",
-                reset=StateReset("effector", ("pos",)),
+                reset=StateReset("effector", ("pos",)), space="point",
             ),
             StateValue(
                 "effector/velocity", ("effector", "vel"), "m/s", "xy", "world",
@@ -85,12 +85,12 @@ class PointMass(Mechanics, Component):
             ModelValue("dt", "dt", "source"),
         ),
         states=(
-            StateValue("skeleton/position", ("plant", "skeleton", "pos"), "m", "xy", "world"),
+            StateValue("skeleton/position", ("plant", "skeleton", "pos"), "m", "xy", "world", space="point"),
             StateValue("skeleton/velocity", ("plant", "skeleton", "vel"), "m/s", "xy", "world"),
             StateValue("skeleton/force", ("plant", "skeleton", "force"), "N", "xy", "world"),
             StateValue(
                 "effector/position", ("effector", "pos"), "m", "xy", "world",
-                reset=StateReset("effector", ("pos",)),
+                reset=StateReset("effector", ("pos",)), space="point",
             ),
             StateValue(
                 "effector/velocity", ("effector", "vel"), "m/s", "xy", "world",
