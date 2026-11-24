@@ -88,23 +88,24 @@ export function setAuthoring({ editor, project, applies, perform, state, select,
   const refuseAxis = (step: string, axis: string) => (reason: string): Refusal => ({ kind: 'axis', step, axis, reason });
 
   /**
-   * Save Set and Inline Set on a step's authored axis, and Add Entry on an axis whose Set has no entries (`empty`), which
-   * Duplicate Run cannot copy one of.
+   * Save Set and Inline Set on a step's authored axis, which convert between its values and the Model differences of a
+   * Set and so apply only while the step reads a Model document (`model`), and Add Entry on an axis whose Set has no
+   * entries (`empty`), which Duplicate Run cannot copy one of.
    */
-  function axisCommands(step: string, axis: string, empty = false): StudioCommand[] {
+  function axisCommands(step: string, axis: string, { model, empty }: { model: boolean; empty: boolean }): StudioCommand[] {
     const read = authoredAxis(project, step, axis);
     if (!read) return [];
-    const command = (id: 'saveSet' | 'inlineSet' | 'addEntry', edit: SetCommand) => bindStudioCommand(id, () => {
+    const command = (id: 'saveSet' | 'inlineSet' | 'addEntry', edit: SetCommand, enabled = applies) => bindStudioCommand(id, () => {
       void perform(async () => {
         const stored = await store(studioAccessibleName(id, axis), edit);
         if (stored?.selected) select(selectSweepValue(state(), step, stored.selected.axis, stored.selected.value));
       }, refuseAxis(step, axis));
-    }, { subject: axis, instance: JSON.stringify([step, axis]), enabled: applies });
-    if ('values' in read) return [command('saveSet', { kind: 'save_set', step, axis })];
+    }, { subject: axis, instance: JSON.stringify([step, axis]), enabled });
+    if ('values' in read) return [command('saveSet', { kind: 'save_set', step, axis }, applies && model)];
     if (!('set' in read)) return [];
     return [
       ...empty ? [command('addEntry', { kind: 'add_set_entry', step, axis })] : [],
-      command('inlineSet', { kind: 'inline_set', step, axis }),
+      command('inlineSet', { kind: 'inline_set', step, axis }, applies && model),
     ];
   }
 

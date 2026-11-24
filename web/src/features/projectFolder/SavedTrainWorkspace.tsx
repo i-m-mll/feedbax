@@ -315,11 +315,15 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     perform, state: () => latestState.current, select: (next) => selection.select(next), confirmRemoval: runRemoval.confirm,
   });
   const axisMenu: AxisMenu = (stepId, axis) => {
-    const values = plan.steps.find(({ id }) => id === stepId)?.sweeps.find(({ id }) => id === axis)?.values ?? [];
+    const planned = plan.steps.find(({ id }) => id === stepId);
+    const values = planned?.sweeps.find(({ id }) => id === axis)?.values ?? [];
+    const subject = planned?.kind === 'evaluate' ? planned.inputs.find(({ id }) => id === 'subject')?.sourceStepId : undefined;
+    const model = modelDocumentId(planned?.documentIds) ??
+      (subject ? modelDocumentId(plan.steps.find(({ id }) => id === subject)?.documentIds) : undefined);
     const [problem] = axisProblems(shown?.window_map, stepId, axis, variant);
     return {
       picker: sets.axisPicker(stepId, axis),
-      commands: sets.axisCommands(stepId, axis, !values.some(({ id }) => id !== unvalued)),
+      commands: sets.axisCommands(stepId, axis, { model: !!model, empty: !values.some(({ id }) => id !== unvalued) }),
       removeValue: (value, label) => sets.removeValue(stepId, axis, value, label),
       refusal: refusal?.kind === 'axis' && refusal.step === stepId && refusal.axis === axis ? refusal.reason : problem?.detail,
     };

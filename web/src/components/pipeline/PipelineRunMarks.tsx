@@ -384,7 +384,8 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
     for (const row of byRow) row.sort((a, b) => a.column - b.column);
     return { byRow, rowCount, columnCount, size: mapMarkSize(columnCount, rowCount) };
   }, [step.runs, sweeps, axes]);
-  if (!grid.rowCount) return null;
+  // A step with no runs still draws its axes, such as one whose required Set has no entries, to mark and repair them.
+  if (!grid.rowCount && !sweeps.length) return null;
   const { rows, columns, folded } = axes;
   const { size } = grid;
   const terms = selection?.kind === 'values' && selection.stepId === step.id ? selection.terms : [];
@@ -414,7 +415,7 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
           {folded.map((sweep) => label(sweep, 'folded'))}
         </div>
       )}
-      <ScrollFade axis="both" className="nowheel max-h-56 p-1">
+      {grid.rowCount > 0 && <ScrollFade axis="both" className="nowheel max-h-56 p-1">
         <div role="grid" aria-label={studioName('runs')} aria-rowcount={grid.rowCount} aria-colcount={grid.columnCount}
           data-mark-size={size.id} onKeyDown={navigateMarks}
           className="studio-map-run-grid relative grid w-max"
@@ -447,7 +448,7 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
             </div>
           ))}
         </div>
-      </ScrollFade>
+      </ScrollFade>}
     </div>
   );
 });
