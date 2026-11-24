@@ -212,7 +212,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
             documents.model, documents.task_source,
             registry.components, registry.expression_functions, python_tasks=registry.python_tasks,
             objective=documents.objective,
-            input_overrides=documents.input_overrides,
+            input_bindings=documents.input_bindings,
             initialization_key=model_initialization_key(initialization_seed),
             artifact_provider=slot.provider,
         )
@@ -302,10 +302,10 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
             hidden = dataset.select(carry, labels={"trial": trial_ids[0]})[0, 0, :3]
         assert selected == [carry]
         selected.clear()
-        replay = outcomes[baseline].replay_trial(trial_ids[0], anchor_id="effector")
+        replay = outcomes[baseline].replay(trial_ids[0])
         assert selected == ["checkpoint", "state_time", position]
-        assert replay.identity.stable_id == trial_ids[0]
-        np.testing.assert_array_equal(np.asarray(replay.tracks[0].samples[:3], dtype=first.dtype), first)
+        assert replay.drawn.trials[0].id == trial_ids[0]
+        np.testing.assert_array_equal(np.asarray(replay.drawn.trials[0].states[replay.position].samples[:3], dtype=first.dtype), first)
     np.testing.assert_allclose(first, reference.history[position][0, :3], atol=1e-7)
     np.testing.assert_allclose(hidden, reference.history[carry][0, :3], atol=1e-7)
     subset = fresh.execution.evaluate(
@@ -497,7 +497,7 @@ def test_saved_raw_state_refuses_undeclared_registered_owner(host, tmp_path, mon
     prepared = compile_trial_execution(
         documents.model, documents.task_source,
         registry.components, registry.expression_functions, python_tasks=registry.python_tasks,
-        input_overrides=documents.input_overrides,
+        input_bindings=documents.input_bindings,
     )
     assert isinstance(prepared, PreparedTrialExecution), prepared
     graph = prepared.executable.resolved.graph

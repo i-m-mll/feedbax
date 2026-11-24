@@ -13,7 +13,7 @@ from feedbax.contracts.model_document import (
     CompositeComponent, LeafComponent, ModelName, ModelPhysicalConnection,
     ModelDocument, ModelWire, PhysicalPort, SignalInput, SignalOutput, SignalType, WireAttachment,
 )
-from feedbax.contracts.jobs import StudioSavedTrainKey
+from feedbax.contracts.jobs import StudioProjectWindowMapProblem, StudioSavedTrainKey
 from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import AxisValueId, ProjectName, RowKey
 from feedbax.contracts.request_refs import Name
@@ -212,6 +212,11 @@ class ModelEditProblem(StrictModel):
     detail: str
 
 
+class ModelGraphProblem(StrictModel):
+    address: ModelAddress
+    reason: str
+
+
 class TaskSignalSource(StrictModel):
     owner: Literal["task"]
     run: StudioSavedTrainKey
@@ -225,9 +230,16 @@ class ModelConnectionReviewRequest(StrictModel):
     source: Annotated[SignalSource | TaskSignalSource, Field(discriminator="owner")]
 
 
+class ModelWireReplacement(StrictModel):
+    address: ModelAddress
+    attachments: tuple[ModelAddress, ...]
+
+
 class ModelConnectionVerdict(StrictModel):
     target: SignalTarget
     reason: str | None
+    problem: str | None = None
+    replaced: tuple[ModelWireReplacement, ...] = ()
 
 
 class ModelConnectionReview(StrictModel):
@@ -309,6 +321,7 @@ class ModelProjection(StrictModel):
     resolved_model: ModelDocument | None = None
     base_differences: tuple[ModelStructuralDifference, ...] = ()
     value_differences: tuple[ModelStructuralDifference, ...] = ()
+    problems: tuple[ModelGraphProblem, ...] = ()
 
 
 class ModelEditState(ModelLayout):
@@ -412,6 +425,7 @@ class EvaluateModelState(StrictModel):
     changed_from: ProjectName | None = None
     """The nearest document the read Model document shares with the subject's, when they differ: what the
     evaluation changes is the read document's differences from it."""
+    problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
 
 
 class ModelEditApplied(StrictModel):
@@ -424,6 +438,7 @@ class ModelEditApplied(StrictModel):
     clipboard: ModelClipboard | None = None
     undo_token: ModelUndoToken | None = None
     created: tuple[ProjectName, ...] = ()
+    problems: tuple[ModelGraphProblem, ...] = ()
 
 
 class ModelEditRefused(StrictModel):

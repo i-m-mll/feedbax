@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from pydantic import AliasChoices, Field, StrictFloat, StrictInt
 
 from feedbax.execution.trial_resolution import evaluation_conditions
-from feedbax.contracts.expression_values import LENGTH, CallValue, LiteralValue, NameValue
+from feedbax.contracts.expression_values import LENGTH, CallValue, LiteralValue, NameValue, UnresolvedValue
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
 from feedbax.planner.project_plan import ProjectPlanMemo, RunKey, compile_project
@@ -41,10 +41,112 @@ def _python_project():
     }
     raw["documents"]["objective"]["payload"]["terms"] = []
     documents = raw["steps"]["train"]["base"]["inline"]["trial_documents"]
-    documents.pop("input_overrides")
+    documents.pop("input_bindings")
     documents.update(task=None, python_task={"document": "task"})
     raw["steps"]["baseline"]["base"]["inline"]["params"]["trial_set"] = {"kind": "sample", "count": 1}
     return raw
+
+
+@pytest.mark.parametrize("rename", ["signal", "root input"])
+def test_renaming_keeps_each_delayed_reaches_pairing(tmp_path, rename):
+    """Catches a rename that drops a signal, changes a varied rollout's signal, or feeds an idle input."""
+    import jax.random as jr
+
+    from feedbax.execution.trial_resolution import pair_trial_source
+    from feedbax.tasks.document import TaskParameters
+
+    functions, *_ = authored = authored_documents()
+    raw = document_project(authored, evaluation=True)
+    training = raw["steps"]["train"]["base"]["inline"]["trial_documents"]
+    del training["input_bindings"]
+    model = raw["documents"]["reach-model"]["payload"]
+    root = model["ports"]["inputs"][0]
+    root["name"] = "target"
+    model["ports"]["inputs"].append(root | {
+        "id": "idle-input", "name": "idle", "default": {"value": [0.0, 0.0]},
+    })
+    signals = raw["documents"]["task"]["payload"]["signals"]
+    for signal in signals:
+        if signal["id"] == "target_pos":
+            signal["name"] = "target"
+        elif signal["id"] == "goal":
+            signal["name"] = "spare"
+    params = raw["steps"]["baseline"]["base"]["inline"]["params"]
+    params["variation"] = [
+        {"op": "replace", "path": "task.signals.target_pos.name", "value": "legacy"},
+        {"op": "replace", "path": "task.signals.goal.name", "value": "target"},
+    ]
+    app = create_app(projects_dir=tmp_path)
+    with TestClient(app) as client:
+        folders = app.state.project_folders
+        bundle = app.state.bootstrap_state.bundle
+        _save_project(folders, "rename", Project.model_validate(raw))
+        url = "/api/projects/rename"
+        train = {"variant": "default", "step": "train", "row": "default"}
+        baseline = train | {"step": "baseline"}
+
+        def pairing(run):
+            snapshot = folders.read("rename")
+            response = client.post(url + "/authoring/trials", json={"revision": snapshot.revision, "run": run})
+            assert response.status_code == 200, response.text
+            view = StudioTrialAuthoring.model_validate(response.json())
+            assert not view.problems, view.problems
+            model = snapshot.project.documents["reach-model"].payload
+            paired = pair_trial_source(
+                type(authored[1]).model_validate(model), view.task, bundle.components,
+                functions, python_tasks=bundle.python_tasks, input_bindings=view.input_bindings,
+            )
+            assert not isinstance(paired, tuple) and not paired.problems, paired
+            trial = paired.task.ahead(TaskParameters(), jr.key(1), jr.key(2))
+            fed, = [trial.inputs[signal] for _, signal in paired.input_bindings]
+            return view, fed
+
+        def signal_name(id_, name):
+            snapshot = folders.read("rename")
+            response = client.post(url + "/authoring/trials", json={
+                "revision": snapshot.revision, "run": train,
+                "change": {"kind": "structure", "changes": [
+                    {"op": "rename", "member": "signal", "id": id_, "name": name},
+                ]},
+            })
+            assert response.status_code == 200, response.text
+            saved = client.patch(url, json={
+                "revision": snapshot.revision,
+                "files": response.json()["files"],
+            })
+            assert saved.status_code == 200, saved.text
+
+        _, original_train = pairing(train)
+        _, original_baseline = pairing(baseline)
+        assert not np.array_equal(original_train, original_baseline)
+
+        if rename == "signal":
+            signal_name("target_pos", "goal")
+        else:
+            snapshot = folders.read("rename")
+            response = client.post(url + "/model/edit", json={
+                "revision": snapshot.revision, "presentation_revision": snapshot.presentation_revision,
+                "document": "reach-model", "command": {"operation": {
+                    "op": "rename", "name": "goal", "address": {"composites": [], "element": {
+                        "kind": "port", "end": {"owner": "inputs", "port": "task-input"},
+                    }},
+                }},
+            })
+            assert response.status_code == 200 and response.json()["result"]["status"] == "applied", response.text
+
+        shown_train, trained = pairing(train)
+        shown_baseline, evaluated = pairing(baseline)
+        assert shown_train.input_bindings["task-input"] == "target_pos"
+        assert shown_baseline.input_bindings["task-input"] == "goal"
+        np.testing.assert_array_equal(trained, original_train)
+        np.testing.assert_array_equal(evaluated, original_baseline)
+
+        signal_name("goal", "idle")
+        shown_train, trained = pairing(train)
+        assert shown_train.input_bindings["idle-input"] is None
+        assert next(row for row in shown_train.inputs if row.id == "idle-input").signal_id is None
+        np.testing.assert_array_equal(trained, original_train)
+        assert not folders.read_plan("rename", revision=None).plan.diagnostics
 
 
 def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_path, monkeypatch):
@@ -121,14 +223,14 @@ def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_p
         revision = folders.read(project).revision
         view = author(revision)
         (port,) = view.inputs
-        assert port.signal is None and port.required
+        assert port.signal_id is None and port.required
         assert any("reach_input" in problem.reason for problem in view.problems)
         assert view.outputs and view.resets
         revision = save(author(revision, {
-            "kind": "binding", "input": port.address.model_dump(mode="json"), "signal": "reach_target",
+            "kind": "binding", "input_id": port.id, "signal_id": "reach_target",
         }))
         view = author(revision)
-        assert view.inputs[0].explicit and view.inputs[0].signal == "reach_target"
+        assert view.inputs[0].explicit and view.inputs[0].signal_id == "reach_target"
         assert not view.problems
         (output,) = view.outputs
         assert isinstance(output.address, ModelAddress)
@@ -155,11 +257,11 @@ def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_p
         assert view.objective.terms[0].name == "Control effort"
         assert any(field.path == "/objective/terms/effort/measure" for field in view.fields)
         assert not view.problems
-        refused = author(revision, {"kind": "objective", "edits": [
+        marked = author(revision, {"kind": "objective", "edits": [
             {"op": "replace", "path": "/terms/0/measure/args/0/reference", "value": "unknown"},
         ]})
-        assert not refused.files
-        assert any(problem.code == "unknown_name" for problem in refused.problems)
+        assert marked.files
+        assert any(problem.code == "unknown_name" for problem in marked.problems)
 
         def ids():
             return {item.key: item.request_id for item in folders.read_plan(project, revision=revision).plan.runs}
@@ -203,7 +305,7 @@ def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_p
         sample = client.post("/api/execution/task-trials/sample", json={
             "model": model,
             "python_task": view.task.model_dump(mode="json"),
-            "input_overrides": {"reach_input": "reach_target"}, "count": 1,
+            "input_bindings": {"task-input": "reach_target"}, "count": 1,
         })
         assert sample.status_code == 200, sample.text
         np.testing.assert_allclose(sample.json()["drawn"]["trials"][0]["inputs"]["reach_target"], [[0.22, 0]] * 12)
@@ -259,6 +361,88 @@ def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_p
         assert ids() == after
         with jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=evaluated).open_states() as dataset:
             assert int(dataset.data("objective/coverage/effort").item()) == 1
+
+
+def test_task_saves_unresolved_text_and_binds_it_when_a_variable_appears(tmp_path):
+    app = create_app(projects_dir=tmp_path / "projects")
+    raw = document_project(authored_documents())
+    task_file = raw["documents"]["task"]["payload"]
+    target = next(variable for variable in task_file["variables"] if variable["id"] == "target")
+    terms = raw["documents"]["objective"]["payload"]["terms"]
+    terms.append(terms[0] | {"id": "disabled", "enabled": False})
+    project = "held-expression"
+    folders = app.state.project_folders
+    _save_project(folders, project, Project.model_validate(raw))
+    revision = folders.read(project).revision
+    run = {"variant": "default", "step": "train", "row": "default"}
+    path = "/task/variables/target/value"
+
+    with TestClient(app) as client:
+        def author(change=None):
+            response = client.post(f"/api/projects/{project}/authoring/trials", json={
+                "revision": revision, "run": run, "change": change,
+            })
+            assert response.status_code == 200, response.text
+            return StudioTrialAuthoring.model_validate(response.json())
+
+        def save(view):
+            response = client.patch(f"/api/projects/{project}", json={
+                "revision": view.revision,
+                "files": [file.model_dump(mode="json") for file in view.files],
+            })
+            assert response.status_code == 200, response.text
+            return response.json()["revision"]
+
+        def target_field(view):
+            return next(field for field in view.fields if field.path == path)
+
+        assert not author().problems
+        disabled_path = "/objective/terms/disabled/weight"
+        disabled = author({"kind": "expression", "path": disabled_path, "edit": {
+            "kind": "text", "text": "(",
+        }})
+        disabled_field = next(field for field in disabled.fields if field.path == disabled_path)
+        assert disabled.files and disabled_field.text == "("
+        (disabled_problem,) = disabled_field.problems
+        assert disabled_problem.code == "parse" and disabled_problem in disabled.problems
+        edit = author({"kind": "expression", "path": path, "edit": {
+            "kind": "text", "text": "start + offset",
+        }})
+        assert edit.files
+        revision = save(edit)
+        reopened = author()
+        for view in (edit, reopened):
+            field = target_field(view)
+            problem, = field.problems
+            assert field.text == "start + offset"
+            assert problem.code == "unknown_name"
+            assert field.text[problem.span.start:problem.span.end] == "offset"
+        assert isinstance(
+            next(variable.value for variable in reopened.task.variables if variable.id == "target"), UnresolvedValue,
+        )
+        (unrunnable,) = folders.read_plan(project, revision=revision).plan.runs
+        assert unrunnable.admission_problem is not None
+        assert "offset" in unrunnable.admission_problem.detail
+
+        added = author({"kind": "task", "edits": [{"op": "add", "path": "/variables/-", "value": {
+            "id": "offset-id", "name": "offset", "type": target["type"],
+            "value": {"kind": "call", "function": "vector", "args": [
+                {"kind": "literal", "value": 0.1}, {"kind": "literal", "value": 0.2},
+            ]},
+        }}]})
+        assert not added.problems
+        revision = save(added)
+        resolved = next(variable.value for variable in author().task.variables if variable.id == "target")
+        assert isinstance(resolved, CallValue)
+        assert resolved.args[1] == NameValue(reference="offset-id")
+        rename = author({"kind": "structure", "changes": [{
+            "op": "rename", "member": "variable", "id": "offset-id", "name": "displacement",
+        }]})
+        revision = save(rename)
+        renamed = author()
+        assert not renamed.problems
+        assert target_field(renamed).text == "start + displacement"
+        assert next(variable.value for variable in renamed.task.variables if variable.id == "target") == resolved
 
 
 def test_python_task_integer_sweep_uses_registered_site():

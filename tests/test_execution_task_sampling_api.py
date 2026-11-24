@@ -33,7 +33,7 @@ def authored_preview(kind, expression_functions):
     return {
         "model": _model_payload(),
         "task": document.model_dump(mode="json"),
-        "input_overrides": {"reach_target": "target_pos"},
+        "input_bindings": {"task-input": "target_pos"},
         "seed": 17,
         "count": 4,
     }
@@ -80,7 +80,7 @@ def test_aggregate_of_delayed_reaches_shares_the_drawn_epoch(client, expression_
 
 def test_a_binding_problem_does_not_hide_the_trial(client, expression_functions):
     payload = authored_preview("simple", expression_functions)
-    payload["input_overrides"] = {"reach_target": "target_vel"}
+    payload["input_bindings"] = {"task-input": "target_vel"}
     response = client.post("/api/execution/task-trials/sample", json=payload)
     assert response.status_code == 200, response.text
     trial = response.json()["drawn"]["trials"][0]

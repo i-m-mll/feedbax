@@ -20,6 +20,7 @@ class StepInput(StrictModel):
 class OperationDataset(StrictModel):
     element: ProjectName
     product: ProjectName
+    unresolved: Literal[True] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 DatasetSource = StepInput | OperationDataset

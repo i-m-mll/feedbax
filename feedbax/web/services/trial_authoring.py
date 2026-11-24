@@ -6,7 +6,7 @@ from dataclasses import dataclass, field, replace
 
 from feedbax.execution.trial_resolution import TrialPair, compile_unpaired_task, pair_trial_source
 from feedbax.contracts.expression_values import (
-    Level, Problem, ProblemCode, ScopedValue, Site, SweepList, SweepRange, SweepSample,
+    Level, Problem, ProblemCode, ScopedValue, Site, SweepList, SweepRange, SweepSample, UnresolvedValue,
     ValueBase, ValueType,
 )
 from feedbax.tasks.document import TrialSource, zero
@@ -27,9 +27,10 @@ from feedbax.planner.project_plan import EVALUATION_TASK, RunKey, compile_projec
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import DocumentTrainingConfig, DocumentTrainingRequestSpec, EvaluationRequestSpec
 from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings
-from feedbax.contracts.project_sources import pointer
+from feedbax.contracts.project_sources import ValueSource, pointer
+from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
 from feedbax.contracts.studio_authoring import StudioSweptParameterMissing
-from feedbax.contracts.studio_place import task_start
+from feedbax.contracts.studio_place import task_start_path
 from feedbax.studio.authoring import training_document_choice
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.contracts.studio_trials import (
@@ -44,9 +45,10 @@ from feedbax.contracts.task_document import (
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument, ObjectiveTerm
 from feedbax.contracts.training import TrialDocuments
+from feedbax.contracts.trial_bindings import selected_signal_id
 from feedbax.contracts.expression_check import references
 from feedbax.contracts.expression_site import FieldKind, project_site, read_field
-from feedbax.contracts.expression_text import ParsedField, parse, print_field
+from feedbax.contracts.expression_text import parse, print_field, resolve_expression
 from feedbax.studio.value_structure import value_structure
 from feedbax.objectives.document import ObjectiveExecutor, ObjectiveUse, compile_objective
 from feedbax.application.bundle import ApplicationRegistryBundle
@@ -55,12 +57,12 @@ from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFol
 from feedbax.studio.selection import StoredEdit
 from feedbax.studio.numeric_fields import project_numeric_field
 from feedbax.web.services.trial_fields import (
-    TrialFieldSweep, at, index_pointer, numeric_nodes, routes_to_sweep, site_expression, trial_field_sweep,
+    TrialFieldSweep, at, held_expression_file, index_pointer, numeric_nodes, routes_to_sweep, site_expression, trial_field_sweep,
     trial_field_sweep_edit,
 )
 from feedbax.web.services.trial_scope import (
     authored_payload, base_value_edits, changed_from_base, document_write, evaluation_document_write, lit_steps, preview_stored, reached_runs, refuse_unreached, scoped_file,
-    selected_runs, variant_view,
+    reached_steps, selected_runs, variant_view,
 )
 
 
@@ -69,7 +71,7 @@ class _InitialTrialDocuments:
     model: ModelDocument
     task_source: TaskDocument | PythonTaskSelection
     objective: ObjectiveDocument | None
-    input_overrides: dict[str, str]
+    input_bindings: dict[str, str | None]
 
     @property
     def task(self) -> TaskDocument | None:
@@ -117,7 +119,7 @@ def _project(
     task_sites = {}
     paired = pair_trial_source(
         documents.model, task, bundle.components, bundle.expression_functions,
-        python_tasks=bundle.python_tasks, input_overrides=documents.input_overrides,
+        python_tasks=bundle.python_tasks, input_bindings=documents.input_bindings,
         task_sites=task_sites, graph_override=graph_override, reset_fields=resets,
     )
     partial = None
@@ -145,7 +147,7 @@ def _project(
     names = {epoch.id: epoch.name for epoch in epochs}
     epochs = tuple(
         StudioTrialEpoch(id=epoch, name=names.get(epoch, epoch), steps=steps)
-        for epoch, steps in zip(source.epochs, source.step_counts, strict=True)
+        for epoch, steps in dict(zip(source.epochs, source.step_counts, strict=True)).items()
     )
     if documents.objective is not None:
         objective_sites = {} if show_objective else None
@@ -212,12 +214,13 @@ def _input_address(port: str) -> ModelAddress:
 def _input_rows(documents, projection) -> list[StudioTrialInput]:
     paired = projection.pair
     resolved = {port.id: port.type for port in paired.model.inputs} if paired else {}
-    effective = dict(paired.input_bindings) if paired else {}
+    signals = {signal.name: signal.id for signal in projection.signals}
     return [
         StudioTrialInput(
-            address=address, name=port.name, type=resolved.get(address.to_text()),
-            required=port.default is None, signal=effective.get(port.name),
-            explicit=port.name in documents.input_overrides,
+            id=port.id, address=address, name=port.name, type=resolved.get(address.to_text()),
+            required=port.default is None,
+            signal_id=selected_signal_id(port.id, port.name, signals, documents.input_bindings),
+            explicit=port.id in documents.input_bindings,
         )
         for port in documents.model.ports.inputs
         for address in (_input_address(port.id),)
@@ -264,22 +267,19 @@ def _expression_edit(change, documents, projection, bundle):
     raw = document.model_dump(mode="json", exclude_unset=True)
     if end is not None and text.strip() == "rest":
         return StudioTrialDocumentEdit(kind=role, edits=_end_edits(raw, end, "rest", {}))
-    parsed = (
-        read_field(text, site, bundle.expression_functions) if projection.pair is not None
-        else parse(text, site, bundle.expression_functions)
-    )
-    if not isinstance(parsed, ParsedField):
-        return tuple(problem.model_copy(update={"path": (role, *rest)}) for problem in parsed)
-    if isinstance(parsed.value, SweepList | SweepRange | SweepSample):
+    parsed = parse(text, site, bundle.expression_functions)
+    value = UnresolvedValue(text=text) if isinstance(parsed, tuple) else parsed.value
+    if isinstance(value, SweepList | SweepRange | SweepSample):
         return one
+    stored_value = value.model_dump(mode="json")
     if end is not None and isinstance(at(document, tuple(rest[:-1])), Rest):
         return StudioTrialDocumentEdit(kind=role, edits=_end_edits(
-            raw, end, "length", {"length": parsed.value.model_dump(mode="json")},
+            raw, end, "length", {"length": stored_value},
         ))
     stored = index_pointer(raw, tuple(rest))
     path = stored or index_pointer(raw, tuple(rest[:-1])) + pointer(tuple(rest[-1:]))
     return StudioTrialDocumentEdit(kind=role, edits=[SetProjectValue(
-        op="replace" if stored else "add", path=path, value=parsed.value.model_dump(mode="json"),
+        op="replace" if stored else "add", path=path, value=stored_value,
     )])
 
 
@@ -426,28 +426,14 @@ def _train_writes(change, project, definition, documents, projection):
             writes.append(_override("trial_documents.python_task", "remove"))
         return writes
     if isinstance(change, StudioTrialBindingEdit):
-        row = next((row for row in _input_rows(documents, projection) if row.address == change.input), None)
+        row = next((row for row in _input_rows(documents, projection) if row.id == change.input_id), None)
         if row is None:
-            raise ProjectFolderInvalid("The address is not a declared Model input for this row.")
-        overrides = dict(documents.input_overrides)
-        if change.signal is None or change.signal == row.name:
-            overrides.pop(row.name, None)
-        else:
-            overrides[row.name] = change.signal
-        present = "input_overrides" in raw
-        if present:
-            path = f"trial_documents.input_overrides.{row.name}"
-            if "." in row.name:
-                raise ProjectFolderInvalid("This input needs a path-safe name for a scoped edit.")
-            if row.name in overrides:
-                op = "replace" if row.explicit else "add"
-                return [_override(path, op, overrides[row.name])]
-            if row.explicit:
-                return [_override(path, "remove")]
-            return []
-        if overrides:
-            return [_override("trial_documents.input_overrides", "add", overrides)]
-        return []
+            raise ProjectFolderInvalid("The ID is not a declared Model input for this row.")
+        if "input_bindings" in raw:
+            return [_override(
+                f"trial_documents.input_bindings.{row.id}", "replace" if row.explicit else "add", change.signal_id,
+            )]
+        return [_override("trial_documents.input_bindings", "add", {row.id: change.signal_id})]
     field, value = _changed_value(documents, definition, change.kind)
     return _value_writes(f"trial_documents.{field}", value, change)
 
@@ -492,7 +478,7 @@ def _initial_trial_documents(definition, bundle) -> _InitialTrialDocuments:
     params = authored_rollout_settings(definition.payload.get("params"))
     return _InitialTrialDocuments(
         model, source, ObjectiveDocument.model_validate(objective.payload) if objective is not None else None,
-        params.input_overrides,
+        params.input_bindings,
     )
 
 
@@ -548,7 +534,9 @@ def _evaluate_documents(plan, key, definition, bundle):
                 code=ProblemCode.STRUCTURE, path=("variation",), reason=str(error),
             )),
         ), None
-    documents = _with_task(documents, task)
+    documents = _with_task(documents, task).model_copy(update={
+        "input_bindings": documents.input_bindings | params.input_bindings,
+    })
     paired = _project(documents, bundle, graph_override=graph, objective_use=objective_use)
     return documents, replace(paired, task_origins=variant.edit_origins), graph
 
@@ -605,15 +593,15 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
                 (lambda edits: document_write(project, shown, edits, {key.step}, readers)) if step.kind == "train"
                 else lambda edits: evaluation_document_write(project, plan, shown, edits, {key.step}, "task", variant),
             )
-            return (StoredEdit([]), made) if isinstance(made, tuple) else (made, ())
+            return (StoredEdit([]), made, None) if isinstance(made, tuple) else (made, (), None)
         change = _expression_edit(expression, documents, projected, bundle)
         if not isinstance(change, StudioTrialDocumentEdit):
-            return StoredEdit([]), change
+            return StoredEdit([]), change, None
     structural = isinstance(change, StudioTrialStructureEdit)
     if structural:
         change = _structure_edit(change, documents, definition)
         if not isinstance(change, StudioTrialDocumentEdit):
-            return StoredEdit([]), change
+            return StoredEdit([]), change, None
     document = None
     document_path = None
     edited_role = (change.document if isinstance(change, StudioTrialDocumentReset)
@@ -694,7 +682,7 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
     elif isinstance(change, StudioTrialSelectDocument) and change.role == "training":
         writes = training_document_choice(project, key.step, bundle.training_methods, change.document)
         if isinstance(writes, StudioSweptParameterMissing):
-            return StoredEdit([]), writes
+            return StoredEdit([]), writes, None
         stored = scoped_file(project, key.step, stored_scope, writes, chosen=chosen, users=readers, view=view)
     else:
         writes = _train_writes(change, project, definition, documents, projected)
@@ -702,12 +690,20 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
             project, key.step, stored_scope, writes, chosen=chosen, users=readers, view=view,
         ) if writes else StoredEdit([])
     if not stored.files and not stored.created:
-        return StoredEdit([]), ()
+        return StoredEdit([]), (), None
+    if isinstance(change, StudioTrialDocumentEdit) and change.kind == "task" and any(
+        (parts := json_pointer_parts(edit.path))[:1] == ("signals",)
+        and (len(parts) <= 2 or parts[2:] == ("name",))
+        for edit in change.edits
+    ):
+        from feedbax.web.services.trial_bindings import preserve_renamed_bindings
+
+        stored = preserve_renamed_bindings(folders, project_id, body.revision, project, stored)
     variants = {key.variant} if variant and whole else set(plan.variants)
     reach = reached_runs(plan, variants, selected, stored.reached - {key.step})
     return _validate_files(
         stored, project, settled, selected, reach, key.step, folders, bundle, change, expression,
-        evaluate_field=evaluate_field and not isinstance(scope, StudioTrialStepScope), structural=structural,
+        evaluate_field=evaluate_field and not isinstance(scope, StudioTrialStepScope),
     )
 
 
@@ -725,8 +721,8 @@ def _structure_edit(change, documents, definition) -> StudioTrialDocumentEdit | 
     _, raw = _changed_value(documents, definition, "task")
     before, after = task.model_dump(mode="json"), changed.model_dump(mode="json")
     edits = [
-        SetProjectValue(op="replace" if field in raw else "add", path=pointer((field,)), value=after[field])
-        for field in after if after[field] != before[field]
+        SetProjectValue(op="replace" if field in raw else "add", path=pointer((field,)), value=after.get(field, []))
+        for field in dict.fromkeys((*after, *before)) if after.get(field) != before.get(field)
     ]
     if not edits:
         raise ProjectFolderInvalid("The change leaves the task as it is.")
@@ -826,12 +822,78 @@ def _evaluate_field_files(project, key, scope, change, documents):
     ))
 
 
+def _held_values(authored, definition, documents, projection, kind):
+    """Each unresolved field for which this run identifies a writable authored owner."""
+    raw = {}
+    for path, site in projection.fields.items():
+        role, *rest = map(str, path)
+        document = _field_document(documents, role)
+        if document is None or not isinstance(value := site_expression(document, tuple(rest)), UnresolvedValue):
+            continue
+        if role not in raw:
+            raw[role] = document.model_dump(mode="json", exclude_unset=True)
+        indexed = index_pointer(raw[role], tuple(rest))
+        if indexed is None:
+            continue
+        if kind == "train":
+            source_path = f"/payload/trial_documents/{role}{indexed}/text"
+        else:
+            root = _evaluation_task_path(definition)
+            source_path = pointer(tuple(root.split("."))) + indexed + "/text"
+        source: ValueSource | None = definition.sources.get(source_path)
+        if source is not None and (owner := held_expression_file(authored, source, value)) is not None:
+            yield owner, value, site
+
+
+def _resolved_value_files(authored, candidate, pairings, compile_sources, bundle):
+    """Store a parsed value in its original file when its readers agree on the references."""
+    functions = bundle.expression_functions
+    proposals = {}
+    for key, (documents, projection) in pairings.items():
+        kind = candidate.steps[key.variant, key.step].kind
+        for owner, held, site in _held_values(authored, candidate.selected_definitions[key], documents, projection, kind):
+            key_and_path = (owner[0].kind, owner[0].id, owner[1])
+            parsed = resolve_expression(held, site, functions)
+            proposals.setdefault(key_and_path, []).append(None if isinstance(parsed, tuple) else parsed.value)
+
+    accepted = {
+        owner: values[0] for owner, values in proposals.items()
+        if values[0] is not None and all(value == values[0] for value in values)
+    }
+    if not accepted:
+        return []
+
+    documents = {name for kind, name, _ in accepted if kind == "document"}
+    steps = reached_steps(authored, {name for kind, name, _ in accepted if kind == "step"})
+    variants = {name for kind, name, _ in accepted if kind == "variant"}
+    other_runs = {
+        row.key for row in candidate.rows if row.kind == "train" and row.key not in pairings
+        and (row.document_uses & documents or row.key.step in steps or row.key.variant in variants)
+    }
+    if other_runs:
+        other = compile_sources(authored, other_runs)
+        for key, definition in other.selected_definitions.items():
+            shown, projection, _ = _pairing(other, key, bundle)
+            for (address, path), held, site in _held_values(authored, definition, shown, projection, "train"):
+                owner = (address.kind, address.id, path)
+                if owner not in accepted:
+                    continue
+                parsed = resolve_expression(held, site, functions)
+                if isinstance(parsed, tuple) or parsed.value != accepted[owner]:
+                    del accepted[owner]
+
+    return [
+        StudioProjectFilePatch(address=AuthoredFileAddress(kind=kind, id=name), patches=[
+            SetProjectValue(op="replace", path=path, value=value.model_dump(mode="json")),
+        ])
+        for (kind, name, path), value in accepted.items()
+    ]
+
+
 def _validate_files(
     stored, project, settled, selected, reach, named, folders, bundle, change, expression, *, evaluate_field,
-    structural=False,
 ):
     plan = settled.plan
-    keeps_problems = isinstance(change, StudioTrialSelectDocument) or structural
     authored = preview_stored(project, stored)
     compare_names = isinstance(change, StudioTrialDocumentEdit) and change.kind == "objective" and any(
         "name" in json_pointer_parts(edit.path) or len(json_pointer_parts(edit.path)) <= 2 for edit in change.edits
@@ -853,36 +915,24 @@ def _validate_files(
             raise ProjectFolderInvalid("The proposed edit changes an Objective outside the selected scope.")
     previous = {run.key: run for run in plan.runs}
     current = {run.key: run for run in candidate.runs}
-    before_diagnostics = plan.diagnostics
+    pairings = {}
     for key in sorted(selected, key=lambda item: (item.variant, item.step, item.row)):
+        if key not in candidate.selected_definitions or key not in plan.selected_definitions:
+            continue
+        new, after, _ = _pairing(candidate, key, bundle)
+        pairings[key] = (new, after)
         if key.step != named and key in previous and key in current and (
             previous[key].request_id == current[key].request_id
         ):
             # A reached step that holds its own value where the edit is made keeps it.
             continue
-        if key not in candidate.selected_definitions:
-            diagnostic = next((
-                item for item in candidate.diagnostics if item not in before_diagnostics
-                and item.step in (None, key.step) and item.variant in (None, key.variant)
-            ), None)
-            raise ProjectFolderInvalid(diagnostic.detail if diagnostic else "The edit does not resolve for every selected run.")
-        old, before, _ = _pairing(plan, key, bundle)
-        new, after, _ = _pairing(candidate, key, bundle)
+        old, _, _ = _pairing(plan, key, bundle)
         if expression is not None:
             role, *rest = json_pointer_parts(expression.path)
             shown = _field_document(old, role)
             parent = index_pointer(shown.model_dump(mode="json"), tuple(rest[:-1])) if shown is not None else None
             if parent is None or not change.edits[0].path.startswith(parent + "/"):
                 raise ProjectFolderInvalid("The selected runs order this field's members differently.")
-        # Compiling stops at a document's first problems, so once it has some, mending one lets compiling reach
-        # problems that were there before the edit; an edit is refused for what it breaks in a document without any.
-        introduced = () if before.problems else tuple(
-            problem for problem in after.problems if problem not in before.problems
-        )
-        if introduced and not evaluate_field and not keeps_problems:
-            return StoredEdit([]), introduced
-        if evaluate_field and introduced and key in current:
-            return StoredEdit([]), introduced
         if isinstance(change, StudioTrialDocumentEdit):
             old_value = old.task_source if change.kind == "task" else old.objective
             new_value = new.task_source if change.kind == "task" else new.objective
@@ -909,24 +959,17 @@ def _validate_files(
             if definition.document_ids.get(path) != change.document:
                 raise ProjectFolderInvalid(f"A selected {change.role} is controlled by a different authored source.")
         elif isinstance(change, StudioTrialBindingEdit):
-            binding = next((row for row in _input_rows(new, after) if row.address == change.input), None)
-            if binding is None:
+            if not any(row.id == change.input_id for row in _input_rows(new, after)):
                 raise ProjectFolderInvalid("A selected run has no addressed input.")
-            expected = dict(old.input_overrides)
-            if change.signal in (None, binding.name):
-                expected.pop(binding.name, None)
-            else:
-                expected[binding.name] = change.signal
-            if expected != new.input_overrides:
+            expected = old.input_bindings | {change.input_id: change.signal_id}
+            if expected != new.input_bindings:
                 raise ProjectFolderInvalid("A selected input is controlled by a different authored source.")
-        if not evaluate_field and not keeps_problems and key in previous and key not in current:
-            diagnostic = next((
-                item for item in candidate.diagnostics if item not in before_diagnostics
-                and item.step == key.step and item.variant == key.variant and item.row == key.row
-            ), None)
-            raise ProjectFolderInvalid(diagnostic.detail if diagnostic else "The edit removes a planned request.")
     refuse_unreached(plan, candidate, reach)
-    return stored, ()
+    if files := _resolved_value_files(authored, candidate, pairings, compile_sources, bundle):
+        stored = stored.then(files)
+        authored = preview_stored(project, stored)
+        candidate = compile_sources(authored, selected)
+    return stored, (), (authored, candidate)
 
 
 def _objective_names(plan, key):
@@ -957,7 +1000,7 @@ def _field_problems(path, site: Site, text: str, functions, problems) -> list[Pr
     ]
 
 
-def _trial_fields(path, site: Site, expression, functions, sweep, row, problems) -> list[StudioTrialField]:
+def _trial_fields(path, site: Site, expression, functions, sweep, row, problems, name_paths) -> list[StudioTrialField]:
     """The field at ``path`` with its text, its structure where its value names only what is in scope, its problems,
     and each number in it the step can sweep: ``sweep`` gives the sweep of the number at a path, if the step can sweep it.
 
@@ -966,7 +1009,7 @@ def _trial_fields(path, site: Site, expression, functions, sweep, row, problems)
     """
     missing = references(expression) - {item.id for item in site.names} if expression is not None else set()
     shown = expression is not None and not missing
-    projection = project_site(site, functions)
+    projection = project_site(site, functions, expression, name_paths=name_paths)
     fields = []
     for inner, label in numeric_nodes(expression, functions) if shown else ():
         swept = sweep((*path, *inner), site, label or _field_label(path))
@@ -988,10 +1031,15 @@ def _trial_fields(path, site: Site, expression, functions, sweep, row, problems)
         for reference in sorted(missing)
     ))})
     text = print_field(expression, printed) if expression is not None else ""
+    marks = _field_problems(path, site, text, functions, problems)
+    if not marks and isinstance(expression, UnresolvedValue):
+        resolved = resolve_expression(expression, site, functions)
+        if isinstance(resolved, tuple):
+            marks = [problem.model_copy(update={"path": path}) for problem in resolved]
     return [StudioTrialField(
         path=pointer(tuple(map(str, path))), label=_field_label(path), site=projection, text=text,
         structure=value_structure(expression, site, functions) if shown else None,
-        problems=_field_problems(path, site, text, functions, problems),
+        problems=marks,
     ), *fields]
 
 
@@ -1023,15 +1071,29 @@ def trial_authoring(
     if step is None or step.kind not in ("train", "evaluate"):
         raise ProjectFolderInvalid("The selected run has no authored trial pairing.")
     try:
+        project = snapshot.project
         documents, projected, graph = _pairing(plan, key, bundle)
         stored, refused = StoredEdit([]), ()
         refusal = None
         if body.change is not None:
-            stored, refused = _prepare_edits(
+            stored, refused, preview = _prepare_edits(
                 body, folders, project_id, snapshot.project, settled, key, bundle, documents, projected,
             )
             if isinstance(refused, StudioSweptParameterMissing):
                 refusal, refused = refused, ()
+            if preview is not None:
+                project, plan = preview
+                if changed := plan.selected_definitions.get(key):
+                    definition = changed
+                    documents, projected, graph = _pairing(plan, key, bundle)
+                else:
+                    problems = tuple(
+                        Problem(code=ProblemCode.STRUCTURE, reason=item.detail)
+                        for item in plan.diagnostics
+                        if item.step == key.step and item.row in (None, key.row)
+                        and item.variant in (None, key.variant)
+                    )
+                    projected = replace(projected, problems=problems)
     except (ValueError, TypeError, KeyError) as error:
         raise ProjectFolderInvalid(str(error)) from error
     paired = projected.pair
@@ -1069,6 +1131,8 @@ def trial_authoring(
                 else:
                     task_field_sources[target[-1]] = source
     row = next((item for item in plan.rows if item.key == key), None)
+    output_paths = {_output_address(port.id).to_text(): (port.name,)
+                    for port in documents.model.ports.outputs}
 
     def expression(path):
         document = _field_document(documents, path[0])
@@ -1083,16 +1147,25 @@ def trial_authoring(
     def sweep(path, site, label):
         if paired is None:
             return None
-        return _field_sweep(snapshot.project, plan, key, definition, path, site, label)
+        return _field_sweep(project, plan, key, definition, path, site, label)
 
+    fields = [
+        field for path, site in projected.fields.items() if path[1:2] != ("validation_trials",)
+        for field in _trial_fields(
+            path, site, expression(path), bundle.expression_functions, sweep, row, projected.problems, output_paths,
+        )
+    ]
+    field_problems = [
+        problem for field in fields for problem in field.problems
+        if not _held_problems(problem.path, projected.problems)
+    ]
     return StudioTrialAuthoring(
         revision=snapshot.revision, run=body.run, model=model_document,
         task_document=definition.document_ids.get(task_path) if task_path else None,
         objective_document=objective_document,
         task=task, objective=documents.objective, objective_source=objective_source,
-        input_overrides=documents.input_overrides,
-        task_changed=changed_from_base(snapshot.project, _whole_document(definition, task_path) if task_path else None),
-        objective_changed=changed_from_base(snapshot.project, _whole_document(
+        task_changed=changed_from_base(project, _whole_document(definition, task_path) if task_path else None),
+        objective_changed=changed_from_base(project, _whole_document(
             definition, objective_path,
         )) if objective_source is not None and objective_source.kind == "own" else [],
         task_source=task_source, task_field_sources=task_field_sources,
@@ -1109,20 +1182,15 @@ def trial_authoring(
                 objective_use=ObjectiveUse.INHERITED if objective_source is not None and objective_source.kind == "train"
                 else ObjectiveUse.TRAIN,
             ).problems))
-            for name in sorted(snapshot.project.documents)
-            if (other := _selected_task(snapshot.project, name)) is not None
+            for name in sorted(project.documents)
+            if (other := _selected_task(project, name)) is not None
         ],
-        inputs=_input_rows(documents, projected),
+        input_bindings=documents.input_bindings, inputs=_input_rows(documents, projected),
         outputs=[StudioTrialOutput(address=ModelAddress.from_text(value.id), value=value)
                  for value in paired.model.outputs] if paired else [],
-        resets=[StudioTrialReset(address=field.address, name=task_start(documents.model, field.address).name,
+        resets=[StudioTrialReset(address=field.address, path=task_start_path(documents.model, field.address),
                                  type=field.type, finest=field.finest, required=field.required)
                 for field in projected.resets],
-        fields=[
-            field for path, site in projected.fields.items() if path[1:2] != ("validation_trials",)
-            for field in _trial_fields(
-                path, site, expression(path), bundle.expression_functions, sweep, row, projected.problems,
-            )
-        ],
-        problems=[*projected.problems, *refused], files=stored.files, created=list(stored.created), refusal=refusal,
+        fields=fields, problems=[*projected.problems, *field_problems, *refused],
+        files=stored.files, created=list(stored.created), refusal=refusal,
     )

@@ -69,7 +69,7 @@ PORTLESS = ResolvedModelInterface(PERIOD, (), (), (), ())
 def reset_position(interface):
     return next(
         field.address for field in interface.reset.fields
-        if field.address.element.path == ("reset", "effector", "position")
+        if field.address.element.path == ("state", "effector/position")
     )
 
 
@@ -243,7 +243,7 @@ def example(kind, functions, *, zero=False, interface=PORTLESS, reference_valida
         doc,
         functions,
         model=interface,
-        input_overrides={"reach_target": "target_pos"} if interface.inputs else None,
+        input_bindings={"task-input": "target_pos"} if interface.inputs else None,
     )
     assert isinstance(task, DocumentTask), task
     return doc, task
@@ -574,10 +574,10 @@ def test_temporal_variable_can_leave_a_cell_absent(functions):
 
 def test_nested_reset_updates_observations_and_delay_queues():
     interface, graph = _pair_model(writable_gru=True)
-    field, = (field for field in interface.reset.fields if field.address.composites)
-    assert field.address.composites == ("wrapper", "controller")
-    assert field.address.element.path == ("reset", "hidden")
-    identifier = field.address.to_text()
+    scope = ("wrapper", "controller")
+    identifier = ModelAddress.at_state(scope, "cell", "hidden").to_text()
+    output_id = ModelAddress.at_state(scope, "cell", "output").to_text()
+    field = next(field for field in interface.reset.fields if field.address.to_text() == identifier)
     key = jr.key(32)
     hidden = jnp.ones(field.type.shape, dtype=jnp.int32)
     reset = interface.reset.prepare(graph, {identifier: hidden}, key=key)
@@ -590,25 +590,43 @@ def test_nested_reset_updates_observations_and_delay_queues():
     np.testing.assert_array_equal(reset.outputs["hidden"], hidden)
     carry = reset.cycle_init["__nested__", "wrapper"]["__nested__", "controller"]
     np.testing.assert_array_equal(carry["readout", "input"], jnp.stack((hidden, hidden)))
+    explicit = interface.reset.prepare(graph, {identifier: hidden, output_id: hidden + 2}, key=key)
+    np.testing.assert_array_equal(cell.state_view(explicit.state).hidden, hidden)
+    np.testing.assert_array_equal(explicit.outputs["hidden"], hidden + 2)
+    explicit_carry = explicit.cycle_init["__nested__", "wrapper"]["__nested__", "controller"]
+    np.testing.assert_array_equal(explicit_carry["readout", "input"], jnp.stack((hidden + 2, hidden + 2)))
     default = interface.reset.prepare(graph, {}, key=key)
     np.testing.assert_array_equal(cell.state_view(default.state).hidden, 0)
     renamed, _ = _pair_model(writable_gru=True, rename=True)
     assert renamed.reset.fields == interface.reset.fields
 
 
+def test_scalar_distance_initializes_both_coordinates(functions, paired_model):
+    interface, graph = paired_model
+    doc, _ = example("simple", functions, interface=interface)
+    start, target = doc.variables
+    start = start.model_copy(update={
+        "type": ValueType(base=ValueBase.REAL, dimensions=LENGTH), "value": expression("0.25 m"),
+    })
+    task = compile_task(
+        doc.model_copy(update={"variables": (start, target)}), functions,
+        model=interface, input_overrides={"reach_target": "target_pos"},
+    )
+    assert isinstance(task, DocumentTask), task
+    key = jr.key(0)
+    trial = task.ahead(TaskParameters(), key, key)
+    reset = interface.reset.prepare(graph, trial.inits, key=key)
+    np.testing.assert_array_equal(graph.nodes["plant"].state_view(reset.state).effector.pos, [0.25, 0.25])
+
+
 def test_writable_reset_fields_refuse_read_only_shapes_and_dtypes(paired_model):
     interface, graph = paired_model
     writable = reset_position(interface)
-    unsupported = writable.model_copy(update={"element": writable.element.model_copy(update={
-        "path": ("reset", "effector", "force"),
-    })})
-    assert {field.address.element.path for field in interface.reset.fields} == {
-        ("reset", "effector", "position"), ("reset", "effector", "velocity"),
-    }
+    unsupported = ModelAddress.at_state((), "plant", "effector/acceleration")
     key = jr.key(0)
     for address, value, message in (
         (unsupported, [0.0, 0.0], "not a declared writable"),
-        (writable, [1.0], "shape"),
+        (writable, [[1.0, 2.0]], "shape"),
         (writable, [True, False], "real"),
     ):
         with pytest.raises(ModelResetError, match=message) as error:
@@ -624,8 +642,8 @@ def test_trial_configuration_changes_force_without_mutating_model():
     }
     key = jr.key(11)
     updates = {
-        ("reset", "effector", "position"): [0.5, -0.25],
-        ("reset", "effector", "velocity"): [2.0, 1.0],
+        ("state", "effector/position"): [0.5, -0.25],
+        ("state", "effector/velocity"): [2.0, 1.0],
         ("fields", "active"): True,
         ("fields", "scale"): 2,
         ("fields", "amplitude"): 3,
@@ -635,8 +653,8 @@ def test_trial_configuration_changes_force_without_mutating_model():
     plant = graph.nodes["plant"]
     curl = graph.nodes["curl"]
     effector = plant.state_view(reset.state).effector
-    np.testing.assert_array_equal(effector.pos, updates["reset", "effector", "position"])
-    np.testing.assert_array_equal(effector.vel, updates["reset", "effector", "velocity"])
+    np.testing.assert_array_equal(effector.pos, updates["state", "effector/position"])
+    np.testing.assert_array_equal(effector.vel, updates["state", "effector/velocity"])
     inputs = {"effector": effector, "force": jnp.zeros((2,), dtype=jnp.float32)}
     active, _ = curl(inputs, reset.state, key=key)
     default = interface.reset.prepare(graph, {}, key=key)
@@ -657,20 +675,20 @@ def test_a_start_the_model_requires_is_a_problem_until_a_variable_initializes_it
         for binding in interface.reset._bindings
     )))
     doc, _ = example("simple", functions, interface=interface)
-    overrides = {"reach_target": "target_pos"}
-    unset = compile_task(doc.model_copy(update={"links": ()}), functions, model=required, input_overrides=overrides)
+    overrides = {"task-input": "target_pos"}
+    unset = compile_task(doc.model_copy(update={"links": ()}), functions, model=required, input_bindings=overrides)
     assert [problem.path for problem in unset] == [("links", position)]
     # Catches a missing start not tied to its Model value, which Studio could then name only by the Task's links.
     assert unset[0].model_address == reset_position(interface)
     # Catches a link to a variable that does not exist placed nowhere, though it leaves its Model value unstarted.
     dangling = compile_task(
         doc.model_copy(update={"links": (Link(model_field=position, variable="ghost"),)}),
-        functions, model=required, input_overrides=overrides,
+        functions, model=required, input_bindings=overrides,
     )
     assert [(problem.path, problem.model_address) for problem in dangling] == [
         (("links", position), reset_position(interface)),
     ]
-    assert not isinstance(compile_task(doc, functions, model=required, input_overrides=overrides), tuple)
+    assert not isinstance(compile_task(doc, functions, model=required, input_bindings=overrides), tuple)
 
 
 @pytest.mark.parametrize("kind", ["simple", "delayed", "stabilization"])
@@ -688,7 +706,7 @@ def test_document_pair_drives_signed_model_graph_with_real_reset(kind, functions
         doc,
         functions,
         model=interface,
-        input_overrides={"reach_target": "target_vel"},
+        input_bindings={"task-input": "target_vel"},
     )
     assert bad[0].code.value == "type_mismatch"
     read_only = reset_position(interface)
@@ -697,7 +715,7 @@ def test_document_pair_drives_signed_model_graph_with_real_reset(kind, functions
     })})
     bad = compile_task(
         doc.model_copy(update={"links": (Link(model_field=read_only.to_text(), variable="start"),)}),
-        functions, model=interface, input_overrides={"reach_target": "target_pos"},
+        functions, model=interface, input_bindings={"task-input": "target_pos"},
     )
     assert bad[0].path == ("links", read_only.to_text())
     assert bad[0].code.value == "unknown_name"
@@ -830,3 +848,80 @@ def test_each_independent_problem_is_reported_and_a_bad_variable_marks_its_reade
         "signals": document.signals[:1],
     })
     assert isinstance(compile_task(mended, functions, model=PORTLESS), DocumentTask)
+
+
+def _reaches(list_count):
+    def literal(value, unit=None):
+        return {"kind": "literal", "value": value, "unit": unit}
+
+    def name(reference):
+        return {"kind": "name", "reference": reference}
+
+    def call(function, *args):
+        return {"kind": "call", "function": function, "args": args}
+
+    def name_scope(key):
+        return ScopedValue(id=key, name=key, type=REAL, level=Level.TRIAL)
+
+    return TaskDocument.model_validate({
+        "id": "three-reaches",
+        "variables": [
+            {"id": "n", "name": "total", "type": {"base": "integer"}, "value": literal(3)},
+            {
+                "id": "angles", "name": "angles", "type": dict(VALUE_TYPES)["Angle"],
+                "count": list_count,
+                "value": {"kind": "draw", "family": "uniform", "args": [literal(0, "°"), literal(360, "°")]},
+            },
+            {
+                "id": "targets", "name": "targets", "type": POINT, "count": list_count,
+                "value": call("polar", literal(0.15, "m"), name("angles")),
+            },
+        ],
+        "epochs": [
+            {"id": key, "name": key, "end": {"kind": "length", "length": literal(steps, "st")}}
+            for key, steps in (("fixate", 1), ("move", 2), ("hold", 1))
+        ],
+        "repeats": [{"id": "reaches", "first_epoch": "move", "last_epoch": "hold", "count": name("n")}],
+        "signals": [{
+            "id": "target", "name": "target", "type": POINT, "cells": [{
+                "id": "reach-target", "first_epoch": "move", "last_epoch": "hold",
+                "value": expression("targets[i]", (name_scope("targets"), name_scope("i"))),
+            }],
+        }],
+    })
+
+
+def test_three_reaches_draw_one_target_per_move_and_hold_and_score_every_move(functions):
+    """Catches a repeat that copies the epochs but always emits the same item or scores only the last move."""
+    task = compile_task(_reaches({"kind": "name", "reference": "n"}), functions, model=PORTLESS)
+    assert isinstance(task, DocumentTask), task
+    run_key, trial_key = jr.split(jr.key(0))
+    trial = jax.jit(task.ahead)(TaskParameters(), run_key, trial_key)
+    assert task.epochs == ("fixate", "move", "hold", "move", "hold", "move", "hold")
+    np.testing.assert_array_equal(trial.epochs.starts, [0, 1, 3, 4, 6, 7, 9])
+    np.testing.assert_array_equal(trial.epochs.ends, [1, 3, 4, 6, 7, 9, 10])
+    targets = np.asarray(trial.variables["targets"])
+    assert np.unique(targets, axis=0).shape[0] == 3
+    np.testing.assert_allclose(trial.inputs["target"][1:], np.repeat(targets, 3, axis=0))
+
+    objective = ObjectiveDocument.model_validate({
+        "id": "score", "terms": [{
+            "id": "distance", "epochs": ["move"], "reduction": "sum",
+            "measure_type": dict(VALUE_TYPES)["Distance"],
+            "measure": {"kind": "call", "function": "norm", "args": [{"kind": "name", "reference": "target"}]},
+        }],
+    })
+    executor = compile_objective(objective, task.interface.signals, functions, task=task)
+    assert isinstance(executor, ObjectiveExecutor), executor
+    term = executor.evaluate_trial({}, trial, run_key, trial_key)["distance"]
+    assert term.covered
+    np.testing.assert_allclose(term.value, 6 * 0.15)
+
+
+def test_wrong_list_count_marks_the_cell_that_uses_the_repeat_index(functions):
+    """Catches truncation, wrapping, or a missing Problem when the bracket and list disagree."""
+    result = compile_task(_reaches({"kind": "literal", "value": 2}), functions, model=PORTLESS)
+    assert not isinstance(result, DocumentTask)
+    assert [(error.code, error.path) for error in result] == [
+        ("list_count", ("signals", "target", "cells", "reach-target", "value"))
+    ]
