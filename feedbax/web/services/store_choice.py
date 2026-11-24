@@ -31,7 +31,7 @@ def choose_store[T](
     *,
     choice: str | None = None,
 ) -> EditStore[T] | list[StudioStoreChoice] | Literal["unavailable", "stale"]:
-    """Resolve an exact preferred store, or offer the effective stores at this revision.
+    """Resolve a preferred store within the selection, or offer the effective stores at this revision.
 
     The adapter supplies actual reach from authored provenance. A stable source address
     distinguishes multiple stores of the same kind. It is bound to the replay token
@@ -40,7 +40,8 @@ def choose_store[T](
     def key(run: RunKey) -> tuple[str, str, str]:
         return run.variant, run.step, run.row
 
-    if choice is None and preferred.runs and preferred.runs == set(selection):
+    within_selection = bool(preferred.runs) and preferred.runs <= set(selection)
+    if choice is None and within_selection:
         return preferred
 
     options = {}
@@ -63,7 +64,7 @@ def choose_store[T](
         ))
 
     if choice is not None:
-        if preferred.runs == set(selection) or choice not in options:
+        if within_selection or choice not in options:
             return "stale"
         return options[choice][0]
     return [option for _, option in options.values()] or "unavailable"

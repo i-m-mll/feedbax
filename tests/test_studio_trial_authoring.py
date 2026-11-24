@@ -802,6 +802,34 @@ def test_shared_objective_rename_asks_before_writing_and_can_copy_for_one_reader
             assert view.json()["objective"]["terms"][0]["name"] == name
 
 
+def test_whole_step_weight_sweep_writes_without_asking_about_its_new_rows(tmp_path):
+    raw = _python_project()
+    raw["steps"].pop("baseline")
+    raw["documents"]["objective"]["payload"]["terms"] = [
+        {"id": "effort", "name": "Effort", "measure": {"kind": "literal", "value": 1}},
+    ]
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, "weight", Project.model_validate(raw))
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        route = "/api/projects/weight"
+        revision = folders.read("weight").revision
+        response = client.post(f"{route}/authoring/trials", json={
+            "revision": revision, "run": {"variant": "default", "step": "train", "row": "default"},
+            "scope": {"kind": "step"},
+            "change": {
+                "kind": "expression", "path": "/objective/terms/effort/weight",
+                "edit": {"kind": "text", "text": "0.1, 1, 10"},
+            },
+        })
+        assert response.status_code == 200, response.text
+        answer = response.json()
+        assert answer["files"] and not answer.get("store_choices"), answer
+        saved = client.patch(route, json={"revision": revision, "files": answer["files"]})
+        assert saved.status_code == 200, saved.text
+        plan = folders.read_plan("weight", revision=saved.json()["revision"]).plan
+        assert len([row for row in plan.rows if row.key.step == "train"]) == 3
+
+
 def test_scoped_rename_asks_before_changing_an_unselected_inheritor(tmp_path):
     raw = _python_project()
     raw["documents"]["reach-model"]["payload"] = _model_payload()

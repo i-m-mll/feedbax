@@ -95,6 +95,23 @@ def _two_readers(data):
     return data
 
 
+def test_editing_the_base_for_its_remaining_reader_preserves_an_unselected_copy(tmp_path):
+    data = _two_readers(_data())
+    del data["steps"]["check"]
+    _based(data, "model-2", _with_mass(_model(data), 2.5))
+    data["steps"]["fee"]["base"]["inline"]["trial_documents"]["model"] = {"document": "model-2"}
+    project = _Project(tmp_path, data)
+    with project.client:
+        prior = project.ids()
+        based = project.project().documents["model-2"]
+        result = project.edit(_mass(3.0), step="other")
+        assert not result["created"]
+        assert project.project().documents["model-2"] == based
+        assert project.ids()["fee"] == prior["fee"]
+        assert project.ids()["other"] != prior["other"]
+        assert project.composed("model") == _with_mass(_model(data), 3.0)
+
+
 def test_an_evaluation_field_edit_makes_a_document_based_on_its_subjects(tmp_path):
     project = _Project(tmp_path, _data())
     with project.client:
