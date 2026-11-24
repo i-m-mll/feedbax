@@ -217,6 +217,15 @@
     "cardQuiet": "Quiet Cards",
     "cardRing": "Ring Cards",
     "settings": "Settings",
+    "appearance": "Appearance",
+    "shortcuts": "Shortcuts",
+    "machines": "Machines",
+    "thisProject": "This Project",
+    "searchSettings": "Search Settings",
+    "keepSuperseded": "Keep Superseded",
+    "manualSteps": "Manual Steps",
+    "command": "Command",
+    "specimen": "Sample",
     "theme": "Theme",
     "face": "Face",
     "density": "Density",
@@ -434,16 +443,13 @@
     "spacing": "Spacing",
     "reload": "Reload",
     "check": "Check",
-    "uncheckedHollow": "Unchecked Outline",
-    "uncheckedBadge": "Unchecked Dot",
     "mixed": "Mixed",
     "completions": "Completions",
-    "sectionChevronAfterName": "Chevron After",
-    "sectionChevronEdge": "Chevron Edge",
     "addAttachment": "Add Attachment"
   },
   "unit": {
     "second": "s",
+    "day": "d",
     "minute": "min",
     "meter": "m",
     "centimeter": "cm",
@@ -604,8 +610,7 @@
     "removeRuns": "Remove {count} runs?",
     "runCount": "{count} runs",
     "oneRun": "1 run",
-    "removedResultsRemain": "Existing results remain on disk but disappear from the project.",
-    "sweptParameterMissing": "{class} has no {parameter} to sweep"
+    "removedResultsRemain": "Existing results remain on disk but disappear from the project."
   },
   "step": {
     "train": { "glyph": "flask" },

@@ -1,19 +1,9 @@
-import type { StudioTrajectoryTrack, TrialRecord } from '@/generated/studioContracts';
+import type { TrialRecord, TrialStateTrack } from '@/generated/studioContracts';
 
 export function primaryWorkspaceReplayTrack(
   trial: TrialRecord, position: string | null,
-): StudioTrajectoryTrack | null {
-  if (!position) return null;
-  const track = trial.states?.[position];
-  if (!track) return null;
-  return {
-    anchor_id: 'effector',
-    selector: { namespace: 'state_path', compact: position },
-    samples: track.samples,
-    dim: 2,
-    frame: track.frame,
-    units: track.units,
-  };
+): TrialStateTrack | null {
+  return position ? trial.states?.[position] ?? null : null;
 }
 
 export function workspaceReplayFrameIndex(times: number[], position: number): number {
@@ -26,7 +16,7 @@ export function workspaceReplayFrameIndex(times: number[], position: number): nu
 }
 
 export function workspaceReplaySampleAt(
-  track: StudioTrajectoryTrack | null | undefined,
+  track: Pick<TrialStateTrack, 'samples'> | null | undefined,
   frameIndex: number
 ): [number, number] | null {
   const sample = track?.samples[Math.max(0, Math.min(track.samples.length - 1, frameIndex))];
@@ -36,7 +26,7 @@ export function workspaceReplaySampleAt(
   return Number.isFinite(x) && Number.isFinite(y) ? [x, y] : null;
 }
 
-export function workspaceReplayPolyline(track: StudioTrajectoryTrack | null | undefined): Array<[number, number]> {
+export function workspaceReplayPolyline(track: Pick<TrialStateTrack, 'samples'> | null | undefined): Array<[number, number]> {
   if (!track) return [];
   return track.samples
     .map((sample) => {

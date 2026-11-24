@@ -12,13 +12,15 @@ import numpy as np
 from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler.resolution import GraphParameterResolution, resolve_graph_parameters
 from feedbax.compiler.prototypes import prototypes_from_task_bindings
+from feedbax.compiler.model_edit import model_graph_problems
+from feedbax.compiler.model_ports import ModelRegistryPorts
 from feedbax.contracts.acausal import AcausalConnectionSpec, AcausalGraphSpec, PlanarDynamicsSpec, SolverConfigSpec
 from feedbax.contracts.acausal_interface import (
     PLANAR_STATE_ONLY_QUANTITIES, derive_acausal_interface, is_acausal_type,
 )
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.expression_units import UNITS
-from feedbax.contracts.expression_values import Level, LiteralValue, NameValue, ScopedValue, ValueBase, ValueType
+from feedbax.contracts.expression_values import Level, LiteralValue, NameValue, ScopedValue, UnresolvedValue, ValueBase, ValueType
 from feedbax.contracts.graph import ComponentSpec, GraphSpec, StudioTaskBinding, StudioTaskBindingSpec, WireSpec
 from feedbax.contracts.model_address import (
     ComponentPortEnd, FieldElement, ModelAddress, PhysicalEnd, PortElement, SignalSource,
@@ -77,6 +79,22 @@ class _Lower:
 
     def problem(self, scope, kind, detail, **fields) -> ModelCompilationProblem:
         return ModelCompilationProblem(self.address(scope, kind, **fields), detail)
+
+    @property
+    def period(self) -> float:
+        return self.numeric_field(self.model.step_seconds, (), {"kind": "graph"}, ("step_seconds",))
+
+    def numeric_field[T](self, value: T | UnresolvedValue, scope, owner, path: tuple[str, ...]) -> T:
+        if isinstance(value, UnresolvedValue) or isinstance(value, dict) and value.get("kind") == "unresolved":
+            raise self.problem(scope, "field", "This Model field contains unresolved text", parent=owner, path=path)
+        return value
+
+    def parameters(self, component, scope, name: str):
+        owner = {"kind": "component", "id": name}
+        return {
+            field: self.numeric_field(value, scope, owner, ("fields", field))
+            for field, value in component.fields.items()
+        }
 
     def remember(self, path, derived, element):
         tokens = tuple(token for parent in path for token in ("subgraphs", parent))
@@ -206,7 +224,7 @@ class _Lower:
                 self.plugins.add(definition.owner)
                 if is_acausal_type(component.type, "BoundaryPort"):
                     raise self.problem(path, "component", "declare conserving interfaces on the composite port list", id=name)
-                fields = dict(component.fields)
+                fields = self.parameters(component, path, name)
                 nodes[name] = ComponentSpec(type=component.type, revision=component.revision, params=fields)
             if component.attachments.sources or component.attachments.sinks:
                 raise self.problem(path, "component", "equations port attachments require signal lowering", id=name)
@@ -288,7 +306,7 @@ class _Lower:
             physical_domain=interior.physical_domain, nodes=nodes, connections=connections,
             subgraphs=children or None,
             solver=SolverConfigSpec(
-                solver_type="euler", dt=self.model.step_seconds,
+                solver_type="euler", dt=self.period,
                 planar_substeps=substeps if mechanics else None,
             ),
             planar_dynamics=dynamics,
@@ -338,14 +356,15 @@ class _Lower:
             self.remember(path, ("nodes", key), {"kind": "component", "id": key})
             if component.kind == "composite":
                 scope = (*path, key)
-                if not isinstance(component.interior, PhysicalInterior) and component.substeps != 1:
+                substeps = self.numeric_field(component.substeps, path, {"kind": "component", "id": key}, ("substeps",))
+                if not isinstance(component.interior, PhysicalInterior) and substeps != 1:
                     raise self.problem(path, "component", "the composite solver supports one step per model step", id=key)
                 if component.attachments.sinks:
                     raise self.problem(path, "component", "sink probes require observation lowering", id=key)
                 if isinstance(component.interior, PhysicalInterior):
                     from feedbax.compiler.acausal_compiler import compile_acausal_authoring_report
 
-                    child = self.physical(component.interior, component.ports, scope, substeps=component.substeps)
+                    child = self.physical(component.interior, component.ports, scope, substeps=substeps)
                     report = compile_acausal_authoring_report(
                         child, node_path=list(scope), component_registry=self.components,
                     )
@@ -376,16 +395,16 @@ class _Lower:
                 if definition is None or definition.is_composite:
                     raise self.problem(path, "component", f"unknown leaf type {component.type!r}", id=key)
                 self.plugins.add(definition.owner)
-                params = dict(component.fields)
+                params = self.parameters(component, path, key)
                 if "dt" in params or "control_dt" in params:
                     raise self.problem(path, "component", "component periods are supplied by the model root", id=key)
                 for period in ("dt", "control_dt"):
                     if period in definition.params.model.model_fields:
-                        params[period] = self.model.step_seconds
+                        params[period] = self.period
                 if component.type == "feedbax.VanillaRNN":
                     tau = params.get("tau", definition.params.model.model_fields["tau"].default)
                     try:
-                        params["tau"] = model_tau_seconds(tau, self.model.step_seconds)
+                        params["tau"] = model_tau_seconds(tau, self.period)
                     except ValueError as error:
                         raise self.problem(
                             path, "field", str(error), parent={"kind": "component", "id": key}, path=("fields", "tau"),
@@ -427,19 +446,20 @@ class _Lower:
                 if isinstance(attachment, ProbeAttachment):
                     raise self.problem(path, "attachment", "probe observation is unavailable in this milestone", parent=at, id=attachment.id)
                 if isinstance(attachment, DelayAttachment):
-                    length = attachment.delay.value
-                    if attachment.delay.unit == "s":
-                        length /= self.model.step_seconds
+                    delay = self.numeric_field(attachment.delay, path, origin, ("delay",))
+                    length = delay.value
+                    if delay.unit == "s":
+                        length /= self.period
                     if not isfinite(length):
                         raise self.problem(path, "attachment", "delay step count is not finite", parent=at, id=attachment.id)
                     steps = round(length)
-                    if steps < 1 or attachment.delay.unit == "st" and steps != length:
+                    if steps < 1 or delay.unit == "st" and steps != length:
                         raise self.problem(path, "attachment", "delay must resolve to at least one whole step", parent=at, id=attachment.id)
                     if signal is None or signal.shape is None:
                         raise self.problem(path, "attachment", "delay has no resolved reset shape", parent=at, id=attachment.id)
                     if signal.dtype != "float32":
                         raise self.problem(path, "attachment", "delay requires a float32 reset", parent=at, id=attachment.id)
-                    initial = attachment.initial
+                    initial = self.numeric_field(attachment.initial, path, origin, ("initial",))
                     reset_output = None
                     if isinstance(initial, dict):
                         try:
@@ -477,10 +497,17 @@ class _Lower:
                 if isinstance(attachment, InterventionAttachment):
                     if attachment.window is not None:
                         raise self.problem(path, "attachment", "intervention window lowering is unavailable", parent=at, id=attachment.id)
-                    parameters = attachment.fields
+                    parameters = {
+                        name: self.numeric_field(value, path, origin, ("fields", name))
+                        for name, value in attachment.fields.items()
+                    }
                     match attachment.operation.lower():
                         case "scale" if type(parameters.get("factor")) in (int, float):
                             type_id, params = "feedbax.Scale", {"scale": parameters["factor"], "fixed": True}
+                        case "add" if isinstance(parameters.get("value"), list) and all(
+                            type(value) in (int, float) and isfinite(value) for value in parameters["value"]
+                        ):
+                            type_id, params = "feedbax.ConstantInput", {"arrays": parameters["value"], "active": True}
                         case "clamp" if all(type(parameters.get(name)) in (int, float) for name in ("low", "high")):
                             if parameters["low"] > parameters["high"]:
                                 raise self.problem(path, "attachment", "clamp bounds are reversed", parent=at, id=attachment.id)
@@ -583,7 +610,7 @@ class _Lower:
                     raise self.problem(path, "wire", "target port already has a driver", id=key)
                 transform(source, wire.attachments, key, at, finish=(b.component, b.port), signal=signal)
         return GraphSpec(
-            step_seconds=self.model.step_seconds if not path else None,
+            step_seconds=self.period if not path else None,
             nodes=nodes, wires=wires, input_ports=list(input_bindings), output_ports=list(output_names.values()),
             input_bindings=input_bindings, output_bindings=output_bindings, subgraphs=subgraphs or None,
         )
@@ -719,7 +746,7 @@ class LoweredModelDocument:
         ) | dict(input_prototypes or {})
         resolution = resolve_graph_parameters(self.graph, prototypes, components)
         return ResolvedModelInterface(
-            model.step_seconds,
+            _Lower(model, components).period,
             _scoped_ports(model, resolution, "inputs"),
             _scoped_ports(model, resolution, "outputs"),
             self.links,
@@ -823,6 +850,8 @@ def lower_model_document(
     lower = _Lower(model, components)
     names = frozenset(item.label for item in task.exposed_data if item.bindable) if task else frozenset()
     graph = lower.graph(model.interior, model.ports, (), available=names | supplied_inputs)
+    if (problem := next(model_graph_problems(model, ports=ModelRegistryPorts(components).port), None)) is not None:
+        raise ModelCompilationProblem(problem.address, problem.reason)
     lower.reject_within_step_paths(graph)
     binding = lower.root_inputs(task, graph) if task is not None else None
     return LoweredModelDocument(graph, binding, lower.origins, tuple(lower.links), tuple(sorted(lower.plugins)))
@@ -840,9 +869,11 @@ def lower_planar_scene_interior(
         child = component.interior
         if isinstance(child, PhysicalInterior):
             if child.physical_domain == "planar_multibody" and index == len(path) - 1:
-                return _Lower(model, components).physical(
-                    child, component.ports, path, substeps=component.substeps,
+                lower = _Lower(model, components)
+                substeps = lower.numeric_field(
+                    component.substeps, path[:-1], {"kind": "component", "id": name}, ("substeps",),
                 )
+                return lower.physical(child, component.ports, path, substeps=substeps)
             break
         interior = child
     raise ValueError(f"{list(path)!r} must identify a planar multibody interior.")

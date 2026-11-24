@@ -342,7 +342,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         const result = await projectModelFields(saved.project_id, {
           ...fieldBody, revision: current.revision, address, edit, chosen_steps: [...chosenSteps],
         }, editor.signal);
-        if (!result.command && !result.files?.length && result.problems?.length) return result.problems[0].reason;
+        if (!result.command && !result.files?.length) return result.problems?.[0]?.reason;
         if (result.command) {
           if (result.files?.length && !await confirmRunRemoval(sweepValueRuns(result.removed_values))) return undefined;
           const applied = await editor.editModel('Set Value', fieldBody.document, result.command, current, fieldBody.run && {
@@ -392,8 +392,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       multipleRows: !evaluate && (fieldRows?.length ?? 0) > 1,
       selectedMembers: field.sweep ? selectedSweepValues?.get(field.sweep.id) : undefined,
     });
-    const [problem] = field.problems ?? [];
-    return { ...model, id: fieldName(field.address), reason: problem?.reason, span: problem?.span ?? undefined };
+    return { ...model, id: fieldName(field.address), reason: field.problems?.[0]?.reason, span: field.problems?.[0]?.span ?? undefined };
   }));
   const projectedFields = sharedFields(projectedLists);
   const fieldScope = JSON.stringify([saved.project_id, model?.id, fieldRows, fieldOwners.map(addressKey)]);
@@ -499,6 +498,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         try {
           const result = await editor.editModel(name, model.id, { operation }, reviewed, scope);
           if (result.status === 'refused') return { address: result.problem.address, reason: result.problem.detail };
+          if (result.status === 'asked') return { reason: 'Choose where to store this edit.' };
           const shown = follow(result);
           if (result.clipboard) clipboard = result.clipboard;
           if (choose && result.changed.length) {
@@ -537,6 +537,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
             step: readBody.run.step, chosen_steps: [...chosenSteps], ...evaluateEditRuns(scope, readBody.run, fieldRows),
           });
           if (applied.status === 'refused') throw new Error(applied.problem.detail);
+          if (applied.status === 'asked') throw new Error('Choose where to store this edit.');
           shown = follow(applied) ?? shown;
           const [first] = applied.changed;
           if (!first) throw new Error('The edit changed nothing.');
