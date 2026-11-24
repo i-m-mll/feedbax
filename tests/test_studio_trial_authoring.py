@@ -603,6 +603,10 @@ def test_scoped_objective_writes_preserve_other_requests(tmp_path, kind):
         route = f"/api/projects/{project}"
         prepared = client.post(f"{route}/authoring/trials", json=body)
         assert prepared.status_code == 200, prepared.text
+        if kind == "step":
+            choice = next(option for option in prepared.json()["store_choices"] if option["kind"] == "selected_readers")
+            prepared = client.post(f"{route}/authoring/trials", json=body | {"store_choice": choice["id"]})
+            assert prepared.status_code == 200, prepared.text
         files, created = prepared.json()["files"], prepared.json()["created"]
         assert len(files) == 1, prepared.text
         assert files[0]["address"]["kind"] == ("variant" if kind == "variant" else "step")
@@ -666,47 +670,68 @@ def test_scoped_objective_writes_preserve_other_requests(tmp_path, kind):
             assert weights == {selected: 3, other: 3}
 
 
-def test_an_objective_edit_for_a_step_leaves_the_steps_based_on_it_on_their_document(tmp_path):
+def test_shared_objective_rename_asks_before_writing_and_can_copy_for_one_reader(tmp_path):
     raw = _python_project()
     raw["documents"]["reach-model"]["payload"] = _model_payload()
     raw["steps"].pop("baseline")
     raw["steps"]["other"] = {"kind": "train", "base": {"step": "train"}}
-    raw["steps"]["independent"] = deepcopy(raw["steps"]["train"])
     raw["documents"]["objective"]["payload"]["terms"] = [
-        {"id": "base", "measure": {"kind": "literal", "value": 1}, "weight": {"kind": "literal", "value": 1}},
+        {"id": "base", "name": "Before", "measure": {"kind": "literal", "value": 1}},
     ]
-    train = RunKey("default", "train", "default")
     folders = ProjectFolderService(tmp_path)
     project = "inherited-objective"
     _save_project(folders, project, Project.model_validate(raw))
     route = f"/api/projects/{project}"
-
-    def plan():
-        return folders.read_plan(project, revision=None).plan
+    revision = folders.read(project).revision
+    body = {
+        "run": {"variant": "default", "step": "train", "row": "default"},
+        "revision": revision,
+        "change": {"kind": "objective", "edits": [{"op": "replace", "path": "/terms/0/name", "value": "After"}]},
+    }
 
     with TestClient(create_app(projects_dir=tmp_path)) as client:
-        before = {item.key: item.request_id for item in plan().runs}
-        response = client.post(f"{route}/authoring/trials", json={
-            "run": {"variant": "default", "step": "train", "row": "default"},
-            "revision": folders.read_plan(project, revision=None).revision, "scope": {"kind": "step", "chosen_steps": ["train"]},
-            "change": {"kind": "objective", "edits": [{"op": "replace", "path": "/terms/0/weight/value", "value": 2}]},
-        })
+        answer = client.post(f"{route}/authoring/trials", json=body)
+        assert answer.status_code == 200, answer.text
+        asked = answer.json()
+        assert asked["files"] == asked["created"] == []
+        assert folders.read(project).revision == revision
+        all_steps, only_train = asked["store_choices"]
+        assert (all_steps["kind"], all_steps["label"], all_steps["steps"]) == (
+            "all_readers", "All 2 Steps", ["other", "train"],
+        )
+        assert all_steps["runs"] == [body["run"] | {"step": "other"}, body["run"]]
+        assert (only_train["kind"], only_train["label"], only_train["runs"]) == (
+            "selected_readers", "Only This Step", [body["run"]],
+        )
+        altered = body | {
+            "store_choice": only_train["id"],
+            "change": {"kind": "objective", "edits": [{"op": "replace", "path": "/terms/0/name", "value": "Wrong"}]},
+        }
+        assert client.post(f"{route}/authoring/trials", json=altered).status_code == 422
+        assert folders.read(project).revision == revision
+        replay = body | {"store_choice": only_train["id"]}
+        response = client.post(f"{route}/authoring/trials", json=replay)
         assert response.status_code == 200, response.text
         (created,) = response.json()["created"]
-        made = client.post(f"{route}/files", json={
-            "revision": folders.read_plan(project, revision=None).revision, "file": created,
-        })
+        assert created["document"]["base"] == {"document": "objective"}
+        made = client.post(f"{route}/files", json={"revision": revision, "file": created})
         assert made.status_code == 201, made.text
         saved = client.patch(route, json={
-            "revision": folders.read_plan(project, revision=None).revision, "files": response.json()["files"],
+            "revision": folders.read(project).revision, "files": response.json()["files"],
         })
         assert saved.status_code == 200, saved.text
-        after = {item.key: item.request_id for item in plan().runs}
-        assert {key for key in before if before[key] != after[key]} == {train}
-        assert plan().document_users("default", "objective-2") == {"train"}
+        assert client.post(f"{route}/authoring/trials", json=replay).status_code == 409
+        after = folders.read_plan(project, revision=saved.json()["revision"])
+        assert after.plan.document_users("default", created["id"]) == {"train"}
+        for step, name in (("train", "After"), ("other", "Before")):
+            view = client.post(f"{route}/authoring/trials", json={
+                "revision": after.revision, "run": body["run"] | {"step": step},
+            })
+            assert view.status_code == 200, view.text
+            assert view.json()["objective"]["terms"][0]["name"] == name
 
 
-def test_scoped_rename_refuses_a_name_change_in_an_unselected_inheritor(tmp_path):
+def test_scoped_rename_asks_before_changing_an_unselected_inheritor(tmp_path):
     raw = _python_project()
     raw["documents"]["reach-model"]["payload"] = _model_payload()
     raw["steps"].pop("baseline")
@@ -729,8 +754,13 @@ def test_scoped_rename_refuses_a_name_change_in_an_unselected_inheritor(tmp_path
                 {"op": "replace", "path": "/terms/0/name", "value": "Renamed"},
             ]},
         })
-    assert refused.status_code == 422, refused.text
-    assert "outside the selected scope" in refused.json()["detail"]
+    assert refused.status_code == 200, refused.text
+    response = refused.json()
+    assert response["files"] == []
+    sweep = next(choice for choice in response["store_choices"] if choice["kind"] == "sweep_value")
+    assert {(run["step"], run["row"]) for run in sweep["runs"]} == {
+        ("train", "length=short"), ("other", "length=short"),
+    }
     assert folders.read("scoped-name").revision == revision
 
 
