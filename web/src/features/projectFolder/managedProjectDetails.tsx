@@ -154,7 +154,23 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
     selected: checkpoint,
     onSelect: chooseCheckpoint,
   } : undefined;
-  return { read: state, aggregate: { data: batch, error: aggregate.error, refetch: aggregate.refetch }, time, setTime, checkpoints, chooseCheckpoint };
+  return { read: state, aggregate: { data: batch, error: aggregate.error, refetch: aggregate.refetch }, time, setTime, checkpoints, chooseCheckpoint, checkpoint };
+}
+
+/**
+ * The Objective terms over every trial the saved evaluation recorded at `checkpoint`: each term's mean value over the
+ * trials it covers and the share it covers, when `enabled` and the evaluation has a result.
+ */
+export function useRecordedTerms(projectId: string, revision: string, evaluation: StudioSavedEvaluationRow | undefined,
+  checkpoint: number | undefined, enabled: boolean) {
+  const jobId = evaluation?.result?.job_id;
+  const query = useQuery({
+    queryKey: ['saved-evaluation-replay', projectId, revision, evaluation?.key, jobId, null, checkpoint, 'aggregate'],
+    queryFn: ({ signal }) => fetchSavedEvaluationReplay(projectId,
+      { revision, key: evaluation!.key, job_id: jobId!, trial: null, aggregate: true, checkpoint }, signal),
+    enabled: enabled && !!jobId && (!evaluation?.checkpoint_series || checkpoint !== undefined),
+  });
+  return query.data?.drawn.kind === 'aggregate' ? query.data.drawn.terms ?? {} : undefined;
 }
 
 /** The Scene's part of the window's selection: the key of the selected element the Scene draws, a field as its element. */

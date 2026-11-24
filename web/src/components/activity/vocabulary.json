@@ -264,6 +264,7 @@
     "model": "Model",
     "objective": "Objective",
     "coverage": "Coverage",
+    "covered": "Covered",
     "total": "Total",
     "training": "Training",
     "trainingMethod": "Training Method",

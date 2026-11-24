@@ -61,7 +61,7 @@ import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { authoredPointer, declarationAddress, ownDefinition, modelDocumentId } from './authoredEdits';
 import { withBaseDescendants } from './baseDescendants';
 import { stepDocument } from './documentPayload';
-import { useManagedProjectDetails, useStoredModel, type NamedDocumentScope } from './managedProjectDetails';
+import { useManagedProjectDetails, useRecordedTerms, useStoredModel, type NamedDocumentScope } from './managedProjectDetails';
 import { useTrialClock } from './useTrialClock';
 import { drawnVariables } from './task/trialSample';
 import { usePlayheadStore } from '@/components/timeline/trialClock';
@@ -393,8 +393,12 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     id === step.inputs.find(({ id }) => id === 'subject')?.sourceStepId)?.documentIds) : undefined;
   const stored = useStoredModel(editor, step, modelSource);
   const restGeometry = useSceneGeometry(saved.project_id, stored ? { document_id: stored.id, revision: saved.revision } : null, restState);
+  const scoredBy = authored?.kind === 'evaluate' ? evaluateSubject(authored) : undefined;
+  /** An Evaluate is scored by the Objective of the Train that made its checkpoint, or by the one it names itself. */
+  const scored = authored?.kind !== 'evaluate' || scoredBy?.kind === 'steps' || scoredBy?.kind === 'document' && !!scoredBy.objective;
   const views = !step ? noViews : viewOffer({
-    step, trainingForm: !!trainingDocument && !!authoring, planRead: !!shown, run: !namedRow ? 'none' : namedRow.resolved === false ? 'unresolved' : 'resolved', model: stored?.value,
+    step, trainingForm: !!trainingDocument && !!authoring, planRead: !!shown, run: !namedRow ? 'none' : namedRow.resolved === false ? 'unresolved' : 'resolved',
+    objective: scored, model: stored?.value,
     scenePlaces: restGeometry?.kind === 'ready' ? restGeometry.geometry.mechanisms.length > 0 : undefined,
     runProblems: (namedRun && step.runs.find(({ id }) => id === savedRunId(namedRun))?.problems) ?? [],
     results: !!plans.error || !!shownResult.row || !!shownResult.evaluation?.checkpoint_series,
@@ -655,6 +659,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     shelfView: windowState.mode === 'map' ? undefined : primaryView ?? undefined,
   });
   const evaluationReplay = trialClock.replay;
+  const scoredEvaluation = step?.kind === 'evaluate' && selectedEvaluation?.status === 'succeeded' ? selectedEvaluation : undefined;
+  const recordedTerms = useRecordedTerms(saved.project_id, saved.revision, scoredEvaluation, evaluationReplay.checkpoint,
+    windowState.mode !== 'map' && [primaryView, secondaryView].includes('objective'));
   const documentBase = authored && stepDocument(authored.base);
   const pickDocument = useProjectDocuments({
     editor, stepId: step?.id, run: namedRun, scope: trialEditScope,
@@ -1815,7 +1822,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             const termElement = named(objectiveDocument);
             const term = termElement && value.objective?.terms?.some(({ id }) => id === termElement.id)
               ? { term: termElement.id, field: termElement.field } : undefined;
-            const termInspector = term && <TrialObjectiveInspector view={value} commit={commit} selected={term} runs={runs}
+            // An Evaluate of a checkpoint is scored by the Objective of the Train that made it, which it shows unedited.
+            const train = value.objective_source?.kind === 'train' ? plan.steps.find(({ id }) => id === value.objective_source!.step) : undefined;
+            const scoring = train ? undefined : commit;
+            const termInspector = term && <TrialObjectiveInspector view={value} commit={scoring} selected={term} runs={runs}
               shown={trialClock.trial} />;
             if (view === 'task') {
               const document = value.task_document ?? step?.id ?? '';
@@ -1841,13 +1851,19 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                     : selected && <TrialTaskInspector view={value} commit={commit} selected={selected} shown={trialClock.trial} />),
               };
             }
+            const picker = train ? undefined : pickDocument('objective', value.objective_document ?? undefined, documentScopes.objective);
+            const scores = scoredEvaluation && recordedTerms
+              ? { shown: trialClock.trial, run: recordedTerms, trials: scoredEvaluation.trials.length } : undefined;
             return {
-              picker: pickDocument('objective', value.objective_document ?? undefined, documentScopes.objective),
+              picker: picker && step?.kind === 'evaluate'
+                ? { ...picker, choose: trialEditable ? (next) => chooseSubjectDocument('objective', next) : undefined } : picker,
+              header: train && <Button variant="bare" size="content" className="underline-offset-2 hover:underline"
+                onClick={() => selection.select(selectStep(state, train.id))}>{train.label}</Button>,
               body: withProblem(<FocusedFields className="contents" request={fieldFocus?.step === step?.id && fieldFocus?.target?.startsWith('objective:') ? fieldFocus : undefined}
                 onFocused={() => setFieldFocus(undefined)}>
-                <TrialObjectiveTable view={value} commit={commit} selected={term} select={choose(objectiveDocument)} runs={runs} />
+                <TrialObjectiveTable view={value} commit={scoring} selected={term} select={choose(objectiveDocument)} runs={runs} scores={scores} />
               </FocusedFields>),
-              drawer: <TrialObjectiveOutline sections={drawerSections} view={value} commit={commit} selected={term?.term} select={choose(objectiveDocument)} />,
+              drawer: <TrialObjectiveOutline sections={drawerSections} view={value} commit={scoring} selected={term?.term} select={choose(objectiveDocument)} />,
               inspector: termInspector,
             };
           }
