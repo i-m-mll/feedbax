@@ -2249,6 +2249,7 @@ export interface TaskTrialSampleRequest {
   input_overrides?: Record<string, string>;
   objective?: ObjectiveDocument | null;
   evaluation_trials?: string[] | null;
+  nominal?: boolean;
   seed?: number;
   count?: number;
   aggregate?: boolean;
@@ -9245,13 +9246,14 @@ export const TaskTrialSampleRequestSchema: z.ZodType<TaskTrialSampleRequest> = z
       "input_overrides": z.record(z.string(), z.string()).optional(),
       "objective": ObjectiveDocumentSchema.nullable().optional(),
       "evaluation_trials": z.array(z.string()).min(1).nullable().optional(),
+      "nominal": z.boolean().optional(),
       "seed": z.number().int().safe().optional(),
       "count": z.number().int().safe().gte(1).optional(),
       "aggregate": z.boolean().optional(),
     })
     .strict()
     .superRefine((input, ctx) => {
-      const value = { ...{"input_overrides": {}, "seed": 0, "count": 8, "aggregate": false}, ...input };
+      const value = { ...{"input_overrides": {}, "nominal": false, "seed": 0, "count": 8, "aggregate": false}, ...input };
       if ((value.task == null) === (value.python_task == null)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,

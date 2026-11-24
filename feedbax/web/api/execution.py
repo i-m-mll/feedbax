@@ -33,6 +33,8 @@ class TaskTrialSampleRequest(StrictModel):
     objective: ObjectiveDocument | None = None
     evaluation_trials: list[str] | None = Field(default=None, min_length=1)
     """Evaluate trial IDs to preview with the same seed schedule as the run."""
+    nominal: bool = False
+    """Preview one representative Task trial independently of the sampler seed."""
     seed: int = 0
     count: int = Field(default=8, ge=1)
     """How many trials to draw; Studio offers up to the step's batch size."""
