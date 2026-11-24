@@ -107,8 +107,12 @@ import { stepReport, useManagedReport } from './useManagedReport';
 import { ScrollFade } from '@/components/ui/ScrollFade';
 import type { AxisMenu } from '@/components/pipeline/PipelineRunMarks';
 import { OfferedSets, setAuthoring } from './setAuthoring';
+import { useSceneGeometry } from '@/components/scene/useSceneGeometry';
+import type { StateValues } from '@/components/scene/trialScene';
 
 type EditorSession = ReturnType<typeof bindProjectEditor>;
+/** The Model's own initial state, at which the Scene's geometry tells whether the Model has anything to draw. */
+const restState: StateValues = {};
 /** The anchor of an Evaluate's sampled number of trials, which the Trials editor draws. */
 const trialCount = '/params/trial_set/count';
 
@@ -373,9 +377,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const modelSource = step?.kind === 'evaluate' ? modelDocumentId(plan.steps.find(({ id }) =>
     id === step.inputs.find(({ id }) => id === 'subject')?.sourceStepId)?.documentIds) : undefined;
   const stored = useStoredModel(editor, step, modelSource);
+  const restGeometry = useSceneGeometry(saved.project_id, stored ? { document_id: stored.id, revision: saved.revision } : null, restState);
   const views = !step ? noViews : viewOffer({
     step, trainingForm: !!trainingDocument && !!authoring, planRead: !!shown, run: !namedRow ? 'none' : namedRow.resolved === false ? 'unresolved' : 'resolved', model: stored?.value,
-    evaluation: shownResult.evaluation,
+    scenePlaces: restGeometry?.kind === 'ready' ? restGeometry.geometry.mechanisms.length > 0 : undefined,
     runProblems: (namedRun && step.runs.find(({ id }) => id === savedRunId(namedRun))?.problems) ?? [],
     results: !!plans.error || !!shownResult.row || !!shownResult.evaluation?.checkpoint_series,
     report: !!stepReport(snapshot, step?.id).report,
@@ -671,7 +676,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   }
   const detailInputs = {
     editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection,
-    variantId: variant, evaluation: selectedEvaluation, evaluationReplay,
+    variantId: variant, evaluation: selectedEvaluation, sceneTrial: trialClock.scene, checkpoints: evaluationReplay.checkpoints,
     namedRun, documentScopes, planCurrent: plans.current, elements, valueEditing: !!selectedValue, evaluateScope: evaluateScope || undefined, stored, modelProblems, selectedSweepValues, confirmRunRemoval: runRemoval.confirm,
     drawerSections,
     openModelProblems: (element: ModelAddress, opener: HTMLElement) => {
