@@ -129,6 +129,8 @@ test('a new revision\'s plan, while read, changes no control and holds a gesture
   await expect(drawer.getByRole('button', { name: 'Equinox', exact: true })).toBeVisible();
   await expect(model.getByRole('button', { name: 'Port target_on', exact: true })).toBeVisible();
   await expect(inspector.getByRole('button', { name: 'Step kind: Value', exact: true })).toBeVisible();
+  await expect(page.locator('footer.studio-window-bottom').getByRole('group', { name: 'Clock', exact: true })
+    .getByRole('button', { name: /^Trial / })).toBeVisible();
   const train = await heldEdit(evaluate.revision, () => page.keyboard.press('Meta+Shift+Z'), () => page.keyboard.press('Meta+Z'));
   expect(train.changes).toEqual([]);
   const { project } = await (await request.get(projectPath)).json();
