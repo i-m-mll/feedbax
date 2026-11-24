@@ -152,34 +152,37 @@ export async function authorFirstTrain(
   await setNumber(batchSize, 4, (project) => config(project)?.batch_size);
 
   // Simple reaches starts the effector where its `start` variable says, through a link to the shipped Model's
-  // `plant`. This Model's point mass has another id, so the link dangles and the Task says so. Re-linking it is the
-  // Task view's to offer (T2+); until then the journey makes the same structural change through the service.
+  // `plant`. This Model's point mass has another id, so the link dangles and the Task says so; `start`'s Initializes
+  // re-points it.
   const shipped = rootPayload(firstTrainTask) as unknown as TaskDocument;
   const [{ model_field: shippedLink }] = shipped.links ?? [];
   const plantLink = JSON.stringify({ ...JSON.parse(shippedLink), element: {
     ...JSON.parse(shippedLink).element, parent: { id: plantId, kind: 'component' },
   } });
-  const author = async (change: unknown) => {
+  const problems = async () => {
     const { revision } = await savedProject();
     const response = await request.post(projectPath + '/authoring/trials', {
-      data: { revision, run: { variant: 'default', step: 'train', row: 'default' }, change },
+      data: { revision, run: { variant: 'default', step: 'train', row: 'default' }, change: null },
     });
     expect(response.ok(), await response.text()).toBe(true);
-    const view = await response.json() as StudioTrialAuthoring;
-    for (const file of view.created ?? []) {
-      const created = await request.post(projectPath + '/files', { data: { revision: (await savedProject()).revision, file } });
-      expect(created.status(), await created.text()).toBe(201);
-    }
-    if (view.files?.length) {
-      const patched = await request.patch(projectPath, { data: { revision: (await savedProject()).revision, files: view.files } });
-      expect(patched.ok(), await patched.text()).toBe(true);
-    }
-    return view;
+    return (await response.json() as StudioTrialAuthoring).problems;
   };
-  expect((await author(null)).problems).toEqual([expect.objectContaining({ path: ['links', shippedLink] })]);
-  await author({ kind: 'structure', change: { op: 'link', model_field: shippedLink, variable: null } });
-  await author({ kind: 'structure', change: { op: 'link', model_field: plantLink, variable: 'start' } });
-  expect((await author(null)).problems).toEqual([]);
+  const links = async () => (rootPayload((await savedProject()).project.documents?.task) as unknown as TaskDocument).links;
+  expect(await problems()).toEqual([expect.objectContaining({ path: ['links', shippedLink] })]);
+  await page.keyboard.press('Meta+3');
+  const initializes = task.getByRole('combobox', { name: 'Initializes start', exact: true });
+  const toggle = async (option: Locator) => {
+    await initializes.click();
+    await option.click();
+    await page.keyboard.press('Escape');
+  };
+  const effector = page.getByRole('option').filter({ hasText: /effector position$/ });
+  await toggle(effector.filter({ hasNotText: /^plant · / }));
+  await expect.poll(links).toEqual([{ model_field: shippedLink, variable: 'start' }, { model_field: plantLink, variable: 'start' }]);
+  await toggle(page.getByRole('option', { name: 'plant · effector position', exact: true }));
+  await expect.poll(links).toEqual([{ model_field: plantLink, variable: 'start' }]);
+  expect(await problems()).toEqual([]);
+  await page.keyboard.press('Meta+1');
   // A comparison of forces reads one reach: simple reaches' others point every way, and their mean along the reach is
   // flat. The Task view does not edit validation trials yet.
   const [reach] = shipped.validation_trials!;

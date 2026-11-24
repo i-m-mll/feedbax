@@ -50,10 +50,14 @@ class StudioTrialOutput(StrictModel):
 
 
 class StudioTrialReset(StrictModel):
+    """A value of the paired Model that a variable of the Task may initialize at the start of each trial."""
+
     address: ModelAddress
+    name: str
+    """The component's name and the field's path."""
     type: ValueType
     finest: Level
-    variable: str | None
+    required: bool
 
 
 class StudioTrialDocumentEdit(StrictModel):

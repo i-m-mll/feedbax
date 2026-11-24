@@ -11,13 +11,15 @@ type Member = Literal["variable", "epoch", "signal"]
 
 
 class AddMember(StrictModel):
-    """A new member named ``name`` at ``index`` (the end when None); a variable or signal has ``type``."""
+    """A new member named ``name`` at ``index`` (the end when None); a variable or signal has ``type``, and a variable
+    initializes the Model fields of ``initializes``."""
 
     op: Literal["add"]
     member: Member
     name: str = Field(min_length=1)
     index: int | None = Field(default=None, ge=0)
     type: ValueType | None = None
+    initializes: tuple[str, ...] = ()
 
 
 class RemoveMember(StrictModel):

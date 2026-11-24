@@ -5,11 +5,12 @@ import { ProjectWindow, ProjectWindowPalette } from '@/features/projectWindow/Pr
 import { useDrawerSections } from '@/features/projectWindow/DrawerForms';
 import { defaultProjectWindowState, type ProjectWindowState } from '@/features/projectWindow/projectWindowState';
 import { TaskInspector } from '@/features/projectFolder/task/TaskInspector';
-import { TaskOutline } from '@/features/projectFolder/task/TaskOutline';
+import { TaskOutline, type OutlineEntry, type OutlineGroup } from '@/features/projectFolder/task/TaskOutline';
 import { TaskGrid } from '@/features/projectFolder/task/TaskGrid';
 import { TaskDocumentBody, TaskPythonBody } from '@/features/projectFolder/task/TaskView';
 import { TaskVariables } from '@/features/projectFolder/task/TaskVariables';
 import type { TaskDocumentView, TaskSelection } from '@/features/projectFolder/task/taskModel';
+import type { FieldModel } from '@/components/values/fieldModel';
 import type { TrialShown } from '@/features/projectFolder/task/trialSample';
 import { aggregate, documentView, fixtures, pythonView, templates, type DocumentSpec, type PythonSpec } from './taskFixtures';
 
@@ -94,6 +95,28 @@ function withoutEpoch(spec: DocumentSpec, id: string): DocumentSpec {
   };
 }
 
+const firstReason = (fields: readonly (FieldModel | undefined)[]) => fields.find((field) => field?.reason)?.reason;
+
+/** The fixture's variables, epochs and signals as the Outline lists them. */
+function outlineGroups(view: TaskDocumentView): Partial<Record<OutlineGroup, OutlineEntry[]>> {
+  return {
+    variables: view.variables.map(({ id, name, value }) => ({ id, name, reason: firstReason([value]) })),
+    epochs: view.epochs.map(({ id, name, end }) => ({ id, name, reason: firstReason([end]) })),
+    signals: view.signals.map(({ id, name, cells }) => ({
+      id, name, reason: firstReason(cells.map((cell) => cell.kind === 'value' ? cell.value : undefined)),
+    })),
+  };
+}
+
+const outlineKinds = { variables: 'variable', epochs: 'epoch', signals: 'signal', modelInputs: 'signal' } as const;
+
+function outlineSelection(selected: TaskSelection | undefined) {
+  if (!selected || selected.kind === 'repeat') return undefined;
+  const group: OutlineGroup = selected.kind === 'variable' ? 'variables'
+    : selected.kind === 'epoch' || selected.kind === 'end' ? 'epochs' : 'signals';
+  return { group, id: selected.kind === 'cell' ? selected.signal : selected.id };
+}
+
 function TaskWindow() {
   const tasks = useTasks();
   const [key, setKey] = useState('delayed-reaches');
@@ -136,9 +159,8 @@ function TaskWindow() {
                 move: (id, to) => edit((current) => ({ ...current, variables: moved(current.variables, id, to) })),
               }} />}
               grid={<TaskGrid epochs={view.epochs} repeats={view.repeats} signals={view.signals} selected={selected} select={setSelected} edits={{
-                addEpoch: (before) => edit((current) => {
-                  const epoch = { id: fresh('e'), name: 'epoch', end: '0.1 s' };
-                  const at = before ? current.epochs.findIndex(({ id }) => id === before) : current.epochs.length;
+                addEpoch: (name, at) => edit((current) => {
+                  const epoch = { id: fresh('e'), name, end: '0.1 s' };
                   const epochs = [...current.epochs];
                   epochs.splice(at, 0, epoch);
                   return { ...current, epochs, signals: current.signals.map((signal) => ({ ...signal, cells: [...signal.cells,
@@ -146,13 +168,14 @@ function TaskWindow() {
                     epochs.findIndex(({ id }) => id === a.first) - epochs.findIndex(({ id }) => id === b.first)) })) };
                 }),
                 renameEpoch: (id, name) => edit((current) => ({ ...current, epochs: current.epochs.map((item) => item.id === id ? { ...item, name } : item) })),
-                removeEpoch: (id) => edit((current) => withoutEpoch(current, id)),
-                addSignal: () => edit((current) => ({ ...current, signals: [...current.signals, {
-                  id: fresh('s'), name: 'signal', type: 'Number', cells: [{ first: current.epochs[0].id, last: current.epochs.at(-1)!.id, text: null }],
+                removeEpochs: (ids) => edit((current) => ids.reduce(withoutEpoch, current)),
+                addSignal: (name) => edit((current) => ({ ...current, signals: [...current.signals, {
+                  id: fresh('s'), name, type: 'Number', cells: [{ first: current.epochs[0].id, last: current.epochs.at(-1)!.id, text: null }],
                 }] })),
               }} />} />
             : <TaskPythonBody view={view} />,
-          drawer: view.kind === 'document' ? <TaskOutline sections={sections} view={view} selected={selected} select={setSelected} /> : undefined,
+          drawer: view.kind === 'document' ? <TaskOutline sections={sections} groups={outlineGroups(view)} selected={outlineSelection(selected)}
+            select={(group, id) => setSelected({ kind: outlineKinds[group], id })} /> : undefined,
           inspector: view.kind === 'document' ? <TaskInspector view={view} selected={selected} shown={shown} /> : undefined,
         }} />
     </div>

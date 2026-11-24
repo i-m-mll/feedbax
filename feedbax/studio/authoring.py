@@ -560,6 +560,10 @@ class _StepFields:
             documents=scope[1] if scope is not None else (),
         )
 
+    def effective(self, payload: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        """A run's definition as it runs: a Train's with its method's defaults filled in."""
+        return _effective(payload, self.registry) if self.step.kind == "train" else payload
+
     def own(self, read_plan: _ReadPlan | None) -> None:
         """Record the fields of the step's own definition."""
         if self.step.kind == "evaluate":
@@ -827,9 +831,9 @@ def project_train_fields(
     selected runs, or the reason the step's sweep refuses it."""
     payloads = selection.payloads
     definition = _StepFields(project, step_id, registry, selection.current, selected=payloads, runs=selection.coordinates)
-    definition.training(read_plan)
+    definition.own(read_plan)
     settings = definition.shown.get("settings")
-    mixed = _differences([_effective(payload, registry) for payload in payloads]) if payloads else set()
+    mixed = _differences([definition.effective(payload) for payload in payloads]) if payloads else set()
     edit: StudioSweptParameterMissing | None = None
     stored = StoredEdit([])
     removed: dict[str, list[str]] = {}
@@ -1015,9 +1019,7 @@ def project_numeric_fields(
         project, step_id, registry, shown=selection.current, selected=selection.payloads, runs=selection.coordinates,
     )
     definition.own(read_plan)
-    effective = [
-        _effective(payload, registry) if definition.step.kind == "train" else payload for payload in selection.payloads
-    ]
+    effective = [definition.effective(payload) for payload in selection.payloads]
     selected = (
         SelectedValues(selection.values, selection.current)
         if selection.values is not None and selection.current is not None else None
