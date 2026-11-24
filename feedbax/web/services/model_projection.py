@@ -26,6 +26,33 @@ def _port(composites, component, direction, port):
     )
 
 
+def _boundary_port(composites, direction, port):
+    return ModelAddress.model_validate({
+        "composites": composites,
+        "element": {"kind": "port", "end": {"owner": direction + "s", "port": port}},
+    })
+
+
+def _declared_ports(authority: ModelRegistryPorts, owner, scope=()):
+    for direction, ports in (("input", owner.ports.inputs), ("output", owner.ports.outputs)):
+        for port in ports:
+            yield ModelPortProjection(address=_boundary_port(scope, direction, port.id), type=port.type)
+    for key, component in owner.interior.components.items():
+        if component.kind == "composite":
+            for direction, ports in (("input", component.ports.inputs), ("output", component.ports.outputs)):
+                for port in ports:
+                    yield ModelPortProjection(address=_port(scope, key, direction, port.id), type=port.type)
+            yield from _declared_ports(authority, component, (*scope, key))
+            continue
+        try:
+            declarations = authority.layout(component.model_dump(mode="json"))
+        except ValueError:
+            continue  # A broken dynamic layout does not prevent reading the other occurrences.
+        for (direction, port), declaration in declarations.items():
+            if isinstance(declaration.type, SignalType):
+                yield ModelPortProjection(address=_port(scope, key, direction, port), type=declaration.type)
+
+
 def _dumped(payload) -> dict:
     return ModelDocument.model_validate(payload).model_dump(mode="json")
 
@@ -72,6 +99,7 @@ def model_projection(folders, project_id, body, components):
     supplied = {port.name for port in bound}
     authority = ModelRegistryPorts(components)
     problems = tuple(authority.problems(model))
+    ports = {port.address.to_text(): port for port in _declared_ports(authority, model)}
     task_inputs = tuple(
         ModelAddress.model_validate({
             "composites": [],
@@ -83,22 +111,20 @@ def model_projection(folders, project_id, body, components):
         problems=problems, ungroup=tuple(authority.ungroup_eligibility(model)), **differences,
     )
     if problems:
-        return ModelProjection(**known)
+        return ModelProjection(ports=tuple(ports.values()), **known)
     try:
         lowered = lower_model_document(
             model, components, supplied_inputs=frozenset(supplied),
         )
     except ValueError:
-        # The selected Plan carries the addressed failure. Exposed task signals
-        # are still known when the Model cannot be lowered.
-        return ModelProjection(**known)
+        return ModelProjection(ports=tuple(ports.values()), **known)
     try:
         resolution = resolve_graph_parameters(
             lowered.graph, {}, components, allow_incomplete=True,
         )
     except ValueError:
-        return ModelProjection(**known)
-    ports = []
+        return ModelProjection(ports=tuple(ports.values()), **known)
+
     def collect(resolved, owner, composites):
         for port in _enumerate_graph_ports(resolved.graph, component_registry=components, resolution=resolved):
             value = port.value_schema
@@ -107,17 +133,17 @@ def model_projection(folders, project_id, body, components):
                 item = next((item for item in declarations if (item.id if composites else item.name) == port.port), None)
                 if item is None:
                     continue
-                address = ModelAddress.model_validate({
-                    "composites": composites,
-                    "element": {"kind": "port", "end": {"owner": port.direction + "s", "port": item.id}},
-                })
-                unit = item.type.unit
+                address = _boundary_port(composites, port.direction, item.id)
             elif port.node_id in owner.interior.components:
                 address = _port(composites, port.node_id, port.direction, port.port)
-                unit = value.units
             else:
                 continue
-            ports.append(ModelPortProjection(address=address, type=SignalType(base=value.dtype, shape=value.shape, unit=unit)))
+            key = address.to_text()
+            declared = ports[key].type if key in ports else SignalType()
+            ports[key] = ModelPortProjection(address=address, type=SignalType(
+                base=declared.base or value.dtype, shape=declared.shape if declared.shape is not None else value.shape,
+                unit=declared.unit or value.units,
+            ))
         for child, branch in resolved.subgraphs.items():
             component = owner.interior.components.get(child)
             if component is not None and component.kind == "composite":
@@ -137,5 +163,5 @@ def model_projection(folders, project_id, body, components):
                 if isinstance(address.element, PortElement):
                     objective_ports[reference] = address
     return ModelProjection(
-        ports=tuple(ports), objective_ports=tuple(objective_ports.values()), **known,
+        ports=tuple(ports.values()), objective_ports=tuple(objective_ports.values()), **known,
     )
