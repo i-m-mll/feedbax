@@ -109,7 +109,7 @@ export function TaskVariables({ variables, starts = [], selected, select, edits,
           <MenuItem disabled={index === 0 || !move} onClick={() => move?.(variable.id, index - 1)}>{studioName('moveEarlier')}</MenuItem>
           <MenuItem disabled={index === variables.length - 1 || !move}
             onClick={() => move?.(variable.id, index + 1)}>{studioName('moveLater')}</MenuItem>
-          <MenuCheckboxItem checked={!!variable.count} disabled={!edits.list}
+          <MenuCheckboxItem checked={!!variable.count} disabled={!edits.list} closes
             onCheckedChange={(list) => settle(variable.id, edits.list?.(variable.id, list))}>{studioName('list')}</MenuCheckboxItem>
           <MenuItem onClick={() => settle(variable.id, edits.remove?.(variable.id))}>{studioName('remove')}</MenuItem>
         </> }}>

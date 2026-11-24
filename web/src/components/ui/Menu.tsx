@@ -110,12 +110,14 @@ export interface MenuCheckboxItemProps {
   checked: boolean;
   onCheckedChange: (checked: boolean) => void;
   disabled?: boolean;
+  /** The item is a command on one thing, so choosing it closes the menu; one of several toggles keeps it open. */
+  closes?: boolean;
   children: ReactNode;
 }
 
-export function MenuCheckboxItem({ checked, onCheckedChange, disabled, children }: MenuCheckboxItemProps) {
+export function MenuCheckboxItem({ checked, onCheckedChange, disabled, closes = false, children }: MenuCheckboxItemProps) {
   return (
-    <BaseMenu.CheckboxItem className={popupItem} checked={checked} disabled={disabled} closeOnClick={false}
+    <BaseMenu.CheckboxItem className={popupItem} checked={checked} disabled={disabled} closeOnClick={closes}
       onCheckedChange={(next) => onCheckedChange(next)}>
       <span className="flex size-[1em] shrink-0 items-center justify-center">
         <BaseMenu.CheckboxItemIndicator keepMounted={false}><Check /></BaseMenu.CheckboxItemIndicator>
