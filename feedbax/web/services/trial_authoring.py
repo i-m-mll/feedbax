@@ -30,7 +30,6 @@ from feedbax.contracts.request_specs import DocumentTrainingConfig, DocumentTrai
 from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings
 from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
-from feedbax.contracts.studio_authoring import StudioSweptParameterMissing
 from feedbax.contracts.studio_place import task_start_path
 from feedbax.studio.authoring import training_document_choice
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
@@ -55,6 +54,7 @@ from feedbax.objectives.document import ObjectiveExecutor, ObjectiveUse, compile
 from feedbax.application.bundle import ApplicationRegistryBundle
 from feedbax.web.services.evaluate_sources import evaluate_subject, evaluate_value_source
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
+from feedbax.web.services.set_authoring import trial_set_fields
 from feedbax.web.services.store_choice import EditStore, choose_store
 from feedbax.studio.selection import StoredEdit
 from feedbax.studio.numeric_fields import project_numeric_field
@@ -149,7 +149,7 @@ def _project(
     names = {epoch.id: epoch.name for epoch in epochs}
     epochs = tuple(
         StudioTrialEpoch(id=epoch, name=names.get(epoch, epoch), steps=steps)
-        for epoch, steps in zip(source.epochs, source.step_counts, strict=True)
+        for epoch, steps in dict(zip(source.epochs, source.step_counts, strict=True)).items()
     )
     if documents.objective is not None:
         objective_sites = {} if show_objective else None
@@ -240,12 +240,13 @@ def _selected_task(project, document) -> TaskDocument | PythonTaskSelection | No
     return None
 
 
-def _with_task(documents, task):
+def _with_task(documents, task, *, input_bindings: dict[str, str | None] | None = None):
+    bindings = documents.input_bindings if input_bindings is None else input_bindings
     if isinstance(documents, _InitialTrialDocuments):
-        return replace(documents, task_source=task)
+        return replace(documents, task_source=task, input_bindings=bindings)
     if isinstance(task, PythonTaskSelection):
-        return documents.model_copy(update={"task": None, "python_task": task})
-    return documents.model_copy(update={"task": task, "python_task": None})
+        return documents.model_copy(update={"task": None, "python_task": task, "input_bindings": bindings})
+    return documents.model_copy(update={"task": task, "python_task": None, "input_bindings": bindings})
 
 
 def _field_document(documents, role):
@@ -529,6 +530,7 @@ def _evaluate_documents(plan, key, definition, bundle):
                         components=bundle.components,
                     )
                     graph, task = lowered.graph, lowered.task
+                params = effective_params
     except ValueError as error:
         return documents, _Projection(
             projection.pair, projection.variables, projection.signals, projection.epochs,
@@ -536,9 +538,7 @@ def _evaluate_documents(plan, key, definition, bundle):
                 code=ProblemCode.STRUCTURE, path=("variation",), reason=str(error),
             )),
         ), None
-    documents = _with_task(documents, task).model_copy(update={
-        "input_bindings": documents.input_bindings | params.input_bindings,
-    })
+    documents = _with_task(documents, task, input_bindings=documents.input_bindings | params.input_bindings)
     paired = _project(documents, bundle, graph_override=graph, objective_use=objective_use)
     return documents, replace(paired, task_origins=variant.edit_origins), graph
 
@@ -670,8 +670,6 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
                 raise ProjectFolderInvalid("Evaluate authoring edits the task variation.")
         elif isinstance(change, StudioTrialSelectDocument) and change.role == "training":
             writes = training_document_choice(project, step_id, bundle.training_methods, change.document)
-            if isinstance(writes, StudioSweptParameterMissing):
-                return writes
         else:
             writes = _train_writes(change, project, definition, documents, projected)
         return scoped_file(
@@ -696,8 +694,6 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
         ]
     else:
         stored = store_for(stored_scope, chosen)
-        if isinstance(stored, StudioSweptParameterMissing):
-            return StoredEdit([]), stored, None
         kind, label = (
             ("sweep_value", "Sweep Value") if isinstance(scope, AxisValueRuns)
             else ("row_exception", "Selected Runs") if isinstance(scope, ListedRuns)
@@ -777,8 +773,8 @@ def _structure_edit(change, documents, definition) -> StudioTrialDocumentEdit | 
     _, raw = _changed_value(documents, definition, "task")
     before, after = task.model_dump(mode="json"), changed.model_dump(mode="json")
     edits = [
-        SetProjectValue(op="replace" if field in raw else "add", path=pointer((field,)), value=after[field])
-        for field in after if after[field] != before[field]
+        SetProjectValue(op="replace" if field in raw else "add", path=pointer((field,)), value=after.get(field, []))
+        for field in dict.fromkeys((*after, *before)) if after.get(field) != before.get(field)
     ]
     if not edits:
         raise ProjectFolderInvalid("The change leaves the task as it is.")
@@ -1130,7 +1126,6 @@ def trial_authoring(
         project = snapshot.project
         documents, projected, graph = _pairing(plan, key, bundle)
         stored, refused = StoredEdit([]), ()
-        refusal = None
         store_choices = None
         if body.store_choice is not None and body.change is None:
             raise ProjectFolderInvalid("A store choice requires the edit it was offered for.")
@@ -1140,8 +1135,6 @@ def trial_authoring(
             )
             if isinstance(refused, list):
                 store_choices, refused = refused, ()
-            if isinstance(refused, StudioSweptParameterMissing):
-                refusal, refused = refused, ()
             if preview is not None:
                 project, plan = preview
                 if changed := plan.selected_definitions.get(key):
@@ -1230,10 +1223,11 @@ def trial_authoring(
             definition, objective_path,
         )) if objective_source is not None and objective_source.kind == "own" else [],
         task_source=task_source, task_field_sources=task_field_sources,
+        set_fields=trial_set_fields(snapshot.project, key.step),
         task_types=[StudioTaskType(type=key, label=entry.label, parameter_schema=entry.parameters.model_json_schema())
                     for key in bundle.python_tasks.keys() if (entry := bundle.python_tasks.resolve(key))],
         variables=list(projected.variables), signals=list(projected.signals), epochs=list(projected.epochs),
-        period_seconds=documents.model.step_seconds,
+        period_seconds=documents.model.step_seconds if isinstance(documents.model.step_seconds, float) else None,
         n_steps=compiled.n_steps if compiled else None,
         batch_size=_batch_size(step.kind, definition.payload),
         reads_model=compiled.reads_model if compiled else False,
@@ -1254,5 +1248,5 @@ def trial_authoring(
                 for field in projected.resets],
         fields=fields, problems=[*projected.problems, *field_problems, *refused],
         files=stored.files, created=list(stored.created),
-        refusal=refusal, store_choices=store_choices,
+        store_choices=store_choices,
     )

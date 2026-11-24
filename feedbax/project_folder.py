@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from base64 import b64decode, b64encode
-from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
@@ -31,7 +30,9 @@ from feedbax.training.methods import TrainingMethodRegistry
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
 from feedbax.contracts.matrix_core import apply_value_patch_in_place
+from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import (
     BasedDocument, Document, Project, RootDocument, Sha256, diff, json_pointer_parts, same_json,
@@ -64,12 +65,13 @@ from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic,
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_target
 from feedbax.contracts.result_address import ANALYSIS_SCHEMA, payload_elements
 from feedbax.persistence.project_subject import terminal_train_reader
+from feedbax.persistence.reachability import DEFAULT_SUPERSEDED_DAYS
 from feedbax.project_members import (
-    change_member_key, detach_refusals, duplicate_step, fresh_element_keys, generated_name, label_member, merge_cards,
-    references_member, regroup_refused, split_card,
+    change_member_key, detach_refusals, duplicate_document_name, duplicate_step, fresh_element_keys, generated_name,
+    label_member, merge_cards, preserve_dangling_member, regroup_refused, split_card,
 )
 from feedbax.contracts.strict_json import strict_json_loads
-from feedbax.studio.selection import StoredEdit
+from feedbax.studio.selection import StoredEdit, merged_files
 from feedbax.contracts.studio_project import (
     DECLARATION_ADDRESS,
     PRESENTATION_ADDRESS,
@@ -102,7 +104,7 @@ if TYPE_CHECKING:
     from feedbax.plot.templates import FigureTemplateRegistry
     from feedbax.component_registry import ComponentRegistry
     from feedbax.contracts.model_edit import (
-        ModelClipboard, ModelEditAsked, ModelEditProblem, ModelEditRequest,
+        ModelClipboard, ModelEditAsked, ModelEditProblem, ModelEditRequest, ModelGraphProblem,
     )
 
 
@@ -116,99 +118,125 @@ type _Resource = Literal["project", "presentation"]
 _MODEL_LAYOUT_FIELDS = ("positions", "flipped", "collapsed", "waypoints")
 
 
-def _document_sweep_paths(
-    project: Project, document: str, read_plan: Callable[[], ProjectPlan],
-) -> list[tuple[str, ...] | ModelAddress]:
-    prefix = f"documents.{document}.payload."
+def _model_sweep_changes(
+    project: Project, document: str, before, after, moves: dict[str, ModelAddress], *, functions, read_plan,
+) -> tuple[list[StudioProjectFilePatch], list[StudioProjectWindowMapProblem]]:
+    """Track moved fields and report removed targets on their authored sweep patches."""
+    from feedbax.contracts.project import base_chain
+    from feedbax.contracts.set_document import step_model
 
-    def paths(sweep: Sweep):
-        for axis in sweep.axes.values():
-            if isinstance(axis, GeneratedAxis):
-                yield axis.path
-            if isinstance(axis, NamedAxis):
-                for entry in axis.values.values():
-                    if entry is not None:
-                        yield from entry.patches
-        for entry in (*sweep.rows.values(), *sweep.exceptions.values()):
-            if entry is not None:
-                yield from entry.patches
-
-    targets: list[tuple[str, ...] | ModelAddress] = []
-    scoped: dict[str, list[ModelAddress]] = {}
-    has_step_targets = False
-    for sweep in (project.sweep, *(step.sweep for step in project.steps.values())):
-        if sweep is None:
-            continue
-        for path in paths(sweep):
-            if path.startswith(prefix):
-                targets.append(tuple(path.removeprefix(prefix).split(".")))
-                continue
-            try:
-                target = model_field_target(path)
-            except ValueError:
-                continue  # The Plan reports malformed authored targets.
-            if target is None:
-                continue
-            if target.document == document:
-                targets.append(target.address)
-            elif target.step is not None:
-                scoped.setdefault(target.step, []).append(target.address)
-            elif target.document is None:
-                has_step_targets = True
-    if not scoped and not has_step_targets:
-        return targets
-
+    if project.sweep is None and not any(entry.sweep is not None for entry in project.steps.values()):
+        return [], []
     plan = read_plan()
-    rows = {row.key: row for row in plan.rows}
+    problems = []
+    readers = {
+        row.key.step for row in plan.rows if document in row.document_uses or document in row.followed_documents
+    }
+    readers.update(
+        name for name in project.steps if (model := step_model(project, name)) is not None
+        and document in base_chain(project.documents, model[0])
+    )
 
-    def uses_model(row) -> bool:
-        ids = row.document_ids
-        return document in (ids.get("payload.trial_documents.model"), ids.get("payload.graph"), ids.get("inputs.subject"))
+    def target(path: str, at: tuple[str, ...], step: str | None) -> str:
+        try:
+            model = model_field_target(path)
+        except ValueError:
+            return path
+        if model is not None:
+            if (model.scope is None and step not in readers) or (model.step is not None and model.step not in readers):
+                return path
+            if model.document is not None and document not in base_chain(project.documents, model.document):
+                return path
+            old = model.address
+            new = old.relocated(moves)
+            if not before.has_field(old, functions=functions):
+                return path
+            if not after.has_field(new, functions=functions):
+                mark_missing(old, at, step)
+                return path
+            if new == old:
+                return path
+            prefix = ".".join(model.scope) + "." if model.scope else ""
+            return prefix + new.to_text()
+        parts = path.split(".")
+        if len(parts) < 4 or (parts[0], parts[2]) != ("documents", "payload"):
+            return path
+        if document not in base_chain(project.documents, parts[1]):
+            return path
+        old = ModelAddress.at_stored_path(parts[3:])
+        new = old.relocated(moves)
+        if _model_path_present(before.document, parts[3:]) and not _model_path_present(after.document, new.stored_path()):
+            mark_missing(old, at, step)
+            return path
+        return ".".join((*parts[:3], *new.stored_path())) if new != old else path
 
-    steps = {(key.variant, key.step) for key, row in rows.items() if uses_model(row)}
-    for run in plan.runs:
-        subject = run.inputs.get("subject") if run.kind == "evaluate" else None
-        if subject is not None and any(key in rows and uses_model(rows[key]) for key in subject.sources):
-            steps.add((run.key.variant, run.key.step))
-    for variant, name in steps:
-        targets.extend(scoped.get(name, ()))
-        if sweep := plan.steps[variant, name].sweep:
-            for path in paths(sweep):
-                try:
-                    target = model_field_target(path)
-                except ValueError:
-                    continue  # The Plan reports malformed authored targets.
-                if target is not None and target.step is None and target.document is None:
-                    targets.append(target.address)
-    return targets
+    def mark_missing(address: ModelAddress, at: tuple[str, ...], step: str | None) -> None:
+        path = pointer(at)
+        problems.append(StudioProjectWindowMapProblem(
+            code="invalid_sweep", path=path, detail=f"The Model field {address.label()} no longer exists.",
+            step=step, variant=None, row=None, place=None, authored_path=path,
+            address=f"steps/{step}.json" if step else None, document_path=pointer(address.stored_path()),
+        ))
+
+    def patches_at(item: dict, path: tuple[str, ...], step: str | None) -> list[SetProjectValue]:
+        patches = item.get("patches", {})
+        changed = {}
+        for key, value in patches.items():
+            at = (*path, "patches", key)
+            moved = target(key, at, step)
+            if moved != key and moved in patches:
+                authored = pointer(at)
+                problems.append(StudioProjectWindowMapProblem(
+                    code="invalid_sweep", path=authored, detail="The moved field already has an authored sweep patch.",
+                    step=step, variant=None, row=None, place=None, authored_path=authored,
+                    address=f"steps/{step}.json" if step else None,
+                ))
+                moved = key
+            changed[moved] = value
+        if changed == patches:
+            return []
+        return [SetProjectValue(op="replace", path=pointer((*path, "patches")), value=changed)]
+
+    def sweep_edits(sweep: Sweep, prefix: tuple[str, ...], step: str | None) -> list[SetProjectValue]:
+        changes = []
+        for name, axis in sweep.axes.items():
+            path = (*prefix, "axes", name)
+            if isinstance(axis, GeneratedAxis):
+                if (moved := target(axis.path, (*path, "path"), step)) != axis.path:
+                    changes.append(SetProjectValue(op="replace", path=pointer((*path, "path")), value=moved))
+            elif isinstance(axis, NamedAxis):
+                for value_id, value in axis.values.items():
+                    if value is not None:
+                        changes.extend(patches_at(value.model_dump(mode="json", exclude_unset=True),
+                                                  (*path, "values", value_id), step))
+        for kind, entries in (("rows", sweep.rows if step is not None else {}), ("exceptions", sweep.exceptions)):
+            for name, entry in entries.items():
+                if entry is not None:
+                    changes.extend(patches_at(entry.model_dump(mode="json", exclude_unset=True), (*prefix, kind, name), step))
+        return changes
+
+    files = []
+    for step, entry in project.steps.items():
+        if entry.sweep is not None and (changes := sweep_edits(entry.sweep, ("sweep",), step)):
+            files.append(StudioProjectFilePatch(address=AuthoredFileAddress(kind="step", id=step), patches=changes))
+    if (sweep := project.sweep) is not None:
+        if changes := sweep_edits(sweep, ("sweep",), None):
+            files.append(StudioProjectFilePatch(address=DECLARATION_ADDRESS, patches=changes))
+        for name, row in sweep.rows.items():
+            if row is not None and (changes := patches_at(row.model_dump(mode="json", exclude_unset=True), (), None)):
+                files.append(StudioProjectFilePatch(address=AuthoredFileAddress(kind="variant", id=name), patches=changes))
+    return files, problems
 
 
-def _model_field_exists(payload, path):
-    for key in path:
-        if isinstance(payload, list) and key.isdecimal() and int(key) < len(payload):
-            payload = payload[int(key)]
-        elif isinstance(payload, dict) and key in payload:
-            payload = payload[key]
+def _model_path_present(value, path):
+    for part in path:
+        if isinstance(value, dict) and part in value:
+            value = value[part]
+        elif isinstance(value, list) and part.isdecimal() and int(part) < len(value):
+            value = value[int(part)]
         else:
             return False
     return True
-
-
-def _loses_model_target(payload, next_payload, targets, state, result, authority, functions):
-    from feedbax.compiler.model_edit import ModelEditDraft
-
-    if any(_model_field_exists(payload, path) and not _model_field_exists(next_payload, path)
-           for path in targets if isinstance(path, tuple)):
-        return True
-    addresses = [address for address in targets if isinstance(address, ModelAddress)]
-    if not addresses:
-        return False
-    before = ModelEditDraft(state, authority.port, authority.accepts)
-    after = ModelEditDraft(result, authority.port, authority.accepts)
-    return any(
-        before.has_field(address, functions=functions) and not after.has_field(address, functions=functions)
-        for address in addresses
-    )
 
 
 def model_edit_source(
@@ -260,7 +288,7 @@ def _apply_file_edits(entry: dict, file: StudioProjectFilePatch, *, model_operat
     check_model()
     for patch in file.patches:
         path = json_pointer_parts(patch.path)
-        if file.address == DECLARATION_ADDRESS:
+        if file.address == DECLARATION_ADDRESS and not model_operation:
             if path[0] != "settings":
                 raise ProjectFolderInvalid("Only project settings can be edited through the declaration address")
             if path == ("settings",) and isinstance(patch, RemoveProjectValue):
@@ -273,6 +301,8 @@ def _apply_file_edits(entry: dict, file: StudioProjectFilePatch, *, model_operat
 
 
 def _project_file_entry(payload: dict, address: AuthoredFileAddress) -> dict:
+    if address == DECLARATION_ADDRESS:
+        return payload
     family = _FAMILIES[address.kind]
     return (payload["sweep"]["rows"] if family == "variants" else payload[family])[address.id]
 
@@ -315,7 +345,6 @@ def _layout_patches(
     *, had_entry: bool = True, had_documents: bool = True,
 ) -> list[SetProjectValue | RemoveProjectValue]:
     """The presentation patches that give each document its Model layout, keeping its other presentation."""
-    from feedbax.contracts.project_sources import pointer
 
     patches: list[SetProjectValue | RemoveProjectValue] = []
     has_documents = "documents" in presentation.model_fields_set
@@ -362,7 +391,7 @@ class SettledProjectPlan:
         return cls(
             location.project_id, text.revision, project_semantic_root(text.project),
             text.configuration, text.store_path if store is None else store, plan, readers, text.root,
-            detach_refusals(plan, text.project.documents), regroup_refused(text.project),
+            detach_refusals(text.project.documents), regroup_refused(text.project),
         )
 
 
@@ -454,7 +483,7 @@ def compile_saved_project(
         )
         settled = SettledProjectPlan(
             project_id, text.revision, semantic_root, text.configuration, store, plan, readers, text.root,
-            detach_refusals(plan, text.project.documents), regroup_refused(text.project),
+            detach_refusals(text.project.documents), regroup_refused(text.project),
         )
         if reusable:
             memo.saved = _SavedCompilation(stamp, settled, observations)
@@ -646,18 +675,12 @@ def _publish_patch(folder: _LockedProjectFolder, files: list[_PendingFile], guar
         _finish_patch_at(folder.path, folder.descriptor)
 
 
-def _diagnostic_counts(diagnostics: Iterable[ProjectDiagnostic]) -> Counter:
-    return Counter((item.code, item.step, item.variant, item.row, item.element) for item in diagnostics)
-
-
 def _free_member_name(project: dict, family: MemberFamily, member: str) -> str:
-    """The name of a copy: a document's stem numbered, a step's kind (`train-2`), whichever is free of members and references."""
+    """The name of a copy: a document's stem numbered, or a step's kind, whichever key is unused."""
     if family == "documents":
         stem = re.sub(r"-[0-9]+$", "", member)
-        return generated_name(stem, lambda name: name == stem or name in project["documents"]
-                              or references_member(project, "documents", name))
-    return generated_name(project["steps"][member]["kind"], lambda name: name in project["steps"]
-                          or references_member(project, "steps", name))
+        return generated_name(stem, lambda name: name == stem or name in project["documents"])
+    return generated_name(project["steps"][member]["kind"], project["steps"].__contains__)
 
 
 def _check_file_spellings(root: Path, files: Iterable[str]) -> None:
@@ -855,6 +878,8 @@ class AppliedModelEdit:
     clipboard: ModelClipboard | None
     change: ModelEditChange | None
     created: tuple[str, ...] = ()
+    problems: tuple[ModelGraphProblem, ...] = ()
+    sweep_problems: tuple[StudioProjectWindowMapProblem, ...] = ()
 
 
 class ProjectFolder:
@@ -950,13 +975,22 @@ class ProjectFolder:
             presentation = None
             presentation_error = "unreadable_presentation"
         documents = text.project.documents
-        composed = {
-            name: entry.payload for name, document in documents.items() if isinstance(document, BasedDocument)
-            if isinstance(entry := compose_document(documents.get, name), RootDocument)
-        }
+        composed = {}
+        problems = []
+        for name, document in documents.items():
+            if isinstance(document, BasedDocument):
+                entry = compose_document(documents.get, name)
+                if isinstance(entry, ProjectDiagnostic):
+                    problems.append(StudioProjectWindowMapProblem.from_diagnostic(
+                        replace(entry, authored_file=f"documents/{entry.document or name}.json"),
+                        declaration=text.declaration,
+                    ))
+                else:
+                    composed[name] = entry.payload
         return StudioProjectSnapshot(
             project_id=location.project_id,
             composed=composed,
+            problems=problems,
             revision=text.revision,
             project=text.project,
             semantic_root=project_semantic_root(text.project),
@@ -978,6 +1012,7 @@ class ProjectFolder:
                 data=b64encode(text.files[text.declaration]).decode("ascii"),
             ),
             settings=text.configuration.settings,
+            default_keep_superseded_days=DEFAULT_SUPERSEDED_DAYS,
         )
 
     def _document(self, location: ProjectFolderLocation, text: TextProject) -> StudioProjectDocument:
@@ -1208,8 +1243,8 @@ class ProjectFolder:
         """Label a member, change its key, duplicate or detach it, or split or merge
         Analyze cards, in one write.
 
-        A key change, a split and a merge rewrite the references and presentation they move; a label changes no
-        reference. A key change, a split or a merge that would leave a reference unplannable is refused.
+        A key change, a split and a merge rewrite the references and presentation they move. The saved result
+        carries any remaining authored Problems.
         """
         command = body.command
         with self._locked_folder(project_id) as folder:
@@ -1234,7 +1269,8 @@ class ProjectFolder:
             def element_keys() -> set[str]:
                 return {
                     key for name, document in text.project.documents.items() if document.schema_id == ANALYSIS_SCHEMA
-                    for key in payload_elements(composed(name)["payload"])
+                    if isinstance(entry := compose_document(text.project.documents.get, name), RootDocument)
+                    for key in payload_elements(entry.payload)
                 }
 
             if command.kind in ("split", "merge"):
@@ -1258,6 +1294,8 @@ class ProjectFolder:
                 name = _free_member_name(source, "steps", member)
                 document = _free_member_name(source, "documents", source["steps"][member]["base"].get("document", member))
                 try:
+                    source = preserve_dangling_member(source, "steps", name)
+                    source = preserve_dangling_member(source, "documents", document)
                     project, shown = split_card(source, shown, member, set(command.elements), document, name)
                 except ValueError as error:
                     raise ProjectFolderInvalid(str(error)) from error
@@ -1271,10 +1309,6 @@ class ProjectFolder:
                 name = member
                 if not isinstance(text.project.documents[member], BasedDocument):
                     raise ProjectFolderInvalid(f"{member} has no base.")
-                if member in self._compile(folder.location, text).detach_refused:
-                    raise ProjectFolderInvalid(
-                        f"Detaching {member} would leave an Evaluate step's Model document sharing no document with its subject's.",
-                    )
                 project = {**source, "documents": {**source["documents"], member: composed(member)}}
             elif command.kind == "rename":
                 name = member
@@ -1289,44 +1323,34 @@ class ProjectFolder:
             else:
                 family = command.family
                 members = getattr(text.project, family)
-                name = (command.key if command.kind == "change_key" else command.name) or _free_member_name(
-                    source, family, member,
-                )
+                copy_label = None
+                if command.kind == "change_key":
+                    name = command.key
+                elif family == "documents":
+                    name, copy_label = duplicate_document_name(text.project.documents, member, command.name)
+                else:
+                    name = command.name or _free_member_name(source, family, member)
                 if name in members:
                     raise ProjectFileExists(f"{family}/{name}.json")
-                if references_member(source, family, name):
-                    raise ProjectFolderInvalid(f"A reference already names {name}.")
                 if command.kind == "change_key":
                     project, shown = change_member_key(source, shown, family, member, name)
-                elif family == "steps":
-                    project, shown = duplicate_step(source, shown, member, name)
                 else:
-                    copy = composed(member)
-                    if copy["schema"] == ANALYSIS_SCHEMA:
-                        copy["payload"] = fresh_element_keys(copy["payload"], element_keys())
-                    project = {**source, "documents": {**source["documents"], name: copy}}
-                    if member in shown.get("documents", {}):
-                        shown["documents"] = {**shown["documents"], name: shown["documents"][member]}
+                    source = preserve_dangling_member(source, family, name)
+                    if family == "steps":
+                        project, shown = duplicate_step(source, shown, member, name)
+                    else:
+                        copy = composed(member)
+                        copy["label"] = copy_label
+                        if copy["schema"] == ANALYSIS_SCHEMA:
+                            copy["payload"] = fresh_element_keys(copy["payload"], element_keys())
+                        project = {**source, "documents": {**source["documents"], name: copy}}
+                        if member in shown.get("documents", {}):
+                            shown["documents"] = {**shown["documents"], name: shown["documents"][member]}
             try:
                 validated = Project.model_validate(project)
                 presentation = PresentationDocument.model_validate(shown)
             except ValueError as error:
                 raise ProjectFolderInvalid(str(error)) from error
-            if command.kind in ("change_key", "split", "merge"):
-                plan = compile_project(
-                    validated, readers=self._base_readers(folder.location, text), operations=self.operations,
-                    components=self.components, functions=self.functions, python_tasks=self.python_tasks,
-                    figure_templates=self.figure_templates, training_methods=self.training_methods,
-                )
-                introduced = _diagnostic_counts(plan.diagnostics) - _diagnostic_counts(
-                    self._compile(folder.location, text).plan.diagnostics,
-                )
-                if introduced:
-                    raise ProjectFolderInvalid(
-                        f"Changing the key of {member} leaves a reference this change does not rewrite."
-                        if command.kind == "change_key" else
-                        f"This {command.kind} leaves {member}'s operations or figures unplannable.",
-                    )
             original = dump_text_project(text.project, text.configuration)
             encoded = dump_text_project(validated, text.configuration)
             if command.kind == "duplicate":
@@ -1360,7 +1384,14 @@ class ProjectFolder:
                 check_revision("presentation", presentation_revision, _read_presentation(root)[1])
 
             _publish_patch(folder, pending, guard)
-            return StudioMemberCommandResult(member=name, snapshot=self._snapshot(folder.location, self._load(root)))
+            saved = self._load(root)
+            problems = [
+                StudioProjectWindowMapProblem.from_diagnostic(item, declaration=saved.declaration)
+                for item in self._compile(folder.location, saved).plan.diagnostics
+            ] if command.kind != "rename" else []
+            return StudioMemberCommandResult(
+                member=name, snapshot=self._snapshot(folder.location, saved), problems=problems,
+            )
 
     def apply_model_command(
         self, project_id: str, body: ModelEditRequest, components: ComponentRegistry, store: ModelStore,
@@ -1371,8 +1402,8 @@ class ProjectFolder:
 
         A document the edit creates gets the layout of its base, the edited layout when its base is the shown one.
         """
-        from feedbax.contracts.model_edit import ModelEditAsked, ModelEditProblem, ModelEditState, ModelProjectionRequest
-        from feedbax.compiler.model_edit import apply_model_edit
+        from feedbax.contracts.model_edit import ModelEditAsked, ModelEditProblem, ModelEditState, ModelProjectionRequest, SetField
+        from feedbax.compiler.model_edit import ModelEditDraft, apply_model_edit
         from feedbax.compiler.model_ports import ModelRegistryPorts
         from feedbax.project_model_selection import selected_task_signal
 
@@ -1409,16 +1440,10 @@ class ProjectFolder:
         if any(file.address.kind != "step" for file in body.files):
             raise ProjectFolderInvalid("A Model edit writes step files alongside its command.")
         change = None
+        sweep_problems = []
         created: tuple[str, ...] = ()
         if result.state != state or body.files:
             next_payload = result.state.document.model_dump(mode="json") if result.state.document != state.document else payload
-            targets = _document_sweep_paths(
-                snapshot.project, body.document, lambda: self.read_plan(project_id, revision=body.revision).plan,
-            ) if next_payload is not payload else ()
-            if targets and _loses_model_target(payload, next_payload, targets, state, result.state, authority, self.functions):
-                return ModelEditProblem(
-                    address=result.changed[0], detail="Convert the affected sweep to a Value before moving or removing its field.",
-                )
             next_layout = layout.copy()
             updated_layout = result.state.model_dump(mode="json", include=set(_MODEL_LAYOUT_FIELDS))
             for key in _MODEL_LAYOUT_FIELDS:
@@ -1446,19 +1471,31 @@ class ProjectFolder:
             if not narrowed:
                 layouts[body.document] = next_layout
             shown_file = AuthoredFileAddress(kind="document", id=body.document)
-            alone = not stored.created and all(file.address == shown_file for file in stored.files)
-            created = tuple(document.id for document in stored.created)
             files = list(stored.files)
+            if (next_payload is not payload and not isinstance(body.command.operation, SetField)
+                    and any(file.address == shown_file for file in files)):
+                step_files = [file for file in files if file.address.kind == "step"]
+                candidate = preview_authored_files(snapshot.project, step_files)
+                before_draft = ModelEditDraft(state, authority.port, authority.accepts)
+                after_draft = ModelEditDraft(result.state, authority.port, authority.accepts)
+                moved, sweep_problems = _model_sweep_changes(
+                    candidate, body.document, before_draft, after_draft, result.relocations, functions=self.functions,
+                    read_plan=lambda: self.read_plan(project_id, revision=body.revision).plan,
+                )
+                files = merged_files([*files, *moved])
+            alone = not stored.created and all(file.address == shown_file for file in files)
+            created = tuple(document.id for document in stored.created)
             if patches := _layout_patches(snapshot.presentation, layouts):
                 files.append(StudioProjectFilePatch(address=PRESENTATION_ADDRESS, patches=patches))
             before = snapshot
             if files or stored.created:
                 snapshot = self._patch(snapshot.project_id, StudioProjectPatchBatch(
-                    revision=snapshot.revision, presentation_revision=snapshot.presentation_revision, files=files,
-                ), model_operation=True, created=stored.created)
+                    revision=snapshot.revision, presentation_revision=snapshot.presentation_revision,
+                    files=files, created=list(stored.created),
+                ), model_operation=True)
             if alone:
                 change = ModelEditChange(before, (payload, layout), model_edit_source(snapshot, body.document))
-        return AppliedModelEdit(snapshot, result.changed, result.clipboard, change, created)
+        return AppliedModelEdit(snapshot, result.changed, result.clipboard, change, created, result.problems, tuple(sweep_problems))
 
     def _write_model_change(
         self, snapshot: StudioProjectSnapshot, document: ProjectName,
@@ -1484,18 +1521,18 @@ class ProjectFolder:
 
     def _patch(
         self, project_id: str, body: StudioProjectPatch | StudioProjectPatchBatch, *, model_operation: bool,
-        created: Sequence[CreateNamedDocument] = (),
     ) -> StudioProjectSnapshot:
         """Apply ``body``'s file patches, after creating the ``created`` documents, in one write."""
         with self._locked_folder(project_id) as folder:
             root = folder.path
             text = self._load(root)
             check_revision("project", body.revision, text.revision)
-            files = body.files if isinstance(body, StudioProjectPatchBatch) else [body]
+            files, created = (body.files, body.created) if isinstance(body, StudioProjectPatchBatch) else ([body], [])
             original = dump_text_project(text.project, text.configuration)
             payload = text.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
             configuration = text.configuration.model_dump(mode="json")
             addresses = {}
+            declaration_settings = False
             made = set()
             for document in created:
                 address = AuthoredFileAddress(kind="document", id=document.id)
@@ -1526,7 +1563,13 @@ class ProjectFolder:
                         assert presentation is not None
                         entry = presentation
                     elif relative == text.declaration:
-                        entry = configuration
+                        if model_operation:
+                            if any(not patch.path.startswith("/sweep/") for patch in file.patches):
+                                raise ProjectFolderInvalid("A Model edit only rewrites declaration sweep targets.")
+                            entry = payload
+                        else:
+                            declaration_settings = True
+                            entry = configuration
                     else:
                         if relative not in original and relative not in made:
                             raise ProjectFolderNotFound(file.address.id)
@@ -1534,7 +1577,7 @@ class ProjectFolder:
                     _apply_file_edits(entry, file, model_operation=model_operation)
                 project = Project.model_validate(payload)
                 encoded = dump_text_project(project, text.configuration)
-                if text.declaration in addresses:
+                if declaration_settings:
                     settings = ProjectConfiguration.model_validate(configuration).settings
                     original[text.declaration] = text_project_settings_edit(text.manifest, text.configuration.settings)
                     encoded[text.declaration] = text_project_settings_edit(text.manifest, settings)

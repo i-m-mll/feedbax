@@ -49,4 +49,3 @@ export function SettingsPage({ label, searchLabel, sections }: {
     </div>
   );
 }
-

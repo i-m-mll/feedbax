@@ -3,7 +3,7 @@ import { catalogEntries, readStudioTrialAuthoring, useAuthoringCatalog } from '@
 import { landsOnGesture } from '@/api/request';
 import { shownError } from '@/api/shownErrors';
 import {
-  studioAccessibleName, studioName, studioSweptParameterMissing, type StudioNameId,
+  studioAccessibleName, studioName, type StudioNameId,
 } from '@/components/activity/studioVocabulary';
 import { shownName } from '@/features/pipeline/planView';
 import type { DocumentPickerModel, PickerTemplate } from '@/features/projectWindow/DocumentPicker';
@@ -161,7 +161,6 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
     const result = await readStudioTrialAuthoring(projectId, {
       revision, run, scope, change: { kind: 'select_document', role, document },
     }, editor.signal);
-    refuse(role, result.refusal ? studioSweptParameterMissing(result.refusal) : undefined);
     return result.files;
   }
 

@@ -58,7 +58,9 @@ function grid(view: TrialView, task: TaskDocument, types: readonly StudioNamedVa
       id: epoch.id, name: epoch.name, end: endField(view, task, index, commit),
       bounds: {
         id: epoch.id, name: epoch.name, ends: !('length' in epoch.end) ? 'rest' : steps && steps.least !== steps.greatest ? 'drawn' : 'length',
-        least: (steps?.least ?? 0) * period, nominal: (steps?.nominal ?? 0) * period, greatest: (steps?.greatest ?? 0) * period,
+        least: steps && period != null ? steps.least * period : 0,
+        nominal: steps && period != null ? steps.nominal * period : 0,
+        greatest: steps && period != null ? steps.greatest * period : 0,
       },
     };
   });
@@ -148,8 +150,9 @@ export function TrialGridInspector({ view, commit, runs, selected, shown: drawn 
   if (!shown) return null;
   const document: TaskDocumentView = {
     kind: 'document', variables: [], epochs: shown.epochs, repeats: [], signals: shown.signals,
-    duration: (view.n_steps ?? 0) * view.period_seconds, stepSeconds: view.period_seconds,
+    duration: view.n_steps != null && view.period_seconds != null ? view.n_steps * view.period_seconds : 0,
+    stepSeconds: view.period_seconds ?? undefined,
   };
   return <TaskInspector view={document} selected={selectionOf(selected)}
-    shown={drawn ?? { kind: 'definition' }} />;
+    shown={drawn} />;
 }

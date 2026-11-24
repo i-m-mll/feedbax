@@ -5,7 +5,7 @@ from typing import Annotated, Literal
 from pydantic import Field
 
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.expression_values import FieldValue, Problem
+from feedbax.contracts.expression_values import FieldValue, Problem, UnresolvedValue
 from feedbax.contracts.jobs import StudioPlanReviewSource
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import SelectedRuns, ModelEditCommand
@@ -57,7 +57,7 @@ class ModelFieldRequest(StudioRunSelection):
 class StudioSweepValue(StrictModel):
     id: ProjectName
     label: str | None
-    value: int | float
+    value: int | float | UnresolvedValue
 
 
 class StudioSweepList(StrictModel):

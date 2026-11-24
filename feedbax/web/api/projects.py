@@ -119,8 +119,10 @@ def read_train_authoring(
     response: Response,
 ) -> StudioTrainAuthoring:
     from feedbax.studio.authoring import project_train_fields
-    from feedbax.web.services.authored_scope import train_edit_store
-    from feedbax.web.services.trial_scope import train_selection
+    from feedbax.web.services.authored_scope import preview_plan, train_edit_store
+    from feedbax.web.services.trial_scope import preview_stored, train_selection
+    from feedbax.contracts.jobs import StudioProjectWindowMapProblem
+    from feedbax.contracts.project_resolution import ResolutionCode
 
     def project_fields() -> StudioTrainAuthoring:
         folders = request.app.state.project_folders
@@ -139,12 +141,22 @@ def read_train_authoring(
         except ValueError as error:
             raise ProjectFolderInvalid(str(error)) from error
         stored = train_edit_store(folders, project_id, snapshot.project, step_id, body, projection.stored)
+        settled = folders.read_plan(project_id, revision=snapshot.revision)
+        plan = settled.plan
+        if not isinstance(stored, list) and (stored.files or stored.created) and any(
+            step_id == step and planned.sweep is not None for (_, step), planned in plan.steps.items()
+        ):
+            plan = preview_plan(folders, settled, preview_stored(snapshot.project, stored))
+        sweep_problems = [
+            StudioProjectWindowMapProblem.from_diagnostic(item, declaration="")
+            for item in plan.diagnostics if item.step == step_id and item.code == ResolutionCode.INVALID_SWEEP
+        ]
         return StudioTrainAuthoring(
             project_id=project_id, step_id=step_id, revision=snapshot.revision, fields=projection.fields,
             settings=projection.settings, mixed=projection.mixed, files=[] if isinstance(stored, list) else stored.files,
             created=[] if isinstance(stored, list) else list(stored.created),
             store_choices=stored if isinstance(stored, list) else None,
-            documents=projection.documents, refusal=projection.refusal, classes=projection.classes,
+            documents=projection.documents, classes=projection.classes, sweep_problems=sweep_problems,
             removed_values=projection.removed, changed=projection.changed,
         )
 

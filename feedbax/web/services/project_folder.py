@@ -147,7 +147,7 @@ class ProjectFolderService(ProjectFolder):
             } for item in components.list_all() if not item.is_composite)
             return review_model_connections(
                 ModelDocument.model_validate(payload), body, layout=authority.layout, next_input=authority.next_input,
-                library=library, accepts=authority.accepts, task_signal=task_signal,
+                library=library, task_signal=task_signal,
             )
         except ValueError as error:
             raise ProjectFolderInvalid(str(error)) from error
@@ -192,11 +192,14 @@ class ProjectFolderService(ProjectFolder):
         ) if change is not None else None
         return ModelEditResponse(result=ModelEditApplied(
             status="applied", snapshot=result.snapshot, changed=result.changed, clipboard=result.clipboard,
-            undo_token=token, created=result.created,
+            undo_token=token, created=result.created, problems=result.problems,
+            sweep_problems=result.sweep_problems,
         ))
 
     def undo_model(self, project_id: str, body: ModelUndoRequest) -> ModelEditResponse:
         from feedbax.contracts.model_edit import ModelEditApplied, ModelEditResponse
+        from feedbax.contracts.model_document import ModelDocument
+        from feedbax.compiler.model_ports import ModelRegistryPorts
         from feedbax.studio.model_undo import apply_delta
 
         try:
@@ -223,8 +226,10 @@ class ProjectFolderService(ProjectFolder):
             snapshot, edit.document, payload, layout,
             had_entry=edit.had_entry, had_documents=edit.had_documents,
         )
+        problems = tuple(ModelRegistryPorts(self.components).problems(ModelDocument.model_validate(payload))) \
+            if self.components is not None else ()
         return ModelEditResponse(result=ModelEditApplied(
-            status="applied", snapshot=snapshot, changed=edit.changed, undo_token=token,
+            status="applied", snapshot=snapshot, changed=edit.changed, undo_token=token, problems=problems,
         ))
 
     @staticmethod

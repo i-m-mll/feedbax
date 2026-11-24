@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from feedbax.contracts.project import Project
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
+from tests.support.managed_train_fixture import managed_train_project
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored_documents, document_project
 
@@ -78,12 +79,10 @@ def _set_edit(folders, client, command, *, store=None):
         edit = reply.json()
     else:
         assert not edit.get("store_choices"), edit
-    for created in edit.get("created", []):
-        made = client.post(f"{BASE}/files", json={"revision": revision, "file": created})
-        assert made.status_code == 201, made.text
-        revision = made.json()["snapshot"]["revision"]
-    if edit["files"]:
-        written = client.patch(BASE, json={"revision": revision, "files": edit["files"]})
+    if edit.get("created") or edit["files"]:
+        written = client.patch(BASE, json={
+            "revision": revision, "created": edit.get("created", []), "files": edit["files"],
+        })
         assert written.status_code == 200, written.text
     return edit
 
@@ -256,3 +255,74 @@ def test_removing_the_last_copy_removes_the_axis(studio):
     assert folders.read(PROJECT).project.steps["baseline"].sweep is None or not folders.read(
         PROJECT).project.steps["baseline"].sweep.axes
     assert _runs(folders, "baseline") == before
+
+
+def test_to_field_moves_the_set_into_one_train_and_to_sweep_restores_it(studio):
+    folders, client = studio
+    train_before = _runs(folders, "train")
+    for _ in range(3):
+        _duplicate(folders, client, "other", ["default"])
+    _set_edit(folders, client, {"kind": "save_set", "step": "other", "axis": "run"})
+    before = folders.read(PROJECT).project.steps["other"].sweep.axes["run"]
+    sweep = _runs(folders, "other")
+    assert len(sweep) == 4
+
+    _set_edit(folders, client, {"kind": "set_to_field", "step": "other", "axis": "run"})
+    assert list(_runs(folders, "other")) == ["default"]
+    revision = folders.read(PROJECT).revision
+    reply = client.post(f"{BASE}/authoring/trials", json={
+        "revision": revision, "run": {"variant": "default", "step": "other", "row": "default"},
+    })
+    assert reply.status_code == 200, reply.text
+    (field,) = reply.json()["set_fields"]
+    assert field["axis"] == "run" and field["set"] == before.set
+    assert field["entries"][0]["entry"] is None
+    assert all(item["weight"] == 1 for item in field["entries"])
+    assert _runs(folders, "train") == train_before
+
+    _set_edit(folders, client, {"kind": "set_to_sweep", "step": "other", "axis": "run"})
+    assert _runs(folders, "other") == sweep
+    assert not folders.read(PROJECT).project.steps["other"].set_fields
+
+
+def test_required_set_can_be_emptied_and_repaired(tmp_path):
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    raw["documents"]["draft"] = {"schema": "feedbax.set_document.v1", "payload": {"entries": {"one": {}}}}
+    raw["steps"]["train"]["sweep"] = {"axes": {"draft": {"set": "draft"}}}
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, PROJECT, Project.model_validate(raw))
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        emptied = _set_edit(folders, client, {"kind": "remove_value", "step": "train", "axis": "draft", "value": "one"})
+        assert emptied["files"] and emptied["problems"][0]["address"] == "documents/draft.json"
+        assert emptied["problems"][0]["authored_path"] == "/payload/entries"
+        snapshot = folders.read(PROJECT)
+        assert snapshot.project.documents["draft"].payload["entries"] == {}
+        assert snapshot.project.steps["train"].sweep.axes["draft"].set == "draft"
+        assert any(problem.authored_path == "/payload/entries"
+                   for problem in folders.read_plan(PROJECT, revision=None).plan.diagnostics)
+        repaired = _set_edit(folders, client, {"kind": "add_set_entry", "step": "train", "axis": "draft"})
+        assert repaired["files"] and not repaired["problems"] and _runs(folders, "train")
+
+
+def test_applying_an_inapplicable_set_stores_the_reference_and_marks_the_difference(tmp_path):
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    pointer = "/interior/components/removed/fields/mass"
+    raw["documents"]["draft"] = {"schema": "feedbax.set_document.v1", "payload": {
+        "entries": {"heavy": {"differences": {pointer: {"value": 2.0}}}},
+    }}
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, PROJECT, Project.model_validate(raw))
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        applied = _set_edit(folders, client, {"kind": "apply_set", "step": "train", "set": "draft"})
+        assert applied["files"] and applied["problems"][0]["address"] == "documents/draft.json"
+        assert applied["problems"][0]["authored_path"].startswith("/payload/entries/heavy/differences/")
+        assert folders.read(PROJECT).project.steps["train"].sweep.axes["draft"].set == "draft"
+        plan = folders.read_plan(PROJECT, revision=None).plan
+        assert any(problem.document == "draft" and pointer in problem.detail for problem in plan.diagnostics)
+
+        inlined = _set_edit(folders, client, {"kind": "inline_set", "step": "train", "axis": "draft"})
+        assert inlined["files"] and inlined["problems"][0]["address"] == "steps/train.json"
+        path = inlined["problems"][0]["authored_path"]
+        assert path.startswith("/sweep/axes/draft/values/heavy/patches/")
+        assert any(problem.authored_path.startswith(path) for problem in folders.read_plan(PROJECT, revision=None).plan.diagnostics
+                   if problem.authored_path is not None)

@@ -305,3 +305,57 @@ def test_an_evaluation_picks_a_model_document_and_one_unrelated_to_its_subjects_
         assert "check" not in project.ids()
         problems = [problem for problem in project.plan().diagnostics if problem.step == "check"]
         assert [problem.path for problem in problems] == ["payload.trial_documents.model"]
+
+
+def test_invalid_model_field_survives_reopen_and_can_be_repaired(tmp_path):
+    project = _Project(tmp_path, _data())
+    text = " 1 + "
+    with project.client:
+        recipe = project.fields("fee", {"kind": "text", "text": text})
+        assert recipe["problems"][0]["model_address"] == MASS
+        before = project.snapshot()["revision"]
+        saved = project.edit(recipe["command"]["operation"], files=recipe["files"])
+        assert saved["snapshot"]["revision"] != before
+        assert project.composed("model")["interior"]["components"]["plant"]["fields"]["mass"] == {
+            "kind": "unresolved", "text": text,
+        }
+        (fee,) = [run for run in project.plan().runs if run.key.step == "fee"]
+        assert fee.admission_problem is not None
+        assert any(problem.model_address == ModelAddress.model_validate(MASS) for problem in fee.problems)
+        fields = project.fields("fee", None)["fields"]
+        assert any(field["address"] == MASS and field["text"] == text and field["problems"] for field in fields)
+        recipe = project.fields("fee", {"kind": "text", "text": "2"})
+        project.edit(recipe["command"]["operation"], files=recipe["files"])
+        (fee,) = [run for run in project.plan().runs if run.key.step == "fee"]
+        assert fee.admission_problem is None
+
+
+def test_removing_a_swept_model_field_keeps_other_fields_readable(tmp_path):
+    data = _data()
+    data["steps"]["fee"]["sweep"] = {"axes": {"mass": {"path": _MASS_TEXT, "values": [1.5, 3.0]}}}
+    project = _Project(tmp_path, data)
+    with project.client:
+        before = project.snapshot()["revision"]
+        result = project.edit({"op": "delete", "selection": [_PLANT]})
+        assert result["snapshot"]["revision"] != before
+        assert result["sweep_problems"][0]["authored_path"] == "/sweep/axes/mass/path"
+        assert "plant" not in project.composed("model")["interior"]["components"]
+        assert project.project().steps["fee"].sweep.axes["mass"].path == _MASS_TEXT
+        assert any(problem.authored_path and problem.authored_path.startswith("/sweep/axes/mass")
+                   for problem in project.plan().diagnostics if problem.step == "fee")
+        read = project.fields("fee", None, owner={"composites": [], "element": {"kind": "graph"}})
+        (step,) = read["fields"]
+        assert step["label"] == "Step" and step["text"] == "0.01 s"
+
+
+def test_grouping_a_swept_model_field_rewrites_its_target_by_identity(tmp_path):
+    data = _data()
+    data["steps"]["fee"]["sweep"] = {"axes": {"mass": {"path": _MASS_TEXT, "values": [1.5, 3.0]}}}
+    project = _Project(tmp_path, data)
+    with project.client:
+        result = project.edit({"op": "group", "selection": [_PLANT], "name": "Plant"})
+        target = ModelAddress.from_text(project.project().steps["fee"].sweep.axes["mass"].path)
+        assert target.composites and target.element == ModelAddress.model_validate(MASS).element
+        (group,) = target.composites
+        assert project.composed("model")["interior"]["components"][group]["interior"]["components"]["plant"]
+        assert not result["sweep_problems"] and "fee" in project.ids()

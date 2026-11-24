@@ -7,7 +7,7 @@ from pydantic import JsonValue
 
 from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler.model_document import model_tau_seconds
-from feedbax.contracts.expression_values import TIME, Level, LiteralValue, Problem, ProblemCode, Site, ValueBase, ValueType
+from feedbax.contracts.expression_values import TIME, Level, LiteralValue, Problem, ProblemCode, Site, UnresolvedValue, ValueBase, ValueType
 from feedbax.contracts.model_address import AttachmentElement, ComponentElement, FieldElement, ModelAddress, PortElement, WireElement
 from feedbax.contracts.model_document import (
     MODEL_DOCUMENT_SCHEMA_ID, CompositeComponent, DelayAttachment, InterventionAttachment, LeafComponent, ModelDocument,
@@ -21,6 +21,7 @@ from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_docu
 from feedbax.planner.project_plan import RunKey
 from feedbax.contracts.jobs import StudioPlanReviewSource
 from feedbax.contracts.project_sources import ValueSource, pointer
+from feedbax.contracts.project_sweep import NamedAxis, SetValue
 from feedbax.contracts.studio_field import (
     FieldResetEdit, FieldTextEdit, ModelFieldRequest, ModelFieldResponse, ModelFieldView,
 )
@@ -56,7 +57,7 @@ def _address(owner: ModelAddress, *path: str) -> ModelAddress:
 
 
 def _duration(
-    owner: ModelAddress, label: str, path: tuple[str, ...], value: int | float, unit: str,
+    owner: ModelAddress, label: str, path: tuple[str, ...], value: int | float | UnresolvedValue, unit: str,
     *, stored: bool = False, literal: bool = False,
 ) -> _Field:
     address = _address(owner, *path)
@@ -71,6 +72,14 @@ def _positive(value: int | float) -> int | float:
     if value <= 0:
         raise ValueError("Enter a positive duration.")
     return value
+
+
+def _numeric_value(value: JsonValue) -> int | float | UnresolvedValue | None:
+    if type(value) in (int, float):
+        return value
+    if isinstance(value, dict) and value.get("kind") == "unresolved":
+        return UnresolvedValue.model_validate(value)
+    return None
 
 
 def _attachment_fields(branch: ModelDocument | CompositeComponent, owner: ModelAddress) -> Iterator[_Field]:
@@ -93,7 +102,11 @@ def _attachment_fields(branch: ModelDocument | CompositeComponent, owner: ModelA
         return
     attachment = next((item for item in chain if item.id == element.id), None)
     if isinstance(attachment, DelayAttachment):
-        yield _duration(owner, "Delay", ("delay",), attachment.delay.value, attachment.delay.unit, stored=True)
+        delay = attachment.delay
+        if isinstance(delay, UnresolvedValue):
+            yield _duration(owner, "Delay", ("delay",), delay, "st", stored=True)
+        else:
+            yield _duration(owner, "Delay", ("delay",), delay.value, delay.unit, stored=True)
         values = {"initial": attachment.initial}
     elif isinstance(attachment, InterventionAttachment):
         names = {"clamp": ("low", "high"), "scale": ("factor",)}.get(attachment.operation.lower(), ())
@@ -101,7 +114,7 @@ def _attachment_fields(branch: ModelDocument | CompositeComponent, owner: ModelA
     else:
         return
     for name, value in values.items():
-        if type(value) not in (int, float):
+        if (number := _numeric_value(value)) is None:
             continue
         address = _address(owner, *(("initial",) if name == "initial" else ("fields", name)))
 
@@ -113,7 +126,7 @@ def _attachment_fields(branch: ModelDocument | CompositeComponent, owner: ModelA
             return number
 
         yield _Field(address, NumericField(
-            address.stored_path(), name.capitalize(), value,
+            address.stored_path(), name.capitalize(), number,
             Site(expected=ValueType(base=ValueBase.REAL), finest=Level.RUN, structural=True),
             True, validate,
         ))
@@ -164,26 +177,29 @@ def _fields(model: ModelDocument, owner: ModelAddress, components: ComponentRegi
             continue
         base = {"int": ValueBase.INTEGER, "float": ValueBase.REAL}.get(schema.type)
         value = component.fields.get(name, defaults.get(name))
+        number = _numeric_value(value)
         if component.type == "feedbax.VanillaRNN" and name == "tau":
-            if type(value) in (int, float):
-                yield _duration(owner, "Tau", ("fields", "tau"), value, "st", stored=name in component.fields)
+            if number is not None:
+                yield _duration(owner, "Tau", ("fields", "tau"), number, "st", stored=name in component.fields)
             elif isinstance(value, dict) and value.get("kind") == "literal" and value.get("unit") in ("st", "s"):
                 if type(magnitude := value.get("value")) in (int, float):
                     yield _duration(owner, "Tau", ("fields", "tau"), magnitude, value["unit"], stored=True, literal=True)
             continue
-        if base is None or type(value) not in (int, float):
+        if base is None or number is None:
             continue
 
         def validate(value: int | float, name=name) -> int | float:
-            values = {**component.fields, name: value}
-            if component.type == "feedbax.VanillaRNN" and "tau" in values:
+            values = {key: item for key, item in component.fields.items()
+                      if not isinstance(_numeric_value(item), UnresolvedValue)}
+            values[name] = value
+            if component.type == "feedbax.VanillaRNN" and "tau" in values and isinstance(model.step_seconds, float):
                 values["tau"] = model_tau_seconds(values["tau"], model.step_seconds)
             definition.params.require(values)
             return value
 
         address = _address(owner, "fields", name)
         yield _Field(address, NumericField(
-            address.stored_path(), name.replace("_", " ").capitalize(), value,
+            address.stored_path(), name.replace("_", " ").capitalize(), number,
             Site(expected=ValueType(base=base), finest=Level.RUN, structural=True),
             name in component.fields and "fields" in component.model_fields_set, validate,
         ))
@@ -221,7 +237,8 @@ def _reset_text(
     ), None)
     if field is None:
         return Problem(code=ProblemCode.STRUCTURE, reason=f"{restored} has no value here.")
-    return print_field(field.numeric.literal(field.numeric.value), field.numeric.site)
+    numeric = field.numeric
+    return print_field(numeric.value if isinstance(numeric.value, UnresolvedValue) else numeric.literal(numeric.value), numeric.site)
 
 
 def _held_values(
@@ -236,7 +253,7 @@ def _held_values(
             continue
         for field in _fields(ModelDocument.model_validate(payload), owner, components):
             values = held.setdefault(field.address.to_text(), [])
-            if field.numeric.value not in values:
+            if not isinstance(field.numeric.value, UnresolvedValue) and field.numeric.value not in values:
                 values.append(field.numeric.value)
     return held
 
@@ -263,6 +280,36 @@ def _field_store(
     if isinstance(choice, list):
         return ModelFieldResponse(fields=response.fields, store_choices=choice)
     return response.model_copy(update={"files": choice.files, "created": list(choice.created)})
+
+
+def _address_problems(field: _Field, problems: tuple[Problem, ...]) -> list[Problem]:
+    return [problem.model_copy(update={"model_address": field.address}) for problem in problems]
+
+
+def _held_problems(field: _Field, functions: FunctionRegistry, period: float | None) -> list[Problem]:
+    if not isinstance(held := field.numeric.value, UnresolvedValue):
+        return []
+    edit = FieldTextEdit(kind="text", text=held.text)
+    result = prepare_numeric_field(field.numeric, None, edit, functions, period=period).result
+    if not isinstance(result, tuple):
+        reason = ("Delay in steps must be a whole number."
+                  if isinstance(result, LiteralValue) and result.unit == "st" and field.address.element.parent.kind == "attachment"
+                  else "This value has not been resolved.")
+        result = (Problem(code=ProblemCode.STRUCTURE, reason=reason),)
+    return _address_problems(field, result)
+
+
+def _hold_sweep_member(axis, member: str, held: JsonValue, step_file, problems: list[Problem]) -> ModelFieldResponse:
+    if axis is None or len(axis.covering) != 1:
+        raise ProjectFolderInvalid("Choose an authored Model sweep value.")
+    _, sweep = axis.covering[0]
+    if not isinstance(sweep, NamedAxis) or (entry := sweep.values.get(member)) is None:
+        raise ProjectFolderInvalid("Choose an authored Model sweep value.")
+    path = axis.target.patch_path
+    assert path is not None
+    updated = entry.model_copy(update={"value": held, "patches": entry.patches | {path: SetValue(value=held)}})
+    after = sweep.model_copy(update={"values": sweep.values | {member: updated}})
+    return ModelFieldResponse(files=[step_file(axis.write_axis(after))], problems=problems)
 
 
 def model_fields(
@@ -327,6 +374,9 @@ def model_fields(
     } if effective_model is not None else {}
     authored_fields = {field.address.to_text(): field for field in _fields(model, body.owner, components)}
     visible_fields = effective_fields if evaluate or variant is not None else effective_fields | authored_fields
+    period = (effective_model or model).step_seconds
+    if isinstance(period, UnresolvedValue):
+        period = None
     fields = []
     targets = {}
     for field_key, field in visible_fields.items():
@@ -334,7 +384,10 @@ def model_fields(
         resolved = effective_fields.get(field_key)
         axis = None
         if step is not None:
-            target = SweepTarget(numeric.value, _addressed, field_key)
+            target = SweepTarget(
+                numeric.value.model_dump(mode="json") if isinstance(numeric.value, UnresolvedValue) else numeric.value,
+                _addressed, field_key,
+            )
             axis = FieldSweeps(
                 step, target, numeric.label, numeric.key[-1:], integer=numeric.site.expected.base == ValueBase.INTEGER,
                 runs=runs,
@@ -349,28 +402,32 @@ def model_fields(
         fields.append(project_numeric_field(
             ModelFieldView, numeric, axis, functions, selected, resolved.numeric.value if resolved else None,
             held=held.get(field_key, ()),
-            period=(effective_model or model).step_seconds, scoped=bool(body.rows or body.axes),
-            address=field.address,
+            period=period, scoped=bool(body.rows or body.axes),
+            address=field.address, problems=_held_problems(field, functions, period)
+            or (_held_problems(resolved, functions, period) if resolved is not None else []),
             sources=[StudioPlanReviewSource.model_validate(source, from_attributes=True) for source in sources],
             changed=changed,
         ))
         targets[field_key] = replace(field, numeric=numeric), axis
     if body.edit is None:
         return ModelFieldResponse(fields=fields)
-    if body.address is None or body.address.to_text() not in targets or body.run is None or (
-        evaluate is None and variant is None and (step is None or plan is None)
+    if body.address is None or body.address.to_text() not in targets:
+        raise ProjectFolderInvalid("Choose a supported field of the selected Model.")
+    if body.run is None and (body.rows or body.axes or body.evaluate_scope is not None) or (
+        body.run is not None and evaluate is None and variant is None and (step is None or plan is None)
     ):
         raise ProjectFolderInvalid("Choose a supported field of the selected Model.")
     field, axis = targets[body.address.to_text()]
     owner_name = body.document
 
-    step_address = AuthoredFileAddress(kind="step", id=body.run.step)
-
     def step_file(patches: list[SetProjectValue]) -> StudioProjectFilePatch:
-        return StudioProjectFilePatch(address=step_address, patches=patches)
+        if body.run is None:
+            raise ProjectFolderInvalid("Choose a step that reads this Model to edit its sweep.")
+        return StudioProjectFilePatch(address=AuthoredFileAddress(kind="step", id=body.run.step), patches=patches)
 
     scope = None
     if (body.rows or body.axes) and evaluate is None:
+        assert body.run is not None
         key = RunKey(body.run.variant, body.run.step, body.run.row)
         scope = selection_scope(project, plan, key, tuple(body.rows), body.axes)
     edit = body.edit
@@ -380,13 +437,23 @@ def model_fields(
             return ModelFieldResponse(problems=[reset])
         edit = FieldTextEdit(kind="text", text=reset)
     prepared = prepare_numeric_field(
-        field.numeric, axis, edit, functions, period=(effective_model or model).step_seconds,
+        field.numeric, axis, edit, functions, period=period,
         scoped=scope is not None,
     )
     result = prepared.result
+    problems = []
     if isinstance(result, tuple):
-        return ModelFieldResponse(problems=list(result))
+        if not isinstance(edit, FieldTextEdit):
+            raise ProjectFolderInvalid(result[0].reason)
+        problems = _address_problems(field, result)
+        result = UnresolvedValue(text=edit.text).model_dump(mode="json")
+        if edit.value_id is not None:
+            return _field_store(
+                folders, project_id, project, plan, body,
+                _hold_sweep_member(axis, edit.value_id, result, step_file, problems), axis=axis,
+            )
     if isinstance(result, list):
+        assert body.run is not None
         kept = _kept_writes(project, body.run.step, prepared.keep) if prepared.keep and step is not None else ([], None)
         if isinstance(kept, Problem):
             return ModelFieldResponse(problems=[kept])
@@ -432,23 +499,28 @@ def model_fields(
         destination = ListedRuns(kind="rows", rows=tuple(sorted(writable))) if sources and writable else scope
         files = scoped_file(project, body.run.step, destination, [write]).files if writable else []
         return _field_store(
-            folders, project_id, project, plan, body, ModelFieldResponse(files=files), kind="other_runs",
+            folders, project_id, project, plan, body, ModelFieldResponse(files=files, problems=problems), kind="other_runs",
             label="Other Runs", alternatives=alternatives,
         )
     value = result
     if isinstance(result, LiteralValue):
         if field.address.element.parent.kind == "attachment":
             if result.unit == "st" and result.value != int(result.value):
-                return ModelFieldResponse(problems=[Problem(code=ProblemCode.STRUCTURE, reason="Delay in steps must be a whole number.")])
-            value = result.model_dump(mode="json", exclude={"kind"})
+                problems = _address_problems(field, (Problem(
+                    code=ProblemCode.STRUCTURE, reason="Delay in steps must be a whole number.",
+                ),))
+                value = UnresolvedValue(text=edit.text).model_dump(mode="json")
+            else:
+                value = result.model_dump(mode="json", exclude={"kind"})
         elif result.unit == "st" and field.numeric.unit == "st" and not field.literal and field.numeric.stored:
             value = result.value
         else:
             value = result.model_dump(mode="json")
     difference = SetField(op="set_field", address=field.address, value=value)
     if evaluate is not None:
-        return ModelFieldResponse(command=ModelEditCommand(operation=difference))
+        return ModelFieldResponse(command=ModelEditCommand(operation=difference), problems=problems)
     if variant is not None:
+        assert body.run is not None
         field_key = difference.address.to_text()
         path = f"documents.{owner_name}.{field_key}"
         if field_key not in authored_fields or isinstance(difference.address.element.parent, AttachmentElement):
@@ -463,7 +535,7 @@ def model_fields(
             alternatives.append(("selected_readers", "Selected Readers", variant, narrowed))
         return _field_store(
             folders, project_id, project, plan, body,
-            ModelFieldResponse(files=[variant_file(project, variant, [write])]), kind="variant", label="Variant",
+            ModelFieldResponse(files=[variant_file(project, variant, [write])], problems=problems), kind="variant", label="Variant",
             alternatives=alternatives,
         )
-    return ModelFieldResponse(command=ModelEditCommand(operation=difference))
+    return ModelFieldResponse(command=ModelEditCommand(operation=difference), problems=problems)

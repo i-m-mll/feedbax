@@ -10,8 +10,8 @@ from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.model_edit import AxisValueRuns, ListedRuns
 from feedbax.contracts.project import Project, RemoveProjectValue, StepBase
 from feedbax.contracts.project_io import project_declaration_name
-from feedbax.contracts.project_inputs import StepReference
-from feedbax.planner.project_plan import PlanSourceIndex, ProjectPlan, RunKey
+from feedbax.contracts.project_inputs import InputBinding, StepReference
+from feedbax.planner.project_plan import BlockedRow, PlannedRun, PlanSourceIndex, ProjectPlan, RunKey
 from feedbax.contracts.project_sweep import (
     CHECKPOINT_RULE_TARGET, CheckpointRuleAxis, NamedAxis, authored_row, checkpoint_sweep_refusal,
 )
@@ -44,7 +44,7 @@ class _CheckpointSource:
         address = AuthoredFileAddress(kind="step", id=self.owner)
         raw = step.model_dump(mode="json", by_alias=True, exclude_unset=True)
         if self.kind == "step":
-            return file_value(address, raw, ("inputs", "subject", "checkpoint"), rule)
+            return file_value(address, raw, self.parts, rule)
         target = raw
         for part in self.parts:
             target = target[part]
@@ -65,20 +65,51 @@ def _ancestors(project: Project, step: str):
         step = base.step
 
 
-def _step_source(project: Project, variant_project: Project, key: RunKey) -> _CheckpointSource | None:
+def _subject_index(plan: ProjectPlan, key: RunKey, subjects: list[StepReference]) -> int | None:
+    row = plan.row(key)
+    subject = (
+        row.inputs.get("subject") if isinstance(row, PlannedRun)
+        else next(iter(row.inputs.get("subject", ())), None) if isinstance(row, BlockedRow)
+        else None
+    )
+    if subject is not None and subject.selection in subjects:
+        return subjects.index(subject.selection)
+    for problem in plan.diagnostics:
+        if (problem.variant, problem.step, problem.row) != (key.variant, key.step, key.row):
+            continue
+        match problem.path.split("."):
+            case ["inputs", "subject", index, "checkpoint"] if index.isdigit() and int(index) < len(subjects):
+                return int(index)
+    return 0 if len(subjects) == 1 else None
+
+
+def _step_source(
+    project: Project, variant_project: Project, plan: ProjectPlan, key: RunKey, subject: InputBinding | None,
+) -> _CheckpointSource | None:
+    parts = ("inputs", "subject")
+    if isinstance(subject, list):
+        index = _subject_index(plan, key, subject)
+        if index is None:
+            return None
+        parts = (*parts, str(index))
+    elif not isinstance(subject, StepReference):
+        return None
+    parts = (*parts, "checkpoint")
     for name, step in _ancestors(variant_project, key.step):
         if "subject" not in step.inputs:
             continue
-        if not isinstance(step.inputs["subject"], StepReference):
-            return None
-        path = ("steps", name, "inputs", "subject", "checkpoint")
+        path = ("steps", name, *parts)
         authored = authored_row(project.sweep, key.variant)
-        if authored is not None and (origin := authored.patch_origins.get(".".join(path))) is not None:
-            if origin[0] == "row":
-                return _CheckpointSource("variant", origin[1], path)
-        if isinstance(project.steps[name].inputs.get("subject"), StepReference):
-            return _CheckpointSource("step", name)
-        return None
+        if authored is not None:
+            for length in range(len(path), 2, -1):
+                origin = authored.patch_origins.get(".".join(path[:length]))
+                if origin is not None and origin[0] == "row":
+                    return _CheckpointSource("variant", origin[1], path)
+        local = project.steps[name].inputs.get("subject")
+        if (isinstance(local, StepReference) and len(parts) == 3
+                or isinstance(local, list) and len(parts) == 4 and int(parts[2]) < len(local)):
+            return _CheckpointSource("step", name, parts)
+        break
     return None
 
 
@@ -90,13 +121,13 @@ def _checkpoint_sources(project: Project, plan: ProjectPlan) -> dict[RunKey, _Ch
         if row.kind != "evaluate":
             continue
         key = row.key
-        _, rows = index.expanded_step(key.variant, key.step)
+        template, rows = index.expanded_step(key.variant, key.step)
         expansion = rows[key.row]
         origin = expansion.patch_origins.get(CHECKPOINT_RULE_TARGET)
         owner = expansion.patch_authors.get(CHECKPOINT_RULE_TARGET, key.step)
         source = None
         if origin is None:
-            source = _step_source(project, plan.variant_projects[key.variant], key)
+            source = _step_source(project, plan.variant_projects[key.variant], plan, key, template.inputs.get("subject"))
         elif origin[0] == "sweep_value":
             _, axis, value = origin
             sweep = project.steps[owner].sweep
