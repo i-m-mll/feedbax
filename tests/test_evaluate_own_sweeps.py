@@ -93,3 +93,44 @@ def test_a_task_field_value_reaches_the_evaluated_states(host, tmp_path, monkeyp
     result = jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=job)
     with result.open_states() as states:
         np.testing.assert_allclose(states.data("/v1/task/output/reach_target")[..., 0], 0.3)
+
+
+def test_a_task_document_field_edit_on_some_evaluate_runs_reaches_their_requests(tmp_path):
+    """Catches an Evaluate's edit of a Task document field that is refused, or reaches the wrong runs' requests."""
+    from fastapi.testclient import TestClient
+
+    from feedbax.web.app import create_app
+
+    raw = managed_evaluation_definition()
+    evaluate = raw["steps"]["baseline"]
+    evaluate["sweep"] = {"axes": {"probe": {"values": {"near": {"value": 1}, "far": {"value": 2}}}}}
+    raw["steps"] = {"train": raw["steps"]["train"], "baseline": evaluate}
+    index = next(i for i, item in enumerate(raw["documents"]["task"]["payload"]["variables"]) if item["id"] == "target")
+    target = {"kind": "call", "function": "vector", "args": [
+        {"kind": "literal", "value": coordinate, "unit": "m"} for coordinate in (0.25, -0.1)
+    ]}
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, "fields", Project.model_validate(raw))
+    before = folders.read_plan("fields", revision=None)
+    far = next(run.key for run in before.plan.runs if run.kind == "evaluate" and run.key.row.endswith("far"))
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        reply = client.post("/api/projects/fields/authoring/trials", json={
+            "revision": before.revision, "run": {"variant": far.variant, "step": far.step, "row": far.row},
+            "scope": {"kind": "rows", "rows": [far.row]},
+            "change": {"kind": "task", "edits": [{"op": "replace", "path": f"/variables/{index}/value", "value": target}]},
+        })
+        assert reply.status_code == 200, reply.text
+        edited = reply.json()
+        assert not edited["problems"], edited["problems"]
+        saved = client.patch("/api/projects/fields", json={"revision": before.revision, "files": edited["files"]})
+        assert saved.status_code == 200, saved.text
+    after = folders.read_plan("fields", revision=None).plan
+    assert after.diagnostics == ()
+    variations = {}
+    for run in after.runs:
+        if run.kind == "evaluate":
+            spec = decode_request(after.requests[run.request_id], after.documents.__getitem__).spec
+            variation = spec.params["variation"]
+            variations[run.key] = list(variation.values()) if isinstance(variation, dict) else variation
+    assert variations.pop(far) == [{"op": "replace", "path": "task.variables.target.value", "value": target}]
+    assert list(variations.values()) == [[]]

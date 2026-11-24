@@ -1,10 +1,8 @@
 """Project and prepare edits for one saved trial pairing."""
 
-import re
 
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
-from hashlib import sha256
 
 from feedbax.execution.trial_resolution import TrialPair, pair_trial_source
 from feedbax.contracts.expression_values import (
@@ -15,7 +13,7 @@ from feedbax.tasks.registry import resolve_python_task_instance
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.matrix_core import stored_parts
 from feedbax.contracts.model_address import ModelAddress
-from feedbax.contracts.model_edit import ListedRuns, VariantRuns
+from feedbax.contracts.model_edit import VariantRuns
 from feedbax.contracts.project import (
     SetProjectValue, apply_document_edits, based_on, json_pointer_parts,
 )
@@ -23,7 +21,7 @@ from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_docu
 from feedbax.planner.project_plan import EVALUATION_TASK, RunKey, compile_project, own_task_variation
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec
-from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings, authored_variation
+from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.studio_authoring import StudioSweptParameterMissing
 from feedbax.contracts.studio_project import AuthoredFileAddress
@@ -48,13 +46,13 @@ from feedbax.studio.value_structure import value_structure
 from feedbax.objectives.document import ObjectiveExecutor, ObjectiveUse, compile_objective
 from feedbax.application.bundle import ApplicationRegistryBundle
 from feedbax.web.services.evaluate_sources import evaluate_subject, evaluate_value_source
-from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, preview_authored_files
+from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
 from feedbax.studio.selection import StoredEdit
 from feedbax.studio.authoring_sweeps import FieldSweeps, SweepTarget
 from feedbax.studio.numeric_fields import NumericField, prepare_numeric_field, project_numeric_field
 from feedbax.contracts.studio_project import StudioProjectFilePatch
 from feedbax.web.services.trial_scope import (
-    authored_payload, base_value_edits, changed_from_base, document_write, evaluation_document_write, file_value, lit_steps, preview_stored, reached_runs, refuse_unreached, scoped_file,
+    authored_payload, base_value_edits, changed_from_base, document_write, evaluation_document_write, lit_steps, preview_stored, reached_runs, refuse_unreached, scoped_file,
     selected_runs, variant_view,
 )
 
@@ -382,63 +380,6 @@ def _task_selection_writes(definition, value):
     return writes
 
 
-def _task_field_writes(definition, task, origins, change):
-    if not isinstance(task, PythonTaskSelection):
-        raise ProjectFolderInvalid("Evaluate Task field edits require a Python Task.")
-    raw = definition.payload["params"]["variation"]
-    prior = dict(authored_variation(authored_rollout_settings(definition.payload["params"]).variation))
-    writes = []
-    appended = 0
-    for edit in change.edits:
-        parts = json_pointer_parts(edit.path)
-        if len(parts) != 2 or parts[0] != "params" or not parts[1] or "." in parts[1]:
-            raise ProjectFolderInvalid("The edit must address one Python Task parameter.")
-        path = ("task", *parts)
-        target = ".".join(path)
-        existing = origins.get(path)
-        value = edit.value if isinstance(edit, SetProjectValue) else None
-        if existing is not None:
-            name = json_pointer_parts(existing)[-1]
-            before = prior[existing]
-            if before.op == "add" and not isinstance(edit, SetProjectValue):
-                if isinstance(raw, list):
-                    raise ProjectFolderInvalid("Removing this parameter would move other addressed variations.")
-                writes.append(_override(f"params.variation.{name}", "remove"))
-                continue
-            op = ("add" if before.op == "add" else "replace") if isinstance(edit, SetProjectValue) else "remove"
-            inner = _override(target, op, value)
-            writes.append(_override(f"params.variation.{name}", "replace", inner.model_dump(mode="json", exclude_unset=True)))
-            continue
-        op = ("replace" if parts[1] in task.params else "add") if isinstance(edit, SetProjectValue) else "remove"
-        inner = _override(target, op, value)
-        if isinstance(raw, list):
-            name = len(raw) + appended
-            appended += 1
-        else:
-            parameter = parts[1]
-            name = "task-" + (parameter if re.fullmatch(r"[A-Za-z0-9_-]+", parameter)
-                              else sha256(parameter.encode()).hexdigest())
-            occupied = set(raw) | {item.path.rpartition(".")[2] for item in writes}
-            while name in occupied:
-                name += "-field"
-        writes.append(_override(f"params.variation.{name}", "add", inner.model_dump(mode="json", exclude_unset=True)))
-    if isinstance(raw, dict) and ("task",) in origins and any(write.op == "add" for write in writes):
-        named = {name: dict(edit) for name, edit in sorted(raw.items())}
-        for name, edit in named.items():
-            reference = definition.document_ids.get(f"payload.params.variation.{name}.value")
-            if reference is not None:
-                selected = definition.document_pointers.get(f"payload.params.variation.{name}.value")
-                edit["value"] = {"document": reference, **({"pointer": selected} if selected else {})}
-        for write in writes:
-            name = write.path.rpartition(".")[2]
-            if write.op == "remove":
-                del named[name]
-            else:
-                named[name] = write.value
-        return [_override("params.variation", "replace", list(named.values()))]
-    return writes
-
-
 def _train_writes(change, project, definition, documents, projection):
     raw = definition.payload["trial_documents"]
     if isinstance(change, StudioTrialSelectDocument) and change.role != "task":
@@ -660,7 +601,7 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
             selected = selected_runs(plan, key, scope, chosen_steps=set(stored.reached) | {key.step})
             settled = folders.read_plan(project_id, revision=body.revision, source_runs=selected)
         elif evaluate_field:
-            stored = _evaluate_field_files(project, settled.plan, key, scope, selected, bundle, change, documents, projected)
+            stored = _evaluate_field_files(project, key, scope, change, documents)
         else:
             raise ProjectFolderInvalid("Evaluate authoring edits the task variation.")
     elif document is not None and whole:
@@ -751,26 +692,32 @@ def _evaluate_task_write(project, plan, key, scope: StudioTrialStepScope, change
     return evaluation_document_write(project, plan, document, list(change.edits), chosen, "task", variant)
 
 
-def _evaluate_field_files(project, plan, key, scope, selected, bundle, change, documents, projected):
-    recipes = {}
-    for row in sorted(selected, key=lambda item: item.row):
-        task, projection = (documents, projected) if row == key else _pairing(plan, row, bundle)[:2]
-        recipes[row] = _task_field_writes(plan.selected_definitions[row], task.task_source, projection.task_origins, change)
-    if all(writes == recipes[key] for writes in recipes.values()):
-        return scoped_file(project, key.step, scope, recipes[key])
-    if not isinstance(scope, ListedRuns):
-        raise ProjectFolderInvalid("Selected runs have different authored sources for this Task field.")
-    # Explicit rows can carry independent recipes in a single saved sweep edit.
-    # A step or named axis must remain one rule over its future rows.
-    current = project
-    for row, writes in recipes.items():
-        current = preview_authored_files(
-            current, scoped_file(current, row.step, ListedRuns(kind="rows", rows=(row.row,)), writes).files,
-        )
-    raw = project.steps[key.step].model_dump(mode="json", by_alias=True, exclude_unset=True)
-    sweep = current.steps[key.step].sweep.model_dump(mode="json", by_alias=True, exclude_unset=True)
-    return StoredEdit([file_value(AuthoredFileAddress(kind="step", id=key.step), raw, ("sweep",), sweep)],
-                      reached=frozenset({key.step}))
+def _present_ops(raw, change):
+    """``change`` with each set written as a replace where ``raw`` holds its target and as an add where it does not."""
+    def holds(parts):
+        value = raw
+        for part in parts:
+            if isinstance(value, dict) and part in value:
+                value = value[part]
+            elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
+                value = value[int(part)]
+            else:
+                return False
+        return True
+
+    return change.model_copy(update={"edits": [
+        edit.model_copy(update={"op": "replace" if holds(json_pointer_parts(edit.path)) else "add"})
+        if isinstance(edit, SetProjectValue) else edit for edit in change.edits
+    ]})
+
+
+def _evaluate_field_files(project, key, scope, change, documents):
+    """The step's writes of the selected runs' Task fields, at the Task's paths as a Train writes them."""
+    task = documents.task_source
+    raw = task.model_dump(mode="json", exclude_unset=True)
+    return scoped_file(project, key.step, scope, _edit_patches(
+        f"trial_documents.{_task_field(task)}", raw, _present_ops(raw, change),
+    ))
 
 
 def _validate_files(
@@ -829,10 +776,7 @@ def _validate_files(
             raw = old_value.model_dump(mode="json", exclude_unset=True)
             requested = change
             if evaluate_field:
-                requested = change.model_copy(update={"edits": [
-                    edit.model_copy(update={"op": "replace" if json_pointer_parts(edit.path)[1] in old_value.params else "add"})
-                    if isinstance(edit, SetProjectValue) else edit for edit in change.edits
-                ]})
+                requested = _present_ops(raw, change)
             if plan.steps[key.variant, key.step].kind == "train":
                 _, raw = _changed_value(old, plan.selected_definitions[key], change.kind)
                 if (order := _reordered(raw.get("terms", []), change)) is not None:
