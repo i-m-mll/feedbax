@@ -1,6 +1,6 @@
 import clsx from 'clsx';
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { queryOptions, useQuery, useQueryClient } from '@tanstack/react-query';
 import { catalogEntries, readStudioTrialAuthoring, useAuthoringCatalog } from '@/api/studioAuthoring';
 import { shownError } from '@/api/shownErrors';
 import { studioAccessibleName, studioDefinitionStatus, studioEvaluateValueSource, studioName } from '@/components/activity/studioVocabulary';
@@ -84,13 +84,19 @@ export function trialField(projection: StudioTrialField, label: string, runs: Tr
   };
 }
 
+/** The read of a run's Trial authoring at a revision. */
+const trialAuthoringQuery = (project: string, revision: string, run: StudioSavedTrainKey | undefined) => queryOptions({
+  queryKey: ['trial-authoring', project, revision, run] as const,
+  queryFn: ({ signal }) => readStudioTrialAuthoring(project, { revision, run: run! }, signal),
+});
+
 export function useTrialAuthoring(
   editor: ProjectEditController, project: string, revision: string, run: StudioSavedTrainKey | undefined,
   enabled: boolean, editable: boolean, scope: TrialChangeScope, confirmRemoval: ConfirmRunRemoval, askStore: AskStore,
 ) {
+  const queryClient = useQueryClient();
   const query = useQuery({
-    queryKey: ['trial-authoring', project, revision, run],
-    queryFn: ({ signal }) => readStudioTrialAuthoring(project, { revision, run: run! }, signal),
+    ...trialAuthoringQuery(project, revision, run),
     enabled: enabled && !!run,
     placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === project &&
       JSON.stringify(previousQuery.queryKey[3]) === JSON.stringify(run) ? previous : undefined,
@@ -132,6 +138,8 @@ export function useTrialAuthoring(
         await editor.flush();
         const settled = await stored;
         if (settled.status === 'refused') return shownError(settled.error);
+        // The commit settles once the view of what it stored is read, so its field never draws the value it replaced.
+        await queryClient.prefetchQuery(trialAuthoringQuery(project, editor.getSnapshot().saved.revision, run));
       }
       return undefined;
     }).catch(shownError);
@@ -542,11 +550,7 @@ export const startAnchor = (address: string) => `task:start:${address}`;
 export function TrialSweepItems({ project, revision, run, onChoose }: {
   project: string; revision: string; run?: StudioSavedTrainKey; onChoose(anchor: string, view: 'task' | 'objective'): void;
 }) {
-  const { data } = useQuery({
-    queryKey: ['trial-authoring', project, revision, run],
-    queryFn: ({ signal }) => readStudioTrialAuthoring(project, { revision, run: run! }, signal),
-    enabled: !!run,
-  });
+  const { data } = useQuery({ ...trialAuthoringQuery(project, revision, run), enabled: !!run });
   if (!data) return null;
   const sweepable = (path: string) => data.fields.some((field) => field.path === path && field.can_sweep && !field.sweep);
   const variables = 'variables' in data.task ? data.task.variables.filter(({ id }) =>

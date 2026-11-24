@@ -688,8 +688,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     });
   }
   function add(definition: ComponentDefinition, point?: ModelPosition, from?: Port, to?: string) {
-    const occupied = [...objects.map(([id], index) => cardPosition(at(graph, { kind: 'component', id }), () => positionAt(index))),
-      ...placed.map((item) => item.position)];
+    const occupied = nodes.map((node) => node.position);
     let index = 0;
     let available = positionAt(index);
     while (occupied.some(({ x, y }) => Math.abs(x - available.x) < 196 && Math.abs(y - available.y) < 150)) {
@@ -909,7 +908,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         } }),
       },
       position: cardPosition(address, () => ghost && wasAt ? wasAt : definition ? positionAt(index)
-        : { x: id === inputCard ? 18 : 245 + 235 * Math.max(1, Math.min(objects.length, 4)), y: 38 }),
+        : { x: id === inputCard ? 18 : 245 + 235 * 4, y: 38 }),
       selected: !!definition && selectedIds.has(key),
       draggable: !ghost && editTopology && !locked && !pick,
       selectable: !!definition && !pick,
@@ -947,7 +946,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     .map(([id, component]) => makeCard(id, objects.length, component, true));
   const nodes = [makeCard(inputCard, 0), ...objects.map(([id, component], index) => makeCard(id, index, component)),
     ...ghostCards, ...placed.map(placingCard), makeCard(outputCard, 0)];
-  const selfLoops = new Map<string, number>();
+  /** How low each wire's ports sit on their cards, which orders the routes between the same cards. */
+  const depths = new Map<string, number>();
   const bundled = new Map<string, ModelEdge>();
   /** The wires the connection being drawn would replace at the target it is over. */
   const previewed = previewTarget ? review?.verdicts.get(previewTarget) : undefined;
@@ -970,8 +970,9 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       return [owner, port?.name ?? end.port].filter(Boolean).join('.');
     };
     const wireLabel = `${endpoint(from)} → ${endpoint(to)}`;
-    const self = !isPhysical && source === target ? selfLoops.get(source) ?? 0 : undefined;
-    if (self !== undefined) selfLoops.set(source, self + 1);
+    const row = (end: typeof from, direction: Port['direction']) => portMap.get(idFor(end))
+      ?.findIndex((candidate) => candidate.direction === direction && candidate.end.port === end.port) ?? 0;
+    depths.set(id, row(from, 'output') + row(to, 'input'));
     const ghost = ghostKeys.has(key);
     const displacedAttachments = displaced.get(key);
     const attached = (list: readonly Attachment[], removedHere: boolean) => list.map((item) => ({
@@ -994,7 +995,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       selected: selectedIds.has(key),
       data: {
         address, selected: selectedIds.has(key), waypoints: waypoints?.[key], problem: ghost ? undefined : addressedProblems.get(key),
-        self, ghost: ghost || !!displacedAttachments, change: marked.get(key)?.difference.change === 'rewired' ? undefined : changeMark(address),
+        ghost: ghost || !!displacedAttachments, change: marked.get(key)?.difference.change === 'rewired' ? undefined : changeMark(address),
         moveWaypoint: !ghost && editTopology && !locked ? (index, point) => {
           route(address, (waypoints?.[key] ?? []).map((previous, offset) => offset === index ? point : previous), 'Move Waypoint');
         } : undefined,
@@ -1009,6 +1010,15 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     ...('connections' in (drawnInterior ?? {}) ? Object.entries((drawnInterior as { connections?: Record<string, { a: Parameters<typeof makeEdge>[1]; b: Parameters<typeof makeEdge>[2] }> }).connections ?? {})
       .map(([id, connection]) => makeEdge(id, connection.a, connection.b, 'physical')) : []),
   ];
+  const between = new Map<string, ModelEdge[]>();
+  for (const edge of connections) {
+    if (edge.type !== 'signal') continue;
+    const cards = [edge.source, edge.target].sort().join(' ');
+    between.set(cards, [...between.get(cards) ?? [], edge]);
+  }
+  for (const group of between.values()) {
+    group.sort((a, b) => depths.get(b.id)! - depths.get(a.id)!).forEach((edge, rank) => { edge.data!.rank = rank; });
+  }
   const edges = connections.flatMap((edge) => {
     if (!collapsed?.[graphId] || edge.source === edge.target || edge.source.startsWith('@') || edge.target.startsWith('@')) return [edge];
     const endpoints = edge.type === 'physical' ? [edge.source, edge.target].sort() : [edge.source, edge.target];
