@@ -3,16 +3,17 @@
  * document as shipped, the three-reach task of issue 7f0c01f's acceptance 8 (an Until End, a × 3 repeat, a list
  * variable, `targets[i]` cells), the stabilization document (which leaves the model's input unfed), and a Python task.
  */
-import type { FunctionInfo, JsonValue, ScopedValue, TextSpan, TrialAggregate, TrialRecord, ValueType } from '@/generated/studioContracts';
+import type { Expression, FunctionInfo, JsonValue, Repeat, ScopedValue, TextSpan, TrialAggregate, TrialRecord, ValueType } from '@/generated/studioContracts';
 import type { ChangeMark, FieldModel, ValueKind } from '@/components/values/fieldModel';
 import { rawField } from '@/components/values/adapters/raw';
 import type {
   EpochBounds, TaskCell, TaskDocumentView, TaskEpoch, TaskPythonView, TaskSignal, TaskVariable, VariableLevel,
 } from '@/features/projectFolder/task/taskModel';
+import { epochInstances } from '@/features/projectFolder/task/repeats';
 import type { SignalSteps } from '@/features/projectFolder/task/trialSample';
 
 export interface VariableSpec {
-  id: string; name: string; type: string; count?: number; level?: VariableLevel; text: string;
+  id: string; name: string; type: string; count?: Expression; level?: VariableLevel; text: string;
   /** A problem with the value, and the term of its text it is about. */
   reason?: string; span?: TextSpan; changed?: string;
 }
@@ -24,7 +25,7 @@ export interface DocumentSpec {
   kind: 'document';
   variables: VariableSpec[];
   epochs: EpochSpec[];
-  repeats: { id: string; first: string; last: string; count: string }[];
+  repeats: Repeat[];
   signals: SignalSpec[];
   duration: number;
   stepSeconds: number;
@@ -111,16 +112,9 @@ function boundsOf(epoch: EpochSpec, step: number): EpochBounds {
 /** Each epoch's bounds; Rest's are what the others leave of the trial, a repeated epoch counted at each repetition. */
 export function epochBounds(spec: DocumentSpec): EpochBounds[] {
   const bounds = spec.epochs.map((epoch) => boundsOf(epoch, spec.stepSeconds));
-  const times = (index: number) => {
-    const repeat = spec.repeats.find(({ first, last }) => {
-      const a = spec.epochs.findIndex(({ id }) => id === first);
-      const b = spec.epochs.findIndex(({ id }) => id === last);
-      return index >= a && index <= b;
-    });
-    return repeat ? Number(repeat.count) || 1 : 1;
-  };
-  const sum = (key: 'least' | 'nominal' | 'greatest') => bounds.reduce((total, epoch, index) =>
-    epoch.ends === 'rest' ? total : total + epoch[key] * times(index), 0);
+  const instances = epochInstances(bounds, spec.repeats, []).map(({ epoch }) => epoch);
+  const sum = (key: 'least' | 'nominal' | 'greatest') => instances.reduce((total, epoch) =>
+    epoch.ends === 'rest' ? total : total + epoch[key], 0);
   return bounds.map((epoch) => epoch.ends === 'rest' ? {
     ...epoch,
     least: Math.max(0, spec.duration - sum('greatest')),
@@ -129,13 +123,21 @@ export function epochBounds(spec: DocumentSpec): EpochBounds[] {
   } : epoch);
 }
 
+/** A count's text, as the service prints an integer or a name. */
+const countText = (count: Expression, spec: DocumentSpec) => count.kind === 'name'
+  ? spec.variables.find(({ id }) => id === count.reference)?.name ?? count.reference
+  : count.kind === 'literal' ? String(count.value) : '';
+
 /** Change callback by field id. */
 export type Write = (id: string, text: string) => void;
 
 const level = (variable: VariableSpec): ScopedValue['level'] => variable.level === 'step' ? 2 : 1;
 
 function names(spec: DocumentSpec): ScopedValue[] {
-  return spec.variables.map((variable) => ({ id: variable.id, name: variable.name, type: { base: 'real' }, level: level(variable) }));
+  return spec.variables.map((variable) => ({
+    id: variable.id, name: variable.name, type: { base: 'real' }, level: level(variable),
+    list_count: variable.count?.kind === 'literal' ? variable.count.value as number : undefined,
+  }));
 }
 
 const draws = /^U\(\s*(-?\d*\.?\d+)[^,]*,\s*(-?\d*\.?\d+)[^)]*\)$/;
@@ -191,7 +193,9 @@ export function documentView(spec: DocumentSpec, texts: Readonly<Record<string, 
     : { from: { kind: 'base', document: spec.base ?? '' }, reset: async () => undefined };
   const bounds = epochBounds({ ...spec, epochs: spec.epochs.map((epoch) => ({ ...epoch, end: text(`end:${epoch.id}`, epoch.end) })) });
   const variables: TaskVariable[] = spec.variables.map((variable) => ({
-    id: variable.id, name: variable.name, type: variable.type, valueType: types[variable.type], count: variable.count,
+    id: variable.id, name: variable.name, type: variable.type, valueType: types[variable.type],
+    count: variable.count && textField({ id: `count:${variable.id}`, label: 'Count', text: text(`count:${variable.id}`,
+      countText(variable.count, spec)), kinds: ['value', 'link'], write, scope, finest: 0 }),
     level: variable.level ?? 'trial',
     typeChoice: rawField({ id: `type:${variable.id}`, label: 'Type', value: variable.type, change: () => undefined,
       type: { kind: 'choice', options: Object.keys(types).map((type) => ({ value: type, label: type })) } }),
@@ -217,8 +221,9 @@ export function documentView(spec: DocumentSpec, texts: Readonly<Record<string, 
   }));
   return {
     kind: 'document', variables, epochs, signals, duration: spec.duration, stepSeconds: spec.stepSeconds,
-    repeats: spec.repeats.map((repeat) => ({ ...repeat, count: textField({
-      id: `repeat:${repeat.id}`, label: 'Count', text: text(`repeat:${repeat.id}`, repeat.count), kinds: ['value'], write, scope, finest: 0,
+    repeats: spec.repeats.map((repeat) => ({ id: repeat.id, first: repeat.first_epoch, last: repeat.last_epoch, count: textField({
+      id: `repeat:${repeat.id}`, label: 'Count', text: text(`repeat:${repeat.id}`, countText(repeat.count, spec)), kinds: ['value', 'link'],
+      write, scope, finest: 0,
     }) })),
   };
 }
@@ -442,8 +447,8 @@ const threeReaches: DocumentSpec = {
   variables: [
     { id: 'start', name: 'start', type: 'Point', text: 'U(disk(0, 0.05))' },
     { id: 'reach', name: 'reach', type: 'Distance', text: '0.1, 0.15, 0.2' },
-    { id: 'angles', name: 'angles', type: 'Number', count: 3, text: 'U(0°, 360°)' },
-    { id: 'targets', name: 'targets', type: 'Point', count: 3, text: 'start + polar(reach, angles)' },
+    { id: 'angles', name: 'angles', type: 'Number', count: { kind: 'literal', value: 3 }, text: 'U(0°, 360°)' },
+    { id: 'targets', name: 'targets', type: 'Point', count: { kind: 'literal', value: 3 }, text: 'start + polar(reach, angles)' },
     { id: 'at_target', name: 'at_target', type: 'Boolean', level: 'step', text: 'held(dist(hand, targets[i]) < 0.02, 0.2 s)' },
     { id: 'jitter', name: 'jitter', type: 'Duration', text: '0.1 * scale', reason: 'No variable is named scale',
       span: { start: 6, end: 11 } },
@@ -454,7 +459,7 @@ const threeReaches: DocumentSpec = {
     { id: 'hold', name: 'hold', end: '0.2 s' },
     { id: 'rest', name: 'rest', end: 'rest' },
   ],
-  repeats: [{ id: 'reaches', first: 'move', last: 'hold', count: '3' }],
+  repeats: [{ id: 'reaches', first_epoch: 'move', last_epoch: 'hold', count: { kind: 'literal', value: 3 } }],
   signals: [
     { id: 'target', name: 'target', type: 'Point', cells: [
       { first: 'fixate', last: 'fixate', text: null }, { first: 'move', last: 'hold', text: 'targets[i]' },

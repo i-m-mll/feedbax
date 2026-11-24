@@ -204,14 +204,18 @@ export interface Completion {
 
 /**
  * Names and functions whose names start with the identifier ending at the caret. An identifier written after a
- * number is that number's unit, as in `0.02 s` or `5 ms`, so it is offered nothing.
+ * number is that number's unit, as in `0.02 s` or `5 ms`, so it is offered nothing. Inside a bracket, where `i` is
+ * the repetition, a list is inserted reading the repetition's item.
  */
 export function completions(model: FieldModel, before: string): { token: string; items: readonly Completion[] } {
   const token = before.match(/[A-Za-z_][A-Za-z0-9_]*$/)?.[0] ?? '';
   if (!token || /(?:^|[^A-Za-z0-9_.])(?:\d+\.?\d*|\.\d+)\s*[A-Za-z_][A-Za-z0-9_]*$/.test(before)) return { token, items: [] };
   const lower = token.toLowerCase();
+  const repeated = model.names.some(({ id }) => id === 'i');
   const names = model.names.filter(({ name }) => name.toLowerCase().startsWith(lower) && name !== token)
-    .map(({ id, name, type }) => ({ id: 'name:' + id, insert: name, label: name, detail: typeText(type) }));
+    .map(({ id, name, type, list_count }) => ({
+      id: 'name:' + id, insert: repeated && list_count ? `${name}[i]` : name, label: name, detail: typeText(type),
+    }));
   const functions = model.functions.filter(({ id }) => id.toLowerCase().startsWith(lower))
     .map(({ id, signature }) => ({ id: 'function:' + id, insert: id + '(', label: id, detail: signature }));
   return { token, items: [...names, ...functions] };
