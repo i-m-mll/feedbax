@@ -80,3 +80,30 @@ def test_a_task_field_s_text_is_what_its_edit_stored(tmp_path):
         assert _text(project, "fee", path) == "60 st"
         (epoch,) = project.composed(TASK)["epochs"]
         assert epoch["end"]["length"] == {"kind": "literal", "value": 60, "unit": "st"}
+
+
+def _start_low(project):
+    """Each Train request's lower bound of the draw that gives ``start``'s first coordinate."""
+    plan = project.plan()
+    values = []
+    for run in plan.runs:
+        if run.kind == "train":
+            task = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec.trial_documents.task
+            (start,) = (variable for variable in task.variables if variable.id == "start")
+            values.append(start.value.args[0].args[0].value)
+    return values
+
+
+def test_a_number_given_to_a_draw_is_set_and_swept_as_a_field_of_its_own(tmp_path):
+    project = _Project(tmp_path, _data())
+    with project.client:
+        path = "/task/variables/start/value/args/0/args/0"
+        view = _author(project, "fee", {"kind": "expression", "path": path, "edit": {"kind": "text", "text": "-0.35"}})
+        assert not view.problems, view.problems
+        _save(project, view)
+        assert _text(project, "fee", path) == "-0.35"
+        assert _start_low(project) == [-0.35]
+        view = _author(project, "fee", {"kind": "expression", "path": path, "edit": {"kind": "text", "text": "-0.4, -0.3"}})
+        assert not view.problems, view.problems
+        _save(project, view)
+        assert sorted(_start_low(project)) == [-0.4, -0.3]

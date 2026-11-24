@@ -179,7 +179,8 @@ def trial_field_sweep_edit(
     edit: FieldTextEdit | FieldKindEdit | FieldNameEdit, swept: TrialFieldSweep, step_id: str, raw: dict,
     functions: FunctionRegistry, write_document: Callable[[list[SetProjectValue]], StoredEdit],
 ) -> StoredEdit | tuple[Problem, ...]:
-    """The files that store a sweep edit of the field: the step's sweep, and the value the document keeps.
+    """The files that store an edit of the field: the step's sweep, and the value the document keeps; a value with no
+    sweep is the document's alone.
 
     A sweep sets a number the document stores, so a field left to its default is given it explicitly. ``raw`` is the
     document's payload as stored.
@@ -188,13 +189,15 @@ def trial_field_sweep_edit(
     result = prepared.result
     if isinstance(result, tuple):
         return result
-    if not isinstance(result, list):
-        raise ProjectFolderInvalid("The field's sweep has no value to keep.")
-    stored = StoredEdit(
-        [StudioProjectFilePatch(address=AuthoredFileAddress(kind="step", id=step_id), patches=result)],
-        reached=frozenset({step_id}),
-    )
-    kept = [patch.value for patch in prepared.keep if patch.op != "remove"]
+    if isinstance(result, list):
+        stored = StoredEdit(
+            [StudioProjectFilePatch(address=AuthoredFileAddress(kind="step", id=step_id), patches=result)],
+            reached=frozenset({step_id}),
+        )
+        kept = [patch.value for patch in prepared.keep if patch.op != "remove"]
+    else:
+        stored = StoredEdit([])
+        kept = [result.value if isinstance(result, LiteralValue) else result]
     edits = []
     if not swept.stored:
         parent = index_pointer(raw, swept.write[:-1])
