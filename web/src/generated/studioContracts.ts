@@ -4136,6 +4136,7 @@ export type StudioProjectSnapshot = {
   "file_revisions": Array<StudioAuthoredFileRevision>;
   "declaration"?: StudioAuthoredDeclaration | null;
   "settings"?: Record<string, JsonValue>;
+  "default_keep_superseded_days"?: number | null;
   "composed"?: Record<string, JsonValue>;
   "problems"?: Array<StudioProjectWindowMapProblem>;
 };
@@ -12014,6 +12015,7 @@ export const StudioProjectSnapshotSchema: z.ZodType<StudioProjectSnapshot> = z.l
     "file_revisions": z.array(StudioAuthoredFileRevisionSchema),
     "declaration": z.union([StudioAuthoredDeclarationSchema, z.null()]).optional(),
     "settings": z.record(z.string(), jsonValueSchema).optional(),
+    "default_keep_superseded_days": z.union([z.number().int().safe().min(0), z.null()]).optional(),
     "composed": z.record(z.string(), jsonValueSchema).optional(),
     "problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
   }).strict()
