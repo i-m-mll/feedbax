@@ -19,6 +19,7 @@ from feedbax.contracts.analysis_document import (
     OperationElement,
     StepInput,
 )
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.figure_document import (
     FIGURE_DOCUMENT_SCHEMA,
     PLOTLY_FIGURE_ROLE,
@@ -55,7 +56,7 @@ from feedbax.contracts.request_specs import (
     RenderRequestSpec,
     RequestSpec,
 )
-from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters
+from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters, authored_variation
 from feedbax.plugins.declarations import missing_declaration
 
 if TYPE_CHECKING:
@@ -80,6 +81,31 @@ def _merged(*tables: LabelNames) -> dict[str, dict[str, LabelName]]:
         for label, names in table.items():
             merged.setdefault(label, {}).update(names)
     return merged
+
+
+def _condition_label(params: RolloutParameters) -> str | None:
+    """Display authored variation values for a rollout whose row has no label."""
+    values = {}
+    for _, edit in authored_variation(params.variation):
+        value = edit.value
+        if edit.path == "task" and isinstance(value, dict):
+            for key in tuple(values):
+                if key.startswith("task."):
+                    del values[key]
+            values["task"] = value.get("id") or value.get("type")
+            values.update((f"task.{key}", item) for key, item in value.get("params", {}).items())
+            for variable in value.get("variables", ()):
+                if isinstance(expression := variable["value"], dict) and expression.get("kind") == "literal":
+                    values[f"task.{variable['name']}"] = expression["value"]
+        else:
+            name = edit.path.removeprefix("graph.nodes.").replace(".params.", ".")
+            if isinstance(value, dict) and value.get("kind") == "literal":
+                value = value["value"]
+            values[name] = "removed" if edit.op == "remove" else value
+    return ", ".join(
+        f"{name}={value if isinstance(value, str) else canonical_json_v2_bytes(value).decode()}"
+        for name, value in values.items()
+    ) or None
 
 
 def _printed_labels(figure: FigureDocument) -> set[str]:
@@ -388,8 +414,10 @@ class _Lowerer:
                     continue
                 spec, name = evaluation
                 if isinstance(spec, EvaluationRequestSpec) and spec.evaluation_type == ROLLOUT_TYPE:
-                    condition = RolloutParameters.model_validate(spec.params).condition_id()
-                    names.setdefault("condition", {}).setdefault(condition, name)
+                    params = RolloutParameters.model_validate(spec.params)
+                    if name.label is None:
+                        name = replace(name, label=_condition_label(params))
+                    names.setdefault("condition", {}).setdefault(params.condition_id(), name)
         return names
 
     def _record(

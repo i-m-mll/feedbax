@@ -6,8 +6,10 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from copy import deepcopy
+from datetime import datetime, timezone
 from functools import wraps
 import json
+from os import utime
 from pathlib import Path
 from threading import Barrier, Event
 
@@ -982,6 +984,52 @@ def test_new_projects_are_durable_openable_and_distinct(tmp_path):
         assert response.headers["Cache-Control"] == "no-store"
         assert response.json() == document
         assert reopened.get(f"/api/projects/{project_id}").json() == snapshot
+
+
+def test_list_projects_reads_authored_folders_without_opening_or_creating_them(tmp_path):
+    projects = tmp_path / "projects"
+    client = TestClient(create_app(projects_dir=projects))
+    assert client.get("/api/projects").json() == {"projects": []}
+    assert not projects.exists()
+
+    folder = projects / "original-folder-name"
+    folder.mkdir(parents=True)
+    for name, content in dump_text_project(
+        Project(), ProjectConfiguration(project="current-project-name", store="results")
+    ).items():
+        declaration = folder / name
+        declaration.write_bytes(content)
+        utime(declaration, (1_000_000_000, 1_000_000_000))
+    results = folder / "results"
+    results.mkdir()
+    (results / "finished").touch()
+    (projects / "alias").symlink_to(folder, target_is_directory=True)
+    (projects / "empty").mkdir()
+    invalid = projects / "invalid"
+    (invalid / "steps").mkdir(parents=True)
+    (invalid / "invalid.feedbax").write_bytes(declaration.read_bytes())
+    (invalid / "steps/step.json").write_text("invalid JSON")
+    before = set(projects.rglob("*"))
+
+    response = client.get("/api/projects")
+    assert response.status_code == 200, response.text
+    assert response.headers["Cache-Control"] == "no-store"
+    listed, = response.json()["projects"]
+    assert listed["name"] == "current-project-name"
+    assert datetime.fromisoformat(listed["modified"]) == datetime(2001, 9, 9, 1, 46, 40, tzinfo=timezone.utc)
+    assert set(projects.rglob("*")) == before
+
+    url = f"/api/projects/{listed['project_id']}"
+    opened = client.get(f"{url}/open")
+    assert opened.status_code == 200, opened.text
+    response = client.post(f"{url}/files", json={
+        "revision": opened.json()["snapshot"]["revision"],
+        "file": {"kind": "step", "id": "train", "step": {"kind": "train", "base": {"inline": {}}}},
+    })
+    assert response.status_code == 201, response.text
+    edited, = client.get("/api/projects").json()["projects"]
+    assert edited == {**listed, "modified": edited["modified"]}
+    assert datetime.fromisoformat(edited["modified"]) > datetime.fromisoformat(listed["modified"])
 
 
 def test_rename_changes_only_the_declaration_and_checks_authored_revision(study):
