@@ -228,12 +228,13 @@ export function TrialTaskInspector({ view, commit, selected, shown }: {
     const record = shown?.kind === 'one' ? shown.record : undefined;
     const steps = record && value && signalSteps(record, value.id);
     const aggregate = shown?.kind === 'all' && value ? signalAggregate(shown.aggregate, value.id) : undefined;
+    const period = view.period_seconds;
     return value ? <Inspector name={humanizeLabel(value.name)} type={value.type.shape?.join(' × ') || value.type.base}>
-      {record && steps && <section aria-label={studioName('plot')} className="grid gap-1">
-        <TrialTrace label={value.name} steps={steps} duration={steps.length * view.period_seconds} boundaries={epochBoundaries(record)} />
+      {period != null && record && steps && <section aria-label={studioName('plot')} className="grid gap-1">
+        <TrialTrace label={value.name} steps={steps} duration={steps.length * period} boundaries={epochBoundaries(record)} />
       </section>}
-      {aggregate && <section aria-label={studioName('plot')} className="grid gap-1">
-        <BatchTrace label={value.name} aggregate={aggregate} duration={aggregate.presence.length * view.period_seconds} boundaries={[]} />
+      {period != null && aggregate && <section aria-label={studioName('plot')} className="grid gap-1">
+        <BatchTrace label={value.name} aggregate={aggregate} duration={aggregate.presence.length * period} boundaries={[]} />
       </section>}
     </Inspector> : null;
   }

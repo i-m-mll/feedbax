@@ -616,23 +616,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         : undefined);
   const evaluateScope = step?.kind === 'evaluate' ? trialScope : undefined;
   const wholeTrialStep = trialScope && (trialScope.kind === 'step' || trialScope.kind === 'variant');
-  // A whole-step edit is a step scope in every variant, the run naming the variant. A Train step's is unscoped, the
-  // server writing its shared documents for every step of the variant that uses them, or made for the chosen steps.
-  const trialEditScope = !trialScope || trialScope.kind === 'step' || trialScope.kind === 'variant'
-    ? trialScope && step?.kind !== 'train' ? { kind: 'step' } as const : undefined
-    : trialScope;
+  const trialEditScope = !trialScope ? undefined : trialScope.kind === 'variant' ? { kind: 'step' } as const : trialScope;
   const documentEditable = !outside;
   const trialEditable = documentEditable && Boolean(trialScope);
-  /** A whole-step edit of a Train step's Task or Objective is made for the steps its view chooses. */
-  const trialChangeScope: TrialChangeScope = (change) => {
-    if (step?.kind === 'evaluate' && wholeTrialStep && change.kind === 'task' && documentScopes.task) {
-      return { kind: 'step', chosen_steps: [...documentScopes.task.lit] };
-    }
-    if (trialEditScope || step?.kind !== 'train' || !wholeTrialStep) return trialEditScope;
-    const chosen = change.kind === 'task' ? documentScopes.task?.lit
-      : change.kind === 'objective' || change.kind === 'expression' ? documentScopes.objective?.lit : undefined;
-    return chosen && { kind: 'step', chosen_steps: [...chosen] };
-  };
+  const trialChangeScope: TrialChangeScope = () => trialEditScope;
   // A run whose own definition is refused has no Task or Objective to read; its views are dimmed by its problems.
   const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, trialStep && namedRow?.resolved !== false,
     trialEditable, trialChangeScope, runRemoval.confirm);

@@ -9,12 +9,14 @@ from operator import attrgetter
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+import equinox as eqx
+import jax
 import jax.numpy as jnp
 from equinox.nn import State, StateIndex
 from jaxtyping import PRNGKeyArray, PyTree
 
 from feedbax.contracts.expression_units import UNITS
-from feedbax.contracts.expression_values import Level, ValueBase, ValueType
+from feedbax.contracts.expression_values import Level, Problem, ProblemCode, ValueBase, ValueType
 from feedbax.contracts.model_address import ComponentElement, FieldElement, ModelAddress
 from feedbax.runtime._graph_key_schedule import reset_key
 from feedbax.runtime._signal_schedule import ScopedPort, resolve_signal_schedule
@@ -29,9 +31,13 @@ if TYPE_CHECKING:
 class ModelResetError(ValueError):
     """An unavailable or incompatible trial initializer."""
 
-    def __init__(self, address: str, detail: str):
+    def __init__(self, address: str | ModelAddress, detail: str):
         super().__init__(detail)
-        self.address = address
+        self.address = address.to_text() if isinstance(address, ModelAddress) else address
+        self.problem = Problem(
+            code=ProblemCode.STRUCTURE, path=("links", self.address), reason=detail,
+            model_address=address if isinstance(address, ModelAddress) else None,
+        )
 
 
 @dataclass(frozen=True)
@@ -173,9 +179,13 @@ class ModelResetPlan:
             writes.append((address, binding, component, jnp.broadcast_to(value, expected.shape)))
 
         state = graph.init_state(key=key)
-        explicit = {(id(component), binding.path) for _, binding, component, _ in writes}
+        owners = {}
+        for _, binding, component, _ in writes:
+            _, explicit = owners.setdefault(id(component), (component, {}))
+            explicit[binding.path] = binding.field.address
         for address, binding, component, value in writes:
-            paths = (binding.path, *(path for path in binding.aliases if (id(component), path) not in explicit))
+            _, explicit = owners[id(component)]
+            paths = (binding.path, *(path for path in binding.aliases if path not in explicit))
             for path in paths:
                 try:
                     current = _storage(component, state, path)
@@ -189,6 +199,14 @@ class ModelResetPlan:
                     )
                 except (AttributeError, TypeError, ValueError) as error:
                     raise ModelResetError(address, str(error)) from error
+        for component, explicit in owners.values():
+            state, problems = component.finalize_trial_state(state, frozenset(explicit))
+            for path, invalid, reason in problems:
+                address = explicit[path]
+                if isinstance(invalid, jax.core.Tracer):
+                    state = eqx.error_if(state, invalid, f"{address.to_text()}: {reason}", on_error="raise")
+                elif bool(invalid):
+                    raise ModelResetError(address, reason)
         state = graph.state_consistency_update(state)
         return PreparedModelReset(
             state, graph.initial_outputs(graph.state_view(state)),

@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { ApiRequestError } from '@/api/request';
 import type { AuthoredFileAddress, ProjectValueEdit, StudioProjectDocument, StudioProjectFilePatch, StudioProjectSnapshot, StudioSavedTrainRuns } from '@/generated/studioContracts';
 import { addressKey, applyAuthoredEdits, declarationAddress, presentationAddress } from './authoredEdits';
-import { ProjectEditConflictError, ProjectEditController, type ProjectEditTransport } from './projectEditController';
+import { ProjectEditConflictError, ProjectEditController, type ProjectEditTransport, type StoredEdit } from './projectEditController';
 import { createCheckpointTrain } from './createCheckpointTrain';
 import { createTrain } from './createTrain';
 import { projectWindowPlan, savedRunId } from './projectWindowPlan';
@@ -71,6 +71,15 @@ function fixture(settleMs = 400, start = initial) {
     if (files.some(({ address }) => address.kind === 'presentation') &&
         body.presentation_revision !== current.presentation_revision) {
       throw new ApiRequestError('http', '/api/projects/reach', 'Presentation changed', { status: 409 });
+    }
+    for (const creation of 'files' in body ? body.created ?? [] : []) {
+      const address = { kind: 'document' as const, id: creation.id };
+      const data = btoa(JSON.stringify(creation.document));
+      const documents = { ...current.project.documents, [creation.id]: creation.document };
+      current = {
+        ...current, project: { ...current.project, documents },
+        file_revisions: [...current.file_revisions, { address, revision: fileDigest(data), data }],
+      };
     }
     for (const { address, patches } of files) external(address, patches);
     return current;
@@ -645,14 +654,18 @@ it('undoes a document command and the step use that joined it as one entry', asy
 });
 
 it('undoes a narrowed edit, the document it creates and the patch that follows, as one entry', async () => {
-  const { editor, current, write } = fixture();
+  const { editor, current, write, replay } = fixture();
   const before = current();
-  const settled = await editor.storeEdit('Set Value', {
+  const edit: StoredEdit = {
     created: [{ kind: 'document', id: 'model-2', document: { schema: 'graph', base: { document: 'model' }, differences: { '/value': { value: 2 } } } }],
     files: [{ address: task, patches: [value(7)] }],
-  }, { reviewedRevision: before.revision });
+  };
+  const settled = await editor.storeEdit('Set Value', edit, { reviewedRevision: before.revision });
   expect(settled).toEqual({ status: 'saved' });
-  expect(write).toHaveBeenCalledOnce();
+  expect(write).toHaveBeenCalledExactlyOnceWith(before.project_id, {
+    ...edit, revision: before.revision, presentation_revision: before.presentation_revision,
+  }, expect.any(AbortSignal));
+  expect(replay).not.toHaveBeenCalled();
   const edited = current().project.documents;
   expect(Object.keys(edited ?? {}).sort()).toEqual(['model', 'model-2', 'task']);
   expect(editor.getSnapshot()).toMatchObject({ undoName: 'Set Value', redoName: null });

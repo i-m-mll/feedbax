@@ -212,6 +212,12 @@ def compile_expression(
                 for name in function.info.implicit_names
                 if name != "T" or "over" not in kwargs
             }
+            if isinstance(node, DrawValue) and node.weights is not None:
+                weight_index = len(parameters)
+                largest = max(node.weights)
+                parameters.append(jnp.asarray([weight / largest for weight in node.weights]))
+            else:
+                weight_index = None
             stateful = function.initial_state is not None
             if function.initial_state is not None:
                 slots[slot] = function.initial_state(node_type.type)
@@ -248,6 +254,8 @@ def compile_expression(
                     inputs.step,
                     discrete_uniform and not at,
                 )
+                if weight_index is not None:
+                    named["weights"] = Evaluation(inputs.parameters[weight_index], True)
                 result = implementation(
                     context,
                     *(arg.value for arg in positional),
