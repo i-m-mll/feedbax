@@ -184,17 +184,20 @@
 .studio-table[data-held] tr > :nth-child(1) { left: var(--held-left-1); }
 .studio-table[data-held] tr > :nth-child(2) { left: var(--held-left-2); }
 .studio-table[data-held] tr > :nth-child(3) { left: var(--held-left-3); }
+.studio-table[data-held] tr > :nth-child(4) { left: var(--held-left-4); }
 
 .studio-table[data-held="1"] tr > :nth-child(-n + 1),
 .studio-table[data-held="2"] tr > :nth-child(-n + 2),
-.studio-table[data-held="3"] tr > :nth-child(-n + 3) {
+.studio-table[data-held="3"] tr > :nth-child(-n + 3),
+.studio-table[data-held="4"] tr > :nth-child(-n + 4) {
   position: sticky;
   z-index: 1;
 }
 
 .studio-table[data-held="1"] tbody tr > :nth-child(-n + 1),
 .studio-table[data-held="2"] tbody tr > :nth-child(-n + 2),
-.studio-table[data-held="3"] tbody tr > :nth-child(-n + 3) {
+.studio-table[data-held="3"] tbody tr > :nth-child(-n + 3),
+.studio-table[data-held="4"] tbody tr > :nth-child(-n + 4) {
   background:
     linear-gradient(var(--cell-fill, transparent), var(--cell-fill, transparent)),
     linear-gradient(var(--row-fill, transparent), var(--row-fill, transparent)),
@@ -203,7 +206,8 @@
 
 .studio-table[data-held="1"] thead tr > :nth-child(-n + 1),
 .studio-table[data-held="2"] thead tr > :nth-child(-n + 2),
-.studio-table[data-held="3"] thead tr > :nth-child(-n + 3) {
+.studio-table[data-held="3"] thead tr > :nth-child(-n + 3),
+.studio-table[data-held="4"] thead tr > :nth-child(-n + 4) {
   z-index: 2;
   background-color: var(--surface-header);
 }
@@ -211,8 +215,118 @@
 /* Once the table is scrolled, a line divides the held columns from those beneath them. */
 .studio-table-box[data-overflow-left] .studio-table[data-held="1"] tr > :nth-child(1),
 .studio-table-box[data-overflow-left] .studio-table[data-held="2"] tr > :nth-child(2),
-.studio-table-box[data-overflow-left] .studio-table[data-held="3"] tr > :nth-child(3) {
+.studio-table-box[data-overflow-left] .studio-table[data-held="3"] tr > :nth-child(3),
+.studio-table-box[data-overflow-left] .studio-table[data-held="4"] tr > :nth-child(4) {
   box-shadow: inset -1px 0 var(--border-muted);
+}
+
+/* A selected row's name is in the medium weight; a related row is marked at its name's leading edge. */
+.studio-table tr[data-selected] > :nth-child(1 of :not(.studio-table-margin)) { font-weight: 500; }
+.studio-table tr[data-related] > :nth-child(1 of :not(.studio-table-margin)) { box-shadow: inset 2px 0 0 var(--row-related-mark); }
+
+/* The leading margin and the row of column handles lie outside the table: no lines, no fill. */
+.studio-table .studio-table-margin,
+.studio-table .studio-table-handles > * {
+  padding: 0;
+  border: 0;
+  text-align: center;
+  vertical-align: middle;
+  line-height: 0;
+}
+
+.studio-table[data-held] tr > .studio-table-margin.studio-table-margin { background: var(--table-surface); }
+
+.studio-table .studio-table-handles > * { height: 1rem; }
+
+.studio-table-handle {
+  display: inline-flex;
+  cursor: grab;
+  touch-action: none;
+  color: var(--text-muted);
+  opacity: 0;
+}
+
+.studio-table-handle svg { width: 1em; height: 1em; }
+
+.studio-table tr:is(:hover, :focus-within, [data-selected], [data-dragging]) > .studio-table-margin .studio-table-handle,
+.studio-table .studio-table-handles > :is(:hover, [data-attention], [data-dragging]) .studio-table-handle {
+  opacity: 1;
+}
+
+/* A dragged row or column is drawn over the others, opaque in its fill. */
+.studio-table tr[data-dragging] {
+  position: relative;
+  z-index: 3;
+  background: linear-gradient(var(--row-fill, transparent), var(--row-fill, transparent)), var(--table-surface);
+}
+
+.studio-table tbody [data-dragging] {
+  position: relative;
+  z-index: 3;
+  background:
+    linear-gradient(var(--cell-fill, transparent), var(--cell-fill, transparent)),
+    linear-gradient(var(--row-fill, transparent), var(--row-fill, transparent)),
+    var(--table-surface);
+}
+
+.studio-table thead [data-dragging] { z-index: 3; }
+
+/* Measuring: the table at its content's width, each text input as wide as its text. */
+.studio-table[data-measuring] {
+  table-layout: auto !important;
+  width: max-content !important;
+  min-width: 0 !important;
+}
+
+.studio-table[data-measuring] > colgroup > col { width: auto !important; }
+
+.studio-table[data-measuring] input[data-measured] {
+  width: var(--studio-measured) !important;
+  min-width: 0 !important;
+  flex: none !important;
+}
+
+/*
+ * A name cell's trailing end: its owner's menu while the owner has attention, over a fade of the name; without
+ * attention, the fade alone where the name is longer than its column, except while the name is edited.
+ */
+.studio-table-name-end {
+  position: absolute;
+  inset-block: 0;
+  right: 0;
+  display: none;
+  align-items: center;
+  padding-left: var(--studio-scroll-fade);
+  padding-right: 0.25rem;
+  pointer-events: none;
+  background:
+    linear-gradient(var(--cell-fill, transparent), var(--cell-fill, transparent)),
+    linear-gradient(var(--row-fill, transparent), var(--row-fill, transparent)),
+    var(--table-surface);
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 var(--studio-scroll-fade));
+  mask-image: linear-gradient(to right, transparent, #000 var(--studio-scroll-fade));
+}
+
+.studio-table thead .studio-table-name-end {
+  background: linear-gradient(var(--cell-fill, transparent), var(--cell-fill, transparent)), var(--surface-header);
+}
+
+.studio-table-name:has(.studio-cell-input:hover:not(:focus)) > .studio-table-name-end { --cell-fill: var(--surface-hover); }
+
+.studio-table-name-end > * { display: none; pointer-events: auto; }
+
+.studio-table-name[data-overflow]:not(:focus-within) > .studio-table-name-end { display: flex; }
+
+.studio-table tr:is(:hover, :focus-within, [data-selected]) > .studio-table-name > .studio-table-name-end[data-menu],
+.studio-table th.studio-table-name:is(:hover, :focus-within, [data-selected]) > .studio-table-name-end[data-menu],
+.studio-table-name-end[data-shown] {
+  display: flex;
+}
+
+.studio-table tr:is(:hover, :focus-within, [data-selected]) > .studio-table-name > .studio-table-name-end[data-menu] > *,
+.studio-table th.studio-table-name:is(:hover, :focus-within, [data-selected]) > .studio-table-name-end[data-menu] > *,
+.studio-table-name-end[data-shown] > * {
+  display: inline-flex;
 }
 
 /* A field or a name's input in a cell is the cell (P35); the cell keeps no inset of its own. */

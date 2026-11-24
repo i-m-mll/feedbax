@@ -262,8 +262,8 @@ type TermField = 'name' | 'enabled' | 'measure' | 'window' | 'weight' | 'reducti
 const columns = ['name', 'measure', 'window', 'weight', 'enabled'] as const satisfies readonly TermField[];
 const columnNames = { name: 'term', enabled: 'enabled', measure: 'measure', window: 'window', weight: 'weight' } as const;
 const columnWidths: Record<(typeof columns)[number], TableColumn> = {
-  name: { least: '9rem', fixed: true }, measure: { least: '10rem' }, window: { least: '8rem' }, weight: { least: '7rem' },
-  enabled: { least: '4.5rem', fixed: true },
+  name: { least: '6rem', greatest: '16rem' }, measure: { least: '10rem' }, window: { least: '8rem' }, weight: { least: '7rem' },
+  enabled: { least: '4.5rem', greatest: '4.5rem' },
 };
 
 /** The anchor of a term's Weight, which Add Sweep puts the keyboard on. */
