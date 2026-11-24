@@ -7,7 +7,7 @@ import {
   createContext, memo, useCallback, useContext, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState,
   type MouseEvent as ReactMouseEvent, type ReactNode, type Ref,
 } from 'react';
-import { Lock, Plus, Unlock, ChevronsDownUp } from 'lucide-react';
+import { Lock, Unlock, ChevronsDownUp } from 'lucide-react';
 import { appTip } from '@window-shell/browser/tooltip';
 import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
 import { CanvasStrip } from '@/components/canvas/CanvasStrip';
@@ -56,7 +56,8 @@ export type ModelCardData = {
   rename?: (name: string) => void;
   renaming?: boolean;
   endRename?: () => void;
-  addPort?: () => void;
+  /** Opens, at the empty handle, the list of signals outside that can be brought in as a new port. */
+  addPort?: (anchor: DOMRect) => void;
 };
 export type ModelCard = Node<ModelCardData, 'modelCard'>;
 export type ModelEdgeData = {
@@ -197,8 +198,12 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
         {!data.collapsed && reason && <span className="studio-model-port-reason" role="status">{reason}</span>}
       </div>;
     })}
-    {data.addPort && <IconButton className="nodrag studio-model-add-port" size="mark" label={studioName('addPort')} icon={<Plus />}
-      onClick={(event) => { event.stopPropagation(); data.addPort?.(); }} />}
+    {data.addPort && !data.collapsed && <div className="studio-model-port" data-hollow="true" data-side={data.flipped ? 'left' : 'right'}>
+      <Button variant="bare" size="content" aria-label={studioName('addPort')} aria-haspopup="menu"
+        className={`nodrag react-flow__handle react-flow__handle-${data.flipped ? 'left' : 'right'}`}
+        onClick={(event) => { event.stopPropagation(); data.addPort?.(event.currentTarget.getBoundingClientRect()); }} />
+      <span>{studioName('addPort')}</span>
+    </div>}
   </SurfaceCard>;
 });
 
@@ -223,8 +228,8 @@ const Wire = memo(function Wire({ id, data, type, source, target, sourceX, sourc
   const start = { x: sourceX, y: sourceY }, end = { x: targetX, y: targetY };
   const exit = sourcePosition === Position.Left ? -1 : 1;
   const entry = targetPosition === Position.Left ? 1 : -1;
-  /** A wire whose target lies behind its source's side runs under both cards rather than back through them. */
-  const under = !physical && exit === entry && (targetX - sourceX) * exit < 32;
+  /** A wire whose ends face the same way, or whose target lies behind its source's side, runs under both cards rather than through them. */
+  const under = !physical && (exit !== entry || (targetX - sourceX) * exit < 32);
   const rank = data?.rank ?? 0;
   const reach = under ? 16 + rank * 10 : 16;
   const a = { x: sourceX + exit * reach, y: sourceY };

@@ -1,44 +1,43 @@
-import { useQueryClient } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
+import { useQueries } from '@tanstack/react-query';
+import { useCallback } from 'react';
 import { fetchProjectSceneGeometry } from '@/api/projectScene';
-import type { StudioSceneGeometryRequest, StudioSceneGeometryResponse } from '@/generated/studioContracts';
-import type { StateValues } from './trialScene';
+import type { StudioSceneGeometryRequest } from '@/generated/studioContracts';
+import type { SceneModelGeometry, StateValues } from './trialScene';
 
-/** The Model's geometry in one pose, as last read: nothing yet, the answer, or why it could not be read. */
+/** The Model's geometry in one pose: being read, the answer, or why it could not be read. */
 export type SceneGeometry =
   | { readonly kind: 'loading' }
-  | { readonly kind: 'ready'; readonly geometry: StudioSceneGeometryResponse }
+  | { readonly kind: 'ready'; readonly geometry: SceneModelGeometry }
   | { readonly kind: 'failed'; readonly error: unknown; readonly retry: () => void };
 
-type Read = { readonly key: string; readonly source: string; readonly result: SceneGeometry };
+/** The most poses one request asks for; a longer trial is read in windows of this many frames. */
+const windowSize = 256;
 
 /**
- * The Model's mechanisms posed by `values`, reconciled toward the latest pose asked for: one read is in flight at a
- * time, and the last pose read for the same Model stays drawn while the next is read, so a playing clock draws every
- * pose the service answers in time for and is never left without one.
+ * The Model's mechanisms in each of `poses`, read in as few requests as the window allows, so that a trial's
+ * playback reads its frames once and then draws each from what was read. `at(index)` is the pose at that index;
+ * `undefined` when there is no Model or nothing to pose.
  */
-export function useSceneGeometry(projectId: string, source: Pick<StudioSceneGeometryRequest, 'revision' | 'document_id'> | null, values: StateValues | undefined): SceneGeometry | undefined {
-  const client = useQueryClient();
-  const model = source && JSON.stringify([projectId, source.document_id, source.revision]);
-  const request = source && values ? { ...source, state_values: { ...values } } : null;
-  const key = request && JSON.stringify([projectId, request]);
-  const [read, setRead] = useState<Read>();
-  const [inFlight, setInFlight] = useState(false);
-  useEffect(() => {
-    if (!request || !key || !model || inFlight || read?.key === key) return;
-    setInFlight(true);
-    void client.fetchQuery({
+export function useSceneGeometry(projectId: string, source: Pick<StudioSceneGeometryRequest, 'revision' | 'document_id'> | null,
+  poses: readonly StateValues[] | undefined) {
+  const windows = source && poses?.length
+    ? Array.from({ length: Math.ceil(poses.length / windowSize) }, (_, index) =>
+      ({ ...source, poses: poses.slice(index * windowSize, (index + 1) * windowSize).map((pose) => ({ ...pose })) }))
+    : [];
+  const reads = useQueries({
+    queries: windows.map((request) => ({
       queryKey: ['scene-geometry', projectId, request],
-      queryFn: ({ signal }) => fetchProjectSceneGeometry(projectId, request, signal),
+      queryFn: ({ signal }: { signal: AbortSignal }) => fetchProjectSceneGeometry(projectId, request, signal),
       staleTime: Infinity,
-    }).then(
-      (geometry): SceneGeometry => ({ kind: 'ready', geometry }),
-      (error): SceneGeometry => ({ kind: 'failed', error, retry: () => setRead(undefined) }),
-    ).then((result) => {
-      setRead({ key, source: model, result });
-      setInFlight(false);
-    });
-  }, [client, projectId, request, key, model, inFlight, read]);
-  if (!request) return undefined;
-  return read && read.source === model ? read.result : { kind: 'loading' };
+      refetchOnWindowFocus: false,
+    })),
+  });
+  const at = useCallback((index: number): SceneGeometry | undefined => {
+    const read = reads[Math.floor(index / windowSize)];
+    if (!read) return undefined;
+    if (read.error) return { kind: 'failed', error: read.error, retry: () => { void read.refetch(); } };
+    const frame = read.data?.frames[index % windowSize];
+    return read.data && frame ? { kind: 'ready', geometry: { document_id: read.data.document_id, ...frame } } : { kind: 'loading' };
+  }, [reads]);
+  return windows.length ? at : undefined;
 }

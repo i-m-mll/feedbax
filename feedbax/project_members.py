@@ -11,7 +11,7 @@ import unicodedata
 
 from pydantic import JsonValue
 
-from feedbax.contracts.project import BasedDocument, Document, Project, diff, json_pointer_parts
+from feedbax.contracts.project import Document, Project, diff, json_pointer_parts, member_display_name, member_name
 from feedbax.contracts.project_inputs import DocumentReference, NamedSubset, StepReference
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.contracts.project_sources import pointer
@@ -40,15 +40,12 @@ def duplicate_document_name(documents: Mapping[str, Document], member: str, key:
     """Number the source's display name and derive the new key as Studio does for a named document."""
     source = documents[member]
 
-    def display(name: str) -> str:
-        return re.sub(r"[-_]+", " ", name).capitalize()
-
     stem = re.sub(r"-[0-9]+$", "", member)
-    base = source.label or display(stem)
+    base = member_display_name(stem, source.label)
     task_schemas = {TASK_DOCUMENT_SCHEMA_ID, PYTHON_TASK_SCHEMA_ID}
     family = task_schemas if source.schema_id in task_schemas else {source.schema_id}
     shown = {
-        document.label or display(name)
+        member_display_name(name, document.label)
         for name, document in documents.items() if document.schema_id in family
     }
     label = generated_name(base, lambda name: name == base or name in shown, " ")
@@ -412,7 +409,7 @@ def label_member(
     typed = Project.model_validate(project)
     composed = compose_document(typed.documents.get, document)
     if isinstance(composed, ProjectDiagnostic):
-        raise ValueError(f"{document} cannot be composed: {composed.detail}")
+        raise ValueError(f"{member_name(typed.documents, document)} cannot be composed: {composed.detail}")
     payload = deepcopy(composed.payload)
     section = next((name for name in ELEMENT_FAMILIES if member in payload.get(name, {})), None)
     if section is None:
@@ -425,7 +422,7 @@ def label_member(
     else:
         base = compose_document(typed.documents.get, entry["base"]["document"])
         if isinstance(base, ProjectDiagnostic):
-            raise ValueError(f"{document}'s base cannot be composed: {base.detail}")
+            raise ValueError(f"{member_name(typed.documents, document)}'s base cannot be composed: {base.detail}")
         entry = {**entry, "differences": {
             path: change.model_dump(mode="json") for path, change in diff(base.payload, payload).items()
         }}
@@ -459,14 +456,6 @@ def duplicate_step(
     if old in shown.get("steps", {}):
         shown["steps"] = {**shown["steps"], new: shown["steps"][old]}
     return copied, shown
-
-
-def detach_refusals(documents: Mapping[str, Document]) -> frozenset[str]:
-    """A based document needs a composed payload before it can be detached."""
-    return frozenset(
-        name for name, document in documents.items()
-        if isinstance(document, BasedDocument) and isinstance(compose_document(documents.get, name), ProjectDiagnostic)
-    )
 
 
 def regroup_refusal(project: dict[str, JsonValue], step: str) -> str | None:
@@ -669,7 +658,7 @@ def merge_cards(
         raise ValueError("Choose two or more distinct Analyze cards.")
     for name in cards:
         if (refusal := regroup_refusal(project, name)) is not None:
-            raise ValueError(f"{name}: {refusal}")
+            raise ValueError(f"{member_display_name(name, project['steps'].get(name, {}).get('label'))}: {refusal}")
     holders = project_holders(Project.model_validate(project))
     joined = set(cards)
     target = project["steps"][card]["base"]["document"]
@@ -730,7 +719,7 @@ def merge_cards(
         for family in ELEMENT_FAMILIES:
             for element, value in own.get(family, {}).items():
                 if any(element in members for members in sections.values()):
-                    raise ValueError(f"The joined cards both contain {element!r}.")
+                    raise ValueError(f"The joined cards both contain {member_display_name(element, value.get('label'))}.")
                 sections[family][element] = _wired(value, wire)
                 if name != card:
                     moved.add(element)

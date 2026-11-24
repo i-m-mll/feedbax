@@ -18,8 +18,8 @@ async function files() {
 }
 
 // Catches a Repeat that writes no bracket over the selected columns or none of count 2, a bracket count that does not
-// reach the nominal shelf as one instance per repetition, and an Item whose Each Repeat does not write the repetition's
-// read `[i]`.
+// reach the nominal shelf as one instance per repetition, an Item whose Each Repeat does not write the repetition's
+// read `[i]`, and a Repeat crossing another that is refused, or stored without a row and a mark of its own.
 test('Repeat brackets the selected columns, its count repeats them on the shelf, and Each Repeat reads the repetition', async ({ page, request }) => {
   test.setTimeout(60_000);
   const { snapshot, projectPath } = await seedManagedProject(request, await files());
@@ -75,4 +75,13 @@ test('Repeat brackets the selected columns, its count repeats them on the shelf,
   await expect.poll(async () => (await task()).signals.find(({ id }) => id === 'goal')?.cells[0].value).toMatchObject({
     kind: 'call', function: 'index', args: [{ kind: 'name', reference: 'target' }, { kind: 'name', reference: 'i' }],
   });
+
+  await header('cue').click({ position: { x: 4, y: 4 } });
+  await header('move').click({ modifiers: ['Shift'], position: { x: 4, y: 4 } });
+  await header('move').getByRole('button', { name: 'Epoch move', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Repeat', exact: true }).click();
+  await expect.poll(async () => (await task()).repeats?.map(({ first_epoch, last_epoch }) => [first_epoch, last_epoch]))
+    .toEqual([['hold', 'cue'], ['cue', 'move']]);
+  await expect(grid.locator('tr').filter({ has: page.locator('th[data-repeat]') })).toHaveCount(2);
+  await expect(bracket.getByRole('img', { name: 'Problem', exact: true })).toHaveCount(1);
 });

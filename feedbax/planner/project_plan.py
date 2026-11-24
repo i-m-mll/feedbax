@@ -39,7 +39,7 @@ from feedbax.contracts.studio_authoring import InputProducer, InputRole
 from feedbax.contracts.studio_place import StudioTaskStart, path_parts, task_start, variation_targets
 from feedbax.contracts.project import (
     DifferenceNotApplied, Differences, Document, InlineBase, Payload, Project, RootDocument, Step, StepBase, StepKind,
-    apply_differences, base_chain, diff, json_pointer_parts, nearest_shared_base,
+    apply_differences, base_chain, diff, json_pointer_parts, member_display_name, member_name, nearest_shared_base,
 )
 from feedbax.contracts.run_rule import RuleRefusal
 from feedbax.contracts.expression_text import RuleBest
@@ -2564,10 +2564,8 @@ class _Compiler:
                 return problem(EVALUATION_MODEL, "Name a Model document.")
             shared = nearest_shared_base(documents, subject, name) if subject is not None else None
             if shared is None:
-                return replace(
-                    problem(EVALUATION_MODEL, f"Shares no document with {subject}." if subject else "Requires a subject Model document."),
-                    code=ResolutionCode.BAD_REFERENCE,
-                )
+                detail = f"Shares no document with {member_name(documents, subject)}." if subject else "Requires a subject Model document."
+                return replace(problem(EVALUATION_MODEL, detail), code=ResolutionCode.BAD_REFERENCE)
             base = compose_document(read, shared)
             if isinstance(base, ProjectDiagnostic):
                 return replace(base, step=key.step, row=key.row, variant=key.variant)
@@ -3826,7 +3824,7 @@ class _Compiler:
             )
         if reference.unresolved:
             target = reference.element or reference.step
-            return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, f"Unresolved target {target!r}.", name)
+            return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, f"Unresolved target {member_display_name(target)}.", name)
         if role.operation_outputs and reference.element is not None and reference.product is not None:
             role = replace(role, producer_kind="analyze", product_role=reference.product)
         element_input = role.producer_kind == "analyze"
@@ -3857,7 +3855,8 @@ class _Compiler:
             subset_document = terms.subset
             if terms.unresolved:
                 return ProjectDiagnostic(
-                    ResolutionCode.MISSING_DOCUMENT, f"{path}.where", subset_document, name, document=subset_document,
+                    ResolutionCode.MISSING_DOCUMENT, f"{path}.where", member_display_name(subset_document),
+                    name, document=subset_document,
                 )
             document = compose_document(self.variants[variant].documents.get, subset_document)
             if isinstance(document, ProjectDiagnostic):
@@ -3899,15 +3898,16 @@ class _Compiler:
         for source_variant in variants:
             target = source_variant, reference.step
             if target in active:
-                chain = " -> ".join(f"{v}/{s}" for v, s in (*active, target))
+                chain = " -> ".join(f"{v}/{member_name(self.variants[v].steps, s)}" for v, s in (*active, target))
                 return ProjectDiagnostic(ResolutionCode.STEP_CYCLE, path, chain, name)
             project = self.variants.get(source_variant)
             producer = project.steps.get(reference.step) if project is not None else None
             if producer is None or producer.kind != role.producer_kind:
+                label = member_name(project.steps if project is not None else self.project.steps, reference.step)
                 return ProjectDiagnostic(
                     ResolutionCode.BAD_REFERENCE,
                     path,
-                    f"{source_variant}/{reference.step} must be a {role.producer_kind} step",
+                    f"{source_variant}/{label} must be a {role.producer_kind} step",
                     name,
                 )
             self.step(*target, active)
@@ -3936,7 +3936,7 @@ class _Compiler:
                 address=lambda run: (run.key.variant, run.key.row),
                 member_key=member_key,
                 coordinates=lambda run: axis_coordinates(run.coordinates, run.input_axes),
-                producer=self.variants[variants[0]].steps[reference.step].label or reference.step,
+                producer=member_name(self.variants[variants[0]].steps, reference.step),
             )
         except RuleRefusal as error:
             return ProjectDiagnostic(
@@ -3956,7 +3956,7 @@ class _Compiler:
             return ProjectDiagnostic(
                 ResolutionCode.BAD_REFERENCE,
                 path,
-                f"no rows of {reference.step!r} are selected",
+                f"No rows of {member_name(self.variants[variants[0]].steps, reference.step)} are selected.",
                 name,
             )
         rule = None if role.name == "subject" else reference.checkpoint

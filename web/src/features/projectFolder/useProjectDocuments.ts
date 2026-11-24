@@ -120,7 +120,10 @@ export function documentTree(project: { documents?: Readonly<Record<string, Docu
 /** The documents of the `schemas`, each followed by the documents based on it, with its depth below its root. */
 export function documentTreeOf(project: { documents?: Readonly<Record<string, Document>> | null }, schemas: readonly string[]) {
   const all = project.documents ?? {};
-  const names = Object.keys(all).filter((id) => schemas.includes(all[id].schema)).sort();
+  /** Ordered by the name each is shown by, as its key is hidden behind its label. */
+  const names = Object.keys(all).filter((id) => schemas.includes(all[id].schema))
+    .sort((left, right) => shownName(left, all[left]).localeCompare(shownName(right, all[right]), undefined, { numeric: true })
+      || left.localeCompare(right));
   const parent = (name: string) => {
     const base = baseOf(all, name);
     return base !== undefined && names.includes(base) ? base : undefined;

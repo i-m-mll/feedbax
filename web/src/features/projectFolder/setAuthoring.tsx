@@ -14,6 +14,8 @@ import { documentPayload } from './documentPayload';
 import type { ProjectEditController } from './projectEditController';
 import { unvalued } from './projectWindowPlan';
 import type { Refusal } from './refusals';
+import { sendWithStore, type AskStore } from './storeChoice';
+import { editedElement } from '@/components/ui/ChoiceMenu';
 import { filesRemoval, type ConfirmRunRemoval } from './runRemoval';
 import { documentTreeOf } from './useProjectDocuments';
 
@@ -31,6 +33,8 @@ export interface SetAuthoringInputs {
   readonly state: () => PipelineSelectionState;
   readonly select: (state: PipelineSelectionState) => void;
   readonly confirmRemoval: ConfirmRunRemoval;
+  /** Asks where an edit that reaches beyond the selection is written. */
+  readonly ask: AskStore;
 }
 
 /** The authored axis of a step's sweep, when the step authors it. */
@@ -44,13 +48,17 @@ function runKey(run: PlanRunView) {
   return { variant, step, row };
 }
 
-export function setAuthoring({ editor, project, applies, perform, state, select, confirmRemoval }: SetAuthoringInputs) {
+export function setAuthoring({ editor, project, applies, perform, state, select, confirmRemoval, ask }: SetAuthoringInputs) {
   const refuseStep = (step: string) => (reason: string): Refusal => ({ kind: 'step', step, reason });
 
   /** Stores the edit `command` makes; one that removes runs first asks when some of them cost a confirmation. */
   async function store(name: string, command: SetCommand, removes = false): Promise<StudioSetEdit | undefined> {
     const { saved } = editor.getSnapshot();
-    const edit = await prepareSetEdit(saved.project_id, { revision: saved.revision, command }, editor.signal);
+    const from = document.activeElement;
+    const edit = await sendWithStore(ask, () => editedElement(from, from), () => editor.flush(),
+      (store_choice) => prepareSetEdit(saved.project_id, { revision: saved.revision, command, store_choice }, editor.signal),
+      (answer) => answer.store_choices);
+    if (!edit) return undefined;
     if (removes && !await confirmRemoval(filesRemoval(saved.project_id, edit.revision, edit.files, editor.signal))) return undefined;
     const stored = await editor.storeEdit(name, { files: edit.files, created: edit.created }, { reviewedRevision: edit.revision });
     if (stored.status === 'refused') throw stored.error;

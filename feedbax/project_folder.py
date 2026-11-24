@@ -35,7 +35,7 @@ from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import (
-    BasedDocument, Document, Project, RootDocument, Sha256, diff, json_pointer_parts, same_json,
+    BasedDocument, Document, Project, RootDocument, Sha256, diff, json_pointer_parts, member_name, same_json,
 )
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_io import (
@@ -67,7 +67,7 @@ from feedbax.contracts.result_address import ANALYSIS_SCHEMA, payload_elements
 from feedbax.persistence.project_subject import terminal_train_reader
 from feedbax.persistence.reachability import DEFAULT_SUPERSEDED_DAYS
 from feedbax.project_members import (
-    change_member_key, detach_refusals, duplicate_document_name, duplicate_step, fresh_element_keys, generated_name,
+    change_member_key, duplicate_document_name, duplicate_step, fresh_element_keys, generated_name,
     label_member, merge_cards, preserve_dangling_member, regroup_refused, split_card,
 )
 from feedbax.contracts.strict_json import strict_json_loads
@@ -91,6 +91,7 @@ from feedbax.contracts.studio_project import (
     StudioPresentationWrite,
     StudioProjectDocument,
     StudioProjectCreateFile,
+    StudioProjectCreateFiles,
     StudioProjectPatch,
     StudioProjectPatchBatch,
     StudioProjectRename,
@@ -379,7 +380,6 @@ class SettledProjectPlan:
     plan: ProjectPlan
     readers: BaseReaders
     project_root: Path
-    detach_refused: frozenset[str]
     regroup_refused: frozenset[str]
 
     @classmethod
@@ -391,7 +391,7 @@ class SettledProjectPlan:
         return cls(
             location.project_id, text.revision, project_semantic_root(text.project),
             text.configuration, text.store_path if store is None else store, plan, readers, text.root,
-            detach_refusals(text.project.documents), regroup_refused(text.project),
+            regroup_refused(text.project),
         )
 
 
@@ -483,7 +483,7 @@ def compile_saved_project(
         )
         settled = SettledProjectPlan(
             project_id, text.revision, semantic_root, text.configuration, store, plan, readers, text.root,
-            detach_refusals(text.project.documents), regroup_refused(text.project),
+            regroup_refused(text.project),
         )
         if reusable:
             memo.saved = _SavedCompilation(stamp, settled, observations)
@@ -1135,30 +1135,38 @@ class ProjectFolder:
                 text = self._load(root)
             return self._document(folder.location, text)
 
-    def create_file(self, project_id: str, body: StudioProjectCreateFile) -> StudioProjectDocument:
-        file = body.file
-        family = _FAMILIES[file.kind]
-        relative = f"{family}/{file.id}.json"
+    def create_file(
+        self, project_id: str, body: StudioProjectCreateFile | StudioProjectCreateFiles,
+    ) -> StudioProjectDocument:
+        files = [body.file] if isinstance(body, StudioProjectCreateFile) else body.files
         with self._locked_folder(project_id) as folder:
             root = folder.path
             text = self._load(root)
             check_revision("project", body.revision, text.revision)
-            entries = text.project.documents if isinstance(file, CreateNamedDocument) else text.project.steps
-            if file.id in entries:
-                raise ProjectFileExists(relative)
-            entry = file.document if isinstance(file, CreateNamedDocument) else file.step
-            project = Project.model_validate({
-                **text.project.model_dump(mode="json", by_alias=True, exclude_unset=True),
-                family: {**entries, file.id: entry},
-            })
-            data = dump_text_project(project, text.configuration)[relative]
+            documents = dict(text.project.documents)
+            steps = dict(text.project.steps)
+            additions = {}
+            for file in files:
+                address = AuthoredFileAddress(kind=file.kind, id=file.id)
+                relative = _relative_file(address)
+                if relative in text.files or relative in additions:
+                    raise ProjectFileExists(relative)
+                additions[relative] = address
+                if isinstance(file, CreateNamedDocument):
+                    documents[file.id] = file.document
+                else:
+                    steps[file.id] = file.step
+            project = Project(documents=documents, steps=steps, sweep=text.project.sweep)
+            encoded = dump_text_project(project, text.configuration)
+            _check_file_spellings(root, encoded)
+
             def guard() -> None:
                 check_revision("project", text.revision, self._load(root).revision)
 
-            try:
-                folder.write(root / relative, data, replace=False, before_publish=guard)
-            except FileExistsError as error:
-                raise ProjectFileExists(relative) from error
+            _publish_patch(folder, [
+                _PendingFile(address=address, before=None, data=encoded[relative].decode())
+                for relative, address in additions.items()
+            ], guard)
             return self._document(folder.location, self._load(root))
 
     def revision(self, project_id: str) -> StudioProjectRevision:
@@ -1262,7 +1270,7 @@ class ProjectFolder:
                 """The document ``name`` as a root document holding its composed payload, under its own label."""
                 document = compose_document(text.project.documents.get, name)
                 if isinstance(document, ProjectDiagnostic):
-                    raise ProjectFolderInvalid(f"{name} cannot be composed: {document.detail}")
+                    raise ProjectFolderInvalid(f"{member_name(text.project.documents, name)} cannot be composed: {document.detail}")
                 label = text.project.documents[name].label
                 return document.model_dump(mode="json", by_alias=True) | ({"label": label} if label else {})
 
@@ -1308,7 +1316,7 @@ class ProjectFolder:
             elif command.kind == "detach":
                 name = member
                 if not isinstance(text.project.documents[member], BasedDocument):
-                    raise ProjectFolderInvalid(f"{member} has no base.")
+                    raise ProjectFolderInvalid(f"{member_name(text.project.documents, member)} has no base.")
                 project = {**source, "documents": {**source["documents"], member: composed(member)}}
             elif command.kind == "rename":
                 name = member
@@ -1405,6 +1413,7 @@ class ProjectFolder:
         from feedbax.contracts.model_edit import ModelEditAsked, ModelEditProblem, ModelEditState, ModelProjectionRequest, SetField
         from feedbax.compiler.model_edit import ModelEditDraft, apply_model_edit
         from feedbax.compiler.model_ports import ModelRegistryPorts
+        from feedbax.compiler.model_templates import instantiate_model_template
         from feedbax.project_model_selection import selected_task_signal
 
         snapshot = self.read(project_id, revision=body.revision)
@@ -1429,6 +1438,7 @@ class ProjectFolder:
         result = apply_model_edit(
             state, body.command, ports=authority.port, accepts=authority.accepts,
             next_input=authority.next_input, functions=self.functions, reference=reference,
+            instantiate_template=lambda name: instantiate_model_template(name, components, state.document.step_seconds),
             task_signal=lambda command: selected_task_signal(self, project_id, ModelProjectionRequest(
                 revision=body.revision, run=command.run, document=body.document,
             ), command.signal),

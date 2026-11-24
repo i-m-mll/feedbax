@@ -1,253 +1,220 @@
 import { expect, test } from './fixtures/studio';
 import { type Locator, type Page } from '@playwright/test';
-import type {
-  ModelDocument, StudioJobEventHistory, StudioJobSnapshot, StudioJobSubmission, StudioProjectDocument, StudioSavedTrainRuns,
+import {
+  firstTrainTask, type ModelDocument, type StudioJobSubmission, type StudioProjectDocument, type StudioSavedTrainRuns,
+  type TaskDocument,
 } from '../../src/generated/studioContracts';
-import { enter, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
-import { palette } from './fixtures/studioKeyboard';
+import { enter, mapStep } from './fixtures/canonicalTrain';
+import { post, readSaved } from './fixtures/studioKeyboard';
 import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-type ModelWire = NonNullable<ModelDocument['interior']['wires']>[string];
-
-function matchesFields(actual: unknown, expected: unknown): boolean {
-  if (expected === null || typeof expected !== 'object') return actual === expected;
-  if (actual === null || typeof actual !== 'object') return false;
-  return Object.entries(expected).every(([key, value]) =>
-    matchesFields((actual as Record<string, unknown>)[key], value));
-}
-
-async function connect(page: Page, source: Locator, target: Locator, path: string,
-  operation: Record<string, unknown>, matchesWire: (wire: ModelWire) => boolean) {
-  await expect(source).toHaveAttribute('aria-disabled', 'false');
-  await expect(target).toHaveAttribute('aria-disabled', 'false');
-  const saved = page.waitForResponse((response) => {
-    const request = response.request();
-    if (request.method() !== 'POST' || new URL(response.url()).pathname !== path + '/model/edit') return false;
-    const actual = request.postDataJSON()?.command?.operation;
-    return actual?.graph?.document === 'model' && actual.graph.element?.kind === 'graph' &&
-      !actual.graph.composites.length && matchesFields(actual, operation);
-  });
-  await source.hover();
-  await page.mouse.down();
-  await target.hover();
-  await page.mouse.up();
-  const response = await saved;
+/** The Model edit a gesture sent, after checking that it was applied. */
+async function applied(edit: ReturnType<typeof post>) {
+  const response = await edit;
   expect(response.ok(), await response.text()).toBe(true);
   const { result } = await response.json();
   expect(result.status, result.problem?.detail).toBe('applied');
-  const model = result.snapshot.project.documents.model.payload as ModelDocument;
-  expect(Object.values(model.interior.wires ?? {}).filter(matchesWire)).toHaveLength(1);
+  return result.snapshot.project.documents.model.payload as ModelDocument;
 }
 
-test('authors a managed Train in an empty folder and reopens its result', async ({ page, request }) => {
-  test.fixme(true, 'Stale against the current Model view; revived with the Model view rebuild, issue 0afecb2.');
+/** A handle grows while a wire is dragged, so the pointer goes to its centre rather than waiting for it to settle. */
+async function centre(target: Locator) {
+  const box = (await target.boundingBox())!;
+  return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+}
+
+async function drag(page: Page, from: Locator, to: Locator | { x: number; y: number }) {
+  const start = await centre(from);
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(start.x + 20, start.y + 20, { steps: 2 });
+  // The backend's verdicts arrive after the drag starts; a drop before them makes no wire.
+  if (!('x' in to)) await expect(to.locator('xpath=..')).toHaveAttribute('data-verdict', 'allowed');
+  const end = 'x' in to ? to : await centre(to);
+  await page.mouse.move(end.x, end.y, { steps: 8 });
+  await page.mouse.up();
+}
+
+/**
+ * Authors a Train's Model with the pointer in the Model view, from an empty model, and trains it.
+ * Catches a Model view that cannot author a model a Train can run: a gesture that writes nothing, a wire stored on the
+ * wrong ports, or a document that does not survive a reload.
+ */
+test('authors a Model with the pointer and trains it @round', async ({ page, request }) => {
   test.setTimeout(58_000);
-  // The Studio's test Python task, which a package would register; the new Train reads it.
-  const { snapshot, projectPath } = await seedManagedProject(request, [{
-    kind: 'document', id: 'task', document: { schema: 'feedbax.spec.python_task', payload: { type: 'reaching_task.Reaching', params: {} } },
-  }]);
-  expect(snapshot.project.steps).toEqual({});
-  const url = '/?project=' + encodeURIComponent(snapshot.project_id);
-  await page.goto(url);
-  const create = page.getByRole('button', { name: 'New Step', exact: true });
-  await expect(create).toBeEnabled();
-  await create.press('Enter');
-  await expect(page.getByRole('menu').getByRole('menuitem', { name: 'Train', exact: true })).toBeFocused();
-  await page.keyboard.press('Enter');
+  const creation = post(page, '/api/projects');
+  await page.goto('/');
+  const created = await creation;
+  expect(created.status()).toBe(201);
+  const { snapshot } = await created.json() as StudioProjectDocument;
+  const projectPath = '/api/projects/' + snapshot.project_id;
+  const runsPath = projectPath + '/train-runs';
+  const saved = () => readSaved(request, projectPath);
+  const savedModel = async () => rootPayload((await saved()).project.documents?.model) as unknown as ModelDocument;
+  const edit = () => post(page, projectPath + '/model/edit');
+
+  await page.getByRole('button', { name: 'New Step', exact: true }).click();
+  await page.getByRole('menu').getByRole('menuitem', { name: 'Train', exact: true }).click();
   const tab = (name: string) => page.getByRole('tab', { name, exact: true });
-  const panel = (name: string) => page.getByRole('tabpanel', { name, exact: true });
-  const model = panel('Model');
-  const task = panel('Task');
-  const objective = panel('Objective');
-  const runs = panel('Runs');
+  const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
+  const task = page.getByRole('tabpanel', { name: 'Task', exact: true });
+  const objective = page.getByRole('tabpanel', { name: 'Objective', exact: true });
+  const runs = page.getByRole('tabpanel', { name: 'Runs', exact: true });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-  await expect(model).toBeFocused();
-  await palette(page, 'problems', 'Problems');
-  const problems = page.getByRole('dialog', { name: 'Problems', exact: true });
-  await problems.getByRole('button', { name: 'Components · Model has no components.', exact: true }).press('Enter');
-  await expect(problems).toBeHidden();
-  await expect(model.getByText('Components · Model has no components.', { exact: true })).toBeFocused();
-  await mapStep(page, 'train').click();
-  await tab('Task').click();
-  await expect(page.getByRole('complementary', { name: 'Details Drawer', exact: true })
-    .getByRole('region', { name: 'Signals' })).toContainText('Reach Target');
-  const taskTarget = task.getByRole('textbox', { name: 'Target x (m)', exact: true });
-  const taskSteps = task.getByRole('textbox', { name: /N Steps/i });
-  const saved = async () => {
-    const response = await request.get(projectPath + '/open');
-    expect(response.ok(), await response.text()).toBe(true);
-    return ((await response.json()) as StudioProjectDocument).snapshot;
-  };
-  const patch = () => page.waitForResponse((response) => response.request().method() === 'PATCH' &&
-    new URL(response.url()).pathname === projectPath);
-  const edit = async (field: Locator, value: string) => {
-    const [saved] = await Promise.all([patch(), enter(field, value)]);
-    expect(saved.ok(), await saved.text()).toBe(true);
-    await expect(field).toBeEnabled();
-  };
-  await edit(taskTarget, '0.22');
-  await edit(taskSteps, '12');
-  await task.focus();
-  await Promise.all([patch(), page.keyboard.press('Meta+Z')]);
-  await expect(taskSteps).toHaveValue('80');
-  await task.focus();
-  await Promise.all([patch(), page.keyboard.press('Meta+Shift+Z')]);
-  await expect(taskSteps).toHaveValue('12');
-  await expect.poll(async () => rootPayload((await saved()).project.documents?.task)).toMatchObject({
-    type: 'reaching_task.Reaching', params: { x: 0.22, n_steps: 12 },
-  });
+  const canvas = model.locator('.react-flow__pane');
+  const inputs = model.locator('[data-id="@inputs"]');
+  const outputs = model.locator('[data-id="@outputs"]');
+  const card = (id: string) => model.locator(`.react-flow__node[data-id="${id}"]`);
+  const handle = (id: string, key: string) => card(id).locator(`[data-handleid="${key}"]`);
 
-  await tab('Model').click();
-  const component = (name: string) => model.locator('.react-flow__node').filter({ hasText: name });
-  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
-  async function add(name: string, category: string) {
-    const library = drawer.getByRole('region', { name: category, exact: true });
-    const button = library.getByRole('button', { name: 'Add ' + name, exact: true });
-    await button.click();
-    const place = inspector.getByRole('button', { name: 'Add ' + name, exact: true });
-    await expect(place).toBeEnabled();
-    const edited = page.waitForResponse((response) => response.request().method() === 'POST' &&
-      new URL(response.url()).pathname === projectPath + '/model/edit');
-    await place.click();
-    const response = await edited;
-    expect(response.ok(), await response.text()).toBe(true);
-    const { result } = await response.json();
-    expect(result.status, result.problem?.detail).toBe('applied');
-    const card = component(name);
-    await expect(card).toBeVisible();
-    await card.locator('header').click();
-    return card;
+  // The empty model is its two boundary cards; the task's signals are hollow ports on `inputs`.
+  await expect(model.locator('.react-flow__node')).toHaveCount(2);
+  await expect(inputs.locator('[data-handleid^="output:@task:"]')).not.toHaveCount(0);
+
+  // The search at the cursor, by its key, places the component there, selected.
+  const box = (await canvas.boundingBox())!;
+  const searched = page.getByRole('dialog', { name: 'Add Component', exact: true });
+  async function place(name: string, open: () => Promise<void>) {
+    await open();
+    await searched.getByRole('textbox').fill(name);
+    const adding = edit();
+    await searched.getByRole('button', { name: 'Add ' + name, exact: true }).last().click();
+    const stored = await applied(adding);
+    const [id] = Object.entries(stored.interior.components ?? {})
+      .filter(([, component]) => component.kind === 'leaf' && component.type === 'feedbax.' + name).map(([key]) => key);
+    await expect(card(id)).toHaveClass(/selected/);
+    return id;
   }
-  const cell = await add('GRU', 'Runtime');
-  await expect(inspector.getByRole('textbox', { name: 'Input size', exact: true })).toBeEnabled();
+  const cursor = { x: box.x + box.width * 0.35, y: box.y + box.height * 0.6 };
+  const cell = await place('GRU', async () => {
+    await page.mouse.click(cursor.x, cursor.y);
+    await page.keyboard.press('Shift+A');
+  });
+  const cellBox = (await card(cell).boundingBox())!;
+  expect(Math.abs(cellBox.x - cursor.x) + Math.abs(cellBox.y - cursor.y)).toBeLessThan(4);
   await enter(inspector.getByRole('textbox', { name: 'Input size', exact: true }), '2');
-  await expect.poll(async () => Object.values((rootPayload((await saved()).project.documents?.model) as unknown as ModelDocument)
-    .interior.components ?? {})).toEqual(expect.arrayContaining([expect.objectContaining({
-      type: 'feedbax.GRU', fields: expect.objectContaining({ input_size: 2 }),
-    })]));
-  const linear = await add('Linear', 'Runtime');
-  await enter(inspector.getByRole('textbox', { name: 'Input size', exact: true }), '4');
-  await expect.poll(async () => Object.values((rootPayload((await saved()).project.documents?.model) as unknown as ModelDocument)
-    .interior.components ?? {}).find((component) => component.kind === 'leaf' && component.type === 'feedbax.Linear')).toMatchObject({ fields: { input_size: 4 } });
-  await enter(inspector.getByRole('textbox', { name: 'Output size', exact: true }), '2');
-  await expect.poll(async () => Object.values((rootPayload((await saved()).project.documents?.model) as unknown as ModelDocument)
-    .interior.components ?? {})).toEqual(expect.arrayContaining([expect.objectContaining({
-      type: 'feedbax.Linear', fields: expect.objectContaining({ input_size: 4, output_size: 2 }),
-    })]));
-  const plant = await add('PointMass', 'Mechanics');
-  const cellId = (await cell.getAttribute('data-id'))!;
-  const linearId = (await linear.getAttribute('data-id'))!;
-  const plantId = (await plant.getAttribute('data-id'))!;
-  const endpoint = (id: string, port: string) => ({ owner: 'component', component: id, port } as const);
-  const inputToCell = endpoint(cellId, 'input');
-  const gruOutput = endpoint(cellId, 'output');
-  const linearInput = endpoint(linearId, 'input');
-  const linearOutput = endpoint(linearId, 'output');
-  const plantForce = endpoint(plantId, 'force');
-  await model.getByRole('button', { name: 'Fit View', exact: true }).click();
-  await connect(page, model.locator('[aria-label="Port reach_target"].react-flow__handle'),
-    cell.locator('[data-handleid="input:input"]'), projectPath,
-    { op: 'connect_task_signal', signal: 'reach_target', target: inputToCell },
-    (wire) => wire.source.owner === 'inputs' && matchesFields(wire.target, inputToCell));
-  await connect(page, cell.locator('[data-handleid="output:output"]'),
-    linear.locator('[data-handleid="input:input"]'), projectPath,
-    { op: 'connect', source: gruOutput, target: linearInput },
-    (wire) => matchesFields(wire.source, gruOutput) && matchesFields(wire.target, linearInput));
-  await connect(page, linear.locator('[data-handleid="output:output"]'),
-    plant.locator('[data-handleid="input:force"]'), projectPath,
-    { op: 'connect', source: linearOutput, target: plantForce },
-    (wire) => matchesFields(wire.source, linearOutput) && matchesFields(wire.target, plantForce));
-  const output = model.locator('[data-id="@outputs"]');
-  await output.getByRole('button', { name: 'Add Port', exact: true }).click();
-  const portDialog = page.getByRole('dialog', { name: 'Add Port', exact: true });
-  await enter(portDialog.getByRole('textbox', { name: 'Name', exact: true }), 'Command');
-  await expect(portDialog).toBeHidden();
-  const savedModel = rootPayload((await saved()).project.documents?.model) as unknown as ModelDocument;
-  const command = savedModel.ports?.outputs?.find(({ name }) => name === 'Command');
-  expect(command).toBeDefined();
-  const commandOutput = { owner: 'outputs', port: command!.id };
-  await connect(page, linear.locator('[data-handleid="output:output"]'),
-    output.locator('[aria-label="Port Command"].react-flow__handle'), projectPath,
-    { op: 'connect', source: linearOutput, target: commandOutput },
-    (wire) => matchesFields(wire.source, linearOutput) && matchesFields(wire.target, commandOutput));
+  await expect.poll(async () => (await savedModel()).interior.components?.[cell]).toMatchObject({ fields: { input_size: 2 } });
 
-  await expect(output.locator('[aria-label="Port Command"].react-flow__handle')).toBeVisible();
+  // A double click on empty canvas opens the same search.
+  const readout = await place('Linear', () => canvas.dblclick({ position: { x: box.width * 0.6, y: box.height * 0.6 } }));
+  await enter(inspector.getByRole('textbox', { name: 'Input size', exact: true }), '4');
+  await enter(inspector.getByRole('textbox', { name: 'Output size', exact: true }), '2');
+  await expect.poll(async () => (await savedModel()).interior.components?.[readout])
+    .toMatchObject({ fields: { input_size: 4, output_size: 2 } });
+
+  // Dropping a wire on empty canvas offers the components with an input that fits, and places the chosen one wired.
+  let joining = edit();
+  await drag(page, handle(readout, 'output:output'), { x: box.x + box.width * 0.85, y: box.y + box.height * 0.3 });
+  await searched.getByRole('button', { name: 'PointMass · force', exact: true }).click();
+  let stored = await applied(joining);
+  const [plant] = Object.entries(stored.interior.components ?? {})
+    .filter(([, component]) => component.kind === 'leaf' && component.type === 'feedbax.PointMass').map(([key]) => key);
+  const readoutOutput = { owner: 'component', component: readout, port: 'output' };
+  expect(Object.values(stored.interior.wires ?? {})).toEqual([expect.objectContaining({
+    source: readoutOutput, target: { owner: 'component', component: plant, port: 'force' },
+  })]);
+
+  // While a wire is dragged the inputs it can feed are offered; a drop on one makes the wire.
+  const start = await centre(handle(cell, 'output:output'));
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.15, { steps: 4 });
+  await expect(card(readout).locator('.studio-model-port[data-verdict="allowed"]')).toHaveCount(1);
+  joining = edit();
+  const end = await centre(handle(readout, 'input:input'));
+  await page.mouse.move(end.x, end.y, { steps: 4 });
+  await page.mouse.up();
+  await applied(joining);
+
+  // Wiring a hollow task port creates the Model input it feeds, which then carries the Task mark.
+  joining = edit();
+  await drag(page, inputs.locator('[data-handleid="output:@task:target_pos"]'), handle(cell, 'input:input'));
+  stored = await applied(joining);
+  const target = stored.ports.inputs?.find(({ name }) => name === 'target_pos');
+  expect(target).toBeDefined();
+  await expect(inputs.getByRole('img', { name: 'Task', exact: true })).toHaveCount(1);
+
+  // Wiring to the empty handle of `outputs` adds a port named after the wire's source, and an Objective term on it marks it.
+  joining = edit();
+  await drag(page, handle(readout, 'output:output'), outputs.locator('[data-handleid="input:__new_port__"]'));
+  stored = await applied(joining);
+  const command = stored.ports.outputs?.find(({ name }) => name === 'output');
+  expect(command).toBeDefined();
+  expect(Object.values(stored.interior.wires ?? {})).toContainEqual(expect.objectContaining({
+    source: readoutOutput, target: { owner: 'outputs', port: command!.id },
+  }));
   await tab('Objective').click();
   await objective.getByRole('button', { name: 'Add Term', exact: true }).click();
-  await page.getByRole('menu', { name: 'Add Term', exact: true }).getByRole('menuitem', { name: 'Command', exact: true }).click();
-  await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(Command)');
-  await enter(objective.getByRole('textbox', { name: 'Weight', exact: true }), '2');
-  await expect.poll(async () => rootPayload((await saved()).project.documents?.objective)).toMatchObject({
-    terms: [expect.objectContaining({ weight: expect.objectContaining({ kind: 'literal', value: 2 }) })],
-  });
-  await objective.focus();
-  await Promise.all([patch(), page.keyboard.press('Meta+Z')]);
-  await expect(objective.getByRole('textbox', { name: 'Weight', exact: true })).toHaveValue('1');
-  await objective.focus();
-  await Promise.all([patch(), page.keyboard.press('Meta+Shift+Z')]);
-  await expect(objective.getByRole('textbox', { name: 'Weight', exact: true })).toHaveValue('2');
-  await tab('Runs').click();
-  await edit(inspector.getByRole('textbox', { name: 'Batches', exact: true }), '2');
-  await edit(inspector.getByRole('textbox', { name: 'Batch Size', exact: true }), '4');
-  await expect.poll(async () => (await saved()).project.steps?.train.base).toMatchObject({
-    inline: { training_config: { n_batches: 2, batch_size: 4 } },
-  });
+  await page.getByRole('menu', { name: 'Add Term', exact: true }).getByRole('menuitem', { name: 'Output', exact: true }).click();
+  await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(output)');
+  await tab('Model').click();
+  await expect(outputs.getByRole('img', { name: 'Objective', exact: true })).toHaveCount(1);
 
-  const reopened = await saved();
-  const reopenedModel = rootPayload(reopened.project.documents?.model) as unknown as ModelDocument;
-  expect(Object.values(reopenedModel.interior.wires ?? {})).toEqual(expect.arrayContaining([
-    expect.objectContaining({ target: inputToCell }),
-    expect.objectContaining({ source: gruOutput, target: linearInput }),
-    expect.objectContaining({ source: linearOutput, target: plantForce }),
-    expect.objectContaining({ source: linearOutput, target: commandOutput }),
+  // The shipped task starts the effector through a link to the shipped Model's plant; Initializes re-points it here.
+  const shipped = rootPayload(firstTrainTask) as unknown as TaskDocument;
+  const [{ model_field: shippedLink }] = shipped.links ?? [];
+  const plantLink = JSON.stringify({ ...JSON.parse(shippedLink), element: {
+    ...JSON.parse(shippedLink).element, parent: { id: plant, kind: 'component' },
+  } });
+  const links = async () => {
+    const { project } = await saved();
+    const { document } = (project.steps?.train?.base as { inline: { trial_documents: { task: { document: string } } } })
+      .inline.trial_documents.task;
+    return (rootPayload(project.documents?.[document]) as unknown as TaskDocument).links;
+  };
+  await tab('Task').click();
+  const initializes = task.getByRole('combobox', { name: 'Initializes start', exact: true });
+  await initializes.click();
+  await page.keyboard.type('effector position');
+  await page.getByRole('option', { name: 'PointMass · effector · position', exact: true }).click();
+  await expect.poll(links).toContainEqual({ model_field: plantLink, variable: 'start' });
+  // The shipped link is still listed, under the id it names, and choosing it again removes it.
+  await page.getByRole('option', { name: 'plant · effector · position', exact: true }).click();
+  await page.keyboard.press('Escape');
+  await expect.poll(links).toEqual([{ model_field: plantLink, variable: 'start' }]);
+
+  await tab('Runs').click();
+  await enter(inspector.getByRole('textbox', { name: 'Batches', exact: true }), '2');
+  await enter(inspector.getByRole('textbox', { name: 'Batch Size', exact: true }), '4');
+  await expect.poll(async () => (rootPayload((await saved()).project.documents?.training) as {
+    training_config?: { n_batches?: number; batch_size?: number };
+  }).training_config).toMatchObject({ n_batches: 2, batch_size: 4 });
+
+  const authored = await saved();
+  const authoredModel = rootPayload(authored.project.documents?.model) as unknown as ModelDocument;
+  expect(Object.values(authoredModel.interior.wires ?? {})).toEqual(expect.arrayContaining([
+    expect.objectContaining({ source: { owner: 'inputs', port: target!.id }, target: { owner: 'component', component: cell, port: 'input' } }),
+    expect.objectContaining({ source: { owner: 'component', component: cell, port: 'output' },
+      target: { owner: 'component', component: readout, port: 'input' } }),
+    expect.objectContaining({ source: readoutOutput, target: { owner: 'component', component: plant, port: 'force' } }),
+    expect.objectContaining({ source: readoutOutput, target: { owner: 'outputs', port: command!.id } }),
   ]));
-  const runsPath = projectPath + '/train-runs';
   const reviewed = async () => {
-    const response = await request.get(runsPath + '?window_map=true&revision=' + reopened.revision);
+    const response = await request.get(runsPath, { params: { revision: authored.revision, window_map: 'true' } });
     expect(response.ok(), await response.text()).toBe(true);
     return await response.json() as StudioSavedTrainRuns;
   };
   const before = await reviewed();
   expect(before.window_map?.problems).toEqual([]);
   expect(before.rows).toHaveLength(1);
+
   await page.reload();
   await mapStep(page, 'train').click();
-  await tab('Objective').click();
-  await expect(objective.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(Command)');
-  await expect(objective.getByRole('textbox', { name: 'Weight', exact: true })).toHaveValue('2');
+  await tab('Model').click();
+  await expect(model.locator('.react-flow__edge')).toHaveCount(4);
+  expect(await savedModel()).toEqual(authoredModel);
   await tab('Runs').click();
   await runs.getByRole('table', { name: 'Runs', exact: true }).getByRole('button').first().click();
-  const submitted = page.waitForResponse((response) => response.request().method() === 'POST' &&
-    new URL(response.url()).pathname === runsPath);
+  const submitted = post(page, runsPath);
   await runs.getByRole('button', { name: 'Run', exact: true }).click();
   const response = await submitted;
   expect(response.status(), await response.text()).toBe(202);
   const { items } = await response.json() as StudioJobSubmission;
   expect(items).toEqual([expect.objectContaining({ disposition: 'admitted', job_id: expect.any(String) })]);
   await expect.poll(async () => (await reviewed()).rows[0]?.attempts[0]?.status, { timeout: 20_000 }).toBe('succeeded');
-  const [completed] = (await reviewed()).rows;
-  expect(completed.request_id).toBe(before.rows[0].request_id);
-  expect(completed.attempts).toEqual([expect.objectContaining({
-    job_id: items[0].job_id, status: 'succeeded', progress: { completed_updates: 2, total_updates: 2 },
-    successful_receipt: expect.objectContaining({ manifest_sha256: expect.any(String) }),
-  })]);
-  const jobs = await request.get('/api/jobs', { params: { project: snapshot.project_id } });
-  expect(jobs.ok(), await jobs.text()).toBe(true);
-  const { cursor } = await jobs.json() as StudioJobSnapshot;
-  const history = await request.get('/api/events/history', { params: { project: snapshot.project_id, through: cursor } });
-  expect(history.ok(), await history.text()).toBe(true);
-  const { events } = await history.json() as StudioJobEventHistory;
-  const last = events.filter((event) => event.kind === 'progress' && event.job_id === items[0].job_id)
-    .flatMap((event) => event.data.metric_interval ? [event.data.metric_interval] : [])
-    .at(-1) as { end_inclusive: number; metrics: { train_loss: { last: number } } } | undefined;
-  expect(last?.end_inclusive).toBe(2);
-  expect(Number.isFinite(last?.metrics.train_loss.last)).toBe(true);
-  await page.reload();
-  await mapStep(page, 'train').click();
-  await expect(runs.getByText('Done', { exact: true })).toBeVisible();
-  console.info('First managed Train', JSON.stringify({
-    revision: reopened.revision, request: completed.request_id, attempt: completed.attempts[0], trainLoss: last?.metrics.train_loss.last,
-  }));
+  expect((await reviewed()).rows[0].attempts[0]).toMatchObject({
+    job_id: items[0].job_id, progress: { completed_updates: 2, total_updates: 2 },
+  });
 });

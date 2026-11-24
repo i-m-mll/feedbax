@@ -29,6 +29,8 @@ from feedbax.compiler.model_differences import structural_differences
 type Record = dict[str, Any]
 type Direction = Literal["input", "output", "physical"]
 
+_EMPTY_BOUNDARY_PORT = "__new_port__"
+
 
 @dataclass(frozen=True)
 class Port:
@@ -164,17 +166,15 @@ def _port_name(owner: Record, direction: Direction, port: str) -> str:
 
 
 def _signal_end_name(owner: Record, graph: Record, end: Record, direction: Direction) -> str:
-    port = end["port"]
-    match end["owner"]:
-        case "inputs":
-            return f"Inputs · {_port_name(owner, 'input', port)}"
-        case "outputs":
-            return f"Outputs · {_port_name(owner, 'output', port)}"
-        case "component":
-            component = graph["components"][end["component"]]
-            name = _port_name(component, direction, port) if component["kind"] == "composite" else port
-            return f"{component['name']} · {name}"
-    raise AssertionError(f"Expected a signal endpoint: {end}")
+    if end["owner"] != "component":
+        return _port_name(owner, "input" if end["owner"] == "inputs" else "output", end["port"])
+    component = graph["components"][end["component"]]
+    return _port_name(component, direction, end["port"]) if "ports" in component else end["port"]
+
+
+def _signal_end_label(owner: Record, graph: Record, end: Record, direction: Direction) -> str:
+    card = graph["components"][end["component"]]["name"] if end["owner"] == "component" else end["owner"].title()
+    return f"{card} · {_signal_end_name(owner, graph, end, direction)}"
 
 
 def _new_port(owner: Record, direction: Direction, name: str, port: Port) -> Record:
@@ -336,6 +336,20 @@ class ModelEditDraft:
         graph["wires"][key] = _signal(source, target, attachments)
         self.changed.append(_address(address.composites, "wire", id=key))
         return key
+
+    def grow_boundary(self, address: ModelAddress, boundary: str, other: Record) -> Record:
+        owner, graph = self.graph(address)
+        if boundary == "inputs" and address.composites:
+            raise _Refusal(address, "Only the root Inputs card can grow from a connection")
+        direction = "input" if boundary == "inputs" else "output"
+        port = self.port(owner, graph, other, direction)
+        if port is None:
+            raise _Refusal(address, "The other port must exist before adding a boundary port")
+        name = _signal_end_name(owner, graph, other, direction)
+        created = _new_port(owner, direction, name, port)
+        end = _card(boundary, created["id"])
+        self.changed.append(_address(address.composites, "port", end=end))
+        return end
 
     def connection_verdict(
         self, address: ModelAddress, owner: Record, graph: Record,
@@ -726,11 +740,7 @@ class ModelEditDraft:
         port = self.port(owner, graph, source, "output")
         if port is None:
             raise _Refusal(command.source_graph, "source port does not exist")
-        if "component" in source:
-            component = graph["components"][source["component"]]
-            name = _port_name(component, "output", source["port"]) if "ports" in component else source["port"]
-        else:
-            name = _port_name(owner, "input", source["port"])
+        name = _signal_end_name(owner, graph, source, "output")
         for index in range(len(prefix), len(destination)):
             scope = destination[:index]
             current = _address(scope, "graph")
@@ -1090,8 +1100,8 @@ class ModelEditDraft:
             if (source_known and output is None) or (target_known and input_port is None):
                 yield problem(at, "Wire does not name a local source and target port")
             elif output is not None and input_port is not None and (reason := _signal_mismatch(output, input_port)):
-                source_name = _signal_end_name(owner, graph, source, "output")
-                target_name = _signal_end_name(owner, graph, target, "input")
+                source_name = _signal_end_label(owner, graph, source, "output")
+                target_name = _signal_end_label(owner, graph, target, "input")
                 yield problem(at, f"{source_name} → {target_name}: {reason}")
             if targets[_target_key(target)] > 1:
                 yield problem(at, "More than one wire drives this input")
@@ -1214,17 +1224,20 @@ def review_model_connections(
     )
     owner, graph = edit.graph(address)
     source = None if task_signal is not None else review.source.model_dump(mode="json")
+    grow_source = review.grow_source and source == _card("inputs", _EMPTY_BOUNDARY_PORT) and not address.composites
     output = (
         Port(task_signal.type) if task_signal is not None
         else edit.port(owner, graph, source, "output")
     )
     source_reason = _task_input_reason(owner, task_signal) if task_signal is not None else None
+    if review.grow_source and not grow_source:
+        source_reason = "Choose an empty port on the root Inputs card"
     targets = [_card("outputs", port["id"]) for port in owner["ports"]["outputs"]]
     growing = []
     for id_, component in graph["components"].items():
         if component["kind"] == "leaf":
             inputs = [port for direction, port in available(component) if direction == "input"]
-            if task_signal is None and (growth := growing_input(component)):
+            if task_signal is None and not review.grow_source and (growth := growing_input(component)):
                 port, parameter, count = growth
                 trial = {**component, "port_counts": {**component["port_counts"], parameter: count}}
                 trial_graph = {**graph, "components": {**graph["components"], id_: trial}}
@@ -1233,15 +1246,23 @@ def review_model_connections(
             inputs = (port["id"] for port in component["ports"]["inputs"])
         targets.extend(_component(id_, port) for port in inputs)
     choices = []
-    if output is not None and task_signal is None:
+    if output is not None and task_signal is None and not review.grow_source:
         for component in library:
             choices.extend(
                 edits.ModelLibraryConnection(component=component["type"], target_port=port)
                 for direction, port in available(component)
                 if direction == "input"
             )
+    if not review.grow_source:
+        growing.append(edits.ModelConnectionVerdict(
+            target=_card("outputs", _EMPTY_BOUNDARY_PORT), growing=True,
+            reason=source_reason or ("Source must be a local output or a port of the inputs card" if output is None else None),
+        ))
     return edits.ModelConnectionReview(targets=tuple(growing) + tuple(
-        edit.connection_verdict(address, owner, graph, source, output, target, source_reason)
+        edit.connection_verdict(
+            address, owner, graph, None if grow_source else source,
+            edit.port(owner, graph, target, "input") if grow_source else output, target, source_reason,
+        )
         for target in targets
     ), library=tuple(choices))
 
@@ -1256,6 +1277,7 @@ def apply_model_edit(
     task_signal: Callable[[edits.ConnectTaskSignal], edits.ModelTaskSignal] | None = None,
     next_input: Callable[[Record], tuple[str, str, int] | None] | None = None,
     reference: Callable[[], edits.ModelEditState | None] | None = None,
+    instantiate_template: Callable[[str], CompositeComponent] | None = None,
 ) -> edits.ModelEditResult | edits.ModelEditProblem:
     """Apply one command to a private draft and return its complete transaction.
 
@@ -1267,7 +1289,11 @@ def apply_model_edit(
     primary = _address((), "graph")
     try:
         match operation:
-            case edits.AddComponent(graph=primary):
+            case edits.AddComponent(graph=primary, component=component):
+                if isinstance(component, edits.RegisteredComponent):
+                    if instantiate_template is None:
+                        raise _Refusal(primary, "Component templates need a registered definition")
+                    operation = operation.model_copy(update={"component": instantiate_template(component.definition)})
                 edit.add_component(operation)
             case edits.MoveCards(placements=placements):
                 primary = placements[0].address
@@ -1324,14 +1350,21 @@ def apply_model_edit(
                     else:
                         edit.remove(address)
             case edits.ConnectSignal(graph=primary, source=source, target=target):
-                if operation.grow_target:
+                left, right = source.model_dump(mode="json"), target.model_dump(mode="json")
+                if operation.grow_source:
+                    if operation.grow_target or left != _card("inputs", _EMPTY_BOUNDARY_PORT):
+                        raise _Refusal(primary, "An empty Inputs port needs an existing target")
+                    left = edit.grow_boundary(primary, "inputs", right)
+                elif operation.grow_target and right == _card("outputs", _EMPTY_BOUNDARY_PORT):
+                    right = edit.grow_boundary(primary, "outputs", left)
+                elif operation.grow_target:
                     _, graph = edit.graph(primary)
                     component = graph["components"].get(getattr(target, "component", None))
                     growth = next_input(component) if next_input is not None and component is not None else None
                     if growth is None or growth[0] != target.port:
                         raise _Refusal(primary, "The target has no matching growing input")
                     component["port_counts"][growth[1]] = growth[2]
-                edit.connect(primary, source.model_dump(mode="json"), target.model_dump(mode="json"))
+                edit.connect(primary, left, right)
             case edits.ConnectTaskSignal(graph=primary, target=target):
                 if task_signal is None or primary.composites:
                     raise _Refusal(primary, "A task signal connects at the Model root")
@@ -1341,7 +1374,12 @@ def apply_model_edit(
                     raise _Refusal(primary, reason)
                 port = {"id": uuid4().hex, "name": item.label, "type": item.type.model_dump(mode="json")}
                 owner["ports"]["inputs"].append(port)
-                edit.connect(primary, _card("inputs", port["id"]), target.model_dump(mode="json"))
+                left, right = _card("inputs", port["id"]), target.model_dump(mode="json")
+                if operation.grow_target:
+                    if right != _card("outputs", _EMPTY_BOUNDARY_PORT):
+                        raise _Refusal(primary, "Choose an empty Outputs port")
+                    right = edit.grow_boundary(primary, "outputs", left)
+                edit.connect(primary, left, right)
             case edits.ConnectPhysical(graph=primary, connection=connection):
                 edit.physical(primary, connection.model_dump(mode="json"))
             case edits.AddPort(graph=primary):

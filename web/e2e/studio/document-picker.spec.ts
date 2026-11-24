@@ -6,6 +6,7 @@ import type {
 import { appendManagedFiles, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind, palette } from './fixtures/studioKeyboard';
 import { rootPayload } from './fixtures/rootPayload';
+import { applyTo } from './fixtures/controls';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -178,8 +179,8 @@ test('the slot header switches, creates, duplicates, renames and re-keys a step\
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
   await expect(picker('Model')).toHaveText('arm');
 
-  // A Model with no planar geometry leaves the Scene empty, so its tab is disabled rather than showing the picker.
-  await expect(page.getByRole('tab', { name: 'Scene', exact: true })).toHaveAttribute('aria-disabled', 'true');
+  // The renamed Model's point mass is a mechanism the Scene draws, so its tab stays offered.
+  await expect(page.getByRole('tab', { name: 'Scene', exact: true })).not.toHaveAttribute('aria-disabled', 'true');
 
   await header.getByRole('button', { name: 'Split Details', exact: true }).click();
   const slots = page.locator('[data-slot]');
@@ -497,7 +498,8 @@ test('a narrowed edit in the Model view makes a document based on the shown one,
   const before = await requests();
   await mass.fill('2.5');
   await mass.press('Enter');
-  await expect(picker).toHaveText('point-mass-2');
+  await applyTo(page).getByRole('menuitem', { name: 'Selected Readers', exact: true }).click();
+  await expect(picker).toHaveText('Point mass 2');
   await expect.poll(async () => (await saved()).project.documents?.['point-mass-2']).toMatchObject({ base: { document: 'point-mass' } });
   expect((await saved()).project.documents?.['point-mass']).toEqual(files.documents?.['point-mass']);
   const after = await requests();

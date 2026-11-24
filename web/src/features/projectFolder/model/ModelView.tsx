@@ -31,10 +31,12 @@ import type {
   AddModelAttachment, ChangeModelAttachment, ComponentDefinition, EvaluateModelRequest, JsonValue,
   RemoveModelAttachment, SetField,
   ModelAddress, ModelClipboard, ModelConnectionReview, ModelConnectionVerdict, ModelDocument, ModelEditCommand, ModelFieldRequest, ModelPosition, ModelProjection,
-  ModelRemovedElement, StudioProjectSnapshot, StudioSavedTrainKey,
+  ModelRemovedElement, StudioProjectRevision, StudioProjectSnapshot, StudioSavedTrainKey,
 } from '@/generated/studioContracts';
 import { ModelAddressSchema, ModelDocumentSchema, ModelEditProblemSchema } from '@/generated/studioContracts';
 import type { ProjectEditController } from '../projectEditController';
+import { sendWithStore, type AskStore } from '../storeChoice';
+import { editedElement } from '@/components/ui/ChoiceMenu';
 import { ModelCanvas, type ModelCard, type ModelEdge } from './ModelCanvas';
 import { attachmentFields, componentFields, delayText, initialField, modelFields, sharedFields, type Attachment, type FieldChange } from './ModelInspector';
 import {
@@ -72,6 +74,8 @@ type Props = {
   fieldAxes?: Record<string, string[]>;
   selectedSweepValues?: ReadonlyMap<string, ReadonlySet<string>>;
   confirmRunRemoval: ConfirmRunRemoval;
+  /** Asks where an edit that reaches beyond the selection is written. */
+  askStore: AskStore;
   evaluate?: Omit<EvaluateModelRequest, 'revision'>;
   problem?: { address: ModelAddress; reason: string };
   problems?: readonly { address: ModelAddress; reason: string }[];
@@ -136,6 +140,9 @@ function positionsOf(saved: StudioProjectSnapshot, document: string) {
   return saved.presentation?.documents?.[document]?.positions;
 }
 
+/** The port an empty boundary handle stands for until a wire to it adds the port. */
+const newPort = '__new_port__';
+
 function positionAt(index: number): ModelPosition {
   return { x: 245 + 235 * (index % 4), y: 38 + 160 * Math.floor(index / 4) };
 }
@@ -194,7 +201,7 @@ function LeafChoices({ definitions, query, choose, disabled }: {
   </section>)}</>;
 }
 
-export function useStoredModelView({ model, saved, editor, elements: state, active, topologyApplies, fieldEditable, fieldChosenSteps, planCurrent, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, evaluate, problem, problems, projectionRun, path, setPath, sections, openProblems, exceptions }: Props) {
+export function useStoredModelView({ model, saved, editor, elements: state, active, topologyApplies, fieldEditable, fieldChosenSteps, planCurrent, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, askStore, evaluate, problem, problems, projectionRun, path, setPath, sections, openProblems, exceptions }: Props) {
   const selected = useModelSelection(state, model?.id);
   const pick = useStore(state, (current) => current.pick);
   const reveal = useStore(state, (current) => current.reveal);
@@ -205,6 +212,16 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const pendingReview = useRef<PendingReview>();
   const libraryReview = useRef<Promise<ModelConnectionReview>>();
   const [run] = useState(commandQueue);
+  const canvasArea = useRef<HTMLDivElement>(null);
+  /** Where a command made from `from` asks where it is written: its field or canvas element, else the selected one. */
+  const editedAt = (from: Element | null) => () => editedElement(from,
+    canvasArea.current?.querySelector('.react-flow__node.selected, .react-flow__edge.selected') ?? canvasArea.current);
+  /** Applies a Model command, asking at the edited element where it is written when the service asks. */
+  const editModel = (from: Element | null, name: string, document: string, command: ModelEditCommand,
+    reviewed: StudioProjectRevision, scope?: Parameters<ProjectEditController['editModel']>[4]) =>
+    sendWithStore(askStore, editedAt(from), () => editor.flush(),
+      (store_choice) => editor.editModel(name, document, command, reviewed, { ...scope, store_choice }),
+      (result) => result.status === 'asked' ? result.store_choices : undefined);
   const [plan] = useState(() => awaitedValue<{ revision: string; chosenSteps: ReadonlySet<string> }>());
   useEffect(() => {
     plan.set(planCurrent ? { revision: saved.revision, chosenSteps: fieldChosenSteps ?? new Set() } : undefined);
@@ -218,7 +235,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const [searchText, setSearchText] = useState('');
   const [locked, setLocked] = useState(false);
   const [rename, setRename] = useState<string>();
-  const [addPort, setAddPort] = useState<'input' | 'output'>();
+  /** Where the interior Inputs card's empty handle opened the list of signals outside. */
+  const [addPort, setAddPort] = useState<DOMRect>();
   const [menu, setMenu] = useState<{ address: ModelAddress; x: number; y: number; point: ModelPosition }>();
   /** What each target of the connection being drawn would do, by target end. */
   const [review, setReview] = useState<{ source: Port; verdicts: ReadonlyMap<string, ModelConnectionVerdict> }>();
@@ -235,6 +253,9 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const valueRuns = !evaluate && fieldRows?.length && fieldAxes ? { rows: [...fieldRows], axes: fieldAxes } : undefined;
   const projectionBody = model && { ...(projectionRun ? { run: projectionRun } : {}), document: model.id, revision: saved.revision, ...valueRuns };
   const projectionRunId = projectionRun && JSON.stringify(projectionRun);
+  /** The runs whose Model the view shows: a review of a connection reviews that Model. */
+  const shownSelection = evaluate ? { run: evaluate.run, evaluate_scope: evaluate.scope }
+    : { ...(projectionRun ? { run: projectionRun } : {}), ...valueRuns };
   const projection = useQuery({
     queryKey: ['model-projection', saved.project_id, projectionBody],
     queryFn: ({ signal }) => readModelProjection(saved.project_id, projectionBody!, signal),
@@ -349,26 +370,30 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
    */
   async function editField(fieldBody: FieldBody, address: ModelAddress, edit: NonNullable<ModelFieldRequest['edit']>) {
     if (!canEditField) return studioReason('unavailable', studioName('field'));
+    const from = document.activeElement;
     return run(async () => {
       const { chosenSteps } = await plan.next(({ revision }) => revision === editor.getSnapshot().saved.revision);
       const current = editor.getSnapshot().saved;
       try {
-        const result = await projectModelFields(saved.project_id, {
-          ...fieldBody, revision: current.revision, address, edit, chosen_steps: [...chosenSteps],
-        }, editor.signal);
-        if (!result.command && !result.files?.length) return result.problems?.[0]?.reason;
+        const result = await sendWithStore(askStore, editedAt(from), () => editor.flush(),
+          (store_choice) => projectModelFields(saved.project_id, {
+            ...fieldBody, revision: current.revision, address, edit, chosen_steps: [...chosenSteps], store_choice,
+          }, editor.signal), (answer) => answer.store_choices);
+        if (!result) return undefined;
+        if (!result.command && !result.files?.length && !result.created?.length) return result.problems?.[0]?.reason;
         if (result.command) {
           if (result.files?.length && !await confirmRunRemoval(sweepValueRuns(result.removed_values))) return undefined;
-          const applied = await editor.editModel('Set Value', fieldBody.document, result.command, current, fieldBody.run && {
+          const applied = await editModel(from, 'Set Value', fieldBody.document, result.command, current, fieldBody.run && {
             step: fieldBody.run.step, chosen_steps: [...chosenSteps], files: result.files ?? [],
             ...(fieldBody.evaluate_scope ? evaluateEditRuns(fieldBody.evaluate_scope, fieldBody.run, fieldRows)
               : fieldBody.rows?.length && fieldBody.axes ? { rows: fieldBody.rows, axes: fieldBody.axes } : {}),
           });
+          if (!applied) return undefined;
           follow(applied);
           return applied.status === 'refused' ? applied.problem.detail : undefined;
         }
-        if (result.files?.length && await confirmRunRemoval(sweepValueRuns(result.removed_values))) {
-          const variant = result.files.find(({ address }) => address.kind === 'variant')?.address.id;
+        if (await confirmRunRemoval(sweepValueRuns(result.removed_values))) {
+          const variant = result.files?.find(({ address }) => address.kind === 'variant')?.address.id;
           const dependencies = variant ? current.file_revisions.map(({ address: file }) => file).filter((file) =>
             (file.kind === 'document' && file.id === fieldBody.document) ||
             (file.kind === 'step' && chosenSteps.has(file.id)) ||
@@ -376,7 +401,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
             : [{ kind: 'document' as const, id: fieldBody.document },
               ...(fieldBody.run ? [{ kind: 'step' as const, id: fieldBody.run.step }] : []),
               ...(attachments.data?.source ? [{ kind: 'step' as const, id: attachments.data.source.step }] : [])];
-          const settled = await editor.editFiles('Set Field', result.files, { reviewedRevision: current.revision, dependencies });
+          const settled = await editor.storeEdit('Set Field', { files: result.files ?? [], created: result.created },
+            { reviewedRevision: current.revision, dependencies });
           if (settled.status === 'refused') return shownError(settled.error);
         }
         return undefined;
@@ -412,9 +438,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const fieldScope = JSON.stringify([saved.project_id, model?.id, fieldRows, fieldOwners.map(addressKey)]);
   const ownNames = projectedLists.map((list) => new Set(list.map(({ id }) => id.split('.').at(-1)!)));
   const projectedNames = new Set([...ownNames[0] ?? []].filter((name) => ownNames.every((names) => names.has(name))));
-  /** The project's Problems in the shown Model, and the graph's own, such as a wire whose signal types differ. */
-  const modelProblems = [...new Map([...problems ?? [], ...evaluate ? [] : projection.data?.problems ?? []]
-    .map((item) => [JSON.stringify([addressKey(item.address), item.reason]), item])).values()];
+  /** The project's Problems in the shown Model, the graph's own among them: the list Problems shows. */
+  const modelProblems = problems ?? [];
   const addressedProblems = new Map<string, string>();
   for (const item of issue?.address ? [...modelProblems, { address: issue.address, reason: issue.reason }] : modelProblems) {
     let address = item.address;
@@ -432,9 +457,13 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       end: { owner: 'inputs', port: `@task:${signal.id}` }, direction: 'output', name: signal.label,
       type: signal.type, taskSignal: signal.id,
     }));
+    /** The empty handles that add a boundary port by wiring to them; an interior's Inputs card lists signals instead. */
+    const grow = (owner: 'inputs' | 'outputs'): Port => ({
+      end: { owner, port: newPort }, direction: owner === 'inputs' ? 'output' : 'input', name: studioName('addPort'), type: {}, growing: true,
+    });
     const map = new Map<string, Port[]>([
-      [inputCard, [...ports.filter((port) => idFor(port.end) === inputCard), ...unused]],
-      [outputCard, ports.filter((port) => idFor(port.end) === outputCard)],
+      [inputCard, [...ports.filter((port) => idFor(port.end) === inputCard), ...unused, ...currentPath.length ? [] : [grow('inputs')]]],
+      [outputCard, [...ports.filter((port) => idFor(port.end) === outputCard), grow('outputs')]],
     ]);
     for (const [id, component] of Object.entries(drawnInterior?.components ?? {})) {
       map.set(id, componentPorts(id, component, registry));
@@ -505,6 +534,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
    */
   async function attempt(name: string, operation: Operation, choose = true, runs = selectedRuns): Promise<{ address?: ModelAddress; reason: string } | null> {
     if (!model || !editTopology) return { reason: studioReason('unavailable', name) };
+    const from = document.activeElement;
     return run(async () => {
         const subject = evaluate?.run ?? projectionRun;
         const scope = subject && { step: subject.step, chosen_steps: [...(await plan.next(({ revision }) =>
@@ -512,9 +542,10 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         const reviewed = editor.getSnapshot().saved;
         setIssue(undefined);
         try {
-          const result = await editor.editModel(name, model.id, { operation }, reviewed, scope);
+          const result = await editModel(from, name, model.id, { operation }, reviewed, scope);
+          if (!result) return null;
           if (result.status === 'refused') return { address: result.problem.address, reason: result.problem.detail };
-          if (result.status === 'asked') return { reason: 'Choose where to store this edit.' };
+          if (result.status === 'asked') throw new Error('The edit was asked again where it applies.');
           const shown = follow(result);
           if (result.clipboard) clipboard = result.clipboard;
           if (choose && result.changed.length) {
@@ -540,6 +571,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     if (!model || !readBody || !attachments.data) {
       return studioReason('unavailable', name);
     }
+    const from = document.activeElement;
     return run(async () => {
         setIssue(undefined);
         try {
@@ -547,13 +579,14 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           let shown = model.id;
           const { scope } = readBody;
           const { chosenSteps } = await plan.next(({ revision }) => revision === editor.getSnapshot().saved.revision);
-          const applied = await editor.editModel(name, model.id, {
+          const applied = await editModel(from, name, model.id, {
             operation: difference.op === 'set_field' ? difference : { op: 'set_attachment', difference },
           }, editor.getSnapshot().saved, {
             step: readBody.run.step, chosen_steps: [...chosenSteps], ...evaluateEditRuns(scope, readBody.run, fieldRows),
           });
+          if (!applied) return undefined;
           if (applied.status === 'refused') throw new Error(applied.problem.detail);
-          if (applied.status === 'asked') throw new Error('Choose where to store this edit.');
+          if (applied.status === 'asked') throw new Error('The edit was asked again where it applies.');
           shown = follow(applied) ?? shown;
           const [first] = applied.changed;
           if (!first) throw new Error('The edit changed nothing.');
@@ -621,7 +654,9 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     if (!source || (source.owner !== 'inputs' && source.owner !== 'component' && source.owner !== 'task')) return undefined;
     pendingReview.current?.request.abort();
     const request = new AbortController();
-    const reviewed = reviewModelConnections(saved.project_id, { revision: saved.revision, document: model.id, graph, source }, request.signal);
+    const reviewed = reviewModelConnections(saved.project_id, {
+      revision: saved.revision, document: model.id, graph, source, ...shownSelection, ...port.growing ? { grow_source: true } : {},
+    }, request.signal);
     const pending = { source: port, reviewed, request };
     pendingReview.current = pending;
     void reviewed.then(({ targets }) => {
@@ -651,9 +686,11 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const { source } = pending;
     const left = wireEnd(source);
     if (source.taskSignal && projectionRun) {
-      void apply(studioName('bindSignal'), { op: 'connect_task_signal', graph, run: projectionRun, signal: source.taskSignal, target: right });
+      void apply(studioName('bindSignal'), { op: 'connect_task_signal', graph, run: projectionRun, signal: source.taskSignal, target: right,
+        ...target.growing ? { grow_target: true } : {} });
     } else if (left.owner === 'component' || left.owner === 'inputs') {
-      void apply(studioName('connectPorts'), { op: 'connect', graph, source: left, target: right, ...(target.growing ? { grow_target: true } : {}) });
+      void apply(studioName('connectPorts'), { op: 'connect', graph, source: left, target: right,
+        ...target.growing ? { grow_target: true } : {}, ...source.growing ? { grow_source: true } : {} });
     }
   }
   function keyboardConnect(port: Port) {
@@ -856,6 +893,43 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       addressKey(at(address, address.element.parent)) === addressKey(owner) ? [definition as Attachment] : []);
   }
 
+  /**
+   * The signals outside the current composite that its Inputs card can bring in, at each level around it. Signals whose
+   * names collide are numbered in the order their cards sit, left to right and top to bottom.
+   */
+  function outsideSignals() {
+    if (!model) return [];
+    const signals = currentPath.flatMap((excluded, depth) => {
+      const outerPath = currentPath.slice(0, depth);
+      const outerGraph = currentGraph(outerPath);
+      const outer = modelPath(model.value, outerPath).owner;
+      const ports = [
+        ...boundaryPorts(outer.ports).filter(({ direction }) => direction === 'output'),
+        ...Object.entries(outer.interior.components ?? {}).filter(([id]) => id !== excluded).flatMap(([id, component]) =>
+          componentPorts(id, component, registry).filter(({ direction }) => direction === 'output')),
+      ];
+      return ports.flatMap((port) => {
+        const source = wireEnd(port);
+        if (source.owner !== 'inputs' && source.owner !== 'component') return [];
+        const owner = source.owner === 'component' ? outer.interior.components?.[source.component]?.name : undefined;
+        const card = at(outerGraph, source.owner === 'component' ? { kind: 'component', id: source.component } : { kind: 'inputs' });
+        return [{
+          key: `${depth}:${endKey(source)}`, source, outerPath, position: positionsOf(saved, model.id)?.[addressKey(card)],
+          label: [...outerPath.map((id, index) => modelPath(model.value, outerPath.slice(0, index)).owner.interior.components?.[id]?.name ?? id),
+            [owner, port.name].filter(Boolean).join('.')].join(' › '),
+        }];
+      });
+    });
+    const named = new Map<string, typeof signals>();
+    for (const signal of signals) named.set(signal.label, [...named.get(signal.label) ?? [], signal]);
+    for (const same of named.values()) {
+      if (same.length < 2) continue;
+      same.sort((a, b) => (a.position?.x ?? Infinity) - (b.position?.x ?? Infinity) || (a.position?.y ?? Infinity) - (b.position?.y ?? Infinity))
+        .forEach((signal, index) => { signal.label = `${signal.label} · ${index + 1}`; });
+    }
+    return signals;
+  }
+
   function move(nodes: ModelCard[]) {
     const placements = nodes.filter((node) => !node.data.locked)
       .map((node) => ({ address: node.data.address, position: node.position }));
@@ -908,7 +982,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         } }),
       },
       position: cardPosition(address, () => ghost && wasAt ? wasAt : definition ? positionAt(index)
-        : { x: id === inputCard ? 18 : 245 + 235 * 4, y: 38 }),
+        : id === inputCard ? { x: 18, y: 38 } : positionAt(2)),
       selected: !!definition && selectedIds.has(key),
       draggable: !ghost && editTopology && !locked && !pick,
       selectable: !!definition && !pick,
@@ -937,7 +1011,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         enter,
         renaming: !ghost && rename === key, endRename: () => setRename(undefined),
         rename: (name) => { void apply(studioName('rename'), { op: 'rename', address, name }).then((ok) => { if (ok) setRename(undefined); }); },
-        addPort: !definition && editTopology ? () => setAddPort(id === inputCard ? 'input' : 'output') : undefined,
+        addPort: !definition && id === inputCard && currentPath.length && editTopology && !locked ? setAddPort : undefined,
       },
     };
   }
@@ -1102,6 +1176,9 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   }
 
   const componentsOnly = selectedHere.length > 0 && selectedHere.every((item) => item.element.kind === 'component');
+  /** Why the selected composite cannot be ungrouped, null when it can; undefined when nothing it reads says. */
+  const ungrouping = component?.kind === 'composite' && selection
+    ? projection.data?.ungroup?.find(({ address }) => addressKey(address) === addressKey(selection))?.reason : undefined;
   const viewportCommands = canvasViewportCommands(() => viewport.current, !!model);
   const isCollapsed = !!collapsed?.[graphId];
   const collapse = bindStudioCommand('collapseAll', () => {
@@ -1159,7 +1236,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     bindStudioCommand('modelGroup', () => void apply(studioName('modelGroup'), { op: 'group', selection: [...selectedHere], name: studioName('modelGroup') }),
       { enabled: editTopology && componentsOnly && !physical }),
     bindStudioCommand('modelUngroup', () => { if (selection) void apply(studioName('modelUngroup'), { op: 'ungroup', address: selection }); },
-      { enabled: editTopology && component?.kind === 'composite' && !component.interior.physical_domain }),
+      { enabled: editTopology && ungrouping === null, reason: editTopology && ungrouping ? ungrouping : undefined }),
     bindStudioCommand('modelCopy', () => void apply(studioName('modelCopy'), { op: 'copy', selection: [...selectedHere] }, false),
       { enabled: editTopology && componentsOnly }),
     bindStudioCommand('modelCut', () => void apply(studioName('modelCut'), { op: 'cut', selection: [...selectedHere] }),
@@ -1379,7 +1456,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     ...commands.filter((command) => command.id.startsWith('model')).map((command) => command.id === 'modelRename'
       ? { ...command, invoke: () => outlineTree.current?.rename(addressKey(address)) } : command),
     ...topologyCommands(address), ...attachmentCommands(address),
-  ].filter((command) => command.enabled);
+  ].filter((command) => command.enabled || command.reason !== undefined);
 
   return {
     documentId: model?.id,
@@ -1404,7 +1481,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       {!evaluate && projection.error && <StudioRegion state={studioReadState(
         'model', projection.data, projection.error, () => { void projection.refetch(); },
       )} />}
-      <div className="min-h-0 flex-1">
+      <div ref={canvasArea} className="min-h-0 flex-1">
         <ModelCanvas key={mountKey} nodes={nodes} edges={edges} physical={!!physical} locked={locked} canEdit={editTopology}
           collapsed={isCollapsed} viewportRef={viewport} collapse={collapse} lock={lock} viewportCommands={viewportCommands}
           onCanvasPoint={(point) => { cursor.current = point; }}
@@ -1489,7 +1566,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
           menu={(node) => {
             const address = outline.addresses.get(node.id);
             return address && outlineCommands(address).map((command) =>
-              <MenuItem key={command.id} {...commandAttributes(command)} onClick={command.invoke}>{command.label}</MenuItem>);
+              <MenuItem key={command.id} {...commandAttributes(command)} disabled={!command.enabled} onClick={command.invoke}>{command.label}</MenuItem>);
           }} />}
       </DrawerSection>
     </Drawer>,
@@ -1506,45 +1583,21 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
             onClick={() => add(item, search, searchSource, port)}>{shortName(item.name)} · {port}</Button> : [];
       })
         : <LeafChoices definitions={definitions} query={searchText} choose={(item) => add(item, search)} disabled={!editTopology} />}
-    </Dialog> : addPort ? <Dialog ariaLabel={studioName('addPort')} onClose={() => setAddPort(undefined)} manageFocus
-      panelClassName="grid max-h-[70vh] w-[min(28rem,90vw)] gap-2 overflow-auto">
-      <ValueField model={rawField({
-        id: 'name', label: studioName('name'), type: { kind: 'string' }, value: '',
-        change: async (raw) => {
-          const name = String(raw).trim();
-          if (!name) return studioReason('takesText', studioName('name'));
-          const refusal = await attempt(studioName('addPort'), {
-            op: 'add_port', graph, direction: addPort, port: { id: crypto.randomUUID(), name, type: {} },
-          }, false);
-          if (!refusal) setAddPort(undefined);
-          return refusal?.reason;
-        },
-      })} />
-      {addPort === 'input' && model && currentPath.flatMap((excluded, depth) => {
-        const outerPath = currentPath.slice(0, depth);
-        const outer = modelPath(model.value, outerPath).owner;
-        const candidates = [
-          ...boundaryPorts(outer.ports).filter(({ direction }) => direction === 'output'),
-          ...Object.entries(outer.interior.components ?? {}).filter(([id]) => id !== excluded).flatMap(([id, component]) =>
-            componentPorts(id, component, registry).filter(({ direction }) => direction === 'output')),
-        ];
-        return candidates.map((port) => {
-          const source = wireEnd(port);
-          if (source.owner !== 'inputs' && source.owner !== 'component') return null;
-          return <Button key={`${depth}:${endKey(source)}`} variant="ghost" align="start" onClick={() => {
-            void apply(studioName('bringSignal'), { op: 'bring_signal_in', source_graph: currentGraph(outerPath),
-              source, destination: graph }, false).then((ok) => { if (ok) setAddPort(undefined); });
-          }}>{'name' in outer ? `${outer.name} › ` : ''}{source.owner === 'component' ? `${outer.interior.components?.[source.component]?.name}.` : ''}{port.name}</Button>;
-        });
-      })}
-    </Dialog> : menu && <Menu open onOpenChange={(open) => { if (!open) setMenu(undefined); }}>
+    </Dialog> : addPort && model ? <Menu open onOpenChange={(open) => { if (!open) setAddPort(undefined); }}>
+      <MenuContent aria-label={studioName('addPort')} anchor={{ getBoundingClientRect: () => addPort }}>
+        {outsideSignals().map(({ key, label, source, outerPath }) => <MenuItem key={key} onClick={() => {
+          setAddPort(undefined);
+          void apply(studioName('bringSignal'), { op: 'bring_signal_in', source_graph: currentGraph(outerPath), source, destination: graph }, false);
+        }}>{label}</MenuItem>)}
+      </MenuContent>
+    </Menu> : menu && <Menu open onOpenChange={(open) => { if (!open) setMenu(undefined); }}>
       <MenuContent aria-label={studioName('modelCommands')} anchor={{
         getBoundingClientRect: () => DOMRect.fromRect({ x: menu.x, y: menu.y, width: 0, height: 0 }),
       }}>
         {[...commands.filter((command) => command.id.startsWith('model')),
           ...topologyCommands(menu.address, menu.point), ...attachmentCommands(menu.address)]
-          .filter((command) => command.enabled).map((command) =>
-          <MenuItem key={command.id} {...commandAttributes(command)}
+          .filter((command) => command.enabled || command.reason !== undefined).map((command) =>
+          <MenuItem key={command.id} {...commandAttributes(command)} disabled={!command.enabled}
             onClick={() => { setMenu(undefined); command.invoke(); }}>{command.label}</MenuItem>)}
       </MenuContent>
     </Menu>,

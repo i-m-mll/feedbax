@@ -2,14 +2,14 @@ import type { StudioRegionIssue } from '@/components/activity/StudioRegion';
 import { studioName } from '@/components/activity/studioVocabulary';
 import { elementKey, type ElementAddress } from '@/features/projectWindow/elementSelection';
 import type {
-  DomainDiagnostic, JsonValue, ModelAddress, StudioSceneGeometryResponse, TaskDocument, TrialRecord, ValueType,
+  DomainDiagnostic, JsonValue, ModelAddress, StudioSceneGeometryFrame, TaskDocument, TrialRecord, ValueType,
 } from '@/generated/studioContracts';
-import type { TrialShown } from '@/features/projectFolder/task/trialSample';
 import type { ScenePoint } from './planarProjection';
 import type { Scene, SceneElement, SceneGroup, SceneShape, SceneTrack } from './sceneView';
 
 /** Values of a Model's states, by state address, that pose its mechanisms. */
 export type StateValues = Readonly<Record<string, JsonValue>>;
+export type SceneModelGeometry = StudioSceneGeometryFrame & { document_id: string };
 
 /** Whether a value of `type` has a place in the world: a position, two lengths. */
 export function hasPlace(type: ValueType) {
@@ -28,42 +28,42 @@ const at = (values: JsonValue | undefined, step: number) =>
   Array.isArray(values) && values.length ? values[Math.min(step, values.length - 1)] : undefined;
 
 /**
- * The state values `record` recorded at state frame `frame`: each configuration and each world-frame track. Undefined
+ * The state values `record` recorded at each state frame: each configuration and each world-frame track. Undefined
  * when the record holds no recorded state, as a trial drawn before a run does not.
  */
-export function recordedState(record: TrialRecord, frame: number): StateValues | undefined {
-  const configurations = Object.entries(record.configurations ?? {});
-  const tracks = Object.entries(record.states ?? {});
-  if (!configurations.length && !tracks.length) return undefined;
-  return Object.fromEntries([
-    ...tracks.flatMap(([address, track]) => {
-      const sample = at(track.samples, frame);
-      return sample === undefined ? [] : [[address, sample]];
-    }),
-    ...configurations.flatMap(([address, history]) => {
-      const sample = at(history, frame);
-      return sample === undefined ? [] : [[address, sample]];
-    }),
-  ]);
+export function recordedStates(record: TrialRecord): StateValues[] | undefined {
+  const histories: [string, JsonValue[]][] = [
+    ...Object.entries(record.states ?? {}).map(([address, track]): [string, JsonValue[]] => [address, track.samples]),
+    ...Object.entries(record.configurations ?? {}).flatMap(([address, history]): [string, JsonValue[]][] =>
+      Array.isArray(history) ? [[address, history]] : []),
+  ];
+  if (!histories.length) return undefined;
+  const frames = Math.max(...histories.map(([, history]) => history.length));
+  return Array.from({ length: frames }, (_, frame) => Object.fromEntries(histories.flatMap(([address, history]) => {
+    const sample = at(history, frame);
+    return sample === undefined ? [] : [[address, sample]];
+  })));
 }
 
 /**
- * Each world-frame path `record` recorded, with where it is at state frame `frame`. States that are one quantity under
- * two names (a mechanism's effector and its skeleton's position) record the same path, which is drawn once.
+ * Each world-frame path `record` recorded, with where it is at state frame `frame`; under `trails`, drawn up to that
+ * frame. States that are one quantity under two names (a mechanism's effector and its skeleton's position) record the
+ * same path, which is drawn once.
  */
-export function recordedTracks(record: TrialRecord | undefined, frame: number): SceneTrack[] {
-  const paths = new Map(Object.values(record?.states ?? {}).filter((track) => track.frame === 'world')
+export function recordedTracks(record: TrialRecord, frame: number, trails: boolean, picked: boolean): SceneTrack[] {
+  const paths = new Map(Object.values(record.states ?? {}).filter((track) => track.frame === 'world')
     .map((track) => [JSON.stringify(track.samples), track.samples]));
-  return [...paths.values()].map((samples) => ({
-    points: samples.map(point).filter((place) => place !== undefined),
-    head: point(at(samples, frame)),
-  }));
+  return [...paths.values()].map((samples) => {
+    const points = samples.map(point).filter((place) => place !== undefined);
+    const drawn = trails ? samples.slice(0, frame + 1).map(point).filter((place) => place !== undefined).length : points.length;
+    return { points, drawn, head: point(at(samples, frame)), picked };
+  });
 }
 
 const component = (address: ModelAddress) => address.element.kind === 'component' ? address.element.id : undefined;
 
 /** Each mechanism the geometry holds, with its bodies, joints and muscles, and each diagnostic on the element it names. */
-export function mechanismGroups(geometry: StudioSceneGeometryResponse): SceneGroup[] {
+export function mechanismGroups(geometry: SceneModelGeometry): SceneGroup[] {
   const document = geometry.document_id;
   const located = (address: ModelAddress): ElementAddress => ({ document, address });
   const named = new Set<string>();
@@ -102,7 +102,7 @@ export function mechanismGroups(geometry: StudioSceneGeometryResponse): SceneGro
 }
 
 /** The shapes of each mechanism the geometry holds. */
-export const mechanismShapes = (geometry: StudioSceneGeometryResponse): SceneShape[] =>
+export const mechanismShapes = (geometry: SceneModelGeometry): SceneShape[] =>
   mechanismGroups(geometry).flatMap((group) => group.elements.flatMap((element) => element.shape ?? []));
 
 /** A task variable's place at `step` of `record`: its value, or its value at that step when it varies within the trial. */
@@ -127,11 +127,10 @@ export interface SceneTask {
 }
 
 /**
- * The task's variables and signals that have a place, at `step`: solid where `shown` is one trial, hollow at each
- * of the trials that may be shown.
+ * The task's variables and signals that have a place, at `step`: solid in the picked trial, hollow at each of the
+ * trials that may be shown.
  */
-export function taskGroup(task: SceneTask, shown: TrialShown | undefined, possible: readonly TrialRecord[], step: number): SceneGroup | undefined {
-  const record = shown?.kind === 'one' ? shown.record : undefined;
+export function taskGroup(task: SceneTask, record: TrialRecord | undefined, possible: readonly TrialRecord[], step: number): SceneGroup | undefined {
   const address: ElementAddress = { document: task.document, element: { kind: 'named', id: 'task' } };
   const element = (kind: 'variable' | 'signal', id: string, name: string,
     place: (record: TrialRecord, id: string, step: number) => ScenePoint | undefined): SceneElement => {
@@ -154,31 +153,40 @@ export function taskGroup(task: SceneTask, shown: TrialShown | undefined, possib
 }
 
 /**
- * What the clock gives the Scene: the shown trial, at the state frame the playhead is at; the trials that may be shown
- * beside it, before a run; the task; and, when the shown trial could not be read, why.
+ * What the clock gives the Scene: the picked trial (the one shown, or the one drawn heavier under All), at the state
+ * frame the playhead is at; the trials drawn beside it (the samples it may be, or every recorded trial under All); the
+ * task; whether paths end at the playhead; and, when the picked trial could not be read, why.
  */
 export interface SceneTrial {
-  readonly shown: TrialShown | undefined;
+  readonly picked: TrialRecord | undefined;
   readonly possible: readonly TrialRecord[];
   readonly frame: number;
   readonly task: SceneTask | undefined;
+  readonly trails: boolean;
   readonly failure?: { readonly kind: 'failed'; readonly issue: StudioRegionIssue; readonly retry: () => void };
 }
 
-/** The Scene of what the clock shows: the posed mechanisms, the rest pose beneath, the recorded tracks and the task. */
-export function trialScene({ posed, rest, task, shown, possible, frame }: {
-  posed: StudioSceneGeometryResponse;
-  rest: StudioSceneGeometryResponse | undefined;
+/**
+ * The Scene of what the clock shows: the mechanisms posed by the picked trial, the rest pose beneath, each recorded
+ * track (the picked trial's heavier) and the task.
+ */
+export function trialScene({ posed, rest, task, picked, possible, frame, trails }: {
+  posed: SceneModelGeometry;
+  rest: SceneModelGeometry | undefined;
   task: SceneTask | undefined;
-  shown: TrialShown | undefined;
+  picked: TrialRecord | undefined;
   possible: readonly TrialRecord[];
   /** The state frame at the playhead; the task's values are read at the step it begins. */
   frame: number;
+  trails: boolean;
 }): Scene {
-  const drawn = task && taskGroup(task, shown, possible, frame);
+  const drawn = task && taskGroup(task, picked, possible, frame);
   return {
     groups: [...mechanismGroups(posed), ...drawn ? [drawn] : []],
     rest: rest ? mechanismShapes(rest) : [],
-    tracks: recordedTracks(shown?.kind === 'one' ? shown.record : undefined, frame),
+    tracks: [
+      ...possible.filter((record) => record.id !== picked?.id).flatMap((record) => recordedTracks(record, frame, trails, false)),
+      ...picked ? recordedTracks(picked, frame, trails, true) : [],
+    ],
   };
 }

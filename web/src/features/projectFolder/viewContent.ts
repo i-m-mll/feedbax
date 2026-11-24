@@ -5,7 +5,7 @@ import type { ModelDocument, StudioProjectWindowMapProblem } from '@/generated/s
 
 export const viewsByKind = {
   train: ['runs', 'model', 'task', 'objective', 'training', 'scene', 'results'],
-  evaluate: ['runs', 'model', 'task', 'scene', 'results'],
+  evaluate: ['runs', 'model', 'task', 'objective', 'scene', 'results'],
   analyze: ['runs', 'analysis', 'figures'],
   report: ['runs', 'document'],
 } as const satisfies Record<PlanStepView['kind'], readonly ProjectWindowView[]>;
@@ -20,6 +20,8 @@ export interface ViewSubject {
   /** The step's run its Task and Objective are read through: none, one with a definition, or one whose own definition
    * is refused, for which the definition views are dimmed by its problems. */
   readonly run: 'none' | 'resolved' | 'unresolved';
+  /** Whether the step is scored by an Objective: its own, or that of the Train whose checkpoint it evaluates. */
+  readonly objective: boolean;
   /** The stored Model the step's Model and Scene show. */
   readonly model: ModelDocument | undefined;
   /** Whether the Model has a mechanism the Scene draws; unknown while its geometry is read. */
@@ -42,8 +44,10 @@ export function viewAbsence(view: ProjectWindowView, subject: ViewSubject): stri
   switch (view) {
     case 'model':
       return subject.model ? undefined : studioReason('definitionUnavailable', studioName('model'));
-    case 'task':
     case 'objective':
+      if (!subject.objective) return studioReason('definitionUnavailable', studioName('objective'));
+      return subject.run === 'none' ? studioReason('noRuns', step.label) : undefined;
+    case 'task':
       return subject.run === 'none' ? studioReason('noRuns', step.label) : undefined;
     case 'training':
       return subject.trainingForm ? undefined : studioReason('definitionUnavailable', studioName('training'));

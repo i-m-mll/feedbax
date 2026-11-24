@@ -183,12 +183,16 @@ function SceneDrawingCanvas({
         {scene.rest.map((shape, index) => <RestDrawing key={index} shape={shape} project={project} />)}
       </g>
       <g pointerEvents="none" aria-hidden="true">
-        {scene.tracks.map((track, index) => <g key={index}>
-          {track.points.length > 1 && <polyline data-scene-track points={track.points.map((point) => project(point).join(',')).join(' ')}
-            fill="none" stroke="var(--text-primary)" strokeWidth={2} vectorEffect="non-scaling-stroke" />}
-          {track.head && <circle data-scene-cursor cx={project(track.head)[0]} cy={project(track.head)[1]} r={3}
-            fill="var(--text-primary)" />}
-        </g>)}
+        {scene.tracks.map((track, index) => {
+          const stroke = track.picked ? 'var(--text-primary)' : 'var(--studio-scene-outline)';
+          return <g key={index}>
+            {track.drawn > 0 && <polyline data-scene-track={track.picked ? 'picked' : 'other'} fill="none" stroke={stroke}
+              points={track.points.slice(0, track.drawn).map((point) => project(point).join(',')).join(' ')}
+              strokeWidth={track.picked ? 2 : 1} vectorEffect="non-scaling-stroke" />}
+            {track.head && <circle data-scene-cursor cx={project(track.head)[0]} cy={project(track.head)[1]} r={track.picked ? 3 : 1.5}
+              fill={stroke} />}
+          </g>;
+        })}
       </g>
       {drawn.map((element) => {
         const mark = element.problem && project(elementPoints(element)[0]);
