@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
@@ -14,6 +15,7 @@ from pydantic_core import to_json, to_jsonable_python
 
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
+from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.matrix_core import apply_override_patch_copy, resolve_segment
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, SetField
@@ -337,6 +339,67 @@ def document_write_target(payload: Any, path: str) -> tuple[str, str] | None:
     if len(parts) >= 4 and parts[0] == "documents" and parts[2] == "payload":
         return parts[1], ".".join(parts[3:])
     return reference_write_target(payload, parts)
+
+
+_SUBJECT_TASK_ROLES = ("task", "python_task")
+
+
+def _variation_name(target: str) -> str:
+    parts = target.split(".")
+    if all(re.fullmatch(r"[A-Za-z0-9_]+", part) for part in parts):
+        return "-".join(parts)
+    return "task-" + sha256_bytes(target.encode())[:16]
+
+
+def subject_task_write(payload: Any, patch: OverridePatch) -> tuple[OverridePatch, bool] | None:
+    """The variation write that lowers an Evaluate's write at ``trial_documents.<task role>.<field>`` of the Task it
+    runs from its subject, or ``None`` when the step names its own Task there.
+
+    The write becomes the edit ``task.<field>``. It replaces an edit at the same target, and is otherwise added after
+    the authored edits. A named variation holds no edit inside another's target, so there the variation becomes the
+    list of its edits in name order followed by this one; the flag says so.
+    """
+    parts = patch.path.split(".")
+    if len(parts) < 3 or parts[0] != "trial_documents" or parts[1] not in _SUBJECT_TASK_ROLES:
+        return None
+    slots = payload.get("trial_documents") if isinstance(payload, dict) else None
+    if isinstance(slots, dict) and "task" in slots:
+        return None
+    params = payload.get("params") if isinstance(payload, dict) else None
+    variation = params.get("variation") if isinstance(params, dict) else None
+    if not isinstance(variation, (dict, list)):
+        raise ValueError("A Task field write requires the Evaluate's variation")
+    target = ".".join(("task", *parts[2:]))
+    edit = {"op": patch.op, "path": target, **({"value": patch.value} if patch.op != "remove" else {})}
+    entries = list(variation.items()) if isinstance(variation, dict) else list(enumerate(variation))
+    paths = {name: entry.get("path") for name, entry in entries if isinstance(entry, dict)}
+    same = next((name for name, path in paths.items() if path == target), None)
+    if same is not None:
+        return OverridePatch(op="replace", path=f"params.variation.{same}", value=edit), False
+    if isinstance(variation, list):
+        return OverridePatch(op="add", path=f"params.variation.{len(variation)}", value=edit), False
+    if any(isinstance(path, str) and (target.startswith(path + ".") or path.startswith(target + "."))
+           for path in paths.values()):
+        ordered = [variation[name] for name in sorted(variation)]
+        return OverridePatch(op="replace", path="params.variation", value=[*ordered, edit]), True
+    name = _variation_name(target)
+    while name in variation:
+        name += "-field"
+    return OverridePatch(op="add", path=f"params.variation.{name}", value=edit), False
+
+
+def subject_model_read(project: Project, payload: Any, document: str) -> Any | None:
+    """An Evaluate's payload reading ``document`` as its own Model, when a row writes into that Model document and
+    the step names no Model of its own; the step then runs the subject's Model with the row's writes as its
+    differences. ``None`` when the step already reads a Model, or ``document`` is not one."""
+    entry = project.documents.get(document)
+    if entry is None or entry.schema_id != MODEL_DOCUMENT_SCHEMA_ID or not isinstance(payload, dict):
+        return None
+    slots = payload.get("trial_documents")
+    if isinstance(slots, dict) and "model" in slots:
+        return None
+    reference = DocumentReference(document=document)
+    return payload | {"trial_documents": {**(slots if isinstance(slots, dict) else {}), "model": reference}}
 
 
 def _figure_slot(path: str) -> str | None:
@@ -1019,8 +1082,27 @@ class _Resolver:
                         raise ValueError("Use an unscoped Model field target in a step sweep")
                     fields.append((path, patch))
                     continue
-                if (target := document_write_target(payload, patch.path)) is not None:
+                authored = patch.path
+                if authored.split(".")[0] == "inputs" and not (isinstance(payload, dict) and "inputs" in payload):
+                    raise ValueError("An input is narrowed by its Runs rule and Checkpoint, not swept")
+                reordered = False
+                if self.project.steps[name].kind == "evaluate" and (
+                    lowered := subject_task_write(payload, patch)
+                ) is not None:
+                    patch, reordered = lowered
+                elif (target := document_write_target(payload, patch.path)) is not None:
                     document, document_path = target
+                    if self.project.steps[name].kind == "evaluate" and (
+                        read := subject_model_read(self.project, payload, document)
+                    ) is not None:
+                        if origins is not None:
+                            held = isinstance(source_at(origins, ("trial_documents",)), SourceObject)
+                            slot = "trial_documents.model" if held else "trial_documents"
+                            value = read["trial_documents"]["model"] if held else read["trial_documents"]
+                            origins = patch_source(
+                                origins, OverridePatch(op="add", path=slot, value=None), source_shape(value, None),
+                            )
+                        payload = read
                     source, override = (None, None) if origins is None else self.row_source(
                         row.patch_authors.get(patch.path, name), row, patch.path,
                     )
@@ -1037,11 +1119,25 @@ class _Resolver:
                     )
                 if patch.op != "remove":
                     patch = patch.model_copy(update={"value": _pack(patch.value, patch.path, name)})
+                variation = payload["params"]["variation"] if reordered else None
                 payload = apply_override_patch_copy(payload, patch)
                 if origins is not None:
-                    author = row.patch_authors.get(patch.path, name)
-                    source, override = self.row_source(author, row, patch.path)
-                    origins = patch_source(origins, patch, source_shape(patch.value, source, override))
+                    author = row.patch_authors.get(authored, name)
+                    source, override = self.row_source(author, row, authored)
+                    if authored == patch.path:
+                        shape = source_shape(patch.value, source, override)
+                    else:
+                        edit = patch.value[-1] if reordered else patch.value
+                        shape = SourceObject(source, {
+                            key: source_shape(value, source, override) if key == "value" else source
+                            for key, value in edit.items()
+                        })
+                    if variation is not None:
+                        held = source_at(origins, ("params", "variation"))
+                        shape = SourceList(getattr(held, "source", None), iter([
+                            *(source_at(held, (entry,)) for entry in sorted(variation)), shape,
+                        ]), patch.value)
+                    origins = patch_source(origins, patch, shape)
             if fields:
                 if not isinstance(payload, dict):
                     raise ValueError("a root document reference is atomic")

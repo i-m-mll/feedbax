@@ -7,6 +7,7 @@ import {
 } from '@/components/activity/studioVocabulary';
 import { shownName } from '@/features/pipeline/planView';
 import type { DocumentPickerModel } from '@/features/projectWindow/DocumentPicker';
+import { blankTask } from '@/generated/studioContracts';
 import type {
   Document, StudioProjectFilePatch, StudioSavedTrainKey, StudioTrialAuthoringRequest,
 } from '@/generated/studioContracts';
@@ -19,7 +20,7 @@ const supervisedTrainMethod = 'feedbax.supervised_gradient';
 
 export const blankDocuments = {
   model: { schema: 'feedbax.spec.model', payload: { step_seconds: 0.01, ports: {}, interior: {} } },
-  task: { schema: 'feedbax.spec.python_task', payload: { type: 'feedbax.Reaching', params: {} } },
+  task: { schema: 'feedbax.spec.task_document', payload: blankTask },
   objective: { schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] } },
   training: {
     schema: 'feedbax.spec.training_document',
@@ -43,7 +44,7 @@ export const blankDocuments = {
 
 const schemas: Record<DocumentRole, readonly string[]> = {
   model: [blankDocuments.model.schema],
-  task: [blankDocuments.task.schema, 'feedbax.spec.task_document'],
+  task: [blankDocuments.task.schema, 'feedbax.spec.python_task'],
   objective: [blankDocuments.objective.schema],
   training: [blankDocuments.training.schema],
   analysis: [blankDocuments.analysis.schema],

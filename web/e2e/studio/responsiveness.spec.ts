@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import { type APIRequestContext, type CDPSession, type Locator, type Page } from '@playwright/test';
-import type { ModelDocument, ModelEditResponse, ModelFieldResponse, StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns, WorkspaceReplayTrial } from '../../src/generated/studioContracts';
+import { blankTask, type ModelDocument, type ModelEditResponse, type ModelFieldResponse, type StudioJobSubmission, type StudioProjectSnapshot, type StudioSavedTrainRuns, type WorkspaceReplayTrial } from '../../src/generated/studioContracts';
 import { summarizeStudioTrace } from './fixtures/studioTrace';
 import { fixture, mapStep, runName, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
@@ -429,7 +429,7 @@ test('measures mounted Model, Runs and Scene responsiveness @responsiveness', as
   const { snapshot, projectPath } = await seedManagedProject(request, [
     modelFile,
     { kind: 'document', id: 'profile-task', document: {
-      schema: 'feedbax.spec.python_task', payload: { type: 'feedbax.Reaching', params: {} },
+      schema: 'feedbax.spec.task_document', payload: blankTask,
     } },
     { kind: 'document', id: 'profile-objective', document: {
       schema: 'feedbax.spec.objective_document', payload: { id: 'profile-objective', terms: [] },

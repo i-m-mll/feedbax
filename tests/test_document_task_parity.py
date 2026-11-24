@@ -37,6 +37,7 @@ from feedbax.objectives.document import (
     Reduction,
     compile_objective,
 )
+from feedbax.contracts.task_document import Length, Rest
 from feedbax.tasks.document import (
     Cell,
     DocumentTask,
@@ -189,15 +190,15 @@ def example(kind, functions, *, zero=False, interface=PORTLESS, reference_valida
         variables.append(variable(2, "B(0.5)"))
         first = expression("0 st" if zero else "U(5 st, 14 st)")
         epochs = (
-            Epoch(id="hold", name="hold", length=first, max_steps=14),
-            Epoch(id="cue", name="cue", length=expression("U(10 st, 19 st)"), max_steps=19),
-            Epoch(id="move", name="move", length=None),
+            Epoch(id="hold", name="hold", end=Length(length=first, max_steps=14)),
+            Epoch(id="cue", name="cue", end=Length(length=expression("U(10 st, 19 st)"), max_steps=19)),
+            Epoch(id="move", name="move", end=Rest()),
         )
     else:
-        epochs = (Epoch(id="move", name="move", length=expression(f"{STEPS} st")),)
+        epochs = (Epoch(id="move", name="move", end=Length(length=expression(f"{STEPS} st"))),)
 
     def cell(start, end, text):
-        return Cell(first_epoch=start, last_epoch=end, value=expression(text, names))
+        return Cell(id=f"{start}-{end}", first_epoch=start, last_epoch=end, value=expression(text, names))
 
     def signal(identifier, value_type, *cells):
         return Signal(id=identifier, name=identifier, type=value_type, cells=cells)
@@ -438,9 +439,9 @@ def test_objective_windows_reduce_defined_samples_with_history(functions):
             variables=(),
             signals=(),
             epochs=(
-                Epoch(id="first", name="first", length=expression("1 st")),
-                Epoch(id="left", name="left", length=expression("2 st")),
-                Epoch(id="right", name="right", length=expression("2 st")),
+                Epoch(id="first", name="first", end=Length(length=expression("1 st"))),
+                Epoch(id="left", name="left", end=Length(length=expression("2 st"))),
+                Epoch(id="right", name="right", end=Length(length=expression("2 st"))),
             ),
         ),
         functions,
@@ -501,7 +502,7 @@ def test_inherited_objective_preserves_term_ids_without_observing_missing_values
 
     x, y = name("x", REAL), name("y", REAL)
     task = compile_task(
-        TaskDocument(id="replacement", variables=(), signals=(), epochs=(Epoch(id="probe", name="Probe"),),
+        TaskDocument(id="replacement", variables=(), signals=(), epochs=(Epoch(id="probe", name="Probe", end=Rest()),),
                      fixed_steps=2),
         functions, model=PORTLESS,
     )
@@ -543,8 +544,8 @@ def test_temporal_variable_can_leave_a_cell_absent(functions):
             ),
         ),
         epochs=(
-            Epoch(id="before", name="before", length=expression("2 st")),
-            Epoch(id="after", name="after", length=expression("2 st")),
+            Epoch(id="before", name="before", end=Length(length=expression("2 st"))),
+            Epoch(id="after", name="after", end=Length(length=expression("2 st"))),
         ),
         signals=(
             Signal(
@@ -553,6 +554,7 @@ def test_temporal_variable_can_leave_a_cell_absent(functions):
                 type=REAL,
                 cells=(
                     Cell(
+                        id="seen",
                         first_epoch="before",
                         last_epoch="after",
                         value=expression("velocity", (velocity,)),

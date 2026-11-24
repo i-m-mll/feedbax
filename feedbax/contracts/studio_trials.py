@@ -17,11 +17,11 @@ from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_authoring import StudioSweptParameterMissing
 from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioFieldView
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
-from feedbax.contracts.task_document import Epoch, PythonTaskSelection, TaskDocument
+from feedbax.contracts.task_document import EpochSteps, PythonTaskSelection, TaskDocument
 
 
 class StudioTrialField(StudioFieldView):
-    """A field of the pairing at ``path``; an Objective term's Weight carries the step's sweep of it."""
+    """A field of the pairing at ``path``; a number the step can sweep carries the step's sweep of it."""
 
     path: str
 
@@ -79,9 +79,10 @@ class StudioTrialBindingEdit(StrictModel):
 
 
 class StudioTrialExpressionEdit(StrictModel):
+    """An edit of the field at ``path``, one of the view's fields."""
+
     kind: Literal["expression"]
-    term: str
-    field: Literal["measure", "weight"]
+    path: Pointer
     edit: Annotated[FieldTextEdit | FieldKindEdit | FieldNameEdit, Field(discriminator="kind")]
 
 
@@ -102,6 +103,14 @@ class StudioTrialAuthoringRequest(StrictModel):
         StudioTrialStepScope | AxisValueRuns | ListedRuns,
         Field(discriminator="kind"),
     ] | None = None
+
+
+class StudioTrialEpoch(StrictModel):
+    """An epoch of the paired task; ``steps`` once the Task pairs with the Model."""
+
+    id: str
+    name: str
+    steps: EpochSteps | None
 
 
 class StudioTaskChoice(StrictModel):
@@ -127,7 +136,7 @@ class StudioTrialAuthoring(StrictModel):
     tasks: list[StudioTaskChoice]
     variables: list[ScopedValue]
     signals: list[ScopedValue]
-    epochs: list[Epoch]
+    epochs: list[StudioTrialEpoch]
     period_seconds: float
     n_steps: int | None
     inputs: list[StudioTrialInput]

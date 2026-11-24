@@ -6,11 +6,12 @@ import numpy as np
 import pytest
 
 from feedbax.compiler.model_document import lower_model_document
+from feedbax.contracts.expression_values import CallValue
 from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.project import Project
-from feedbax.planner.project_plan import RunKey
+from feedbax.planner.project_plan import RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.rollout import RolloutParameters
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
@@ -21,7 +22,8 @@ from feedbax.persistence.array_container import ArrayContainerReader
 from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.persistence.canonical_evaluate import RAW_STATES_SCHEMA, decode_rollout_request
 from feedbax.contracts.rollout import CannotRun
-from feedbax.builtins.reaching import REACHING_TASK
+from feedbax.examples import load_shipped_projects
+from tests.support.reaching_task import REACHING_TASK
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.test_canonical_evaluate_admission import _save_project, managed_evaluation_definition
@@ -198,27 +200,40 @@ def test_encoded_rollout_still_decodes_named_graph_variation():
     assert encode_request(decoded, inputs) == stored
 
 
+def _short_reaches(steps):
+    """The shipped simple reaches, ``steps`` long, with a target the step's fields set and no fixed cohort."""
+    task = load_shipped_projects()["point-mass-reaching"].documents["simple-reaches-task"].model_dump(
+        mode="json", by_alias=True, exclude_unset=True,
+    )
+    payload = task["payload"]
+    payload["fixed_steps"] = steps
+    payload["epochs"][0]["end"]["length"]["value"] = steps
+    del payload["validation_trials"]
+    (target,) = (variable for variable in payload["variables"] if variable["id"] == "target")
+    target["value"] = {"kind": "call", "function": "vector", "args": [
+        {"kind": "literal", "value": 0.1, "unit": "m"}, {"kind": "literal", "value": 0.0, "unit": "m"},
+    ]}
+    return task
+
+
 def _selected_task_variants():
     raw = managed_evaluation_definition()
     train = raw["steps"]["train"]
-    inline = train["base"]["inline"]
-    inline["trial_documents"].update(task=None, python_task={"document": "task"}, input_overrides={})
-    raw["documents"]["task"] = {
-        "schema": "feedbax.spec.python_task",
-        "payload": {"type": REACHING_TASK, "params": {"x": 0.1, "n_steps": 5}},
-    }
+    raw["documents"]["task"] = _short_reaches(5)
     raw["documents"]["objective"]["payload"]["terms"][0].pop("epochs")
     train["sweep"] = {"axes": {"target": {"values": {
-        name: {"patches": {"trial_documents.python_task.params.y": {"op": "add", "value": y}}}
+        name: {"patches": {"trial_documents.task.variables.target.value.args.1.value": {"value": y}}}
         for name, y in (("low", -0.2), ("high", 0.3))
     }}}}
     evaluate = raw["steps"]["baseline"]
     evaluate["sweep"] = {"axes": {"trained": {"input": "subject"}}}
     params = evaluate["base"]["inline"]["params"]
     params["trial_set"] = {"kind": "sample", "count": 1}
-    params["variation"] = {"target-x": _patch("task.params.x", 0.4)}
+    params["variation"] = {"target-x": _patch("task.variables.target.value.args.0.value", 0.4)}
     refused_step = deepcopy(evaluate)
-    refused_step["base"]["inline"]["params"]["variation"] = {"bad-length": _patch("task.params.n_steps", 0)}
+    refused_step["base"]["inline"]["params"]["variation"] = {
+        "bad-length": _patch("task.epochs.move.end.length.value", -1),
+    }
     raw["steps"] = {"train": train, "baseline": evaluate, "refused": refused_step}
     return Project.model_validate(raw)
 
@@ -258,14 +273,15 @@ def test_saved_task_field_preserves_each_selected_train_task(host, tmp_path, mon
         producer = producers[run.inputs["subject"].producer]
         inherited = decode_request(
             plan.plan.requests[producer.request_id], plan.plan.documents.__getitem__,
-        ).spec.trial_documents.python_task
-        assert inherited.params["x"] == 0.1
+        ).spec.trial_documents.task
+        x, y = (arg.value for arg in next(item for item in inherited.variables if item.id == "target").value.args)
+        assert x == 0.1
         result = jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=item.job_id)
         with result.open_states() as states:
-            actual = states.data("/v1/task/output/reach_target")
+            actual = states.data("/v1/task/output/target_pos")
             np.testing.assert_allclose(actual[..., 0], 0.4)
-            np.testing.assert_allclose(actual[..., 1], inherited.params["y"])
-        targets.append(inherited.params["y"])
+            np.testing.assert_allclose(actual[..., 1], y)
+        targets.append(y)
     assert set(targets) == {-0.2, 0.3}
 
 
@@ -413,3 +429,31 @@ def test_saved_task_replacement_and_scale_use_one_exact_trained_checkpoint(host,
             position_samples = states.select(position, labels={"trial": trial})[0, 0]
     assert reads == [(position, (slice(None), slice(None), trial_index))]
     np.testing.assert_array_equal(position_samples, perturbed[position][trial_index])
+
+
+def test_an_evaluate_variation_edits_a_task_document_field_by_id():
+    """An Evaluate changes one field of its subject's Task document, addressed by ids; a variation naming a member
+    the document lacks is refused at that variation."""
+    raw = managed_evaluation_definition()
+    target = {"kind": "call", "function": "vector", "args": [
+        {"kind": "literal", "value": coordinate, "unit": "m"} for coordinate in (0.25, -0.1)
+    ]}
+    evaluate = raw["steps"]["baseline"]
+    evaluate["base"]["inline"]["params"]["variation"] = {"far": _patch("task.variables.target.value", target)}
+    missing = deepcopy(evaluate)
+    missing["base"]["inline"]["params"]["variation"] = {"absent": _patch("task.variables.goal.value", target)}
+    raw["steps"] = {"train": raw["steps"]["train"], "baseline": evaluate, "missing": missing}
+    plan = compile_project(Project.model_validate(raw))
+    assert [(problem.step, problem.path) for problem in plan.diagnostics] == [("missing", "/params/variation/absent")]
+    runs = {run.key: run for run in plan.runs}
+    (evaluated,) = (run for run in plan.runs if run.key.step == "baseline")
+    request = decode_request(plan.requests[evaluated.request_id], plan.documents.__getitem__).spec
+    subject = decode_request(
+        plan.requests[runs[evaluated.inputs["subject"].producer].request_id], plan.documents.__getitem__,
+    ).spec.trial_documents.task
+    variant = resolve_evaluation_variant(
+        GraphSpec(), subject, RolloutParameters.model_validate(request.params).variation,
+        components=new_application_registry_bundle().components,
+    )
+    (variable,) = (item for item in variant.task.variables if item.id == "target")
+    assert variable.value == CallValue.model_validate(target)

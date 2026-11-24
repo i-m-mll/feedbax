@@ -102,10 +102,13 @@
       {
         "id": "move",
         "name": "move",
-        "length": {
-          "kind": "literal",
-          "value": 80,
-          "unit": "st"
+        "end": {
+          "kind": "length",
+          "length": {
+            "kind": "literal",
+            "value": 80,
+            "unit": "st"
+          }
         }
       }
     ],
@@ -124,6 +127,7 @@
         },
         "cells": [
           {
+            "id": "move",
             "first_epoch": "move",
             "last_epoch": "move",
             "value": {
@@ -148,6 +152,7 @@
         },
         "cells": [
           {
+            "id": "move",
             "first_epoch": "move",
             "last_epoch": "move",
             "value": {
@@ -181,6 +186,7 @@
         },
         "cells": [
           {
+            "id": "move",
             "first_epoch": "move",
             "last_epoch": "move",
             "value": {

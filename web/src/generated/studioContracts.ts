@@ -2668,6 +2668,7 @@ export type CallValue = {
 };
 
 export type Cell = {
+  "id": string;
   "first_epoch": string;
   "last_epoch": string;
   "value": Expression;
@@ -2841,6 +2842,8 @@ export type DuplicateRun = {
   "kind": "duplicate_run";
 };
 
+export type End = Length | Rest;
+
 export type EnsureDocumentCollection = {
   "op": "ensure";
   "path": DifferencePointer;
@@ -2874,8 +2877,13 @@ export type EnvironmentReason = {
 export type Epoch = {
   "id": string;
   "name": string;
-  "length"?: Expression | null;
-  "max_steps"?: number | null;
+  "end": End;
+};
+
+export type EpochSteps = {
+  "least": number;
+  "nominal": number;
+  "greatest": number;
 };
 
 export type Expression = LiteralValue | NameValue | CallValue | DrawValue;
@@ -3054,6 +3062,12 @@ export type JaxOperation = {
 export type JobStatus = "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
 
 export type KeyedFamily = "documents" | "steps" | "elements";
+
+export type Length = {
+  "kind"?: "length";
+  "length": Expression;
+  "max_steps"?: number | null;
+};
 
 export type Level = 0 | 1 | 2;
 
@@ -3373,6 +3387,10 @@ export type ReportFigure = {
 
 export type ReportText = {
   "markdown": string;
+};
+
+export type Rest = {
+  "kind"?: "rest";
 };
 
 export type RootDocument = {
@@ -4288,7 +4306,7 @@ export type StudioTrialAuthoring = {
   "tasks": Array<StudioTaskChoice>;
   "variables": Array<ScopedValue>;
   "signals": Array<ScopedValue>;
-  "epochs": Array<Epoch>;
+  "epochs": Array<StudioTrialEpoch>;
   "period_seconds": number;
   "n_steps": number | null;
   "inputs": Array<StudioTrialInput>;
@@ -4325,10 +4343,15 @@ export type StudioTrialDocumentReset = {
   "paths": Array<Pointer>;
 };
 
+export type StudioTrialEpoch = {
+  "id": string;
+  "name": string;
+  "steps": EpochSteps | null;
+};
+
 export type StudioTrialExpressionEdit = {
   "kind": "expression";
-  "term": string;
-  "field": "measure" | "weight";
+  "path": Pointer;
   "edit": FieldTextEdit | FieldKindEdit | FieldNameEdit;
 };
 
@@ -4602,6 +4625,35 @@ export const acausalReportDefaults = {
     "law_revision": null,
     "parameters": {}
   }
+};
+
+export const blankTask = {
+  "id": "task",
+  "variables": [],
+  "epochs": [
+    {
+      "id": "epoch",
+      "name": "epoch",
+      "end": {
+        "kind": "length",
+        "length": {
+          "kind": "literal",
+          "value": 1,
+          "unit": "s"
+        },
+        "max_steps": null
+      }
+    }
+  ],
+  "signals": [],
+  "links": [],
+  "fixed_steps": null,
+  "validation_trials": [
+    {
+      "variables": {},
+      "epoch_steps": {}
+    }
+  ]
 };
 
 function hasDuplicate(values: readonly unknown[]): boolean {
@@ -9223,6 +9275,7 @@ export const CallValueSchema: z.ZodType<CallValue> = z.lazy(() =>
 
 export const CellSchema: z.ZodType<Cell> = z.lazy(() =>
   z.object({
+    "id": z.string(),
     "first_epoch": z.string(),
     "last_epoch": z.string(),
     "value": ExpressionSchema,
@@ -9463,6 +9516,10 @@ export const DuplicateRunSchema: z.ZodType<DuplicateRun> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<DuplicateRun>;
 
+export const EndSchema: z.ZodType<End> = z.lazy(() =>
+  z.union([LengthSchema, RestSchema])
+) as unknown as z.ZodType<End>;
+
 export const EnsureDocumentCollectionSchema: z.ZodType<EnsureDocumentCollection> = z.lazy(() =>
   z.object({
     "op": z.literal("ensure"),
@@ -9507,10 +9564,17 @@ export const EpochSchema: z.ZodType<Epoch> = z.lazy(() =>
   z.object({
     "id": z.string(),
     "name": z.string(),
-    "length": z.union([ExpressionSchema, z.null()]).optional(),
-    "max_steps": z.union([z.number().int().safe().min(0), z.null()]).optional(),
+    "end": EndSchema,
   }).strict()
 ) as unknown as z.ZodType<Epoch>;
+
+export const EpochStepsSchema: z.ZodType<EpochSteps> = z.lazy(() =>
+  z.object({
+    "least": z.number().int().safe().min(0),
+    "nominal": z.number().int().safe().min(0),
+    "greatest": z.number().int().safe().min(0),
+  }).strict()
+) as unknown as z.ZodType<EpochSteps>;
 
 export const ExpressionSchema: z.ZodType<Expression> = z.lazy(() =>
   z.union([LiteralValueSchema, NameValueSchema, CallValueSchema, DrawValueSchema])
@@ -9746,6 +9810,14 @@ export const JobStatusSchema: z.ZodType<JobStatus> = z.lazy(() =>
 export const KeyedFamilySchema: z.ZodType<KeyedFamily> = z.lazy(() =>
   z.union([z.literal("documents"), z.literal("steps"), z.literal("elements")])
 ) as unknown as z.ZodType<KeyedFamily>;
+
+export const LengthSchema: z.ZodType<Length> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("length").optional(),
+    "length": ExpressionSchema,
+    "max_steps": z.union([z.number().int().safe().min(0), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<Length>;
 
 export const LevelSchema: z.ZodType<Level> = z.lazy(() =>
   z.union([z.literal(0), z.literal(1), z.literal(2)])
@@ -10186,6 +10258,12 @@ export const ReportTextSchema: z.ZodType<ReportText> = z.lazy(() =>
     "markdown": z.string(),
   }).strict()
 ) as unknown as z.ZodType<ReportText>;
+
+export const RestSchema: z.ZodType<Rest> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("rest").optional(),
+  }).strict()
+) as unknown as z.ZodType<Rest>;
 
 export const RootDocumentSchema: z.ZodType<RootDocument> = z.lazy(() =>
   z.object({
@@ -11373,7 +11451,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "tasks": z.array(StudioTaskChoiceSchema),
     "variables": z.array(ScopedValueSchema),
     "signals": z.array(ScopedValueSchema),
-    "epochs": z.array(EpochSchema),
+    "epochs": z.array(StudioTrialEpochSchema),
     "period_seconds": z.number().finite(),
     "n_steps": z.union([z.number().int().safe(), z.null()]),
     "inputs": z.array(StudioTrialInputSchema),
@@ -11419,11 +11497,18 @@ export const StudioTrialDocumentResetSchema: z.ZodType<StudioTrialDocumentReset>
   }).strict()
 ) as unknown as z.ZodType<StudioTrialDocumentReset>;
 
+export const StudioTrialEpochSchema: z.ZodType<StudioTrialEpoch> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "name": z.string(),
+    "steps": z.union([EpochStepsSchema, z.null()]),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialEpoch>;
+
 export const StudioTrialExpressionEditSchema: z.ZodType<StudioTrialExpressionEdit> = z.lazy(() =>
   z.object({
     "kind": z.literal("expression"),
-    "term": z.string(),
-    "field": z.union([z.literal("measure"), z.literal("weight")]),
+    "path": PointerSchema,
     "edit": z.union([FieldTextEditSchema, FieldKindEditSchema, FieldNameEditSchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialExpressionEdit>;

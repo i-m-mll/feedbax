@@ -29,6 +29,7 @@ from feedbax.planner.project_plan import RunKey, compile_project
 from feedbax.contracts.studio_place import definition_place, path_parts
 from feedbax.contracts.project_resolution import ResolutionCode
 from feedbax.contracts.studio_authoring import StudioAuthoringChange, StudioSweptParameterMissing
+from feedbax.contracts.task_document import BLANK_TASK
 from feedbax.host import HostError
 from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.plugins.declarations import DistributionSource, callable_declaration
@@ -1065,7 +1066,7 @@ def test_create_named_file_uses_project_cas_and_never_replaces_an_entry(tmp_path
     assert json.loads(step_file.read_bytes()) == train["step"]
 
     task = {"kind": "document", "id": "task", "document": {
-        "schema": "feedbax.spec.python_task", "payload": {"type": "feedbax.Reaching", "params": {}},
+        "schema": "feedbax.spec.task_document", "payload": BLANK_TASK.model_dump(mode="json"),
     }}
     rejected = client.post(url, json={"revision": created["revision"], "file": task})
     assert rejected.status_code == 409

@@ -240,7 +240,7 @@ function termFields(view: TrialView, term: ObjectiveTerm, index: number, commit?
     const sweep = projection.sweep?.id;
     const model = fromFieldView({ ...projection, label, effective: runs?.selected ? projection.effective : null }, {
       id: term.id + field, kind, changed: changed(field),
-      commit: commit && ((edit) => commit('Set ' + label, { kind: 'expression', term: term.id, field, edit })),
+      commit: commit && ((edit) => commit('Set ' + label, { kind: 'expression', path: projection.path, edit })),
       selectedMembers: sweep ? runs?.values(sweep) : undefined,
       chooseMember: sweep && runs?.choose ? (value, extend) => runs.choose!(sweep, value, extend) : undefined,
     });

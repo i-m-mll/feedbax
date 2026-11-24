@@ -2,7 +2,7 @@ import { expect, test } from './fixtures/studio';
 import { type Locator } from '@playwright/test';
 import { mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import type { StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import { blankTask, type StudioJobSubmission, type StudioProjectSnapshot, type StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import {
   captureStudioWindow, chooseSweepValue, enter, fixture, mapStep, runProjectFixture, seedManagedProject,
 } from './fixtures/canonicalTrain';
@@ -438,7 +438,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   const [singleModel, chainModel] = JSON.parse(await runProjectFixture('tests.fixtures.scene_geometry', 'files'));
   const [,,, template] = await fixture('ordinary-files', '2');
   const task = { kind: 'document', id: 'task', document: {
-    schema: 'feedbax.spec.python_task', payload: { type: 'feedbax.Reaching', params: {} },
+    schema: 'feedbax.spec.task_document', payload: blankTask,
   } };
   const objective = { kind: 'document', id: 'objective', document: {
     schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] },
@@ -640,7 +640,7 @@ test('a view with nothing to show is dimmed in the rail, and an open one gives w
   const [planarModel] = JSON.parse(await runProjectFixture('tests.fixtures.scene_geometry', 'files'));
   const [,,, template] = await fixture('ordinary-files', '2');
   const task = { kind: 'document', id: 'task', document: {
-    schema: 'feedbax.spec.python_task', payload: { type: 'feedbax.Reaching', params: {} },
+    schema: 'feedbax.spec.task_document', payload: blankTask,
   } };
   const objective = { kind: 'document', id: 'objective', document: {
     schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] },

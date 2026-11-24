@@ -110,7 +110,7 @@ def _vector_signal(name, terms):
     return {
         "id": name, "name": name, "type": {"base": "real", "shape": [len(terms)]},
         "cells": [{
-            "first_epoch": "rollout", "last_epoch": "rollout",
+            "id": "rollout", "first_epoch": "rollout", "last_epoch": "rollout",
             "value": {"kind": "call", "function": "vector", "args": terms},
         }],
     }
@@ -120,7 +120,7 @@ def _conditioning_task():
     zero = _literal(0.0)
     return {
         "id": "conditioning", "variables": [_variable("conditioning", 0.0)],
-        "epochs": [{"id": "rollout", "name": "Rollout"}], "fixed_steps": 2,
+        "epochs": [{"id": "rollout", "name": "Rollout", "end": {"kind": "rest"}}], "fixed_steps": 2,
         "signals": [
             _vector_signal("feedback", [zero, zero, {"kind": "name", "reference": "conditioning"}]),
             _vector_signal("memory", [zero] * 4),

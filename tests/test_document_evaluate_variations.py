@@ -218,7 +218,7 @@ def _thelen_project(documents):
         model["interior"]["wires"][port] = _wire({"owner": "inputs", "port": port}, _end("muscle", port))
         signals.append(Signal(
             id=port, name=port, type=ValueType(base=ValueBase.REAL),
-            cells=(Cell(first_epoch="hold", last_epoch="move", value=LiteralValue(value=sample)),),
+            cells=(Cell(id="hold-move", first_epoch="hold", last_epoch="move", value=LiteralValue(value=sample)),),
         ))
     model["ports"]["outputs"].append(_port("muscle-force", "muscle_force", shape=[]))
     model["interior"]["wires"]["muscle-force"] = _wire(
