@@ -6,6 +6,7 @@ import { Checkbox } from '@/components/ui/Checkbox';
 import { NumberField } from '@/components/ui/NumberField';
 import { Select } from '@/components/ui/Select';
 import { TextField } from '@/components/ui/TextField';
+import { FieldProblem } from '@/components/ui/FieldProblem';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { Section } from '@/components/ui/Section';
 import { ReferenceField } from '@/components/values/ReferenceField';
@@ -37,7 +38,7 @@ const firstMember: Record<CheckpointKind, CheckpointDraftField | undefined> = {
  * Which updates of the subject's training the Evaluate tests: the kind of rule as the group's control, its updates
  * beneath. A kind with updates saves once they say a rule; Escape restores the saved one.
  */
-export function CheckpointEditor({ initial, step, kinds = checkpointKinds, range, disabled, readOnly, refusal, onSave, onToSweep }: {
+export function CheckpointEditor({ initial, step, kinds = checkpointKinds, range, disabled, readOnly, problem, onSave, onToSweep }: {
   initial: EditableCheckpointRule;
   /** The kinds of rule the input takes. */
   kinds?: readonly CheckpointKind[];
@@ -46,7 +47,8 @@ export function CheckpointEditor({ initial, step, kinds = checkpointKinds, range
   range?: CheckpointRange;
   disabled: boolean;
   readOnly?: boolean;
-  refusal?: string;
+  /** Why the saved rule, or the last one saved, is refused, or the checkpoint it asks for does not exist. */
+  problem?: string;
   onSave(rule: EditableCheckpointRule): void;
   onToSweep?(): void;
 }) {
@@ -58,18 +60,24 @@ export function CheckpointEditor({ initial, step, kinds = checkpointKinds, range
   const name = studioName('checkpoint');
   const fixed = disabled || readOnly;
   const reason = (field: CheckpointDraftField) => !('rule' in held) && held.field === field ? held.reason
-    : field === firstMember[draft.kind] ? refusal : undefined;
+    : field === firstMember[draft.kind] ? problem : undefined;
+  /** The rule last saved from this editor, and the rule it replaced: until the saved rule changes, it is not saved again. */
+  const sent = useRef<{ initial: EditableCheckpointRule; rule: EditableCheckpointRule }>();
   function commit(next: CheckpointDraft) {
     setDraft(next);
     const result = checkpointDraftRule(next, range);
-    if (!fixed && 'rule' in result && !same(result.rule, initial)) onSave(result.rule);
+    if (fixed || !('rule' in result) || same(result.rule, initial)) return;
+    if (sent.current && same(sent.current.initial, initial) && same(sent.current.rule, result.rule)) return;
+    sent.current = { initial, rule: result.rule };
+    onSave(result.rule);
   }
   function number(field: 'at' | 'every' | 'from' | 'through', value: number | null, next: (value: number | null) => CheckpointDraft) {
     const why = reason(field);
-    return <FieldRow key={field} label={studioName(field === 'at' ? 'update' : field)} htmlFor={`${ids}-${field}`}
-      below={why && <p role="alert">{why}</p>}>
+    return <FieldRow key={field} label={studioName(field === 'at' ? 'update' : field)} htmlFor={`${ids}-${field}`}>
       <NumberField ref={field === firstMember[draft.kind] ? first : undefined} id={`${ids}-${field}`}
         min={field === 'at' ? 0 : 1} step={1} value={value} invalid={why !== undefined} disabled={disabled} readOnly={readOnly}
+        aria-describedby={why ? `${ids}-${field}-problem` : undefined}
+        trailing={why && <FieldProblem reason={why} id={`${ids}-${field}-problem`} />}
         onValueChange={(changed) => setDraft(next(changed))} onValueCommitted={(changed) => commit(next(changed))} />
     </FieldRow>;
   }
@@ -83,17 +91,19 @@ export function CheckpointEditor({ initial, step, kinds = checkpointKinds, range
     control={<>
       <Select aria-label={studioAccessibleName('checkpoint', step)} value={draft.kind}
         disabled={fixed}
-        aria-invalid={draft.kind === 'last' && refusal !== undefined}
+        aria-invalid={draft.kind === 'last' && problem !== undefined}
+        aria-describedby={draft.kind === 'last' && problem ? `${ids}-last-problem` : undefined}
+        trailing={draft.kind === 'last' && problem && <FieldProblem reason={problem} id={`${ids}-last-problem`} />}
         items={kinds.map((kind) => ({ value: kind, label: studioName(kind) }))}
         finalFocus={() => first.current}
         onValueChange={(kind) => commit(kind === saved.kind ? saved : emptyCheckpointDraft(kind))} />
-      {draft.kind === 'last' && refusal && <p role="alert">{refusal}</p>}
     </>}>
       {draft.kind === 'at' && number('at', draft.at, (at) => ({ kind: 'at', at }))}
-      {draft.kind === 'list' && <FieldRow label={studioName('updates')} htmlFor={`${ids}-updates`}
-        below={updatesReason && <p role="alert">{updatesReason}</p>}>
+      {draft.kind === 'list' && <FieldRow label={studioName('updates')} htmlFor={`${ids}-updates`}>
         <TextField ref={first} id={`${ids}-updates`} value={draft.updates} spellCheck={false} readOnly={readOnly}
-          disabled={disabled} aria-invalid={updatesReason !== undefined}
+          disabled={disabled} invalid={updatesReason !== undefined}
+          aria-describedby={updatesReason ? `${ids}-updates-problem` : undefined}
+          trailing={updatesReason && <FieldProblem reason={updatesReason} id={`${ids}-updates-problem`} />}
           onChange={(event) => setDraft({ kind: 'list', updates: event.currentTarget.value })}
           onBlur={() => commit(draft)}
           onKeyDown={(event) => {

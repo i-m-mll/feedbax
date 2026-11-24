@@ -204,7 +204,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
 
   await page.reload();
   await expect(mapStep(page, 'train')).toBeVisible();
-  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   const activity = page.getByRole('region', { name: 'Activity', exact: true });
   const resumed = post(page, `/api/jobs/${initial.job_id}/resume`);
   await activity.getByRole('button', { name: 'Resume', exact: true }).click();
@@ -226,7 +226,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   });
   expect(trained.attempts.map(({ job_id }) => job_id)).toEqual([initial.job_id, continued.job_id]);
 
-  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   await page.keyboard.press('Control+Meta+2');
   await activate(page, mapStep(page, 'train'));
   await activate(page, sweepLabel(train, 'learning-rate'));
@@ -384,7 +384,8 @@ test('Model edits follow the lit users of a saved shared document', async ({ pag
   await enter(mass, '3');
   const refusal = await (await rejected).json() as ModelFieldResponse;
   expect(refusal.problems?.[0].reason).toBe('Select all steps that use this Model to change its document value.');
-  await expect(inspector.getByRole('alert')).toContainText(refusal.problems![0].reason);
+  await expect(mass.locator('..').getByRole('img', { name: 'Problem', exact: true }))
+    .toHaveAttribute('data-app-tip', refusal.problems![0].reason);
   expect((await readSaved(request, projectPath)).revision).toBe(shared.revision);
   for (const step of ['alpha', 'beta', 'gamma']) expect(await readMass(shared.revision, afterShared[step].key)).toBe('2');
   await mass.press('Escape');

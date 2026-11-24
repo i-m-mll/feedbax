@@ -18,6 +18,7 @@ from feedbax.contracts.studio_sets import (
 )
 from feedbax.contracts.model_edit import ListedRuns
 from feedbax.project_members import generated_name
+from feedbax.web.services.axis_values import axis_values
 from feedbax.web.services.project_folder import ProjectFolderInvalid
 from feedbax.web.services.trial_scope import (
     StoredEdit, SweepValuesRuns, _composed, content_edits, file_value, selected_value, selection_scope,
@@ -190,11 +191,10 @@ def _duplicate_run(folders, project_id, revision, project: Project, command: Dup
     axis: dict[str, Any] = {"values": {value: {}}, "optional": True}
     if isinstance(scope, SweepValuesRuns):
         axis["where"] = {"rule": scope.rule}
+        values = axis_values(rows)
         picked = {
-            row.key.row for row in rows if all(
-                (coordinate := row.coordinates.get(other)) is not None and coordinate.value_id in ids
-                for other, ids in scope.axes.items()
-            )
+            row.key.row for row in rows
+            if all(values.get((row.key, other)) in chosen for other, chosen in scope.axes.items())
         }
     elif isinstance(scope, ListedRuns):
         axis["where"] = {"rows": sorted(set(scope.rows))}

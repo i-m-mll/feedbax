@@ -390,6 +390,8 @@ class PlannedRow:
     # The Model document an Evaluate row names, and its subject run's Model document.
     evaluated_model: tuple[str, str] | None = field(default=None, kw_only=True)
     train: TrainFacts | None = field(default=None, kw_only=True)
+    resolved: bool = field(default=True, kw_only=True)
+    """Whether the row's definition resolves; one whose own patches or documents are refused has none."""
 
 
 @dataclass(frozen=True)
@@ -1177,6 +1179,7 @@ class _LoweredRow:
     model_source: _ModelSource | None = None
     train: TrainFacts | None = None
     encoded_spec: RequestSpec | None = None
+    resolved: bool = True
 
 
 @dataclass(frozen=True)
@@ -2156,7 +2159,7 @@ class _Compiler:
                     trial_resolution=train_rows.resolution if train_rows is not None else None,
                 )
                 if isinstance(resolved, ProjectDiagnostic):
-                    return _LoweredRow(None, (replace(resolved, variant=key.variant),))
+                    return _LoweredRow(None, (replace(resolved, variant=key.variant),), resolved=False)
                 payload = resolved.payload
                 document_ids = MappingProxyType(resolved.document_ids)
                 document_uses = resolved.document_uses
@@ -2462,7 +2465,7 @@ class _Compiler:
 
         resolved = self.resolve_row(template, key, row, None)
         if isinstance(resolved, ProjectDiagnostic):
-            return _LoweredRow(None, (replace(resolved, variant=key.variant),)), {}
+            return _LoweredRow(None, (replace(resolved, variant=key.variant),), resolved=False), {}
         path = "inputs.subject"
         try:
             if resolved.payload.get("evaluation_type") != ROLLOUT_TYPE:
@@ -2856,6 +2859,11 @@ class _Compiler:
             if chosen is None and members:
                 chosen = members[0][0]
             if chosen is not None and self.block_row(run_key, template, row, {role.name: (chosen,)}):
+                if kind == "evaluate" and isinstance(
+                    problem := self.checkpoint_selector(variant, name, row, chosen, subject, has_checkpoint_axis),
+                    ProjectDiagnostic,
+                ):
+                    self.diagnostics.append(problem)
                 continue
             if (
                 chosen is not None and isinstance(chosen.member.reference, BestRank)
@@ -2869,39 +2877,9 @@ class _Compiler:
                 continue
             if kind == "evaluate" and chosen is not None and isinstance(chosen.member.reference, ProductRef):
                 reference = chosen.member.reference
-                try:
-                    write = row.patches.get(CHECKPOINT_RULE_TARGET)
-                    chosen_subject = chosen.selection if chosen.selection is not None else subject
-                    selected_subject = checkpoint_rule_write(chosen_subject, write) if write is not None else chosen_subject
-                    rule = (
-                        selected_subject.checkpoint if isinstance(selected_subject, StepReference)
-                        else "last" if isinstance(selected_subject, RunReference) else None
-                    )
-                    if rule is None and has_checkpoint_axis:
-                        raise ValueError("The selected row has no checkpoint rule")
-                    horizon = None
-                    if isinstance(rule, UpdateCadence) and chosen.producer is not None:
-                        facts = self.rows[chosen.producer].train
-                        horizon = facts.target_total if facts is not None else None
-                    selector = _checkpoint(rule, horizon=horizon)
-                except (OSError, ValueError) as error:
-                    self.diagnostics.append(ProjectDiagnostic(
-                        ResolutionCode.BAD_REFERENCE, "inputs.subject.checkpoint", str(error),
-                        name, row=row.id, variant=variant,
-                    ))
-                    continue
-                facts = self.rows[chosen.producer].train if chosen.producer is not None else None
-                if facts is not None and facts.origin is not None and facts.target_total is not None and (
-                    outside := _update_outside_run(rule, facts.origin, facts.target_total)
-                ) is not None:
-                    assert chosen.producer is not None
-                    self.diagnostics.append(ProjectDiagnostic(
-                        ResolutionCode.BAD_REFERENCE,
-                        f"{_selection_path(subject, 'subject', chosen.selection)}.checkpoint",
-                        f"Update {outside} is outside {chosen.producer.step!r}, "
-                        f"which runs updates {facts.origin + 1} to {facts.target_total}.",
-                        name, row=row.id, variant=variant,
-                    ))
+                selector = self.checkpoint_selector(variant, name, row, chosen, subject, has_checkpoint_axis)
+                if isinstance(selector, ProjectDiagnostic):
+                    self.diagnostics.append(selector)
                     continue
                 chosen = replace(chosen, member=chosen.member.model_copy(update={
                     "reference": reference.model_copy(update={"select": selector}),
@@ -2937,6 +2915,46 @@ class _Compiler:
             or isinstance(row, PlannedRun) and row.admission_problem is not None
         )
 
+    def checkpoint_selector(
+        self, variant: str, name: str, row: ExpandedRow, chosen: PlannedInput, subject: InputBinding | None,
+        has_checkpoint_axis: bool,
+    ) -> ProductSelector | None | ProjectDiagnostic:
+        """The selector an Evaluate row's checkpoint rule makes, or why the rule does not parse or asks for an update
+        outside its producer's run. Both need only the rule and the producer's extent, so a blocked row has them too."""
+        try:
+            write = row.patches.get(CHECKPOINT_RULE_TARGET)
+            chosen_subject = chosen.selection if chosen.selection is not None else subject
+            selected_subject = checkpoint_rule_write(chosen_subject, write) if write is not None else chosen_subject
+            rule = (
+                selected_subject.checkpoint if isinstance(selected_subject, StepReference)
+                else "last" if isinstance(selected_subject, RunReference) else None
+            )
+            if rule is None and has_checkpoint_axis:
+                raise ValueError("The selected row has no checkpoint rule")
+            horizon = None
+            if isinstance(rule, UpdateCadence) and chosen.producer is not None:
+                facts = self.rows[chosen.producer].train
+                horizon = facts.target_total if facts is not None else None
+            selector = _checkpoint(rule, horizon=horizon)
+        except (OSError, ValueError) as error:
+            return ProjectDiagnostic(
+                ResolutionCode.BAD_REFERENCE, "inputs.subject.checkpoint", str(error),
+                name, row=row.id, variant=variant,
+            )
+        facts = self.rows[chosen.producer].train if chosen.producer is not None else None
+        if facts is not None and facts.origin is not None and facts.target_total is not None and (
+            outside := _update_outside_run(rule, facts.origin, facts.target_total)
+        ) is not None:
+            assert chosen.producer is not None
+            return ProjectDiagnostic(
+                ResolutionCode.BAD_REFERENCE,
+                f"{_selection_path(subject, 'subject', chosen.selection)}.checkpoint",
+                f"Update {outside} is outside {chosen.producer.step!r}, "
+                f"which runs updates {facts.origin + 1} to {facts.target_total}.",
+                name, row=row.id, variant=variant,
+            )
+        return selector
+
     def block_row(
         self, key: RunKey, template: StepComposition, row: ExpandedRow,
         inputs: Mapping[str, tuple[PlannedInput, ...]],
@@ -2970,6 +2988,7 @@ class _Compiler:
         self.rows[key] = BlockedRow(
             planned.key, planned.kind, planned.label, planned.coordinates, MappingProxyType(dict(inputs)), producer,
             axis_keys=planned.axis_keys, input_axes=planned.input_axes,
+            resolved=not isinstance(resolved, ProjectDiagnostic),
             **({} if isinstance(resolved, ProjectDiagnostic) else {
                 "document_ids": MappingProxyType(dict(resolved.document_ids)),
                 "document_uses": resolved.document_uses,
@@ -3036,6 +3055,7 @@ class _Compiler:
             self.rows[key] = replace(
                 row, document_ids=lowered.document_ids, document_uses=lowered.document_uses,
                 followed_documents=followed, evaluated_model=evaluated, train=lowered.train,
+                resolved=lowered.resolved,
             )
             return None
         self.requests[encoded.id] = encoded.data

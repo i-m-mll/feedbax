@@ -111,7 +111,7 @@ test('Machine approval reviews the saved selection and collects the remote resul
   await page.reload();
   await mapStep(page, 'train').click();
   await expect(runs.getByText('Done', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   const card = page.getByRole('region', { name: 'Rehearsal Machine', exact: true });
   await expect(card.getByText('Closes at', { exact: true })).toBeVisible();
   await expect(card.getByText('Billed cost', { exact: true })).toBeVisible();

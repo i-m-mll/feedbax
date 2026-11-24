@@ -83,13 +83,13 @@ test('the slot header switches, creates, duplicates, renames and re-keys a step\
   await mapStep(page, 'sibling').click({ modifiers: ['Shift'] });
   await expect(picker('Model')).toHaveText('point-mass');
   await renameStep('train', 'Reach');
-  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   const activity = page.getByRole('region', { name: 'Activity', exact: true })
     .getByRole('region', { name: configuration.project, exact: true });
   await expect(activity.getByRole('button', { name: 'Train train', exact: true })).toBeVisible();
   await expect(activity.getByRole('button', { name: 'Train Sibling', exact: true })).toBeVisible();
   await expect(activity.getByRole('button', { name: 'Train Reach', exact: true })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
 
   await page.getByRole('tab', { name: 'Task', exact: true }).click();
   await expect(header.getByRole('heading')).toHaveText('Task');

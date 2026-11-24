@@ -172,3 +172,5 @@ class JobsSnapshot(TypedDict):
     terminal_train_receipts: NotRequired[dict[str, JsonObject]]
     checkpoint_differences: NotRequired[dict[str, JsonObject]]
     checkpoint_producers: NotRequired[dict[str, str]]
+    finished_checkpoints: NotRequired[dict[str, list[int]]]
+    """The checkpoint coordinates each finished Train producer published, by request."""
