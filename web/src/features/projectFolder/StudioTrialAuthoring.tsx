@@ -1,6 +1,6 @@
 import clsx from 'clsx';
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { queryOptions, useQuery, useQueryClient } from '@tanstack/react-query';
 import { catalogEntries, readStudioTrialAuthoring, useAuthoringCatalog } from '@/api/studioAuthoring';
 import { shownError } from '@/api/shownErrors';
 import { studioAccessibleName, studioDefinitionStatus, studioEvaluateValueSource, studioName } from '@/components/activity/studioVocabulary';
@@ -30,7 +30,7 @@ import type {
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
 import { addressKey } from './model/modelGraph';
-import { BatchTrace, TrialTrace } from './task/SignalTrace';
+import { BatchTrace, TermTrace, TrialTrace } from './task/SignalTrace';
 import { epochBoundaries, signalAggregate, signalSteps, type TrialShown } from './task/trialSample';
 import { baseOf } from './documentPayload';
 import type { ProjectEditController } from './projectEditController';
@@ -84,13 +84,19 @@ export function trialField(projection: StudioTrialField, label: string, runs: Tr
   };
 }
 
+/** The read of a run's Trial authoring at a revision. */
+const trialAuthoringQuery = (project: string, revision: string, run: StudioSavedTrainKey | undefined) => queryOptions({
+  queryKey: ['trial-authoring', project, revision, run] as const,
+  queryFn: ({ signal }) => readStudioTrialAuthoring(project, { revision, run: run! }, signal),
+});
+
 export function useTrialAuthoring(
   editor: ProjectEditController, project: string, revision: string, run: StudioSavedTrainKey | undefined,
   enabled: boolean, editable: boolean, scope: TrialChangeScope, confirmRemoval: ConfirmRunRemoval, askStore: AskStore,
 ) {
+  const queryClient = useQueryClient();
   const query = useQuery({
-    queryKey: ['trial-authoring', project, revision, run],
-    queryFn: ({ signal }) => readStudioTrialAuthoring(project, { revision, run: run! }, signal),
+    ...trialAuthoringQuery(project, revision, run),
     enabled: enabled && !!run,
     placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === project &&
       JSON.stringify(previousQuery.queryKey[3]) === JSON.stringify(run) ? previous : undefined,
@@ -129,6 +135,8 @@ export function useTrialAuthoring(
         await editor.flush();
         const settled = await stored;
         if (settled.status === 'refused') return shownError(settled.error);
+        // The commit settles once the view of what it stored is read, so its field never draws the value it replaced.
+        await queryClient.prefetchQuery(trialAuthoringQuery(project, editor.getSnapshot().saved.revision, run));
       }
       return undefined;
     }).catch(shownError);
@@ -423,7 +431,7 @@ export function TrialObjectiveTable({ view, commit, selected, select, runs }: {
         return { selected: chosen, onFocusCapture: () => { if (!chosen) select(term.id, field); },
           onPointerDown: () => { if (!chosen) select(term.id, field); } };
       };
-      return <TableRow key={term.id} sortable={move && { id: term.id, label: studioAccessibleName('move', name) }}
+      return <TableRow key={term.id} selected={selected?.term === term.id && !selected.field} sortable={move && { id: term.id, label: studioAccessibleName('move', name) }}
         menu={commit && { label: studioAccessibleName('term', name), items: <>
           <MenuItem onClick={() => setRenaming(term.id)}>{studioName('rename')}</MenuItem>
           <MenuItem disabled={index === 0} onClick={() => { void move?.(term.id, index - 1); }}>{studioName('moveEarlier')}</MenuItem>
@@ -495,7 +503,10 @@ export function TrialObjectiveOutline({ sections, view, commit, selected, select
   </Drawer>;
 }
 
-/** The Inspector of the selected term; a Weight that is a Shape draws its curve in the trial the clock shows. */
+/**
+ * The Inspector of the selected term: a Weight that is a Shape draws its curve in the trial the clock shows, and where
+ * what is shown recorded the term's value per step, its plot.
+ */
 export function TrialObjectiveInspector({ view, commit, selected, runs, shown }: {
   view: TrialView; commit?: Commit; selected?: TermSelection; runs?: TrialRuns; shown?: TrialShown;
 }) {
@@ -506,7 +517,12 @@ export function TrialObjectiveInspector({ view, commit, selected, runs, shown }:
   const fields = termFields(view, term, index, commit, runs, shown);
   const order: (TermField | 'window')[] = ['name', 'measure', 'window', 'weight', 'enabled', 'reduction'];
   const first = order.find((field) => field === selected?.field);
-  return <Inspector name={term.name ?? studioAccessibleName('term', index + 1)} type={term.name ? studioName('term') : undefined}>
+  const name = term.name ?? studioAccessibleName('term', index + 1);
+  const period = view.period_seconds;
+  return <Inspector name={name} type={term.name ? studioName('term') : undefined}>
+    {shown && period != null && <section aria-label={studioName('plot')} className="grid gap-1 empty:hidden">
+      <TermTrace label={name} term={term.id} shown={shown} stepSeconds={period} />
+    </section>}
     {[...first ? [first] : [], ...order.filter((field) => field !== first)].map((field) => field === 'window'
       ? <FieldRow key="window" label={studioName('window')} labelId={windowLabel}>
         <TermWindow view={view} term={term} index={index} commit={commit} labelId={windowLabel} />
@@ -531,11 +547,7 @@ export const startAnchor = (address: string) => `task:start:${address}`;
 export function TrialSweepItems({ project, revision, run, onChoose }: {
   project: string; revision: string; run?: StudioSavedTrainKey; onChoose(anchor: string, view: 'task' | 'objective'): void;
 }) {
-  const { data } = useQuery({
-    queryKey: ['trial-authoring', project, revision, run],
-    queryFn: ({ signal }) => readStudioTrialAuthoring(project, { revision, run: run! }, signal),
-    enabled: !!run,
-  });
+  const { data } = useQuery({ ...trialAuthoringQuery(project, revision, run), enabled: !!run });
   if (!data) return null;
   const sweepable = (path: string) => data.fields.some((field) => field.path === path && field.can_sweep && !field.sweep);
   const variables = 'variables' in data.task ? data.task.variables.filter(({ id }) =>
