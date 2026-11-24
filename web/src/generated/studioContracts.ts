@@ -3121,6 +3121,7 @@ export type MakePresent = {
   "op": "present";
   "signal": string;
   "epoch": string;
+  "text"?: string | null;
 };
 
 export type ManualCombination = {
@@ -10471,6 +10472,7 @@ export const MakePresentSchema: z.ZodType<MakePresent> = z.lazy(() =>
     "op": z.literal("present"),
     "signal": z.string(),
     "epoch": z.string(),
+    "text": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<MakePresent>;
 
