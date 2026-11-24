@@ -282,7 +282,8 @@ export interface TrialRuns {
 
 const termPath = (index: number) => '/terms/' + index;
 
-function termFields(view: TrialView, term: ObjectiveTerm, index: number, commit?: Commit, runs?: TrialRuns): Record<TermField, FieldModel> {
+function termFields(view: TrialView, term: ObjectiveTerm, index: number, commit?: Commit, runs?: TrialRuns,
+  shown?: TrialShown): Record<TermField, FieldModel> {
   const path = termPath(index);
   const changed = (field: keyof ObjectiveTerm) => changedAt(view, 'objective', path + '/' + field, commit);
   const set = (field: keyof ObjectiveTerm, name: string) => commit && ((value: JsonValue) => commit(
@@ -299,7 +300,9 @@ function termFields(view: TrialView, term: ObjectiveTerm, index: number, commit?
       selectedMembers: sweep ? runs?.values(sweep) : undefined,
       chooseMember: sweep && runs?.choose ? (value, extend) => runs.choose!(sweep, value, extend) : undefined,
     });
-    return { ...model, anchor: field === 'weight' ? weightAnchor(term.id) : measureAnchor(term.id) };
+    if (field === 'measure') return { ...model, anchor: measureAnchor(term.id) };
+    const weights = shown?.kind === 'one' ? shown.record.terms?.[term.id]?.weights ?? undefined : undefined;
+    return { ...model, anchor: weightAnchor(term.id), curve: weights };
   };
   return {
     name: rawField({ id: term.id + 'name', label: studioName('name'), type: { kind: 'string' },
@@ -478,14 +481,15 @@ export function TrialObjectiveOutline({ sections, view, commit, selected, select
   </Drawer>;
 }
 
-export function TrialObjectiveInspector({ view, commit, selected, runs }: {
-  view: TrialView; commit?: Commit; selected?: TermSelection; runs?: TrialRuns;
+/** The Inspector of the selected term; a Weight that is a Shape draws its curve in the trial the clock shows. */
+export function TrialObjectiveInspector({ view, commit, selected, runs, shown }: {
+  view: TrialView; commit?: Commit; selected?: TermSelection; runs?: TrialRuns; shown?: TrialShown;
 }) {
   const windowLabel = useId();
   const index = view.objective?.terms?.findIndex(({ id }) => id === selected?.term) ?? -1;
   const term = view.objective?.terms?.[index];
   if (!term) return null;
-  const fields = termFields(view, term, index, commit, runs);
+  const fields = termFields(view, term, index, commit, runs, shown);
   const order: (TermField | 'window')[] = ['name', 'measure', 'window', 'weight', 'enabled', 'reduction'];
   const first = order.find((field) => field === selected?.field);
   return <Inspector name={term.name ?? studioAccessibleName('term', index + 1)} type={term.name ? studioName('term') : undefined}>

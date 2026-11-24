@@ -1818,7 +1818,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                 <TrialObjectiveTable view={value} commit={commit} selected={selected} select={choose(document)} runs={runs} />
               </FocusedFields>),
               drawer: <TrialObjectiveOutline sections={drawerSections} view={value} commit={commit} selected={selected?.term} select={choose(document)} />,
-              inspector: <TrialObjectiveInspector view={value} commit={commit} selected={selected} runs={runs} />,
+              inspector: <TrialObjectiveInspector view={value} commit={commit} selected={selected} runs={runs} shown={trialClock.trial} />,
             };
           }
           if (view === 'training') {

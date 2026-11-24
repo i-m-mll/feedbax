@@ -226,6 +226,7 @@
     "theme": "Theme",
     "face": "Face",
     "density": "Density",
+    "curve": "Curve",
     "card": "Cards",
     "cardFlowName": "Flow",
     "cardFlowUiName": "Base",

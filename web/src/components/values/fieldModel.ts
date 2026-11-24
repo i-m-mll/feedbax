@@ -121,6 +121,11 @@ export interface FieldModel {
   readonly span?: TextSpan;
   /** What the text reads as, where the source sends it: the value's tree, its root's arguments' texts, a draw's density. */
   readonly structure?: StudioValueStructure;
+  /**
+   * The value at each step of the trial the clock shows, null at a step where it is not read (outside a term's
+   * window); a Shape's parts draw it as its curve.
+   */
+  readonly curve?: readonly (number | null)[];
   /** How often the site's consumer reads the value again. */
   readonly finest?: Level;
   readonly names: readonly ScopedValue[];

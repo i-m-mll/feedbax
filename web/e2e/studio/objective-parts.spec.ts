@@ -54,6 +54,13 @@ test("a Measure's outer penalty is chosen in its parts, and a kind is left as it
   await expect(weight).toBeFocused();
   await expect(table.getByRole('button', { name: 'Weight kind: Formula', exact: true })).toBeVisible();
   await expect(inspector.getByRole('textbox', { name: 'Mean', exact: true })).toHaveCount(0);
+
+  // A Shape made from the Weight holds it, and draws its curve over the term's steps in the trial the clock shows.
+  await table.getByRole('button', { name: 'Weight kind: Formula', exact: true }).click();
+  await page.getByRole('menuitemradio', { name: 'Shape', exact: true }).click();
+  await expect(weight).toHaveValue(`hold(${formula})`);
+  await expect(inspector.getByRole('combobox', { name: 'Function', exact: true })).toHaveText('hold');
+  await expect(inspector.getByRole('img', { name: 'Weight curve', exact: true })).toBeVisible();
 });
 
 // Catches an Add Term that is not where the new row appears, a new row that is not selected, and a Measure the user
