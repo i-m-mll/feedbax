@@ -250,3 +250,27 @@ def test_a_first_train_whose_task_does_not_pair_with_its_model_is_planned_and_ca
     assert train.admission_problem.path == pointer(("trial_documents", "task", "links", link["model_field"]))
     view = window_service.ProjectPlanRead.without_history(snapshot)
     assert [row.status for row in view.status_rows()] == ["cannot_run"]
+    (problem,) = view.window_map().problems
+    assert (problem.code, problem.path, problem.document_path) == (
+        "cannot_run", train.admission_problem.path, pointer(("links", link["model_field"])),
+    )
+    assert problem.place is not None and (problem.place.part, problem.place.document) == ("task", "task")
+
+
+def test_an_initial_evaluate_whose_python_task_is_not_installed_keeps_its_row_and_one_problem(tmp_path):
+    from tests.test_model_document_plan import _use_initial_evaluation
+
+    raw = document_project(authored_documents(), evaluation=True)
+    _use_initial_evaluation(raw)
+    raw["documents"]["missing-task"] = {"schema": "feedbax.spec.python_task", "payload": {"type": "absent.Task", "params": {}}}
+    raw["steps"]["baseline"]["inputs"]["task"]["source"] = {"document": "missing-task"}
+    folders = ProjectFolderService(tmp_path / "projects")
+    _save_project(folders, "uninstalled", Project.model_validate(raw))
+    snapshot = folders.read_plan("uninstalled", revision=None)
+    (evaluate,) = [row for row in snapshot.plan.rows if row.key.step == "baseline"]
+    assert [problem.path for problem in evaluate.problems] == ["/inputs/task/type"]
+    view = window_service.ProjectPlanRead.without_history(snapshot)
+    assert next(row for row in view.status_rows() if row.key == evaluate.key).status == "cannot_run"
+    (problem,) = [problem for problem in view.window_map().problems if problem.step == "baseline"]
+    assert problem.code == "cannot_run"
+    assert problem.place is not None and (problem.place.part, problem.place.document) == ("task", "missing-task")

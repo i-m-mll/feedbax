@@ -620,7 +620,7 @@ class JobService(PlanJobReader):
                 for problem in reversed(current.plan.diagnostics)
                 if problem.variant is not None and problem.step is not None and problem.row is not None
                 and problem.element is None
-            }
+            } | {row.key: row.problems[0] for row in current.plan.rows if row.problems}
             for name, key in heavy_selection.items():
                 old, run = before.get(key), after.get(key)
                 if (problem := row_problems.get(key)) is not None:
@@ -673,9 +673,6 @@ class JobService(PlanJobReader):
                 if old.request_id != run.request_id:
                     path = _changed_request_path(reviewed.plan, old.request_id, current.plan, run.request_id)
                     items[name] = _rejected(name, f"The selected Train request changed at {path}.")
-                    continue
-                if problem := run.admission_problem:
-                    items[name] = _rejected(name, f"{problem.path}: {problem.detail}")
                     continue
                 if run.requires:
                     items[name] = _rejected(name, "/requires: Train has unresolved capabilities.")

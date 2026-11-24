@@ -294,7 +294,9 @@ def test_memoized_plan_uses_supplied_python_tasks():
     assert not actual.diagnostics
     assert len(actual.runs) == 1
     assert actual == expected
-    assert compile_project(project, memo=memo).diagnostics[0].path == "payload.trial_documents.python_task.type"
+    (unresolved,) = compile_project(project, memo=memo).runs
+    assert unresolved.admission_problem is not None
+    assert unresolved.admission_problem.path == "/trial_documents/python_task/type"
 
 
 def test_saved_window_applies_current_registry_to_canonical_python_selection(tmp_path, monkeypatch):

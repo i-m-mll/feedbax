@@ -973,8 +973,8 @@ def test_nested_model_plans_with_stable_identity_and_compiles():
     documents.pop("input_overrides")
     raw["documents"]["reach-model"]["payload"]["ports"]["inputs"][0]["name"] = "unknown"
     refused = compile_project(Project.model_validate(raw))
-    (problem,) = [item for item in refused.diagnostics if item.step == "train"]
-    assert problem.document == "reach-model" and "reads signal 'unknown'" in problem.detail
+    (problem,) = [problem for row in refused.rows if row.key.step == "train" for problem in row.problems]
+    assert problem.path.startswith("/trial_documents/model/") and "reads signal 'unknown'" in problem.detail
     assert problem.model_address == ModelAddress.model_validate({
         "composites": [],
         "element": {"kind": "port", "end": {"owner": "inputs", "port": "task-input"}},
@@ -1003,10 +1003,10 @@ def test_unresolved_relative_link_is_reported_at_the_task():
     link["model_field"] = missing
     plan = compile_project(Project.model_validate(raw))
 
-    (train,) = plan.runs
-    assert train.key.step == "train" and train.admission_problem is not None
-    assert {(problem.step, problem.document, problem.document_path) for problem in plan.diagnostics} == {
-        (step, "task", pointer(("links", missing))) for step in ("train", "baseline")
+    assert not plan.diagnostics
+    assert {(run.key.step, tuple(problem.path for problem in run.problems)) for run in plan.runs} == {
+        ("train", (pointer(("trial_documents", "task", "links", missing)),)),
+        ("baseline", (pointer(("inputs", "task", "links", missing)),)),
     }
 
 
@@ -1024,8 +1024,8 @@ def test_stored_model_plan_uses_the_supplied_component_registry():
     project = Project.model_validate(raw)
     memo = ProjectPlanMemo()
     first = compile_project(project, memo=memo)
-    assert [run.admission_problem is not None for run in first.runs if run.kind == "train"] == [True]
-    assert any("unknown leaf type 'test.CustomRelay'" in problem.detail for problem in first.diagnostics)
+    (unregistered,) = [run for run in first.runs if run.kind == "train"]
+    assert any("unknown leaf type 'test.CustomRelay'" in problem.detail for problem in unregistered.problems)
     registry = ComponentRegistry()
     register_owners(registry, "test", CustomRelay)
     registry.seal()
@@ -1459,7 +1459,8 @@ def test_linked_delay_repeats_the_completed_reset_state():
     np.testing.assert_array_equal(queue, np.full((3, cell.hidden_size), 2.0))
     delay["initial"]["reference"] = reference.model_copy(update={"composites": ()}).to_text()
     refused = compile_project(Project.model_validate(raw))
-    assert refused.diagnostics[0].model_address.element.id == "carry"
+    (problem, *_) = next(run for run in refused.runs if run.kind == "train").problems
+    assert problem.model_address.element.id == "carry"
 
 
 @pytest.mark.parametrize(("tau", "alpha"), [
@@ -1558,7 +1559,7 @@ def test_saved_managed_mechanics_refuses_at_model_address(host, tmp_path, domain
         "element": {"kind": "graph"} if domain == "spatial_multibody" else {"kind": "component", "id": "arm"},
     }))
     if domain == "spatial_multibody":
-        assert train.path == "payload.trial_documents.model.interior.components.arm"
+        assert train.path == "/trial_documents/model/interior/components/arm"
         assert "requires an authored spatial asset" in train.detail
         evaluate = next(problem for problem in response.window_map.problems if problem.step == "baseline")
         assert (evaluate.path, evaluate.code) == ("inputs.subject", "blocked_input")
@@ -1886,7 +1887,9 @@ def test_reading_the_plan_realizes_no_model(monkeypatch, scope):
     _refuse_realization(monkeypatch)
     plan = compile_project(project)
     assert plan == expected
-    refusals = [problem.detail for problem in plan.diagnostics if "within-step evaluation" in problem.detail]
+    refusals = [
+        problem.detail for row in plan.rows for problem in row.problems if "within-step evaluation" in problem.detail
+    ]
     assert bool(refusals) == (scope == "within-step")
 
 
@@ -1920,8 +1923,8 @@ def test_reading_the_plan_refuses_an_acausal_leaf_in_a_causal_model(monkeypatch)
     }
     _refuse_realization(monkeypatch)
     plan = compile_project(Project.model_validate(raw))
-    assert [run.admission_problem is not None for run in plan.runs if run.kind == "train"] == [True]
+    (train,) = [run for run in plan.runs if run.kind == "train"]
     assert any(
         "'feedbax.Mass' for node 'mass' belongs to domain 'feedbax.domain.acausal'" in problem.detail
-        for problem in plan.diagnostics
+        for problem in train.problems
     )
