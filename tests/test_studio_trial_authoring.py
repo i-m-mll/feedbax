@@ -825,7 +825,7 @@ def test_initial_model_evaluate_uses_and_edits_its_own_objective(tmp_path):
             "base": {"inline": {"evaluation_type": ROLLOUT_TYPE, "params": {
                 "seed": 0, "trial_policy": "paired", "variation": [],
                 "trial_set": {"kind": "every_condition"},
-                "input_overrides": {"reach_target": "target_pos"},
+                "input_bindings": {"task-input": "target_pos"},
             }}},
             "inputs": {
                 "subject": {"kind": "initial_model", "source": {"document": "reach-model"}},

@@ -57,8 +57,6 @@ class TwoLinkArm(Mechanics, Component):
                 ("effector/force", ("effector", "force"), "N", "xy", "world", None),
             )
         ),
-        scene_effector_port="effector",
-        scene_position="effector/position",
     )
     config_bindings = (ConfigBinding(path="plant.skeleton.l", name="link_lengths"),)
 
@@ -92,15 +90,13 @@ class PointMass(Mechanics, Component):
                 space="point" if quantity == "position" else None,
             )
             for part, storage, companion in (
-                ("skeleton", ("plant", "skeleton"), ("effector",)),
                 ("effector", ("effector",), ("plant", "skeleton")),
+                ("skeleton", ("plant", "skeleton"), ("effector",)),
             )
             for quantity, attribute, unit in (
                 ("position", "pos", "m"), ("velocity", "vel", "m/s"), ("force", "force", "N"),
             )
         ),
-        scene_effector_port="effector",
-        scene_position="effector/position",
     )
 
     ports = _MECHANICS_PORTS
