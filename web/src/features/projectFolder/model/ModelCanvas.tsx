@@ -202,6 +202,7 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
       <Button variant="bare" size="content" aria-label={studioName('addPort')} aria-haspopup="menu"
         className={`nodrag react-flow__handle react-flow__handle-${data.flipped ? 'left' : 'right'}`}
         onClick={(event) => { event.stopPropagation(); data.addPort?.(event.currentTarget.getBoundingClientRect()); }} />
+      <span>{studioName('addPort')}</span>
     </div>}
   </SurfaceCard>;
 });

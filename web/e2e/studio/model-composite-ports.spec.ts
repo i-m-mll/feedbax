@@ -33,3 +33,34 @@ test('a composite\'s empty input handle lists the outside signals apart and brin
   await expect(list).toBeHidden();
   await expect(handles).toHaveCount(ports + 1);
 });
+
+/** Wiring from the root Inputs card's empty handle adds an input named after the port it feeds, wired to it. */
+test('a wire from the root Inputs card\'s empty handle adds the input it feeds', async ({ page }) => {
+  const model = await newModel(page);
+  const linear = await addFromLibrary(page, model, 'Linear');
+  const inputs = model.locator('.react-flow__node[data-id="@inputs"]');
+  const ports = inputs.locator('.react-flow__handle[data-model-port]');
+  const before = await ports.count();
+  await edited(page, async () => {
+    await inputs.locator('[data-handleid="output:__new_port__"]').hover();
+    await page.mouse.down();
+    await linear.locator('[data-handleid="input:input"]').hover();
+    await page.mouse.up();
+  });
+  await expect(ports).toHaveCount(before + 1);
+  await expect(inputs.getByRole('button', { name: 'Port input', exact: true })).toBeVisible();
+});
+
+/** Wiring to the Outputs card's empty handle adds an output named after the wire's source, wired from it. */
+test('a wire to the Outputs card\'s empty handle adds the output it carries', async ({ page }) => {
+  const model = await newModel(page);
+  const linear = await addFromLibrary(page, model, 'Linear');
+  const outputs = model.locator('.react-flow__node[data-id="@outputs"]');
+  await edited(page, async () => {
+    await linear.locator('[data-handleid="output:output"]').hover();
+    await page.mouse.down();
+    await outputs.locator('[data-handleid="input:__new_port__"]').hover();
+    await page.mouse.up();
+  });
+  await expect(outputs.getByRole('button', { name: 'Port output', exact: true })).toBeVisible();
+});

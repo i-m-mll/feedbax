@@ -140,6 +140,9 @@ function positionsOf(saved: StudioProjectSnapshot, document: string) {
   return saved.presentation?.documents?.[document]?.positions;
 }
 
+/** The port an empty boundary handle stands for until a wire to it adds the port. */
+const newPort = '__new_port__';
+
 function positionAt(index: number): ModelPosition {
   return { x: 245 + 235 * (index % 4), y: 38 + 160 * Math.floor(index / 4) };
 }
@@ -455,9 +458,13 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       end: { owner: 'inputs', port: `@task:${signal.id}` }, direction: 'output', name: signal.label,
       type: signal.type, taskSignal: signal.id,
     }));
+    /** The empty handles that add a boundary port by wiring to them; an interior's Inputs card lists signals instead. */
+    const grow = (owner: 'inputs' | 'outputs'): Port => ({
+      end: { owner, port: newPort }, direction: owner === 'inputs' ? 'output' : 'input', name: studioName('addPort'), type: {}, growing: true,
+    });
     const map = new Map<string, Port[]>([
-      [inputCard, [...ports.filter((port) => idFor(port.end) === inputCard), ...unused]],
-      [outputCard, ports.filter((port) => idFor(port.end) === outputCard)],
+      [inputCard, [...ports.filter((port) => idFor(port.end) === inputCard), ...unused, ...currentPath.length ? [] : [grow('inputs')]]],
+      [outputCard, [...ports.filter((port) => idFor(port.end) === outputCard), grow('outputs')]],
     ]);
     for (const [id, component] of Object.entries(drawnInterior?.components ?? {})) {
       map.set(id, componentPorts(id, component, registry));
@@ -649,7 +656,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     pendingReview.current?.request.abort();
     const request = new AbortController();
     const reviewed = reviewModelConnections(saved.project_id, {
-      revision: saved.revision, document: model.id, graph, source, ...shownSelection,
+      revision: saved.revision, document: model.id, graph, source, ...shownSelection, ...port.growing ? { grow_source: true } : {},
     }, request.signal);
     const pending = { source: port, reviewed, request };
     pendingReview.current = pending;
@@ -680,9 +687,11 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const { source } = pending;
     const left = wireEnd(source);
     if (source.taskSignal && projectionRun) {
-      void apply(studioName('bindSignal'), { op: 'connect_task_signal', graph, run: projectionRun, signal: source.taskSignal, target: right });
+      void apply(studioName('bindSignal'), { op: 'connect_task_signal', graph, run: projectionRun, signal: source.taskSignal, target: right,
+        ...target.growing ? { grow_target: true } : {} });
     } else if (left.owner === 'component' || left.owner === 'inputs') {
-      void apply(studioName('connectPorts'), { op: 'connect', graph, source: left, target: right, ...(target.growing ? { grow_target: true } : {}) });
+      void apply(studioName('connectPorts'), { op: 'connect', graph, source: left, target: right,
+        ...target.growing ? { grow_target: true } : {}, ...source.growing ? { grow_source: true } : {} });
     }
   }
   function keyboardConnect(port: Port) {
@@ -974,7 +983,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         } }),
       },
       position: cardPosition(address, () => ghost && wasAt ? wasAt : definition ? positionAt(index)
-        : { x: id === inputCard ? 18 : 245 + 235 * 4, y: 38 }),
+        : id === inputCard ? { x: 18, y: 38 } : positionAt(2)),
       selected: !!definition && selectedIds.has(key),
       draggable: !ghost && editTopology && !locked && !pick,
       selectable: !!definition && !pick,

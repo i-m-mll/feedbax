@@ -20,7 +20,7 @@ async function openModel(page: Page, projectId: string) {
 
 /** Waits until the Model projection has drawn @inputs' Task-signal rows, which lengthen that card when they land. */
 async function projected(model: Locator) {
-  await expect(model.locator('.react-flow__node[data-id="@inputs"] .studio-model-port[data-hollow="true"]').first()).toBeVisible();
+  await expect(model.locator('.react-flow__node[data-id="@inputs"] [data-handleid^="output:@task:"]').first()).toBeVisible();
 }
 
 /**
