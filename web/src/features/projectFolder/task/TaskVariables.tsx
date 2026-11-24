@@ -106,7 +106,7 @@ export function TaskVariables({ variables, selected, select, edits }: {
             <GripVertical aria-hidden="true" />
           </span>
         </TableCell>
-        <TableFieldCell>
+        <TableFieldCell header>
           <span className="flex h-full min-w-0 items-center">
             <InlineEdit form="cell" value={variable.name} editing={renaming === variable.id}
               className="min-w-0 flex-1 font-mono" aria-label={studioAccessibleName('rename', variable.name)}
@@ -144,7 +144,7 @@ function NewVariable({ add, done }: { add(name: string): Made; done(): void }) {
   const [refusal, setRefusal] = useState<string>();
   return <TableRow>
     <TableCell />
-    <TableFieldCell>
+    <TableFieldCell header>
       <span className="flex h-full min-w-0 items-center">
         <InlineEdit form="cell" value="" editing className="min-w-0 flex-1 font-mono"
           aria-label={studioName('addVariable')}

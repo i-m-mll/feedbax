@@ -61,7 +61,7 @@ export function InlineEdit({ value, editing, onEditingChange, onCommit, children
       aria-invalid={!draft.trim() || undefined}
       className={clsx(
         'w-full min-w-0 text-[length:inherit] font-[inherit] text-shell-foreground outline-none',
-        cell ? 'studio-cell-input block h-row truncate bg-transparent px-row-inline aria-[invalid]:text-shell-status-failure'
+        cell ? 'studio-cell-input block h-[calc(var(--row-height)-1px)] truncate text-left bg-transparent px-row-inline aria-[invalid]:text-shell-status-failure'
           : clsx('h-[calc(var(--row-height)-4px)] rounded-row border border-shell-control bg-shell-surface px-1',
             'focus:outline focus:outline-2 focus:-outline-offset-1 focus:outline-shell-accent aria-[invalid]:border-shell-status-failure'),
         className,

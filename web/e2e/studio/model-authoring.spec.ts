@@ -7,7 +7,7 @@ import { enter, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { palette } from './fixtures/studioKeyboard';
 import { rootPayload } from './fixtures/rootPayload';
 
-test.use({ viewport: { width: 1440, height: 900 }, studioPlugins: ['tests/support/plugins'] });
+test.use({ viewport: { width: 1440, height: 900 } });
 
 type ModelWire = NonNullable<ModelDocument['interior']['wires']>[string];
 

@@ -14,14 +14,13 @@ import {
   type RunSetsByStep,
 } from "@/features/pipeline/selection";
 import { Button } from "@/components/ui/Button";
-import { ScrollFade } from "@/components/ui/ScrollFade";
 import { Table, TableCell, TableHeaderCell, TableRow, TableRowHeader } from "@/components/ui/Table";
 import { rulePickSurface } from "@/features/projectWindow/elementSelection";
 import { CommandContextMenu, type RunMenu } from "./CommandContextMenu";
 import type { AxisMenu } from "./PipelineRunMarks";
 import { DocumentPicker, type DocumentEditing } from "@/features/projectWindow/DocumentPicker";
 
-const gutter = "w-px pl-1 pr-2 text-right";
+const gutter = "pl-1 pr-2 text-right";
 
 /** The controls inside a run's row; a press anywhere else on the row chooses the run. */
 const rowControls = "button, a, input, select, textarea, [role=button], [role=menuitem], [contenteditable=true]";
@@ -147,8 +146,16 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
   const bottom = last ? virtual.getTotalSize() - last.end : 0;
 
   return (
-    <ScrollFade ref={scroll} axis="both" className={`${fillSlot ? "h-full" : "max-h-96"} [--fade-inset-top:var(--row-height)]`}>
-      <Table aria-label={studioName("runs")} aria-rowcount={rows.length + 1} {...picking && { [rulePickSurface]: "" }}>
+      <Table aria-label={studioName("runs")} aria-rowcount={rows.length + 1} {...picking && { [rulePickSurface]: "" }}
+        columns={[
+          { least: "2.5rem", fixed: true },
+          ...named ? [{ least: "10rem", fixed: true }] : [],
+          ...showVariant ? [{ least: "6rem" }] : [],
+          ...sweeps.map(() => ({ least: "6rem" })),
+          { least: "8rem" }, { least: "8rem" },
+        ]}
+        held={named ? 2 : 1}
+        box={{ ref: scroll, axis: "both", className: `${fillSlot ? "h-full" : "max-h-96"} [--fade-inset-top:var(--row-height)]` }}>
         <thead className="sticky top-0 z-10">
           <tr aria-rowindex={1}>
             <TableHeaderCell aria-hidden="true" className={gutter} />
@@ -235,6 +242,5 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
           {bottom > 0 && <tr aria-hidden="true"><td colSpan={width} style={{ height: bottom }} /></tr>}
         </tbody>
       </Table>
-    </ScrollFade>
   );
 }

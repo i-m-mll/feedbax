@@ -62,7 +62,8 @@ export function StudioEvaluationResults({ evaluation, onReplay }: {
   const points = new Map(attempt?.points?.map(({ completed_updates, status }) => [completed_updates, status]));
   return <div className="space-y-2 text-sm">
     <StudioEvaluationAttemptDetails evaluation={evaluation} />
-    <Table aria-label={studioName('checkpointResults')}>
+    <Table aria-label={studioName('checkpointResults')} held={1}
+      columns={[{ least: '6rem', fixed: true }, { least: '8rem' }]}>
       <thead>
         <tr>
           <TableHeaderCell scope="col">{studioName('update')}</TableHeaderCell>

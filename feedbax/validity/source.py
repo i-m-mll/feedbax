@@ -11,12 +11,13 @@ from difflib import SequenceMatcher
 from functools import lru_cache
 from hashlib import file_digest, sha256
 from importlib import metadata
+from importlib.machinery import ModuleSpec, PathFinder
+from importlib.util import find_spec
 from os import path as os_path
 from pathlib import Path
 import stat
 import symtable
 import sys
-from types import ModuleType
 
 from packaging.utils import canonicalize_name
 
@@ -135,20 +136,37 @@ def plugin_packages() -> dict[str, str]:
     }
 
 
-def loaded_source_roots(owners: Mapping[str, str]) -> dict[str, Path]:
+def package_spec(package: str) -> ModuleSpec | None:
+    """Find a plugin package on the search path without executing it or its parents."""
+    top, *rest = package.split(".")
+    spec = find_spec(top)
+    for index in range(len(rest)):
+        if spec is None or spec.submodule_search_locations is None:
+            return None
+        spec = PathFinder.find_spec(".".join((top, *rest[:index + 1])), list(spec.submodule_search_locations))
+    return spec
+
+
+def _package_roots(package: str) -> tuple[Path, ...]:
+    spec = find_spec(package.partition(".")[0])
+    if spec is None:
+        return ()
+    if spec.submodule_search_locations is not None:
+        return tuple(Path(path) for path in spec.submodule_search_locations)
+    return (Path(spec.origin).parent,) if spec.origin is not None else ()
+
+
+def plugin_source_roots(owners: Mapping[str, str]) -> dict[str, Path]:
+    """Name each plugin package's top-level folders, whatever this process has imported."""
+    return _plugin_source_roots(tuple(sorted(owners.items())), tuple(sys.path))
+
+
+@lru_cache(maxsize=16)
+def _plugin_source_roots(owners: tuple[tuple[str, str], ...], _search: tuple[str, ...]) -> dict[str, Path]:
     roots = {"feedbax": Path(__file__).resolve().parents[1]}
-    for package, distribution in sorted(owners.items()):
-        module = sys.modules.get(package)
-        if not isinstance(module, ModuleType):
-            continue
-        if isinstance(filename := vars(module).get("__file__"), str):
-            package_roots = (Path(filename).parent,)
-        else:
-            package_roots = tuple(Path(path) for path in vars(module).get("__path__", ()))
-        depth = package.count(".")
+    for package, distribution in owners:
+        package_roots = _package_roots(package)
         for index, package_root in enumerate(package_roots):
-            if depth:
-                package_root = package_root.parents[depth - 1]
             suffix = f":{index}" if len(package_roots) > 1 else ""
             roots[f"plugin:{distribution}{suffix}"] = package_root.resolve()
     return roots
@@ -160,7 +178,7 @@ def _catalog(project_root: Path | None) -> SourceCatalog:
 
 
 def _catalog_roots(project_root: Path | None, owners: Mapping[str, str]) -> dict[str, Path]:
-    roots = loaded_source_roots(owners)
+    roots = dict(plugin_source_roots(owners))
     if project_root is not None:
         roots["project"] = project_root.resolve()
     return roots
