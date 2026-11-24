@@ -46,3 +46,23 @@
   left: auto;
   right: 0;
 }
+
+/*
+ * A field in a table cell is the cell (P35): its box has no border, radius or fill of its own and fills the cell,
+ * its text inset as a text cell's. Hovering an editable field mutes the cell.
+ */
+.studio-table-field-cell [data-field-box] {
+  height: calc(var(--row-height) - 1px);
+  border-color: transparent;
+  border-radius: 0;
+  background: transparent;
+  outline: none;
+}
+
+.studio-table-field-cell [data-field-box] > input {
+  padding-inline: var(--row-padding-inline);
+}
+
+.studio-table-field-cell [data-field-box]:hover:not(:has(input:read-only, input:disabled), [data-disabled]) {
+  background: var(--surface-hover);
+}

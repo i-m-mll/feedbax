@@ -1,12 +1,12 @@
 import { appTip } from '@window-shell/browser/tooltip';
 import clsx from 'clsx';
-import { Activity, GripVertical, MoreHorizontal, Plus } from 'lucide-react';
+import { Activity, GripVertical, MoreHorizontal } from 'lucide-react';
 import { useState } from 'react';
 import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
 import { IconButton } from '@/components/ui/Button';
 import { InlineEdit } from '@/components/ui/InlineEdit';
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '@/components/ui/Menu';
-import { Table, TableCell, TableHeaderCell, TableRow } from '@/components/ui/Table';
+import { Table, TableCell, TableFieldCell, TableHeaderCell, TableRow } from '@/components/ui/Table';
 import { ValueField } from '@/components/values/ValueField';
 import { withAttention } from './attention';
 import type { TaskSelection, TaskVariable } from './taskModel';
@@ -44,35 +44,30 @@ export function TaskVariables({ variables, drawn, drawnLabel, selected, select, 
   edits: VariableEdits;
 }) {
   const [renaming, setRenaming] = useState<string>();
-  return <Table aria-label={studioName('variables')} className="table-fixed">
-    <colgroup>
-      <col className="w-8" /><col className="w-36" /><col className="w-36" /><col />{drawn && <col className="w-40" />}
-    </colgroup>
+  return <Table aria-label={studioName('variables')} held={2}
+    columns={[{ least: '2rem', fixed: true }, { least: '9rem', fixed: true }, { least: '9rem', fixed: true }, { least: '10rem' },
+      ...drawn ? [{ least: '10rem', fixed: true }] : []]}
+    addRow={edits.add && { label: studioName('addVariable'), onAdd: edits.add }}>
     <thead><tr>
       <TableHeaderCell aria-hidden="true" />
       <TableHeaderCell scope="col">{studioName('name')}</TableHeaderCell>
       <TableHeaderCell scope="col">{studioName('type')}</TableHeaderCell>
-      <TableHeaderCell scope="col">
-        <span className="flex items-center justify-between">{studioName('value')}
-          {edits.add && <IconButton variant="ghost" size="mark" label={studioName('addVariable')} icon={<Plus aria-hidden="true" />}
-            onClick={edits.add} />}
-        </span>
-      </TableHeaderCell>
+      <TableHeaderCell scope="col">{studioName('value')}</TableHeaderCell>
       {drawn && <TableHeaderCell scope="col">{drawnLabel}</TableHeaderCell>}
     </tr></thead>
     <tbody>{variables.map((variable, index) => {
       const chosen = selected?.kind === 'variable' && selected.id === variable.id;
-      return <TableRow key={variable.id} selected={chosen} className="group/owner align-top"
+      return <TableRow key={variable.id} selected={chosen} className="group/owner"
         onPointerDown={() => { if (!chosen) select({ kind: 'variable', id: variable.id }); }}
         onFocusCapture={() => { if (!chosen) select({ kind: 'variable', id: variable.id }); }}>
-        <TableCell className="px-0">
+        <TableCell className="!px-0">
           <span className={clsx('flex h-row items-center justify-center text-shell-muted', withAttention)}>
             <GripVertical aria-label={studioAccessibleName('moveLater', variable.name)} className="size-[1em] cursor-grab" />
           </span>
         </TableCell>
-        <TableCell className="overflow-visible">
-          <span className="flex h-row min-w-0 items-center gap-1" onDoubleClick={() => edits.rename && setRenaming(variable.id)}>
-            <InlineEdit value={variable.name} editing={renaming === variable.id} className="min-w-0 truncate font-mono"
+        <TableFieldCell>
+          <span className="flex min-w-0 items-center gap-1 pr-1">
+            <InlineEdit form="cell" value={variable.name} editing={renaming === variable.id} className="min-w-0 flex-1 font-mono"
               aria-label={studioAccessibleName('rename', variable.name)}
               onEditingChange={(editing) => setRenaming(editing ? variable.id : undefined)}
               onCommit={(name) => edits.rename?.(variable.id, name)} />
@@ -88,16 +83,16 @@ export function TaskVariables({ variables, drawn, drawnLabel, selected, select, 
               </MenuContent>
             </Menu>}
           </span>
-        </TableCell>
-        <TableCell className="overflow-visible py-0.5">
+        </TableFieldCell>
+        <TableFieldCell>
           <span className="flex min-w-0 items-center gap-1">
             <span className="min-w-0 grow"><ValueField form="cell" model={variable.typeChoice} /></span>
-            {variable.count !== undefined && <span className="shrink-0 text-xs tabular-nums text-shell-muted">× {variable.count}</span>}
+            {variable.count !== undefined && <span className="shrink-0 pr-row-inline text-xs tabular-nums text-shell-muted">× {variable.count}</span>}
           </span>
-        </TableCell>
-        <TableCell className="overflow-visible py-0.5"><ValueField form="cell" model={variable.value} /></TableCell>
+        </TableFieldCell>
+        <TableFieldCell><ValueField form="cell" model={variable.value} /></TableFieldCell>
         {drawn && <TableCell className="font-mono text-xs tabular-nums text-shell-muted">
-          <span className="block truncate leading-[var(--row-height)]">{drawn[variable.id]}</span>
+          <span className="block truncate">{drawn[variable.id]}</span>
         </TableCell>}
       </TableRow>;
     })}</tbody>

@@ -12,6 +12,11 @@ import { startFixtureRunner } from './python';
 
 export const repo = fileURLToPath(new URL('../../../../', import.meta.url));
 
+/** The e2e Python environment: the test Python task is installed, as a package registers one. */
+export const pythonEnvironment = {
+  ...process.env, PYTHONPATH: [`${repo}tests/support/plugins`, process.env.PYTHONPATH].filter(Boolean).join(':'),
+};
+
 /** The Python application each Studio instance serves. */
 export type StudioBackend = 'app' | 'remote';
 /** `preview` serves the memoized production build; `dev` serves source modules through Vite. */
@@ -83,7 +88,7 @@ function processesIn(home: string) {
  * Starts one Studio (frontend, backend and lazily its job host) in a private home that is
  * removed after its jobs settle on close.
  */
-export async function launchStudio(backend: StudioBackend, frontend: StudioFrontend, plugins: readonly string[] = []) {
+export async function launchStudio(backend: StudioBackend, frontend: StudioFrontend) {
   const [webPort, backendPort] = await loopbackPorts(2);
   const origin = `http://127.0.0.1:${webPort}`;
   const home = join(tmpdir(), `feedbax-studio-test-${randomUUID()}`);
@@ -99,10 +104,7 @@ export async function launchStudio(backend: StudioBackend, frontend: StudioFront
       '--home', home, '--backend-port', String(backendPort), ...args,
     ], {
       cwd: repo,
-      env: {
-        ...process.env, FEEDBAX_OWNER_PID: String(process.pid), FEEDBAX_STUDIO_TEST_HOME: home,
-        PYTHONPATH: [...plugins.map((folder) => repo + folder), process.env.PYTHONPATH].filter(Boolean).join(':'),
-      },
+      env: { ...pythonEnvironment, FEEDBAX_OWNER_PID: String(process.pid), FEEDBAX_STUDIO_TEST_HOME: home },
       stdio: ['ignore', logFd, logFd],
     });
     launchers.push(child);
@@ -197,20 +199,14 @@ const traced = base.extend<{ namedTrace: void; cpuThrottle: void }, { fixtureRun
   }, { auto: true }],
 });
 
-type WorkerFixtures = {
-  studioBackend: StudioBackend; studioFrontend: StudioFrontend;
-  /** Folders of installed distributions, relative to the repository, on the Studio's path. */
-  studioPlugins: readonly string[];
-  studio: Studio;
-};
+type WorkerFixtures = { studioBackend: StudioBackend; studioFrontend: StudioFrontend; studio: Studio };
 
 /** Each worker owns one Studio; tests in the worker share its home and job host. */
 export const test = traced.extend<{}, WorkerFixtures>({
   studioBackend: ['app', { scope: 'worker', option: true }],
   studioFrontend: ['preview', { scope: 'worker', option: true }],
-  studioPlugins: [[], { scope: 'worker', option: true }],
-  studio: [async ({ studioBackend, studioFrontend, studioPlugins }, use) => {
-    const { studio, close } = await launchStudio(studioBackend, studioFrontend, studioPlugins);
+  studio: [async ({ studioBackend, studioFrontend }, use) => {
+    const { studio, close } = await launchStudio(studioBackend, studioFrontend);
     try {
       await use(studio);
     } finally {

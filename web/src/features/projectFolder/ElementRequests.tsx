@@ -16,11 +16,13 @@ export function ElementRequests({ requests, selected, onSelect }: {
   onSelect(member: string | undefined): void;
 }) {
   const labels = [...new Set(requests.flatMap((request) => Object.keys(request.labels ?? {})))];
-  return <Table className="table-fixed" aria-label={studioName('runs')}>
+  const mark = { least: '1.75rem', fixed: true };
+  return <Table aria-label={studioName('runs')} held={1}
+    columns={[mark, ...labels.map(() => ({ least: '6rem' })), mark]}>
     <thead><tr>
-      <TableHeaderCell className="w-7" />
+      <TableHeaderCell />
       {labels.map((label) => <TableHeaderCell key={label}>{label}</TableHeaderCell>)}
-      <TableHeaderCell className="w-7" />
+      <TableHeaderCell />
     </tr></thead>
     <tbody>{requests.map((request, index) => {
       const member = requestMember(request);
