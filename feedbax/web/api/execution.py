@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any, Literal
 
 import jax
+import numpy as np
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 
@@ -25,7 +26,10 @@ class TaskTrialSampleRequest(StrictModel):
     python_task: PythonTaskSelection | None = None
     input_overrides: dict[str, str] = Field(default_factory=dict)
     seed: int = 0
-    count: int = Field(default=8, ge=1, le=64)
+    count: int = Field(default=8, ge=1)
+    """How many trials to draw; Studio offers up to the step's batch size."""
+    aggregate: bool = False
+    """Whether to return the trials' aggregate instead of the trials."""
 
     @model_validator(mode="after")
     def _one_task(self):
@@ -51,12 +55,85 @@ class SampledTaskTrial(BaseModel):
     timeline: list[TaskTimelineCue]
 
 
+class SampledTaskTrials(BaseModel):
+    kind: Literal["trials"]
+    trials: list[SampledTaskTrial]
+
+
+class TaskEpochShare(BaseModel):
+    """Per step, the share of trials that are in the epoch."""
+
+    epoch: str
+    label: str
+    share: list[float]
+
+
+class TaskSignalAggregate(BaseModel):
+    presence: list[float]
+    """Per step, the share of trials in which the signal is present."""
+    percentiles: list[list[list[float]] | None] | None
+    """For a numeric signal, per step and component, the 5th, 25th, 50th, 75th and 95th percentiles over the trials
+    where it is present; null at a step where no trial has it."""
+
+
+class TaskVariableRange(BaseModel):
+    """The least and greatest drawn value of each component, in the value's own shape."""
+
+    least: Any
+    greatest: Any
+
+
+class TaskTrialAggregate(BaseModel):
+    kind: Literal["aggregate"]
+    epochs: list[TaskEpochShare]
+    signals: dict[str, TaskSignalAggregate]
+    variables: dict[str, TaskVariableRange]
+
+
 class TaskTrialSampleResponse(BaseModel):
-    schema_version: str = "feedbax.execution.sampled_task_trials.v2"
+    schema_version: str = "feedbax.execution.sampled_task_trials.v3"
     task: str
     seed: int
+    count: int
     n_steps: int
-    trials: list[SampledTaskTrial]
+    drawn: Annotated[SampledTaskTrials | TaskTrialAggregate, Field(discriminator="kind")]
+
+
+PERCENTILES = (5, 25, 50, 75, 95)
+
+
+def aggregate_trials(epochs: list[str], labels: dict[str, str], samples, n_steps: int) -> TaskTrialAggregate:
+    """The batch `samples` as shares of trials per epoch and step, and its signals' presence and percentiles."""
+    starts, ends, _ = (np.asarray(values) for values in samples.epochs)
+    steps = np.arange(n_steps)
+    inside: dict[str, np.ndarray] = {}
+    for index, epoch in enumerate(epochs):
+        covered = (steps >= starts[:, index, None]) & (steps < ends[:, index, None])
+        inside[epoch] = inside[epoch] | covered if epoch in inside else covered
+    signals = {}
+    for name, values in samples.inputs.items():
+        values = np.asarray(values)
+        present = np.asarray(samples.present[name]).astype(bool)
+        percentiles = None
+        if np.issubdtype(values.dtype, np.number):
+            flat = values.reshape(*values.shape[:2], -1).astype(float)
+            masked = np.where(present[..., None], flat, np.nan)
+            any_present = present.any(axis=0)
+            with np.errstate(all="ignore"):
+                quantiles = np.nanpercentile(masked[:, any_present], PERCENTILES, axis=0) if any_present.any() else None
+            at = iter(np.moveaxis(quantiles, 0, -1).tolist() if quantiles is not None else ())
+            percentiles = [next(at) if here else None for here in any_present]
+        signals[name] = TaskSignalAggregate(presence=present.mean(axis=0).tolist(), percentiles=percentiles)
+    return TaskTrialAggregate(
+        kind="aggregate",
+        epochs=[TaskEpochShare(epoch=epoch, label=labels.get(epoch, epoch), share=covered.mean(axis=0).tolist())
+                for epoch, covered in inside.items()],
+        signals=signals,
+        variables={
+            name: TaskVariableRange(least=np.min(values, axis=0).tolist(), greatest=np.max(values, axis=0).tolist())
+            for name, values in ((name, np.asarray(values)) for name, values in samples.variables.items())
+        },
+    )
 
 
 @router.post("/task-trials/sample", response_model=TaskTrialSampleResponse)
@@ -94,6 +171,10 @@ async def sample_task_trials(
         )
     )
     labels = {epoch.id: epoch.name for epoch in selected.epochs} if isinstance(selected, TaskDocument) else {}
+    head = dict(task=selected.id if isinstance(selected, TaskDocument) else selected.type,
+                seed=payload.seed, count=payload.count, n_steps=task.n_steps)
+    if payload.aggregate:
+        return TaskTrialSampleResponse(**head, drawn=aggregate_trials(list(task.epochs), labels, samples, task.n_steps))
     trials = []
     for index in range(payload.count):
         trial = jax.tree.map(lambda values: values[index], samples)
@@ -124,7 +205,4 @@ async def sample_task_trials(
                 timeline=timeline,
             )
         )
-    return TaskTrialSampleResponse(
-        task=selected.id if isinstance(selected, TaskDocument) else selected.type,
-        seed=payload.seed, n_steps=task.n_steps, trials=trials,
-    )
+    return TaskTrialSampleResponse(**head, drawn=SampledTaskTrials(kind="trials", trials=trials))

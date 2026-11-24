@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from 'react';
 import { Shelf, type ShelfRow } from '@/components/timeline/Shelf';
-import { nominalRows, trialRows, type ShelfTask } from '@/features/projectFolder/task/shelfRows';
+import { batchRows, nominalRows, trialRows, type ShelfTask } from '@/features/projectFolder/task/shelfRows';
 import { ProjectWindow, ProjectWindowPalette } from '@/features/projectWindow/ProjectWindow';
 import { useDrawerSections } from '@/features/projectWindow/DrawerForms';
 import { defaultProjectWindowState, type ProjectWindowState } from '@/features/projectWindow/projectWindowState';
@@ -61,10 +61,12 @@ function shelfTask(view: TaskDocumentView): ShelfTask {
   };
 }
 
-/** The shelf's rows for the nominal trial or one sampled trial. */
+/** The shelf's rows for the nominal trial, one sampled trial, or the batch. */
 function shelfRows(view: TaskDocumentView, shown: TrialShown): ShelfRow[] {
-  return shown.kind === 'trial' ? trialRows(shelfTask(view), shown.trial, view.stepSeconds ?? view.duration / 100)
-    : nominalRows(shelfTask(view));
+  const step = view.stepSeconds ?? view.duration / 100;
+  return shown.kind === 'trial' ? trialRows(shelfTask(view), shown.trial, step)
+    : shown.kind === 'batch' ? batchRows(shelfTask(view), shown.batch, step)
+      : nominalRows(shelfTask(view));
 }
 
 function shownOf(choice: TrialChoice, sample: ReturnType<typeof useSample>): TrialShown {
@@ -189,7 +191,7 @@ function Frame({ name, children, className }: { name: string; children: ReactNod
   </figure>;
 }
 
-/** One task's states side by side: the shelf for the nominal trial and a sample, and the Inspector for an End, a cell, a variable and a signal's traces. */
+/** One task's states side by side: the shelf for the nominal trial, a sample and the batch, and the Inspector for an End, a cell, a variable and a signal's traces. */
 function TaskStates({ fixtureKey, end, cell, variable, signal }: {
   fixtureKey: string; end: string; cell: { signal: string; id: string }; variable: string; signal: string;
 }) {
@@ -211,6 +213,7 @@ function TaskStates({ fixtureKey, end, cell, variable, signal }: {
     <div className="grid max-w-4xl gap-3">
       <Frame name="nominal">{strip(definition)}</Frame>
       <Frame name="sample 1 of 8">{strip(trial)}</Frame>
+      <Frame name={`${batchSize} trials`}>{strip(batch)}</Frame>
     </div>
     <div className="flex flex-wrap items-start gap-3">
       <Frame name="End" className={box}>{inspector({ kind: 'end', id: end })}</Frame>

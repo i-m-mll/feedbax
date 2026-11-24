@@ -2,7 +2,7 @@ import { studioName } from '@/components/activity/studioVocabulary';
 import type { ShelfBar, ShelfRow, ShelfSegment } from '@/components/timeline/Shelf';
 import type { NamedElementAddress } from '@/features/projectWindow/elementSelection';
 import type { EpochBounds } from './taskModel';
-import type { SampledTrial, SignalSteps } from './trialSample';
+import type { SampledTrial, SignalSteps, TrialBatch } from './trialSample';
 
 /** What the shelf draws of a task document: its epochs' bounds in order, and the epochs each signal's cells cover. */
 export interface ShelfTask {
@@ -91,6 +91,35 @@ export function trialRows(task: ShelfTask, trial: SampledTrial, stepSeconds: num
     ...task.signals.map((signal): ShelfRow => ({
       kind: 'bars', key: `signal:${signal.id}`, name: signal.name, selects: named(task.document, `signal:${signal.id}`),
       bars: presence(trial.signals[signal.id] ?? [], stepSeconds),
+    })),
+  ];
+}
+
+/** Where a share of trials is above 0, in runs: heavy where every trial is counted, light where only some are. */
+function shareBars(share: readonly number[], stepSeconds: number): ShelfBar[] {
+  const bars: ShelfBar[] = [];
+  share.forEach((value, step) => {
+    if (value <= 0) return;
+    const some = value < 1;
+    const last = bars.at(-1);
+    if (last && last.end === step * stepSeconds && !!last.some === some) bars[bars.length - 1] = { ...last, end: (step + 1) * stepSeconds };
+    else bars.push({ start: step * stepSeconds, end: (step + 1) * stepSeconds, ...some && { some } });
+  });
+  return bars;
+}
+
+/**
+ * A batch of trials' rows: one per epoch, since epochs of different trials overlap in time, and one per signal; each
+ * heavy where every trial is in the epoch or has the signal, light where some do.
+ */
+export function batchRows(task: ShelfTask, batch: TrialBatch, stepSeconds: number): ShelfRow[] {
+  return [
+    ...batch.epochs.map(({ id, name, share }): ShelfRow => ({
+      kind: 'bars', key: `epoch:${id}`, name, selects: named(task.document, `epoch:${id}`), bars: shareBars(share, stepSeconds),
+    })),
+    ...task.signals.map((signal): ShelfRow => ({
+      kind: 'bars', key: `signal:${signal.id}`, name: signal.name, selects: named(task.document, `signal:${signal.id}`),
+      bars: shareBars(batch.signals[signal.id]?.presence ?? [], stepSeconds),
     })),
   ];
 }

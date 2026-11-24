@@ -2195,6 +2195,34 @@ export interface SampledTaskTrial {
   timeline: TaskTimelineCue[];
 }
 
+export interface SampledTaskTrials {
+  kind: "trials";
+  trials: SampledTaskTrial[];
+}
+
+export interface TaskEpochShare {
+  epoch: string;
+  label: string;
+  share: number[];
+}
+
+export interface TaskSignalAggregate {
+  presence: number[];
+  percentiles: Array<number[][] | null> | null;
+}
+
+export interface TaskVariableRange {
+  least: unknown;
+  greatest: unknown;
+}
+
+export interface TaskTrialAggregate {
+  kind: "aggregate";
+  epochs: TaskEpochShare[];
+  signals: Record<string, TaskSignalAggregate>;
+  variables: Record<string, TaskVariableRange>;
+}
+
 export interface TaskTrialSampleRequest {
   model: ModelDocument;
   task?: TaskDocument | null;
@@ -2202,14 +2230,16 @@ export interface TaskTrialSampleRequest {
   input_overrides?: Record<string, string>;
   seed?: number;
   count?: number;
+  aggregate?: boolean;
 }
 
 export interface TaskTrialSampleResponse {
   schema_version?: string;
   task: string;
   seed: number;
+  count: number;
   n_steps: number;
-  trials: SampledTaskTrial[];
+  drawn: SampledTaskTrials | TaskTrialAggregate;
 }
 
 export interface ParentRef {
@@ -4340,6 +4370,7 @@ export type StudioTrialAuthoring = {
   "epochs": Array<StudioTrialEpoch>;
   "period_seconds": number;
   "n_steps": number | null;
+  "batch_size": number | null;
   "reads_model": boolean;
   "inputs": Array<StudioTrialInput>;
   "outputs": Array<StudioTrialOutput>;
@@ -9098,6 +9129,54 @@ export const SampledTaskTrialSchema: z.ZodType<SampledTaskTrial> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<SampledTaskTrial>;
 
+export const SampledTaskTrialsSchema: z.ZodType<SampledTaskTrials> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("trials"),
+      "trials": z.array(SampledTaskTrialSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<SampledTaskTrials>;
+
+export const TaskEpochShareSchema: z.ZodType<TaskEpochShare> = z.lazy(() =>
+  z
+    .object({
+      "epoch": z.string(),
+      "label": z.string(),
+      "share": z.array(z.number().finite()),
+    })
+    .strict()
+) as unknown as z.ZodType<TaskEpochShare>;
+
+export const TaskSignalAggregateSchema: z.ZodType<TaskSignalAggregate> = z.lazy(() =>
+  z
+    .object({
+      "presence": z.array(z.number().finite()),
+      "percentiles": z.array(z.array(z.array(z.number().finite())).nullable()).nullable(),
+    })
+    .strict()
+) as unknown as z.ZodType<TaskSignalAggregate>;
+
+export const TaskVariableRangeSchema: z.ZodType<TaskVariableRange> = z.lazy(() =>
+  z
+    .object({
+      "least": z.unknown(),
+      "greatest": z.unknown(),
+    })
+    .strict()
+) as unknown as z.ZodType<TaskVariableRange>;
+
+export const TaskTrialAggregateSchema: z.ZodType<TaskTrialAggregate> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("aggregate"),
+      "epochs": z.array(TaskEpochShareSchema),
+      "signals": z.record(z.string(), TaskSignalAggregateSchema),
+      "variables": z.record(z.string(), TaskVariableRangeSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<TaskTrialAggregate>;
+
 export const TaskTrialSampleRequestSchema: z.ZodType<TaskTrialSampleRequest> = z.lazy(() =>
   z
     .object({
@@ -9106,11 +9185,12 @@ export const TaskTrialSampleRequestSchema: z.ZodType<TaskTrialSampleRequest> = z
       "python_task": PythonTaskSelectionSchema.nullable().optional(),
       "input_overrides": z.record(z.string(), z.string()).optional(),
       "seed": z.number().int().safe().optional(),
-      "count": z.number().int().safe().gte(1).lte(64).optional(),
+      "count": z.number().int().safe().gte(1).optional(),
+      "aggregate": z.boolean().optional(),
     })
     .strict()
     .superRefine((input, ctx) => {
-      const value = { ...{"input_overrides": {}, "seed": 0, "count": 8}, ...input };
+      const value = { ...{"input_overrides": {}, "seed": 0, "count": 8, "aggregate": false}, ...input };
       if ((value.task == null) === (value.python_task == null)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -9126,8 +9206,9 @@ export const TaskTrialSampleResponseSchema: z.ZodType<TaskTrialSampleResponse> =
       "schema_version": z.string().optional(),
       "task": z.string(),
       "seed": z.number().int().safe(),
+      "count": z.number().int().safe(),
       "n_steps": z.number().int().safe(),
-      "trials": z.array(SampledTaskTrialSchema),
+      "drawn": z.union([SampledTaskTrialsSchema, TaskTrialAggregateSchema]),
     })
     .strict()
 ) as unknown as z.ZodType<TaskTrialSampleResponse>;
@@ -12032,6 +12113,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "epochs": z.array(StudioTrialEpochSchema),
     "period_seconds": z.number().finite(),
     "n_steps": z.union([z.number().int().safe(), z.null()]),
+    "batch_size": z.union([z.number().int().safe(), z.null()]),
     "reads_model": z.boolean(),
     "inputs": z.array(StudioTrialInputSchema),
     "outputs": z.array(StudioTrialOutputSchema),
