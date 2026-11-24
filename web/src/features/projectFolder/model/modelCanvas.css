@@ -22,3 +22,9 @@
 .studio-model-port[data-verdict="marked"] .react-flow__handle { width: 13px; height: 13px; border-width: 2px; border-color: var(--studio-status-failure); }
 .react-flow__edge[data-preview="kept"] .studio-model-wire { stroke: var(--text-primary, currentColor); stroke-dasharray: 6 3; }
 .react-flow__edge[data-preview="displaced"] .studio-model-wire { opacity: .35; }
+
+/* The wires a dropped card would be wired by. */
+.react-flow__edge.studio-carried { pointer-events: none !important; }
+.react-flow__edge.studio-carried .studio-model-wire { stroke-dasharray: 4 3; }
+/* The wire a dropped card would split, kept under the pointer but drawn as the two wires that replace it. */
+.react-flow__edge.studio-carried-split .studio-model-wire { opacity: 0; }

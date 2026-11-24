@@ -16,6 +16,9 @@ import type { ModelAddress, ModelPosition } from '@/generated/studioContracts';
 import { commandAttributes, type StudioCommand } from '@/features/projectWindow/studioCommands';
 import { Button, IconButton } from '@/components/ui/Button';
 import { Card as SurfaceCard, CardHead } from '@/components/ui/Card';
+import { CarryChip, carry, carryKind, useCarryTarget, type CarryKind } from '@/components/ui/carry';
+import type { Point } from '@/components/ui/pointerPress';
+import type { LibraryItem } from '@/features/projectWindow/LibraryList';
 import { ChangeMark, type ChangeMarkProps } from '@/components/ui/ChangeMark';
 import { TextField } from '@/components/ui/TextField';
 import { portId, portTypeLabel, type Port } from './modelGraph';
@@ -79,6 +82,14 @@ export type ModelEdgeData = {
   problem?: string;
 };
 export type ModelEdge = Edge<ModelEdgeData, 'signal' | 'physical'>;
+type WireAttachment = NonNullable<ModelEdgeData['attachments']>[number];
+
+/** An attachment carried from the wire it is on. */
+type CarriedAttachment = { wire: string; attachment: WireAttachment };
+const attachmentCarry = carryKind<CarriedAttachment>('attachment');
+
+/** What a Library item dropped would make: its card, and the wires into and out of it when it splits a wire. */
+export type LibraryPreview = { cards: ModelCard[]; wires: ModelEdge[] };
 
 function side(port: Port, flipped: boolean) {
   return (port.direction === 'input') !== flipped ? Position.Left : Position.Right;
@@ -291,15 +302,13 @@ const Wire = memo(function Wire({ id, data, type, source, target, sourceX, sourc
         {data.problem && <span role="img" aria-label={studioName('problems')} aria-description={data.problem}>◆</span>}
         {data.bundleCount && <span className="rounded-row border border-shell-divider bg-shell-chrome px-1 text-xs">{data.bundleCount}</span>}
         {data.change && <ChangeMark {...data.change} />}
-        {data.attachments?.map(({ id, label, description, mark, select, drag, ghost, change }) => <span key={id} className="contents">
-          <Button size="mark" aria-label={studioAccessibleName('attachment', label)}
-            aria-description={description} data-ghost={ghost || undefined}
-            {...appTip(studioAccessibleName('attachment', label))}
-            draggable={!!drag} onDragStart={(event) => {
-              if (drag) event.dataTransfer.setData('application/x-feedbax-attachment', JSON.stringify(drag));
-            }}
-            onClick={(event) => { event.stopPropagation(); select(); }}>{mark}</Button>
-          {change && <ChangeMark {...change} />}
+        {data.attachments?.map((attachment) => <span key={attachment.id} className="contents">
+          <Button size="mark" aria-label={studioAccessibleName('attachment', attachment.label)}
+            aria-description={attachment.description} data-ghost={attachment.ghost || undefined}
+            {...appTip(studioAccessibleName('attachment', attachment.label))}
+            onPointerDown={attachment.drag ? (event) => carry(event, attachmentCarry, { wire: id, attachment }) : undefined}
+            onClick={(event) => { event.stopPropagation(); attachment.select(); }}>{attachment.mark}</Button>
+          {attachment.change && <ChangeMark {...attachment.change} />}
         </span>)}
       </div>
     </EdgeLabelRenderer> : null}
@@ -334,8 +343,12 @@ type Props = {
   onConnectEnd(point: ModelPosition, valid: boolean, empty: boolean): void;
   /** The handle a pointer drawing a connection is over changed. */
   onConnectHover(node: string, handle: string | null): void;
+  /** What a Library drag carries; without it the canvas takes none. */
+  libraryCarry?: CarryKind<LibraryItem>;
+  /** What dropping the Library item `type` at `point` would make, splitting `edge` when it is over one. */
+  previewLibrary(type: string, point: ModelPosition, edge: ModelEdge | undefined, reversed: boolean): LibraryPreview | undefined;
   onLibraryDrop(type: string, point: ModelPosition, edge: ModelEdge | undefined, reversed: boolean): void;
-  onAttachmentDrop(raw: string, edge: ModelEdge): void;
+  onAttachmentDrop(attachment: ModelLocation, edge: ModelEdge): void;
 };
 
 export function ModelCanvas(props: Props) {
@@ -344,8 +357,8 @@ export function ModelCanvas(props: Props) {
 
 function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdit, lock, collapse, viewportCommands, onCanvasPoint,
   onSearch, onNode, onEdge, onClear, onBox, onMove, onContext, onConnect, onConnectStart, onConnectEnd, onConnectHover,
-  onLibraryDrop, onAttachmentDrop }: Props) {
-  const { screenToFlowPosition, setNodes, setEdges, getNode, getEdge, getInternalNode } = useReactFlow<ModelCard, ModelEdge>();
+  libraryCarry, previewLibrary, onLibraryDrop, onAttachmentDrop }: Props) {
+  const { screenToFlowPosition, setNodes, setEdges, getNode, getInternalNode } = useReactFlow<ModelCard, ModelEdge>();
   const viewport = useRef<CanvasViewport>(null);
   useImperativeHandle(viewportRef, () => ({
     fitView: () => viewport.current?.fitView(),
@@ -367,11 +380,46 @@ function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdi
     if (boxing.current) boxed.current(selection.nodes as ModelCard[]);
   }, []);
   const point = (event: { clientX: number; clientY: number }) => screenToFlowPosition({ x: event.clientX, y: event.clientY });
+  const surface = useRef<HTMLDivElement>(null);
+  /** The shown wire under the pointer at `at`; the wires a drag draws are not among them. */
+  const wireAt = (at: Point) => {
+    const id = document.elementFromPoint(at.x, at.y)?.closest('.react-flow__edge')?.getAttribute('data-id');
+    return id ? edges.find((edge) => edge.id === id) : undefined;
+  };
+  const reversed = (edge: ModelEdge | undefined) =>
+    !!edge && (getNode(edge.source)?.position.x ?? 0) > (getNode(edge.target)?.position.x ?? 0);
+  const library = useCarryTarget(surface, libraryCarry, {
+    drop: ({ id }, at) => {
+      const edge = wireAt(at);
+      onLibraryDrop(id, screenToFlowPosition(at), edge, reversed(edge));
+    },
+  });
+  const attachment = useCarryTarget(surface, attachmentCarry, {
+    takes: (_, at) => wireAt(at)?.type === 'signal',
+    drop: ({ attachment: { drag } }, at) => {
+      const edge = wireAt(at);
+      if (drag && edge) onAttachmentDrop(drag, edge);
+    },
+  });
+  const splitting = library && wireAt(library.at);
+  const preview = library && previewLibrary(library.value.id, screenToFlowPosition(library.at), splitting, reversed(splitting));
+  const split = preview?.wires.length ? splitting?.id : undefined;
+  const receiving = attachment && wireAt(attachment.at);
+  const drawnNodes = preview ? [...nodes, ...preview.cards.map((card) => ({ ...card, className: 'studio-carried' }))] : nodes;
+  const drawnEdges = !preview && !receiving ? edges : [...edges.map((edge): ModelEdge => {
+    if (edge.id === split) return { ...edge, className: 'studio-carried-split' };
+    if (!attachment || !receiving || !edge.data) return edge;
+    const { wire, attachment: moved } = attachment.value;
+    let list = edge.data.attachments ?? [];
+    if (edge.id === wire) list = list.filter((item) => item.id !== moved.id);
+    if (edge.id === receiving.id) list = [...list, { ...moved, drag: undefined }];
+    return list === edge.data.attachments ? edge : { ...edge, data: { ...edge.data, attachments: list } };
+  }), ...(preview?.wires.map((wire) => ({ ...wire, className: 'studio-carried', interactionWidth: 0, focusable: false, selectable: false })) ?? [])];
   /** The cards follow their props before the browser paints, so a card added by a gesture is drawn in the next frame. */
   useLayoutEffect(() => {
     setNodes((prior) => {
       const current = new Map(prior.map((node) => [node.id, node]));
-      return nodes.map((node) => {
+      return drawnNodes.map((node) => {
         const live = current.get(node.id);
         if (!live) return node;
         return {
@@ -381,8 +429,8 @@ function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdi
         };
       });
     });
-  }, [nodes, setNodes, getInternalNode]);
-  useLayoutEffect(() => { setEdges(edges); }, [edges, setEdges]);
+  }, [drawnNodes, setNodes, getInternalNode]);
+  useLayoutEffect(() => { setEdges(drawnEdges); }, [drawnEdges, setEdges]);
   return <CanvasStrip viewport={viewportCommands} tools={<>
     <IconButton label={collapse.label} icon={<ChevronsDownUp />} {...commandAttributes(collapse, 'right')} pressed={collapsed}
       disabled={!collapse.enabled} onClick={collapse.invoke} />
@@ -393,24 +441,7 @@ function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdi
       onPointerLeave={() => onCanvasPoint(undefined)}
       onDoubleClick={(event) => {
         if (event.target instanceof Element && event.target.classList.contains('react-flow__pane')) onSearch(point(event));
-      }} onDragOver={(event) => {
-        if (event.dataTransfer.types.some((type) => type === 'application/x-feedbax-component' || type === 'application/x-feedbax-attachment')) {
-          event.preventDefault();
-        }
-      }} onDrop={(event) => {
-        const id = event.target instanceof Element ? event.target.closest('.react-flow__edge')?.getAttribute('data-id') : null;
-        const edge = id ? getEdge(id) : undefined;
-        const type = event.dataTransfer.getData('application/x-feedbax-component');
-        const attachment = event.dataTransfer.getData('application/x-feedbax-attachment');
-        if (attachment && edge?.type === 'signal') {
-          event.preventDefault();
-          onAttachmentDrop(attachment, edge);
-        } else if (type) {
-          event.preventDefault();
-          const reversed = !!edge && (getNode(edge.source)?.position.x ?? 0) > (getNode(edge.target)?.position.x ?? 0);
-          onLibraryDrop(type, point(event), edge, reversed);
-        }
-      }}>
+      }} ref={surface}>
       <StudioCanvas defaultNodes={initial.nodes} defaultEdges={initial.edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
         viewportRef={viewport} fitReady={false} defaultViewport={origin} minZoom={0.06}
         zoomOnDoubleClick={false} nodesDraggable={canEdit && !locked} nodesConnectable={canEdit && !locked}
@@ -433,6 +464,9 @@ function Canvas({ nodes, edges, viewportRef, physical, locked, collapsed, canEdi
         }}>
         {physical && <Background gap={16} size={1} />}
       </StudioCanvas>
+      <CarryChip kind={attachmentCarry}>
+        {({ attachment: carried }) => <Button size="mark" tabIndex={-1} aria-hidden="true">{carried.mark}</Button>}
+      </CarryChip>
     </div>
   </CanvasStrip>;
 }
