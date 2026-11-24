@@ -73,7 +73,8 @@ function unfold(element: Element, root: Element) {
 
 /**
  * Puts the keyboard on the requested field of `root` as soon as `root` shows a field, unless a command has run since
- * the request: the keyboard then belongs to what that command opened.
+ * the request, or the keyboard is already on a field of `root`: it then belongs to what that command opened, or to the
+ * field being written.
  */
 export function useFieldFocus(root: RefObject<HTMLElement>, request: FieldFocusRequest | undefined, onFocused: () => void) {
   const focused = useRef(onFocused);
@@ -84,7 +85,8 @@ export function useFieldFocus(root: RefObject<HTMLElement>, request: FieldFocusR
     if (!request || !element) return;
     const requested = commandsRun();
     const attempt = () => {
-      if (commandsRun() !== requested) {
+      const active = document.activeElement;
+      if (commandsRun() !== requested || (active && element.contains(active) && active.matches(field))) {
         focused.current();
         return true;
       }

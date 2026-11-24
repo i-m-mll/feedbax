@@ -25,11 +25,58 @@ export function ruleWord(name: string) {
   return ruleName.test(name) && !reserved.has(name) ? name : JSON.stringify(name);
 }
 
-/** The rule choosing, on each axis, the values whose ids are listed; `values[axis][id]` is how a rule writes each. */
+/**
+ * The rule choosing, on each axis, the values whose ids are listed, in the axis's order; `values[axis][id]` is how a
+ * rule writes each.
+ */
 export function valuesRule(values: Readonly<Record<string, Readonly<Record<string, string>>>>,
   chosen: Readonly<Record<string, readonly string[]>>) {
-  return Object.keys(chosen).sort().map((axis) =>
-    `${axis}=${[...new Set(chosen[axis])].sort().map((id) => values[axis]?.[id] ?? ruleWord(id)).join(',')}`).join(' ');
+  return Object.keys(chosen).sort().map((axis) => {
+    const ids = new Set(chosen[axis]);
+    const known = Object.keys(values[axis] ?? {});
+    const ordered = [...known.filter((id) => ids.has(id)), ...[...ids].filter((id) => !known.includes(id)).sort()];
+    return `${axis}=${ordered.map((id) => values[axis]?.[id] ?? ruleWord(id)).join(',')}`;
+  }).join(' ');
+}
+
+/** A run as a rule reads it: its id, and its value's id on each axis. */
+export interface RuledRun {
+  readonly id: string;
+  readonly values: Readonly<Record<string, string>>;
+}
+
+/**
+ * The shortest rule choosing exactly the `picked` runs of `runs`: a term for each axis on which the picked runs leave
+ * a value out, and none where they are every run. Undefined when no rule of `axes` terms chooses exactly them.
+ */
+export function pickedRule(runs: readonly RuledRun[], picked: ReadonlySet<string>,
+  axes: Readonly<Record<string, Readonly<Record<string, string>>>>): string | undefined {
+  const chosen = runs.filter(({ id }) => picked.has(id));
+  if (!chosen.length) return undefined;
+  const terms: Record<string, string[]> = {};
+  for (const axis of Object.keys(axes)) {
+    const taken = new Set(chosen.map(({ values }) => values[axis]));
+    if (taken.size === new Set(runs.map(({ values }) => values[axis])).size) continue;
+    const ids = [...taken].filter((id): id is string => id !== undefined && id in axes[axis]);
+    if (ids.length < taken.size) return undefined;
+    terms[axis] = ids;
+  }
+  const matched = runs.filter(({ values }) => Object.entries(terms).every(([axis, ids]) => ids.includes(values[axis])));
+  return matched.length === chosen.length ? valuesRule(axes, terms) : undefined;
+}
+
+/** What picked runs write: the shortest rule choosing them, else their rows pinned as To Rows pins them. */
+export type PickedTerms<Row> = { readonly rule: string } | { readonly rows: readonly Row[] };
+
+/** The terms that choose exactly the `picked` runs; `rowOf` is the pinned row of each run. */
+export function pickedTerms<Row>(runs: readonly RuledRun[], picked: ReadonlySet<string>,
+  axes: Readonly<Record<string, Readonly<Record<string, string>>>>, rowOf: (run: string) => Row | undefined): PickedTerms<Row> {
+  const rule = pickedRule(runs, picked, axes);
+  if (rule !== undefined) return { rule };
+  return { rows: runs.flatMap(({ id }) => {
+    const row = picked.has(id) ? rowOf(id) : undefined;
+    return row === undefined ? [] : [row];
+  }) };
 }
 
 /** The rule's words before the caret; a quoted name is one word, spaces and all. */

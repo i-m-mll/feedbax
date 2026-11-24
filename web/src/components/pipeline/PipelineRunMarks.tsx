@@ -1,6 +1,6 @@
 import clsx from 'clsx';
 import { Check } from 'lucide-react';
-import { memo, useMemo, useRef, type DragEvent, type KeyboardEvent } from 'react';
+import { memo, useMemo, useRef, type DragEvent, type KeyboardEvent, type MouseEvent } from 'react';
 import { appTip } from '@window-shell/browser/tooltip';
 import { StatusMark, statusTone } from '@/components/ui/StatusMark';
 import {
@@ -65,8 +65,10 @@ function MapAxisLabel({
   dragging,
   exchange,
   axisMenu,
+  pickRuns,
 }: {
   axisMenu?: AxisMenu;
+  pickRuns?: PickRuns;
   sweep: PlanSweepView;
   place: Place;
   step: PlanStepView;
@@ -137,7 +139,8 @@ function MapAxisLabel({
               onClick={(event) => {
                 const extend = extendsSelection(event) || extendByKey.current;
                 extendByKey.current = false;
-                applySelection((state) => selectSweepValue(state, step.id, sweep.id, value.id, extend));
+                if (pickRuns) pickRuns(step.runs.filter(({ values }) => values[sweep.id] === value.id).map(({ id }) => id));
+                else applySelection((state) => selectSweepValue(state, step.id, sweep.id, value.id, extend));
               }}>
               {value.label}
             </MenuItem>
@@ -177,6 +180,9 @@ interface MarkPresentation {
   statuses: readonly [StudioResultState, number][];
 }
 
+/** Toggles runs among those picked for a rule, in place of selecting them. */
+export type PickRuns = (runs: readonly string[]) => void;
+
 const markRadius: Record<MapMarkSize['id'], string> = { full: 'rounded-sm', small: 'rounded-[2px]', smallest: 'rounded-[1px]' };
 
 function MarkButton({
@@ -190,8 +196,10 @@ function MarkButton({
   downstream,
   applySelection,
   runMenu,
+  pickRuns,
 }: {
   item: MarkPresentation;
+  pickRuns?: PickRuns;
   size: MapMarkSize;
   stepId: string;
   selected: ReadonlySet<string>;
@@ -236,7 +244,14 @@ function MarkButton({
     else if (mark.terms) applySelection(() => selectSweepGroup(stepId, mark.terms!));
     else applySelection(() => ({ selection: { kind: 'rows', stepId, runIds: runs.map(({ id }) => id) }, focus: null }));
   };
-  return <CommandContextMenu onOpen={chooseFirst} commands={runMenu && ((anchor) => runMenu(runs, anchor))} trigger={
+  const choose = pickRuns
+    ? { onClick: () => pickRuns(runs.map(({ id }) => id)), onMouseDown: (event: MouseEvent) => event.preventDefault() }
+    : selectionButton((extend) => {
+      if (mark.kind === 'run') applySelection((state) => selectRun(state, { stepId, runId: mark.run.id }, extend));
+      else if (mark.terms) applySelection(() => selectSweepGroup(stepId, mark.terms!));
+      else applySelection(() => ({ selection: { kind: 'rows', stepId, runIds: runs.map(({ id }) => id) }, focus: null }));
+    });
+  return <CommandContextMenu onOpen={chooseFirst} commands={!pickRuns && runMenu ? (anchor) => runMenu(runs, anchor) : undefined} trigger={
     <Button
       variant="bare"
       size="content"
@@ -251,11 +266,7 @@ function MarkButton({
       data-group-member={selectionKind === 'values' && selectedCount > 0 && mark.kind === 'run' ? '' : undefined}
       className={clsx('studio-map-run-mark relative flex shrink-0', markRadius[size.id])}
       style={{ width: size.mark, height: size.mark }}
-      {...selectionButton((extend) => {
-        if (mark.kind === 'run') applySelection((state) => selectRun(state, { stepId, runId: mark.run.id }, extend));
-        else if (mark.terms) applySelection(() => selectSweepGroup(stepId, mark.terms!));
-        else applySelection(() => ({ selection: { kind: 'rows', stepId, runIds: runs.map(({ id }) => id) }, focus: null }));
-      })}
+      {...choose}
     >
       {shaped ? <StatusMark status={statuses[0][0]} /> : (
         <span aria-hidden="true" className={clsx('flex size-full overflow-hidden', markRadius[size.id])}>
@@ -322,8 +333,10 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
   runMenu,
   axisMenu,
   arrange,
+  pickRuns,
 }: {
   axisMenu?: AxisMenu;
+  pickRuns?: PickRuns;
   step: PlanStepView;
   sweeps: readonly PlanSweepView[];
   selection: PipelineSelection | null;
@@ -380,7 +393,7 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
     : undefined;
   const label = (sweep: PlanSweepView, place: Place) => (
     <MapAxisLabel key={sweep.id} sweep={sweep} place={place} step={step} selection={selection}
-      applySelection={applySelection} dragging={dragging} exchange={exchange} axisMenu={axisMenu}
+      applySelection={applySelection} dragging={dragging} exchange={exchange} axisMenu={axisMenu} pickRuns={pickRuns}
       placeAt={exchange && rows && columns ? (target) => exchange(sweep.id, (target === 'rows' ? rows : columns).id) : undefined} />
   );
   return (
@@ -419,7 +432,7 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
                   style={{ gridRow: cell.row + 1, gridColumn: cell.column + 1 }}>
                   <MarkButton item={cell.item} size={size} stepId={step.id} selected={selected}
                     selectionKind={selection?.kind} boxed={boxed} upstream={upstream} downstream={downstream}
-                    applySelection={applySelection} runMenu={runMenu} />
+                    applySelection={applySelection} runMenu={runMenu} pickRuns={pickRuns} />
                 </div>
               ))}
             </div>
