@@ -72,6 +72,8 @@ export interface ProjectWindowProps {
   failure?: ReactNode;
   problems?: ReactNode;
   activity?: ReactNode;
+  /** The open project's rows in Settings. */
+  projectSettings?: ReactNode;
 }
 
 /** The glyph of each view, and of the document kind a view shows. */
@@ -149,6 +151,7 @@ function usePaletteState() {
 export function ProjectWindow({
   state, onStateChange, projectName, saveStatus, views, renderView, map, mapDrawer, compactMap,
   onBack, onForward, commands, mapCommands, focusRequest, variant, overlay, clock, shelf, failure, problems, activity,
+  projectSettings,
 }: ProjectWindowProps) {
   const id = useId();
   const ids = {
@@ -605,7 +608,7 @@ export function ProjectWindow({
               closeSettings();
             }}>
             <h2 className="sr-only">{studioName('settings')}</h2>
-            <StudioSettings />
+            <StudioSettings project={projectSettings} />
           </section>
         )}
       </main>

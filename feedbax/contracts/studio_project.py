@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 from pydantic import Field, FiniteFloat, JsonValue, model_validator
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.project import Document, Project, Sha256, Step
 from feedbax.contracts.project import ProjectValueEdit as ProjectValueEdit
 from feedbax.contracts.project import RemoveProjectValue as RemoveProjectValue
@@ -78,8 +79,10 @@ class StudioProjectSnapshot(StudioProjectRevision):
     file_revisions: list[StudioAuthoredFileRevision]
     declaration: StudioAuthoredDeclaration | None = None
     settings: dict[str, JsonValue] = Field(default_factory=dict)
+    default_keep_superseded_days: int | None = Field(default=None, ge=0)
     composed: dict[str, JsonValue] = Field(default_factory=dict)
     """The composed payload of each based document whose base chain composes."""
+    problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
 
 
 class StudioProjectFilePatch(StrictModel):
@@ -96,6 +99,8 @@ class StudioProjectPatchBatch(StrictModel):
     revision: Sha256
     presentation_revision: Sha256 | None = None
     files: list[StudioProjectFilePatch] = Field(min_length=1)
+    created: list[CreateNamedDocument] = Field(default_factory=list)
+    """Documents created in the same transaction as the file patches."""
 
 
 class ReplayFileAddress(StrictModel):
@@ -225,6 +230,7 @@ class StudioMemberCommand(StrictModel):
 class StudioMemberCommandResult(StrictModel):
     member: ProjectName
     snapshot: StudioProjectSnapshot
+    problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
 
 
 class StudioTrainStep(Step):

@@ -1,15 +1,110 @@
 """Checkpoint rule authoring uses the saved project's Plan."""
 
 import pytest
+from fastapi.testclient import TestClient
 
 from feedbax.contracts.project import Project
 from feedbax.contracts.project_sweep import CHECKPOINT_RULE_TARGET
 from feedbax.contracts.request_refs import UpdateSeriesMember
 from feedbax.contracts.studio_checkpoint_rule import StudioCheckpointRuleRequest
+from feedbax.web.app import create_app
 from feedbax.web.services.checkpoint_rule import prepare_checkpoint_rule_edit
-from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, preview_authored_files
+from feedbax.web.services.project_folder import (
+    ProjectFolderInvalid, ProjectFolderService, ProjectRevisionConflict, preview_authored_files,
+)
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_saved_update_series import definition
+
+
+@pytest.mark.parametrize("site", ["run", "checkpoint"])
+def test_bad_rule_commits_and_reopens_for_repair(tmp_path, monkeypatch, site):
+    """An invalid edit survives reload, blocks only its consumer, and can later be corrected."""
+    project = "bad-rule"
+    route = f"/api/projects/{project}"
+    folders = ProjectFolderService(tmp_path)
+    raw = definition({"every": 2})
+    if site == "checkpoint":
+        raw["sweep"] = {"rows": {"case": {}}}
+    _save_project(folders, project, Project.model_validate(raw))
+    before = folders.read_plan(project, revision=None)
+    run = next(run for run in before.plan.runs if run.kind == "evaluate")
+    variant, row = run.key.variant, run.key.row
+    text = "  seed=  " if site == "run" else "  1, huh  "
+    held = {"kind": "unresolved", "text": text}
+    expected_path = "inputs.subject.where.rule" if site == "run" else "inputs.subject.checkpoint"
+
+    app = create_app(projects_dir=tmp_path, automatic_run="off")
+    with TestClient(app) as client:
+        monkeypatch.setattr(app.state.job_service.host, "jobs_snapshot", lambda **_: {"cursor": 0, "jobs": []})
+
+        def prepare(revision, rule, row_id=row):
+            result = client.post(f"{route}/authoring/checkpoint-rule", json={
+                "revision": revision, "run": {"variant": variant, "step": "baseline", "row": row_id},
+                "edit": {"kind": "set", "scope": {"kind": "rows", "rows": [row_id]}, "rule": rule},
+            })
+            return result
+
+        def apply(revision, files):
+            assert files and all(file["patches"] for file in files)
+            response = client.patch(route, json={"revision": revision, "files": files})
+            assert response.status_code == 200, response.text
+            assert response.json()["revision"] != revision
+            return response.json()["revision"]
+
+        if site == "run":
+            response = client.post(f"{route}/authoring/run-rule", json={
+                "revision": before.revision, "variant": variant, "step": "train", "rule": text,
+            })
+            assert response.status_code == 200, response.text
+            answer = response.json()["result"]
+            assert answer["kind"] == "refused" and answer["span"] is not None
+            files = [{"address": {"kind": "step", "id": "baseline"}, "patches": [
+                {"op": "add", "path": "/inputs/subject/where", "value": {"rule": text}},
+            ]}]
+        else:
+            refused = prepare(before.revision, held, "vanished")
+            assert refused.status_code == 422 and "run changed" in refused.text
+            response = prepare(before.revision, held)
+            assert response.status_code == 200, response.text
+            [problem] = response.json()["problems"]
+            assert problem["path"] == expected_path
+            files = response.json()["files"]
+        assert folders.read(project).revision == before.revision
+
+        revision = apply(before.revision, files)
+        reopened = ProjectFolderService(tmp_path)
+        persisted = reopened.read(project, revision=revision).project.steps["baseline"]
+        if site == "run":
+            assert persisted.inputs["subject"].where.rule == text
+        else:
+            [exception] = persisted.sweep.exceptions.values()
+            assert exception.patches[CHECKPOINT_RULE_TARGET].value == held
+        plan = reopened.read_plan(project, revision=revision).plan
+        assert {run.kind for run in plan.runs} == {"train"}
+        [problem] = plan.diagnostics
+        assert (problem.step, problem.variant, problem.path) == ("baseline", variant, expected_path)
+        assert problem.span is not None
+
+        response = client.get(f"{route}/train-runs", params={"revision": revision, "window_map": True})
+        assert response.status_code == 200, response.text
+        window = response.json()["window_map"]
+        [reopened_problem] = window["problems"]
+        assert (reopened_problem["address"], reopened_problem["path"]) == ("steps/baseline.json", expected_path)
+        assert reopened_problem["authored_path"].endswith("/where/rule" if site == "run" else "/value")
+        step = next(step for step in window["steps"] if step["step_id"] == "baseline")
+        [subject] = step["inputs"]
+        if site == "run":
+            assert subject["subset"]["terms"]["rule"] == text
+            files[0]["patches"] = [{"op": "replace", "path": "/inputs/subject/where/rule", "value": ""}]
+        else:
+            [exception] = step["exceptions"]
+            assert exception["rule"]["patches"][CHECKPOINT_RULE_TARGET]["value"] == held
+            response = prepare(revision, {"at": 2})
+            assert response.status_code == 200, response.text
+            assert response.json()["problems"] == []
+            files = response.json()["files"]
+        repaired = reopened.read_plan(project, revision=apply(revision, files)).plan
+        assert not repaired.diagnostics and {run.kind for run in repaired.runs} == {"train", "evaluate"}
 
 
 def test_checkpoint_rule_sweep_keeps_subject_fanout_and_replans_horizons(tmp_path):
@@ -33,11 +128,12 @@ def test_checkpoint_rule_sweep_keeps_subject_fanout_and_replans_horizons(tmp_pat
     def plan():
         return folders.read_plan("series", revision=None)
 
-    def prepare(settled, row, edit):
+    def prepare(settled, row, edit, choice=None):
         return prepare_checkpoint_rule_edit(folders, "series", StudioCheckpointRuleRequest.model_validate({
             "revision": settled.revision,
             "run": {"variant": row.key.variant, "step": row.key.step, "row": row.key.row},
             "edit": edit,
+            "store_choice": choice,
         }))
 
     before = plan()
@@ -65,10 +161,30 @@ def test_checkpoint_rule_sweep_keeps_subject_fanout_and_replans_horizons(tmp_pat
     assert {
         row.key for row in plan().plan.runs if row.request_id != axis_rows[row.key].request_id
     } == {control.key}
-    with pytest.raises(ProjectFolderInvalid, match="already writes"):
-        prepare(plan(), axis_rows[test_row.key], {
-            "kind": "set", "scope": {"kind": "rows", "rows": [test_row.key.row]}, "rule": [{"at": 7}],
-        })
+    after_row = plan()
+    change = {
+        "kind": "set", "scope": {"kind": "rows", "rows": [test_row.key.row]}, "rule": [{"at": 1}],
+    }
+    review = prepare(after_row, test_row, change)
+    assert review.files == []
+    assert plan().revision == after_row.revision
+    option, = review.store_choices
+    assert option.kind == "sweep_value"
+    assert {(key.variant, key.step, key.row) for key in option.runs} == {
+        (key.variant, key.step, key.row) for key, run in axis_rows.items()
+        if key.step == "baseline" and run.coordinates["replicate"].value_id == "test"
+    }
+    with pytest.raises(ProjectRevisionConflict):
+        prepare(after_row, test_row, change | {"rule": "last"}, option.id)
+    assert plan().revision == after_row.revision
+    chosen = prepare(after_row, test_row, change, option.id)
+    saved = folders.read("series", revision=after_row.revision)
+    _save_project(folders, "series", preview_authored_files(saved.project, chosen.files))
+    original_requests = {run.key: run.request_id for run in after_row.plan.runs}
+    assert {
+        (run.key.variant, run.key.step, run.key.row) for run in plan().plan.runs
+        if run.request_id != original_requests[run.key]
+    } == {(key.variant, key.step, key.row) for key in option.runs}
 
     _save_project(folders, "series", project)
     conversion = prepare(plan(), test_row, {"kind": "to_sweep"})

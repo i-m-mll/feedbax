@@ -5,7 +5,6 @@ from __future__ import annotations
 from base64 import b64decode, urlsafe_b64encode
 from binascii import Error as Base64Error
 from copy import deepcopy
-from functools import partial
 from hmac import compare_digest, digest
 import os
 from pathlib import Path
@@ -148,7 +147,7 @@ class ProjectFolderService(ProjectFolder):
             } for item in components.list_all() if not item.is_composite)
             return review_model_connections(
                 ModelDocument.model_validate(payload), body, layout=authority.layout, next_input=authority.next_input,
-                library=library, accepts=authority.accepts, task_signal=task_signal,
+                library=library, task_signal=task_signal,
             )
         except ValueError as error:
             raise ProjectFolderInvalid(str(error)) from error
@@ -156,24 +155,35 @@ class ProjectFolderService(ProjectFolder):
     def edit_model(
         self, project_id: str, body: ModelEditRequest, components: ComponentRegistry,
     ) -> ModelEditResponse:
-        from feedbax.contracts.model_edit import ModelEditApplied, ModelEditProblem, ModelEditRefused, ModelEditResponse
+        from feedbax.contracts.model_edit import (
+            ModelEditApplied, ModelEditAsked, ModelEditProblem, ModelEditRefused, ModelEditResponse,
+        )
 
-        from feedbax.web.services.trial_scope import model_document_store, row_model, scoped_model_store
+        from feedbax.web.services.model_scope import model_edit_store
+        from feedbax.web.services.trial_bindings import input_names, preserve_renamed_bindings
+        from feedbax.web.services.trial_scope import row_model
 
         project_id = self.project_id(project_id)
+        row = None
         if body.rows:
             if body.files:
                 raise ProjectFolderInvalid("A Model edit for selected runs writes no step files alongside it.")
             row = row_model(self, project_id, self.read(project_id, revision=body.revision).project, body)
-            result = self.apply_model_command(
-                project_id, body, components, lambda project, body, before, after: scoped_model_store(
-                    project, body, row, after,
-                ), source=row.content,
-            )
-        else:
-            result = self.apply_model_command(
-                project_id, body, components, partial(model_document_store, self, project_id),
-            )
+
+        def store(project, body, before, after):
+            stored = model_edit_store(self, project_id, project, body, before, after, row)
+            if isinstance(stored, ModelEditAsked):
+                return stored
+            old_names, new_names = input_names(before), input_names(after)
+            if any(old_names[id_] != new_names[id_] for id_ in old_names.keys() & new_names.keys()):
+                return preserve_renamed_bindings(self, project_id, body.revision, project, stored)
+            return stored
+
+        result = self.apply_model_command(
+            project_id, body, components, store, source=row.content if row is not None else None,
+        )
+        if isinstance(result, ModelEditAsked):
+            return ModelEditResponse(result=result)
         if isinstance(result, ModelEditProblem):
             return ModelEditResponse(result=ModelEditRefused(status="refused", problem=result))
         change = result.change
@@ -182,11 +192,14 @@ class ProjectFolderService(ProjectFolder):
         ) if change is not None else None
         return ModelEditResponse(result=ModelEditApplied(
             status="applied", snapshot=result.snapshot, changed=result.changed, clipboard=result.clipboard,
-            undo_token=token, created=result.created,
+            undo_token=token, created=result.created, problems=result.problems,
+            sweep_problems=result.sweep_problems,
         ))
 
     def undo_model(self, project_id: str, body: ModelUndoRequest) -> ModelEditResponse:
         from feedbax.contracts.model_edit import ModelEditApplied, ModelEditResponse
+        from feedbax.contracts.model_document import ModelDocument
+        from feedbax.compiler.model_ports import ModelRegistryPorts
         from feedbax.studio.model_undo import apply_delta
 
         try:
@@ -213,8 +226,10 @@ class ProjectFolderService(ProjectFolder):
             snapshot, edit.document, payload, layout,
             had_entry=edit.had_entry, had_documents=edit.had_documents,
         )
+        problems = tuple(ModelRegistryPorts(self.components).problems(ModelDocument.model_validate(payload))) \
+            if self.components is not None else ()
         return ModelEditResponse(result=ModelEditApplied(
-            status="applied", snapshot=snapshot, changed=edit.changed, undo_token=token,
+            status="applied", snapshot=snapshot, changed=edit.changed, undo_token=token, problems=problems,
         ))
 
     @staticmethod
