@@ -302,6 +302,7 @@ class StudioTrainAuthoring(StrictModel):
     """Documents the edit creates, written before ``files``, which may name them."""
     documents: list[ProjectName]
     refusal: StudioSweptParameterMissing | None = None
+    sweep_problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
     classes: list[StudioClassField] = Field(default_factory=list)
     removed_values: dict[str, list[str]] = Field(default_factory=dict)
     """Per sweep, the values whose runs the edit removes from the project."""

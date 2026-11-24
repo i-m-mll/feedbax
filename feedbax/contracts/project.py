@@ -20,7 +20,7 @@ from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_inputs import (
     DocumentReference as DocumentReference, InputBinding, NonemptyText, Pointer as Pointer, ProjectName, RowKey,
 )
-from feedbax.contracts.project_sweep import PatchPath, Sweep
+from feedbax.contracts.project_sweep import PatchPath, Sweep, TrialSetField
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
 from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID, TrainingDocument
 
@@ -289,6 +289,7 @@ class Step(StrictModel):
     base: Base
     deltas: list[MatrixCompositionDelta] = Field(default_factory=list)
     sweep: Sweep | None = None
+    set_fields: dict[ProjectName, TrialSetField] = Field(default_factory=dict, exclude_if=lambda value: not value)
     inputs: dict[ProjectName, InputBinding | None] = Field(default_factory=dict)
     requires: list[PatchPath] = Field(default_factory=list)
     note: StepNote | None = None

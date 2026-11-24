@@ -57,6 +57,7 @@ from feedbax.contracts.project_io import (
     require_text_declaration,
     text_file_stamp,
     text_project_fingerprint,
+    text_project_settings_edit,
 )
 from feedbax.planner.project_plan import ProjectPlan, ProjectPlanMemo, RunKey, compile_project, compiler_authority
 from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, compose_document
@@ -70,6 +71,7 @@ from feedbax.project_members import (
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.studio.selection import StoredEdit
 from feedbax.contracts.studio_project import (
+    DECLARATION_ADDRESS,
     PRESENTATION_ADDRESS,
     AuthoredFileAddress,
     CreateNamedDocument,
@@ -257,8 +259,14 @@ def _apply_file_edits(entry: dict, file: StudioProjectFilePatch, *, model_operat
 
     check_model()
     for patch in file.patches:
+        path = json_pointer_parts(patch.path)
+        if file.address == DECLARATION_ADDRESS:
+            if path[0] != "settings":
+                raise ProjectFolderInvalid("Only project settings can be edited through the declaration address")
+            if path == ("settings",) and isinstance(patch, RemoveProjectValue):
+                raise ProjectFolderInvalid("Replace project settings with an empty object to clear them")
         apply_value_patch_in_place(
-            entry, json_pointer_parts(patch.path), patch.op,
+            entry, path, patch.op,
             patch.value if isinstance(patch, SetProjectValue) else None, path=patch.path,
         )
     check_model()
@@ -485,20 +493,15 @@ def _regular(path: Path) -> os.stat_result:
     return info
 
 
-class _PendingDeclarationAddress(StrictModel):
-    kind: Literal["declaration"]
-    id: ProjectName
-
-
 class _PendingFile(StrictModel):
-    address: AuthoredFileAddress | _PendingDeclarationAddress
+    address: AuthoredFileAddress
     before: Sha256 | None
     data: str | None
     encoding: Literal["utf8", "base64"] = "utf8"
 
     @property
     def relative(self) -> str:
-        if isinstance(self.address, _PendingDeclarationAddress):
+        if self.address.kind == "declaration":
             return project_declaration_name(self.address.id)
         return _relative_file(self.address)
 
@@ -571,7 +574,7 @@ def _finish_patch_at(root: Path, root_fd: int) -> None:
     if not files or len({relative for _, relative, _ in targets}) != len(files):
         raise ProjectFolderInvalid("Studio edit journal is invalid")
     for file, relative, _ in targets:
-        if isinstance(file.address, _PendingDeclarationAddress):
+        if file.address.kind == "declaration":
             try:
                 require_text_declaration(root, relative.name)
             except ProjectReadError as error:
@@ -975,6 +978,7 @@ class ProjectFolder:
                 authored_revision=authored_declaration_revision(text.manifest),
                 data=b64encode(text.files[text.declaration]).decode("ascii"),
             ),
+            settings=text.configuration.settings,
         )
 
     def _document(self, location: ProjectFolderLocation, text: TextProject) -> StudioProjectDocument:
@@ -1165,7 +1169,7 @@ class ProjectFolder:
                         proposed[relative] = data
                     if data != text.files.get(relative):
                         pending.append(_PendingFile(
-                            address=_PendingDeclarationAddress(kind="declaration", id=text.configuration.project)
+                            address=AuthoredFileAddress(kind="declaration", id=text.configuration.project)
                             if declaration else file.address.model_dump(), before=file.before,
                             data=b64encode(data).decode("ascii") if data is not None else None,
                             encoding="base64",
@@ -1321,7 +1325,7 @@ class ProjectFolder:
                 path = Path(relative)
                 data = encoded.get(relative)
                 pending.append(_PendingFile(
-                    address=_PendingDeclarationAddress(kind="declaration", id=text.configuration.project)
+                    address=AuthoredFileAddress(kind="declaration", id=text.configuration.project)
                     if relative == text.declaration
                     else AuthoredFileAddress(kind=_KINDS[path.parent.name], id=path.stem),
                     before=text.file_revisions.get(relative),
@@ -1478,6 +1482,7 @@ class ProjectFolder:
             files = body.files if isinstance(body, StudioProjectPatchBatch) else [body]
             original = dump_text_project(text.project, text.configuration)
             payload = text.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
+            configuration = text.configuration.model_dump(mode="json")
             addresses = {}
             made = set()
             for document in created:
@@ -1501,13 +1506,15 @@ class ProjectFolder:
                     if edits_presentation else None
                 )
                 for file in files:
-                    relative = _relative_file(file.address)
+                    relative = text.declaration if file.address == DECLARATION_ADDRESS else _relative_file(file.address)
                     if relative in addresses and relative not in made:
                         raise ProjectFolderInvalid(f"{relative} is addressed twice")
                     addresses[relative] = file.address
                     if relative == STUDIO_PRESENTATION_FILENAME:
                         assert presentation is not None
                         entry = presentation
+                    elif relative == text.declaration:
+                        entry = configuration
                     else:
                         if relative not in original and relative not in made:
                             raise ProjectFolderNotFound(file.address.id)
@@ -1515,6 +1522,10 @@ class ProjectFolder:
                     _apply_file_edits(entry, file, model_operation=model_operation)
                 project = Project.model_validate(payload)
                 encoded = dump_text_project(project, text.configuration)
+                if text.declaration in addresses:
+                    settings = ProjectConfiguration.model_validate(configuration).settings
+                    original[text.declaration] = text_project_settings_edit(text.manifest, text.configuration.settings)
+                    encoded[text.declaration] = text_project_settings_edit(text.manifest, settings)
                 if presentation is not None:
                     original[STUDIO_PRESENTATION_FILENAME] = _encode_presentation(_decode_presentation(presentation_data))
                     encoded[STUDIO_PRESENTATION_FILENAME] = _encode_presentation(PresentationDocument.model_validate(presentation))
@@ -1530,7 +1541,8 @@ class ProjectFolder:
             if changed:
                 _publish_patch(folder, [
                     _PendingFile(
-                        address=addresses[relative],
+                        address=AuthoredFileAddress(kind="declaration", id=text.configuration.project)
+                        if relative == text.declaration else addresses[relative],
                         before=(
                             sha256_bytes(presentation_data) if presentation_data is not None else None
                         ) if relative == STUDIO_PRESENTATION_FILENAME else text.file_revisions.get(relative),

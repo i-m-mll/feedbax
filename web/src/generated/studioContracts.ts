@@ -37,10 +37,16 @@ export interface CloseWhenIdle {
   seconds: number;
 }
 
+export interface HostRuntime {
+  backend: string;
+  devices: string[];
+}
+
 export interface LocalTargetProfile {
   kind: "local";
   id: "local";
   label: "This Mac";
+  runtime?: HostRuntime | null;
 }
 
 export interface SessionTargetProfile {
@@ -238,7 +244,8 @@ export interface StudioSavedEvaluationReplayRequest {
   revision: string;
   key: StudioSavedTrainKey;
   job_id: string;
-  trial: string;
+  trial?: string | null;
+  aggregate?: boolean;
   checkpoint?: number | null;
 }
 
@@ -313,7 +320,7 @@ export interface StudioSavedEvaluationRow {
   subject_rank_key?: string | null;
   checkpoint_series?: StudioEvaluationCheckpointSeries | null;
   checkpoint_attempt?: StudioEvaluationCheckpointAttempt | null;
-  checkpoint_rule?: "last" | BestCheckpoint | BatchCheckpoint | BarrierCheckpoint | CheckpointBatches | CheckpointCadence | UpdateCadence | UpdateCheckpoint[] | null;
+  checkpoint_rule?: "last" | BestCheckpoint | BatchCheckpoint | BarrierCheckpoint | CheckpointBatches | CheckpointCadence | UpdateCadence | UpdateCheckpoint[] | UnresolvedValue | null;
   bound_subject?: StudioBoundBestSubject | null;
 }
 
@@ -589,7 +596,7 @@ export interface InputDefault {
 export interface DelayAttachment {
   kind: "delay";
   id: string;
-  delay: ModelTime;
+  delay: ModelTime | UnresolvedValue;
   initial?: JsonValue;
 }
 
@@ -598,7 +605,7 @@ export interface InterventionAttachment {
   id: string;
   operation: string;
   fields?: Record<string, JsonValue>;
-  window?: JsonValue;
+  window?: InterventionWindow | null;
 }
 
 export interface ProbeAttachment {
@@ -663,7 +670,7 @@ export interface CompositeComponent {
   name: string;
   ports: ModelPorts;
   interior: GraphInterior | PhysicalInterior;
-  substeps?: number;
+  substeps?: number | UnresolvedValue;
   attachments?: ModelPortAttachments;
 }
 
@@ -688,7 +695,7 @@ export interface ModelWorld {
 
 export interface ModelDocument {
   schema_version?: "feedbax.spec.model.v1";
-  step_seconds: number;
+  step_seconds: number | UnresolvedValue;
   ports: ModelPorts;
   interior: GraphInterior;
   world?: ModelWorld | null;
@@ -960,6 +967,7 @@ export interface ModelEditApplied {
   clipboard?: ModelClipboard | null;
   undo_token?: string | null;
   created?: string[];
+  problems?: ModelGraphProblem[];
 }
 
 export interface ModelEditRefused {
@@ -993,6 +1001,18 @@ export interface TaskSignalSource {
 export interface ModelConnectionVerdict {
   target: ComponentPortEnd | OutputBoundaryEnd;
   reason: string | null;
+  problem?: string | null;
+  replaced?: ModelWireReplacement[];
+}
+
+export interface ModelWireReplacement {
+  address: ModelAddress;
+  attachments: ModelAddress[];
+}
+
+export interface ModelGraphProblem {
+  address: ModelAddress;
+  reason: string;
 }
 
 export interface ModelLibraryConnection {
@@ -1038,6 +1058,7 @@ export interface ModelProjection {
   resolved_model?: ModelDocument | null;
   base_differences?: Array<ModelAddedElement | ModelRemovedElement | ModelRewiredElement>;
   value_differences?: Array<ModelAddedElement | ModelRemovedElement | ModelRewiredElement>;
+  problems?: ModelGraphProblem[];
 }
 
 export interface ModelProjectionRequest {
@@ -1157,6 +1178,7 @@ export interface ModelFieldView {
   members?: StudioSweepValue[];
   changed?: boolean;
   address: ModelAddress;
+  problems?: Problem[];
   sources?: StudioPlanReviewSource[];
 }
 
@@ -1988,6 +2010,52 @@ export interface StudioPlanarSceneResponse {
   diagnostics: DomainDiagnostic[];
 }
 
+export interface SceneLinkGeometry {
+  body: ModelAddress;
+  body_name: string;
+  joint: ModelAddress;
+  joint_name: string;
+  start: [number, number];
+  end: [number, number];
+  pivot: [number, number];
+}
+
+export interface SceneMuscleGeometry {
+  address: ModelAddress;
+  name: string;
+  points: [number, number][];
+}
+
+export interface ScenePlanarGeometry {
+  kind: "planar";
+  address: ModelAddress;
+  name: string;
+  links: SceneLinkGeometry[];
+  muscles: SceneMuscleGeometry[];
+}
+
+export interface ScenePointGeometry {
+  kind: "point";
+  address: ModelAddress;
+  name: string;
+  point: ModelAddress;
+  position: [number, number];
+}
+
+export interface StudioSceneGeometryRequest {
+  revision: string;
+  document_id: string;
+  state_values?: Record<string, JsonValue>;
+}
+
+export interface StudioSceneGeometryResponse {
+  revision: string;
+  document_id: string;
+  project_id: string;
+  mechanisms: Array<ScenePointGeometry | ScenePlanarGeometry>;
+  diagnostics: DomainDiagnostic[];
+}
+
 export interface DomainRegistryPayload {
   schema_id?: "feedbax.spec.domain";
   schema_version?: "feedbax.spec.domain.v1";
@@ -2018,118 +2086,6 @@ export interface DomainCompileReport {
   diagnostics?: DomainDiagnostic[];
   derived_interface?: Record<string, unknown> | null;
   summary?: Record<string, number>;
-}
-
-export interface WorkspaceReplayWarning {
-  code: "missing_trial_metadata" | "missing_manifest_refs" | "missing_anchor_resolution" | "missing_overlay_metadata" | "npz_browser_downgrade";
-  message: string;
-  path?: string | null;
-  metadata?: Record<string, unknown>;
-}
-
-export interface WorkspaceReplayTrialIdentity {
-  index: number;
-  stable_id?: string | null;
-  source?: "stable_id" | "index_fallback";
-  label?: string | null;
-  metadata?: Record<string, unknown>;
-}
-
-export interface WorkspaceReplaySampleAxis {
-  length: number;
-  units?: string | null;
-  dt?: number | null;
-  values?: number[] | null;
-  metadata?: Record<string, unknown>;
-}
-
-export interface WorkspaceReplayTrack {
-  anchor_id: string;
-  selector: StudioSelectorRef;
-  samples: number[][];
-  dim: number;
-  dtype?: string;
-  units?: string | null;
-  frame?: string | null;
-  label?: string | null;
-  metadata?: Record<string, unknown>;
-}
-
-export interface WorkspaceReplayOverlayChannel {
-  id: string;
-  selector: StudioSelectorRef;
-  samples: unknown[];
-  dtype?: string;
-  shape?: unknown[] | null;
-  units?: string | null;
-  label?: string | null;
-  binding?: Record<string, unknown>;
-  metadata?: Record<string, unknown>;
-}
-
-export interface WorkspaceReplayTrialSpecSnapshot {
-  summary?: Record<string, unknown>;
-  targets?: Record<string, unknown>;
-  timeline?: Record<string, unknown> | null;
-  snapshot?: Record<string, unknown> | null;
-  schema_id?: string | null;
-  schema_version?: string | null;
-  sha256?: string | null;
-  metadata?: Record<string, unknown>;
-}
-
-export interface WorkspaceReplayManifestRefs {
-  spec_snapshot?: StudioArtifactRef | null;
-  checkpoint?: StudioArtifactRef | StudioManifestRef | null;
-  task_variant?: StudioArtifactRef | StudioManifestRef | null;
-  seed?: number | string | null;
-  environment?: StudioArtifactRef | StudioManifestRef | Record<string, unknown> | null;
-  producer_manifest?: StudioManifestRef | null;
-  metadata?: Record<string, unknown>;
-}
-
-export interface WorkspaceReplayTrial {
-  identity: WorkspaceReplayTrialIdentity;
-  time: WorkspaceReplaySampleAxis;
-  tracks?: WorkspaceReplayTrack[];
-  overlays?: WorkspaceReplayOverlayChannel[];
-  trial_spec?: WorkspaceReplayTrialSpecSnapshot;
-  manifest_refs?: WorkspaceReplayManifestRefs;
-  warnings?: WorkspaceReplayWarning[];
-  metadata?: Record<string, unknown>;
-}
-
-export interface WorkspaceReplayImportedArtifact {
-  artifact: StudioArtifactRef;
-  source_format?: "npz" | "unknown";
-  missing_metadata?: string[];
-  metadata?: Record<string, unknown>;
-}
-
-export interface WorkspaceReplayProduct {
-  schema_id?: "feedbax.manifest.studio.workspace_replay";
-  schema_version?: "feedbax.manifest.studio.workspace_replay.v1";
-  product_kind?: "workspace_replay";
-  source_mode?: "resolved_scene" | "imported_artifact";
-  trials?: WorkspaceReplayTrial[];
-  imported_artifact?: WorkspaceReplayImportedArtifact | null;
-  manifest_refs?: WorkspaceReplayManifestRefs;
-  warnings?: WorkspaceReplayWarning[];
-  metadata?: Record<string, unknown>;
-}
-
-export interface WorkspaceReplayRequiredSelector {
-  anchor_id: string;
-  selector: StudioSelectorRef;
-  label?: string | null;
-  retention_id?: string | null;
-  value_schema?: Record<string, unknown> | null;
-  metadata?: Record<string, unknown>;
-}
-
-export interface ResolvedWorkspaceReplayScene {
-  required_selectors?: WorkspaceReplayRequiredSelector[];
-  metadata?: Record<string, unknown>;
 }
 
 export interface ComponentDefinition {
@@ -2186,6 +2142,14 @@ export interface TaskTimelineCue {
   outcome: number;
 }
 
+export interface StudioTrialReplayResponse {
+  n_steps: number;
+  state_time: number[];
+  position: string | null;
+  receipt: JobReceipt;
+  drawn: TrialRecords | TrialAggregate;
+}
+
 export interface TrialRecord {
   id: string;
   inits: Record<string, JsonValue>;
@@ -2195,7 +2159,14 @@ export interface TrialRecord {
   variable_defined: Record<string, JsonValue>;
   timeline: TaskTimelineCue[];
   terms?: Record<string, TrialTerm>;
-  states?: Record<string, JsonValue>;
+  states?: Record<string, TrialStateTrack>;
+  configurations?: Record<string, JsonValue>;
+}
+
+export interface TrialStateTrack {
+  samples: number[][];
+  units: string | null;
+  frame: string;
 }
 
 export interface TrialRecords {
@@ -2244,12 +2215,13 @@ export interface TrialAggregate {
 }
 
 export interface TaskTrialSampleRequest {
-  model: ModelDocument;
+  model?: ModelDocument | null;
   task?: TaskDocument | null;
   python_task?: PythonTaskSelection | null;
-  input_overrides?: Record<string, string>;
+  input_bindings?: Record<string, string | null>;
   objective?: ObjectiveDocument | null;
   evaluation_trials?: string[] | null;
+  nominal?: boolean;
   seed?: number;
   count?: number;
   aggregate?: boolean;
@@ -2394,14 +2366,34 @@ export interface PenzaiInspectorResponse {
   data: PenzaiInspectorPayload;
 }
 
+export interface StudioTrajectorySampleAxis {
+  length: number;
+  units?: string | null;
+  dt?: number | null;
+  values?: number[] | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface StudioTrajectoryTrack {
+  anchor_id: string;
+  selector: StudioSelectorRef;
+  samples: number[][];
+  dim: number;
+  dtype?: string;
+  units?: string | null;
+  frame?: string | null;
+  label?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
 export interface TrainingTrajectoryPayload {
   schema_id?: "feedbax.event.studio.training_trajectory";
   schema_version?: "feedbax.event.studio.training_trajectory.v1";
   source_kind?: "live_snapshot";
   fidelity?: "lower_fidelity_live_snapshot";
   n_steps?: number | null;
-  time?: WorkspaceReplaySampleAxis | null;
-  tracks?: Record<string, WorkspaceReplayTrack>;
+  time?: StudioTrajectorySampleAxis | null;
+  tracks?: Record<string, StudioTrajectoryTrack>;
   observables?: Record<string, unknown>;
   outputs?: Record<string, unknown>;
   effector?: unknown[] | null;
@@ -2564,6 +2556,12 @@ export type AddMember = {
   "initializes"?: Array<string>;
 };
 
+export type AddSetEntry = {
+  "kind": "add_set_entry";
+  "step": string;
+  "axis": string;
+};
+
 export type AnalysisDocument = {
   "schema_version"?: "feedbax.analysis_document.v1";
   "inputs"?: Record<string, AnalyzeDatasetInput | AnalyzeModelInput | AnalyzeTaskInput>;
@@ -2600,7 +2598,7 @@ export type AttemptProvenance = {
 };
 
 export type AuthoredFileAddress = {
-  "kind": "document" | "step" | "variant" | "presentation";
+  "kind": "document" | "step" | "variant" | "presentation" | "declaration";
   "id": string;
 };
 
@@ -2709,7 +2707,7 @@ export type CheckpointCadence = {
   "through": number;
 };
 
-export type CheckpointRule = "last" | BestCheckpoint | BatchCheckpoint | BarrierCheckpoint | CheckpointBatches | CheckpointCadence | UpdateRule;
+export type CheckpointRule = "last" | BestCheckpoint | BatchCheckpoint | BarrierCheckpoint | CheckpointBatches | CheckpointCadence | UpdateRule | UnresolvedValue;
 
 export type CheckpointRuleAxis = {
   "path"?: CheckpointRulePath;
@@ -2737,6 +2735,11 @@ export type ContentRef = {
   "size": number;
   "media_type"?: string | null;
   "tree"?: boolean;
+};
+
+export type CooccurringSetTrials = {
+  "kind": "cooccurring";
+  "weights"?: Record<string, SetEntryParts>;
 };
 
 export type CreateNamedDocument = {
@@ -2832,6 +2835,7 @@ export type DrawValue = {
   "family": string;
   "args": Array<Expression>;
   "per"?: "run" | "trial";
+  "weights"?: Array<WeightPart> | null;
 };
 
 export type DriverChanged = {
@@ -3078,6 +3082,12 @@ export type InputRole = {
   "checkpoint_sets": boolean;
 };
 
+export type InterventionWindow = {
+  "epoch": string;
+  "offsets": Array<number>;
+  "duration": number;
+};
+
 export type JaxOperation = {
   "backend": "cpu" | "gpu";
   "floating_point_bits": 32 | 64;
@@ -3128,6 +3138,10 @@ export type ListedAxis = {
   "path": SweepTarget;
   "where"?: AxisCondition | null;
   "values": Array<JsonValue>;
+};
+
+export type ListedSetTrials = {
+  "kind": "listed";
 };
 
 export type LiteralValue = {
@@ -3525,6 +3539,11 @@ export type SetDocumentValue = {
   "value": JsonValue;
 };
 
+export type SetEntryParts = {
+  "on"?: WeightPart;
+  "off"?: WeightPart;
+};
+
 export type SetLink = {
   "op": "link";
   "model_field": string;
@@ -3550,6 +3569,20 @@ export type SetSpan = {
   "first_epoch": string;
   "last_epoch": string;
 };
+
+export type SetToField = {
+  "kind": "set_to_field";
+  "step": string;
+  "axis": string;
+};
+
+export type SetToSweep = {
+  "kind": "set_to_sweep";
+  "step": string;
+  "axis": string;
+};
+
+export type SetTrialSampling = ListedSetTrials | WeightedSetTrials | CooccurringSetTrials;
 
 export type SetType = {
   "op": "set_type";
@@ -3593,7 +3626,7 @@ export type SiteProjection = {
   "kinds": Array<FieldKind>;
   "functions": Array<FunctionInfo>;
   "parts": Array<ExpressionPartSite>;
-  "name_paths"?: Record<string, ModelAddress>;
+  "name_paths"?: Record<string, Array<string>>;
 };
 
 export type SourceDifference = {
@@ -3630,6 +3663,7 @@ export type Step = {
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "sweep"?: Sweep | null;
+  "set_fields"?: Record<string, TrialSetField>;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
   "note"?: StepNote | null;
@@ -3675,6 +3709,8 @@ export type StepReference = {
   "product"?: string | null;
   "unresolved"?: true | null;
 };
+
+export type StoreKind = "all_readers" | "selected_readers" | "sweep_value" | "set_entry" | "row_exception" | "variant" | "other_runs" | "whole_step";
 
 export type StoreSubset = {
   "rule"?: string;
@@ -3735,6 +3771,7 @@ export type StudioAnalyzeStep = {
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "sweep"?: Sweep | null;
+  "set_fields"?: Record<string, TrialSetField>;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
   "note"?: StepNote | null;
@@ -3861,6 +3898,7 @@ export type StudioBoundBestSubject = {
 export type StudioCheckpointRuleEdit = {
   "revision": string;
   "files": Array<StudioProjectFilePatch>;
+  "problems"?: Array<StudioProjectWindowMapProblem>;
 };
 
 export type StudioCheckpointRuleRequest = {
@@ -3871,7 +3909,7 @@ export type StudioCheckpointRuleRequest = {
 
 export type StudioCheckpointRuleSet = {
   "kind": "set";
-  "rule": "last" | BatchCheckpoint | UpdateRule;
+  "rule": "last" | BatchCheckpoint | UpdateRule | UnresolvedValue;
   "scope": AxisValueRuns | ListedRuns;
 };
 
@@ -3931,6 +3969,7 @@ export type StudioEvaluateStep = {
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "sweep"?: Sweep | null;
+  "set_fields"?: Record<string, TrialSetField>;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
   "note"?: StepNote | null;
@@ -4074,6 +4113,7 @@ export type StudioProjectSnapshot = {
   "presentation_error"?: "unreadable_presentation" | null;
   "file_revisions": Array<StudioAuthoredFileRevision>;
   "declaration"?: StudioAuthoredDeclaration | null;
+  "settings"?: Record<string, JsonValue>;
   "composed"?: Record<string, JsonValue>;
   "problems"?: Array<StudioProjectWindowMapProblem>;
 };
@@ -4144,6 +4184,7 @@ export type StudioProjectWindowMapInput = {
   "subset": StudioProjectWindowMapSubset | null;
   "checkpoint"?: CheckpointRule | null;
   "checkpoint_axis"?: string | null;
+  "can_sweep_checkpoint"?: boolean;
 };
 
 export type StudioProjectWindowMapInputAxis = {
@@ -4166,6 +4207,7 @@ export type StudioProjectWindowMapProblem = {
   "layer"?: string | null;
   "authored_path"?: string | null;
   "blocked_by"?: StudioSavedTrainKey | null;
+  "span"?: TextSpan | null;
 };
 
 export type StudioProjectWindowMapRequest = {
@@ -4251,6 +4293,7 @@ export type StudioReportStep = {
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "sweep"?: Sweep | null;
+  "set_fields"?: Record<string, TrialSetField>;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
   "note"?: StepNote | null;
@@ -4271,6 +4314,7 @@ export type StudioRunRuleChosen = {
 export type StudioRunRuleRefused = {
   "kind"?: "refused";
   "reason": string;
+  "span"?: TextSpan | null;
 };
 
 export type StudioRunRuleRequest = {
@@ -4301,11 +4345,25 @@ export type StudioSetEdit = {
   "files": Array<StudioProjectFilePatch>;
   "created"?: Array<CreateNamedDocument>;
   "selected"?: StudioAxisValue | null;
+  "problems"?: Array<StudioProjectWindowMapProblem>;
 };
 
 export type StudioSetEditRequest = {
   "revision": string;
-  "command": DuplicateRun | SaveSet | InlineSet | ApplySet | RemoveAxisValue;
+  "command": DuplicateRun | SaveSet | InlineSet | ApplySet | SetToField | SetToSweep | RemoveAxisValue | AddSetEntry;
+};
+
+export type StudioSetField = {
+  "axis": string;
+  "set": string;
+  "sampling": SetTrialSampling;
+  "entries": Array<StudioSetFieldEntry>;
+};
+
+export type StudioSetFieldEntry = {
+  "entry": string | null;
+  "label"?: string | null;
+  "weight"?: WeightPart | SetEntryParts | null;
 };
 
 export type StudioSetsOffered = {
@@ -4320,6 +4378,14 @@ export type StudioSetsOfferedRequest = {
 export type StudioStepPlace = {
   "part": "step";
   "field"?: string | null;
+};
+
+export type StudioStoreChoice = {
+  "id": Sha256;
+  "kind": StoreKind;
+  "label": string;
+  "steps": Array<string>;
+  "runs": Array<StudioSavedTrainKey>;
 };
 
 export type StudioSubsetToRowsEdit = {
@@ -4381,6 +4447,7 @@ export type StudioTrainAuthoring = {
   "created"?: Array<CreateNamedDocument>;
   "documents": Array<string>;
   "refusal"?: StudioSweptParameterMissing | null;
+  "sweep_problems"?: Array<StudioProjectWindowMapProblem>;
   "classes"?: Array<StudioClassField>;
   "removed_values"?: Record<string, Array<string>>;
   "changed"?: Array<string>;
@@ -4414,6 +4481,7 @@ export type StudioTrainStep = {
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "sweep"?: Sweep | null;
+  "set_fields"?: Record<string, TrialSetField>;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
   "note"?: StepNote | null;
@@ -4439,7 +4507,7 @@ export type StudioTrialAuthoring = {
   "objective_changed"?: Array<Pointer>;
   "objective": ObjectiveDocument | null;
   "objective_source"?: StudioTrialObjectiveSource | null;
-  "input_overrides"?: Record<string, string>;
+  "set_fields"?: Array<StudioSetField>;
   "task_types": Array<StudioTaskType>;
   "tasks": Array<StudioTaskChoice>;
   "variables": Array<ScopedValue>;
@@ -4449,6 +4517,7 @@ export type StudioTrialAuthoring = {
   "n_steps": number | null;
   "batch_size": number | null;
   "reads_model": boolean;
+  "input_bindings": Record<string, string | null>;
   "inputs": Array<StudioTrialInput>;
   "outputs": Array<StudioTrialOutput>;
   "resets": Array<StudioTrialReset>;
@@ -4456,6 +4525,7 @@ export type StudioTrialAuthoring = {
   "problems": Array<Problem>;
   "files": Array<StudioProjectFilePatch>;
   "created"?: Array<CreateNamedDocument>;
+  "store_choices"?: Array<StudioStoreChoice> | null;
   "refusal"?: StudioSweptParameterMissing | null;
 };
 
@@ -4463,13 +4533,14 @@ export type StudioTrialAuthoringRequest = {
   "revision": Sha256;
   "run": StudioSavedTrainKey;
   "change"?: StudioTrialDocumentEdit | StudioTrialDocumentReset | StudioTrialBindingEdit | StudioTrialSelectDocument | StudioTrialExpressionEdit | StudioTrialStructureEdit | null;
+  "store_choice"?: Sha256 | null;
   "scope"?: StudioTrialStepScope | AxisValueRuns | ListedRuns | null;
 };
 
 export type StudioTrialBindingEdit = {
   "kind": "binding";
-  "input": ModelAddress;
-  "signal": string | null;
+  "input_id": string;
+  "signal_id": string | null;
 };
 
 export type StudioTrialDocumentEdit = {
@@ -4515,11 +4586,12 @@ export type StudioTrialField = {
 };
 
 export type StudioTrialInput = {
+  "id": string;
   "address": ModelAddress;
   "name": string;
   "type": ValueType | null;
   "required": boolean;
-  "signal": string | null;
+  "signal_id": string | null;
   "explicit": boolean;
 };
 
@@ -4535,7 +4607,7 @@ export type StudioTrialOutput = {
 
 export type StudioTrialReset = {
   "address": ModelAddress;
-  "name": string;
+  "path": Array<string>;
   "type": ValueType;
   "finest": Level;
   "required": boolean;
@@ -4648,8 +4720,13 @@ export type TrialDocuments = {
   "model": ModelDocument;
   "task": TaskDocument | null;
   "objective": ObjectiveDocument;
-  "input_overrides"?: Record<string, string>;
+  "input_bindings"?: Record<string, string | null>;
   "python_task"?: PythonTaskSelection | null;
+};
+
+export type TrialSetField = {
+  "axis": SetAxis;
+  "sampling": SetTrialSampling;
 };
 
 export type UnresolvedValue = {
@@ -4718,6 +4795,14 @@ export type Variable = {
 export type VariableBinding = {
   "variable": Name;
   "select"?: Record<string, string | number | boolean | IndexSelection | null>;
+};
+
+export type WeightPart = number;
+
+export type WeightedSetTrials = {
+  "kind": "weighted";
+  "weights"?: Record<string, WeightPart>;
+  "none"?: WeightPart;
 };
 
 export type WholeDimensions = {
@@ -5471,12 +5556,22 @@ export const CloseWhenIdleSchema: z.ZodType<CloseWhenIdle> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<CloseWhenIdle>;
 
+export const HostRuntimeSchema: z.ZodType<HostRuntime> = z.lazy(() =>
+  z
+    .object({
+      "backend": z.string(),
+      "devices": z.array(z.string()),
+    })
+    .strict()
+) as unknown as z.ZodType<HostRuntime>;
+
 export const LocalTargetProfileSchema: z.ZodType<LocalTargetProfile> = z.lazy(() =>
   z
     .object({
       "kind": z.literal("local"),
       "id": z.literal("local"),
       "label": z.literal("This Mac"),
+      "runtime": HostRuntimeSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<LocalTargetProfile>;
@@ -5802,7 +5897,8 @@ export const StudioSavedEvaluationReplayRequestSchema: z.ZodType<StudioSavedEval
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
       "key": StudioSavedTrainKeySchema,
       "job_id": z.string(),
-      "trial": z.string(),
+      "trial": z.string().nullable().optional(),
+      "aggregate": z.boolean().optional(),
       "checkpoint": z.number().int().safe().gte(0).nullable().optional(),
     })
     .strict()
@@ -5909,7 +6005,7 @@ export const StudioSavedEvaluationRowSchema: z.ZodType<StudioSavedEvaluationRow>
       "subject_rank_key": z.string().nullable().optional(),
       "checkpoint_series": StudioEvaluationCheckpointSeriesSchema.nullable().optional(),
       "checkpoint_attempt": StudioEvaluationCheckpointAttemptSchema.nullable().optional(),
-      "checkpoint_rule": z.union([z.literal("last"), BestCheckpointSchema, BatchCheckpointSchema, BarrierCheckpointSchema, CheckpointBatchesSchema, CheckpointCadenceSchema, z.union([UpdateCadenceSchema, z.array(UpdateCheckpointSchema).min(1).max(64)])]).nullable().optional(),
+      "checkpoint_rule": z.union([z.literal("last"), BestCheckpointSchema, BatchCheckpointSchema, BarrierCheckpointSchema, CheckpointBatchesSchema, CheckpointCadenceSchema, z.union([UpdateCadenceSchema, z.array(UpdateCheckpointSchema).min(1).max(64)]), UnresolvedValueSchema]).nullable().optional(),
       "bound_subject": StudioBoundBestSubjectSchema.nullable().optional(),
     })
     .strict()
@@ -6349,7 +6445,7 @@ export const DelayAttachmentSchema: z.ZodType<DelayAttachment> = z.lazy(() =>
     .object({
       "kind": z.literal("delay"),
       "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
-      "delay": ModelTimeSchema,
+      "delay": z.union([ModelTimeSchema, UnresolvedValueSchema]),
       "initial": jsonValueSchema.optional(),
     })
     .strict()
@@ -6362,7 +6458,7 @@ export const InterventionAttachmentSchema: z.ZodType<InterventionAttachment> = z
       "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
       "operation": z.string(),
       "fields": z.record(z.string(), jsonValueSchema).optional(),
-      "window": jsonValueSchema.optional(),
+      "window": InterventionWindowSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<InterventionAttachment>;
@@ -6485,7 +6581,7 @@ export const CompositeComponentSchema: z.ZodType<CompositeComponent> = z.lazy(()
       "name": z.string().min(1),
       "ports": ModelPortsSchema,
       "interior": z.union([GraphInteriorSchema, PhysicalInteriorSchema]),
-      "substeps": z.number().int().safe().gte(1).optional(),
+      "substeps": z.union([z.number().int().safe().gte(1), UnresolvedValueSchema]).optional(),
       "attachments": ModelPortAttachmentsSchema.optional(),
     })
     .strict()
@@ -6561,7 +6657,7 @@ export const ModelDocumentSchema: z.ZodType<ModelDocument> = z.lazy(() =>
   z
     .object({
       "schema_version": z.literal("feedbax.spec.model.v1").optional(),
-      "step_seconds": z.number().finite().gt(0),
+      "step_seconds": z.union([z.number().finite().gt(0), UnresolvedValueSchema]),
       "ports": ModelPortsSchema,
       "interior": GraphInteriorSchema,
       "world": ModelWorldSchema.nullable().optional(),
@@ -7049,6 +7145,7 @@ export const ModelEditAppliedSchema: z.ZodType<ModelEditApplied> = z.lazy(() =>
       "clipboard": ModelClipboardSchema.nullable().optional(),
       "undo_token": z.string().min(1).nullable().optional(),
       "created": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
+      "problems": z.array(ModelGraphProblemSchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelEditApplied>;
@@ -7106,9 +7203,29 @@ export const ModelConnectionVerdictSchema: z.ZodType<ModelConnectionVerdict> = z
     .object({
       "target": z.union([ComponentPortEndSchema, OutputBoundaryEndSchema]),
       "reason": z.string().nullable(),
+      "problem": z.string().nullable().optional(),
+      "replaced": z.array(ModelWireReplacementSchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelConnectionVerdict>;
+
+export const ModelWireReplacementSchema: z.ZodType<ModelWireReplacement> = z.lazy(() =>
+  z
+    .object({
+      "address": ModelAddressSchema,
+      "attachments": z.array(ModelAddressSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelWireReplacement>;
+
+export const ModelGraphProblemSchema: z.ZodType<ModelGraphProblem> = z.lazy(() =>
+  z
+    .object({
+      "address": ModelAddressSchema,
+      "reason": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelGraphProblem>;
 
 export const ModelLibraryConnectionSchema: z.ZodType<ModelLibraryConnection> = z.lazy(() =>
   z
@@ -7179,6 +7296,7 @@ export const ModelProjectionSchema: z.ZodType<ModelProjection> = z.lazy(() =>
       "resolved_model": ModelDocumentSchema.nullable().optional(),
       "base_differences": z.array(z.union([ModelAddedElementSchema, ModelRemovedElementSchema, ModelRewiredElementSchema])).optional(),
       "value_differences": z.array(z.union([ModelAddedElementSchema, ModelRemovedElementSchema, ModelRewiredElementSchema])).optional(),
+      "problems": z.array(ModelGraphProblemSchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelProjection>;
@@ -7354,6 +7472,7 @@ export const ModelFieldViewSchema: z.ZodType<ModelFieldView> = z.lazy(() =>
       "members": z.array(StudioSweepValueSchema).optional(),
       "changed": z.boolean().optional(),
       "address": ModelAddressSchema,
+      "problems": z.array(ProblemSchema).optional(),
       "sources": z.array(StudioPlanReviewSourceSchema).optional(),
     })
     .strict()
@@ -8877,6 +8996,76 @@ export const StudioPlanarSceneResponseSchema: z.ZodType<StudioPlanarSceneRespons
     .strict()
 ) as unknown as z.ZodType<StudioPlanarSceneResponse>;
 
+export const SceneLinkGeometrySchema: z.ZodType<SceneLinkGeometry> = z.lazy(() =>
+  z
+    .object({
+      "body": ModelAddressSchema,
+      "body_name": z.string(),
+      "joint": ModelAddressSchema,
+      "joint_name": z.string(),
+      "start": z.tuple([z.number().finite(), z.number().finite()]),
+      "end": z.tuple([z.number().finite(), z.number().finite()]),
+      "pivot": z.tuple([z.number().finite(), z.number().finite()]),
+    })
+    .strict()
+) as unknown as z.ZodType<SceneLinkGeometry>;
+
+export const SceneMuscleGeometrySchema: z.ZodType<SceneMuscleGeometry> = z.lazy(() =>
+  z
+    .object({
+      "address": ModelAddressSchema,
+      "name": z.string(),
+      "points": z.array(z.tuple([z.number().finite(), z.number().finite()])).min(2),
+    })
+    .strict()
+) as unknown as z.ZodType<SceneMuscleGeometry>;
+
+export const ScenePlanarGeometrySchema: z.ZodType<ScenePlanarGeometry> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("planar"),
+      "address": ModelAddressSchema,
+      "name": z.string(),
+      "links": z.array(SceneLinkGeometrySchema).min(1),
+      "muscles": z.array(SceneMuscleGeometrySchema),
+    })
+    .strict()
+) as unknown as z.ZodType<ScenePlanarGeometry>;
+
+export const ScenePointGeometrySchema: z.ZodType<ScenePointGeometry> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("point"),
+      "address": ModelAddressSchema,
+      "name": z.string(),
+      "point": ModelAddressSchema,
+      "position": z.tuple([z.number().finite(), z.number().finite()]),
+    })
+    .strict()
+) as unknown as z.ZodType<ScenePointGeometry>;
+
+export const StudioSceneGeometryRequestSchema: z.ZodType<StudioSceneGeometryRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+      "document_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "state_values": z.record(z.string(), jsonValueSchema).optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSceneGeometryRequest>;
+
+export const StudioSceneGeometryResponseSchema: z.ZodType<StudioSceneGeometryResponse> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+      "document_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "project_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "mechanisms": z.array(z.union([ScenePointGeometrySchema, ScenePlanarGeometrySchema])),
+      "diagnostics": z.array(DomainDiagnosticSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSceneGeometryResponse>;
+
 export const DomainRegistryPayloadSchema: z.ZodType<DomainRegistryPayload> = z.lazy(() =>
   z
     .object({
@@ -8929,211 +9118,6 @@ export const DomainCompileReportSchema: z.ZodType<DomainCompileReport> = z.lazy(
       }
     })
 ) as unknown as z.ZodType<DomainCompileReport>;
-
-export const WorkspaceReplayWarningSchema: z.ZodType<WorkspaceReplayWarning> = z.lazy(() =>
-  z
-    .object({
-      "code": z.union([z.literal("missing_trial_metadata"), z.literal("missing_manifest_refs"), z.literal("missing_anchor_resolution"), z.literal("missing_overlay_metadata"), z.literal("npz_browser_downgrade")]),
-      "message": z.string(),
-      "path": z.string().nullable().optional(),
-      "metadata": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<WorkspaceReplayWarning>;
-
-export const WorkspaceReplayTrialIdentitySchema: z.ZodType<WorkspaceReplayTrialIdentity> = z.lazy(() =>
-  z
-    .object({
-      "index": z.number().int().safe().gte(0),
-      "stable_id": z.string().nullable().optional(),
-      "source": z.union([z.literal("stable_id"), z.literal("index_fallback")]).optional(),
-      "label": z.string().nullable().optional(),
-      "metadata": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-    .superRefine((input, ctx) => {
-      const value = { ...{"source": "index_fallback", "metadata": {}}, ...input };
-      if (!value.stable_id && value.source !== 'index_fallback') {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "trial identity source requires stable_id unless index_fallback",
-        });
-      }
-    })
-) as unknown as z.ZodType<WorkspaceReplayTrialIdentity>;
-
-export const WorkspaceReplaySampleAxisSchema: z.ZodType<WorkspaceReplaySampleAxis> = z.lazy(() =>
-  z
-    .object({
-      "length": z.number().int().safe().gte(0),
-      "units": z.string().nullable().optional(),
-      "dt": z.number().finite().gt(0).nullable().optional(),
-      "values": z.array(z.number().finite()).nullable().optional(),
-      "metadata": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-    .superRefine((input, ctx) => {
-      const value = { ...{"metadata": {}}, ...input };
-      if (value.values != null && value.values.length !== value.length) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "time axis values length must equal length",
-        });
-      }
-    })
-) as unknown as z.ZodType<WorkspaceReplaySampleAxis>;
-
-export const WorkspaceReplayTrackSchema: z.ZodType<WorkspaceReplayTrack> = z.lazy(() =>
-  z
-    .object({
-      "anchor_id": z.string(),
-      "selector": StudioSelectorRefSchema,
-      "samples": z.array(z.array(z.number().finite())),
-      "dim": z.number().int().safe().gt(0),
-      "dtype": z.string().optional(),
-      "units": z.string().nullable().optional(),
-      "frame": z.string().nullable().optional(),
-      "label": z.string().nullable().optional(),
-      "metadata": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-    .superRefine((input, ctx) => {
-      const value = { ...{"dtype": "float32", "metadata": {}}, ...input };
-      if (value.samples.some((sample) => sample.length !== value.dim)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "track samples must match dim",
-        });
-      }
-    })
-) as unknown as z.ZodType<WorkspaceReplayTrack>;
-
-export const WorkspaceReplayOverlayChannelSchema: z.ZodType<WorkspaceReplayOverlayChannel> = z.lazy(() =>
-  z
-    .object({
-      "id": z.string(),
-      "selector": StudioSelectorRefSchema,
-      "samples": z.array(z.unknown()),
-      "dtype": z.string().optional(),
-      "shape": z.array(z.unknown()).nullable().optional(),
-      "units": z.string().nullable().optional(),
-      "label": z.string().nullable().optional(),
-      "binding": z.record(z.string(), z.unknown()).optional(),
-      "metadata": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<WorkspaceReplayOverlayChannel>;
-
-export const WorkspaceReplayTrialSpecSnapshotSchema: z.ZodType<WorkspaceReplayTrialSpecSnapshot> = z.lazy(() =>
-  z
-    .object({
-      "summary": z.record(z.string(), z.unknown()).optional(),
-      "targets": z.record(z.string(), z.unknown()).optional(),
-      "timeline": z.record(z.string(), z.unknown()).nullable().optional(),
-      "snapshot": z.record(z.string(), z.unknown()).nullable().optional(),
-      "schema_id": z.string().nullable().optional(),
-      "schema_version": z.string().nullable().optional(),
-      "sha256": z.string().nullable().optional(),
-      "metadata": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<WorkspaceReplayTrialSpecSnapshot>;
-
-export const WorkspaceReplayManifestRefsSchema: z.ZodType<WorkspaceReplayManifestRefs> = z.lazy(() =>
-  z
-    .object({
-      "spec_snapshot": StudioArtifactRefSchema.nullable().optional(),
-      "checkpoint": z.union([StudioArtifactRefSchema, StudioManifestRefSchema, z.null()]).optional(),
-      "task_variant": z.union([StudioArtifactRefSchema, StudioManifestRefSchema, z.null()]).optional(),
-      "seed": z.union([z.number().int().safe(), z.string(), z.null()]).optional(),
-      "environment": z.union([StudioArtifactRefSchema, StudioManifestRefSchema, z.record(z.string(), z.unknown()), z.null()]).optional(),
-      "producer_manifest": StudioManifestRefSchema.nullable().optional(),
-      "metadata": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<WorkspaceReplayManifestRefs>;
-
-export const WorkspaceReplayTrialSchema: z.ZodType<WorkspaceReplayTrial> = z.lazy(() =>
-  z
-    .object({
-      "identity": WorkspaceReplayTrialIdentitySchema,
-      "time": WorkspaceReplaySampleAxisSchema,
-      "tracks": z.array(WorkspaceReplayTrackSchema).optional(),
-      "overlays": z.array(WorkspaceReplayOverlayChannelSchema).optional(),
-      "trial_spec": WorkspaceReplayTrialSpecSnapshotSchema.optional(),
-      "manifest_refs": WorkspaceReplayManifestRefsSchema.optional(),
-      "warnings": z.array(WorkspaceReplayWarningSchema).optional(),
-      "metadata": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-    .superRefine((input, ctx) => {
-      const value = { ...{"tracks": [], "overlays": [], "trial_spec": {"summary": {}, "targets": {}, "timeline": null, "snapshot": null, "schema_id": null, "schema_version": null, "sha256": null, "metadata": {}}, "manifest_refs": {"spec_snapshot": null, "checkpoint": null, "task_variant": null, "seed": null, "environment": null, "producer_manifest": null, "metadata": {}}, "warnings": [], "metadata": {}}, ...input };
-      if (value.tracks.some((track) => track.samples.length !== value.time.length) || value.overlays.some((overlay) => overlay.samples.length !== value.time.length)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "track and overlay sample counts must match the time axis",
-        });
-      }
-    })
-) as unknown as z.ZodType<WorkspaceReplayTrial>;
-
-export const WorkspaceReplayImportedArtifactSchema: z.ZodType<WorkspaceReplayImportedArtifact> = z.lazy(() =>
-  z
-    .object({
-      "artifact": StudioArtifactRefSchema,
-      "source_format": z.union([z.literal("npz"), z.literal("unknown")]).optional(),
-      "missing_metadata": z.array(z.string()).optional(),
-      "metadata": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<WorkspaceReplayImportedArtifact>;
-
-export const WorkspaceReplayProductSchema: z.ZodType<WorkspaceReplayProduct> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.manifest.studio.workspace_replay").optional(),
-      "schema_version": z.literal("feedbax.manifest.studio.workspace_replay.v1").optional(),
-      "product_kind": z.literal("workspace_replay").optional(),
-      "source_mode": z.union([z.literal("resolved_scene"), z.literal("imported_artifact")]).optional(),
-      "trials": z.array(WorkspaceReplayTrialSchema).optional(),
-      "imported_artifact": WorkspaceReplayImportedArtifactSchema.nullable().optional(),
-      "manifest_refs": WorkspaceReplayManifestRefsSchema.optional(),
-      "warnings": z.array(WorkspaceReplayWarningSchema).optional(),
-      "metadata": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-    .superRefine((input, ctx) => {
-      const value = { ...{"schema_id": "feedbax.manifest.studio.workspace_replay", "schema_version": "feedbax.manifest.studio.workspace_replay.v1", "product_kind": "workspace_replay", "source_mode": "resolved_scene", "trials": [], "manifest_refs": {"spec_snapshot": null, "checkpoint": null, "task_variant": null, "seed": null, "environment": null, "producer_manifest": null, "metadata": {}}, "warnings": [], "metadata": {}}, ...input };
-      if ((value.source_mode === 'resolved_scene' && value.imported_artifact != null) || (value.source_mode === 'imported_artifact' && (value.imported_artifact == null || value.warnings.length === 0))) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "workspace replay source mode must match imported artifact and warnings",
-        });
-      }
-    })
-) as unknown as z.ZodType<WorkspaceReplayProduct>;
-
-export const WorkspaceReplayRequiredSelectorSchema: z.ZodType<WorkspaceReplayRequiredSelector> = z.lazy(() =>
-  z
-    .object({
-      "anchor_id": z.string(),
-      "selector": StudioSelectorRefSchema,
-      "label": z.string().nullable().optional(),
-      "retention_id": z.string().nullable().optional(),
-      "value_schema": z.record(z.string(), z.unknown()).nullable().optional(),
-      "metadata": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<WorkspaceReplayRequiredSelector>;
-
-export const ResolvedWorkspaceReplaySceneSchema: z.ZodType<ResolvedWorkspaceReplayScene> = z.lazy(() =>
-  z
-    .object({
-      "required_selectors": z.array(WorkspaceReplayRequiredSelectorSchema).optional(),
-      "metadata": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<ResolvedWorkspaceReplayScene>;
 
 export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(() =>
   z
@@ -9205,6 +9189,18 @@ export const TaskTimelineCueSchema: z.ZodType<TaskTimelineCue> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<TaskTimelineCue>;
 
+export const StudioTrialReplayResponseSchema: z.ZodType<StudioTrialReplayResponse> = z.lazy(() =>
+  z
+    .object({
+      "n_steps": z.number().int().safe(),
+      "state_time": z.array(z.number().finite()),
+      "position": z.string().nullable(),
+      "receipt": JobReceiptSchema,
+      "drawn": z.union([TrialRecordsSchema, TrialAggregateSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<StudioTrialReplayResponse>;
+
 export const TrialRecordSchema: z.ZodType<TrialRecord> = z.lazy(() =>
   z
     .object({
@@ -9216,10 +9212,21 @@ export const TrialRecordSchema: z.ZodType<TrialRecord> = z.lazy(() =>
       "variable_defined": z.record(z.string(), jsonValueSchema),
       "timeline": z.array(TaskTimelineCueSchema),
       "terms": z.record(z.string(), TrialTermSchema).optional(),
-      "states": z.record(z.string(), jsonValueSchema).optional(),
+      "states": z.record(z.string(), TrialStateTrackSchema).optional(),
+      "configurations": z.record(z.string(), jsonValueSchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TrialRecord>;
+
+export const TrialStateTrackSchema: z.ZodType<TrialStateTrack> = z.lazy(() =>
+  z
+    .object({
+      "samples": z.array(z.array(z.number().finite())),
+      "units": z.string().nullable(),
+      "frame": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialStateTrack>;
 
 export const TrialRecordsSchema: z.ZodType<TrialRecords> = z.lazy(() =>
   z
@@ -9301,19 +9308,20 @@ export const TrialAggregateSchema: z.ZodType<TrialAggregate> = z.lazy(() =>
 export const TaskTrialSampleRequestSchema: z.ZodType<TaskTrialSampleRequest> = z.lazy(() =>
   z
     .object({
-      "model": ModelDocumentSchema,
+      "model": ModelDocumentSchema.nullable().optional(),
       "task": TaskDocumentSchema.nullable().optional(),
       "python_task": PythonTaskSelectionSchema.nullable().optional(),
-      "input_overrides": z.record(z.string(), z.string()).optional(),
+      "input_bindings": z.record(z.string(), z.string().nullable()).optional(),
       "objective": ObjectiveDocumentSchema.nullable().optional(),
       "evaluation_trials": z.array(z.string()).min(1).nullable().optional(),
+      "nominal": z.boolean().optional(),
       "seed": z.number().int().safe().optional(),
       "count": z.number().int().safe().gte(1).optional(),
       "aggregate": z.boolean().optional(),
     })
     .strict()
     .superRefine((input, ctx) => {
-      const value = { ...{"input_overrides": {}, "seed": 0, "count": 8, "aggregate": false}, ...input };
+      const value = { ...{"input_bindings": {}, "nominal": false, "seed": 0, "count": 8, "aggregate": false}, ...input };
       if ((value.task == null) === (value.python_task == null)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -9549,6 +9557,52 @@ export const PenzaiInspectorResponseSchema: z.ZodType<PenzaiInspectorResponse> =
     .strict()
 ) as unknown as z.ZodType<PenzaiInspectorResponse>;
 
+export const StudioTrajectorySampleAxisSchema: z.ZodType<StudioTrajectorySampleAxis> = z.lazy(() =>
+  z
+    .object({
+      "length": z.number().int().safe().gte(0),
+      "units": z.string().nullable().optional(),
+      "dt": z.number().finite().gt(0).nullable().optional(),
+      "values": z.array(z.number().finite()).nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+    .superRefine((input, ctx) => {
+      const value = { ...{"metadata": {}}, ...input };
+      if (value.values != null && value.values.length !== value.length) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "time axis values length must equal length",
+        });
+      }
+    })
+) as unknown as z.ZodType<StudioTrajectorySampleAxis>;
+
+export const StudioTrajectoryTrackSchema: z.ZodType<StudioTrajectoryTrack> = z.lazy(() =>
+  z
+    .object({
+      "anchor_id": z.string(),
+      "selector": StudioSelectorRefSchema,
+      "samples": z.array(z.array(z.number().finite())),
+      "dim": z.number().int().safe().gt(0),
+      "dtype": z.string().optional(),
+      "units": z.string().nullable().optional(),
+      "frame": z.string().nullable().optional(),
+      "label": z.string().nullable().optional(),
+      "metadata": z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict()
+    .superRefine((input, ctx) => {
+      const value = { ...{"dtype": "float32", "metadata": {}}, ...input };
+      if (value.samples.some((sample) => sample.length !== value.dim)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "track samples must match dim",
+        });
+      }
+    })
+) as unknown as z.ZodType<StudioTrajectoryTrack>;
+
 export const TrainingTrajectoryPayloadSchema: z.ZodType<TrainingTrajectoryPayload> = z.lazy(() =>
   z
     .object({
@@ -9557,8 +9611,8 @@ export const TrainingTrajectoryPayloadSchema: z.ZodType<TrainingTrajectoryPayloa
       "source_kind": z.literal("live_snapshot").optional(),
       "fidelity": z.literal("lower_fidelity_live_snapshot").optional(),
       "n_steps": z.number().int().safe().nullable().optional(),
-      "time": WorkspaceReplaySampleAxisSchema.nullable().optional(),
-      "tracks": z.record(z.string(), WorkspaceReplayTrackSchema).optional(),
+      "time": StudioTrajectorySampleAxisSchema.nullable().optional(),
+      "tracks": z.record(z.string(), StudioTrajectoryTrackSchema).optional(),
       "observables": z.record(z.string(), z.unknown()).optional(),
       "outputs": z.record(z.string(), z.unknown()).optional(),
       "effector": z.array(z.unknown()).nullable().optional(),
@@ -9805,6 +9859,14 @@ export const AddMemberSchema: z.ZodType<AddMember> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<AddMember>;
 
+export const AddSetEntrySchema: z.ZodType<AddSetEntry> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("add_set_entry"),
+    "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<AddSetEntry>;
+
 export const AnalysisDocumentSchema: z.ZodType<AnalysisDocument> = z.lazy(() =>
   z.object({
     "schema_version": z.literal("feedbax.analysis_document.v1").optional(),
@@ -9854,7 +9916,7 @@ export const AttemptProvenanceSchema: z.ZodType<AttemptProvenance> = z.lazy(() =
 
 export const AuthoredFileAddressSchema: z.ZodType<AuthoredFileAddress> = z.lazy(() =>
   z.object({
-    "kind": z.union([z.literal("document"), z.literal("step"), z.literal("variant"), z.literal("presentation")]),
+    "kind": z.union([z.literal("document"), z.literal("step"), z.literal("variant"), z.literal("presentation"), z.literal("declaration")]),
     "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
   }).strict()
 ) as unknown as z.ZodType<AuthoredFileAddress>;
@@ -10003,7 +10065,7 @@ export const CheckpointCadenceSchema: z.ZodType<CheckpointCadence> = z.lazy(() =
 ) as unknown as z.ZodType<CheckpointCadence>;
 
 export const CheckpointRuleSchema: z.ZodType<CheckpointRule> = z.lazy(() =>
-  z.union([z.literal("last"), BestCheckpointSchema, BatchCheckpointSchema, BarrierCheckpointSchema, CheckpointBatchesSchema, CheckpointCadenceSchema, UpdateRuleSchema])
+  z.union([z.literal("last"), BestCheckpointSchema, BatchCheckpointSchema, BarrierCheckpointSchema, CheckpointBatchesSchema, CheckpointCadenceSchema, UpdateRuleSchema, UnresolvedValueSchema])
 ) as unknown as z.ZodType<CheckpointRule>;
 
 export const CheckpointRuleAxisSchema: z.ZodType<CheckpointRuleAxis> = z.lazy(() =>
@@ -10047,6 +10109,13 @@ export const ContentRefSchema: z.ZodType<ContentRef> = z.lazy(() =>
     "tree": z.boolean().optional(),
   }).strict()
 ) as unknown as z.ZodType<ContentRef>;
+
+export const CooccurringSetTrialsSchema: z.ZodType<CooccurringSetTrials> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("cooccurring"),
+    "weights": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), SetEntryPartsSchema).optional(),
+  }).strict()
+) as unknown as z.ZodType<CooccurringSetTrials>;
 
 export const CreateNamedDocumentSchema: z.ZodType<CreateNamedDocument> = z.lazy(() =>
   z.object({
@@ -10174,6 +10243,7 @@ export const DrawValueSchema: z.ZodType<DrawValue> = z.lazy(() =>
     "family": z.string(),
     "args": z.array(ExpressionSchema),
     "per": z.union([z.literal("run"), z.literal("trial")]).optional(),
+    "weights": z.union([z.array(WeightPartSchema), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<DrawValue>;
 
@@ -10499,6 +10569,14 @@ export const InputRoleSchema: z.ZodType<InputRole> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<InputRole>;
 
+export const InterventionWindowSchema: z.ZodType<InterventionWindow> = z.lazy(() =>
+  z.object({
+    "epoch": z.string(),
+    "offsets": z.array(z.number().int().safe().min(0)).min(1),
+    "duration": z.number().int().safe().gt(0),
+  }).strict()
+) as unknown as z.ZodType<InterventionWindow>;
+
 export const JaxOperationSchema: z.ZodType<JaxOperation> = z.lazy(() =>
   z.object({
     "backend": z.union([z.literal("cpu"), z.literal("gpu")]),
@@ -10570,6 +10648,12 @@ export const ListedAxisSchema: z.ZodType<ListedAxis> = z.lazy(() =>
     "values": z.array(jsonValueSchema).min(1),
   }).strict()
 ) as unknown as z.ZodType<ListedAxis>;
+
+export const ListedSetTrialsSchema: z.ZodType<ListedSetTrials> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("listed"),
+  }).strict()
+) as unknown as z.ZodType<ListedSetTrials>;
 
 export const LiteralValueSchema: z.ZodType<LiteralValue> = z.lazy(() =>
   z.object({
@@ -11114,6 +11198,13 @@ export const SetDocumentValueSchema: z.ZodType<SetDocumentValue> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<SetDocumentValue>;
 
+export const SetEntryPartsSchema: z.ZodType<SetEntryParts> = z.lazy(() =>
+  z.object({
+    "on": WeightPartSchema.optional(),
+    "off": WeightPartSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<SetEntryParts>;
+
 export const SetLinkSchema: z.ZodType<SetLink> = z.lazy(() =>
   z.object({
     "op": z.literal("link"),
@@ -11147,6 +11238,26 @@ export const SetSpanSchema: z.ZodType<SetSpan> = z.lazy(() =>
     "last_epoch": z.string(),
   }).strict()
 ) as unknown as z.ZodType<SetSpan>;
+
+export const SetToFieldSchema: z.ZodType<SetToField> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("set_to_field"),
+    "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<SetToField>;
+
+export const SetToSweepSchema: z.ZodType<SetToSweep> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("set_to_sweep"),
+    "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<SetToSweep>;
+
+export const SetTrialSamplingSchema: z.ZodType<SetTrialSampling> = z.lazy(() =>
+  z.union([ListedSetTrialsSchema, WeightedSetTrialsSchema, CooccurringSetTrialsSchema])
+) as unknown as z.ZodType<SetTrialSampling>;
 
 export const SetTypeSchema: z.ZodType<SetType> = z.lazy(() =>
   z.object({
@@ -11203,7 +11314,7 @@ export const SiteProjectionSchema: z.ZodType<SiteProjection> = z.lazy(() =>
     "kinds": z.array(FieldKindSchema),
     "functions": z.array(FunctionInfoSchema),
     "parts": z.array(ExpressionPartSiteSchema),
-    "name_paths": z.record(z.string(), ModelAddressSchema).optional(),
+    "name_paths": z.record(z.string(), z.array(z.string())).optional(),
   }).strict()
 ) as unknown as z.ZodType<SiteProjection>;
 
@@ -11252,6 +11363,7 @@ export const StepSchema: z.ZodType<Step> = z.lazy(() =>
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
+    "set_fields": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), TrialSetFieldSchema).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
     "note": z.union([StepNoteSchema, z.null()]).optional(),
@@ -11312,6 +11424,10 @@ export const StepReferenceSchema: z.ZodType<StepReference> = z.lazy(() =>
     "unresolved": z.union([z.literal(true), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StepReference>;
+
+export const StoreKindSchema: z.ZodType<StoreKind> = z.lazy(() =>
+  z.union([z.literal("all_readers"), z.literal("selected_readers"), z.literal("sweep_value"), z.literal("set_entry"), z.literal("row_exception"), z.literal("variant"), z.literal("other_runs"), z.literal("whole_step")])
+) as unknown as z.ZodType<StoreKind>;
 
 export const StoreSubsetSchema: z.ZodType<StoreSubset> = z.lazy(() =>
   z.object({
@@ -11391,6 +11507,7 @@ export const StudioAnalyzeStepSchema: z.ZodType<StudioAnalyzeStep> = z.lazy(() =
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
+    "set_fields": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), TrialSetFieldSchema).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
     "note": z.union([StepNoteSchema, z.null()]).optional(),
@@ -11555,6 +11672,7 @@ export const StudioCheckpointRuleEditSchema: z.ZodType<StudioCheckpointRuleEdit>
   z.object({
     "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
     "files": z.array(StudioProjectFilePatchSchema),
+    "problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioCheckpointRuleEdit>;
 
@@ -11569,7 +11687,7 @@ export const StudioCheckpointRuleRequestSchema: z.ZodType<StudioCheckpointRuleRe
 export const StudioCheckpointRuleSetSchema: z.ZodType<StudioCheckpointRuleSet> = z.lazy(() =>
   z.object({
     "kind": z.literal("set"),
-    "rule": z.union([z.literal("last"), BatchCheckpointSchema, UpdateRuleSchema]),
+    "rule": z.union([z.literal("last"), BatchCheckpointSchema, UpdateRuleSchema, UnresolvedValueSchema]),
     "scope": z.union([AxisValueRunsSchema, ListedRunsSchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioCheckpointRuleSet>;
@@ -11649,6 +11767,7 @@ export const StudioEvaluateStepSchema: z.ZodType<StudioEvaluateStep> = z.lazy(()
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
+    "set_fields": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), TrialSetFieldSchema).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
     "note": z.union([StepNoteSchema, z.null()]).optional(),
@@ -11836,6 +11955,7 @@ export const StudioProjectSnapshotSchema: z.ZodType<StudioProjectSnapshot> = z.l
     "presentation_error": z.union([z.literal("unreadable_presentation"), z.null()]).optional(),
     "file_revisions": z.array(StudioAuthoredFileRevisionSchema),
     "declaration": z.union([StudioAuthoredDeclarationSchema, z.null()]).optional(),
+    "settings": z.record(z.string(), jsonValueSchema).optional(),
     "composed": z.record(z.string(), jsonValueSchema).optional(),
     "problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
   }).strict()
@@ -11924,6 +12044,7 @@ export const StudioProjectWindowMapInputSchema: z.ZodType<StudioProjectWindowMap
     "subset": z.union([StudioProjectWindowMapSubsetSchema, z.null()]),
     "checkpoint": z.union([CheckpointRuleSchema, z.null()]).optional(),
     "checkpoint_axis": z.union([z.string(), z.null()]).optional(),
+    "can_sweep_checkpoint": z.boolean().optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapInput>;
 
@@ -11950,6 +12071,7 @@ export const StudioProjectWindowMapProblemSchema: z.ZodType<StudioProjectWindowM
     "layer": z.union([z.string(), z.null()]).optional(),
     "authored_path": z.union([z.string(), z.null()]).optional(),
     "blocked_by": z.union([StudioSavedTrainKeySchema, z.null()]).optional(),
+    "span": z.union([TextSpanSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapProblem>;
 
@@ -12055,6 +12177,7 @@ export const StudioReportStepSchema: z.ZodType<StudioReportStep> = z.lazy(() =>
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
+    "set_fields": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), TrialSetFieldSchema).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
     "note": z.union([StepNoteSchema, z.null()]).optional(),
@@ -12081,6 +12204,7 @@ export const StudioRunRuleRefusedSchema: z.ZodType<StudioRunRuleRefused> = z.laz
   z.object({
     "kind": z.literal("refused").optional(),
     "reason": z.string(),
+    "span": z.union([TextSpanSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioRunRuleRefused>;
 
@@ -12119,15 +12243,33 @@ export const StudioSetEditSchema: z.ZodType<StudioSetEdit> = z.lazy(() =>
     "files": z.array(StudioProjectFilePatchSchema),
     "created": z.array(CreateNamedDocumentSchema).optional(),
     "selected": z.union([StudioAxisValueSchema, z.null()]).optional(),
+    "problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioSetEdit>;
 
 export const StudioSetEditRequestSchema: z.ZodType<StudioSetEditRequest> = z.lazy(() =>
   z.object({
     "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
-    "command": z.union([DuplicateRunSchema, SaveSetSchema, InlineSetSchema, ApplySetSchema, RemoveAxisValueSchema]),
+    "command": z.union([DuplicateRunSchema, SaveSetSchema, InlineSetSchema, ApplySetSchema, SetToFieldSchema, SetToSweepSchema, RemoveAxisValueSchema, AddSetEntrySchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioSetEditRequest>;
+
+export const StudioSetFieldSchema: z.ZodType<StudioSetField> = z.lazy(() =>
+  z.object({
+    "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "set": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "sampling": SetTrialSamplingSchema,
+    "entries": z.array(StudioSetFieldEntrySchema),
+  }).strict()
+) as unknown as z.ZodType<StudioSetField>;
+
+export const StudioSetFieldEntrySchema: z.ZodType<StudioSetFieldEntry> = z.lazy(() =>
+  z.object({
+    "entry": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]),
+    "label": z.union([z.string(), z.null()]).optional(),
+    "weight": z.union([WeightPartSchema, SetEntryPartsSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioSetFieldEntry>;
 
 export const StudioSetsOfferedSchema: z.ZodType<StudioSetsOffered> = z.lazy(() =>
   z.object({
@@ -12148,6 +12290,16 @@ export const StudioStepPlaceSchema: z.ZodType<StudioStepPlace> = z.lazy(() =>
     "field": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioStepPlace>;
+
+export const StudioStoreChoiceSchema: z.ZodType<StudioStoreChoice> = z.lazy(() =>
+  z.object({
+    "id": Sha256Schema,
+    "kind": StoreKindSchema,
+    "label": z.string(),
+    "steps": z.array(z.string()).min(1),
+    "runs": z.array(StudioSavedTrainKeySchema).min(1),
+  }).strict()
+) as unknown as z.ZodType<StudioStoreChoice>;
 
 export const StudioSubsetToRowsEditSchema: z.ZodType<StudioSubsetToRowsEdit> = z.lazy(() =>
   z.object({
@@ -12225,6 +12377,7 @@ export const StudioTrainAuthoringSchema: z.ZodType<StudioTrainAuthoring> = z.laz
     "created": z.array(CreateNamedDocumentSchema).optional(),
     "documents": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))),
     "refusal": z.union([StudioSweptParameterMissingSchema, z.null()]).optional(),
+    "sweep_problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
     "classes": z.array(StudioClassFieldSchema).optional(),
     "removed_values": z.record(z.string(), z.array(z.string())).optional(),
     "changed": z.array(z.string()).optional(),
@@ -12266,6 +12419,7 @@ export const StudioTrainStepSchema: z.ZodType<StudioTrainStep> = z.lazy(() =>
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
+    "set_fields": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), TrialSetFieldSchema).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
     "note": z.union([StepNoteSchema, z.null()]).optional(),
@@ -12295,7 +12449,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "objective_changed": z.array(PointerSchema).optional(),
     "objective": z.union([ObjectiveDocumentSchema, z.null()]),
     "objective_source": z.union([StudioTrialObjectiveSourceSchema, z.null()]).optional(),
-    "input_overrides": z.record(z.string(), z.string()).optional(),
+    "set_fields": z.array(StudioSetFieldSchema).optional(),
     "task_types": z.array(StudioTaskTypeSchema),
     "tasks": z.array(StudioTaskChoiceSchema),
     "variables": z.array(ScopedValueSchema),
@@ -12305,6 +12459,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "n_steps": z.union([z.number().int().safe(), z.null()]),
     "batch_size": z.union([z.number().int().safe(), z.null()]),
     "reads_model": z.boolean(),
+    "input_bindings": z.record(z.string(), z.union([z.string(), z.null()])),
     "inputs": z.array(StudioTrialInputSchema),
     "outputs": z.array(StudioTrialOutputSchema),
     "resets": z.array(StudioTrialResetSchema),
@@ -12312,6 +12467,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "problems": z.array(ProblemSchema),
     "files": z.array(StudioProjectFilePatchSchema),
     "created": z.array(CreateNamedDocumentSchema).optional(),
+    "store_choices": z.union([z.array(StudioStoreChoiceSchema).min(1), z.null()]).optional(),
     "refusal": z.union([StudioSweptParameterMissingSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialAuthoring>;
@@ -12321,6 +12477,7 @@ export const StudioTrialAuthoringRequestSchema: z.ZodType<StudioTrialAuthoringRe
     "revision": Sha256Schema,
     "run": StudioSavedTrainKeySchema,
     "change": z.union([z.union([StudioTrialDocumentEditSchema, StudioTrialDocumentResetSchema, StudioTrialBindingEditSchema, StudioTrialSelectDocumentSchema, StudioTrialExpressionEditSchema, StudioTrialStructureEditSchema]), z.null()]).optional(),
+    "store_choice": z.union([Sha256Schema, z.null()]).optional(),
     "scope": z.union([z.union([StudioTrialStepScopeSchema, AxisValueRunsSchema, ListedRunsSchema]), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialAuthoringRequest>;
@@ -12328,8 +12485,8 @@ export const StudioTrialAuthoringRequestSchema: z.ZodType<StudioTrialAuthoringRe
 export const StudioTrialBindingEditSchema: z.ZodType<StudioTrialBindingEdit> = z.lazy(() =>
   z.object({
     "kind": z.literal("binding"),
-    "input": ModelAddressSchema,
-    "signal": z.union([z.string(), z.null()]),
+    "input_id": z.string(),
+    "signal_id": z.union([z.string(), z.null()]),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialBindingEdit>;
 
@@ -12387,11 +12544,12 @@ export const StudioTrialFieldSchema: z.ZodType<StudioTrialField> = z.lazy(() =>
 
 export const StudioTrialInputSchema: z.ZodType<StudioTrialInput> = z.lazy(() =>
   z.object({
+    "id": z.string(),
     "address": ModelAddressSchema,
     "name": z.string(),
     "type": z.union([ValueTypeSchema, z.null()]),
     "required": z.boolean(),
-    "signal": z.union([z.string(), z.null()]),
+    "signal_id": z.union([z.string(), z.null()]),
     "explicit": z.boolean(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialInput>;
@@ -12413,7 +12571,7 @@ export const StudioTrialOutputSchema: z.ZodType<StudioTrialOutput> = z.lazy(() =
 export const StudioTrialResetSchema: z.ZodType<StudioTrialReset> = z.lazy(() =>
   z.object({
     "address": ModelAddressSchema,
-    "name": z.string(),
+    "path": z.array(z.string()),
     "type": ValueTypeSchema,
     "finest": LevelSchema,
     "required": z.boolean(),
@@ -12566,10 +12724,17 @@ export const TrialDocumentsSchema: z.ZodType<TrialDocuments> = z.lazy(() =>
     "model": ModelDocumentSchema,
     "task": z.union([TaskDocumentSchema, z.null()]),
     "objective": ObjectiveDocumentSchema,
-    "input_overrides": z.record(z.string(), z.string()).optional(),
+    "input_bindings": z.record(z.string(), z.union([z.string(), z.null()])).optional(),
     "python_task": z.union([PythonTaskSelectionSchema, z.null()]).optional(),
   }).strict().superRefine((value, ctx) => { if ((value.task == null) === (value.python_task == null)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Select one Task document or registered Python task." }); })
 ) as unknown as z.ZodType<TrialDocuments>;
+
+export const TrialSetFieldSchema: z.ZodType<TrialSetField> = z.lazy(() =>
+  z.object({
+    "axis": SetAxisSchema,
+    "sampling": SetTrialSamplingSchema,
+  }).strict()
+) as unknown as z.ZodType<TrialSetField>;
 
 export const UnresolvedValueSchema: z.ZodType<UnresolvedValue> = z.lazy(() =>
   z.object({
@@ -12667,6 +12832,18 @@ export const VariableBindingSchema: z.ZodType<VariableBinding> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<VariableBinding>;
 
+export const WeightPartSchema: z.ZodType<WeightPart> = z.lazy(() =>
+  z.number().finite().min(0)
+) as unknown as z.ZodType<WeightPart>;
+
+export const WeightedSetTrialsSchema: z.ZodType<WeightedSetTrials> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("weighted"),
+    "weights": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), WeightPartSchema).optional(),
+    "none": WeightPartSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<WeightedSetTrials>;
+
 export const WholeDimensionsSchema: z.ZodType<WholeDimensions> = z.lazy(() =>
   z.object({
     "parameter": z.string().min(1),
@@ -12695,6 +12872,7 @@ export const feedbax__contracts__task_structure__RenameMemberSchema: z.ZodType<f
 export const contractSchemas = {
   KeepOpen: KeepOpenSchema,
   CloseWhenIdle: CloseWhenIdleSchema,
+  HostRuntime: HostRuntimeSchema,
   LocalTargetProfile: LocalTargetProfileSchema,
   SessionTargetProfile: SessionTargetProfileSchema,
   LocalTarget: LocalTargetSchema,
@@ -12830,8 +13008,10 @@ export const contractSchemas = {
   DomainCompileReport: DomainCompileReportSchema,
   StudioPlanarSceneRequest: StudioPlanarSceneRequestSchema,
   StudioPlanarSceneResponse: StudioPlanarSceneResponseSchema,
+  StudioSceneGeometryRequest: StudioSceneGeometryRequestSchema,
+  StudioSceneGeometryResponse: StudioSceneGeometryResponseSchema,
   StudioErrorReport: StudioErrorReportSchema,
-  WorkspaceReplayTrial: WorkspaceReplayTrialSchema,
+  StudioTrialReplayResponse: StudioTrialReplayResponseSchema,
   PenzaiBuilderListResponse: PenzaiBuilderListResponseSchema,
   PenzaiInspectorResponse: PenzaiInspectorResponseSchema,
   PenzaiNodeRequest: PenzaiNodeRequestSchema,
@@ -12858,6 +13038,7 @@ export type ContractName = keyof typeof contractSchemas;
 export interface ContractTypeMap {
   KeepOpen: KeepOpen;
   CloseWhenIdle: CloseWhenIdle;
+  HostRuntime: HostRuntime;
   LocalTargetProfile: LocalTargetProfile;
   SessionTargetProfile: SessionTargetProfile;
   LocalTarget: LocalTarget;
@@ -12993,8 +13174,10 @@ export interface ContractTypeMap {
   DomainCompileReport: DomainCompileReport;
   StudioPlanarSceneRequest: StudioPlanarSceneRequest;
   StudioPlanarSceneResponse: StudioPlanarSceneResponse;
+  StudioSceneGeometryRequest: StudioSceneGeometryRequest;
+  StudioSceneGeometryResponse: StudioSceneGeometryResponse;
   StudioErrorReport: StudioErrorReport;
-  WorkspaceReplayTrial: WorkspaceReplayTrial;
+  StudioTrialReplayResponse: StudioTrialReplayResponse;
   PenzaiBuilderListResponse: PenzaiBuilderListResponse;
   PenzaiInspectorResponse: PenzaiInspectorResponse;
   PenzaiNodeRequest: PenzaiNodeRequest;

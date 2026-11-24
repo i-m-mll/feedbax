@@ -79,6 +79,7 @@ def compile_expression(
     discrete_uniform: bool = False,
     path: NodePath = (),
     root_draw_key: bool = False,
+    nominal: bool = False,
 ) -> Compiled | tuple[Problem, ...]:
     """Compile with dynamic literal operands.
 
@@ -87,6 +88,7 @@ def compile_expression(
     checked = check(tree, site, functions, path=path)
     if not isinstance(checked, Checked):
         return checked
+    tree = checked.tree
     if period_seconds is not None and (not isfinite(period_seconds) or period_seconds <= 0):
         return (
             Problem(
@@ -173,8 +175,17 @@ def compile_expression(
                         path=(*path, *at),
                     )
                 )
+            implementation = function.evaluate
             stream = None
-            if isinstance(node, DrawValue):
+            if nominal and (isinstance(node, DrawValue) or function.info.random):
+                if function.nominal is None:
+                    problems.append(Problem(
+                        code=ProblemCode.OUT_OF_SCOPE, path=(*path, *at),
+                        reason=f"{key} does not declare a representative value for a nominal trial.",
+                    ))
+                else:
+                    implementation = function.nominal
+            elif isinstance(node, DrawValue):
                 stream = ("draw", str(draw_ordinal))
                 draw_ordinal += 1
             elif function.info.random:
@@ -192,7 +203,6 @@ def compile_expression(
                 for name in function.info.implicit_names
                 if name != "T" or "over" not in kwargs
             }
-            implementation = function.evaluate
             stateful = function.initial_state is not None
             if function.initial_state is not None:
                 slots[slot] = function.initial_state(node_type.type)
