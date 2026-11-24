@@ -267,7 +267,7 @@ test('a Train step keeps a new Model with its Problems and a duplicated Model wi
   const measure = primary.getByRole('textbox', { name: 'Measure', exact: true }).first();
   await measure.fill('sqnorm(absent)');
   await measure.press('Enter');
-  await expect(primary.getByRole('alert')).toBeVisible();
+  await expect(primary.locator('[data-field-term]')).toHaveText('absent');
   expect((await saved()).project.documents).toEqual(objectiveBefore);
 });
 
