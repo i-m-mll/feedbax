@@ -9,7 +9,6 @@ import { rawField } from '@/components/values/adapters/raw';
 import type {
   EpochBounds, TaskCell, TaskDocumentView, TaskEpoch, TaskPythonView, TaskSignal, TaskVariable, VariableLevel,
 } from '@/features/projectFolder/task/taskModel';
-import { epochInstances } from '@/features/projectFolder/task/repeats';
 import type { SignalSteps } from '@/features/projectFolder/task/trialSample';
 
 export interface VariableSpec {
@@ -26,6 +25,8 @@ export interface DocumentSpec {
   variables: VariableSpec[];
   epochs: EpochSpec[];
   repeats: Repeat[];
+  /** The epochs of one trial by id, in order, as the service's `epoch_instances` lists them; the epochs when none repeat. */
+  instances?: string[];
   signals: SignalSpec[];
   duration: number;
   stepSeconds: number;
@@ -109,10 +110,14 @@ function boundsOf(epoch: EpochSpec, step: number): EpochBounds {
   return { ...base, ends: 'length', least: fixed, nominal: fixed, greatest: fixed };
 }
 
+/** The epochs of one trial by id, in order. */
+export const instancesOf = (spec: DocumentSpec) =>
+  spec.instances?.filter((id) => spec.epochs.some((epoch) => epoch.id === id)) ?? spec.epochs.map(({ id }) => id);
+
 /** Each epoch's bounds; Rest's are what the others leave of the trial, a repeated epoch counted at each repetition. */
 export function epochBounds(spec: DocumentSpec): EpochBounds[] {
   const bounds = spec.epochs.map((epoch) => boundsOf(epoch, spec.stepSeconds));
-  const instances = epochInstances(bounds, spec.repeats, []).map(({ epoch }) => epoch);
+  const instances = instancesOf(spec).map((id) => bounds.find((epoch) => epoch.id === id)!);
   const sum = (key: 'least' | 'nominal' | 'greatest') => instances.reduce((total, epoch) =>
     epoch.ends === 'rest' ? total : total + epoch[key], 0);
   return bounds.map((epoch) => epoch.ends === 'rest' ? {
@@ -460,6 +465,7 @@ const threeReaches: DocumentSpec = {
     { id: 'rest', name: 'rest', end: 'rest' },
   ],
   repeats: [{ id: 'reaches', first_epoch: 'move', last_epoch: 'hold', count: { kind: 'literal', value: 3 } }],
+  instances: ['fixate', 'move', 'hold', 'move', 'hold', 'move', 'hold', 'rest'],
   signals: [
     { id: 'target', name: 'target', type: 'Point', cells: [
       { first: 'fixate', last: 'fixate', text: null }, { first: 'move', last: 'hold', text: 'targets[i]' },
