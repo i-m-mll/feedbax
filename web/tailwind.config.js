@@ -19,7 +19,6 @@ export default {
           sidebar: 'var(--surface-sidebar)',
           surface: 'var(--surface-main)',
           subtle: 'var(--surface-toolbar)',
-          edge: 'var(--app-boundary-line-color)',
           divider: 'var(--border-muted)',
           control: 'var(--studio-control-border)',
           field: 'var(--neutral-alpha-10)',
