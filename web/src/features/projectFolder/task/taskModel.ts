@@ -13,6 +13,8 @@ export interface ModelStart {
   readonly id: string;
   /** Its components' names and its path. */
   readonly name: string;
+  /** Its composites' and component's names, then the segments of its path: the levels Initializes descends. */
+  readonly path: readonly string[];
 }
 
 /** The Model values a variable initializes, and those its type fits. */
@@ -48,11 +50,20 @@ export interface TaskVariable {
   readonly valueType: ValueType;
   /** The type as a choice of the catalogue's types. */
   readonly typeChoice: FieldModel;
-  /** A list's length. */
-  readonly count?: number;
+  /** A list's count, as a field; none where the variable is not a list. */
+  readonly count?: FieldModel;
   readonly level: VariableLevel;
   readonly value: FieldModel;
   readonly initializes?: VariableInitializes;
+}
+
+/** A Set the step's trials apply: a variable whose values are the Set's entries, each with its weight in parts. */
+export interface TaskSetVariable {
+  /** The sweep axis the Set was moved out of, which names the variable. */
+  readonly axis: string;
+  readonly set: string;
+  /** Each entry, then None where a trial may receive no entry, with its weight in parts when the trials are drawn. */
+  readonly entries: readonly { readonly id: string | null; readonly label: string; readonly parts?: string }[];
 }
 
 /**
@@ -84,6 +95,8 @@ export interface TaskRepeat {
   readonly first: string;
   readonly last: string;
   readonly count: FieldModel;
+  /** The repeat's own problem, about its span rather than its count. */
+  readonly reason?: string;
 }
 
 /**

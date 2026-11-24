@@ -8,7 +8,7 @@ import {
   Menu, MenuContent, MenuItem, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuSubmenu, MenuTrigger,
 } from '@/components/ui/Menu';
 import { StatusMark } from '@/components/ui/StatusMark';
-import { isMemberName } from '@/features/projectFolder/projectMemberName';
+import { keyUnavailable } from '@/features/projectFolder/projectMemberName';
 
 /** What the slot header can do with the document its view shows. An absent command is not offered. */
 export interface DocumentPickerModel {
@@ -28,8 +28,9 @@ export interface DocumentPickerModel {
   readonly create?: (template?: string) => Promise<string | undefined>;
   readonly duplicate?: () => Promise<string | undefined>;
   /** Sets the document's label; its key is the clearing value. */
-  readonly rename?: (label: string | null) => void;
-  readonly changeKey?: (key: string) => void;
+  readonly rename?: (label: string) => void;
+  /** `held` is every key a project document has, which Change Key cannot take. */
+  readonly changeKey?: { readonly commit: (key: string) => void; readonly held: ReadonlySet<string> };
   readonly detach?: () => void;
 }
 
@@ -91,15 +92,12 @@ export function DocumentPicker({ model, editing, setEditing }: {
   if (field === 'name' && rename) {
     return <InlineEdit value={name} editing className="studio-window-slot__document"
       aria-label={studioAccessibleName('rename', name)} onEditingChange={close}
-      onCommit={(next) => rename(next === document ? null : next)} />;
+      onCommit={rename} />;
   }
   if (field === 'key' && changeKey) {
     return <InlineEdit value={document} editing className="studio-window-slot__document font-mono"
       aria-label={studioAccessibleName('changeKey', name)} onEditingChange={close}
-      onCommit={(key) => {
-        if (!isMemberName(key) || documents.some((entry) => entry.key === key)) return false;
-        changeKey(key);
-      }} />;
+      unavailable={(key) => keyUnavailable(key, (key) => changeKey.held.has(key))} onCommit={changeKey.commit} />;
   }
   const start = (part: DocumentEditing['part']) => () => { renaming.current = true; setEditing({ document, part }); };
   return <><Menu onOpenChange={(open) => { if (open) renaming.current = false; }}>

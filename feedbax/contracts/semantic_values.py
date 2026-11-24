@@ -2,7 +2,9 @@
 
 from typing import Literal
 
+from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project_sources import pointer
+from feedbax.contracts.studio_place import path_parts
 
 
 def semantic_key(
@@ -21,3 +23,11 @@ def semantic_key(
     if wire is not None:
         raise ValueError("Only a carry address takes both a wire ID and a symbol")
     return pointer(("v1", root, facet, *owner, symbol))
+
+
+def model_state_address(key: str) -> ModelAddress:
+    """Resolve a versioned model state key to its authored field address."""
+    version, root, facet, *scope, component, symbol = path_parts(key)
+    if (version, root, facet) != ("v1", "model", "state"):
+        raise ValueError(f"Expected a model state key: {key}")
+    return ModelAddress.at_state(tuple(scope), component, symbol)

@@ -14,6 +14,7 @@ from pydantic import JsonValue, ValidationError
 from pydantic_core import to_json, to_jsonable_python
 
 from feedbax.contracts.base import sha256_bytes
+from feedbax.contracts.expression_values import TextSpan
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.matrix_core import apply_override_patch_copy, resolve_segment
@@ -123,6 +124,7 @@ class ProjectDiagnostic:
     """The dotted path the variation entry at ``path`` patches, which places the problem."""
     blocked_by: RunKey | None = None
     """For ``blocked_input``, the producer row that cannot run."""
+    span: TextSpan | None = None
 
 
 @dataclass(frozen=True)
@@ -231,6 +233,17 @@ class BaseReaders:
     terminal_train: Callable[[str], TerminalTrainSource | None] | None = None
 
 
+def _at_sweep_origin(problem: ProjectDiagnostic, source: ValueSource) -> ProjectDiagnostic:
+    if source.kind == "document":
+        return replace(
+            problem, document=source.name, document_path=source.path,
+            authored_file=f"documents/{source.name}.json", authored_path="/payload" + source.path,
+        )
+    if source.step is not None:
+        return replace(problem, authored_file=f"steps/{source.step}.json", authored_path=source.path)
+    return problem
+
+
 class _Problem(Exception):
     def __init__(
         self,
@@ -300,7 +313,7 @@ def _read_external(
 def _pack(value: Any, path: str, step: str | None) -> Any:
     """Treat document references as leaves for the shared patch engine."""
     if isinstance(value, dict):
-        if "document" in value and value.keys() <= {"document", "pointer"}:
+        if "document" in value and value.keys() <= DocumentReference.model_fields.keys():
             try:
                 return DocumentReference.model_validate(value)
             except ValidationError as error:
@@ -319,10 +332,13 @@ def reference_write_target(value: Any, parts: Sequence[str]) -> tuple[str, str] 
     replaces the reference, and a path that meets no reference stays where it is: both are ``None``.
     """
     for index, part in enumerate(parts):
-        if isinstance(value, dict) and "document" in value and value.keys() <= {"document", "pointer"}:
+        if isinstance(value, dict) and "document" in value and value.keys() <= DocumentReference.model_fields.keys():
             value = DocumentReference.model_validate(value)
         if isinstance(value, DocumentReference):
-            return value.document, ".".join((*json_pointer_parts(value.pointer), *parts[index:]))
+            return (
+                None if value.unresolved
+                else (value.document, ".".join((*json_pointer_parts(value.pointer), *parts[index:])))
+            )
         if (key := resolve_segment(value, part, path=".".join(parts))) is None:
             return None
         value = value[key]
@@ -471,6 +487,8 @@ class _Documents:
             return _Problem(code, path, detail, step=self.step, document=name, document_path=document_path)
 
         base_name = document.base.document
+        if document.base.unresolved:
+            raise problem(ResolutionCode.MISSING_DOCUMENT, "base.document", base_name)
         if base_name in (*active, name):
             raise problem(ResolutionCode.DOCUMENT_CYCLE, "base.document", " -> ".join((*active, name, base_name)))
         base = self.read_document(base_name)
@@ -519,7 +537,7 @@ class _Documents:
         return self.shapes[name]
 
     def select(self, reference: DocumentReference, path: str) -> Any:
-        document = self.read_document(reference.document)
+        document = None if reference.unresolved else self.read_document(reference.document)
         if document is None:
             raise _Problem(
                 ResolutionCode.MISSING_DOCUMENT,
@@ -540,10 +558,13 @@ class _Documents:
                             raise ValueError("A variant writes into an object payload only")
                         draft = apply_override_patch_copy(draft, item.patch)
                     except ValueError as error:
-                        raise _Problem(
+                        problem = _Problem(
                             ResolutionCode.INVALID_SWEEP, item.patch.path, str(error),
                             step=self.step, document=reference.document,
-                        ) from error
+                        )
+                        if (origin := item.source) is not None:
+                            problem.diagnostic = _at_sweep_origin(problem.diagnostic, origin)
+                        raise problem from error
                 self.edited[reference.document] = draft
             payload = self.edited[reference.document]
         if (
@@ -841,6 +862,8 @@ class _Resolver:
             )
         base = step.base
         if isinstance(base, StepBase):
+            if base.unresolved:
+                raise _Problem(ResolutionCode.MISSING_STEP, "base.step", base.step, step=name)
             parent = self.state(base.step, (*active, name))
             if base.row is not None:
                 parent = self.select_row(name, base, parent)
@@ -1103,9 +1126,7 @@ class _Resolver:
                                 origins, OverridePatch(op="add", path=slot, value=None), source_shape(value, None),
                             )
                         payload = read
-                    source, override = (None, None) if origins is None else self.row_source(
-                        row.patch_authors.get(patch.path, name), row, patch.path,
-                    )
+                    source, override = self.row_source(row.patch_authors.get(authored, name), row, authored)
                     documents.setdefault(document, []).append(_DocumentRowPatch(
                         patch.model_copy(update={"path": document_path}), source, override,
                     ))
@@ -1162,10 +1183,14 @@ class _Resolver:
                     ), SourceList(None, iter(sources), records))
                 payload = payload | {MODEL_ATTACHMENTS: batches | {batch: records}}
         except ValueError as error:
-            raise _Problem(
+            problem = _Problem(
                 ResolutionCode.INVALID_SWEEP, path, str(error), step=name, layer=row.id,
                 document=model_document, model_address=address,
-            ) from error
+            )
+            if path in row.patch_origins:
+                origin, _ = self.row_source(row.patch_authors.get(path, name), row, path)
+                problem.diagnostic = _at_sweep_origin(problem.diagnostic, origin)
+            raise problem from error
         return _StepState(
             payload, inputs=inputs, requires=state.requires, origins=origins, document_uses=document_uses,
             root_document=state.root_document, row_document_patches={
@@ -1199,17 +1224,29 @@ class _Resolver:
                 state.payload, "payload", document_ids=document_ids, document_pointers=document_pointers,
             )
         input_documents = {}
+        input_problems = []
         for role, value in state.inputs.items():
             if not isinstance(value, (InitialModelReference, TaskDocumentReference, ObjectiveDocumentReference)):
                 continue
             reference = value.source
             path = f"inputs.{role}"
-            selected = documents.select(reference, path)
-            document = self.project.documents[reference.document]
             try:
+                selected = documents.select(reference, path)
+                document = self.project.documents[reference.document]
                 input_documents[role] = RootDocument.model_validate({"schema": document.schema_id, "payload": selected})
+            except _Problem as error:
+                if not partial_figures:
+                    raise
+                input_problems.append(error.diagnostic)
+                continue
             except ValidationError as error:
-                raise _Problem(ResolutionCode.INVALID_DOCUMENT, path, str(error), step=name, document=reference.document) from error
+                diagnostic = _Problem(
+                    ResolutionCode.INVALID_DOCUMENT, path, str(error), step=name, document=reference.document,
+                )
+                if not partial_figures:
+                    raise diagnostic from error
+                input_problems.append(diagnostic.diagnostic)
+                continue
             document_ids[path] = reference.document
             if reference.pointer is not None:
                 document_pointers[path] = reference.pointer
@@ -1255,7 +1292,7 @@ class _Resolver:
             document_ids,
             state.document_uses.union(documents.used),
             document_pointers,
-            tuple(documents.figure_problems.values()),
+            (*documents.figure_problems.values(), *input_problems),
             input_documents,
         )
 
@@ -1328,6 +1365,11 @@ class StepTemplate:
         if not isinstance(payload, dict):
             raise ValueError("A root document reference is not an editable payload.")
         return to_jsonable_python(payload, by_alias=True)
+
+    def sweep_source(self, row: ExpandedRow, path: str) -> ValueSource:
+        """The authored location of a named patch applied to this row."""
+        source, _ = self._resolver.row_source(row.patch_authors.get(path, self.name), row, path)
+        return source
 
     def source_leaf(self, row: ExpandedRow, parts: tuple[str, ...]) -> ValueSource | None:
         try:

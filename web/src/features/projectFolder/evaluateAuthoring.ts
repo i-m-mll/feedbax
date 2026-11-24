@@ -2,10 +2,10 @@ import type { PipelineMapStepSource } from '@/components/pipeline/StudioPipeline
 import { studioFormat, studioReason } from '@/components/activity/studioVocabulary';
 import type { PlanRunView, PlanView } from '@/features/pipeline/planView';
 import {
-  BatchCheckpointSchema, StepReferenceSchema, UpdateRuleSchema,
+  BatchCheckpointSchema, StepReferenceSchema, UnresolvedValueSchema, UpdateRuleSchema,
   type Axis, type BatchCheckpoint, type CheckpointRule, type JsonValue, type ProjectValueEdit, type Step, type StepReference,
   type StudioSavedTrainRuns,
-  type SubsetTerms, type UpdateRule,
+  type SubsetTerms, type UnresolvedValue, type UpdateRule,
 } from '@/generated/studioContracts';
 import { trainSourceSubset } from './createCheckpointTrain';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
@@ -16,14 +16,17 @@ import { generatedName, holds } from './generatedName';
 const rollout = 'feedbax.rollout';
 export const checkpointLabel = (update: number) => studioFormat('checkpointAtUpdate', { update });
 
-export type EditableCheckpointRule = 'last' | BatchCheckpoint | UpdateRule;
+/** A checkpoint rule the Evaluate inspector edits, or the text of one written that does not say a rule. */
+export type EditableCheckpointRule = 'last' | BatchCheckpoint | UpdateRule | UnresolvedValue;
 
 export function editableCheckpointRule(rule: CheckpointRule | null | undefined): EditableCheckpointRule | undefined {
   if (rule === 'last') return rule;
   const point = BatchCheckpointSchema.safeParse(rule);
   if (point.success) return point.data;
   const series = UpdateRuleSchema.safeParse(rule);
-  return series.success ? series.data : undefined;
+  if (series.success) return series.data;
+  const held = UnresolvedValueSchema.safeParse(rule);
+  return held.success ? held.data : undefined;
 }
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -78,6 +81,7 @@ export type CheckpointDraftField = 'at' | 'updates' | 'every' | 'from' | 'throug
 export function checkpointDraft(rule: EditableCheckpointRule): CheckpointDraft {
   if (rule === 'last') return { kind: 'last' };
   if (Array.isArray(rule)) return { kind: 'list', updates: rule.map(({ at }) => at).join(', ') };
+  if ('text' in rule) return { kind: 'list', updates: rule.text };
   if ('at' in rule) return { kind: 'at', at: rule.at };
   return { kind: 'every', every: rule.every, from: rule.from ?? null, through: rule.through ?? null };
 }
@@ -92,45 +96,52 @@ export function emptyCheckpointDraft(kind: CheckpointKind): CheckpointDraft {
   }
 }
 
+/** Why a checkpoint draft is wrong, on the field that is. */
+export interface CheckpointDraftProblem {
+  readonly field: CheckpointDraftField;
+  readonly reason: string;
+}
+
 /**
- * The rule a draft says, or why it says none: a reason on the field that is wrong, or none while a required field is
- * empty.
+ * What a draft saves and why it is wrong. A list that says no rule saves its text; a rule outside `range` saves with
+ * its reason. A draft with a required field empty, or a number no rule takes, saves nothing.
  */
 export function checkpointDraftRule(draft: CheckpointDraft, range?: CheckpointRange):
-  { rule: EditableCheckpointRule } | { field?: CheckpointDraftField; reason?: string } {
+  { readonly rule?: EditableCheckpointRule; readonly problem?: CheckpointDraftProblem } {
   /** The end of `range` that `update` lies beyond, if any. */
   const beyond = (update: number) => !range ? undefined
     : update <= range.after.update ? range.after : update > range.through.update ? range.through : undefined;
-  const outside = (bound: CheckpointBound) => range && studioFormat('checkpointRange', {
-    step: bound.step, from: range.after.update + 1, through: range.through.update,
-  });
+  const outside = (field: CheckpointDraftField, bound: CheckpointBound | undefined) => bound && range && {
+    field, reason: studioFormat('checkpointRange', { step: bound.step, from: range.after.update + 1, through: range.through.update }),
+  };
   switch (draft.kind) {
     case 'last': return { rule: 'last' };
     case 'at': {
       if (draft.at === null) return {};
       const parsed = BatchCheckpointSchema.safeParse({ at: draft.at });
-      if (!parsed.success) return { field: 'at', reason: studioReason('wholeUpdate', String(draft.at)) };
-      const bound = beyond(parsed.data.at);
-      return bound ? { field: 'at', reason: outside(bound) } : { rule: parsed.data };
+      if (!parsed.success) return { problem: { field: 'at', reason: studioReason('wholeUpdate', String(draft.at)) } };
+      return { rule: parsed.data, problem: outside('at', beyond(parsed.data.at)) };
     }
     case 'list': {
       const text = draft.updates.trim();
       if (!text) return {};
-      if (!/^\d+(?:\s*,\s*\d+)*$/.test(text)) return { field: 'updates', reason: studioReason('invalidCheckpointRule', text) };
+      const held = { rule: { kind: 'unresolved', text } as const };
+      if (!/^\d+(?:\s*,\s*\d+)*$/.test(text)) {
+        return { ...held, problem: { field: 'updates', reason: studioReason('invalidCheckpointRule', text) } };
+      }
       const updates = text.split(',').map(Number);
       const parsed = UpdateRuleSchema.safeParse(updates.map((at) => ({ at })));
       if (!parsed.success || new Set(updates).size !== updates.length) {
-        return { field: 'updates', reason: studioReason('invalidUpdateList', text) };
+        return { ...held, problem: { field: 'updates', reason: studioReason('invalidUpdateList', text) } };
       }
-      const bound = updates.map(beyond).find((end) => end !== undefined);
-      return bound ? { field: 'updates', reason: outside(bound) } : { rule: parsed.data };
+      return { rule: parsed.data, problem: outside('updates', updates.map(beyond).find((end) => end !== undefined)) };
     }
     case 'every': {
       if (draft.every === null) return {};
       for (const field of ['every', 'from', 'through'] as const) {
         const value = draft[field];
         if (value !== null && !(Number.isSafeInteger(value) && value > 0)) {
-          return { field, reason: studioReason('positiveUpdates', String(value)) };
+          return { problem: { field, reason: studioReason('positiveUpdates', String(value)) } };
         }
       }
       const rule = {
@@ -139,7 +150,7 @@ export function checkpointDraftRule(draft: CheckpointDraft, range?: CheckpointRa
         ...(draft.through !== null && { through: draft.through }),
       };
       if (rule.from !== undefined && rule.through !== undefined && rule.from > rule.through) {
-        return { field: 'through', reason: studioReason('reversedUpdates', `${rule.from}–${rule.through}`) };
+        return { problem: { field: 'through', reason: studioReason('reversedUpdates', `${rule.from}–${rule.through}`) } };
       }
       return { rule: UpdateRuleSchema.parse(rule) };
     }

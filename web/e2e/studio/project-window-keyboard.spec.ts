@@ -1,6 +1,6 @@
 import { expect, firstJobTimeout, test } from './fixtures/studio';
 import { type APIRequestContext, type Locator, type Page } from '@playwright/test';
-import { firstTrainTask, type ModelDocument, type ModelEditResponse, type ModelFieldResponse, type StudioActivityJob, type StudioJobSubmission, type StudioProjectDocument, type StudioProjectSnapshot, type StudioSavedTrainKey, type StudioSavedTrainRuns, type WorkspaceReplayTrial } from '../../src/generated/studioContracts';
+import { firstTrainTask, type ModelDocument, type ModelEditResponse, type ModelFieldResponse, type StudioActivityJob, type StudioJobSubmission, type StudioProjectDocument, type StudioProjectSnapshot, type StudioSavedTrainKey, type StudioSavedTrainRuns, type StudioTrialReplayResponse } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, runName, runProjectFixture, seedManagedProject, sweepLabel } from './fixtures/canonicalTrain';
 import { runPythonProcess } from './fixtures/python';
 import { authorFirstTrain } from './fixtures/firstTrainAuthoring';
@@ -134,7 +134,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   const train = page.getByRole('article', { name: 'Train train', exact: true });
   const rate = page.getByRole('region', { name: 'Learning Rate field', exact: true });
   await activate(page, rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true }));
-  await activateMenuItem(page, page.getByRole('menuitem', { name: 'Sweep', exact: true }));
+  await activateMenuItem(page, page.getByRole('menuitemradio', { name: 'Sweep', exact: true }));
   const rateText = rate.getByRole('textbox', { name: 'Learning Rate Value', exact: true });
   await expect(rateText).toBeFocused();
   await number(page, rateText, '0.001, 0.002, 0.003');
@@ -274,14 +274,12 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   await expect(sceneTab).toHaveAttribute('aria-selected', 'true');
   expect(replayed.ok(), await replayed.text()).toBe(true);
   expect(replayed.request().postDataJSON()).toMatchObject({ revision: evaluated.revision, key: result.key, job_id: evaluation.job_id, trial });
-  const replay: WorkspaceReplayTrial = await replayed.json();
+  const replay: StudioTrialReplayResponse = await replayed.json();
   const observed = await observe('result', continued.job_id, evaluated.revision, evaluation.job_id!, trial);
   expect(observed.receipt).toEqual(result.result!.receipt);
-  expect(replay.manifest_refs!.producer_manifest).toMatchObject({
-    id: observed.receipt.manifest_id, metadata: { manifest_sha256: observed.receipt.manifest_sha256 },
-  });
-  expect(replay.identity.stable_id).toBe(trial);
-  expect(replay.tracks![0].samples).toEqual(observed.samples);
+  expect(replay.receipt).toEqual(observed.receipt);
+  expect(replay.drawn).toMatchObject({ kind: 'trials', trials: [{ id: trial }] });
+  expect(replay.drawn).toMatchObject({ trials: [{ states: { [replay.position!]: { samples: observed.samples } } }] });
   expect(observed.samples.length).toBeGreaterThan(1);
   expect(observed.samples.every((sample: number[]) => sample.length === 2 && sample.every(Number.isFinite))).toBe(true);
   await expect(page.getByRole('slider', { name: 'Playback Position' })).toBeVisible();
@@ -345,7 +343,7 @@ test('Model edits follow the lit users of a saved shared document', async ({ pag
     expect(response.ok(), await response.text()).toBe(true);
     const { result } = await response.json() as ModelEditResponse;
     expect(result.status).toBe('applied');
-    if (result.status !== 'applied') throw new Error(result.problem.detail);
+    if (result.status !== 'applied') throw new Error(JSON.stringify(result));
     return result.snapshot;
   }
 
@@ -558,7 +556,7 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   const rate = page.getByRole('region', { name: 'Learning Rate field', exact: true });
   const rateText = rate.getByRole('textbox', { name: 'Learning Rate Value', exact: true });
   await activate(page, rate.getByRole('button', { name: 'Learning Rate kind: Value', exact: true }));
-  await activateMenuItem(page, page.getByRole('menuitem', { name: 'Sweep', exact: true }));
+  await activateMenuItem(page, page.getByRole('menuitemradio', { name: 'Sweep', exact: true }));
   await expect(rateText).toBeFocused();
   await number(page, rateText, '0.001, 0.002, 0.003');
   await expect(rate.getByText('0.003', { exact: true })).toBeVisible();

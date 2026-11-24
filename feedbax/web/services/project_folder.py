@@ -5,7 +5,6 @@ from __future__ import annotations
 from base64 import b64decode, urlsafe_b64encode
 from binascii import Error as Base64Error
 from copy import deepcopy
-from functools import partial
 from hmac import compare_digest, digest
 import os
 from pathlib import Path
@@ -18,7 +17,7 @@ from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import ProjectValueEdit, Sha256
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_io import PROJECT_DECLARATION_SUFFIX, TextProject, TextProjectExternalInputs
-from feedbax.contracts.project_resolution import BaseReaders
+from feedbax.contracts.project_resolution import BaseReaders, RunKey
 from feedbax.contracts.studio_project import StudioProjectDocument, StudioProjectSnapshot
 from feedbax.project_folder import (
     ProjectFileExists as ProjectFileExists,
@@ -127,20 +126,41 @@ class ProjectFolderService(ProjectFolder):
         self, project_id: str, body: ModelConnectionReviewRequest, components: ComponentRegistry,
     ) -> ModelConnectionReview:
         from feedbax.contracts.model_document import ModelDocument
-        from feedbax.contracts.model_edit import ModelProjectionRequest, TaskSignalSource
+        from feedbax.contracts.model_edit import EvaluateModelRequest, TaskSignalSource
         from feedbax.compiler.model_edit import review_model_connections
         from feedbax.compiler.model_ports import ModelRegistryPorts
+        from feedbax.project_model_selection import selected_model
+        from feedbax.web.services.evaluate_sources import read_evaluate_model
+        from feedbax.web.services.trial_scope import selection_scope
 
         snapshot = self.read(project_id, revision=body.revision)
         payload, _ = model_edit_source(snapshot, body.document)
         try:
+            if body.run is None and (body.rows or body.axes or body.evaluate_scope is not None):
+                raise ProjectFolderInvalid("Choose a run for this Model selection.")
+            if body.run is not None:
+                key = RunKey(body.run.variant, body.run.step, body.run.row)
+                if body.evaluate_scope is not None:
+                    reading = read_evaluate_model(self, project_id, EvaluateModelRequest(
+                        revision=body.revision, run=body.run, scope=body.evaluate_scope,
+                    ), components, model_document=body.document)
+                    if reading.state.resolved_model is None:
+                        raise ProjectFolderInvalid("The selected Evaluate has no readable Model.")
+                    payload = reading.state.resolved_model.model_dump(mode="json")
+                else:
+                    plan = self.read_plan(project_id, revision=body.revision, source_runs=(key,)).plan
+                    if body.rows or body.axes:
+                        selection_scope(snapshot.project, plan, key, tuple(body.rows), body.axes or None)
+                    definition = plan.selected_definitions.get(key)
+                    if definition is not None and (resolved := selected_model(definition, body.document)) is not None:
+                        payload = resolved
             authority = ModelRegistryPorts(components)
             task_signal = None
             if isinstance(body.source, TaskSignalSource):
                 if body.graph.composites:
                     raise ProjectFolderInvalid("A task signal connects at the Model root")
-                task_signal = selected_task_signal(self, project_id, ModelProjectionRequest(
-                    revision=body.revision, run=body.source.run, document=body.document,
+                task_signal = selected_task_signal(self, project_id, body.model_copy(
+                    update={"run": body.run or body.source.run},
                 ), body.source.signal)
             library = tuple({
                 "kind": "leaf", "type": item.identity.type_id if item.identity else item.name,
@@ -148,7 +168,7 @@ class ProjectFolderService(ProjectFolder):
             } for item in components.list_all() if not item.is_composite)
             return review_model_connections(
                 ModelDocument.model_validate(payload), body, layout=authority.layout, next_input=authority.next_input,
-                library=library, accepts=authority.accepts, task_signal=task_signal,
+                library=library, task_signal=task_signal,
             )
         except ValueError as error:
             raise ProjectFolderInvalid(str(error)) from error
@@ -156,24 +176,35 @@ class ProjectFolderService(ProjectFolder):
     def edit_model(
         self, project_id: str, body: ModelEditRequest, components: ComponentRegistry,
     ) -> ModelEditResponse:
-        from feedbax.contracts.model_edit import ModelEditApplied, ModelEditProblem, ModelEditRefused, ModelEditResponse
+        from feedbax.contracts.model_edit import (
+            ModelEditApplied, ModelEditAsked, ModelEditProblem, ModelEditRefused, ModelEditResponse,
+        )
 
-        from feedbax.web.services.trial_scope import model_document_store, row_model, scoped_model_store
+        from feedbax.web.services.model_scope import model_edit_store
+        from feedbax.web.services.trial_bindings import input_names, preserve_renamed_bindings
+        from feedbax.web.services.trial_scope import row_model
 
         project_id = self.project_id(project_id)
+        row = None
         if body.rows:
             if body.files:
                 raise ProjectFolderInvalid("A Model edit for selected runs writes no step files alongside it.")
             row = row_model(self, project_id, self.read(project_id, revision=body.revision).project, body)
-            result = self.apply_model_command(
-                project_id, body, components, lambda project, body, before, after: scoped_model_store(
-                    project, body, row, after,
-                ), source=row.content,
-            )
-        else:
-            result = self.apply_model_command(
-                project_id, body, components, partial(model_document_store, self, project_id),
-            )
+
+        def store(project, body, before, after):
+            stored = model_edit_store(self, project_id, project, body, before, after, row)
+            if isinstance(stored, ModelEditAsked):
+                return stored
+            old_names, new_names = input_names(before), input_names(after)
+            if any(old_names[id_] != new_names[id_] for id_ in old_names.keys() & new_names.keys()):
+                return preserve_renamed_bindings(self, project_id, body.revision, project, stored)
+            return stored
+
+        result = self.apply_model_command(
+            project_id, body, components, store, source=row.content if row is not None else None,
+        )
+        if isinstance(result, ModelEditAsked):
+            return ModelEditResponse(result=result)
         if isinstance(result, ModelEditProblem):
             return ModelEditResponse(result=ModelEditRefused(status="refused", problem=result))
         change = result.change
@@ -182,11 +213,14 @@ class ProjectFolderService(ProjectFolder):
         ) if change is not None else None
         return ModelEditResponse(result=ModelEditApplied(
             status="applied", snapshot=result.snapshot, changed=result.changed, clipboard=result.clipboard,
-            undo_token=token, created=result.created,
+            undo_token=token, created=result.created, problems=result.problems,
+            sweep_problems=result.sweep_problems,
         ))
 
     def undo_model(self, project_id: str, body: ModelUndoRequest) -> ModelEditResponse:
         from feedbax.contracts.model_edit import ModelEditApplied, ModelEditResponse
+        from feedbax.contracts.model_document import ModelDocument
+        from feedbax.compiler.model_ports import ModelRegistryPorts
         from feedbax.studio.model_undo import apply_delta
 
         try:
@@ -213,8 +247,10 @@ class ProjectFolderService(ProjectFolder):
             snapshot, edit.document, payload, layout,
             had_entry=edit.had_entry, had_documents=edit.had_documents,
         )
+        problems = tuple(ModelRegistryPorts(self.components).problems(ModelDocument.model_validate(payload))) \
+            if self.components is not None else ()
         return ModelEditResponse(result=ModelEditApplied(
-            status="applied", snapshot=snapshot, changed=edit.changed, undo_token=token,
+            status="applied", snapshot=snapshot, changed=edit.changed, undo_token=token, problems=problems,
         ))
 
     @staticmethod

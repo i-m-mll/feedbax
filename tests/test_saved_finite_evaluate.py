@@ -187,9 +187,9 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
             )
         trials = settled.evaluations[by_step[name].key].trials
         with pytest.raises(CannotRun, match="choose a retained checkpoint"):
-            result.replay_trial(trials[0], anchor_id="effector")
+            result.replay(trials[0])
         with pytest.raises(CannotRun, match="absent from the retained set"):
-            result.replay_trial(trials[0], anchor_id="effector", checkpoint=3)
+            result.replay(trials[0], checkpoint=3)
         reads = []
         read_slice = ArrayContainerReader.read_unverified_slice
 
@@ -199,11 +199,12 @@ def test_saved_finite_selection_releases_across_resume_and_retains_exact_checkpo
 
         with monkeypatch.context() as context:
             context.setattr(ArrayContainerReader, "read_unverified_slice", observed)
-            replay = result.replay_trial(trials[1], anchor_id="effector", checkpoint=4)
-        assert [field for field, _ in reads] == ["checkpoint", "state_time", position]
-        assert reads[-1] == (position, (coordinates.index(4), 0, 1))
-        assert replay.identity.stable_id == trials[1] and replay.identity.index == 1
-        np.testing.assert_allclose(replay.tracks[0].samples, trajectories[-1][coordinates.index(4), 0, 1])
+            replay = result.replay(trials[1], checkpoint=4)
+        selection = (coordinates.index(4), 0, 1)
+        assert (position, selection) in reads
+        assert all(index == selection for field, index in reads if field not in {"checkpoint", "state_time"})
+        assert replay.drawn.trials[0].id == trials[1]
+        np.testing.assert_allclose(replay.drawn.trials[0].states[replay.position].samples, trajectories[-1][coordinates.index(4), 0, 1])
     assert not np.array_equal(trajectories[0][0], trajectories[0][1])
     np.testing.assert_array_equal(trajectories[0], trajectories[1][::-1])
     first, second = effective_bindings
@@ -399,7 +400,7 @@ def test_saved_exact_stopped_checkpoint_is_distinct_from_last(host, tmp_path, mo
     with result.open_states() as dataset:
         assert dataset.data("checkpoint").tolist() == [3]
     trial = settled.evaluations[by_step["exact"].key].trials[0]
-    assert result.replay_trial(trial, anchor_id="effector").identity.stable_id == trial
+    assert result.replay(trial).drawn.trials[0].id == trial
 
     # A Train that finished without update 3: it ran outside the finite gate, which would hold it at 3, before
     # anything read it, so 3 was neither demanded nor on its cadence of 2.

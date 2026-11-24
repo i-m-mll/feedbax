@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Annotated, Literal
 
 from pydantic import ConfigDict, Field, StrictStr, StringConstraints
@@ -117,6 +117,16 @@ class ModelAddress(StrictModel):
     composites: tuple[ModelElementId, ...]
     element: AddressedElement
 
+    @classmethod
+    def at_state(cls, composites: tuple[str, ...], component: str, symbol: str) -> ModelAddress:
+        """Address a component's declared state by its semantic symbol."""
+        return cls(
+            composites=composites,
+            element=FieldElement(
+                kind="field", parent=ComponentElement(kind="component", id=component), path=("state", symbol),
+            ),
+        )
+
     def stored_path(self) -> tuple[str, ...]:
         """Locate the addressed member in the stored tree when it has a keyed path."""
         scope = tuple(token for owner in self.composites for token in ("interior", "components", owner))
@@ -177,6 +187,29 @@ class ModelAddress(StrictModel):
             return (element.id,)
 
         return ".".join((*self.composites, *element_label(self.element)))
+
+    def relocated(self, moves: Mapping[str, ModelAddress]) -> ModelAddress:
+        """Follow the identity of this element through a graph move."""
+        if (direct := moves.get(self.to_text())) is not None:
+            return direct
+        element = self.element
+        if isinstance(element, FieldElement | AttachmentElement):
+            owner = ModelAddress(composites=self.composites, element=element.parent).relocated(moves)
+            return ModelAddress(composites=owner.composites, element=element.model_copy(update={"parent": owner.element}))
+        if isinstance(element, PortElement) and isinstance(element.end, ComponentPortEnd):
+            owner = ModelAddress(composites=self.composites, element=ComponentElement(
+                kind="component", id=element.end.component,
+            )).relocated(moves)
+            assert isinstance(owner.element, ComponentElement)
+            return ModelAddress(composites=owner.composites, element=element.model_copy(update={
+                "end": element.end.model_copy(update={"component": owner.element.id}),
+            }))
+        for i, name in enumerate(self.composites):
+            part = ModelAddress(composites=self.composites[:i], element=ComponentElement(kind="component", id=name))
+            if (owner := moves.get(part.to_text())) is not None:
+                assert isinstance(owner.element, ComponentElement)
+                return self.model_copy(update={"composites": (*owner.composites, owner.element.id, *self.composites[i + 1:])})
+        return self
 
     def to_text(self) -> str:
         """Encode the relative address with the shared canonical JSON codec."""

@@ -38,7 +38,7 @@ test('authors and reopens an addressed Model through the project history', async
     expect(response.ok(), await response.text()).toBe(true);
     const { result } = await response.json() as ModelEditResponse;
     expect(result.status, result.status === 'refused' ? result.problem.detail : '').toBe('applied');
-    if (result.status !== 'applied') throw new Error(result.problem.detail);
+    if (result.status !== 'applied') throw new Error(JSON.stringify(result));
     return result;
   }
   function stored(project: StudioProjectDocument['snapshot']) {

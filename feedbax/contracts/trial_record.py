@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field, JsonValue
 
 from feedbax.contracts.expression_values import Problem
+from feedbax.contracts.jobs import JobReceipt
 
 
 class TaskTimelineCue(BaseModel):
@@ -18,9 +19,19 @@ class TaskTimelineCue(BaseModel):
 class TrialTerm(BaseModel):
     steps: list[bool]
     """Whether the term applies at each step."""
+    weights: list[float | None] | None = None
+    """At each step, the authored weight within its window, or null where it is undefined."""
     covered: bool
     values: list[float] | None = None
     """The weighted measure at each step, when recorded."""
+    value: float | None = None
+    """The reduced value for the entire recorded trial, when covered."""
+
+
+class TrialStateTrack(BaseModel):
+    samples: list[list[float]]
+    units: str | None
+    frame: str
 
 
 class TrialRecord(BaseModel):
@@ -32,8 +43,10 @@ class TrialRecord(BaseModel):
     variable_defined: dict[str, JsonValue]
     timeline: list[TaskTimelineCue]
     terms: dict[str, TrialTerm] = Field(default_factory=dict)
-    states: dict[str, JsonValue] = Field(default_factory=dict)
-    """Recorded state tracks, keyed by Model address."""
+    states: dict[str, TrialStateTrack] = Field(default_factory=dict)
+    """Recorded world-frame state tracks, keyed by state Model address."""
+    configurations: dict[str, JsonValue] = Field(default_factory=dict)
+    """Recorded configuration state histories, keyed by state Model address."""
 
 
 class TrialRecords(BaseModel):
@@ -68,6 +81,10 @@ class TrialTermAggregate(BaseModel):
     """At each step, the share of trials on which the term applies."""
     covered: float
     """The share of trials the term covers."""
+    value: float | None = None
+    """The mean reduced value across covered recorded trials."""
+    percentiles: list[list[float] | None] | None = None
+    """At each covered step, the 5th, 25th, 50th, 75th and 95th percentiles."""
 
 
 class TrialAggregate(BaseModel):
@@ -84,3 +101,13 @@ class TrialUnavailable(BaseModel):
 
 
 type TrialDisplay = Annotated[TrialRecords | TrialAggregate | TrialUnavailable, Field(discriminator="kind")]
+
+
+class StudioTrialReplayResponse(BaseModel):
+    n_steps: int
+    state_time: list[float]
+    """Recorded state times in seconds, including the reset state at time zero."""
+    position: str | None
+    """Model address of the declared primary position, if available."""
+    receipt: JobReceipt
+    drawn: Annotated[TrialRecords | TrialAggregate, Field(discriminator="kind")]

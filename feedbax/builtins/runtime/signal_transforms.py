@@ -20,6 +20,7 @@ from pydantic import Field as ConfigField
 import feedbax._vendor.jax_cookbook.tree as jtree
 from feedbax.contracts.component_history import Change, History
 from feedbax.contracts.component import PortType, PortTypeSpec
+from feedbax.contracts.model_values import ModelFacts
 from feedbax.contracts.portable import (
     ComponentOptions,
     ConfigBinding,
@@ -526,6 +527,7 @@ class ConstantInputTransform(GraphNode):
 class ConstantInput(ConstantInputTransform, Component):
     """Adds a constant array to a signal."""
 
+    model_facts = ModelFacts(configuration_slots=("params_index",))
     component_history = History(Change(2, identity=True))
     ports: ClassVar[Ports] = Ports(
         inputs=_VECTOR_PORT_TYPES.inputs, outputs=_VECTOR_PORT_TYPES.outputs

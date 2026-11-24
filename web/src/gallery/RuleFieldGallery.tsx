@@ -12,7 +12,7 @@ export function RuleFieldGallery() {
   const [rule, setRule] = useState('seed=0..1');
   return <div className="grid w-80 content-start gap-2 rounded-control border border-shell-divider p-2" aria-label="Rule fields">
     <RuleField label="Runs" value={rule} vocabulary={vocabulary} count="8/16" onCommit={setRule} />
-    <RuleField label="Refused" value="sed=0" vocabulary={vocabulary} count="16/16" problem="sed=0: sed is not swept in train"
+    <RuleField label="Refused" value="sed=0" vocabulary={vocabulary} count="16/16" problem={{ reason: 'sed=0: sed is not swept in train', term: { text: 'sed=0', start: 0, end: 3 } }}
       onCommit={() => undefined} />
     <RuleField label="Pinned" value="lowest 2 loss" vocabulary={vocabulary} count="2/16" pinned={['seed=0--lr=0.1', 'seed=2--lr=0.1']}
       onCommit={() => undefined} />

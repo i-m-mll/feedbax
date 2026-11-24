@@ -51,6 +51,7 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.contracts.model_edit import ModelEditRequest
 from feedbax.web.services.project_plan import ProjectPlanService
 from feedbax.web.app import create_app
+from tests.support.managed_train_fixture import managed_train_project
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.support.model_documents import read_changed_model
 from tests.support.host import job_row, token, wait_until
@@ -62,7 +63,7 @@ def _prepare_request(request, registry) -> PreparedTrialExecution:
     paired = compile_trial_execution(
         documents.model, documents.task_source,
         registry.components, registry.expression_functions, python_tasks=registry.python_tasks,
-        objective=documents.objective, input_overrides=documents.input_overrides,
+        objective=documents.objective, input_bindings=documents.input_bindings,
         initialization_key=model_initialization_key(request.seed or 0),
     )
     assert isinstance(paired, PreparedTrialExecution), paired
@@ -835,9 +836,8 @@ def test_a_model_field_swept_for_some_runs_reads_as_the_selected_runs_have_it(tm
         assert other["sweep"] is None and not other["mixed"] and other["text"] == "1.0"
 
 
-def test_a_class_without_a_swept_parameter_is_refused_as_a_member(tmp_path):
-    raw = _model_project()
-    raw["steps"].pop("baseline")
+def test_a_class_without_a_swept_parameter_keeps_the_authored_axis(tmp_path):
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     raw["steps"]["train"]["base"]["inline"]["settings"]["optimizer"]["learning_rate"] = {
         "type": "warmup_cosine_decay_schedule", "init_value": 0.0, "peak_value": 0.001, "warmup_steps": 10,
         "decay_steps": 100, "end_value": 0.0,
@@ -848,9 +848,15 @@ def test_a_class_without_a_swept_parameter_is_refused_as_a_member(tmp_path):
         train = _TrainClient(client, url)
         train.number(schedule + "/peak_value", {"kind": "text", "text": "0.001, 0.002"})
         train.sweep_class(schedule, {"kind": "to_sweep"})
-        refused = train.sweep_class(schedule, {"kind": "add_member", "key": "constant_schedule"}, save=False)
-        assert refused["refusal"] == {"class_label": "Constant", "parameter_label": "Peak Value"}
-        assert refused["files"] == []
+        recipe = train.sweep_class(schedule, {"kind": "add_member", "key": "constant_schedule"})
+        assert recipe["files"]
+        revision = client.get(url).json()["revision"]
+        read = client.post(url + "/authoring/train/train", json={"revision": revision})
+        assert read.status_code == 200, read.text
+        reopened = read.json()
+        (field,) = [field for field in reopened["classes"] if field["id"] == schedule]
+        assert "constant_schedule" in {value["value"] for value in field["sweep"]["members"]}
+        assert any("peak_value" in problem["path"] for problem in reopened["sweep_problems"])
 
 
 def test_a_sweep_turned_into_its_value_keeps_the_edits_made_for_that_value(tmp_path):
@@ -970,7 +976,7 @@ def test_nested_model_plans_with_stable_identity_and_compiles():
     assert graph.nodes["wrapper"].nodes["controller"].nodes["cell"].cell.weight_ih.shape[1] == 2
 
     documents = raw["steps"]["train"]["base"]["inline"]["trial_documents"]
-    documents.pop("input_overrides")
+    documents.pop("input_bindings")
     raw["documents"]["reach-model"]["payload"]["ports"]["inputs"][0]["name"] = "unknown"
     refused = compile_project(Project.model_validate(raw))
     (problem,) = [problem for row in refused.rows if row.key.step == "train" for problem in row.problems]
@@ -989,7 +995,7 @@ def _use_initial_evaluation(raw):
         "task": {"kind": "task", "source": trial["task"]},
         "objective": {"kind": "objective", "source": trial["objective"]},
     }
-    evaluation["base"]["inline"]["params"]["input_overrides"] = dict(trial["input_overrides"])
+    evaluation["base"]["inline"]["params"]["input_bindings"] = dict(trial["input_bindings"])
 
 
 def test_unresolved_relative_link_is_reported_at_the_task():
@@ -1801,11 +1807,6 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
 
     model = raw["documents"][model_name]["payload"]
     model["ports"]["inputs"][0]["name"] = "renamed_reach_target"
-    overrides = raw["steps"]["train"]["base"]["inline"]["trial_documents"]["input_overrides"]
-    overrides["renamed_reach_target"] = overrides.pop("reach_target")
-    if not grouped:
-        overrides = raw["steps"]["baseline"]["base"]["inline"]["params"]["input_overrides"]
-        overrides["renamed_reach_target"] = overrides.pop("reach_target")
     _save_project(folders, project, Project.model_validate(raw))
     changed = reopened.read_plan(project, revision=None)
     assert not changed.plan.diagnostics

@@ -1,6 +1,7 @@
 """A task document's structure is changed by the service, and the document it leaves compiles."""
 
 from feedbax.contracts.expression_values import ValueType
+from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.studio_trials import StudioTrialAuthoring
 from feedbax.contracts.expression_values import LiteralValue
 from feedbax.contracts.task_document import BLANK_TASK, TaskDocument
@@ -9,10 +10,7 @@ from tests.test_model_document_edits import _URL, _Project
 from tests.test_task_document_fields import _save
 
 TASK = "delayed-reaches-task"
-LINKED = (
-    '{"composites":[],"element":{"kind":"field","parent":{"id":"plant","kind":"component"},'
-    '"path":["reset","effector","position"]}}'
-)
+LINKED = ModelAddress.at_state((), "plant", "effector/position").to_text()
 DURATION = {"base": "real", "dimensions": {"time": 1}}
 
 
@@ -40,7 +38,7 @@ def _change(project, change, *, body=None) -> StudioTrialAuthoring:
 def _made(project, change) -> list:
     """The problems of the task once ``change`` is saved."""
     view = _change(project, change)
-    assert view.files and not view.problems, (change, view.problems)
+    assert view.files, (change, view.problems)
     _save(project, view)
     return _change(project, None).problems
 
@@ -82,11 +80,37 @@ def test_a_variable_added_for_a_model_start_initializes_it_in_the_same_edit(tmp_
     """Catches naming a Model start that writes the variable without its link, or leaves the start linked twice."""
     project = _project(tmp_path)
     with project.client:
+        resets = {item.address.to_text(): item for item in _change(project, None).resets}
+        skeleton = resets[ModelAddress.at_state((), "plant", "skeleton/position").to_text()]
+        assert skeleton.path == ("Point mass", "skeleton", "position")
+        assert skeleton.type == ValueType.model_validate(POINT) and not skeleton.required
         change = {"op": "add", "member": "variable", "name": "origin", "type": POINT, "initializes": [LINKED]}
         assert _made(project, change) == []
         task = project.composed(TASK)
         assert ValueType.model_validate(task["variables"][-1]["type"]) == ValueType.model_validate(POINT)
         assert task["links"] == [{"model_field": LINKED, "variable": "origin"}]
+
+
+def test_making_a_cell_present_keeps_the_typed_text_in_the_same_write(tmp_path):
+    project = _project(tmp_path)
+    with project.client:
+        assert _made(project, {"op": "add", "member": "signal", "name": "extra"}) == []
+        invalid = _change(project, {"op": "present", "signal": "extra", "epoch": "hold", "text": "unknown"})
+        path = "/task/signals/extra/cells/hold/value"
+        field = next(field for field in invalid.fields if field.path == path)
+        assert invalid.files and field.text == "unknown"
+        assert [problem.code for problem in field.problems] == ["unknown_name"]
+        _save(project, invalid)
+        extra = next(signal for signal in project.composed(TASK)["signals"] if signal["id"] == "extra")
+        assert extra["cells"][0]["value"] == {"kind": "unresolved", "text": "unknown"}
+        repaired = _change(project, [
+            {"op": "absent", "signal": "extra", "cell": "hold"},
+            {"op": "present", "signal": "extra", "epoch": "hold", "text": "2"},
+        ])
+        assert not repaired.problems
+        _save(project, repaired)
+        extra = next(signal for signal in project.composed(TASK)["signals"] if signal["id"] == "extra")
+        assert LiteralValue.model_validate(extra["cells"][0]["value"]).value == 2
 
 
 def test_a_value_is_stored_in_a_task_that_already_has_problems(tmp_path):
@@ -190,9 +214,10 @@ def test_a_problem_about_a_name_carries_the_name_s_place_in_the_field_s_text(tmp
             "change": {"kind": "expression", "path": path, "edit": {"kind": "text", "text": text}},
         })
         view = StudioTrialAuthoring.model_validate(response.json())
-        refused = [problem for problem in view.problems if problem.path == ("task", "signals", "goal", "cells", "move", "value")]
-        assert not view.files and refused, view.problems
-        assert text[refused[-1].span.start:refused[-1].span.end] == "scale", refused
+        held = next(field for field in view.fields if field.path == path)
+        assert view.files, view.problems
+        (problem,) = held.problems
+        assert held.text[problem.span.start:problem.span.end] == "scale", problem
 
 
 def test_a_variable_with_problems_marks_each_field_that_reads_it_where_it_reads_it(tmp_path):

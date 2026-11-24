@@ -78,6 +78,9 @@
           "run",
           "trial"
         ]
+      },
+      "weights": {
+        "absent": null
       }
     },
     "feedbax.contracts.expression_values.LiteralValue": {
@@ -500,6 +503,11 @@
       "window": {
         "absent": null
       }
+    },
+    "feedbax.contracts.model_document.InterventionWindow": {
+      "duration": {},
+      "epoch": {},
+      "offsets": {}
     },
     "feedbax.contracts.model_document.LeafComponent": {
       "attachments": {
@@ -1102,6 +1110,10 @@
         ]
       }
     },
+    "feedbax.contracts.task_document.SetVariableChoices": {
+      "entries": {},
+      "set": {}
+    },
     "feedbax.contracts.task_document.Signal": {
       "absent": {
         "absent": null,
@@ -1159,6 +1171,9 @@
       },
       "id": {},
       "name": {},
+      "set_choices": {
+        "absent": null
+      },
       "type": {},
       "value": {
         "families": [
@@ -1171,7 +1186,7 @@
       }
     },
     "feedbax.contracts.training.TrialDocuments": {
-      "input_overrides": {
+      "input_bindings": {
         "absent": {}
       },
       "model": {},
@@ -3608,6 +3623,11 @@
         "field": "max_steps",
         "migration": "task-epoch-end",
         "model": "feedbax.contracts.task_document.Epoch"
+      },
+      {
+        "field": "input_overrides",
+        "migration": "stable-task-input-bindings",
+        "model": "feedbax.contracts.training.TrialDocuments"
       }
     ],
     "values": [

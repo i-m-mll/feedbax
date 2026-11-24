@@ -3,6 +3,7 @@ import { studioName } from '@/components/activity/studioVocabulary';
 import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import type {
   AuthoredFileAddress,
+  CreateNamedDocument,
   ModelEditCommand,
   ModelEditRequest,
   ModelEditResponse,
@@ -22,7 +23,7 @@ import type {
   StudioProjectSnapshot,
 } from '@/generated/studioContracts';
 import {
-  addressKey, applyAuthoredEdits, presentationAddress, presentationHistoryEdits, sameAuthoredFile,
+  addressKey, applyAuthoredEdits, declarationAddress, presentationAddress, presentationHistoryEdits, sameAuthoredFile,
   type AuthoredProject, type ProjectEditContent,
 } from './authoredEdits';
 import { commandQueue } from './commandQueue';
@@ -45,7 +46,7 @@ type NamedFileCreation = StudioProjectCreateFile['file'];
 /** An edit as a route returns it: the documents it creates, and the patches that follow their creation. */
 export interface StoredEdit {
   readonly files: readonly StudioProjectFilePatch[];
-  readonly created?: readonly NamedFileCreation[];
+  readonly created?: readonly CreateNamedDocument[];
 }
 type FollowingEdits = (snapshot: StudioProjectSnapshot) => Promise<readonly StudioProjectFilePatch[]>;
 
@@ -89,7 +90,6 @@ interface ReplayTarget extends ReplayContent {
   readonly revision: string | null;
   readonly content?: string;
 }
-const declarationAddress = { kind: 'declaration', id: 'declaration' } as const;
 
 export type ProjectEditValidation = (before: AuthoredProject, after: AuthoredProject) => void;
 
@@ -141,9 +141,10 @@ export class ProjectEditConflictError extends Error {
 
 const emptyHistory: History = { undo: [], redo: [] };
 const presentationKey = addressKey(presentationAddress);
+const declarationKey = addressKey(declarationAddress);
 
 function editContent(snapshot: StudioProjectSnapshot): ProjectEditContent {
-  return { ...snapshot.project, presentation: snapshot.presentation };
+  return { ...snapshot.project, presentation: snapshot.presentation, settings: snapshot.settings };
 }
 
 function touchesPresentation(files: readonly StudioProjectFilePatch[]) {
@@ -165,11 +166,19 @@ function unchangedFiles(previous: StudioProjectSnapshot, next: StudioProjectSnap
     return current.get(key) === revision ? [key] : [];
   }));
   if (previous.presentation_revision === next.presentation_revision) unchanged.add(presentationKey);
+  if (sameAuthoredFile(editContent(previous), editContent(next), declarationAddress)) unchanged.add(declarationKey);
   return unchanged;
 }
 
 function unchangedAuthoredCount(unchanged: ReadonlySet<string>) {
-  return unchanged.size - Number(unchanged.has(presentationKey));
+  return unchanged.size - Number(unchanged.has(presentationKey)) - Number(unchanged.has(declarationKey));
+}
+
+function withoutSettingsEdits(history: History): History {
+  const usable = (gesture: Gesture) => !('files' in gesture) ||
+    !gesture.files.some(({ address }) => addressKey(address) === declarationKey) &&
+    !gesture.dependencies.some((address) => addressKey(address) === declarationKey);
+  return { undo: history.undo.filter(usable), redo: history.redo.filter(usable) };
 }
 
 function withoutChangedFiles(
@@ -209,7 +218,8 @@ function changedFiles(
     const to = current.get(key);
     if (from?.revision === to?.revision) continue;
     const { kind, id } = (to ?? from)!.address;
-    if (kind === 'presentation' || (from && from.data == null) || (to && to.data == null)) return null;
+    if (kind === 'presentation' || kind === 'declaration' ||
+        (from && from.data == null) || (to && to.data == null)) return null;
     const address = { kind, id };
     undo.push({
       address, data: from?.data ?? null, revision: from?.revision ?? null,
@@ -324,6 +334,7 @@ function isAcknowledgedAddition(
   const key = addressKey(file);
   const count = unchangedAuthoredCount(unchanged);
   return count === before.file_revisions.length &&
+    unchanged.has(declarationKey) &&
     after.file_revisions.length === count + 1 &&
     !unchanged.has(key) &&
     after.file_revisions.some(({ address }) => addressKey(address) === key) &&
@@ -551,8 +562,7 @@ export class ProjectEditController {
   }
 
   /**
-   * Store an edit a route computed: its patches, after the documents it creates when it creates any, as one Undo
-   * entry. A refused save settles as refused; any other failure of a creating edit is thrown.
+   * Store an edit a route computed, including any new documents and file patches, as one Undo entry.
    */
   async storeEdit(name: string, edit: StoredEdit, options: {
     reviewedRevision: string; validate?: ProjectEditValidation; dependencies?: readonly AuthoredFileAddress[];
@@ -560,7 +570,22 @@ export class ProjectEditController {
     const created = edit.created ?? [];
     if (!created.length) return this.editFiles(name, edit.files, options);
     try {
-      await this.createFiles(name, created, options.reviewedRevision, async () => edit.files);
+      if (!edit.files.length) {
+        await this.createFiles(name, created, options.reviewedRevision);
+      } else {
+        await this.exclusiveTransaction(async (before) => {
+          if (before.revision !== options.reviewedRevision) throw new ProjectEditConflictError();
+          const latest = await this.transport.write(before.project_id, {
+            revision: before.revision,
+            presentation_revision: before.presentation_revision,
+            created: [...created],
+            files: [...edit.files],
+          }, this.signal);
+          const gesture = changedFiles(name, before, latest, true);
+          if (!gesture) throw new ProjectEditConflictError();
+          this.adopt({ ...this.document, snapshot: latest }, moveHistory(this.savedHistory, gesture, 'edit'));
+        });
+      }
       return savedEdit;
     } catch (error) {
       if (isRefusal(error)) return { status: 'refused', error };
@@ -800,10 +825,10 @@ export class ProjectEditController {
   }
 
   private capture(): ProjectEditSnapshot {
-    const { presentation: _, ...draft } = this.draft;
+    const { presentation: _, settings, ...draft } = this.draft;
     return {
       saved: this.saved,
-      configuration: this.document.configuration,
+      configuration: settings === undefined ? this.document.configuration : { ...this.document.configuration, settings },
       draft,
       pending: this.queued.length,
       saving: this.saving || this.transactionWriting,
@@ -913,7 +938,8 @@ export class ProjectEditController {
     }
     const count = unchangedAuthoredCount(unchanged);
     const declarationUnchanged = this.saved.declaration?.authored_revision === latest.declaration?.authored_revision;
-    const sameAuthoredFiles = declarationUnchanged && latest.semantic_root === this.saved.semantic_root &&
+    const sameAuthoredFiles = declarationUnchanged && unchanged.has(declarationKey) &&
+      latest.semantic_root === this.saved.semantic_root &&
       count === latest.file_revisions.length && count === this.saved.file_revisions.length;
     const presentationChanged = !unchanged.has(presentationKey);
     const placementPending = this.queued.some(({ files }) => touchesPresentation(files));
@@ -950,7 +976,9 @@ export class ProjectEditController {
         this.adopt(document, withoutChangedFiles(this.savedHistory, unchanged, declarationUnchanged));
         return;
       }
-      const history = gesture.undo.length ? moveHistory(burst.history, gesture, 'edit') : burst.history;
+      const kept = sameAuthoredFile(editContent(burst.before), editContent(latest), declarationAddress)
+        ? burst.history : withoutSettingsEdits(burst.history);
+      const history = gesture.undo.length ? moveHistory(kept, gesture, 'edit') : kept;
       this.adopt(document, history, burst);
     }
   }
@@ -981,6 +1009,7 @@ export class ProjectEditController {
       const unchanged = unchangedFiles(before, latest);
       const intended = applyFiles(editContent(before), files).project;
       if (before.file_revisions.length !== latest.file_revisions.length ||
+          (!unchanged.has(declarationKey) && !changed.has(declarationKey)) ||
           !latest.file_revisions.every(({ address }) => {
             const key = addressKey(address);
             return unchanged.has(key) || changed.has(key);

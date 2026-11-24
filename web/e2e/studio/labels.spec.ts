@@ -10,7 +10,7 @@ test.use({ viewport: { width: 1440, height: 900 } });
 
 const tab = (page: Page, name: string) => page.getByRole('tab', { name, exact: true });
 
-test('Rename labels a step, an operation and a figure; Change Key rewrites the Report and refuses a held key', async ({ page, request, studio }) => {
+test('Rename labels a step, an operation and a figure; Change Key rewrites the Report and dims a held key', async ({ page, request, studio }) => {
   test.setTimeout(60_000);
   const module = 'web.e2e.studio.fixtures.managed_report';
   const project = JSON.parse(await runProjectFixture(module, 'seed_labels', studio.home, 'labels'));
@@ -78,9 +78,11 @@ test('Rename labels a step, an operation and a figure; Change Key rewrites the R
   const operationKey = inspector.getByRole('textbox', { name: 'Change Key Summary', exact: true });
   await expect(operationKey).toBeFocused();
   await operationKey.fill('held');
+  await expect(operationKey).toHaveAttribute('aria-invalid', 'true');
   await operationKey.press('Enter');
-  await expect(inspector.getByRole('alert')).toContainText('held');
-  expect(graph(await snapshot()).operations).toHaveProperty('summarize');
+  await expect(operationKey).toBeFocused();
+  await operationKey.press('Escape');
+  expect((await snapshot()).revision).toBe(operation.revision);
 
   await canvasMenu('Summary', 'Change Key');
   const rekeyed = await member(() => operationKey.fill('summary').then(() => operationKey.press('Enter')));

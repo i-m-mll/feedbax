@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import IntEnum
 from itertools import groupby
 from math import isfinite
@@ -27,6 +27,7 @@ from feedbax.contracts.expression_values import (
     ProblemCode,
     ScopedValue,
     Site,
+    UnresolvedValue,
     ValueBase,
     ValueType,
     walk,
@@ -44,9 +45,11 @@ from feedbax.contracts.task_document import (
     Variable as Variable,
 )
 from feedbax.contracts.expression_check import Checked, check, dependency_order, references
+from feedbax.contracts.expression_text import resolve_expression
 from feedbax.expression_compile import Compiled, Inputs, compile_expression
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.contracts.rollout import trial_indices
+from feedbax.contracts.trial_bindings import selected_signal_id
 from feedbax.runtime._graph_key_schedule import map_trial_samples, validation_trial_keys
 from feedbax.runtime.epoch_windows import EpochRecord, in_epoch
 
@@ -166,7 +169,7 @@ class _Cell:
 
 @dataclass(frozen=True)
 class _Signal:
-    name: str
+    id: str
     absent: _Field
     cells: tuple[_Cell, ...]
 
@@ -225,7 +228,7 @@ class DocumentTask:
             jnp.where(reached, int(EpochEnd.LENGTH), int(EpochEnd.UNREACHED)),
         )
         absent = {
-            signal.name: signal.absent.evaluate(parameters, prepared, values)
+            signal.id: signal.absent.evaluate(parameters, prepared, values)
             for signal in self.signals
         }
         prepared = prepared._replace(epochs=epochs, absent=absent)
@@ -260,14 +263,14 @@ class DocumentTask:
                 )
                 values[variable.id] = result.value
                 defined[variable.id] = result.defined
-                dynamic[variable.name] = result.value
-                dynamic_defined[variable.name] = result.defined
+                dynamic[variable.id] = result.value
+                dynamic_defined[variable.id] = result.defined
 
         outputs = {}
         present = {}
         next_cells = []
         for signal, cell_states in zip(self.signals, previous_cells, strict=True):
-            output = variables.absent[signal.name]
+            output = variables.absent[signal.id]
             available = False
             next_signal = []
             for cell, previous in zip(signal.cells, cell_states, strict=True):
@@ -290,8 +293,8 @@ class DocumentTask:
                 supplied = active & result.defined
                 output = jnp.where(supplied, result.value, output)
                 available = available | supplied
-            outputs[signal.name] = output
-            present[signal.name] = jnp.asarray(available)
+            outputs[signal.id] = output
+            present[signal.id] = jnp.asarray(available)
             next_cells.append(tuple(next_signal))
         return (next_variables, tuple(next_cells)), outputs, present, dynamic, dynamic_defined
 
@@ -304,7 +307,7 @@ class DocumentTask:
 
         _, (inputs, present, traces, defined) = jax.lax.scan(step, state, jnp.arange(self.n_steps))
         fixed = {
-            variable.name: variables.values[variable.id]
+            variable.id: variables.values[variable.id]
             for variable in self.interface.variables
             if variable.level < Level.STEP
         }
@@ -356,34 +359,37 @@ def zero(base, shape) -> Expression:
 def bind_task_inputs(
     model: ResolvedModelInterface,
     signals: tuple[ScopedValue, ...],
-    input_overrides: Mapping[str, str] | None,
+    input_bindings: Mapping[str, str | None] | None,
 ) -> tuple[tuple[tuple[str, str], ...], tuple[Problem, ...]]:
-    """Resolve model input names to task signal names and describe refused bindings."""
+    """Resolve runtime input names to stable signal IDs and report invalid bindings."""
     problems = []
-
     bindings = []
-    signal_names = {value.name: value for value in signals}
-    overrides = input_overrides or {}
+    by_id = {value.id: value for value in signals}
+    by_name = {value.name: value.id for value in signals}
+    authored = input_bindings or {}
     for port in model.inputs:
-        signal_name = overrides.get(port.name, port.name)
-        signal = signal_names.get(signal_name)
+        signal_id = selected_signal_id(port.root_id, port.name, by_name, authored)
+        signal = by_id.get(signal_id) if signal_id is not None else None
         path = ("model", "inputs", port.id)
         if signal is None:
-            if port.required or port.name in overrides:
-                problems.append(Problem(
-                    code=ProblemCode.UNKNOWN_NAME,
-                    reason=f"Model input {port.name!r} reads signal {signal_name!r}, which the Task does not declare.",
-                    path=path, model_address=port.address,
-                ))
+            if signal_id is not None:
+                reason = f"Model input {port.name!r} reads undeclared signal ID {signal_id!r}."
+            elif port.required:
+                reason = f"Model input {port.name!r} needs a Task signal."
+            else:
+                continue
+            problems.append(Problem(
+                code=ProblemCode.UNKNOWN_NAME, reason=reason, path=path, model_address=port.address,
+            ))
         elif not port.type.accepts(signal.type):
             problems.append(Problem(
                 code=ProblemCode.TYPE_MISMATCH,
-                reason=f"Signal {signal_name!r} does not fit model input {port.name!r}.",
+                reason=f"Signal {signal.name!r} does not fit model input {port.name!r}.",
                 path=path, model_address=port.address,
             ))
         else:
-            bindings.append((port.name, signal.name))
-    for port in sorted(overrides.keys() - {item.name for item in model.inputs}):
+            bindings.append((port.name, signal.id))
+    for port in sorted(authored.keys() - {item.root_id for item in model.inputs}):
         problems.append(Problem(
             code=ProblemCode.UNKNOWN_NAME, reason=f"{port!r} is not an input of the Model.",
             path=("model", "inputs", port),
@@ -397,8 +403,10 @@ def compile_task(
     functions: FunctionRegistry,
     *,
     model: ResolvedModelInterface,
-    input_overrides: Mapping[str, str] | None = None,
+    input_bindings: Mapping[str, str | None] | None = None,
     sites: dict[tuple[str | int, ...], Site] | None = None,
+    link_problems: list[Problem] | None = None,
+    nominal: bool = False,
 ) -> DocumentTask | tuple[Problem, ...]:
     """Compile a bounded ahead-of-rollout task from resolved model field types, or every independent Problem.
 
@@ -411,7 +419,8 @@ def compile_task(
         return (Problem(code=ProblemCode.STRUCTURE, reason="The model period must be positive."),)
 
     def problem(code, reason, path, variable=None, model_address=None):
-        problems.append(Problem(code=code, reason=reason, path=path, variable=variable, model_address=model_address))
+        target = link_problems if link_problems is not None and path[:1] == ("links",) else problems
+        target.append(Problem(code=code, reason=reason, path=path, variable=variable, model_address=model_address))
 
     def unique(items, section):
         result, names = {}, set()
@@ -455,6 +464,7 @@ def compile_task(
             reset_on_epoch=epoch,
             discrete_uniform=discrete,
             path=address,
+            nominal=nominal,
         )
         marks = [
             Problem(
@@ -462,7 +472,7 @@ def compile_task(
                 reason=f"{variables[node.reference].name!r} has problems.",
                 path=(*address, *at),
             )
-            for at, node in walk(tree)
+            for at, node in walk(code.checked.tree if isinstance(code, Compiled) else tree)
             if isinstance(node, NameValue) and node.reference in broken
         ]
         problems.extend(marks if isinstance(code, Compiled) else (*code, *marks))
@@ -472,19 +482,43 @@ def compile_task(
     time = ScopedValue(id="time", name="time", type=time_type, level=Level.STEP)
     integer = ValueType(base=ValueBase.INTEGER)
     repeat_index = ScopedValue(id="i", name="i", type=integer, level=Level.TRIAL)
-    count_expressions = {key: item.count for key, item in variables.items() if item.count is not None}
+    count_scope = tuple(
+        ScopedValue(id=key, name=item.name, type=item.type, level=Level.RUN)
+        for key, item in variables.items()
+        if item.type == integer and item.count is None
+    )
+    count_site = Site(expected=integer, finest=Level.RUN, names=count_scope, structural=True)
+
+    def dependency_tree(value, site):
+        parsed = resolve_expression(value, site, functions)
+        return value if isinstance(parsed, tuple) else parsed.value
+
+    values = {key: item.value for key, item in variables.items()}
+    if any(isinstance(value, UnresolvedValue) for value in values.values()):
+        names = (*(
+            ScopedValue(id=key, name=item.name, type=item.type, level=Level.STEP)
+            for key, item in variables.items()
+        ), time)
+        for key, value in values.items():
+            if isinstance(value, UnresolvedValue):
+                site = Site(expected=variables[key].type, finest=Level.STEP, names=names)
+                values[key] = dependency_tree(value, site)
+    count_expressions = {
+        key: dependency_tree(item.count, count_site)
+        for key, item in variables.items() if item.count is not None
+    }
     count_references = set().union(*(
-        references(item) for item in (*count_expressions.values(), *(repeat.count for repeat in document.repeats))
+        references(item) for item in (
+            *count_expressions.values(), *(dependency_tree(repeat.count, count_site) for repeat in document.repeats),
+        )
     ))
     pending = list(count_references)
     for key in pending:
         if key in variables:
-            for dependency in references(variables[key].value) - count_references:
+            for dependency in references(values[key]) - count_references:
                 count_references.add(dependency)
                 pending.append(dependency)
-    order, cycles = dependency_order(
-        {key: item.value for key, item in variables.items()}, counts=count_expressions,
-    )
+    order, cycles = dependency_order(values, counts=count_expressions)
     problems.extend(cycles)
     scope = {}
     for cycle in cycles:
@@ -496,15 +530,14 @@ def compile_task(
     fixed_key = jax.random.key(0) if count_references else None
     fixed = _Prepared(fixed_values, None, None, fixed_key, fixed_key)
     variable_overrides = set().union(*(row.variables for row in document.validation_trials))
-    count_scope = tuple(
-        ScopedValue(id=key, name=item.name, type=item.type, level=Level.RUN)
-        for key, item in variables.items()
-        if item.type == integer and item.count is None
-    )
-
     def resolve_count(tree, path):
         if sites is not None:
-            sites[path] = Site(expected=integer, finest=Level.RUN, names=count_scope, structural=True)
+            sites[path] = count_site
+        parsed = resolve_expression(tree, count_site, functions)
+        if isinstance(parsed, tuple):
+            problems.extend(item.model_copy(update={"path": (*path, *item.path)}) for item in parsed)
+            return None
+        tree = parsed.value
         if isinstance(tree, LiteralValue) and type(tree.value) is int and tree.unit is None:
             count = tree.value
         elif isinstance(tree, NameValue) and tree.reference in fixed_values and any(
@@ -540,17 +573,24 @@ def compile_task(
             fields.append((scope[key], field))
             if (
                 key in count_references and key not in variable_overrides and level == Level.RUN
-                and references(variable.value) <= fixed_values.keys()
+                and references(values[key]) <= fixed_values.keys()
                 and all(
                     not isinstance(node, DrawValue)
                     and not (
                         isinstance(node, CallValue) and (function := functions.resolve(node.function))
                         and function.info.random
                     )
-                    for _, node in walk(variable.value)
+                    for _, node in walk(values[key])
                 )
             ):
                 fixed_values[key] = field.evaluate(TaskParameters(), fixed, fixed_values)
+
+    if sites is not None:
+        for key, variable in variables.items():
+            sites[("variables", key, "value")] = Site(
+                expected=variable.type, finest=Level.STEP,
+                names=(*scope.values(), time), list_count=scope[key].list_count,
+            )
 
     indexes = {key: index for index, key in enumerate(epochs)}
     repeat_spans = {}
@@ -587,9 +627,10 @@ def compile_task(
             bounds.append(0)
             counts.append(None)
             continue
-        discrete = isinstance(end.length, DrawValue) and end.length.family == "uniform"
         repeat = repeat_spans.get(indexes.get(epoch.id))
         length_scope = (*scope.values(), repeat_index) if repeat is not None else tuple(scope.values())
+        length = dependency_tree(end.length, Site(expected=time_type, finest=Level.TRIAL, names=length_scope))
+        discrete = isinstance(length, DrawValue) and length.family == "uniform"
         field = lower(
             end.length, time_type, Level.TRIAL, length_scope, path, discrete=discrete,
             repeat_count=repeat[2] if repeat is not None else None,
@@ -602,7 +643,7 @@ def compile_task(
             counts.append(EpochSteps(least=0, nominal=bound or 0, greatest=bound or 0))
             continue
         count = None
-        if isinstance(end.length, LiteralValue) and field is not None:
+        if isinstance(length, LiteralValue):
             (seconds,) = field.code.parameters
             steps = round(float(seconds) / period)
             if seconds < 0 or (seconds > 0 and steps == 0):
@@ -618,8 +659,7 @@ def compile_task(
             count = EpochSteps(least=max(steps, 0), nominal=max(steps, 0), greatest=max(steps, 0))
         if (
             discrete
-            and field is not None
-            and all(isinstance(arg, LiteralValue) for arg in end.length.args)
+            and all(isinstance(arg, LiteralValue) for arg in length.args)
         ):
             low, high = (round(float(seconds) / period) for seconds in field.code.parameters)
             if not 0 <= low <= high:
@@ -708,13 +748,13 @@ def compile_task(
                     if not isinstance(other, Checked):
                         problems.extend(other)
         if absent is not None:
-            signals.append(_Signal(signal.name, absent, tuple(cells)))
+            signals.append(_Signal(signal.id, absent, tuple(cells)))
         if kept_signals.get(signal.id) is signal:
             declared_signals.append(
                 ScopedValue(id=signal.id, name=signal.name, type=signal.type, level=Level.STEP)
             )
 
-    bindings, input_problems = bind_task_inputs(model, tuple(declared_signals), input_overrides)
+    bindings, input_problems = bind_task_inputs(model, tuple(declared_signals), input_bindings)
     problems.extend(input_problems)
 
     writable = {field.address.to_text(): field for field in model.reset.fields}
@@ -736,7 +776,7 @@ def compile_task(
             )
         elif link.variable in broken:
             problem(ProblemCode.UNKNOWN_NAME, f"{variable.name!r} has problems.", path, link.variable)
-        elif variable.list_count is not None or variable.level > target.finest or not target.type.accepts(variable.type):
+        elif variable.list_count is not None or variable.level > target.finest or not target.accepts(variable.type):
             problem(ProblemCode.TYPE_MISMATCH, f"{variable.name} does not fit its Model field.", path, link.variable)
         elif link.model_field in links:
             problem(
@@ -839,7 +879,7 @@ def compile_task(
                     if first <= last:
                         cells.append(_Cell(offset + first - members[0], offset + last - members[0], cell.field, repeat))
                 offset += len(members)
-            return _Signal(signal.name, signal.absent, tuple(cells))
+            return replace(signal, cells=tuple(cells))
 
         signals = [instantiate(signal) for signal in signals]
     epoch_ids = tuple(epochs)

@@ -13,6 +13,8 @@ export interface OutlineEntry {
   readonly name: string;
   readonly reason?: string;
   readonly muted?: boolean;
+  /** Trailing text: what feeds a Model input, where its name is not the input's. */
+  readonly detail?: string;
 }
 
 /**
@@ -29,8 +31,11 @@ export function TaskOutline({ sections, groups, selected, select }: {
     {groupOrder.map((group) => {
       const entries = groups[group];
       if (!entries?.length) return null;
-      const nodes = entries.map(({ id, name, reason, muted }) => ({
-        id, name, muted, trailing: reason ? <StatusMark status="cannot_run" label={reason} /> : undefined,
+      const nodes = entries.map(({ id, name, reason, muted, detail }) => ({
+        id, name, muted, trailing: reason || detail ? <>
+          {detail && <span className="text-shell-muted">{detail}</span>}
+          {reason && <StatusMark status="cannot_run" label={reason} />}
+        </> : undefined,
       }));
       return <DrawerSection key={group} sections={sections} id={`task.${group}`} name={studioName(group)}>
         <Tree aria-label={studioName(group)} nodes={nodes} selected={selected?.group === group ? [selected.id] : []}

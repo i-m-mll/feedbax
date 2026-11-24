@@ -235,6 +235,44 @@ def evaluate(implementation, inputs):
     return implementation.evaluate_step(inputs, trial)[0].value
 
 
+def test_huber_replaces_squared_norm_and_uses_a_canonical_delta(functions):
+    """Catch a penalty switch that loses its vector argument or changes with display units."""
+    measure = site(dimensions=LENGTH.raised(2))
+    authored = parsed("sqnorm([500 mm, 2 m] - [0 m, 0 m])", measure)
+    assert "huber" in project_site(measure, functions, authored).parts[0].functions
+    key = jax.random.key(0)
+    for text, expected in (
+        ("huber([0.5, 2])", 1.625),
+        ("huber([500 mm, 2 m])", 1.625),
+        ("huber([0.5 m, 2 m], 500 mm)", 1.0),
+        ("huber([0.5 m, 2 m], 0.5)", 1.0),
+    ):
+        expression = compiled(text, measure, functions)
+        value = evaluate(expression, Inputs(expression.parameters, {}, key, key))
+        assert value.shape == ()
+        assert float(value) == pytest.approx(expected)
+
+
+def test_huber_requires_a_positive_scalar_delta_in_the_residual_units(functions):
+    """Catch a zero threshold silently showing up as a valid zero penalty."""
+    residual_type = ValueType(base=ValueBase.REAL, dimensions=LENGTH)
+    delta = ScopedValue(id="threshold", name="delta", type=residual_type, level=Level.RUN)
+    measure = site(dimensions=LENGTH.raised(2), names=(delta,))
+    expression = compiled("huber(2 m, delta)", measure, functions)
+    key = jax.random.key(0)
+    for threshold, present in ((0.0, True), (-1.0, True), (1.0, False)):
+        inputs = Inputs(
+            expression.parameters, {"threshold": threshold}, key, key, defined={"threshold": present},
+        )
+        trial = expression.with_trial(inputs, expression.evaluate_run(inputs))
+        result, _ = expression.evaluate_step(inputs, trial)
+        assert not bool(result.defined)
+    assert read_field("huber(2 m, [1 m, 2 m])", measure, functions)[0].code == ProblemCode.TYPE_MISMATCH
+    assert read_field("huber(2 m, 1 s)", measure, functions)[0].code == ProblemCode.UNIT_MISMATCH
+    problem = read_field("huber(2 m, 0 m)", measure, functions)[0]
+    assert (problem.code, problem.path) == (ProblemCode.TYPE_MISMATCH, ("args", 1))
+
+
 def test_literal_edits_keep_real_operands_and_do_not_retrace(functions):
     expected = site()
     first = compiled("1 + 2", expected, functions)

@@ -63,7 +63,7 @@ export function StudioEvaluationResults({ evaluation, onReplay }: {
   return <div className="space-y-2 text-sm">
     <StudioEvaluationAttemptDetails evaluation={evaluation} />
     <Table aria-label={studioName('checkpointResults')} held={1}
-      columns={[{ least: '6rem', fixed: true }, { least: '8rem' }]}>
+      columns={[{ least: '6rem', greatest: '16rem' }, { least: '8rem' }]}>
       <thead>
         <tr>
           <TableHeaderCell scope="col">{studioName('update')}</TableHeaderCell>

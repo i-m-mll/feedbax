@@ -112,7 +112,7 @@ class RigidTendonHillMuscleThelen(Component):
             "max_isometric_force", "optimal_muscle_length", "tendon_slack_length",
             "vmax_factor", "min_activation", "tau_activation", "tau_deactivation", "dt",
         )),
-        states=(StateValue("activation", (), "1", "muscle"),),
+        states=(StateValue("activation", (), "1", "muscle", ("activation",)),),
     )
     component_options = ComponentOptions(output_prototype_fn=thelen_muscle_output_prototype)
 

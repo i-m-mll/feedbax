@@ -2,7 +2,7 @@ import { expect, test } from './fixtures/studio';
 import type { Locator, Page } from '@playwright/test';
 import type { ModelDocument } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
-import { readSaved } from './fixtures/studioKeyboard';
+import { palette, post, readSaved } from './fixtures/studioKeyboard';
 import { rootPayload } from './fixtures/rootPayload';
 import { hold } from './fixtures/heldRequest';
 
@@ -138,6 +138,47 @@ test('a Model card added from the Library moves and redraws no other card', asyn
     if (index >= droppedAt) expect(box, `frame ${index - droppedAt} after the drop`).toBeTruthy();
     if (box) expect({ x: Math.round(box.x), y: Math.round(box.y) }).toEqual(dropped);
   });
+});
+
+/**
+ * Each card added from the Library lands clear of every card already drawn, the boundary cards included, and every card
+ * is where it was after a reload.
+ */
+test('Model cards added from the Library overlap no other card and stay put across a reload', async ({ page }) => {
+  const creation = post(page, '/api/projects');
+  await page.goto('/');
+  expect((await creation).status()).toBe(201);
+  await palette(page, 'newStep', 'New Step');
+  await expect(page.getByRole('menu').getByRole('menuitem', { name: 'Train', exact: true })).toBeFocused();
+  await page.keyboard.press('Enter');
+  const model = page.getByRole('tabpanel', { name: 'Model', exact: true });
+  await expect(model).toBeFocused();
+  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+  const cards = model.locator('.react-flow__node.draggable');
+  await expect(cards).toHaveCount(2);
+  await drawer.getByRole('textbox', { name: 'Search Library', exact: true }).fill('Linear');
+  for (const count of [3, 4]) {
+    await drawer.getByRole('listbox', { name: 'Runtime', exact: true }).getByRole('option', { name: 'Linear', exact: true }).dblclick();
+    await expect(cards).toHaveCount(count);
+  }
+  const boxes = await cards.evaluateAll((nodes) => nodes.map((node) => {
+    const { x, y, width, height } = node.getBoundingClientRect();
+    return { id: (node as HTMLElement).dataset.id!, x, y, width, height };
+  }));
+  for (const [index, a] of boxes.entries()) {
+    for (const b of boxes.slice(index + 1)) {
+      const overlaps = a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+      expect(overlaps, `${a.id} and ${b.id}`).toBe(false);
+    }
+  }
+  const flow = () => cards.evaluateAll((nodes) => Object.fromEntries(nodes.map((node) =>
+    [(node as HTMLElement).dataset.id!, (node as HTMLElement).style.transform])));
+  const shown = await flow();
+  await page.reload();
+  await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  await expect(cards).toHaveCount(4);
+  expect(await flow()).toEqual(shown);
 });
 
 /** A card whose data changes while its name is edited stays shown, and the edit keeps the focus. */
