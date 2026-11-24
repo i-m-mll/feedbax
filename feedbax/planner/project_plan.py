@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import Counter, OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping
 from copy import deepcopy
@@ -35,7 +36,7 @@ from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.model_values import model_owner_problem
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.studio_authoring import InputProducer, InputRole
-from feedbax.contracts.studio_place import path_parts, variation_targets
+from feedbax.contracts.studio_place import StudioTaskStart, path_parts, task_start, variation_targets
 from feedbax.contracts.project import (
     DifferenceNotApplied, Differences, Document, InlineBase, Payload, Project, RootDocument, Step, StepBase, StepKind,
     apply_differences, base_chain, diff, json_pointer_parts, nearest_shared_base,
@@ -134,7 +135,7 @@ from feedbax.contracts.request_specs import (
     TrainContinuation,
     ReportRequestSpec,
 )
-from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
+from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, PythonTaskSelection, TaskDocument
 from feedbax.contracts.train_settings import normalize_train_method
 
 if TYPE_CHECKING:
@@ -389,6 +390,10 @@ class PlannedRow:
     # The Model document an Evaluate row names, and its subject run's Model document.
     evaluated_model: tuple[str, str] | None = field(default=None, kw_only=True)
     train: TrainFacts | None = field(default=None, kw_only=True)
+    resolved: bool = field(default=True, kw_only=True)
+    """Whether the row's definition resolves; one whose own patches or documents are refused has none."""
+    problems: tuple[RunProblem, ...] = field(default=(), kw_only=True)
+    """Why the row cannot run, each at its own path: Problems in its documents, and its admission problems."""
 
 
 @dataclass(frozen=True)
@@ -402,8 +407,15 @@ class BlockedRow(PlannedRow):
 @dataclass(frozen=True)
 class RunProblem:
     path: str
+    """A path in the row's request, or in its definition's ``inputs``, as a JSON pointer or a dotted path."""
     detail: str
     model_address: ModelAddress | None = None
+    variable: str | None = None
+    """The Task variable a link at ``path`` belongs to."""
+    start: StudioTaskStart | None = None
+    """The Model value a link at ``path`` is missing for."""
+    variation_target: str | None = None
+    """The dotted path the variation entry at ``path`` patches, which places the problem."""
 
 
 @dataclass(frozen=True)
@@ -412,7 +424,11 @@ class PlannedRun(PlannedRow):
     inputs: Mapping[str, PlannedInput]
     omissions: Mapping[str, str]
     requires: tuple[str, ...]
-    admission_problem: RunProblem | None = None
+
+    @property
+    def admission_problem(self) -> RunProblem | None:
+        """The reason the run cannot be admitted: the first of its problems."""
+        return self.problems[0] if self.problems else None
 
 
 @dataclass(frozen=True)
@@ -929,6 +945,8 @@ class _ModelSource:
     evaluation_problem: ProjectDiagnostic | None = None
     evaluation_graph: GraphSpec | None = None
     trained: _TrainedSource | None = None
+    unpaired: bool = False
+    """The Train's Model, Task and Objective do not pair, so nothing evaluates what it would train."""
 
 
 @dataclass(frozen=True)
@@ -1048,14 +1066,14 @@ def _refused_difference(
     """Address the first of an Evaluate Model document's differences that the trained model refuses on its own."""
     from feedbax.compiler.model_attachment import lower_evaluate_attachments
 
-    for pointer, difference in model.differences.items():
+    for at, difference in model.differences.items():
         try:
             evaluated = ModelDocument.model_validate(
-                apply_differences(trained.model_dump(mode="json"), {pointer: difference}),
+                apply_differences(trained.model_dump(mode="json"), {at: difference}),
             )
             lower_evaluate_attachments(trained, evaluated, None, components, (), functions=functions)
         except ValueError:
-            return ModelAddress.at_stored_path(json_pointer_parts(pointer))
+            return ModelAddress.at_stored_path(json_pointer_parts(at))
     return None
 
 
@@ -1143,6 +1161,21 @@ def _integer_train_site(
     return annotation is int
 
 
+def _integer_subject_task_site(
+    path: str, tasks: Iterable[TaskDocument | PythonTaskSelection | None], python_tasks: PythonTaskRegistry,
+) -> bool:
+    """Whether ``path`` names an integer parameter of the Python Task an Evaluate runs from every subject."""
+    from feedbax.tasks.registry import python_task_parameter_site
+
+    sites = {
+        site is not None and site.expected.base is ValueBase.INTEGER and not site.expected.shape
+        for task in tasks
+        for site in (python_task_parameter_site(path, {"python_task": task.model_dump(mode="json")}, python_tasks)
+                     if isinstance(task, PythonTaskSelection) else None,)
+    }
+    return sites == {True}
+
+
 @dataclass(frozen=True)
 class _RowLoweringStamp:
     kind: StepKind
@@ -1155,12 +1188,34 @@ class _LoweredRow:
     request: EncodedRequest | None
     diagnostics: tuple[ProjectDiagnostic, ...]
     lowering_stamp: _RowLoweringStamp | None = None
-    admission_problem: RunProblem | None = None
+    problems: tuple[RunProblem, ...] = ()
     document_ids: Mapping[str, str] = field(default_factory=dict)
     document_uses: frozenset[str] = frozenset()
     model_source: _ModelSource | None = None
     train: TrainFacts | None = None
     encoded_spec: RequestSpec | None = None
+    resolved: bool = True
+
+
+@dataclass(frozen=True)
+class _Unpaired:
+    """An Evaluate payload whose Task does not pair with its subject's Model, lowered so the row is still planned.
+
+    ``payload`` is None when the Task does not resolve, so its trial rule does not lower."""
+
+    payload: Payload | None
+    problem: ProjectDiagnostic
+
+
+def _map_problem[T](
+    result: T | ProjectDiagnostic | _Unpaired, move: Callable[[ProjectDiagnostic], ProjectDiagnostic],
+) -> T | ProjectDiagnostic | _Unpaired:
+    """Place the problem of a lowered Evaluate payload with ``move``."""
+    if isinstance(result, ProjectDiagnostic):
+        return move(result)
+    if isinstance(result, _Unpaired):
+        return replace(result, problem=move(result.problem))
+    return result
 
 
 @dataclass(frozen=True)
@@ -1195,27 +1250,39 @@ def _builtin_expression_registry():
     return registry
 
 
-def _trial_problem(
-    key: RunKey, problem: Problem, document_ids: Mapping[str, str], *, initial: bool = False,
-) -> ProjectDiagnostic:
-    path = problem.path
-    match path:
+def _trial_place(problem: Problem) -> tuple[str, tuple[str, ...]]:
+    """The trial document a pairing Problem lies in, and its path in that document."""
+    match problem.path:
         case ("model" | "task" | "python_task" | "objective" as role, *parts):
             pass
         case ("terms", *_):
-            role, parts = "objective", path
+            role, parts = "objective", problem.path
         case _:
-            role, parts = "task", path
-    slot = (
-        "inputs.subject" if role == "model" else "inputs.task" if role == "python_task" else f"inputs.{role}"
-    ) if initial else f"payload.trial_documents.{role}"
-    document = document_ids.get(slot)
-    location = tuple(map(str, parts))
-    return ProjectDiagnostic(
-        ResolutionCode.INVALID_PAYLOAD, ".".join((slot, *location)), problem.reason,
-        key.step, row=key.row, variant=key.variant, document=document,
-        document_path=pointer(location) if document is not None else None, model_address=problem.model_address,
-    )
+            role, parts = "task", problem.path
+    return str(role), tuple(map(str, parts))
+
+
+def _trial_problems(
+    problems: Iterable[Problem], model: ModelDocument | None, *, initial: bool = False,
+) -> tuple[RunProblem, ...]:
+    """Each Problem pairing a row's trial documents with ``model``, at its path in the request, or for an Evaluate of an
+    initial Model in its definition's ``inputs``."""
+    placed = []
+    for problem in problems:
+        role, parts = _trial_place(problem)
+        slot = (
+            ("inputs", "subject" if role == "model" else "task" if role == "python_task" else role) if initial
+            else ("trial_documents", role)
+        )
+        start = (
+            task_start(model, problem.model_address)
+            if model is not None and problem.model_address is not None and role == "task" and parts[:1] == ("links",)
+            else None
+        )
+        placed.append(RunProblem(
+            pointer((*slot, *parts)), problem.reason, problem.model_address, problem.variable, start=start,
+        ))
+    return tuple(placed)
 
 
 def _checkpoint_fit_problem(
@@ -1269,6 +1336,8 @@ def _encode_row(
     components: ComponentRegistry | None = None,
 ) -> _LoweredRow:
     checkpoint_problem = None
+    pairing_problems: tuple[RunProblem, ...] = ()
+    preparation: _TrainPreparation | None = None
     if prepared_train is not None:
         payload = payload | {"trial_documents": prepared_train.documents}
         preparation = prepared_train.preparation
@@ -1282,23 +1351,27 @@ def _encode_row(
             authored = TrialDocuments.model_validate(payload.get("trial_documents"))
             if authored.python_task is not None:
                 resolved = resolve_python_task_instance(authored.python_task, python_tasks)
-                if isinstance(resolved, tuple):
-                    return _LoweredRow(None, tuple(
-                        _trial_problem(key, problem, document_ids) for problem in resolved
-                    ), lowering_stamp)
-                authored = authored.model_copy(update={"python_task": resolved.selection()})
-                payload = payload | {"trial_documents": authored.model_dump(mode="json")}
-            preparation = prepare_trial(authored)
+                if not isinstance(resolved, tuple):
+                    authored = authored.model_copy(update={"python_task": resolved.selection()})
+                    payload = payload | {"trial_documents": authored.model_dump(mode="json")}
+            else:
+                resolved = None
+            prepared = resolved if isinstance(resolved, tuple) else prepare_trial(authored)
         except ValueError as error:
             return _LoweredRow(None, (ProjectDiagnostic(
                 ResolutionCode.INVALID_PAYLOAD, "payload.trial_documents", str(error), key.step,
                 row=key.row, variant=key.variant,
             ),), lowering_stamp)
-        if isinstance(preparation, tuple):
-            return _LoweredRow(None, tuple(
-                _trial_problem(key, problem, document_ids) for problem in preparation
-            ), lowering_stamp)
-        checkpoint_problem = preparation.checkpoint_problem
+        assert model_source is not None
+        if isinstance(prepared, tuple):
+            # The Python task does not resolve, or the Model, Task and Objective do not pair: the row is planned and
+            # cannot run.
+            pairing_problems = _trial_problems(prepared, authored.model)
+            model_source = replace(model_source, unpaired=True)
+        else:
+            preparation = prepared
+            checkpoint_problem = preparation.checkpoint_problem
+    if preparation is not None and prepared_train is None:
         assert model_source is not None
         if isinstance(preparation.evaluation, ProjectDiagnostic):
             model_source = replace(
@@ -1373,10 +1446,10 @@ def _encode_row(
     except ValueError as error:
         problems = (("", str(error)),)
     else:
-        if remember_train is not None:
+        if remember_train is not None and preparation is not None:
             assert isinstance(spec, DocumentTrainingRequestSpec) and model_source is not None
             remember_train(_PreparedTrainRow(spec.trial_documents, preparation, model_source))
-        if isinstance(spec, DocumentTrainingRequestSpec):
+        if isinstance(spec, DocumentTrainingRequestSpec) and preparation is not None:
             assert model_source is not None
             model_source = replace(model_source, trained=_TrainedSource(
                 preparation.graph, spec.method, spec.training_config.replicates,
@@ -1384,16 +1457,17 @@ def _encode_row(
             if checkpoint_problem is None and checkpoint_source is not None:
                 assert components is not None
                 checkpoint_problem = _checkpoint_fit_problem(checkpoint_source, preparation, spec, components)
-        problem = (
-            RunProblem("/trial_documents/model/interior/components", "Model has no components.")
-            if isinstance(spec, DocumentTrainingRequestSpec) and not spec.trial_documents.model.interior.components else
-            RunProblem("/trial_documents/objective/terms", "Objective has no enabled terms.")
-            if isinstance(spec, DocumentTrainingRequestSpec) and not any(
-                term.enabled for term in spec.trial_documents.objective.terms
-            ) else checkpoint_problem
-        )
+        documents = spec.trial_documents if isinstance(spec, DocumentTrainingRequestSpec) else None
+        if pairing_problems:
+            refusals = pairing_problems
+        elif documents is not None and not documents.model.interior.components:
+            refusals = (RunProblem("/trial_documents/model/interior/components", "Model has no components."),)
+        elif documents is not None and not any(term.enabled for term in documents.objective.terms):
+            refusals = (RunProblem("/trial_documents/objective/terms", "Objective has no enabled terms."),)
+        else:
+            refusals = (checkpoint_problem,) if checkpoint_problem is not None else ()
         return _LoweredRow(
-            encoded, (), lowering_stamp, admission_problem=problem,
+            encoded, (), lowering_stamp, problems=refusals,
             model_source=model_source, encoded_spec=encoded_spec,
         )
     return _LoweredRow(
@@ -1857,6 +1931,10 @@ class _Compiler:
             for item, _ in members.get("subject", ())
             for key in item.sources
         ) if kind == "evaluate" else ()
+        subject_tasks = tuple(
+            producer.train.task for _, producer in members.get("subject", ())
+            if producer is not None and producer.train is not None
+        )
 
         def expand(read_document=None, _previous=None):
             @cache
@@ -1893,6 +1971,8 @@ class _Compiler:
             def integer_site(path: str) -> bool:
                 target = model_field_target(path)
                 if target is None:
+                    if kind == "evaluate":
+                        return _integer_subject_task_site(path, subject_tasks, self.python_tasks)
                     if kind != "train":
                         return False
                     resolved = resolved_definition()
@@ -1929,9 +2009,17 @@ class _Compiler:
                     resolved = resolved_definition()
                     if isinstance(resolved, ProjectDiagnostic):
                         return resolved, {}
+                    model = model_slot(resolved.payload, resolved.document_ids, resolved.document_pointers)
+                    if model is None and kind == "evaluate":
+                        read = {(source.document, to_json(source.model.model_dump(mode="json"))) for source in subjects
+                                if source is not None and source.document is not None}
+                        if len(read) > 1:
+                            raise SweepExpansionError(
+                                SweepExpansionCode.INVALID_SET, "inputs.subject", "the subject runs read different Models",
+                            )
+                        model = next(((name, json.loads(content)) for name, content in read), None)
                     sets = resolve_set_axes(
-                        composition.sweep, read_document or self.variants[variant].documents.get,
-                        model_slot(resolved.payload, resolved.document_ids, resolved.document_pointers),
+                        composition.sweep, read_document or self.variants[variant].documents.get, model,
                     )
                 for axis_name, axis in (composition.sweep.axes if composition.sweep is not None else {}).items():
                     if axis_name in RESERVED_LABELS and not isinstance(axis, InputAxis):
@@ -2126,7 +2214,7 @@ class _Compiler:
                     trial_resolution=train_rows.resolution if train_rows is not None else None,
                 )
                 if isinstance(resolved, ProjectDiagnostic):
-                    return _LoweredRow(None, (replace(resolved, variant=key.variant),))
+                    return _LoweredRow(None, (replace(resolved, variant=key.variant),), resolved=False)
                 payload = resolved.payload
                 document_ids = MappingProxyType(resolved.document_ids)
                 document_uses = resolved.document_uses
@@ -2199,6 +2287,18 @@ class _Compiler:
                     None, (payload,), lowering_stamp, document_ids=document_ids, document_uses=document_uses,
                     train=train,
                 )
+            refusals: tuple[RunProblem, ...] = ()
+            if isinstance(payload, _Unpaired):
+                unpaired = payload.problem
+                refusals = (RunProblem(
+                    unpaired.path, unpaired.detail, unpaired.model_address, unpaired.variation_target,
+                ),)
+                if payload.payload is None:
+                    return _LoweredRow(
+                        None, (), lowering_stamp, problems=refusals, document_ids=document_ids,
+                        document_uses=document_uses, train=train,
+                    )
+                payload = payload.payload
             lowered = _encode_row(
                 key, kind, payload, inputs, lowering_stamp,
                 self.work.request_documents, self.prepare_train_trial, document_ids,
@@ -2213,6 +2313,7 @@ class _Compiler:
                 document_uses=document_uses,
                 model_source=lowered.model_source or authored_model,
                 train=train,
+                problems=(*refusals, *lowered.problems),
             )
 
         if self.previous is None:
@@ -2306,23 +2407,27 @@ class _Compiler:
         self, key: RunKey, payload: Payload, model_source: _ModelSource | None,
         reference: object, has_differences: bool,
         document_ids: Mapping[str, str], read: Callable[[str], Document | None],
-    ) -> Payload | ProjectDiagnostic:
+    ) -> Payload | ProjectDiagnostic | _Unpaired:
         original = payload.get("params")
         slots = self.evaluation_slots(key, payload, model_source, reference, document_ids, read)
         if isinstance(slots, ProjectDiagnostic):
             return slots
         lowered, model, task = slots
         result = self._lower_evaluate_payload(key, lowered, model_source, reference, has_differences, model)
-        if not isinstance(result, ProjectDiagnostic):
-            return result
-        parts = path_parts(result.path)
-        if task and parts[:3] == ("params", "variation", "0"):
-            return replace(result, path=f"/trial_documents/task{pointer(parts[3:])}", document=document_ids.get(EVALUATION_TASK))
-        if parts[:2] == ("params", "variation"):
-            index = int(parts[2]) - task if len(parts) > 2 and parts[2].isdigit() else None
-            target = variation_targets(original)(str(index) if index is not None else parts[2]) if len(parts) > 2 else None
-            return replace(result, variation_target=target)
-        return result
+
+        def move(problem: ProjectDiagnostic) -> ProjectDiagnostic:
+            parts = path_parts(problem.path)
+            if task and parts[:3] == ("params", "variation", "0"):
+                return replace(
+                    problem, path=f"/trial_documents/task{pointer(parts[3:])}", document=document_ids.get(EVALUATION_TASK),
+                )
+            if parts[:2] == ("params", "variation"):
+                index = int(parts[2]) - task if len(parts) > 2 and parts[2].isdigit() else None
+                target = variation_targets(original)(str(index) if index is not None else parts[2]) if len(parts) > 2 else None
+                return replace(problem, variation_target=target)
+            return problem
+
+        return _map_problem(result, move)
 
     def evaluation_slots(
         self, key: RunKey, payload: Payload, model_source: _ModelSource | None, reference: object,
@@ -2391,7 +2496,7 @@ class _Compiler:
     def _lower_evaluate_payload(
         self, key: RunKey, payload: Payload, model_source: _ModelSource | None,
         reference: object, has_differences: bool, model: _EvaluationModel | None,
-    ) -> Payload | ProjectDiagnostic:
+    ) -> Payload | ProjectDiagnostic | _Unpaired:
         if not has_differences and model is None:
             return self.lower_evaluate_trials(key, payload, reference, model_source)
         original = payload.get("params")
@@ -2401,11 +2506,11 @@ class _Compiler:
         result = self.lower_evaluate_trials(key, lowered, reference, model_source)
         # Derived Model patches append to an ordered copy. Report a Task
         # refusal at the original named edit without changing request encoding.
-        if isinstance(result, ProjectDiagnostic) and isinstance(original, dict):
+        if isinstance(original, dict):
             named = original.get("variation")
             params = lowered.get("params")
             if isinstance(named, dict) and isinstance(params, dict) and isinstance(params.get("variation"), list):
-                return _authored_variation_problem(result, tuple(sorted(named)))
+                return _map_problem(result, lambda problem: _authored_variation_problem(problem, tuple(sorted(named))))
         return result
 
     def initial_model_source(
@@ -2426,13 +2531,14 @@ class _Compiler:
         self, template: StepComposition, key: RunKey, row: ExpandedRow,
     ) -> tuple[_LoweredRow, dict[str, PlannedInput]]:
         from feedbax.compiler.model_document import ModelCompilationProblem
-        from feedbax.execution.trial_resolution import pair_trial_source
+        from feedbax.execution.trial_resolution import evaluation_conditions, pair_trial_source
         from feedbax.contracts.rollout import CannotRun
+        from feedbax.tasks.registry import resolve_python_task_instance
         from feedbax.training.evaluation_variant import resolve_evaluation_variant
 
         resolved = self.resolve_row(template, key, row, None)
         if isinstance(resolved, ProjectDiagnostic):
-            return _LoweredRow(None, (replace(resolved, variant=key.variant),)), {}
+            return _LoweredRow(None, (replace(resolved, variant=key.variant),), resolved=False), {}
         path = "inputs.subject"
         try:
             if resolved.payload.get("evaluation_type") != ROLLOUT_TYPE:
@@ -2448,6 +2554,15 @@ class _Compiler:
             task_ref = template.inputs.get("task")
             if not isinstance(task_ref, TaskDocumentReference):
                 raise ValueError("Declare the Task document for the initial Model rollout")
+            task_document = resolved.input_documents["task"]
+            if task_document.schema_id == PYTHON_TASK_SCHEMA_ID:
+                selection = PythonTaskSelection.model_validate(task_document.payload)
+                if isinstance(unresolved := resolve_python_task_instance(selection, tasks), tuple):
+                    # The Task's conditions are unknown, so its trial rule does not lower to a request.
+                    return _LoweredRow(
+                        None, (), problems=_trial_problems(unresolved, None, initial=True),
+                        document_ids=resolved.document_ids, document_uses=resolved.document_uses,
+                    ), {}
             task = authored_document_input(task_ref, resolved.input_documents["task"], python_tasks=tasks)
             assert isinstance(task, (TaskDocument, PythonTaskSelection))
             sources: dict[str, DocumentInput] = {"subject": source, "task": task}
@@ -2469,21 +2584,24 @@ class _Compiler:
                 source.document, task, components, functions,
                 python_tasks=tasks, input_overrides=settings.input_overrides,
             )
-            problems = paired if isinstance(paired, tuple) else paired.problems
-            if problems:
-                return _LoweredRow(None, tuple(
-                    _trial_problem(key, problem, resolved.document_ids, initial=True) for problem in problems
-                ), document_ids=resolved.document_ids, document_uses=resolved.document_uses), {}
-            assert not isinstance(paired, tuple)
-            variant = resolve_evaluation_variant(paired.lowered.graph, task, settings.variation, components=components)
-            if variant.task != task:
-                paired = pair_trial_source(
-                    source.document, variant.task, components, functions,
-                    python_tasks=tasks, input_overrides=settings.input_overrides, graph_override=variant.graph,
+            unpaired = paired if isinstance(paired, tuple) else paired.problems
+            refusals = _trial_problems(unpaired, source.document, initial=True)
+            conditions = evaluation_conditions(task, tasks)
+            if not unpaired:
+                assert not isinstance(paired, tuple)
+                variant = resolve_evaluation_variant(
+                    paired.lowered.graph, task, settings.variation, components=components,
                 )
-                if isinstance(paired, tuple) or paired.problems:
-                    raise variant.task_refusal((paired if isinstance(paired, tuple) else paired.problems)[0])
-            trials = resolve_trial_ids(raw["trial_set"], paired.task.condition_ids)
+                if variant.task != task:
+                    paired = pair_trial_source(
+                        source.document, variant.task, components, functions,
+                        python_tasks=tasks, input_overrides=settings.input_overrides, graph_override=variant.graph,
+                    )
+                    conditions = evaluation_conditions(variant.task, tasks)
+                    if isinstance(paired, tuple) or paired.problems:
+                        refusal = variant.task_refusal((paired if isinstance(paired, tuple) else paired.problems)[0])
+                        refusals = (RunProblem(refusal.path, refusal.reason),)
+            trials = resolve_trial_ids(raw["trial_set"], conditions)
             payload = payload | {"params": {
                 **{name: value for name, value in raw.items() if name != "trial_set"},
                 "trials": list(trials),
@@ -2495,6 +2613,7 @@ class _Compiler:
             )
             return replace(
                 narrowed, document_ids=resolved.document_ids, document_uses=resolved.document_uses,
+                problems=(*refusals, *narrowed.problems) if narrowed.request is not None else narrowed.problems,
             ), inputs
         except ModelCompilationProblem as error:
             problem = _model_difference_problem(key, resolved.document_ids.get("inputs.subject"), error.address, str(error))
@@ -2512,7 +2631,7 @@ class _Compiler:
     def lower_best_evaluate(
         self, key: RunKey, payload: Payload, subject: PlannedInput, rank: BestRank, has_differences: bool,
         document_ids: Mapping[str, str], read: Callable[[str], Document | None],
-    ) -> Payload | ProjectDiagnostic:
+    ) -> Payload | ProjectDiagnostic | _Unpaired:
         def problem(detail: str) -> ProjectDiagnostic:
             return ProjectDiagnostic(
                 ResolutionCode.BAD_REFERENCE, subject.best_path, detail, key.step,
@@ -2522,6 +2641,7 @@ class _Compiler:
         if payload.get("evaluation_type") != ROLLOUT_TYPE:
             return problem("Best requires managed rollout Evaluate.")
         common = None
+        unpaired = None
         for producer, candidate in zip(subject.candidates, rank.candidates, strict=True):
             model = self.model_sources.get(producer)
             name = f"{producer.variant}/{producer.step}/{producer.row}"
@@ -2535,6 +2655,13 @@ class _Compiler:
             )
             if isinstance(lowered, ProjectDiagnostic):
                 return replace(lowered, detail=f"Best candidate {name}: {lowered.detail}")
+            if isinstance(lowered, _Unpaired):
+                unpaired = unpaired or replace(
+                    lowered, problem=replace(lowered.problem, detail=f"Best candidate {name}: {lowered.problem.detail}"),
+                )
+                if lowered.payload is None:
+                    return unpaired
+                lowered = lowered.payload
             try:
                 if "trial_set" in lowered["params"]:
                     raise ValueError("Task trial rule was not resolved")
@@ -2545,13 +2672,14 @@ class _Compiler:
                 return problem(f"Best candidate {name} resolves a different Evaluate definition or trial order.")
             common = lowered
         assert common is not None
-        return common
+        return replace(unpaired, payload=common) if unpaired is not None else common
 
     def lower_evaluate_trials(
         self, key: RunKey, payload: Payload, reference: object, model_source: _ModelSource | None,
-    ) -> Payload | ProjectDiagnostic:
+    ) -> Payload | ProjectDiagnostic | _Unpaired:
         from feedbax.execution.trial_resolution import evaluation_conditions, pair_trial_source
         from feedbax.contracts.rollout import CannotRun
+        from feedbax.tasks.registry import resolve_python_task_instance
         from feedbax.training.evaluation_variant import resolve_evaluation_variant
 
         if (
@@ -2575,6 +2703,7 @@ class _Compiler:
                 model_source.evaluation_graph, documents.task_source, settings.variation,
                 components=self.components or _builtin_model_registry(),
             )
+            refusal = None
             if any(target[0] == "task" for target in variant.edit_origins):
                 pairing = pair_trial_source(
                     documents.model, variant.task,
@@ -2584,14 +2713,25 @@ class _Compiler:
                 )
                 problems = pairing if isinstance(pairing, tuple) else pairing.problems
                 if problems:
-                    raise variant.task_refusal(problems[0])
-                conditions = pairing.task.condition_ids
+                    cannot = variant.task_refusal(problems[0])
+                    refusal = ProjectDiagnostic(
+                        ResolutionCode.INVALID_PAYLOAD, cannot.path, cannot.reason, key.step,
+                        row=key.row, variant=key.variant, model_address=problems[0].model_address,
+                    )
+                    if isinstance(variant.task, PythonTaskSelection) and isinstance(
+                        resolve_python_task_instance(variant.task, self.python_tasks), tuple,
+                    ):
+                        return _Unpaired(None, refusal)
+                    conditions = evaluation_conditions(variant.task, self.python_tasks)
+                else:
+                    conditions = pairing.task.condition_ids
             else:
                 conditions = evaluation_conditions(variant.task, self.python_tasks)
             trials = resolve_trial_ids(raw["trial_set"], conditions)
-            return payload | {"params": {name: value for name, value in raw.items() if name != "trial_set"} | {
+            lowered = payload | {"params": {name: value for name, value in raw.items() if name != "trial_set"} | {
                 "trials": list(trials),
             }}
+            return _Unpaired(lowered, refusal) if refusal is not None else lowered
         except ValueError as error:
             return ProjectDiagnostic(
                 ResolutionCode.INVALID_PAYLOAD,
@@ -2826,6 +2966,11 @@ class _Compiler:
             if chosen is None and members:
                 chosen = members[0][0]
             if chosen is not None and self.block_row(run_key, template, row, {role.name: (chosen,)}):
+                if kind == "evaluate" and isinstance(
+                    problem := self.checkpoint_selector(variant, name, row, chosen, subject, has_checkpoint_axis),
+                    ProjectDiagnostic,
+                ):
+                    self.diagnostics.append(problem)
                 continue
             if (
                 chosen is not None and isinstance(chosen.member.reference, BestRank)
@@ -2839,39 +2984,9 @@ class _Compiler:
                 continue
             if kind == "evaluate" and chosen is not None and isinstance(chosen.member.reference, ProductRef):
                 reference = chosen.member.reference
-                try:
-                    write = row.patches.get(CHECKPOINT_RULE_TARGET)
-                    chosen_subject = chosen.selection if chosen.selection is not None else subject
-                    selected_subject = checkpoint_rule_write(chosen_subject, write) if write is not None else chosen_subject
-                    rule = (
-                        selected_subject.checkpoint if isinstance(selected_subject, StepReference)
-                        else "last" if isinstance(selected_subject, RunReference) else None
-                    )
-                    if rule is None and has_checkpoint_axis:
-                        raise ValueError("The selected row has no checkpoint rule")
-                    horizon = None
-                    if isinstance(rule, UpdateCadence) and chosen.producer is not None:
-                        facts = self.rows[chosen.producer].train
-                        horizon = facts.target_total if facts is not None else None
-                    selector = _checkpoint(rule, horizon=horizon)
-                except (OSError, ValueError) as error:
-                    self.diagnostics.append(ProjectDiagnostic(
-                        ResolutionCode.BAD_REFERENCE, "inputs.subject.checkpoint", str(error),
-                        name, row=row.id, variant=variant,
-                    ))
-                    continue
-                facts = self.rows[chosen.producer].train if chosen.producer is not None else None
-                if facts is not None and facts.origin is not None and facts.target_total is not None and (
-                    outside := _update_outside_run(rule, facts.origin, facts.target_total)
-                ) is not None:
-                    assert chosen.producer is not None
-                    self.diagnostics.append(ProjectDiagnostic(
-                        ResolutionCode.BAD_REFERENCE,
-                        f"{_selection_path(subject, 'subject', chosen.selection)}.checkpoint",
-                        f"Update {outside} is outside {chosen.producer.step!r}, "
-                        f"which runs updates {facts.origin + 1} to {facts.target_total}.",
-                        name, row=row.id, variant=variant,
-                    ))
+                selector = self.checkpoint_selector(variant, name, row, chosen, subject, has_checkpoint_axis)
+                if isinstance(selector, ProjectDiagnostic):
+                    self.diagnostics.append(selector)
                     continue
                 chosen = replace(chosen, member=chosen.member.model_copy(update={
                     "reference": reference.model_copy(update={"select": selector}),
@@ -2904,15 +3019,55 @@ class _Compiler:
         return (
             key in self.waiting
             or not isinstance(row, (PlannedRun, PlannedAnalyzeRun))
-            or isinstance(row, PlannedRun) and row.admission_problem is not None
+            or bool(row.problems)
         )
+
+    def checkpoint_selector(
+        self, variant: str, name: str, row: ExpandedRow, chosen: PlannedInput, subject: InputBinding | None,
+        has_checkpoint_axis: bool,
+    ) -> ProductSelector | None | ProjectDiagnostic:
+        """The selector an Evaluate row's checkpoint rule makes, or why the rule does not parse or asks for an update
+        outside its producer's run. Both need only the rule and the producer's extent, so a blocked row has them too."""
+        try:
+            write = row.patches.get(CHECKPOINT_RULE_TARGET)
+            chosen_subject = chosen.selection if chosen.selection is not None else subject
+            selected_subject = checkpoint_rule_write(chosen_subject, write) if write is not None else chosen_subject
+            rule = (
+                selected_subject.checkpoint if isinstance(selected_subject, StepReference)
+                else "last" if isinstance(selected_subject, RunReference) else None
+            )
+            if rule is None and has_checkpoint_axis:
+                raise ValueError("The selected row has no checkpoint rule")
+            horizon = None
+            if isinstance(rule, UpdateCadence) and chosen.producer is not None:
+                facts = self.rows[chosen.producer].train
+                horizon = facts.target_total if facts is not None else None
+            selector = _checkpoint(rule, horizon=horizon)
+        except (OSError, ValueError) as error:
+            return ProjectDiagnostic(
+                ResolutionCode.BAD_REFERENCE, "inputs.subject.checkpoint", str(error),
+                name, row=row.id, variant=variant,
+            )
+        facts = self.rows[chosen.producer].train if chosen.producer is not None else None
+        if facts is not None and facts.origin is not None and facts.target_total is not None and (
+            outside := _update_outside_run(rule, facts.origin, facts.target_total)
+        ) is not None:
+            assert chosen.producer is not None
+            return ProjectDiagnostic(
+                ResolutionCode.BAD_REFERENCE,
+                f"{_selection_path(subject, 'subject', chosen.selection)}.checkpoint",
+                f"Update {outside} is outside {chosen.producer.step!r}, "
+                f"which runs updates {facts.origin + 1} to {facts.target_total}.",
+                name, row=row.id, variant=variant,
+            )
+        return selector
 
     def block_row(
         self, key: RunKey, template: StepComposition, row: ExpandedRow,
         inputs: Mapping[str, tuple[PlannedInput, ...]],
     ) -> bool:
         """Give ``key`` one ``blocked_input`` when a producer of its members cannot run, and report whether ``key``
-        must stay unlowered because that producer has no request.
+        must stay unlowered because that producer has no request, or has one whose documents do not pair.
 
         A row left unlowered is a ``BlockedRow`` that keeps its own definition and documents, so it stays authorable.
         A row whose producer has a request is lowered as usual and keeps every problem of its own."""
@@ -2932,7 +3087,8 @@ class _Compiler:
             f"{producer.variant}/{producer.step}/{producer.row} cannot run",
             key.step, row=key.row, variant=key.variant, blocked_by=producer,
         ))
-        if binding.waits_on is None:
+        source = self.model_sources.get(producer)
+        if binding.waits_on is None and not (source is not None and source.unpaired):
             return False
         definition = self.select_definition(template, key, row, inputs)
         resolved = definition if definition is not None else self.resolve_row(template, key, row, None)
@@ -2940,6 +3096,7 @@ class _Compiler:
         self.rows[key] = BlockedRow(
             planned.key, planned.kind, planned.label, planned.coordinates, MappingProxyType(dict(inputs)), producer,
             axis_keys=planned.axis_keys, input_axes=planned.input_axes,
+            resolved=not isinstance(resolved, ProjectDiagnostic),
             **({} if isinstance(resolved, ProjectDiagnostic) else {
                 "document_ids": MappingProxyType(dict(resolved.document_ids)),
                 "document_uses": resolved.document_uses,
@@ -3006,6 +3163,7 @@ class _Compiler:
             self.rows[key] = replace(
                 row, document_ids=lowered.document_ids, document_uses=lowered.document_uses,
                 followed_documents=followed, evaluated_model=evaluated, train=lowered.train,
+                resolved=lowered.resolved, problems=lowered.problems,
             )
             return None
         self.requests[encoded.id] = encoded.data
@@ -3017,7 +3175,7 @@ class _Compiler:
             MappingProxyType(dict(inputs)), MappingProxyType(dict(omissions)), requires,
             axis_keys=row.axis_keys,
             input_axes=row.input_axes,
-            admission_problem=lowered.admission_problem,
+            problems=lowered.problems,
             document_ids=lowered.document_ids,
             document_uses=lowered.document_uses,
             followed_documents=followed,

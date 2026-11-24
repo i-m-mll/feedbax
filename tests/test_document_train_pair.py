@@ -169,13 +169,13 @@ def test_plan_refuses_each_row_with_an_unwired_linear_input(authored, prepared_t
     }}
     _two_optimizer_rates(raw)
     plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
-    assert not plan.runs
+    assert plan.runs and all(run.admission_problem is not None for run in plan.runs)
     assert len(prepared_trials) == 2
     original = controller["interior"]["components"]["readout"]["name"]
     assert {
-        (issue.variant, issue.step, issue.row, issue.detail)
-        for issue in plan.diagnostics
-        if issue.path.endswith(".components.readout")
+        (run.key.variant, run.key.step, run.key.row, issue.detail)
+        for run in plan.runs for issue in run.problems
+        if issue.path.endswith("/components/readout")
     } == {
         (variant, "train", row, f"{label} input 'input' needs a connection.")
         for variant, label in (("base", original), ("renamed", "Renamed readout"))
@@ -192,7 +192,7 @@ def test_plan_reports_every_component_with_invalid_parameters(authored):
         }
     plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
     assert sorted(
-        issue.model_address.element.id for issue in plan.diagnostics
+        issue.model_address.element.id for run in plan.runs for issue in run.problems
         if issue.model_address is not None and issue.model_address.element.kind == "component"
     ) == ["left", "right"]
 
@@ -204,7 +204,7 @@ def test_plan_reports_every_unwired_required_input(authored):
     del controller["interior"]["wires"]["decode"]
     del controller["interior"]["wires"]["target"]
     plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
-    assert sorted(issue.path.rsplit(".", 1)[-1] for issue in plan.diagnostics) == ["cell", "readout"]
+    assert sorted(issue.path.rsplit("/", 1)[-1] for run in plan.runs for issue in run.problems) == ["cell", "readout"]
 
 
 def test_trial_refusals_keep_the_model_address_for_each_step(authored, prepared_trials):
@@ -220,14 +220,17 @@ def test_trial_refusals_keep_the_model_address_for_each_step(authored, prepared_
     raw["steps"]["other"] = other
 
     plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
-    assert not plan.runs
+    assert plan.runs and all(run.admission_problem is not None for run in plan.runs)
     assert len(prepared_trials) == 1
-    assert len(plan.diagnostics) == 4
-    for issue in plan.diagnostics:
-        document = {"train": "reach-model", "other": "other-model"}[issue.step]
-        assert issue.variant == "default"
-        assert issue.row in {"rate=low", "rate=high"}
-        assert issue.document == document
+    assert not plan.diagnostics
+    assert len(plan.runs) == 4
+    for run in plan.runs:
+        document = {"train": "reach-model", "other": "other-model"}[run.key.step]
+        assert run.key.variant == "default"
+        assert run.key.row in {"rate=low", "rate=high"}
+        assert run.document_ids["payload.trial_documents.model"] == document
+        (issue,) = run.problems
+        assert issue.path.startswith("/trial_documents/model/")
         assert issue.model_address == ModelAddress.model_validate({
             "composites": [], "element": {"kind": "component", "id": "plant"},
         })
@@ -420,9 +423,9 @@ def test_trial_preparation_distinguishes_effective_scientific_inputs(authored, p
         (original_mass, "delayed-reaches", 2, "target_pos"),
         (original_mass, "delayed-reaches", 1, "missing-signal"),
     }
-    assert len(plan.requests) == len(plan.runs) == 8
-    assert len(plan.diagnostics) == 2
-    assert {(issue.variant, issue.row) for issue in plan.diagnostics} == {
+    assert len(plan.requests) == len(plan.runs) == 10
+    assert not plan.diagnostics
+    assert {(run.key.variant, run.key.row) for run in plan.runs if run.problems} == {
         ("bad-binding", "rate=low"), ("bad-binding", "rate=high"),
     }
 

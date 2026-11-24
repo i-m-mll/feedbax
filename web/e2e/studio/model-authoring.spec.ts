@@ -42,11 +42,13 @@ async function connect(page: Page, source: Locator, target: Locator, path: strin
 }
 
 test('authors a managed Train in an empty folder and reopens its result', async ({ page, request }) => {
-  test.fixme(true, 'Owned by V1 (feature/bf89b13-r2-v1): a field edit made right after a save is dropped when the run-scoped projection rebuilds the field controls.');
+  test.fixme(true, 'Stale against the current Model view; revived with the Model view rebuild, issue 0afecb2.');
   test.setTimeout(58_000);
-  const { snapshot, projectPath } = await seedManagedProject(request, []);
+  // The Studio's test Python task, which a package would register; the new Train reads it.
+  const { snapshot, projectPath } = await seedManagedProject(request, [{
+    kind: 'document', id: 'task', document: { schema: 'feedbax.spec.python_task', payload: { type: 'reaching_task.Reaching', params: {} } },
+  }]);
   expect(snapshot.project.steps).toEqual({});
-  expect(snapshot.project.documents).toEqual({});
   const url = '/?project=' + encodeURIComponent(snapshot.project_id);
   await page.goto(url);
   const create = page.getByRole('button', { name: 'New Step', exact: true });
@@ -94,7 +96,7 @@ test('authors a managed Train in an empty folder and reopens its result', async 
   await Promise.all([patch(), page.keyboard.press('Meta+Shift+Z')]);
   await expect(taskSteps).toHaveValue('12');
   await expect.poll(async () => rootPayload((await saved()).project.documents?.task)).toMatchObject({
-    type: 'feedbax.Reaching', params: { x: 0.22, n_steps: 12 },
+    type: 'reaching_task.Reaching', params: { x: 0.22, n_steps: 12 },
   });
 
   await tab('Model').click();

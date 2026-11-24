@@ -11,9 +11,11 @@ import { Inspector } from '@/components/ui/Inspector';
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '@/components/ui/Menu';
 import { StatusMark } from '@/components/ui/StatusMark';
 import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
-import { evaluateChange, type ChangeMark, type ChangeSource, type FieldModel } from '@/components/values/fieldModel';
+import {
+  evaluateChange, reasonOf, type ChangeMark, type ChangeSource, type FieldModel, type FieldRefusal,
+} from '@/components/values/fieldModel';
 import { Drawer, DrawerSection, type DrawerSections } from '@/features/projectWindow/DrawerForms';
-import { Table, TableCell, TableHeaderCell } from '@/components/ui/Table';
+import { Table, TableFieldCell, TableHeaderCell, type TableColumn } from '@/components/ui/Table';
 import { CatalogPicker } from '@/components/ui/CatalogPicker';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { SettingsForm } from '@/components/values/SettingsForm';
@@ -23,20 +25,25 @@ import { isRecord, rawField } from '@/components/values/adapters/raw';
 import { fromFieldView } from '@/components/values/adapters/fieldView';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type {
-  JsonValue, ObjectiveTerm, ProjectValueEdit, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
+  FieldKind, JsonValue, ObjectiveTerm, Problem, ProjectValueEdit, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
 } from '@/generated/studioContracts';
-import { authoredPointer } from './authoredEdits';
+import { authoredPointer, authoredPointerParts } from './authoredEdits';
+import { BatchTrace, TrialTrace } from './task/SignalTrace';
+import type { TrialShown } from './task/trialSample';
 import { baseOf } from './documentPayload';
 import type { ProjectEditController } from './projectEditController';
 import { filesRemoval, type ConfirmRunRemoval } from './runRemoval';
-import { ScrollFade } from '@/components/ui/ScrollFade';
 import { SweepTargetItem, type SweepTarget } from './StudioTrainAuthoringForm';
+import { TaskOutline, type OutlineGroup } from './task/TaskOutline';
 
 type Change = NonNullable<StudioTrialAuthoringRequest['change']>;
 /** The scope a change is made in. */
 export type TrialChangeScope = (change: Change) => StudioTrialAuthoringRequest['scope'] | undefined;
-/** Applies a change; `removes` marks one that takes runs out of the project, which the run confirmation guards. */
-type Commit = (name: string, change: Change, removes?: boolean) => Promise<string | undefined>;
+/**
+ * Applies a change; `removes` marks one that takes runs out of the project, which the run confirmation guards. A
+ * refused field edit answers with the problem at that field, with the term of its text it is about.
+ */
+export type Commit = (name: string, change: Change, removes?: boolean) => Promise<FieldRefusal | undefined>;
 /** A step's Trial authoring, with what the changed values of its Task and Objective documents differ from. */
 export type TrialView = StudioTrialAuthoring & {
   readonly changedFrom: { readonly task?: ChangeSource; readonly objective?: ChangeSource };
@@ -52,10 +59,25 @@ function write(path: string, value: JsonValue, present: boolean): ProjectValueEd
  * The changed mark of the value at `path` in the step's Task or Objective document, when it differs from the
  * document's base; its Reset gives it the base's value.
  */
-function changedAt(view: TrialView, document: 'task' | 'objective', path: string, commit?: Commit): ChangeMark | undefined {
+export function changedAt(view: TrialView, document: 'task' | 'objective', path: string, commit?: Commit): ChangeMark | undefined {
   const from = view.changedFrom[document];
   if (!from || !(document === 'task' ? view.task_changed : view.objective_changed)?.includes(path)) return undefined;
   return { from, reset: commit && (() => commit(studioName('reset'), { kind: 'reset', document, paths: [path] })) };
+}
+
+/** The problem that refuses `change`: for a field's edit, the one at that field, with its term's place in the text. */
+function refusalOf(change: Change, problems: readonly Problem[]): FieldRefusal {
+  const at = change.kind === 'expression' ? authoredPointerParts(change.path) : undefined;
+  const own = at && [...problems].reverse().find(({ path = [] }) => path.length === at.length &&
+    path.every((part, index) => String(part) === at[index]));
+  const chosen = own ?? problems[0];
+  return chosen.span ? { reason: chosen.reason, span: chosen.span } : chosen.reason;
+}
+
+/** The kind a stored expression reads as, which its field's mark shows. */
+export function expressionKind(value: JsonValue | undefined): FieldKind {
+  const kind = isRecord(value) ? value.kind : undefined;
+  return kind === 'name' ? 'link' : kind === 'call' ? 'formula' : kind === 'draw' ? 'draw' : 'value';
 }
 
 export function useTrialAuthoring(
@@ -99,7 +121,7 @@ export function useTrialAuthoring(
       const settled = await stored;
       if (settled.status === 'refused') return shownError(settled.error);
     } else if (result.problems.length) {
-      return result.problems[0].reason;
+      return refusalOf(change, result.problems);
     }
     return undefined;
   }).catch(shownError) : undefined;
@@ -124,12 +146,12 @@ export function TrialTaskForm({ view, commit }: { view: TrialView; commit?: Comm
       <FieldRow label={studioName('task')} labelId={typeLabel}>
         <CatalogPicker aria-labelledby={typeLabel} aria-describedby={typeChange ? typeChangeId : undefined} className="w-full"
           trailing={typeChange && <FieldChange change={typeChange} id={typeChangeId}
-            onReset={() => { void typeChange.reset!().then(setError); }} />}
+            onReset={() => { void typeChange.reset!().then((refusal) => setError(reasonOf(refusal))); }} />}
           disabled={!commit} value={task.type}
           entries={view.task_types.map((item) => ({ key: item.type, label: item.label, package: packages.get(item.type) }))}
-          onChoose={async (key) => setError(await edit(studioName('task'), [
+          onChoose={async (key) => setError(reasonOf(await edit(studioName('task'), [
             write(authoredPointer(['type']), key, true), write(authoredPointer(['params']), {}, has(task, 'params')),
-          ]))} />
+          ])))} />
       </FieldRow>
       {type && <SettingsForm schema={type.parameter_schema} value={params}
         origin={(path) => {
@@ -152,50 +174,75 @@ export function TrialTaskForm({ view, commit }: { view: TrialView; commit?: Comm
   </div>;
 }
 
-/** The Task's elements by kind, as the drawer's sections: what the task produces and what the Model reads. */
-function taskGroups(view: StudioTrialAuthoring) {
-  const signal = (name: string) => humanizeLabel(name);
-  return [
-    { id: 'variables', nodes: view.variables.map(({ id, name }) => ({ id: 'variable:' + id, name: humanizeLabel(name) })) },
-    { id: 'signals', nodes: view.signals.map(({ id, name }) => ({ id: 'signal:' + id, name: signal(name) })) },
-    { id: 'epochs', nodes: view.epochs.map(({ id, name }) => ({ id: 'epoch:' + id, name })) },
-    { id: 'perTrial', nodes: view.resets.flatMap(({ address }) => address.element.kind === 'field'
-      ? [{ id: 'reset:' + JSON.stringify(address), name: address.element.path.map(String).join(' · ') }] : []) },
-    { id: 'modelInputs', nodes: view.inputs.map(({ name, signal: bound }) => ({
-      id: 'input:' + name, name, muted: !bound,
-    })) },
-  ] as const satisfies readonly { id: Parameters<typeof studioName>[0]; nodes: readonly TreeNode[] }[];
+/** The first problem of each element of the task, by its group and id; a link's is its variable's. */
+function outlineReasons(view: StudioTrialAuthoring) {
+  const links = 'variables' in view.task ? view.task.links ?? [] : [];
+  const reasons = new Map<string, string>();
+  for (const { path = [], reason } of view.problems) {
+    const [section, id] = path.map(String);
+    const linked = section === 'links' ? links.find(({ model_field }) => model_field === id)?.variable : undefined;
+    const key = linked ? `variables:${linked}`
+      : section === 'variables' || section === 'epochs' || section === 'signals' ? `${section}:${id}` : undefined;
+    if (key && !reasons.has(key)) reasons.set(key, reason);
+  }
+  return reasons;
 }
 
+const outlineKinds = { variables: 'variable', epochs: 'epoch', signals: 'signal', modelInputs: 'input' } as const;
+
+/**
+ * The drawer's Outline of the Task: a task document's variables, epochs and signals, or a Python task's signals, and
+ * the Model's inputs, each with its status mark. Selecting one selects it (`<kind>:<id>`).
+ */
 export function TrialTaskOutline({ sections, view, selected, select }: {
   sections: DrawerSections; view: StudioTrialAuthoring; selected?: string; select(id: string | null): void;
 }) {
-  return <Drawer>
-    {taskGroups(view).map(({ id, nodes }) => nodes.length > 0 && <DrawerSection key={id} sections={sections} id={`task.${id}`}
-      name={studioName(id)}>
-      <Tree aria-label={studioName(id)} nodes={nodes} selected={selected && nodes.some((node) => node.id === selected) ? [selected] : []}
-        onSelectedChange={(ids) => select(ids.at(-1) ?? null)} />
-    </DrawerSection>)}
-  </Drawer>;
+  const reasons = outlineReasons(view);
+  const entries = (group: OutlineGroup, items: readonly { id: string; name: string }[]) =>
+    items.map(({ id, name }) => ({ id, name, reason: reasons.get(`${group}:${id}`) }));
+  const task = 'variables' in view.task ? view.task : undefined;
+  const groups = {
+    variables: task && entries('variables', task.variables),
+    epochs: task && entries('epochs', task.epochs),
+    signals: task ? entries('signals', task.signals) : view.signals.map(({ id, name }) => ({ id, name: humanizeLabel(name) })),
+    modelInputs: view.inputs.map(({ name, signal }) => ({ id: name, name, muted: !signal })),
+  };
+  const [kind, ...rest] = selected?.split(':') ?? [];
+  const group = (Object.keys(outlineKinds) as OutlineGroup[]).find((key) => outlineKinds[key] === kind);
+  return <TaskOutline sections={sections} groups={groups} selected={group && { group, id: rest.join(':') }}
+    select={(chosen, id) => select(`${outlineKinds[chosen]}:${id}`)} />;
 }
 
-export function TrialTaskInspector({ view, commit, selected }: { view: TrialView; commit?: Commit; selected?: string }) {
+/**
+ * The Inspector of a signal, an epoch or a Model input the drawer or the shelf selects; a signal, with a trial or a
+ * batch drawn, shows its plot over that trial or its median and percentile bands over the batch.
+ */
+export function TrialTaskInspector({ view, commit, selected, shown }: {
+  view: TrialView; commit?: Commit; selected?: string; shown?: TrialShown;
+}) {
   if (!selected) return null;
   const [kind, ...rest] = selected.split(':');
   const key = rest.join(':');
-  if (kind === 'variable' || kind === 'signal') {
-    const value = (kind === 'variable' ? view.variables : view.signals).find(({ id }) => id === key);
-    return value ? <Inspector name={humanizeLabel(value.name)} type={value.type.shape?.join(' × ') || value.type.base} /> : null;
+  if (kind === 'signal') {
+    const value = view.signals.find(({ id }) => id === key);
+    const trial = shown?.kind === 'trial' ? shown.trial : undefined;
+    const steps = trial?.signals[key];
+    const aggregate = shown?.kind === 'batch' ? shown.batch.signals[key] : undefined;
+    return value ? <Inspector name={humanizeLabel(value.name)} type={value.type.shape?.join(' × ') || value.type.base}>
+      {trial && steps && <section aria-label={studioName('plot')} className="grid gap-1">
+        <TrialTrace label={value.name} steps={steps} duration={steps.length * view.period_seconds}
+          boundaries={trial.intervals.slice(1).map(({ start }) => Math.round(start / view.period_seconds))} />
+      </section>}
+      {aggregate && <section aria-label={studioName('plot')} className="grid gap-1">
+        <BatchTrace label={value.name} aggregate={aggregate} duration={aggregate.presence.length * view.period_seconds} boundaries={[]} />
+      </section>}
+    </Inspector> : null;
   }
   if (kind === 'epoch') {
     const epoch = view.epochs.find(({ id }) => id === key);
     return epoch ? <Inspector name={epoch.name} type={studioName('epochs')} /> : null;
   }
-  if (kind === 'reset') {
-    const reset = view.resets.find(({ address }) => JSON.stringify(address) === key);
-    return reset && reset.address.element.kind === 'field' ? <Inspector name={reset.address.element.path.map(String).join(' · ')}
-      type={reset.variable ?? studioDefinitionStatus('unlinked')} /> : null;
-  }
+  if (kind !== 'input') return null;
   const input = view.inputs.find(({ name }) => name === key);
   if (!input) return null;
   return <Inspector name={input.name} type={studioName('modelInputs')}>
@@ -214,6 +261,10 @@ export function TrialTaskInspector({ view, commit, selected }: { view: TrialView
 type TermField = 'name' | 'enabled' | 'measure' | 'window' | 'weight' | 'reduction';
 const columns = ['name', 'measure', 'window', 'weight', 'enabled'] as const satisfies readonly TermField[];
 const columnNames = { name: 'term', enabled: 'enabled', measure: 'measure', window: 'window', weight: 'weight' } as const;
+const columnWidths: Record<(typeof columns)[number], TableColumn> = {
+  name: { least: '9rem', fixed: true }, measure: { least: '10rem' }, window: { least: '8rem' }, weight: { least: '7rem' },
+  enabled: { least: '4.5rem', fixed: true },
+};
 
 /** The anchor of a term's Weight, which Add Sweep puts the keyboard on. */
 export const weightAnchor = (term: string) => `objective:${term}:weight`;
@@ -235,12 +286,11 @@ function termFields(view: TrialView, term: ObjectiveTerm, index: number, commit?
     const label = humanizeLabel(field);
     const projection = view.fields.find((site) => site.path === authoredPointer(['objective', 'terms', term.id, field]));
     if (!projection) throw new Error(`The Objective's ${field} of term ${term.id} has no field`);
-    const value = term[field];
-    const kind = value?.kind === 'name' ? 'link' : value?.kind === 'call' ? 'formula' : value?.kind === 'draw' ? 'draw' : 'value';
+    const kind = expressionKind(term[field] as JsonValue | undefined);
     const sweep = projection.sweep?.id;
     const model = fromFieldView({ ...projection, label, effective: runs?.selected ? projection.effective : null }, {
       id: term.id + field, kind, changed: changed(field),
-      commit: commit && ((edit) => commit('Set ' + label, { kind: 'expression', term: term.id, field, edit })),
+      commit: commit && ((edit) => commit('Set ' + label, { kind: 'expression', path: projection.path, edit })),
       selectedMembers: sweep ? runs?.values(sweep) : undefined,
       chooseMember: sweep && runs?.choose ? (value, extend) => runs.choose!(sweep, value, extend) : undefined,
     });
@@ -299,7 +349,7 @@ export function TrialObjectiveAdd({ view, commit, select }: {
       ? [write('/terms/-', value, false)]
       : [write('/terms', [value], has(view.objective ?? {}, 'terms'))];
     const reason = await commit(studioName('addTerm'), { kind: 'objective', edits });
-    setRefusal(reason);
+    setRefusal(reasonOf(reason));
     if (!reason) select(id);
   };
   return <>
@@ -322,29 +372,27 @@ export function TrialObjectiveTable({ view, commit, selected, select, runs }: {
   view: TrialView; commit?: Commit; selected?: TermSelection; select(term: string, field?: string): void; runs?: TrialRuns;
 }) {
   const terms = view.objective?.terms ?? [];
-  return <ScrollFade axis="both" className="h-full min-h-0 [--fade-inset-top:var(--row-height)]">
-    <Table aria-label={studioName('objectiveTerms')}>
-      <thead className="sticky top-0 z-10"><tr>{columns.map((id) =>
-        <TableHeaderCell scope="col" key={id} className={clsx(id === 'enabled' && 'w-0 text-center')}>
-          {studioName(columnNames[id])}
-        </TableHeaderCell>)}
-      </tr></thead>
-      <tbody>{terms.map((term, index) => {
-        const fields = termFields(view, term, index, commit, runs);
-        return <tr key={term.id} className="align-top">
-          {columns.map((field) => {
-            const chosenCell = selected?.term === term.id && selected.field === field;
-            return <TableCell key={field} data-selected={chosenCell || undefined}
-              className={clsx('overflow-visible py-1', field === 'measure' && 'min-w-40', chosenCell && 'bg-shell-row-selected')}
-              onFocusCapture={() => { if (!chosenCell) select(term.id, field); }}
-              onPointerDown={() => { if (!chosenCell) select(term.id, field); }}>
-              <ValueField model={fields[field]} form="cell" />
-            </TableCell>;
-          })}
-        </tr>;
-      })}</tbody>
-    </Table>
-  </ScrollFade>;
+  return <Table aria-label={studioName('objectiveTerms')} held={1} columns={columns.map((id) => columnWidths[id])}
+    box={{ axis: 'both', className: 'h-full min-h-0 [--fade-inset-top:var(--row-height)]' }}>
+    <thead className="sticky top-0 z-10"><tr>{columns.map((id) =>
+      <TableHeaderCell scope="col" key={id} className={clsx(id === 'enabled' && 'text-center')}>
+        {studioName(columnNames[id])}
+      </TableHeaderCell>)}
+    </tr></thead>
+    <tbody>{terms.map((term, index) => {
+      const fields = termFields(view, term, index, commit, runs);
+      return <tr key={term.id}>
+        {columns.map((field) => {
+          const chosenCell = selected?.term === term.id && selected.field === field;
+          return <TableFieldCell key={field} selected={chosenCell}
+            onFocusCapture={() => { if (!chosenCell) select(term.id, field); }}
+            onPointerDown={() => { if (!chosenCell) select(term.id, field); }}>
+            <ValueField model={fields[field]} form="cell" />
+          </TableFieldCell>;
+        })}
+      </tr>;
+    })}</tbody>
+  </Table>;
 }
 
 export function TrialObjectiveOutline({ sections, view, commit, selected, select }: {
@@ -354,7 +402,7 @@ export function TrialObjectiveOutline({ sections, view, commit, selected, select
   const tree = useRef<TreeHandle>(null);
   const terms = view.objective?.terms ?? [];
   const save = async (name: string, edit: ProjectValueEdit, removes?: boolean) =>
-    setError(await commit?.(name, { kind: 'objective', edits: [edit] }, removes));
+    setError(reasonOf(await commit?.(name, { kind: 'objective', edits: [edit] }, removes)));
   const nodes: TreeNode[] = terms.map((term, index) => ({
     id: term.id, name: term.name ?? studioAccessibleName('term', index + 1), muted: term.enabled === false,
   }));
@@ -401,25 +449,42 @@ export function TrialObjectiveInspector({ view, commit, selected, runs }: {
   </Inspector>;
 }
 
+/** The anchor of a task variable's Value, which Add Sweep puts the keyboard on. */
+export const variableAnchor = (variable: string) => `task:${variable}:value`;
+
+/** The anchor of a task variable's Initializes, where a problem of its links is revealed. */
+export const initializesAnchor = (variable: string) => `task:${variable}:initializes`;
+
+/** The anchor of the row of a Model value no variable initializes, keyed by its address, which a problem reveals. */
+export const startAnchor = (address: string) => `task:start:${address}`;
+
 /**
- * The Objective's term Weights a sweep of the step can start from, as Add Sweep items under Objective, a term each.
- * Choosing one goes to its cell; the sweep is made by the text it commits.
+ * The fields of the step's Task and Objective a sweep can start from, as Add Sweep items: the task's variables under
+ * Task, and the terms' Weights under Objective. Choosing one goes to its field; the sweep is made by the text it commits.
  */
-export function ObjectiveSweepItems({ project, revision, run, onChoose }: {
-  project: string; revision: string; run?: StudioSavedTrainKey; onChoose(anchor: string): void;
+export function TrialSweepItems({ project, revision, run, onChoose }: {
+  project: string; revision: string; run?: StudioSavedTrainKey; onChoose(anchor: string, view: 'task' | 'objective'): void;
 }) {
   const { data } = useQuery({
     queryKey: ['trial-authoring', project, revision, run],
     queryFn: ({ signal }) => readStudioTrialAuthoring(project, { revision, run: run! }, signal),
     enabled: !!run,
   });
-  const terms = (data?.objective?.terms ?? []).flatMap((term, index) => data!.fields.some((field) =>
-    field.path === authoredPointer(['objective', 'terms', term.id, 'weight']) && field.can_sweep && !field.sweep)
-    ? [{ term, index }] : []);
-  if (!terms.length) return null;
-  const target: SweepTarget = { kind: 'group', label: studioName('objective'), members: terms.map(({ term, index }) => ({
+  if (!data) return null;
+  const sweepable = (path: string) => data.fields.some((field) => field.path === path && field.can_sweep && !field.sweep);
+  const variables = 'variables' in data.task ? data.task.variables.filter(({ id }) =>
+    sweepable(authoredPointer(['task', 'variables', id, 'value']))) : [];
+  const terms = (data.objective?.terms ?? []).flatMap((term, index) =>
+    sweepable(authoredPointer(['objective', 'terms', term.id, 'weight'])) ? [{ term, index }] : []);
+  const task: SweepTarget = { kind: 'group', label: studioName('task'), members: variables.map(({ id, name }) => ({
+    kind: 'field', label: name, anchor: variableAnchor(id),
+  })) };
+  const objective: SweepTarget = { kind: 'group', label: studioName('objective'), members: terms.map(({ term, index }) => ({
     kind: 'group', label: term.name ?? studioAccessibleName('term', index + 1),
     members: [{ kind: 'field', label: humanizeLabel('weight'), anchor: weightAnchor(term.id) }],
   })) };
-  return <SweepTargetItem target={target} onChoose={onChoose} />;
+  return <>
+    {variables.length > 0 && <SweepTargetItem target={task} onChoose={(anchor) => onChoose(anchor, 'task')} />}
+    {terms.length > 0 && <SweepTargetItem target={objective} onChoose={(anchor) => onChoose(anchor, 'objective')} />}
+  </>;
 }

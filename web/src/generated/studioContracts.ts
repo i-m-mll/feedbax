@@ -1672,51 +1672,6 @@ export interface StudioInterventionTransformSpec {
   metadata?: Record<string, unknown>;
 }
 
-export interface StudioTaskEpochSpec {
-  id: string;
-  label: string;
-  index: number;
-  length: StudioValueSpec;
-  metadata?: Record<string, unknown>;
-}
-
-export interface StudioEpochValueSpec {
-  schema_id?: "feedbax.spec.studio.epoch_value";
-  schema_version?: "feedbax.spec.studio.epoch_value.v1";
-  target_id: string;
-  epoch_id: string;
-  value_spec: StudioValueSpec;
-}
-
-export interface StudioTaskTimelineSignalSpec {
-  id: string;
-  label: string;
-  kind: string;
-  task_data_id?: string | null;
-  path: string;
-  value_spec?: StudioValueSpec | null;
-  value_schema?: Record<string, unknown> | null;
-  task_data_schema?: Record<string, unknown> | null;
-  metadata?: Record<string, unknown>;
-}
-
-export interface StudioTaskTimelineSegmentSpec {
-  id: string;
-  label: string;
-  epoch_ids?: string[];
-  metadata?: Record<string, unknown>;
-}
-
-export interface StudioTaskTimelineSpec {
-  schema_id?: "feedbax.spec.studio.task_timeline";
-  schema_version?: "feedbax.spec.studio.task_timeline.v2";
-  epochs?: StudioTaskEpochSpec[];
-  signals?: StudioTaskTimelineSignalSpec[];
-  epoch_value_specs?: StudioEpochValueSpec[];
-  segments?: StudioTaskTimelineSegmentSpec[];
-  metadata?: Record<string, unknown>;
-}
-
 export interface StudioTaskDataSpec {
   id: string;
   label: string;
@@ -2240,6 +2195,34 @@ export interface SampledTaskTrial {
   timeline: TaskTimelineCue[];
 }
 
+export interface SampledTaskTrials {
+  kind: "trials";
+  trials: SampledTaskTrial[];
+}
+
+export interface TaskEpochShare {
+  epoch: string;
+  label: string;
+  share: number[];
+}
+
+export interface TaskSignalAggregate {
+  presence: number[];
+  percentiles: Array<number[][] | null> | null;
+}
+
+export interface TaskVariableRange {
+  least: unknown;
+  greatest: unknown;
+}
+
+export interface TaskTrialAggregate {
+  kind: "aggregate";
+  epochs: TaskEpochShare[];
+  signals: Record<string, TaskSignalAggregate>;
+  variables: Record<string, TaskVariableRange>;
+}
+
 export interface TaskTrialSampleRequest {
   model: ModelDocument;
   task?: TaskDocument | null;
@@ -2247,14 +2230,16 @@ export interface TaskTrialSampleRequest {
   input_overrides?: Record<string, string>;
   seed?: number;
   count?: number;
+  aggregate?: boolean;
 }
 
 export interface TaskTrialSampleResponse {
   schema_version?: string;
   task: string;
   seed: number;
+  count: number;
   n_steps: number;
-  trials: SampledTaskTrial[];
+  drawn: SampledTaskTrials | TaskTrialAggregate;
 }
 
 export interface ParentRef {
@@ -2548,6 +2533,15 @@ export interface InspectionStatusResponse {
   treescope_version?: string | null;
 }
 
+export type AddMember = {
+  "op": "add";
+  "member": Member;
+  "name": string;
+  "index"?: number | null;
+  "type"?: ValueType | null;
+  "initializes"?: Array<string>;
+};
+
 export type AnalysisDocument = {
   "schema_version"?: "feedbax.analysis_document.v1";
   "inputs"?: Record<string, AnalyzeDatasetInput | AnalyzeModelInput | AnalyzeTaskInput>;
@@ -2668,6 +2662,7 @@ export type CallValue = {
 };
 
 export type Cell = {
+  "id": string;
   "first_epoch": string;
   "last_epoch": string;
   "value": Expression;
@@ -2841,6 +2836,8 @@ export type DuplicateRun = {
   "kind": "duplicate_run";
 };
 
+export type End = Length | Rest;
+
 export type EnsureDocumentCollection = {
   "op": "ensure";
   "path": DifferencePointer;
@@ -2874,8 +2871,13 @@ export type EnvironmentReason = {
 export type Epoch = {
   "id": string;
   "name": string;
-  "length"?: Expression | null;
-  "max_steps"?: number | null;
+  "end": End;
+};
+
+export type EpochSteps = {
+  "least": number;
+  "nominal": number;
+  "greatest": number;
 };
 
 export type Expression = LiteralValue | NameValue | CallValue | DrawValue;
@@ -3055,6 +3057,12 @@ export type JobStatus = "not_run" | "cannot_run" | "stale" | "queued" | "awaitin
 
 export type KeyedFamily = "documents" | "steps" | "elements";
 
+export type Length = {
+  "kind"?: "length";
+  "length": Expression;
+  "max_steps"?: number | null;
+};
+
 export type Level = 0 | 1 | 2;
 
 export type LineEncodings = {
@@ -3103,6 +3111,18 @@ export type LocatedSpan = {
   "span": TextSpan;
 };
 
+export type MakeAbsent = {
+  "op": "absent";
+  "signal": string;
+  "cell": string;
+};
+
+export type MakePresent = {
+  "op": "present";
+  "signal": string;
+  "epoch": string;
+};
+
 export type ManualCombination = {
   "manual": Array<Record<string, string>>;
 };
@@ -3115,6 +3135,8 @@ export type MatrixCompositionDelta = {
   "schema_version"?: string | null;
 };
 
+export type Member = "variable" | "epoch" | "signal";
+
 export type MemberFamily = "documents" | "steps";
 
 export type MergeCards = {
@@ -3125,6 +3147,13 @@ export type MergeCards = {
 
 export type ModelPort = {
   "kind"?: "model";
+};
+
+export type MoveMember = {
+  "op": "move";
+  "member": Member;
+  "id": string;
+  "index": number;
 };
 
 export type Name = string;
@@ -3251,6 +3280,7 @@ export type Problem = {
   "path"?: Array<string | number>;
   "span"?: TextSpan | null;
   "model_address"?: ModelAddress | null;
+  "variable"?: string | null;
 };
 
 export type ProblemCode = "parse" | "unknown_name" | "duplicate_name" | "unknown_function" | "plugin_missing" | "arity" | "type_mismatch" | "unit_mismatch" | "level_too_fine" | "out_of_scope" | "cycle" | "unbounded_length" | "length_budget" | "missing_limit" | "list_count" | "structure";
@@ -3332,6 +3362,12 @@ export type RemoveDocumentValue = {
   "op": "remove";
 };
 
+export type RemoveMember = {
+  "op": "remove";
+  "member": Member;
+  "id": string;
+};
+
 export type RemoveProjectValue = {
   "op": "remove";
   "path": DifferencePointer;
@@ -3339,14 +3375,6 @@ export type RemoveProjectValue = {
 
 export type RemoveValue = {
   "op": "remove";
-};
-
-export type RenameMember = {
-  "family": KeyedFamily;
-  "member": string;
-  "document"?: string | null;
-  "kind": "rename";
-  "label": string | null;
 };
 
 export type ReplayDeclarationAddress = {
@@ -3373,6 +3401,10 @@ export type ReportFigure = {
 
 export type ReportText = {
   "markdown": string;
+};
+
+export type Rest = {
+  "kind"?: "rest";
 };
 
 export type RootDocument = {
@@ -3440,10 +3472,31 @@ export type SetDocumentValue = {
   "value": JsonValue;
 };
 
+export type SetLink = {
+  "op": "link";
+  "model_field": string;
+  "variable": string | null;
+};
+
 export type SetProjectValue = {
   "op": "add" | "replace";
   "path": DifferencePointer;
   "value": JsonValue;
+};
+
+export type SetSpan = {
+  "op": "set_span";
+  "signal": string;
+  "cell": string;
+  "first_epoch": string;
+  "last_epoch": string;
+};
+
+export type SetType = {
+  "op": "set_type";
+  "member": "variable" | "signal";
+  "id": string;
+  "type": ValueType;
 };
 
 export type SetValue = {
@@ -3648,6 +3701,7 @@ export type StudioAuthoringCatalog = {
   "registries": Record<string, StudioAuthoringRegistry>;
   "step_inputs": Record<string, Record<string, InputRole>>;
   "analyze_inputs": Record<string, InputRole>;
+  "tasks": StudioTaskCatalog;
 };
 
 export type StudioAuthoringChange = {
@@ -3840,10 +3894,17 @@ export type StudioInputPlace = {
   "role": string;
 };
 
+export type StudioLibraryDocument = {
+  "distribution": string;
+  "library": string;
+  "name": string;
+  "document": RootDocument;
+};
+
 export type StudioMemberCommand = {
   "revision": Sha256;
   "presentation_revision": Sha256;
-  "command": RenameMember | ChangeKey | DuplicateMember | DetachMember | SplitCard | MergeCards;
+  "command": feedbax__contracts__studio_project__RenameMember | ChangeKey | DuplicateMember | DetachMember | SplitCard | MergeCards;
 };
 
 export type StudioMemberCommandResult = {
@@ -3861,6 +3922,11 @@ export type StudioModelPlace = {
   "part": "model";
   "document": string | null;
   "member"?: ModelAddress | null;
+};
+
+export type StudioNamedValueType = {
+  "name": string;
+  "type": ValueType;
 };
 
 export type StudioObjectivePlace = {
@@ -3952,10 +4018,22 @@ export type StudioProjectWindowMap = {
   "regroup_refused"?: Array<string>;
 };
 
+export type StudioProjectWindowMapAxis = {
+  "id": string;
+  "values": Array<StudioProjectWindowMapAxisValue>;
+};
+
+export type StudioProjectWindowMapAxisValue = {
+  "id": string;
+  "label": string;
+  "rule": string;
+};
+
 export type StudioProjectWindowMapCoordinate = {
   "value_id": string;
   "label": string | null;
   "value": JsonValue;
+  "axis_value": string;
 };
 
 export type StudioProjectWindowMapEdge = {
@@ -3998,6 +4076,7 @@ export type StudioProjectWindowMapInputAxis = {
   "value_id": string;
   "label": string | null;
   "carries": Array<string>;
+  "axis_value": string;
 };
 
 export type StudioProjectWindowMapProblem = {
@@ -4039,6 +4118,7 @@ export type StudioProjectWindowMapRow = {
   "origin"?: number | null;
   "target_total"?: number | null;
   "light"?: StudioSavedLightHistory | null;
+  "resolved"?: boolean;
 };
 
 export type StudioProjectWindowMapStep = {
@@ -4051,7 +4131,7 @@ export type StudioProjectWindowMapStep = {
   "document_uses"?: Array<string>;
   "exceptions"?: Array<StudioProjectWindowMapException>;
   "status_counts": Record<string, number>;
-  "rule_axes"?: Record<string, Record<string, string>>;
+  "axes"?: Array<StudioProjectWindowMapAxis>;
   "rule_metrics"?: Array<string>;
 };
 
@@ -4186,6 +4266,12 @@ export type StudioSweptParameterMissing = {
   "parameter_label": string;
 };
 
+export type StudioTaskCatalog = {
+  "blank": TaskDocument;
+  "documents": Array<StudioLibraryDocument>;
+  "value_types": Array<StudioNamedValueType>;
+};
+
 export type StudioTaskChoice = {
   "document": string;
   "problems": Array<Problem>;
@@ -4195,6 +4281,13 @@ export type StudioTaskPlace = {
   "part": "task";
   "document": string | null;
   "parameter"?: string | null;
+  "initializes"?: string | null;
+  "start"?: StudioTaskStart | null;
+};
+
+export type StudioTaskStart = {
+  "address": ModelAddress;
+  "name": string;
 };
 
 export type StudioTaskType = {
@@ -4274,9 +4367,11 @@ export type StudioTrialAuthoring = {
   "tasks": Array<StudioTaskChoice>;
   "variables": Array<ScopedValue>;
   "signals": Array<ScopedValue>;
-  "epochs": Array<Epoch>;
+  "epochs": Array<StudioTrialEpoch>;
   "period_seconds": number;
   "n_steps": number | null;
+  "batch_size": number | null;
+  "reads_model": boolean;
   "inputs": Array<StudioTrialInput>;
   "outputs": Array<StudioTrialOutput>;
   "resets": Array<StudioTrialReset>;
@@ -4290,7 +4385,7 @@ export type StudioTrialAuthoring = {
 export type StudioTrialAuthoringRequest = {
   "revision": Sha256;
   "run": StudioSavedTrainKey;
-  "change"?: StudioTrialDocumentEdit | StudioTrialDocumentReset | StudioTrialBindingEdit | StudioTrialSelectDocument | StudioTrialExpressionEdit | null;
+  "change"?: StudioTrialDocumentEdit | StudioTrialDocumentReset | StudioTrialBindingEdit | StudioTrialSelectDocument | StudioTrialExpressionEdit | StudioTrialStructureEdit | null;
   "scope"?: StudioTrialStepScope | AxisValueRuns | ListedRuns | null;
 };
 
@@ -4311,10 +4406,15 @@ export type StudioTrialDocumentReset = {
   "paths": Array<Pointer>;
 };
 
+export type StudioTrialEpoch = {
+  "id": string;
+  "name": string;
+  "steps": EpochSteps | null;
+};
+
 export type StudioTrialExpressionEdit = {
   "kind": "expression";
-  "term": string;
-  "field": "measure" | "weight";
+  "path": Pointer;
   "edit": FieldTextEdit | FieldKindEdit | FieldNameEdit;
 };
 
@@ -4334,6 +4434,7 @@ export type StudioTrialField = {
   "members"?: Array<StudioSweepValue>;
   "changed"?: boolean;
   "path": string;
+  "problems"?: Array<Problem>;
 };
 
 export type StudioTrialInput = {
@@ -4352,9 +4453,10 @@ export type StudioTrialOutput = {
 
 export type StudioTrialReset = {
   "address": ModelAddress;
+  "name": string;
   "type": ValueType;
   "finest": Level;
-  "variable": string | null;
+  "required": boolean;
 };
 
 export type StudioTrialSelectDocument = {
@@ -4366,6 +4468,11 @@ export type StudioTrialSelectDocument = {
 export type StudioTrialStepScope = {
   "kind": "step";
   "chosen_steps"?: Array<string>;
+};
+
+export type StudioTrialStructureEdit = {
+  "kind": "structure";
+  "changes": Array<TaskStructureChange>;
 };
 
 export type StudioValueStructure = {
@@ -4440,6 +4547,8 @@ export type TaskPort = {
   "kind"?: "task";
   "task_key"?: string | null;
 };
+
+export type TaskStructureChange = AddMember | RemoveMember | feedbax__contracts__task_structure__RenameMember | MoveMember | SetType | SetSpan | MakeAbsent | MakePresent | SetLink;
 
 export type TextSpan = {
   "start": number;
@@ -4526,6 +4635,21 @@ export type WholeDimensions = {
   "parameter": string;
 };
 
+export type feedbax__contracts__studio_project__RenameMember = {
+  "family": KeyedFamily;
+  "member": string;
+  "document"?: string | null;
+  "kind": "rename";
+  "label": string | null;
+};
+
+export type feedbax__contracts__task_structure__RenameMember = {
+  "op": "rename";
+  "member": Member;
+  "id": string;
+  "name": string;
+};
+
 export const acausalReportDefaults = {
   "AcausalGraphSpec": {
     "schema_id": "feedbax.spec.acausal_graph",
@@ -4587,6 +4711,582 @@ export const acausalReportDefaults = {
     "wraps": [],
     "law_revision": null,
     "parameters": {}
+  }
+};
+
+export const blankTask = {
+  "id": "task",
+  "variables": [],
+  "epochs": [
+    {
+      "id": "epoch",
+      "name": "epoch",
+      "end": {
+        "kind": "length",
+        "length": {
+          "kind": "literal",
+          "value": 1,
+          "unit": "s"
+        },
+        "max_steps": null
+      }
+    }
+  ],
+  "signals": [],
+  "links": [],
+  "fixed_steps": null,
+  "validation_trials": [
+    {
+      "variables": {},
+      "epoch_steps": {}
+    }
+  ]
+};
+
+export const firstTrainTask: Document = {
+  "schema": "feedbax.spec.task_document",
+  "payload": {
+    "id": "simple-reaches",
+    "variables": [
+      {
+        "id": "start",
+        "name": "start",
+        "type": {
+          "base": "real",
+          "shape": [
+            2
+          ],
+          "dimensions": {
+            "length": 1
+          }
+        },
+        "value": {
+          "kind": "call",
+          "function": "vector",
+          "args": [
+            {
+              "kind": "draw",
+              "family": "uniform",
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": -0.4
+                },
+                {
+                  "kind": "literal",
+                  "value": 0.5
+                }
+              ]
+            },
+            {
+              "kind": "draw",
+              "family": "uniform",
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": -0.3
+                },
+                {
+                  "kind": "literal",
+                  "value": 0.45
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "id": "target",
+        "name": "target",
+        "type": {
+          "base": "real",
+          "shape": [
+            2
+          ],
+          "dimensions": {
+            "length": 1
+          }
+        },
+        "value": {
+          "kind": "call",
+          "function": "vector",
+          "args": [
+            {
+              "kind": "draw",
+              "family": "uniform",
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": -0.4
+                },
+                {
+                  "kind": "literal",
+                  "value": 0.5
+                }
+              ]
+            },
+            {
+              "kind": "draw",
+              "family": "uniform",
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": -0.3
+                },
+                {
+                  "kind": "literal",
+                  "value": 0.45
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "epochs": [
+      {
+        "id": "move",
+        "name": "move",
+        "end": {
+          "kind": "length",
+          "length": {
+            "kind": "literal",
+            "value": 80,
+            "unit": "st"
+          }
+        }
+      }
+    ],
+    "signals": [
+      {
+        "id": "target_pos",
+        "name": "target_pos",
+        "type": {
+          "base": "real",
+          "shape": [
+            2
+          ],
+          "dimensions": {
+            "length": 1
+          }
+        },
+        "cells": [
+          {
+            "id": "move",
+            "first_epoch": "move",
+            "last_epoch": "move",
+            "value": {
+              "kind": "name",
+              "reference": "target"
+            }
+          }
+        ]
+      },
+      {
+        "id": "target_vel",
+        "name": "target_vel",
+        "type": {
+          "base": "real",
+          "shape": [
+            2
+          ],
+          "dimensions": {
+            "length": 1,
+            "time": -1
+          }
+        },
+        "cells": [
+          {
+            "id": "move",
+            "first_epoch": "move",
+            "last_epoch": "move",
+            "value": {
+              "kind": "call",
+              "function": "vector",
+              "args": [
+                {
+                  "kind": "literal",
+                  "value": 0
+                },
+                {
+                  "kind": "literal",
+                  "value": 0
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "id": "goal",
+        "name": "goal",
+        "type": {
+          "base": "real",
+          "shape": [
+            2
+          ],
+          "dimensions": {
+            "length": 1
+          }
+        },
+        "cells": [
+          {
+            "id": "move",
+            "first_epoch": "move",
+            "last_epoch": "move",
+            "value": {
+              "kind": "name",
+              "reference": "target"
+            }
+          }
+        ]
+      }
+    ],
+    "links": [
+      {
+        "model_field": "{\"composites\":[],\"element\":{\"kind\":\"field\",\"parent\":{\"id\":\"plant\",\"kind\":\"component\"},\"path\":[\"reset\",\"effector\",\"position\"]}}",
+        "variable": "start"
+      }
+    ],
+    "fixed_steps": 80,
+    "validation_trials": [
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            -0.050000011920928955
+          ],
+          "target": [
+            0.3999999761581421,
+            -0.050000011920928955
+          ]
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            -0.050000011920928955
+          ],
+          "target": [
+            0.2117448770875089,
+            0.34091572931308595
+          ]
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            -0.050000011920928955
+          ],
+          "target": [
+            -0.21126049082001508,
+            0.43746394416998285
+          ]
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            -0.050000011920928955
+          ],
+          "target": [
+            -0.5504844577930674,
+            0.16694185763785016
+          ]
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            -0.050000011920928955
+          ],
+          "target": [
+            -0.5504844577930674,
+            -0.266941881479708
+          ]
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            -0.050000011920928955
+          ],
+          "target": [
+            -0.2112604908200152,
+            -0.5374639680118407
+          ]
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            -0.050000011920928955
+          ],
+          "target": [
+            0.21174487708750878,
+            -0.4409157531549439
+          ]
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            -0.050000011920928955
+          ],
+          "target": [
+            0.6999999582767487,
+            -0.050000011920928955
+          ]
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            -0.050000011920928955
+          ],
+          "target": [
+            0.5117448592061155,
+            0.34091572931308595
+          ]
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            -0.050000011920928955
+          ],
+          "target": [
+            0.08873949129859149,
+            0.43746394416998285
+          ]
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            -0.050000011920928955
+          ],
+          "target": [
+            -0.25048447567446086,
+            0.16694185763785016
+          ]
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            -0.050000011920928955
+          ],
+          "target": [
+            -0.2504844756744609,
+            -0.266941881479708
+          ]
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            -0.050000011920928955
+          ],
+          "target": [
+            0.08873949129859136,
+            -0.5374639680118407
+          ]
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            -0.050000011920928955
+          ],
+          "target": [
+            0.5117448592061153,
+            -0.4409157531549439
+          ]
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            0.19999998807907104
+          ],
+          "target": [
+            0.3999999761581421,
+            0.19999998807907104
+          ]
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            0.19999998807907104
+          ],
+          "target": [
+            0.2117448770875089,
+            0.590915729313086
+          ]
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            0.19999998807907104
+          ],
+          "target": [
+            -0.21126049082001508,
+            0.6874639441699828
+          ]
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            0.19999998807907104
+          ],
+          "target": [
+            -0.5504844577930674,
+            0.4169418576378502
+          ]
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            0.19999998807907104
+          ],
+          "target": [
+            -0.5504844577930674,
+            -0.01694188147970796
+          ]
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            0.19999998807907104
+          ],
+          "target": [
+            -0.2112604908200152,
+            -0.28746396801184076
+          ]
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            -0.10000002384185791,
+            0.19999998807907104
+          ],
+          "target": [
+            0.21174487708750878,
+            -0.1909157531549439
+          ]
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            0.19999998807907104
+          ],
+          "target": [
+            0.6999999582767487,
+            0.19999998807907104
+          ]
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            0.19999998807907104
+          ],
+          "target": [
+            0.5117448592061155,
+            0.590915729313086
+          ]
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            0.19999998807907104
+          ],
+          "target": [
+            0.08873949129859149,
+            0.6874639441699828
+          ]
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            0.19999998807907104
+          ],
+          "target": [
+            -0.25048447567446086,
+            0.4169418576378502
+          ]
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            0.19999998807907104
+          ],
+          "target": [
+            -0.2504844756744609,
+            -0.01694188147970796
+          ]
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            0.19999998807907104
+          ],
+          "target": [
+            0.08873949129859136,
+            -0.28746396801184076
+          ]
+        }
+      },
+      {
+        "variables": {
+          "start": [
+            0.19999995827674866,
+            0.19999998807907104
+          ],
+          "target": [
+            0.5117448592061153,
+            -0.1909157531549439
+          ]
+        }
+      }
+    ]
   }
 };
 
@@ -7515,131 +8215,6 @@ export const StudioInterventionTransformSpecSchema: z.ZodType<StudioIntervention
     .strict()
 ) as unknown as z.ZodType<StudioInterventionTransformSpec>;
 
-export const StudioTaskEpochSpecSchema: z.ZodType<StudioTaskEpochSpec> = z.lazy(() =>
-  z
-    .object({
-      "id": z.string(),
-      "label": z.string(),
-      "index": z.number().int().safe(),
-      "length": StudioValueSpecSchema,
-      "metadata": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<StudioTaskEpochSpec>;
-
-export const StudioEpochValueSpecSchema: z.ZodType<StudioEpochValueSpec> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.epoch_value").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.epoch_value.v1").optional(),
-      "target_id": z.string().min(1),
-      "epoch_id": z.string().min(1),
-      "value_spec": StudioValueSpecSchema,
-    })
-    .strict()
-    .superRefine((input, ctx) => {
-      const value = { ...{"schema_id": "feedbax.spec.studio.epoch_value", "schema_version": "feedbax.spec.studio.epoch_value.v1"}, ...input };
-      if (containsNonFiniteNumber(value.value_spec)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "timeline epoch values must contain only finite numbers",
-        });
-      }
-      if (!['constant', 'function', 'distribution'].includes(value.value_spec.mode)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "timeline epoch values support constant, function, or distribution modes",
-        });
-      }
-      if ((value.value_spec.mode === 'constant' && value.value_spec.value == null) || (value.value_spec.mode === 'function' && !value.value_spec.function_id) || (value.value_spec.mode === 'distribution' && (value.value_spec.distribution == null || typeof value.value_spec.distribution !== 'object' || value.value_spec.distribution.parameters == null || typeof value.value_spec.distribution.parameters !== 'object'))) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "timeline epoch value is missing its required mode payload",
-        });
-      }
-      if (value.value_spec.mode === 'distribution' && (() => { const distribution = value.value_spec.distribution as Record<string, unknown>; const parameters = distribution?.parameters as Record<string, unknown>; const first = parameters?.[distribution?.family === 'uniform' ? 'min' : 'mean']; const second = parameters?.[distribution?.family === 'uniform' ? 'max' : 'std']; if (distribution?.family !== 'uniform' && distribution?.family !== 'normal') return true; if (typeof first !== 'number' || !Number.isFinite(first) || typeof second !== 'number' || !Number.isFinite(second)) return true; return distribution.family === 'uniform' ? second < first : second < 0; })()) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "timeline distribution must be uniform min/max or normal mean/std with valid bounds",
-        });
-      }
-    })
-) as unknown as z.ZodType<StudioEpochValueSpec>;
-
-export const StudioTaskTimelineSignalSpecSchema: z.ZodType<StudioTaskTimelineSignalSpec> = z.lazy(() =>
-  z
-    .object({
-      "id": z.string(),
-      "label": z.string(),
-      "kind": z.string(),
-      "task_data_id": z.string().nullable().optional(),
-      "path": z.string(),
-      "value_spec": StudioValueSpecSchema.nullable().optional(),
-      "value_schema": z.record(z.string(), z.unknown()).nullable().optional(),
-      "task_data_schema": z.record(z.string(), z.unknown()).nullable().optional(),
-      "metadata": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<StudioTaskTimelineSignalSpec>;
-
-export const StudioTaskTimelineSegmentSpecSchema: z.ZodType<StudioTaskTimelineSegmentSpec> = z.lazy(() =>
-  z
-    .object({
-      "id": z.string(),
-      "label": z.string(),
-      "epoch_ids": z.array(z.string()).optional(),
-      "metadata": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-) as unknown as z.ZodType<StudioTaskTimelineSegmentSpec>;
-
-export const StudioTaskTimelineSpecSchema: z.ZodType<StudioTaskTimelineSpec> = z.lazy(() =>
-  z
-    .object({
-      "schema_id": z.literal("feedbax.spec.studio.task_timeline").optional(),
-      "schema_version": z.literal("feedbax.spec.studio.task_timeline.v2").optional(),
-      "epochs": z.array(StudioTaskEpochSpecSchema).optional(),
-      "signals": z.array(StudioTaskTimelineSignalSpecSchema).optional(),
-      "epoch_value_specs": z.array(StudioEpochValueSpecSchema).optional(),
-      "segments": z.array(StudioTaskTimelineSegmentSpecSchema).optional(),
-      "metadata": z.record(z.string(), z.unknown()).optional(),
-    })
-    .strict()
-    .superRefine((input, ctx) => {
-      const value = { ...{"schema_id": "feedbax.spec.studio.task_timeline", "schema_version": "feedbax.spec.studio.task_timeline.v2", "epochs": [], "signals": [], "epoch_value_specs": [], "segments": [], "metadata": {}}, ...input };
-      if (value.schema_id !== 'feedbax.spec.studio.task_timeline' || value.schema_version !== 'feedbax.spec.studio.task_timeline.v2') {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "unsupported Studio task timeline schema identity",
-        });
-      }
-      if (hasDuplicate((value.epochs ?? []).map((epoch) => epoch.id)) || (value.epochs ?? []).map((epoch) => epoch.index).slice().sort((a, b) => a - b).some((index, position) => index !== position)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "timeline epochs must have unique ids and contiguous indexes",
-        });
-      }
-      if (hasDuplicate((value.signals ?? []).map((signal) => signal.task_data_id ?? signal.id))) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "timeline signal target ids must be unique",
-        });
-      }
-      if ((value.epoch_value_specs ?? []).some((entry) => !(value.signals ?? []).some((signal) => (signal.task_data_id ?? signal.id) === entry.target_id) || !(value.epochs ?? []).some((epoch) => epoch.id === entry.epoch_id)) || hasDuplicate((value.epoch_value_specs ?? []).map((entry) => `${entry.target_id}\u0000${entry.epoch_id}`))) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "timeline epoch values must name known targets and epochs without overlap",
-        });
-      }
-      if ((value.epoch_value_specs ?? []).some((entry, index, entries) => index > 0 && (entries[index - 1].target_id > entry.target_id || (entries[index - 1].target_id === entry.target_id && (value.epochs ?? []).findIndex((epoch) => epoch.id === entries[index - 1].epoch_id) > (value.epochs ?? []).findIndex((epoch) => epoch.id === entry.epoch_id))))) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "timeline epoch values must be ordered by target_id then epoch index",
-        });
-      }
-    })
-) as unknown as z.ZodType<StudioTaskTimelineSpec>;
-
 export const StudioTaskDataSpecSchema: z.ZodType<StudioTaskDataSpec> = z.lazy(() =>
   z
     .object({
@@ -8554,6 +9129,54 @@ export const SampledTaskTrialSchema: z.ZodType<SampledTaskTrial> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<SampledTaskTrial>;
 
+export const SampledTaskTrialsSchema: z.ZodType<SampledTaskTrials> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("trials"),
+      "trials": z.array(SampledTaskTrialSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<SampledTaskTrials>;
+
+export const TaskEpochShareSchema: z.ZodType<TaskEpochShare> = z.lazy(() =>
+  z
+    .object({
+      "epoch": z.string(),
+      "label": z.string(),
+      "share": z.array(z.number().finite()),
+    })
+    .strict()
+) as unknown as z.ZodType<TaskEpochShare>;
+
+export const TaskSignalAggregateSchema: z.ZodType<TaskSignalAggregate> = z.lazy(() =>
+  z
+    .object({
+      "presence": z.array(z.number().finite()),
+      "percentiles": z.array(z.array(z.array(z.number().finite())).nullable()).nullable(),
+    })
+    .strict()
+) as unknown as z.ZodType<TaskSignalAggregate>;
+
+export const TaskVariableRangeSchema: z.ZodType<TaskVariableRange> = z.lazy(() =>
+  z
+    .object({
+      "least": z.unknown(),
+      "greatest": z.unknown(),
+    })
+    .strict()
+) as unknown as z.ZodType<TaskVariableRange>;
+
+export const TaskTrialAggregateSchema: z.ZodType<TaskTrialAggregate> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("aggregate"),
+      "epochs": z.array(TaskEpochShareSchema),
+      "signals": z.record(z.string(), TaskSignalAggregateSchema),
+      "variables": z.record(z.string(), TaskVariableRangeSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<TaskTrialAggregate>;
+
 export const TaskTrialSampleRequestSchema: z.ZodType<TaskTrialSampleRequest> = z.lazy(() =>
   z
     .object({
@@ -8562,11 +9185,12 @@ export const TaskTrialSampleRequestSchema: z.ZodType<TaskTrialSampleRequest> = z
       "python_task": PythonTaskSelectionSchema.nullable().optional(),
       "input_overrides": z.record(z.string(), z.string()).optional(),
       "seed": z.number().int().safe().optional(),
-      "count": z.number().int().safe().gte(1).lte(64).optional(),
+      "count": z.number().int().safe().gte(1).optional(),
+      "aggregate": z.boolean().optional(),
     })
     .strict()
     .superRefine((input, ctx) => {
-      const value = { ...{"input_overrides": {}, "seed": 0, "count": 8}, ...input };
+      const value = { ...{"input_overrides": {}, "seed": 0, "count": 8, "aggregate": false}, ...input };
       if ((value.task == null) === (value.python_task == null)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -8582,8 +9206,9 @@ export const TaskTrialSampleResponseSchema: z.ZodType<TaskTrialSampleResponse> =
       "schema_version": z.string().optional(),
       "task": z.string(),
       "seed": z.number().int().safe(),
+      "count": z.number().int().safe(),
       "n_steps": z.number().int().safe(),
-      "trials": z.array(SampledTaskTrialSchema),
+      "drawn": z.union([SampledTaskTrialsSchema, TaskTrialAggregateSchema]),
     })
     .strict()
 ) as unknown as z.ZodType<TaskTrialSampleResponse>;
@@ -9046,6 +9671,17 @@ export const InspectionStatusResponseSchema: z.ZodType<InspectionStatusResponse>
     .strict()
 ) as unknown as z.ZodType<InspectionStatusResponse>;
 
+export const AddMemberSchema: z.ZodType<AddMember> = z.lazy(() =>
+  z.object({
+    "op": z.literal("add"),
+    "member": MemberSchema,
+    "name": z.string().min(1),
+    "index": z.union([z.number().int().safe().min(0), z.null()]).optional(),
+    "type": z.union([ValueTypeSchema, z.null()]).optional(),
+    "initializes": z.array(z.string()).optional(),
+  }).strict()
+) as unknown as z.ZodType<AddMember>;
+
 export const AnalysisDocumentSchema: z.ZodType<AnalysisDocument> = z.lazy(() =>
   z.object({
     "schema_version": z.literal("feedbax.analysis_document.v1").optional(),
@@ -9209,6 +9845,7 @@ export const CallValueSchema: z.ZodType<CallValue> = z.lazy(() =>
 
 export const CellSchema: z.ZodType<Cell> = z.lazy(() =>
   z.object({
+    "id": z.string(),
     "first_epoch": z.string(),
     "last_epoch": z.string(),
     "value": ExpressionSchema,
@@ -9449,6 +10086,10 @@ export const DuplicateRunSchema: z.ZodType<DuplicateRun> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<DuplicateRun>;
 
+export const EndSchema: z.ZodType<End> = z.lazy(() =>
+  z.union([LengthSchema, RestSchema])
+) as unknown as z.ZodType<End>;
+
 export const EnsureDocumentCollectionSchema: z.ZodType<EnsureDocumentCollection> = z.lazy(() =>
   z.object({
     "op": z.literal("ensure"),
@@ -9493,10 +10134,17 @@ export const EpochSchema: z.ZodType<Epoch> = z.lazy(() =>
   z.object({
     "id": z.string(),
     "name": z.string(),
-    "length": z.union([ExpressionSchema, z.null()]).optional(),
-    "max_steps": z.union([z.number().int().safe().min(0), z.null()]).optional(),
+    "end": EndSchema,
   }).strict()
 ) as unknown as z.ZodType<Epoch>;
+
+export const EpochStepsSchema: z.ZodType<EpochSteps> = z.lazy(() =>
+  z.object({
+    "least": z.number().int().safe().min(0),
+    "nominal": z.number().int().safe().min(0),
+    "greatest": z.number().int().safe().min(0),
+  }).strict()
+) as unknown as z.ZodType<EpochSteps>;
 
 export const ExpressionSchema: z.ZodType<Expression> = z.lazy(() =>
   z.union([LiteralValueSchema, NameValueSchema, CallValueSchema, DrawValueSchema])
@@ -9733,6 +10381,14 @@ export const KeyedFamilySchema: z.ZodType<KeyedFamily> = z.lazy(() =>
   z.union([z.literal("documents"), z.literal("steps"), z.literal("elements")])
 ) as unknown as z.ZodType<KeyedFamily>;
 
+export const LengthSchema: z.ZodType<Length> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("length").optional(),
+    "length": ExpressionSchema,
+    "max_steps": z.union([z.number().int().safe().min(0), z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<Length>;
+
 export const LevelSchema: z.ZodType<Level> = z.lazy(() =>
   z.union([z.literal(0), z.literal(1), z.literal(2)])
 ) as unknown as z.ZodType<Level>;
@@ -9797,6 +10453,22 @@ export const LocatedSpanSchema: z.ZodType<LocatedSpan> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<LocatedSpan>;
 
+export const MakeAbsentSchema: z.ZodType<MakeAbsent> = z.lazy(() =>
+  z.object({
+    "op": z.literal("absent"),
+    "signal": z.string(),
+    "cell": z.string(),
+  }).strict()
+) as unknown as z.ZodType<MakeAbsent>;
+
+export const MakePresentSchema: z.ZodType<MakePresent> = z.lazy(() =>
+  z.object({
+    "op": z.literal("present"),
+    "signal": z.string(),
+    "epoch": z.string(),
+  }).strict()
+) as unknown as z.ZodType<MakePresent>;
+
 export const ManualCombinationSchema: z.ZodType<ManualCombination> = z.lazy(() =>
   z.object({
     "manual": z.array(z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.string().min(1))),
@@ -9812,6 +10484,10 @@ export const MatrixCompositionDeltaSchema: z.ZodType<MatrixCompositionDelta> = z
     "schema_version": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<MatrixCompositionDelta>;
+
+export const MemberSchema: z.ZodType<Member> = z.lazy(() =>
+  z.union([z.literal("variable"), z.literal("epoch"), z.literal("signal")])
+) as unknown as z.ZodType<Member>;
 
 export const MemberFamilySchema: z.ZodType<MemberFamily> = z.lazy(() =>
   z.union([z.literal("documents"), z.literal("steps")])
@@ -9830,6 +10506,15 @@ export const ModelPortSchema: z.ZodType<ModelPort> = z.lazy(() =>
     "kind": z.literal("model").optional(),
   }).strict()
 ) as unknown as z.ZodType<ModelPort>;
+
+export const MoveMemberSchema: z.ZodType<MoveMember> = z.lazy(() =>
+  z.object({
+    "op": z.literal("move"),
+    "member": MemberSchema,
+    "id": z.string(),
+    "index": z.number().int().safe().min(0),
+  }).strict()
+) as unknown as z.ZodType<MoveMember>;
 
 export const NameSchema: z.ZodType<Name> = z.lazy(() =>
   z.string()
@@ -10002,6 +10687,7 @@ export const ProblemSchema: z.ZodType<Problem> = z.lazy(() =>
     "path": z.array(z.union([z.string(), z.number().int().safe()])).optional(),
     "span": z.union([TextSpanSchema, z.null()]).optional(),
     "model_address": z.union([ModelAddressSchema, z.null()]).optional(),
+    "variable": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<Problem>;
 
@@ -10114,6 +10800,14 @@ export const RemoveDocumentValueSchema: z.ZodType<RemoveDocumentValue> = z.lazy(
   }).strict()
 ) as unknown as z.ZodType<RemoveDocumentValue>;
 
+export const RemoveMemberSchema: z.ZodType<RemoveMember> = z.lazy(() =>
+  z.object({
+    "op": z.literal("remove"),
+    "member": MemberSchema,
+    "id": z.string(),
+  }).strict()
+) as unknown as z.ZodType<RemoveMember>;
+
 export const RemoveProjectValueSchema: z.ZodType<RemoveProjectValue> = z.lazy(() =>
   z.object({
     "op": z.literal("remove"),
@@ -10126,16 +10820,6 @@ export const RemoveValueSchema: z.ZodType<RemoveValue> = z.lazy(() =>
     "op": z.literal("remove"),
   }).strict()
 ) as unknown as z.ZodType<RemoveValue>;
-
-export const RenameMemberSchema: z.ZodType<RenameMember> = z.lazy(() =>
-  z.object({
-    "family": KeyedFamilySchema,
-    "member": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-    "document": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
-    "kind": z.literal("rename"),
-    "label": z.union([z.string().min(1), z.null()]),
-  }).strict()
-) as unknown as z.ZodType<RenameMember>;
 
 export const ReplayDeclarationAddressSchema: z.ZodType<ReplayDeclarationAddress> = z.lazy(() =>
   z.object({
@@ -10172,6 +10856,12 @@ export const ReportTextSchema: z.ZodType<ReportText> = z.lazy(() =>
     "markdown": z.string(),
   }).strict()
 ) as unknown as z.ZodType<ReportText>;
+
+export const RestSchema: z.ZodType<Rest> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("rest").optional(),
+  }).strict()
+) as unknown as z.ZodType<Rest>;
 
 export const RootDocumentSchema: z.ZodType<RootDocument> = z.lazy(() =>
   z.object({
@@ -10262,6 +10952,14 @@ export const SetDocumentValueSchema: z.ZodType<SetDocumentValue> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<SetDocumentValue>;
 
+export const SetLinkSchema: z.ZodType<SetLink> = z.lazy(() =>
+  z.object({
+    "op": z.literal("link"),
+    "model_field": z.string(),
+    "variable": z.union([z.string(), z.null()]),
+  }).strict()
+) as unknown as z.ZodType<SetLink>;
+
 export const SetProjectValueSchema: z.ZodType<SetProjectValue> = z.lazy(() =>
   z.object({
     "op": z.union([z.literal("add"), z.literal("replace")]),
@@ -10269,6 +10967,25 @@ export const SetProjectValueSchema: z.ZodType<SetProjectValue> = z.lazy(() =>
     "value": jsonValueSchema,
   }).strict()
 ) as unknown as z.ZodType<SetProjectValue>;
+
+export const SetSpanSchema: z.ZodType<SetSpan> = z.lazy(() =>
+  z.object({
+    "op": z.literal("set_span"),
+    "signal": z.string(),
+    "cell": z.string(),
+    "first_epoch": z.string(),
+    "last_epoch": z.string(),
+  }).strict()
+) as unknown as z.ZodType<SetSpan>;
+
+export const SetTypeSchema: z.ZodType<SetType> = z.lazy(() =>
+  z.object({
+    "op": z.literal("set_type"),
+    "member": z.union([z.literal("variable"), z.literal("signal")]),
+    "id": z.string(),
+    "type": ValueTypeSchema,
+  }).strict()
+) as unknown as z.ZodType<SetType>;
 
 export const SetValueSchema: z.ZodType<SetValue> = z.lazy(() =>
   z.object({
@@ -10537,6 +11254,7 @@ export const StudioAuthoringCatalogSchema: z.ZodType<StudioAuthoringCatalog> = z
     "registries": z.record(z.string(), StudioAuthoringRegistrySchema),
     "step_inputs": z.record(z.string(), z.record(z.string(), InputRoleSchema)),
     "analyze_inputs": z.record(z.string(), InputRoleSchema),
+    "tasks": StudioTaskCatalogSchema,
   }).strict()
 ) as unknown as z.ZodType<StudioAuthoringCatalog>;
 
@@ -10790,11 +11508,20 @@ export const StudioInputPlaceSchema: z.ZodType<StudioInputPlace> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<StudioInputPlace>;
 
+export const StudioLibraryDocumentSchema: z.ZodType<StudioLibraryDocument> = z.lazy(() =>
+  z.object({
+    "distribution": z.string(),
+    "library": z.string(),
+    "name": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "document": RootDocumentSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioLibraryDocument>;
+
 export const StudioMemberCommandSchema: z.ZodType<StudioMemberCommand> = z.lazy(() =>
   z.object({
     "revision": Sha256Schema,
     "presentation_revision": Sha256Schema,
-    "command": z.union([RenameMemberSchema, ChangeKeySchema, DuplicateMemberSchema, DetachMemberSchema, SplitCardSchema, MergeCardsSchema]),
+    "command": z.union([feedbax__contracts__studio_project__RenameMemberSchema, ChangeKeySchema, DuplicateMemberSchema, DetachMemberSchema, SplitCardSchema, MergeCardsSchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioMemberCommand>;
 
@@ -10820,6 +11547,13 @@ export const StudioModelPlaceSchema: z.ZodType<StudioModelPlace> = z.lazy(() =>
     "member": z.union([ModelAddressSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioModelPlace>;
+
+export const StudioNamedValueTypeSchema: z.ZodType<StudioNamedValueType> = z.lazy(() =>
+  z.object({
+    "name": z.string(),
+    "type": ValueTypeSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioNamedValueType>;
 
 export const StudioObjectivePlaceSchema: z.ZodType<StudioObjectivePlace> = z.lazy(() =>
   z.object({
@@ -10936,11 +11670,27 @@ export const StudioProjectWindowMapSchema: z.ZodType<StudioProjectWindowMap> = z
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMap>;
 
+export const StudioProjectWindowMapAxisSchema: z.ZodType<StudioProjectWindowMapAxis> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "values": z.array(StudioProjectWindowMapAxisValueSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMapAxis>;
+
+export const StudioProjectWindowMapAxisValueSchema: z.ZodType<StudioProjectWindowMapAxisValue> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "label": z.string(),
+    "rule": z.string(),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectWindowMapAxisValue>;
+
 export const StudioProjectWindowMapCoordinateSchema: z.ZodType<StudioProjectWindowMapCoordinate> = z.lazy(() =>
   z.object({
     "value_id": z.string(),
     "label": z.union([z.string(), z.null()]),
     "value": jsonValueSchema,
+    "axis_value": z.string(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapCoordinate>;
 
@@ -10995,6 +11745,7 @@ export const StudioProjectWindowMapInputAxisSchema: z.ZodType<StudioProjectWindo
     "value_id": z.string(),
     "label": z.union([z.string(), z.null()]),
     "carries": z.array(z.string()),
+    "axis_value": z.string(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapInputAxis>;
 
@@ -11042,6 +11793,7 @@ export const StudioProjectWindowMapRowSchema: z.ZodType<StudioProjectWindowMapRo
     "origin": z.union([z.number().int().safe(), z.null()]).optional(),
     "target_total": z.union([z.number().int().safe(), z.null()]).optional(),
     "light": z.union([StudioSavedLightHistorySchema, z.null()]).optional(),
+    "resolved": z.boolean().optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapRow>;
 
@@ -11056,7 +11808,7 @@ export const StudioProjectWindowMapStepSchema: z.ZodType<StudioProjectWindowMapS
     "document_uses": z.array(z.string()).optional(),
     "exceptions": z.array(StudioProjectWindowMapExceptionSchema).optional(),
     "status_counts": z.record(z.string(), z.number().int().safe()),
-    "rule_axes": z.record(z.string(), z.record(z.string(), z.string())).optional(),
+    "axes": z.array(StudioProjectWindowMapAxisSchema).optional(),
     "rule_metrics": z.array(z.string()).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapStep>;
@@ -11234,6 +11986,14 @@ export const StudioSweptParameterMissingSchema: z.ZodType<StudioSweptParameterMi
   }).strict()
 ) as unknown as z.ZodType<StudioSweptParameterMissing>;
 
+export const StudioTaskCatalogSchema: z.ZodType<StudioTaskCatalog> = z.lazy(() =>
+  z.object({
+    "blank": TaskDocumentSchema,
+    "documents": z.array(StudioLibraryDocumentSchema),
+    "value_types": z.array(StudioNamedValueTypeSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioTaskCatalog>;
+
 export const StudioTaskChoiceSchema: z.ZodType<StudioTaskChoice> = z.lazy(() =>
   z.object({
     "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
@@ -11246,8 +12006,17 @@ export const StudioTaskPlaceSchema: z.ZodType<StudioTaskPlace> = z.lazy(() =>
     "part": z.literal("task"),
     "document": z.union([z.string(), z.null()]),
     "parameter": z.union([z.string(), z.null()]).optional(),
+    "initializes": z.union([z.string(), z.null()]).optional(),
+    "start": z.union([StudioTaskStartSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTaskPlace>;
+
+export const StudioTaskStartSchema: z.ZodType<StudioTaskStart> = z.lazy(() =>
+  z.object({
+    "address": ModelAddressSchema,
+    "name": z.string(),
+  }).strict()
+) as unknown as z.ZodType<StudioTaskStart>;
 
 export const StudioTaskTypeSchema: z.ZodType<StudioTaskType> = z.lazy(() =>
   z.object({
@@ -11341,9 +12110,11 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "tasks": z.array(StudioTaskChoiceSchema),
     "variables": z.array(ScopedValueSchema),
     "signals": z.array(ScopedValueSchema),
-    "epochs": z.array(EpochSchema),
+    "epochs": z.array(StudioTrialEpochSchema),
     "period_seconds": z.number().finite(),
     "n_steps": z.union([z.number().int().safe(), z.null()]),
+    "batch_size": z.union([z.number().int().safe(), z.null()]),
+    "reads_model": z.boolean(),
     "inputs": z.array(StudioTrialInputSchema),
     "outputs": z.array(StudioTrialOutputSchema),
     "resets": z.array(StudioTrialResetSchema),
@@ -11359,7 +12130,7 @@ export const StudioTrialAuthoringRequestSchema: z.ZodType<StudioTrialAuthoringRe
   z.object({
     "revision": Sha256Schema,
     "run": StudioSavedTrainKeySchema,
-    "change": z.union([z.union([StudioTrialDocumentEditSchema, StudioTrialDocumentResetSchema, StudioTrialBindingEditSchema, StudioTrialSelectDocumentSchema, StudioTrialExpressionEditSchema]), z.null()]).optional(),
+    "change": z.union([z.union([StudioTrialDocumentEditSchema, StudioTrialDocumentResetSchema, StudioTrialBindingEditSchema, StudioTrialSelectDocumentSchema, StudioTrialExpressionEditSchema, StudioTrialStructureEditSchema]), z.null()]).optional(),
     "scope": z.union([z.union([StudioTrialStepScopeSchema, AxisValueRunsSchema, ListedRunsSchema]), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialAuthoringRequest>;
@@ -11387,11 +12158,18 @@ export const StudioTrialDocumentResetSchema: z.ZodType<StudioTrialDocumentReset>
   }).strict()
 ) as unknown as z.ZodType<StudioTrialDocumentReset>;
 
+export const StudioTrialEpochSchema: z.ZodType<StudioTrialEpoch> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "name": z.string(),
+    "steps": z.union([EpochStepsSchema, z.null()]),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialEpoch>;
+
 export const StudioTrialExpressionEditSchema: z.ZodType<StudioTrialExpressionEdit> = z.lazy(() =>
   z.object({
     "kind": z.literal("expression"),
-    "term": z.string(),
-    "field": z.union([z.literal("measure"), z.literal("weight")]),
+    "path": PointerSchema,
     "edit": z.union([FieldTextEditSchema, FieldKindEditSchema, FieldNameEditSchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialExpressionEdit>;
@@ -11413,6 +12191,7 @@ export const StudioTrialFieldSchema: z.ZodType<StudioTrialField> = z.lazy(() =>
     "members": z.array(StudioSweepValueSchema).optional(),
     "changed": z.boolean().optional(),
     "path": z.string(),
+    "problems": z.array(ProblemSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialField>;
 
@@ -11437,9 +12216,10 @@ export const StudioTrialOutputSchema: z.ZodType<StudioTrialOutput> = z.lazy(() =
 export const StudioTrialResetSchema: z.ZodType<StudioTrialReset> = z.lazy(() =>
   z.object({
     "address": ModelAddressSchema,
+    "name": z.string(),
     "type": ValueTypeSchema,
     "finest": LevelSchema,
-    "variable": z.union([z.string(), z.null()]),
+    "required": z.boolean(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialReset>;
 
@@ -11457,6 +12237,13 @@ export const StudioTrialStepScopeSchema: z.ZodType<StudioTrialStepScope> = z.laz
     "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialStepScope>;
+
+export const StudioTrialStructureEditSchema: z.ZodType<StudioTrialStructureEdit> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("structure"),
+    "changes": z.array(TaskStructureChangeSchema).min(1),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialStructureEdit>;
 
 export const StudioValueStructureSchema: z.ZodType<StudioValueStructure> = z.lazy(() =>
   z.object({
@@ -11556,6 +12343,10 @@ export const TaskPortSchema: z.ZodType<TaskPort> = z.lazy(() =>
     "task_key": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<TaskPort>;
+
+export const TaskStructureChangeSchema: z.ZodType<TaskStructureChange> = z.lazy(() =>
+  z.union([AddMemberSchema, RemoveMemberSchema, feedbax__contracts__task_structure__RenameMemberSchema, MoveMemberSchema, SetTypeSchema, SetSpanSchema, MakeAbsentSchema, MakePresentSchema, SetLinkSchema])
+) as unknown as z.ZodType<TaskStructureChange>;
 
 export const TextSpanSchema: z.ZodType<TextSpan> = z.lazy(() =>
   z.object({
@@ -11675,6 +12466,25 @@ export const WholeDimensionsSchema: z.ZodType<WholeDimensions> = z.lazy(() =>
     "parameter": z.string().min(1),
   }).strict()
 ) as unknown as z.ZodType<WholeDimensions>;
+
+export const feedbax__contracts__studio_project__RenameMemberSchema: z.ZodType<feedbax__contracts__studio_project__RenameMember> = z.lazy(() =>
+  z.object({
+    "family": KeyedFamilySchema,
+    "member": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "document": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+    "kind": z.literal("rename"),
+    "label": z.union([z.string().min(1), z.null()]),
+  }).strict()
+) as unknown as z.ZodType<feedbax__contracts__studio_project__RenameMember>;
+
+export const feedbax__contracts__task_structure__RenameMemberSchema: z.ZodType<feedbax__contracts__task_structure__RenameMember> = z.lazy(() =>
+  z.object({
+    "op": z.literal("rename"),
+    "member": MemberSchema,
+    "id": z.string(),
+    "name": z.string().min(1),
+  }).strict()
+) as unknown as z.ZodType<feedbax__contracts__task_structure__RenameMember>;
 
 export const contractSchemas = {
   KeepOpen: KeepOpenSchema,

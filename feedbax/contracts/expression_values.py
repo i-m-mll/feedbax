@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from enum import IntEnum, StrEnum
 from typing import Annotated, Literal
 
@@ -118,6 +119,8 @@ class Problem(ValueRecord):
     path: tuple[str | int, ...] = ()
     span: TextSpan | None = None
     model_address: ModelAddress | None = Field(default=None, exclude_if=lambda value: value is None)
+    variable: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    """The id of the Task variable whose member at ``path`` the problem is in, such as the variable a link initializes."""
 
 
 type Scalar = StrictBool | StrictInt | FiniteFloat
@@ -215,3 +218,10 @@ def children(node: Expression) -> tuple[tuple[NodePath, Expression], ...]:
     if isinstance(node, DrawValue):
         return tuple((("args", i), child) for i, child in enumerate(node.args))
     return ()
+
+
+def walk(tree: Expression, at: NodePath = ()) -> Iterator[tuple[NodePath, Expression]]:
+    """Every node of ``tree`` with its path, the root first."""
+    yield at, tree
+    for step, child in children(tree):
+        yield from walk(child, (*at, *step))

@@ -41,15 +41,22 @@ type State = {
   pick: ReferencePick | null;
   /** A Model element the slot showing its document moves to. */
   reveal: ModelLocation | null;
-  /** The runs a rule field being written chooses, boxed on their step's card while it has focus. */
+  /** The runs a rule field being written chooses, boxed on their step's card while it has focus, or picked there. */
   choosing: RuleChoice | null;
 };
 
-/** A step's runs, by run id, that a rule being written chooses. */
+/**
+ * A step's runs, by run id, that a rule being written chooses. While runs are picked for the rule, `toggle` takes a
+ * press on a mark, an axis value or a row of the step instead of the selection.
+ */
 export interface RuleChoice {
   readonly step: string;
   readonly runs: ReadonlySet<string>;
+  readonly toggle?: (runs: readonly string[]) => void;
 }
+
+/** Marks what a press on toggles while runs are picked, so that pressing it does not end the picking. */
+export const rulePickSurface = 'data-rule-pick';
 
 export type ElementSelectionStore = ReturnType<typeof useElementSelectionStore>;
 

@@ -9,6 +9,7 @@ const allowed = [
   'FEEDBAX_STUDIO_E2E_WORKERS',
   'FEEDBAX_STUDIO_TIER',
   'FEEDBAX_STUDIO_TRACE',
+  'FEEDBAX_STUDIO_CPU_THROTTLE',
 ] as const;
 
 const env: Record<string, string> = { FEEDBAX_BROWSER_TEST_RUNNER: '1' };

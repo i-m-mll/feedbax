@@ -37,6 +37,7 @@ from feedbax.objectives.document import (
     Reduction,
     compile_objective,
 )
+from feedbax.contracts.task_document import VALUE_TYPES, Length, Rest
 from feedbax.tasks.document import (
     Cell,
     DocumentTask,
@@ -51,7 +52,7 @@ from feedbax.tasks.document import (
     compile_task,
 )
 from feedbax.runtime.graph import GraphTraceRequest
-from feedbax.compiler.model_reset import ModelResetError
+from feedbax.compiler.model_reset import ModelResetError, ModelResetPlan
 from tests.test_model_document_plan import _nested_model
 
 PERIOD = 0.01
@@ -189,15 +190,15 @@ def example(kind, functions, *, zero=False, interface=PORTLESS, reference_valida
         variables.append(variable(2, "B(0.5)"))
         first = expression("0 st" if zero else "U(5 st, 14 st)")
         epochs = (
-            Epoch(id="hold", name="hold", length=first, max_steps=14),
-            Epoch(id="cue", name="cue", length=expression("U(10 st, 19 st)"), max_steps=19),
-            Epoch(id="move", name="move", length=None),
+            Epoch(id="hold", name="hold", end=Length(length=first, max_steps=14)),
+            Epoch(id="cue", name="cue", end=Length(length=expression("U(10 st, 19 st)"), max_steps=19)),
+            Epoch(id="move", name="move", end=Rest()),
         )
     else:
-        epochs = (Epoch(id="move", name="move", length=expression(f"{STEPS} st")),)
+        epochs = (Epoch(id="move", name="move", end=Length(length=expression(f"{STEPS} st"))),)
 
     def cell(start, end, text):
-        return Cell(first_epoch=start, last_epoch=end, value=expression(text, names))
+        return Cell(id=f"{start}-{end}", first_epoch=start, last_epoch=end, value=expression(text, names))
 
     def signal(identifier, value_type, *cells):
         return Signal(id=identifier, name=identifier, type=value_type, cells=cells)
@@ -438,9 +439,9 @@ def test_objective_windows_reduce_defined_samples_with_history(functions):
             variables=(),
             signals=(),
             epochs=(
-                Epoch(id="first", name="first", length=expression("1 st")),
-                Epoch(id="left", name="left", length=expression("2 st")),
-                Epoch(id="right", name="right", length=expression("2 st")),
+                Epoch(id="first", name="first", end=Length(length=expression("1 st"))),
+                Epoch(id="left", name="left", end=Length(length=expression("2 st"))),
+                Epoch(id="right", name="right", end=Length(length=expression("2 st"))),
             ),
         ),
         functions,
@@ -501,7 +502,7 @@ def test_inherited_objective_preserves_term_ids_without_observing_missing_values
 
     x, y = name("x", REAL), name("y", REAL)
     task = compile_task(
-        TaskDocument(id="replacement", variables=(), signals=(), epochs=(Epoch(id="probe", name="Probe"),),
+        TaskDocument(id="replacement", variables=(), signals=(), epochs=(Epoch(id="probe", name="Probe", end=Rest()),),
                      fixed_steps=2),
         functions, model=PORTLESS,
     )
@@ -543,8 +544,8 @@ def test_temporal_variable_can_leave_a_cell_absent(functions):
             ),
         ),
         epochs=(
-            Epoch(id="before", name="before", length=expression("2 st")),
-            Epoch(id="after", name="after", length=expression("2 st")),
+            Epoch(id="before", name="before", end=Length(length=expression("2 st"))),
+            Epoch(id="after", name="after", end=Length(length=expression("2 st"))),
         ),
         signals=(
             Signal(
@@ -553,6 +554,7 @@ def test_temporal_variable_can_leave_a_cell_absent(functions):
                 type=REAL,
                 cells=(
                     Cell(
+                        id="seen",
                         first_epoch="before",
                         last_epoch="after",
                         value=expression("velocity", (velocity,)),
@@ -644,6 +646,33 @@ def test_trial_configuration_changes_force_without_mutating_model():
     assert not bool(curl.configuration_values()["active"])
 
 
+def test_a_start_the_model_requires_is_a_problem_until_a_variable_initializes_it(functions, paired_model):
+    """Catches a task that pairs with a Model whose state has no start of its own, leaving it at whatever the
+    component's storage holds."""
+    interface, _ = paired_model
+    position = reset_position(interface).to_text()
+    required = replace(interface, reset=ModelResetPlan(tuple(
+        replace(binding, field=replace(binding.field, required=True))
+        if binding.field.address.to_text() == position else binding
+        for binding in interface.reset._bindings
+    )))
+    doc, _ = example("simple", functions, interface=interface)
+    overrides = {"reach_target": "target_pos"}
+    unset = compile_task(doc.model_copy(update={"links": ()}), functions, model=required, input_overrides=overrides)
+    assert [problem.path for problem in unset] == [("links", position)]
+    # Catches a missing start not tied to its Model value, which Studio could then name only by the Task's links.
+    assert unset[0].model_address == reset_position(interface)
+    # Catches a link to a variable that does not exist placed nowhere, though it leaves its Model value unstarted.
+    dangling = compile_task(
+        doc.model_copy(update={"links": (Link(model_field=position, variable="ghost"),)}),
+        functions, model=required, input_overrides=overrides,
+    )
+    assert [(problem.path, problem.model_address) for problem in dangling] == [
+        (("links", position), reset_position(interface)),
+    ]
+    assert not isinstance(compile_task(doc, functions, model=required, input_overrides=overrides), tuple)
+
+
 @pytest.mark.parametrize("kind", ["simple", "delayed", "stabilization"])
 def test_document_pair_drives_signed_model_graph_with_real_reset(kind, functions, paired_model):
     interface, graph = paired_model
@@ -672,6 +701,8 @@ def test_document_pair_drives_signed_model_graph_with_real_reset(kind, functions
     )
     assert bad[0].path == ("links", read_only.to_text())
     assert bad[0].code.value == "unknown_name"
+    # Catches a link problem not tied to its variable, which Studio would then mark on the Task as a whole.
+    assert bad[0].variable == "start"
 
     run_key = jr.key(8)
     keys = jr.split(run_key, 6)
@@ -748,3 +779,46 @@ def test_reach_and_stabilization_sample_distributions(kind, functions, reference
             )
     if kind == "stabilization":
         np.testing.assert_array_equal(after[0], after[1])
+
+
+def test_each_independent_problem_is_reported_and_a_bad_variable_marks_its_readers(functions):
+    """Catches a compile that stops at a bad variable, so problems in later fields stay hidden until it is mended, or
+    that marks fields which never read it; and catches a direction that cannot be an Angle variable."""
+    types = dict(VALUE_TYPES)
+    declared = (
+        ("start", "Point", "[0 m, 0 m]"),
+        ("reach", "Distance", "0.1 m"),
+        ("direction", "Angle", "45°"),
+        ("target", "Point", "start + polar(reach, direction)"),
+        ("bad", "Distance", "true"),
+        ("reads_bad", "Distance", "2 * bad"),
+    )
+    names = tuple(name(identifier, types[kind]) for identifier, kind, _ in declared)
+    variables = tuple(
+        Variable(id=identifier, name=identifier, type=types[kind], value=expression(text, names))
+        for identifier, kind, text in declared
+    )
+
+    def signal(identifier, kind, text):
+        cell = Cell(id="c", first_epoch="move", last_epoch="move", value=expression(text, names))
+        return Signal(id=identifier, name=identifier, type=types[kind], cells=(cell,))
+
+    document = TaskDocument(
+        id="task", variables=variables,
+        epochs=(Epoch(id="move", name="move", end=Length(length=expression("1 m"))),),
+        signals=(signal("goal", "Point", "target"), signal("far", "Distance", "bad"), signal("wrong", "Point", "true")),
+    )
+    problems = compile_task(document, functions, model=PORTLESS)
+    assert sorted(problem.path for problem in problems) == [
+        ("epochs", "move", "end", "length"),
+        ("signals", "far", "cells", "c", "value"),
+        ("signals", "wrong", "cells", "c", "value"),
+        ("variables", "bad", "value"),
+        ("variables", "reads_bad", "value", "args", 1),
+    ]
+    mended = document.model_copy(update={
+        "variables": tuple(item for item in variables if item.id not in ("bad", "reads_bad")),
+        "epochs": (Epoch(id="move", name="move", end=Length(length=expression("10 st"))),),
+        "signals": document.signals[:1],
+    })
+    assert isinstance(compile_task(mended, functions, model=PORTLESS), DocumentTask)

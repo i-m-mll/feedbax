@@ -73,7 +73,8 @@ function unfold(element: Element, root: Element) {
 
 /**
  * Puts the keyboard on the requested field of `root` as soon as `root` shows a field, unless a command has run since
- * the request: the keyboard then belongs to what that command opened.
+ * the request, or the keyboard is already on a field of `root`: it then belongs to what that command opened, or to the
+ * field being written.
  */
 export function useFieldFocus(root: RefObject<HTMLElement>, request: FieldFocusRequest | undefined, onFocused: () => void) {
   const focused = useRef(onFocused);
@@ -84,17 +85,19 @@ export function useFieldFocus(root: RefObject<HTMLElement>, request: FieldFocusR
     if (!request || !element) return;
     const requested = commandsRun();
     const attempt = () => {
-      if (commandsRun() !== requested) {
+      const active = document.activeElement;
+      if (commandsRun() !== requested || (active && element.contains(active) && active.matches(field))) {
         focused.current();
         return true;
       }
-      // The named field, or without a name the step's own first field, once it can take the keyboard;
-      // the first field of any kind when the fields shown do not include it.
+      // The named field, or without a name the step's own first field once no region before it is loading, as soon
+      // as it can take the keyboard; the first field of any kind when the fields shown do not include it.
+      const busy = element.querySelector('[aria-busy="true"]');
       const scope = target === undefined ? '[data-field]' : `[data-field="${CSS.escape(target)}"]`;
       const named = element.querySelector(scope);
+      if (target === undefined && named && busy && busy.compareDocumentPosition(named) & Node.DOCUMENT_POSITION_FOLLOWING) return false;
       if (named) unfold(named, element);
-      const shown = named === null && (element.querySelector('[data-field]') !== null ||
-        element.querySelector('[aria-busy="true"]') === null);
+      const shown = named === null && (element.querySelector('[data-field]') !== null || busy === null);
       const chosen = named || shown ? element.querySelector<HTMLElement>(named ? `${scope} :is(${field})` : field) : null;
       if (!chosen) return false;
       chosen.focus();

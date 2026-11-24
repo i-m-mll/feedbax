@@ -124,7 +124,6 @@ from feedbax.application.composition import load_application
 assert_feedbax_revision_exact(sys.argv[2])
 registry = load_application().bundle
 assert registry.components.get("feedbax.VanillaRNN") is not None
-assert registry.python_tasks.resolve("feedbax.Reaching") is not None
 assert "feedbax.aligned_velocity" in registry.operations.keys()
 assert "feedbax.VelocitySummary" in registry.figure_templates.keys()
 print(json.dumps({

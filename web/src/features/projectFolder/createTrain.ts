@@ -1,14 +1,15 @@
 import { studioName } from '@/components/activity/studioVocabulary';
-import type { Document, StudioProjectCreateFile } from '@/generated/studioContracts';
+import { firstTrainTask, type Document, type StudioProjectCreateFile } from '@/generated/studioContracts';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import { blankDocuments } from './useProjectDocuments';
 import { trainingDocumentKeys } from './trainingDocument';
 import { generatedName, holds } from './generatedName';
 
 const { model, task, objective, training } = blankDocuments;
-const taskDocumentSchema = 'feedbax.spec.task_document';
+const pythonTaskSchema = 'feedbax.spec.python_task';
 
-/** Create a Train step on the project's Model, Task, Objective and training documents, creating those that are missing. */
+/** Create a Train step on the project's Model, Task, Objective and training documents, creating those that are missing;
+ * a missing Task is feedbax's simple reaches. */
 export async function createTrain(editor: ProjectEditController, reviewedRevision: string) {
   const { saved } = editor.getSnapshot();
   if (saved.revision !== reviewedRevision) throw new ProjectEditConflictError();
@@ -25,8 +26,8 @@ export async function createTrain(editor: ProjectEditController, reviewedRevisio
     return id;
   }
   const graph = bindDocument('model', model);
-  const taskDocument = bindDocument('task', task, [task.schema, taskDocumentSchema]);
-  const taskField = documents[taskDocument]?.schema === taskDocumentSchema ? 'task' : 'python_task';
+  const taskDocument = bindDocument('task', firstTrainTask, [task.schema, pythonTaskSchema]);
+  const taskField = documents[taskDocument]?.schema === pythonTaskSchema ? 'python_task' : 'task';
   const objectiveDocument = bindDocument('objective', objective);
   const trainingDocument = bindDocument('training', training);
   const id = generatedName('train', holds(saved.project.steps));

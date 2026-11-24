@@ -43,15 +43,35 @@ def test_sample_task_trials_returns_the_authored_trial(client, expression_functi
     assert first.status_code == second.status_code == 200, first.text
     result = first.json()
     assert result == second.json()
-    assert result["schema_version"] == "feedbax.execution.sampled_task_trials.v2"
     assert result["task"] == kind
     assert result["n_steps"] == 80
-    assert len(result["trials"]) == 4
-    trial = result["trials"][0]
+    assert len(result["drawn"]["trials"]) == 4
+    trial = result["drawn"]["trials"][0]
     assert len(trial["inputs"]["target_pos"]) == result["n_steps"]
     assert list(trial["inits"].values()) == [trial["variables"]["start"]]
     assert trial["timeline"][0]["start"] == 0
     assert trial["timeline"][-1]["end"] == result["n_steps"]
+
+
+# Catches an aggregate that counts every trial as in an epoch whose end is drawn (or none), and percentiles taken over
+# steps where the signal is absent.
+def test_aggregate_of_delayed_reaches_shares_the_drawn_epoch(client, expression_functions):
+    payload = authored_preview("delayed", expression_functions) | {"count": 64, "seed": 0, "aggregate": True}
+    response = client.post("/api/execution/task-trials/sample", json=payload)
+    assert response.status_code == 200, response.text
+    drawn = response.json()["drawn"]
+    assert drawn["kind"] == "aggregate"
+    hold = next(epoch["share"] for epoch in drawn["epochs"] if epoch["epoch"] == "hold")
+    assert hold[:5] == [1.0] * 5
+    assert all(0 < share < 1 for share in hold[6:14])
+    assert hold[14:] == [0.0] * (len(hold) - 14)
+    target = drawn["signals"]["target_pos"]
+    absent = [step for step, share in enumerate(target["presence"]) if share == 0]
+    assert absent and all(target["percentiles"][step] is None for step in absent)
+    present = target["percentiles"][-1]
+    assert len(present) == 2 and all(low <= high for component in present for low, high in zip(component, component[1:]))
+    catch = drawn["variables"]["catch"]
+    assert (catch["least"], catch["greatest"]) == (False, True)
 
 
 def test_sample_task_trials_reports_model_pairing_problem(client, expression_functions):

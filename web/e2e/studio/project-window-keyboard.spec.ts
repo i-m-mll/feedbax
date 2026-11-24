@@ -1,6 +1,6 @@
 import { expect, firstJobTimeout, test } from './fixtures/studio';
 import { type APIRequestContext, type Locator, type Page } from '@playwright/test';
-import type { ModelDocument, ModelEditResponse, ModelFieldResponse, StudioActivityJob, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainKey, StudioSavedTrainRuns, WorkspaceReplayTrial } from '../../src/generated/studioContracts';
+import { firstTrainTask, type ModelDocument, type ModelEditResponse, type ModelFieldResponse, type StudioActivityJob, type StudioJobSubmission, type StudioProjectDocument, type StudioProjectSnapshot, type StudioSavedTrainKey, type StudioSavedTrainRuns, type WorkspaceReplayTrial } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, runName, runProjectFixture, seedManagedProject, sweepLabel } from './fixtures/canonicalTrain';
 import { runPythonProcess } from './fixtures/python';
 import { authorFirstTrain } from './fixtures/firstTrainAuthoring';
@@ -47,13 +47,13 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   expect(Object.keys(saved.project.steps ?? {})).toEqual(['train']);
   expect(saved.project.steps?.train).toMatchObject({
     kind: 'train', base: { inline: { trial_documents: {
-      model: { document: 'model' }, python_task: { document: 'task' },
+      model: { document: 'model' }, task: { document: 'task' },
       objective: { document: 'objective' },
     } } },
   });
   expect(saved.project.documents).toMatchObject({
     model: { schema: 'feedbax.spec.model', payload: { ports: {}, interior: {} } },
-    task: { schema: 'feedbax.spec.python_task', payload: { type: 'feedbax.Reaching', params: {} } },
+    task: firstTrainTask,
     objective: { schema: 'feedbax.spec.objective_document', payload: { terms: [] } },
   });
 
@@ -91,29 +91,22 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   const [run] = plan.rows;
   expect(run).toMatchObject({ key: { step: 'train', row: 'default' }, status: 'cannot_run', attempts: [] });
   expect(plan.window_map?.rows.map(({ key }) => key)).toEqual([run.key]);
-  expect(plan.window_map?.problems).toMatchObject([{ path: '/trial_documents/model/interior/components' }]);
+  expect(plan.window_map?.problems).toMatchObject([
+    { code: 'cannot_run', path: expect.stringMatching(/^\/trial_documents\/task\/links\//), place: { document: 'task' } },
+  ]);
   const refused = await request.post(`${projectPath}/train-runs`, {
     data: { revision: saved.revision, run_keys: [run.key], token: crypto.randomUUID() },
   });
   expect(refused.status(), await refused.text()).toBe(202);
   expect((await refused.json() as StudioJobSubmission).items).toMatchObject([
-    { disposition: 'rejected', reason: '/trial_documents/model/interior/components: Model has no components.' },
+    { disposition: 'rejected', reason: expect.stringMatching(/^cannot_run \/trial_documents\/task\/links\/.*: start is linked to a field the Model does not have\.$/) },
   ]);
 
   const tab = (name: string) => page.getByRole('tab', { name, exact: true });
   await tab('Runs').click();
   await expect(page.getByRole('complementary', { name: 'Inspector', exact: true })
     .getByRole('textbox', { name: 'Batches', exact: true })).toBeEnabled();
-  await tab('Task').click();
-  const task = page.getByRole('tabpanel', { name: 'Task', exact: true });
-  const reach = task.getByRole('textbox', { name: 'Target x (m)', exact: true });
-  await expect(reach).toHaveValue('0.15');
-  await expect(task.getByRole('alert')).toHaveCount(0);
-  await enter(reach, '0.6');
-  await expect.poll(async () => rootPayload((await readSaved(request, projectPath)).project.documents?.task))
-    .toMatchObject({ params: { x: 0.6 } });
   const current = await readSaved(request, projectPath);
-  expect(current.revision).not.toBe(saved.revision);
 
   await page.reload();
   await expect(page).toHaveURL(new RegExp(`[?&]project=${snapshot.project_id}(?:&|$)`));
@@ -122,13 +115,13 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   await expect(model.locator('.react-flow')).toBeVisible();
   await expect(model.getByRole('button', { name: 'Model Document model', exact: true })).toBeVisible();
   await expect(card.locator('[data-status-mark="cannot_run"]')).toBeVisible();
-  await tab('Task').click();
-  await expect(reach).toHaveValue('0.6');
   const persisted = await readSaved(request, projectPath);
   expect(persisted).toMatchObject({ project_id: snapshot.project_id, revision: current.revision, project: current.project });
   const reopened = await readPlan(persisted.revision);
   expect(reopened.rows).toMatchObject([{ key: run.key, status: 'cannot_run', attempts: [] }]);
-  expect(reopened.window_map?.problems).toMatchObject([{ path: '/trial_documents/model/interior/components' }]);
+  expect(reopened.window_map?.problems).toMatchObject([
+    { code: 'cannot_run', path: expect.stringMatching(/^\/trial_documents\/task\/links\//), place: { document: 'task' } },
+  ]);
 });
 
 test('authors, checkpoint-resumes and evaluates a subset from one fresh managed project', { tag: '@round' }, async ({ page, request, studio }, info) => {
@@ -204,7 +197,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
 
   await page.reload();
   await expect(mapStep(page, 'train')).toBeVisible();
-  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   const activity = page.getByRole('region', { name: 'Activity', exact: true });
   const resumed = post(page, `/api/jobs/${initial.job_id}/resume`);
   await activity.getByRole('button', { name: 'Resume', exact: true }).click();
@@ -226,7 +219,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   });
   expect(trained.attempts.map(({ job_id }) => job_id)).toEqual([initial.job_id, continued.job_id]);
 
-  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   await page.keyboard.press('Control+Meta+2');
   await activate(page, mapStep(page, 'train'));
   await activate(page, sweepLabel(train, 'learning-rate'));
@@ -241,7 +234,9 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   expect(evaluated.project.steps!.evaluate.inputs?.subject).toEqual({
     step: 'train', checkpoint: 'last', where: { rule: `learning-rate=${selected.coordinates['learning-rate'].value}` },
   });
-  await expect(page.getByRole('complementary', { name: 'Inspector', exact: true })).toContainText('1 of 3');
+  const subject = page.getByRole('complementary', { name: 'Inspector', exact: true }).getByRole('list', { name: 'Subject', exact: true });
+  await expect(subject.getByRole('combobox', { name: 'Runs', exact: true })).toHaveValue('learning-rate=0.001');
+  await expect(subject).toContainText('1/3');
   const projection = await plan(evaluated.revision);
   const [pending] = projection.window_map!.evaluations!;
   expect(projection.window_map?.evaluations).toHaveLength(1);
@@ -256,7 +251,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   });
   const [trial] = result.trials;
   expect(trial).toBeTruthy();
-  expect(result.trials).toHaveLength(1);
+  expect(result.trials).toHaveLength((rootPayload(firstTrainTask) as { validation_trials: unknown[] }).validation_trials.length);
 
   await page.reload();
   await activate(page, mapStep(page, 'evaluate'));
@@ -384,7 +379,8 @@ test('Model edits follow the lit users of a saved shared document', async ({ pag
   await enter(mass, '3');
   const refusal = await (await rejected).json() as ModelFieldResponse;
   expect(refusal.problems?.[0].reason).toBe('Select all steps that use this Model to change its document value.');
-  await expect(inspector.getByRole('alert')).toContainText(refusal.problems![0].reason);
+  await expect(mass.locator('..').getByRole('img', { name: 'Problem', exact: true }))
+    .toHaveAttribute('data-app-tip', refusal.problems![0].reason);
   expect((await readSaved(request, projectPath)).revision).toBe(shared.revision);
   for (const step of ['alpha', 'beta', 'gamma']) expect(await readMass(shared.revision, afterShared[step].key)).toBe('2');
   await mass.press('Escape');

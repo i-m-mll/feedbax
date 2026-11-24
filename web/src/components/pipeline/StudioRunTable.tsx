@@ -14,13 +14,13 @@ import {
   type RunSetsByStep,
 } from "@/features/pipeline/selection";
 import { Button } from "@/components/ui/Button";
-import { ScrollFade } from "@/components/ui/ScrollFade";
 import { Table, TableCell, TableHeaderCell, TableRow, TableRowHeader } from "@/components/ui/Table";
+import { rulePickSurface } from "@/features/projectWindow/elementSelection";
 import { CommandContextMenu, type RunMenu } from "./CommandContextMenu";
 import type { AxisMenu } from "./PipelineRunMarks";
 import { DocumentPicker, type DocumentEditing } from "@/features/projectWindow/DocumentPicker";
 
-const gutter = "w-px pl-1 pr-2 text-right";
+const gutter = "pl-1 pr-2 text-right";
 
 /** The controls inside a run's row; a press anywhere else on the row chooses the run. */
 const rowControls = "button, a, input, select, textarea, [role=button], [role=menuitem], [contenteditable=true]";
@@ -61,6 +61,8 @@ interface TableProps extends RunSelectionProps {
   fillSlot?: boolean;
   runMenu?: RunMenu;
   axisMenu?: AxisMenu;
+  /** While runs are picked for a rule: those picked, drawn as selected, and the toggle a press on a row takes. */
+  picking?: { readonly runs: ReadonlySet<string>; toggle(runs: readonly string[]): void };
 }
 
 /** A sweep's column head: the axis, the set it reads, and the axis's context menu. */
@@ -77,7 +79,7 @@ function AxisHead({ step, sweep, axisMenu }: { step: string; sweep: PlanSweepVie
   return authored?.commands.length ? <CommandContextMenu commands={() => authored.commands} trigger={head} /> : head;
 }
 
-export function StudioRunTable({ step, state, onSelectionChange, rows, related, fillSlot, runMenu, axisMenu }: TableProps) {
+export function StudioRunTable({ step, state, onSelectionChange, rows, related, fillSlot, runMenu, axisMenu, picking }: TableProps) {
   const scroll = useRef<HTMLDivElement>(null);
   const mountedRows = useRef(new Map<string, HTMLTableRowElement>());
   const pendingKeyboardFocus = useRef<{ id: string; column: number } | null>(null);
@@ -144,8 +146,16 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
   const bottom = last ? virtual.getTotalSize() - last.end : 0;
 
   return (
-    <ScrollFade ref={scroll} axis="both" className={`${fillSlot ? "h-full" : "max-h-96"} [--fade-inset-top:var(--row-height)]`}>
-      <Table aria-label={studioName("runs")} aria-rowcount={rows.length + 1}>
+      <Table aria-label={studioName("runs")} aria-rowcount={rows.length + 1} {...picking && { [rulePickSurface]: "" }}
+        columns={[
+          { least: "2.5rem", fixed: true },
+          ...named ? [{ least: "10rem", fixed: true }] : [],
+          ...showVariant ? [{ least: "6rem" }] : [],
+          ...sweeps.map(() => ({ least: "6rem" })),
+          { least: "8rem" }, { least: "8rem" },
+        ]}
+        held={named ? 2 : 1}
+        box={{ ref: scroll, axis: "both", className: `${fillSlot ? "h-full" : "max-h-96"} [--fade-inset-top:var(--row-height)]` }}>
         <thead className="sticky top-0 z-10">
           <tr aria-rowindex={1}>
             <TableHeaderCell aria-hidden="true" className={gutter} />
@@ -160,12 +170,13 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
           {top > 0 && <tr aria-hidden="true"><td colSpan={width} style={{ height: top }} /></tr>}
           {items.map((item) => {
             const run = rows[item.index];
-            const lit = selected.has(run.id);
+            const lit = picking ? picking.runs.has(run.id) : selected.has(run.id);
             const reason = run.results.some(({ validity }) => validity.reasons?.length) ? undefined : run.reason;
-            const selectRow = selectionButton((extend) => onSelectionChange(selectRun(state, { stepId: step.id, runId: run.id }, extend)));
+            const selectRow = picking ? { onClick: () => picking.toggle([run.id]), onKeyDown: undefined }
+              : selectionButton((extend) => onSelectionChange(selectRun(state, { stepId: step.id, runId: run.id }, extend)));
             return (
               <CommandContextMenu key={run.id} onOpen={() => { if (!lit) onSelectionChange(selectRun(state, { stepId: step.id, runId: run.id })); }}
-                commands={runMenu && ((anchor) => runMenu([run], anchor))} trigger={<TableRow
+                commands={!picking && runMenu ? (anchor) => runMenu([run], anchor) : undefined} trigger={<TableRow
                 data-result-run={run.id}
                 ref={(node) => {
                   virtual.measureElement(node);
@@ -185,6 +196,7 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
                 related={relatedIds?.has(run.id)}
                 aria-rowindex={item.index + 2}
                 onKeyDown={(event) => { if (!event.defaultPrevented) navigate(event, item.index); }}
+                onMouseDown={picking ? (event) => event.preventDefault() : undefined}
                 onClick={(event) => {
                   const control = (event.target as Element).closest(rowControls);
                   if (!event.defaultPrevented && (!control || !event.currentTarget.contains(control))) selectRow.onClick(event);
@@ -230,6 +242,5 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
           {bottom > 0 && <tr aria-hidden="true"><td colSpan={width} style={{ height: bottom }} /></tr>}
         </tbody>
       </Table>
-    </ScrollFade>
   );
 }

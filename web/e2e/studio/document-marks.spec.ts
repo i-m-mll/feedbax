@@ -358,14 +358,16 @@ test('an Evaluate step\'s Task edit marks the value its document changes, and Re
   };
   const before = Object.keys(await documents());
   const task = page.getByRole('tabpanel', { name: 'Task', exact: true });
-  const target = task.getByRole('textbox', { name: 'Target x (m)', exact: true });
+  const target = task.getByRole('table', { name: 'Variables', exact: true }).getByRole('row')
+    .filter({ has: page.getByRole('textbox', { name: 'Rename target', exact: true }) })
+    .getByRole('textbox', { name: 'Value', exact: true });
 
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await mapStep(page, 'check').click();
   await page.getByRole('tab', { name: 'Task', exact: true }).click();
   await expect(target).toBeEditable();
   const base = await target.inputValue();
-  await target.fill('0.24');
+  await target.fill('[0.24 m, 0.05 m]');
   await target.press('Enter');
   await expect(target).toHaveAccessibleDescription('Changed by check');
   const created = Object.keys(await documents()).filter((name) => !before.includes(name));

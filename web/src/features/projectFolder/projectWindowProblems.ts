@@ -1,4 +1,6 @@
 import type { StudioPlace } from '@/components/activity/studioVocabulary';
+import { addressKey } from './model/modelGraph';
+import { initializesAnchor, startAnchor } from './StudioTrialAuthoring';
 import type { JsonValue, StudioProjectFilePatch, StudioProjectWindowMapProblem } from '@/generated/studioContracts';
 import {
   authoredMember, authoredPointer, authoredPointerParts, removeAuthoredMember, type AuthoredProject,
@@ -74,11 +76,13 @@ export function placeView(place: StudioPlace | null): RevealView {
 }
 
 /**
- * Whether a place is among a step's own fields, drawn in the inspector, and which: `target` is the `data-field` the
- * inspector gives that field, absent when the place names the fields as a whole.
+ * Whether a place is a field its view reveals itself, with its own mark, and which: `target` is the `data-field` the
+ * view gives that field, absent when the place names the fields as a whole. A step's own fields are in the inspector.
  */
 export function placeField(place: StudioPlace | null): { target?: string } | null {
   switch (place?.part) {
+    case 'task': return place.initializes ? { target: initializesAnchor(place.initializes) }
+      : place.start ? { target: startAnchor(addressKey(place.start.address)) } : null;
     case 'training': return place.setting ? { target: `/training_config/${place.setting}` } : {};
     // The inspector names each top-level setting's row; a nested setting is revealed at the row that holds it.
     case 'method': return { target: place.setting ? authoredPointer(['settings', place.setting.split('.')[0]]) : '/method' };
@@ -90,6 +94,8 @@ export function placeField(place: StudioPlace | null): { target?: string } | nul
 /** A place revealed in a step's view, with what the reason that named it says. */
 export interface Reveal {
   readonly step: string;
+  /** The name of what the reason is about. */
+  readonly name: string;
   readonly place: StudioPlace | null;
   readonly view: RevealView;
   readonly reason: string;

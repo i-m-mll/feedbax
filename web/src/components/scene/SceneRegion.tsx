@@ -286,14 +286,9 @@ function isDrawerAnchor(scene: ResolvedScene, anchor: ResolvedScene['anchors'][n
   return isJoint(anchor) || scene.entities.some((entity) => entity.id === anchor.entity_id && entity.kind === 'task_object');
 }
 
-export function SceneDrawer({ sections, scene, selectedId, onSelect, trials, checkpoints }: SceneSelection & {
+export function SceneDrawer({ sections, scene, selectedId, onSelect, checkpoints }: SceneSelection & {
   sections: DrawerSections;
   scene: ResolvedScene;
-  trials?: {
-    choices: readonly { id: string; label: string }[];
-    selectedId: string | null;
-    onSelect: (id: string) => void;
-  };
   checkpoints?: {
     choices: readonly number[];
     selected: number;
@@ -301,7 +296,6 @@ export function SceneDrawer({ sections, scene, selectedId, onSelect, trials, che
   };
 }) {
   const checkpointLabel = useId();
-  const trialLabel = useId();
   const muscleIds = new Set(scene.elements.filter((element) => element.archetype === 'muscle_path').map((element) => element.entity_id));
   const issueCounts = new Map<string, string[]>();
   for (const issue of scene.validation) {
@@ -329,20 +323,15 @@ export function SceneDrawer({ sections, scene, selectedId, onSelect, trials, che
   for (const anchor of scene.anchors) {
     if (anchor.selectable && isDrawerAnchor(scene, anchor)) add(isJoint(anchor) ? 'joints' : 'task', anchor);
   }
-  const replay = checkpoints || (trials && trials.choices.length > 0);
   return (
     <Drawer>
-      {replay && (
-        <DrawerSection sections={sections} id="scene.trials" name={studioName('trials')} bodyClassName="grid gap-1 p-1">
-          {checkpoints && <FieldRow label={studioName('checkpoint')} labelId={checkpointLabel}>
+      {checkpoints && (
+        <DrawerSection sections={sections} id="scene.checkpoint" name={studioName('checkpoint')} bodyClassName="grid gap-1 p-1">
+          <FieldRow label={studioName('checkpoint')} labelId={checkpointLabel}>
             <Select aria-labelledby={checkpointLabel} value={String(checkpoints.selected)}
               items={checkpoints.choices.map((coordinate) => ({ value: String(coordinate), label: String(coordinate) }))}
               onValueChange={(value) => checkpoints.onSelect(Number(value))} />
-          </FieldRow>}
-          {trials && trials.choices.length > 0 && <FieldRow label={studioName('trials')} labelId={trialLabel}>
-            <Select aria-labelledby={trialLabel} value={trials.selectedId} placeholder={studioName('choose')}
-              items={trials.choices.map(({ id, label }) => ({ value: id, label }))} onValueChange={trials.onSelect} />
-          </FieldRow>}
+          </FieldRow>
         </DrawerSection>
       )}
       {drawerGroups.map((group) => {

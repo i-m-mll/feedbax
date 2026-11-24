@@ -1,5 +1,5 @@
 """Seed a Train step whose Model holds a Linear and a Conv2d without their required parameters, a sound 8000-batch
-Train step, and an Evaluate of the first."""
+Train step, an Evaluate of the first, and an Analyze of the Evaluate."""
 
 import json
 import sys
@@ -13,8 +13,9 @@ def seed(home: str, project_id: str):
 
     raw = _saved_light_definition(paired=True)
     steps = raw["steps"]
-    for name in ("baseline", "analyze", "report"):
+    for name in ("baseline", "report"):
         steps.pop(name)
+    steps["analyze"]["inputs"]["states"] = {"step": "conditions"}
     documents = raw["documents"]
     documents["sound-model"] = deepcopy(documents["reach-model"])
     components = documents["reach-model"]["payload"]["interior"]["components"]

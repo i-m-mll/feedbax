@@ -468,3 +468,30 @@ def test_review_attributes_opaque_parameter_edits(before, after):
         assert (source.path if source is not None else None) == (
             "/base/inline/params/a.b~1x" if params else None
         )
+
+
+def test_plan_writes_each_problem_that_keeps_a_row_from_running(tmp_path, capsys):
+    """One Train row's Model does not pair with its Task and the other's Objective has no enabled terms; both rows
+    are planned, and each Problem is written once, on its row, at its path."""
+    from tests.test_blocked_inputs import _one_bad_train_row
+
+    raw = _one_bad_train_row()
+    del raw["steps"]["baseline"]
+    for term in raw["documents"]["objective"]["payload"]["terms"]:
+        term["enabled"] = False
+    root = tmp_path / "refused"
+    for relative, data in dump_text_project(
+        Project.model_validate(raw), ProjectConfiguration(project="refused", store="results"),
+    ).items():
+        (root / relative).parent.mkdir(parents=True, exist_ok=True)
+        (root / relative).write_bytes(data)
+    assert main(["plan", str(root)]) == 0
+    captured = capsys.readouterr()
+    assert len(captured.out.splitlines()) == 2
+    lines = [line for line in captured.err.splitlines() if "[cannot_run]" in line]
+    runs = [line.split(" run=")[1].split(" ")[0] for line in lines]
+    assert runs.count("train@rate=high") == 1 and runs.count("train@rate=low") >= 1
+    (terms,) = [line for line in lines if "run=train@rate=high " in line]
+    assert terms.startswith("steps/train.json [documents/objective.json:/terms] /trial_documents/objective/terms ")
+    assert terms.endswith("Objective has no enabled terms.")
+    assert all(" /trial_documents/model/" in line for line in lines if "run=train@rate=low " in line)

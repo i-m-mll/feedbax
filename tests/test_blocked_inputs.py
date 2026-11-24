@@ -1,11 +1,14 @@
 """A row whose input's producer cannot run is kept and blocked; it never removes the rows that read sound producers."""
 
 from fastapi.testclient import TestClient
+import pytest
 
 from feedbax.contracts.project import Project
 from feedbax.planner.project_plan import BlockedRow, PlannedRun, ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.project_resolution import ResolutionCode
-from feedbax.jobs import JobService, _planned_checkpoint_catalogs
+from feedbax.contracts.project_sources import pointer
+from feedbax.studio.library import first_train_task
+from feedbax.jobs import JobService, PlanJobAttempts, PlanJobReader, _planned_checkpoint_catalogs
 from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.application.composition import application_python_tasks
 from feedbax.web.app import create_app
@@ -16,6 +19,7 @@ from tests.test_document_train_pair import _two_optimizer_rates, authored_docume
 from tests.test_model_document_plan import _end, _model_controller, _wire
 from tests.test_studio_trial_authoring import _python_project
 from tests.support.host import token
+from tests.support.python_task import reaching_python_task  # noqa: F401
 
 BAD_LINEAR = {"kind": "leaf", "name": "Left", "type": "feedbax.equinox.Linear", "fields": {}}
 
@@ -36,6 +40,8 @@ def _one_bad_train_row() -> dict:
 def test_one_bad_train_row_blocks_only_the_evaluate_row_that_reads_it():
     plan = compile_project(Project.model_validate(_one_bad_train_row()), memo=ProjectPlanMemo())
     bad = RunKey("default", "train", "rate=low")
+    (train,) = [row for row in plan.rows if row.key == bad]
+    assert isinstance(train, PlannedRun) and train.admission_problem is not None
     evaluations = [row for row in plan.rows if row.key.step == "baseline"]
     assert len(evaluations) == 2
     (sound,) = [row for row in evaluations if isinstance(row, PlannedRun)]
@@ -46,7 +52,6 @@ def test_one_bad_train_row_blocks_only_the_evaluate_row_that_reads_it():
     assert [(problem.code, problem.row, problem.path, problem.blocked_by) for problem in problems] == [
         (ResolutionCode.BLOCKED_INPUT, blocked.key.row, "inputs.subject", bad),
     ]
-
 
 def test_an_evaluate_of_an_unadmissible_train_keeps_its_own_problem():
     raw = document_project(authored_documents(), evaluation=True)
@@ -130,6 +135,56 @@ def test_a_checkpoint_outside_the_subjects_range_is_a_problem_on_the_row():
         assert all(part in problem.detail for part in (f"Update {at} ", step, first, last)), problem.detail
 
 
+def test_a_blocked_evaluate_still_reports_an_update_outside_its_train():
+    raw = _one_bad_train_row()
+    raw["steps"]["train"]["base"]["inline"]["training_config"]["n_batches"] = 4
+    raw["steps"]["baseline"]["inputs"]["subject"]["checkpoint"] = {"at": 9}
+    plan = compile_project(Project.model_validate(raw), memo=ProjectPlanMemo())
+    blocked = next(row for row in plan.rows if isinstance(row, BlockedRow))
+    problems = {
+        (problem.code, problem.path) for problem in plan.diagnostics
+        if problem.step == "baseline" and problem.row == blocked.key.row
+    }
+    assert problems == {
+        (ResolutionCode.BLOCKED_INPUT, "inputs.subject"), (ResolutionCode.BAD_REFERENCE, "inputs.subject.checkpoint"),
+    }
+
+
+class _FinishedTrain(PlanJobReader):
+    """A Host whose one Train producer finished having saved ``held``, and which ran nothing else."""
+
+    def __init__(self, train: str, held: tuple[int, ...]):
+        super().__init__(host=None)
+        self.attempts = PlanJobAttempts(
+            0, {}, checkpoint_producers=frozenset({train}), finished_checkpoints={train: held},
+        )
+
+    def read_plan_attempts(self, **_scope) -> PlanJobAttempts:
+        return self.attempts
+
+
+def test_an_update_a_finished_train_did_not_save_is_a_problem_on_the_checkpoint_before_anything_runs(tmp_path):
+    folders = ProjectFolderService(tmp_path)
+    raw = document_project(authored_documents(), evaluation=True)
+    raw["steps"]["train"]["base"]["inline"]["training_config"].update(n_batches=4, snapshot_interval=2)
+    for at, expected in ((3, True), (4, False)):
+        raw["steps"]["baseline"]["inputs"]["subject"] = {"step": "train", "checkpoint": {"at": at}}
+        _save_project(folders, "missing", Project.model_validate(raw))
+        settled = folders.read_plan("missing", revision=None)
+        (train,) = [run for run in settled.plan.runs if run.key.step == "train"]
+        read = window_service.read_settled_project_plan(settled, _FinishedTrain(train.request_id, (2, 4)))
+        window = read.window_map(evaluation_tasks=application_python_tasks())
+        missing = [
+            problem for problem in window.problems
+            if problem.step == "baseline" and problem.path == "/inputs/subject/checkpoint"
+        ]
+        assert bool(missing) == expected, window.problems
+        (row,) = window.evaluations
+        assert row.can_run is not expected
+        if expected:
+            assert all(part in missing[0].detail for part in ("Update 3 ", "'train'", "2, 4")), missing[0].detail
+
+
 def test_objective_expressions_stay_editable_when_the_model_does_not_pair(tmp_path):
     raw = document_project(authored_documents())
     raw["documents"]["reach-model"]["payload"]["interior"]["components"]["left"] = BAD_LINEAR
@@ -137,7 +192,7 @@ def test_objective_expressions_stay_editable_when_the_model_does_not_pair(tmp_pa
     _save_project(folders, "unpaired", Project.model_validate(raw))
     settled = folders.read_plan("unpaired", revision=None)
     (row,) = [row for row in settled.plan.rows if row.key.step == "train"]
-    assert not isinstance(row, PlannedRun)
+    assert isinstance(row, PlannedRun) and row.admission_problem is not None
     body = {"revision": settled.revision, "run": {"variant": row.key.variant, "step": row.key.step, "row": row.key.row}}
     with TestClient(create_app(projects_dir=tmp_path)) as client:
         reply = client.post("/api/projects/unpaired/authoring/trials", json=body)
@@ -146,13 +201,14 @@ def test_objective_expressions_stay_editable_when_the_model_does_not_pair(tmp_pa
         assert fields["/objective/terms/effort/measure"] == "sqnorm(command)"
         assert fields["/objective/terms/effort/weight"] == "1"
         edit = client.post("/api/projects/unpaired/authoring/trials", json=body | {
-            "change": {"kind": "expression", "term": "effort", "field": "weight", "edit": {"kind": "text", "text": "2"}},
+            "change": {"kind": "expression", "path": "/objective/terms/effort/weight", "edit": {"kind": "text", "text": "2"}},
         })
         assert edit.status_code == 200, edit.text
         assert edit.json()["files"], edit.text
         assert not [problem for problem in edit.json()["problems"] if problem["path"][:1] == ["objective"]]
 
 
+@pytest.mark.usefixtures("reaching_python_task")
 def test_a_lowered_row_waiting_on_its_producer_cannot_run_and_is_never_submitted(host, tmp_path):
     folders = ProjectFolderService(tmp_path / "projects")
     _save_project(folders, "waiting", Project.model_validate(_python_project()))
@@ -166,3 +222,55 @@ def test_a_lowered_row_waiting_on_its_producer_cannot_run_and_is_never_submitted
     (item,) = jobs.admit_plan(folders, snapshot, run_keys=(evaluate.key,), token=token("waiting")).items
     assert item.disposition == "rejected" and "inputs.subject" in (item.reason or ""), item
     assert not host.jobs(project=snapshot.project_id)
+
+
+def test_a_first_train_whose_task_does_not_pair_with_its_model_is_planned_and_cannot_run(tmp_path):
+    """A new project's first Train reads simple reaches beside a blank Model, whose plant the Task's link names."""
+    task = first_train_task().model_dump(mode="json", by_alias=True)
+    (link,) = task["payload"]["links"]
+    folders = ProjectFolderService(tmp_path / "projects")
+    _save_project(folders, "first", Project.model_validate({
+        "documents": {
+            "model": {"schema": "feedbax.spec.model", "payload": {"step_seconds": 0.01, "ports": {}, "interior": {}}},
+            "task": task,
+            "objective": {"schema": "feedbax.spec.objective_document", "payload": {"id": "objective", "terms": []}},
+        },
+        "steps": {"train": {"kind": "train", "base": {"inline": {
+            "method": "feedbax.supervised_gradient",
+            "settings": {"optimizer": {"type": "adam", "learning_rate": {"type": "constant_schedule", "value": 0.001}}},
+            "training_config": {"n_batches": 1, "batch_size": 1},
+            "trial_documents": {
+                "model": {"document": "model"}, "task": {"document": "task"}, "objective": {"document": "objective"},
+            },
+        }}}},
+    }))
+    snapshot = folders.read_plan("first", revision=None)
+    (train,) = snapshot.plan.runs
+    assert train.admission_problem is not None
+    assert train.admission_problem.path == pointer(("trial_documents", "task", "links", link["model_field"]))
+    view = window_service.ProjectPlanRead.without_history(snapshot)
+    assert [row.status for row in view.status_rows()] == ["cannot_run"]
+    (problem,) = view.window_map().problems
+    assert (problem.code, problem.path, problem.document_path) == (
+        "cannot_run", train.admission_problem.path, pointer(("links", link["model_field"])),
+    )
+    assert problem.place is not None and (problem.place.part, problem.place.document) == ("task", "task")
+
+
+def test_an_initial_evaluate_whose_python_task_is_not_installed_keeps_its_row_and_one_problem(tmp_path):
+    from tests.test_model_document_plan import _use_initial_evaluation
+
+    raw = document_project(authored_documents(), evaluation=True)
+    _use_initial_evaluation(raw)
+    raw["documents"]["missing-task"] = {"schema": "feedbax.spec.python_task", "payload": {"type": "absent.Task", "params": {}}}
+    raw["steps"]["baseline"]["inputs"]["task"]["source"] = {"document": "missing-task"}
+    folders = ProjectFolderService(tmp_path / "projects")
+    _save_project(folders, "uninstalled", Project.model_validate(raw))
+    snapshot = folders.read_plan("uninstalled", revision=None)
+    (evaluate,) = [row for row in snapshot.plan.rows if row.key.step == "baseline"]
+    assert [problem.path for problem in evaluate.problems] == ["/inputs/task/type"]
+    view = window_service.ProjectPlanRead.without_history(snapshot)
+    assert next(row for row in view.status_rows() if row.key == evaluate.key).status == "cannot_run"
+    (problem,) = [problem for problem in view.window_map().problems if problem.step == "baseline"]
+    assert problem.code == "cannot_run"
+    assert problem.place is not None and (problem.place.part, problem.place.document) == ("task", "missing-task")

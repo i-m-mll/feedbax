@@ -19,6 +19,7 @@ _RETIREMENTS = frozenset({
     "declared-train-methods-retirement",
     "managed-analysis-retirement",
     "relative-model-addresses",
+    "task-epoch-end",
 })
 
 

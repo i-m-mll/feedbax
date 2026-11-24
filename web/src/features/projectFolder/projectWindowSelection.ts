@@ -61,7 +61,11 @@ export function settledWindowSelection(plan: PlanView, state: PipelineSelectionS
   return terms.length ? selectSweepGroup(step.id, terms) : selectStep(state, step.id);
 }
 
-export function useProjectWindowSelection(initialStepId: string | null) {
+/**
+ * The window's selection and its history. A change of selection goes through `inTurn`, which holds it behind the
+ * gestures still waiting to run, so that each acts on the selection it was made on.
+ */
+export function useProjectWindowSelection(initialStepId: string | null, inTurn: (change: () => void) => void) {
   const [history, setHistory] = useState<{ entries: readonly SelectionEntry[]; index: number }>(() => ({
     entries: [{
       stepId: initialStepId,
@@ -72,12 +76,12 @@ export function useProjectWindowSelection(initialStepId: string | null) {
   }));
   const current = history.entries[history.index];
 
-  const change = (update: (entry: SelectionEntry) => SelectionEntry) => setHistory(({ entries, index }) => {
+  const change = (update: (entry: SelectionEntry) => SelectionEntry) => inTurn(() => setHistory(({ entries, index }) => {
     const previous = entries[index];
     const next = update(previous);
     if (JSON.stringify(previous) === JSON.stringify(next)) return { entries, index };
     return { entries: [...entries.slice(0, index + 1), next], index: index + 1 };
-  });
+  }));
 
   return {
     ...current,
@@ -102,10 +106,10 @@ export function useProjectWindowSelection(initialStepId: string | null) {
       pipeline: entry.stepId ? selectStep(emptyPipelineSelection, entry.stepId) : emptyPipelineSelection,
     })),
     back: history.index > 0
-      ? () => setHistory((state) => ({ ...state, index: Math.max(0, state.index - 1) }))
+      ? () => inTurn(() => setHistory((state) => ({ ...state, index: Math.max(0, state.index - 1) })))
       : undefined,
     forward: history.index < history.entries.length - 1
-      ? () => setHistory((state) => ({ ...state, index: Math.min(state.entries.length - 1, state.index + 1) }))
+      ? () => inTurn(() => setHistory((state) => ({ ...state, index: Math.min(state.entries.length - 1, state.index + 1) })))
       : undefined,
   };
 }

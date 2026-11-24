@@ -21,16 +21,20 @@ from feedbax.contracts.expression_values import (
     Level,
     CallValue,
     LiteralValue,
+    NameValue,
     Problem,
     ProblemCode,
     ScopedValue,
     Site,
     ValueBase,
     ValueType,
+    walk,
 )
 from feedbax.contracts.task_document import (
     Cell as Cell,
     Epoch as Epoch,
+    EpochSteps,
+    Length,
     Link as Link,
     Signal as Signal,
     TaskDocument as TaskDocument,
@@ -83,6 +87,8 @@ class TrialSource(Protocol):
     def period(self) -> float: ...
     @property
     def epochs(self) -> tuple[str, ...]: ...
+    @property
+    def step_counts(self) -> tuple[EpochSteps, ...]: ...
     @property
     def reads_model(self) -> bool: ...
     @property
@@ -158,6 +164,7 @@ class DocumentTask:
     validation_rows: tuple[TaskParameters, ...]
     condition_ids: tuple[str, ...]
     input_bindings: tuple[tuple[str, str], ...]
+    step_counts: tuple[EpochSteps, ...]
     reads_model: bool = False
 
     def init(self, parameters, run_key, trial_key):
@@ -311,10 +318,11 @@ def _validation_expression(value: ValidationValue) -> Expression:
     return LiteralValue(value=value)
 
 
-def _zero(base, shape):
+def zero(base, shape) -> Expression:
+    """The value of a type that is nothing: false, or zero in every entry."""
     if not shape:
         return LiteralValue(value=False if base == ValueBase.BOOLEAN else 0)
-    child = _zero(base, shape[1:])
+    child = zero(base, shape[1:])
     return CallValue(function="vector", args=(child,) * shape[0])
 
 
@@ -365,14 +373,18 @@ def compile_task(
     input_overrides: Mapping[str, str] | None = None,
     sites: dict[tuple[str | int, ...], Site] | None = None,
 ) -> DocumentTask | tuple[Problem, ...]:
-    """Compile a bounded ahead-of-rollout task from resolved model field types."""
+    """Compile a bounded ahead-of-rollout task from resolved model field types, or every independent Problem.
+
+    A variable with problems keeps its declared type in scope, so each field that reads it is marked where it does, and
+    fields that do not read it report only their own problems.
+    """
     problems = []
     period = model.period_seconds
     if not isfinite(period) or period <= 0:
         return (Problem(code=ProblemCode.STRUCTURE, reason="The model period must be positive."),)
 
-    def problem(code, reason, path):
-        problems.append(Problem(code=code, reason=reason, path=path))
+    def problem(code, reason, path, variable=None, model_address=None):
+        problems.append(Problem(code=code, reason=reason, path=path, variable=variable, model_address=model_address))
 
     def unique(items, section):
         result, names = {}, set()
@@ -388,15 +400,16 @@ def compile_task(
                     f"Repeated or reserved name {item.name!r}.",
                     (section, item.id),
                 )
+                continue
             result[item.id] = item
             names.add(item.name)
         return result
 
     variables = unique(document.variables, "variables")
     epochs = unique(document.epochs, "epochs")
-    unique(document.signals, "signals")
-    if problems:
-        return tuple(problems)
+    kept_signals = unique(document.signals, "signals")
+    broken: set[str] = set()
+    """The variables with problems of their own or read from another that has them."""
 
     def lower(tree, expected, finest, scope, address, *, epoch=False, discrete=False):
         site = Site(expected=expected, finest=finest, names=tuple(scope))
@@ -412,17 +425,27 @@ def compile_task(
             discrete_uniform=discrete,
             path=address,
         )
-        if isinstance(code, Compiled):
-            return _Field(address, code)
-        problems.extend(code)
-        return None
+        marks = [
+            Problem(
+                code=ProblemCode.UNKNOWN_NAME,
+                reason=f"{variables[node.reference].name!r} has problems.",
+                path=(*address, *at),
+            )
+            for at, node in walk(tree)
+            if isinstance(node, NameValue) and node.reference in broken
+        ]
+        problems.extend(marks if isinstance(code, Compiled) else (*code, *marks))
+        return _Field(address, code) if isinstance(code, Compiled) and not marks else None
 
     time_type = ValueType(base=ValueBase.REAL, dimensions=TIME)
     time = ScopedValue(id="time", name="time", type=time_type, level=Level.STEP)
-    order = dependency_order({key: item.value for key, item in variables.items()})
-    if order and isinstance(order[0], Problem):
-        return order
+    order, cycles = dependency_order({key: item.value for key, item in variables.items()})
+    problems.extend(cycles)
     scope = {}
+    for cycle in cycles:
+        (_, key, _) = cycle.path
+        broken.add(key)
+        scope[key] = ScopedValue(id=key, name=variables[key].name, type=variables[key].type, level=Level.RUN)
     fields = []
     for key in order:
         variable = variables[key]
@@ -433,29 +456,42 @@ def compile_task(
             (*scope.values(), time),
             ("variables", key, "value"),
         )
-        if field is not None:
-            declared = ScopedValue(
-                id=key, name=variable.name, type=variable.type, level=field.code.checked.root.level
-            )
-            scope[key] = declared
-            fields.append((declared, field))
-    if problems:
-        return tuple(problems)
+        level = Level.RUN if field is None else field.code.checked.root.level
+        scope[key] = ScopedValue(id=key, name=variable.name, type=variable.type, level=level)
+        if field is None:
+            broken.add(key)
+        else:
+            fields.append((scope[key], field))
 
     lengths = []
+    unread = set()
+    """The epochs whose length has problems."""
     bounds = []
+    counts: list[EpochSteps | None] = []
     rest = []
     for epoch in document.epochs:
-        path = ("epochs", epoch.id, "length")
-        if epoch.length is None:
+        path = ("epochs", epoch.id, "end", "length")
+        end = epoch.end
+        if not isinstance(end, Length):
+            if sites is not None:
+                # A Rest End is still the site of the length it can be given instead.
+                sites[path] = Site(expected=time_type, finest=Level.TRIAL, names=tuple(scope.values()))
             rest.append(epoch.id)
             lengths.append(None)
             bounds.append(0)
+            counts.append(None)
             continue
-        discrete = isinstance(epoch.length, DrawValue) and epoch.length.family == "uniform"
-        field = lower(epoch.length, time_type, Level.TRIAL, scope.values(), path, discrete=discrete)
-        bound = epoch.max_steps
-        if isinstance(epoch.length, LiteralValue) and field is not None:
+        discrete = isinstance(end.length, DrawValue) and end.length.family == "uniform"
+        field = lower(end.length, time_type, Level.TRIAL, scope.values(), path, discrete=discrete)
+        bound = end.max_steps
+        if field is None:
+            unread.add(epoch.id)
+            lengths.append(None)
+            bounds.append(bound or 0)
+            counts.append(EpochSteps(least=0, nominal=bound or 0, greatest=bound or 0))
+            continue
+        count = None
+        if isinstance(end.length, LiteralValue) and field is not None:
             (seconds,) = field.code.parameters
             steps = round(float(seconds) / period)
             if seconds < 0 or (seconds > 0 and steps == 0):
@@ -468,10 +504,11 @@ def compile_task(
                 bound = steps
             elif steps > bound:
                 problem(ProblemCode.LENGTH_BUDGET, "The length exceeds its step bound.", path)
+            count = EpochSteps(least=max(steps, 0), nominal=max(steps, 0), greatest=max(steps, 0))
         if (
             discrete
             and field is not None
-            and all(isinstance(arg, LiteralValue) for arg in epoch.length.args)
+            and all(isinstance(arg, LiteralValue) for arg in end.length.args)
         ):
             low, high = (round(float(seconds) / period) for seconds in field.code.parameters)
             if not 0 <= low <= high:
@@ -482,10 +519,13 @@ def compile_task(
                 bound = high
             elif high > bound:
                 problem(ProblemCode.LENGTH_BUDGET, "The draw exceeds the epoch bound.", path)
+            else:
+                count = EpochSteps(least=low, nominal=round((low + high) / 2), greatest=high)
         if bound is None:
             problem(ProblemCode.UNBOUNDED_LENGTH, "A variable length needs a step bound.", path)
         lengths.append(field)
         bounds.append(bound)
+        counts.append(count or EpochSteps(least=0, nominal=bound or 0, greatest=bound or 0))
     if len(rest) > 1 or rest and document.fixed_steps is None:
         problem(ProblemCode.STRUCTURE, "One rest epoch requires a fixed trial length.", ("epochs",))
     if (
@@ -497,8 +537,6 @@ def compile_task(
             "The length bounds exceed the fixed trial length.",
             ("epochs",),
         )
-    if problems:
-        return tuple(problems)
 
     axes = tuple(
         ScopedValue(id=name, name=name, type=value_type, level=Level.STEP)
@@ -513,12 +551,17 @@ def compile_task(
     declared_signals = []
     for signal in document.signals:
         path = ("signals", signal.id)
-        absent_value = signal.absent or _zero(signal.type.base, signal.type.shape)
+        absent_value = signal.absent or zero(signal.type.base, signal.type.shape)
         absent = lower(absent_value, signal.type, Level.TRIAL, scope.values(), (*path, "absent"))
         occupied = set()
+        cell_ids = set()
         cells = []
-        for i, cell in enumerate(signal.cells):
-            cell_path = (*path, "cells", i)
+        for cell in signal.cells:
+            cell_path = (*path, "cells", cell.id)
+            if cell.id in cell_ids:
+                problem(ProblemCode.DUPLICATE_NAME, f"Repeated cell id {cell.id!r}.", cell_path)
+                continue
+            cell_ids.add(cell.id)
             first, last = indexes.get(cell.first_epoch), indexes.get(cell.last_epoch)
             if first is None or last is None or first > last:
                 problem(
@@ -537,13 +580,14 @@ def compile_task(
                 signal.type,
                 Level.STEP,
                 (*scope.values(), time, *axes),
-                (*path, "cells", cell.first_epoch, cell.last_epoch, "value"),
+                (*cell_path, "value"),
                 epoch=True,
             )
             if code is not None:
                 cells.append(_Cell(first, last, code))
         if absent is not None:
             signals.append(_Signal(signal.name, absent, tuple(cells)))
+        if kept_signals.get(signal.id) is signal:
             declared_signals.append(
                 ScopedValue(id=signal.id, name=signal.name, type=signal.type, level=Level.STEP)
             )
@@ -558,15 +602,32 @@ def compile_task(
         variable = scope.get(link.variable)
         path = ("links", link.model_field)
         if target is None:
-            problem(ProblemCode.UNKNOWN_NAME, f"{link.variable} is linked to a field the Model does not have.", path)
+            name = variable.name if variable is not None else link.variable
+            problem(
+                ProblemCode.UNKNOWN_NAME, f"{name} is linked to a field the Model does not have.", path,
+                link.variable if variable is not None else None,
+            )
         elif variable is None:
-            problem(ProblemCode.UNKNOWN_NAME, f"{link.variable} is not a variable of the Task.", path)
+            problem(
+                ProblemCode.UNKNOWN_NAME, f"{link.variable} is not a variable of the Task.", path,
+                model_address=target.address,
+            )
+        elif link.variable in broken:
+            problem(ProblemCode.UNKNOWN_NAME, f"{variable.name!r} has problems.", path, link.variable)
         elif variable.level > target.finest or not target.type.accepts(variable.type):
-            problem(ProblemCode.TYPE_MISMATCH, f"{link.variable} does not fit its Model field.", path)
+            problem(ProblemCode.TYPE_MISMATCH, f"{variable.name} does not fit its Model field.", path, link.variable)
         elif link.model_field in links:
-            problem(ProblemCode.STRUCTURE, f"{link.variable} links a Model field that is already linked.", path)
+            problem(
+                ProblemCode.STRUCTURE, f"{variable.name} links a Model field that is already linked.", path, link.variable,
+            )
         else:
             links[link.model_field] = link.variable
+    for address, field in writable.items():
+        if field.required and all(link.model_field != address for link in document.links):
+            problem(
+                ProblemCode.STRUCTURE, "The Model needs this value at the start of each trial.", ("links", address),
+                model_address=field.address,
+            )
     rows = []
     first = document.validation_trials[0]
     for index, row in enumerate(document.validation_trials):
@@ -580,6 +641,8 @@ def compile_task(
         row_values = {}
         for key, value in row.variables.items():
             variable = scope.get(key)
+            if key in broken:
+                continue
             if variable is None or variable.level == Level.STEP:
                 problem(
                     ProblemCode.OUT_OF_SCOPE,
@@ -602,6 +665,8 @@ def compile_task(
                 )[0].value
         for key, value in row.epoch_steps.items():
             epoch_index = indexes.get(key)
+            if key in unread:
+                continue
             if (
                 epoch_index is None
                 or lengths[epoch_index] is None
@@ -621,6 +686,14 @@ def compile_task(
     if problems:
         return tuple(problems)
     n_steps = sum(bounds) if document.fixed_steps is None else document.fixed_steps
+    if rest:
+        others = [count for count in counts if count is not None]
+        index = counts.index(None)
+        counts[index] = EpochSteps(
+            least=max(0, n_steps - sum(count.greatest for count in others)),
+            nominal=max(0, n_steps - sum(count.nominal for count in others)),
+            greatest=max(0, n_steps - sum(count.least for count in others)),
+        )
     return DocumentTask(
         TaskInterface(tuple(scope.values()), tuple(declared_signals), tuple(links.items())),
         n_steps,
@@ -633,4 +706,5 @@ def compile_task(
         tuple(rows),
         document.condition_ids,
         tuple(bindings),
+        tuple(counts),
     )

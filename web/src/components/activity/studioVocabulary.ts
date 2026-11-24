@@ -1,11 +1,13 @@
 import { BarChart3, FileText, FlaskConical, PlayCircle } from 'lucide-react';
 import type { ResultStatus } from '@/components/ui/StatusMark';
 import type {
-  ComputationChange, DriverChanged, EnvironmentDifference, ProgramsChanged, StepCountChanged, EnvironmentNotice, FieldKind, RegistryBinding, StudioActivityJob, StudioEvaluateValueSource,
+  ValueType,
+  ComputationChange, DriverChanged, EnvironmentDifference, ProgramsChanged, StepCountChanged, EnvironmentNotice, RegistryBinding, StudioActivityJob, StudioEvaluateValueSource,
   StudioDefinitionChange, StudioPlanReviewSource, StudioProjectWindowMapProblem, StudioSavedEvaluationResult,
   StudioSavedTrainChange, StudioSweptParameterMissing, ValidityReason,
 } from '@/generated/studioContracts';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
+import type { ValueKind } from '@/components/values/fieldModel';
 import vocabulary from './vocabulary.json';
 
 export type StudioNameId = keyof typeof vocabulary.name;
@@ -53,7 +55,7 @@ export function studioSweptParameterMissing({ class_label, parameter_label }: St
   return studioFormat('sweptParameterMissing', { class: class_label, parameter: parameter_label });
 }
 
-export function studioFieldKindLabel(label: string, kind: FieldKind) {
+export function studioFieldKindLabel(label: string, kind: ValueKind) {
   return studioFormat('fieldKind', { label, name: studioName('kind').toLowerCase(), value: studioName(kind) });
 }
 
@@ -257,7 +259,8 @@ export type StudioPlace = NonNullable<StudioProjectWindowMapProblem['place']>;
 export function studioPlaceName(place: StudioPlace | null) {
   switch (place?.part) {
     case 'model': return studioName('model');
-    case 'task': return place.parameter ? humanizeLabel(place.parameter) : studioName('task');
+    case 'task': return place.start ? place.start.name : place.initializes ? studioName('initializes')
+      : place.parameter ? humanizeLabel(place.parameter) : studioName('task');
     case 'objective': return studioName('objective');
     case 'training': return place.setting ? humanizeLabel(place.setting) : studioName('training');
     case 'method': return place.setting ? humanizeLabel(place.setting.split('.').at(-1)!) : studioName('trainingMethod');
@@ -273,14 +276,30 @@ export function studioChange(before: unknown, after: unknown) {
   return `${JSON.stringify(before)} → ${JSON.stringify(after)}`;
 }
 
-/** A typed reason as one line of text: the name of what it names, then what it says. */
-export function studioPlaceReason(place: StudioPlace | null, detail: string) {
-  return `${studioPlaceName(place)} · ${detail}`;
+/** A typed reason as one line of text: the name of what it is about, then what it says. */
+export function studioMentionReason(name: string, detail: string) {
+  return `${name} · ${detail}`;
 }
 
-/** What a problem says, after the member of a document it names. */
-export function studioProblemDetail({ detail, document_path }: StudioProjectWindowMapProblem) {
-  return document_path ? `${document_path} · ${detail}` : detail;
+/** Whether a place is a document as a whole, rather than a field or member of it that Studio names. */
+export function studioPlaceIsDocument(place: StudioPlace | null): boolean {
+  return place?.part === 'model' || place?.part === 'objective' ||
+    place?.part === 'task' && !place.parameter && !place.initializes && !place.start;
+}
+
+/**
+ * The name of what a problem is about: its place when that names a field, else the deepest field of its document it
+ * points into, labelled as Studio labels a field. A pointer's index or encoded entry key is not a field.
+ */
+export function studioProblemName({ place, document_path }: StudioProjectWindowMapProblem) {
+  const field = studioPlaceIsDocument(place)
+    ? document_path?.split('/').slice(1).filter((part) => /^[A-Za-z_]\w*$/.test(part)).at(-1) : undefined;
+  return field ? humanizeLabel(field) : studioPlaceName(place);
+}
+
+/** A problem as one line of text: the name of what it is about, then what it says. */
+export function studioProblemReason(problem: StudioProjectWindowMapProblem) {
+  return studioMentionReason(studioProblemName(problem), problem.detail);
 }
 
 /** What a definition change says: the values it changed, or the field it changed when it carries none. */
@@ -296,8 +315,8 @@ export function studioRunReason({ openingReason, problems = [], change, reason }
   readonly reason?: string;
 }) {
   if (openingReason) return openingReason;
-  if (problems.length) return problems.map((problem) => studioPlaceReason(problem.place, studioProblemDetail(problem))).join('\n');
-  if (change) return studioPlaceReason(change.place, studioChangeDetail(change));
+  if (problems.length) return problems.map(studioProblemReason).join('\n');
+  if (change) return studioMentionReason(studioPlaceName(change.place), studioChangeDetail(change));
   return reason;
 }
 
@@ -309,4 +328,11 @@ export function studioStep(kind: keyof typeof vocabulary.step | StudioActivityJo
     tint: `var(--studio-kind-${step})`,
     name: studioName(kind === 'render' ? 'figures' : kind),
   };
+}
+
+/** A type as its parts: its base, its shape, and its unit's dimensions, as in `Real · 2 · length`, after its name where it has one. */
+export function studioValueType({ base, shape = [], dimensions = {} }: ValueType, name?: string) {
+  const unit = Object.entries(dimensions).filter(([, exponent]) => exponent).map(([name, exponent]) =>
+    exponent === 1 ? name : `${name}^${exponent}`).join('·');
+  return [name, studioName(base), shape.length ? shape.join('×') : undefined, unit || undefined].filter(Boolean).join(' · ');
 }

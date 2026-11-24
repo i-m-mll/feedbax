@@ -49,22 +49,6 @@ const scene: ResolvedScene = {
 const noOverlaysHidden = new Set<SceneOverlay>();
 
 describe('Scene regions', () => {
-  it('selects a supplied trial independently of the entity selection', async () => {
-    const chooseTrial = vi.fn();
-    const chooseEntity = vi.fn();
-    render(<><SceneDrawer sections={sections} scene={scene} selectedId="arm" onSelect={chooseEntity} trials={{
-      choices: [{ id: 'trial-a', label: 'Straight reach' }, { id: 'trial-b', label: 'Curl reach' }],
-      selectedId: 'trial-a',
-      onSelect: chooseTrial,
-    }} /></>);
-    const user = userEvent.setup();
-    await user.click(screen.getByRole('combobox', { name: 'Trials' }));
-    await user.click(await screen.findByRole('option', { name: 'Curl reach' }));
-    expect(chooseTrial).toHaveBeenCalledWith('trial-b');
-    expect(chooseEntity).not.toHaveBeenCalled();
-    expect(screen.getByRole('treeitem', { name: 'Arm' }).getAttribute('aria-selected')).toBe('true');
-  });
-
   it('shares entity selection between separately mounted canvas, drawer and inspector', async () => {
     function View() {
       const [selectedId, onSelect] = useState<string | null>(null);

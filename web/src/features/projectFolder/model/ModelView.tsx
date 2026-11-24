@@ -1072,7 +1072,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     ];
   }
   const commands = [
-    bindStudioCommand('addComponent', () => openSearch(), { enabled: editTopology && definitions.length > 0 }),
+    bindStudioCommand('addComponent', () => openSearch(), { enabled: editTopology && (registryQuery.isPending || definitions.length > 0) }),
     ...(port?.direction === 'output' ? [bindStudioCommand('connectPorts', () => keyboardConnect(port),
       { enabled: editTopology && !locked })] : []),
     bindStudioCommand('modelSelectAll', () => setSelection(

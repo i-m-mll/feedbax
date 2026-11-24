@@ -1,8 +1,9 @@
 import { useMemo, useState, type ReactNode } from "react";
+import type { RuleChoice } from "@/features/projectWindow/elementSelection";
 import { StudioRegion, StudioRegionBoundary, useRegionPending, type StudioRegionState } from "@/components/activity/StudioRegion";
 import { StudioRunStatus } from "@/components/activity/StudioRunStatus";
 import {
-  studioAccessibleName, studioChangeDetail, studioCountOf, studioEnvironmentNotice, studioName, studioPlaceReason, studioProblemDetail,
+  studioAccessibleName, studioChangeDetail, studioCountOf, studioEnvironmentNotice, studioMentionReason, studioName, studioPlaceName, studioProblemName,
   studioReason, studioRunStatus, studioValidityReason, type StudioPlace, type StudioResultState, type StudioValidityRows,
 } from "@/components/activity/studioVocabulary";
 import { StatusMark } from "@/components/ui/StatusMark";
@@ -37,7 +38,11 @@ interface StudioRunsProps extends RunSelectionProps {
   pivotActive?: boolean;
   runMenu?: RunMenu;
   axisMenu?: AxisMenu;
+  /** The runs a rule field chooses, and while they are picked, the toggle a press on a row of their step takes. */
+  choosing?: RuleChoice | null;
 }
+
+const noRuns: RunSetsByStep = new Map();
 
 /** The steps the chosen runs were made from and are used by, one row each; pressed, a row selects its step. */
 function StudioRunLineage({
@@ -129,8 +134,9 @@ function StudioRunPivot({ step, state, onSelectionChange, rows, related, runMenu
             items={step.sweeps.filter(({ id }) => id !== y.id).map(({ id, label }) => ({ value: id, label }))} />
         </label>
       </div>
-      <ScrollFade axis="both" className="max-h-96 rounded-surface border border-shell-divider [--fade-inset-top:var(--row-height)]">
-        <Table aria-label={studioName("pivot")}>
+        <Table aria-label={studioName("pivot")} held={1}
+          columns={[{ least: "8rem", fixed: true }, ...x.values.map(() => ({ least: "6rem" }))]}
+          box={{ axis: "both", className: "max-h-96 rounded-surface border border-shell-divider [--fade-inset-top:var(--row-height)]" }}>
           <thead><tr>
             <TableHeaderCell scope="col">{y.label}</TableHeaderCell>
             {x.values.map((value) => <TableHeaderCell key={value.id} scope="col">{value.label}</TableHeaderCell>)}
@@ -173,7 +179,6 @@ function StudioRunPivot({ step, state, onSelectionChange, rows, related, runMenu
             ))}
           </tbody>
         </Table>
-      </ScrollFade>
       {pivot.unplaced.length > 0 && (
         <StudioRunTable step={step} state={state} onSelectionChange={onSelectionChange} rows={pivot.unplaced} related={related}
           runMenu={runMenu} />
@@ -194,6 +199,8 @@ function runName(step: PlanStepView, run: PlanRunView) {
 
 /** A reason a run names, which its row reveals. */
 export interface RunMention {
+  /** The name of what the reason is about. */
+  readonly name: string;
   readonly place: StudioPlace | null;
   readonly detail: string;
   readonly problem?: StudioProjectWindowMapProblem;
@@ -223,23 +230,24 @@ export function StudioStepInspector({
   const selected = useMemo(() => selectedRuns(step, state.selection), [step, state.selection]);
   const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
   const roots = useMemo(() => selected.map(({ id }) => ({ stepId: step.id, runId: id })), [selected, step.id]);
-  const upstream = useMemo(() => lineage.upstream(roots), [lineage, roots]);
-  const downstream = useMemo(() => lineage.downstream(roots), [lineage, roots]);
   const chosen = state.selection?.kind !== "steps" && selected.length > 0;
+  /** With the step selected its inputs' fields name what it is made from; with runs selected, the rows say which. */
+  const upstream = useMemo(() => chosen ? lineage.upstream(roots) : noRuns, [chosen, lineage, roots]);
+  const downstream = useMemo(() => lineage.downstream(roots), [lineage, roots]);
   const single = selected.length === 1;
   const counts = new Map<StudioResultState, number>();
   const reasons = new Set<string>();
   const mentions = new Map<string, { run?: PlanRunView; mention: RunMention }>();
   const openingErrors = new Set(chosen ? selected.flatMap((run) => run.openingErrors ?? []) : []);
   const validity = new Map<string, { state: StudioResultState; rows: StudioValidityRows }>();
-  if (revealed) mentions.set(studioPlaceReason(revealed.place, revealed.detail), { mention: revealed });
+  if (revealed) mentions.set(studioMentionReason(revealed.name, revealed.detail), { mention: revealed });
   for (const run of chosen ? selected : []) {
     counts.set(run.state, (counts.get(run.state) ?? 0) + 1);
     const named: RunMention[] = [
-      ...(run.problems ?? []).map((problem) => ({ place: problem.place, detail: studioProblemDetail(problem), problem })),
-      ...run.change ? [{ place: run.change.place, detail: studioChangeDetail(run.change) }] : [],
+      ...(run.problems ?? []).map((problem) => ({ name: studioProblemName(problem), place: problem.place, detail: problem.detail, problem })),
+      ...run.change ? [{ name: studioPlaceName(run.change.place), place: run.change.place, detail: studioChangeDetail(run.change) }] : [],
     ];
-    for (const mention of named) mentions.set(studioPlaceReason(mention.place, mention.detail), { run, mention });
+    for (const mention of named) mentions.set(studioMentionReason(mention.name, mention.detail), { run, mention });
     if (run.reason && !named.length && !run.results.some(({ validity }) => validity.reasons?.length)) reasons.add(run.reason);
     for (const { validity: { state, reasons: typed = [], environment } } of run.results) {
       const mark = state === "current" ? "succeeded" : state;
@@ -286,7 +294,7 @@ export function StudioStepInspector({
     {mentions.size > 0 && <ul className="text-xs"
       aria-label={studioName([...mentions.values()].some(({ mention }) => mention.problem) ? "problems" : "changes")}>
       {[...mentions].map(([key, { run, mention }]) => <li key={key} className="break-words">
-        <MentionRow place={mention.place} detail={mention.detail} placeShown={!namedByStep(mention.place)}
+        <MentionRow name={mention.name} detail={mention.detail} placeShown={!namedByStep(mention)}
           onReveal={run && onReveal && (() => onReveal(run, mention))} />
       </li>)}
     </ul>}
@@ -305,8 +313,8 @@ export function StudioStepInspector({
 }
 
 /** Whether a place is the step itself, which the inspector's title line already names. */
-function namedByStep(place: StudioPlace | null) {
-  return place === null || place.part === "step" && !place.field;
+function namedByStep({ place, problem }: RunMention) {
+  return !problem?.document_path && (place === null || place.part === "step" && !place.field);
 }
 
 const lowRunCommands = new Set<StudioCommandId>(["openRun", "pivot"]);
@@ -344,14 +352,15 @@ export function StudioRunControls({ commands = [], machine, combination, pivotCo
     })} />;
 }
 
-function RunsContent({ plan, step, state, onSelectionChange, pivotActive, runMenu, axisMenu }: StudioRunsProps) {
+function RunsContent({ plan, step, state, onSelectionChange, pivotActive, runMenu, axisMenu, choosing }: StudioRunsProps) {
   const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
   const related = useMemo(() => lineage.related(state.focus), [lineage, state.focus]);
   const selection = { step, state, onSelectionChange };
   return <ScrollFade axis="both" className="h-full min-h-0">
     {pivotActive
       ? <StudioRunPivot {...selection} rows={step.runs} related={related} runMenu={runMenu} />
-      : <StudioRunTable {...selection} rows={step.runs} related={related} runMenu={runMenu} axisMenu={axisMenu} fillSlot />}
+      : <StudioRunTable {...selection} rows={step.runs} related={related} runMenu={runMenu} axisMenu={axisMenu} fillSlot
+        picking={choosing?.step === step.id && choosing.toggle ? { runs: choosing.runs, toggle: choosing.toggle } : undefined} />}
   </ScrollFade>;
 }
 

@@ -1,5 +1,5 @@
 import { expect, test } from './fixtures/studio';
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import type { ModelDocument } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { readSaved } from './fixtures/studioKeyboard';
@@ -18,6 +18,11 @@ async function openModel(page: Page, projectId: string) {
   return page.locator('[data-slot="primary"]').getByRole('tabpanel', { name: 'Model', exact: true });
 }
 
+/** Waits until the Model projection has drawn @inputs' Task-signal rows, which lengthen that card when they land. */
+async function projected(model: Locator) {
+  await expect(model.locator('.react-flow__node[data-id="@inputs"] .studio-model-port[data-hollow="true"]').first()).toBeVisible();
+}
+
 /** A card dropped while its move saves stays where, and as it was, dropped: no frame shows it moved, resized or hidden. */
 test('a dragged Model card keeps its place and shape from release until its move has saved', async ({ page, request }) => {
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
@@ -25,7 +30,7 @@ test('a dragged Model card keeps its place and shape from release until its move
     (body as { command?: { operation?: { op?: string } } }).command?.operation?.op === 'move_cards');
   const model = await openModel(page, snapshot.project_id);
   const card = model.locator('.react-flow__node[data-id="@inputs"]');
-  await expect(card.getByRole('button', { name: 'Add Port', exact: true })).toBeVisible();
+  await projected(model);
 
   const header = (await card.locator('header').boundingBox())!;
   await page.mouse.move(header.x + 20, header.y + header.height / 2);
@@ -75,6 +80,7 @@ test('a Model card added from the Library moves and redraws no other card', asyn
     (body as { command?: { operation?: { op?: string } } }).command?.operation?.op === 'add_component');
   const model = await openModel(page, snapshot.project_id);
   await expect(model.locator('.react-flow__node[data-id="cell"]')).toHaveClass(/\bdraggable\b/);
+  await projected(model);
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
   await drawer.getByRole('textbox', { name: 'Search Library', exact: true }).fill('GRU');
   const before = await model.locator('.react-flow__node').evaluateAll((nodes) => nodes.map((node) => (node as HTMLElement).dataset.id!));

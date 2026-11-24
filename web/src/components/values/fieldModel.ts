@@ -1,6 +1,6 @@
 import type {
   FieldKind, FieldKindEdit, FieldNameEdit, FieldTextEdit, FunctionInfo, JsonValue, Level, ScopedValue, StudioEvaluateValueSource,
-  StudioAddClassMember, StudioRemoveClassMember, StudioValueStructure, ValueType,
+  StudioAddClassMember, StudioRemoveClassMember, StudioValueStructure, TextSpan, ValueType,
 } from '@/generated/studioContracts';
 
 /**
@@ -23,7 +23,13 @@ export interface FieldOption {
  */
 export type FieldEdit = FieldTextEdit | FieldKindEdit | FieldNameEdit | StudioAddClassMember | StudioRemoveClassMember |
   { readonly kind: 'set'; readonly value: JsonValue } | { readonly kind: 'reset' };
-export type FieldCommit = (edit: FieldEdit) => Promise<string | undefined>;
+export type FieldCommit = (edit: FieldEdit) => Promise<FieldRefusal | undefined>;
+
+/** Why a source refused an edit: a reason, or a reason about the term of the edit's text at `span`. */
+export type FieldRefusal = string | { readonly reason: string; readonly span?: TextSpan };
+
+/** The reason of a refusal, for a control that marks the whole value. */
+export const reasonOf = (refusal: FieldRefusal | undefined) => typeof refusal === 'string' ? refusal : refusal?.reason;
 
 /**
  * What a changed value differs from: the base of the document whose difference sets it, the document's value where the
@@ -39,7 +45,7 @@ export type ChangeSource =
 /** The changed mark of a value: what it differs from, and the Reset that gives the value the inherited one. */
 export interface ChangeMark {
   readonly from: ChangeSource;
-  readonly reset?: () => Promise<string | undefined>;
+  readonly reset?: () => Promise<FieldRefusal | undefined>;
 }
 
 /** The mark of a value an Evaluate step changes; a value it trains is not a change, and is its origin. */
@@ -54,8 +60,11 @@ export function withReset(commit: FieldCommit | undefined, change: ChangeMark | 
   return (edit) => edit.kind === 'reset' ? reset() : commit(edit);
 }
 
+/** A field's kind: one its site offers, or an epoch End's Until or Rest, which only an End's site offers. */
+export type ValueKind = FieldKind | 'until' | 'rest';
+
 export interface FieldKindOffer {
-  readonly kind: FieldKind;
+  readonly kind: ValueKind;
   readonly enabled: boolean;
 }
 
@@ -89,7 +98,7 @@ export interface FieldModel {
   readonly unit?: string;
   readonly text: string | null;
   readonly value?: JsonValue;
-  readonly kind: FieldKind;
+  readonly kind: ValueKind;
   /** The kinds the site offers. One offer of Value means the field has no mark and no menu. */
   readonly kinds: readonly FieldKindOffer[];
   readonly members?: FieldMembers;
@@ -108,6 +117,8 @@ export interface FieldModel {
   /** Shows the object the origin names, where it names one. */
   readonly revealOrigin?: () => void;
   readonly reason?: string;
+  /** The term of `text` that `reason` is about, when it is about one term rather than the whole value. */
+  readonly span?: TextSpan;
   /** What the text reads as, where the source sends it: the value's tree, its root's arguments' texts, a draw's density. */
   readonly structure?: StudioValueStructure;
   /** How often the site's consumer reads the value again. */
@@ -125,15 +136,19 @@ export function hasMark(model: FieldModel) {
  * The edit that turns the field into `kind`, where one does. Formula, Draw, Shape and Link have none: the kind is
  * read from the text, so the mark shows them and no command makes them.
  */
-export function kindEdit(model: FieldModel, kind: FieldKind): FieldKindEdit | undefined {
+export function kindEdit(model: FieldModel, kind: ValueKind): FieldKindEdit | undefined {
   if (kind === 'sweep' && model.kind !== 'sweep') return { kind: 'to_sweep' };
   if (kind === 'value' && model.kind === 'sweep' && model.keeps) return { kind: 'to_value', value_id: model.keeps };
   return undefined;
 }
 
-/** The kinds the field's kind menu offers: those an edit converts it to, and Draw, whose parts make the edit. */
+/**
+ * The kinds the field's kind menu offers: those an edit converts it to; Draw, whose parts make the edit; Rest, whose
+ * text is `rest`; and Until, made by the text it commits.
+ */
 export function kindOffers(model: FieldModel) {
-  return model.kinds.filter(({ kind }) => kindEdit(model, kind) || kind === 'draw' && model.kind !== 'draw');
+  return model.kinds.filter(({ kind }) => kindEdit(model, kind) ||
+    (kind === 'draw' || kind === 'rest' || kind === 'until') && model.kind !== kind);
 }
 
 /** A draw as its parts: a family, the text of each argument (undefined while unfilled), and when it is drawn. */

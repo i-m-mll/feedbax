@@ -12,22 +12,26 @@ from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.managed_train_fixture import managed_train_project
 
 
+TARGET_Y = "task.variables.target.value.args.1.value"
+"""The Evaluate variation path of the y of the task's target."""
+
+
 def _train_definition():
     project = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     documents = project["documents"]
     train = project["steps"]["train"]
     inline = train["base"]["inline"]
     trial = inline["trial_documents"]
-    task = trial.pop("task")
-    trial["python_task"] = task
-    documents[task["document"]] = {
-        "schema": "feedbax.spec.python_task",
-        "payload": {"type": "feedbax.Reaching", "params": {"n_steps": 12, "x": 0.15, "y": 0.05}},
-    }
+    task = documents[trial["task"]["document"]]["payload"]
+    task["fixed_steps"] = 12
+    task["epochs"][0]["end"]["length"]["value"] = 12
+    del task["validation_trials"]
+    (target,) = (variable for variable in task["variables"] if variable["id"] == "target")
+    target["value"] = {"kind": "call", "function": "vector", "args": [
+        {"kind": "literal", "value": coordinate, "unit": "m"} for coordinate in (0.18, 0.05)
+    ]}
     model = documents[trial["model"]["document"]]["payload"]
-    model["ports"]["inputs"][0]["name"] = "reach_target"
     model["interior"]["components"]["plant"]["fields"]["mass"] = 1.25
-    documents[task["document"]]["payload"]["params"]["x"] = 0.18
     inline["training_config"]["snapshot_interval"] = 1
     return project
 
@@ -60,7 +64,7 @@ def files():
             name: {"value": seed, "patches": {
                 "params.seed": {"value": seed},
                 "params.variation.row-y": {
-                    "op": "add", "value": {"op": "replace", "path": "task.params.y", "value": y},
+                    "op": "add", "value": {"op": "replace", "path": TARGET_Y, "value": y},
                 },
             }}
             for name, seed, y in rows
@@ -83,5 +87,33 @@ def files():
     ]
 
 
+def own_sweep_files():
+    """A Train of two seeds and an Evaluate of each of its runs, sampling one trial, with a number in their Task."""
+    project = _train_definition()
+    train = project["steps"]["train"]
+    task = project["documents"][train["base"]["inline"]["trial_documents"]["task"]["document"]]["payload"]
+    task["variables"].append({"id": "gain", "name": "gain", "type": {"base": "real"}, "value": {"kind": "literal", "value": 0.5}})
+    train["sweep"] = {"axes": {"seed": {"values": {
+        f"s{seed}": {"value": seed, "patches": {"seed": {"op": "add", "value": seed}}} for seed in (0, 1)
+    }}}}
+    evaluate = {
+        "kind": "evaluate",
+        "base": {"inline": {"evaluation_type": ROLLOUT_TYPE, "params": {
+            "seed": 731, "trial_set": {"kind": "sample", "count": 1}, "trial_policy": "paired", "variation": [],
+        }}},
+        "inputs": {"subject": {"step": "train", "checkpoint": "last"}},
+        "sweep": {"axes": {"subject": {"input": "subject"}}},
+    }
+    return [
+        *({"kind": "document", "id": name, "document": document} for name, document in project["documents"].items()),
+        {"kind": "step", "id": "train", "step": train},
+        {"kind": "step", "id": "probe", "step": evaluate},
+    ]
+
+
 if __name__ == "__main__":
-    print(json.dumps(seed_train_variants(*sys.argv[1:]) if sys.argv[1:] else files()))
+    arguments = sys.argv[1:]
+    if arguments == ["own-sweep-files"]:
+        print(json.dumps(own_sweep_files()))
+    else:
+        print(json.dumps(seed_train_variants(*arguments) if arguments else files()))

@@ -1,12 +1,13 @@
 import { useState, useSyncExternalStore } from 'react';
-import { readStudioTrialAuthoring } from '@/api/studioAuthoring';
+import { catalogEntries, readStudioTrialAuthoring, useAuthoringCatalog } from '@/api/studioAuthoring';
 import { landsOnGesture } from '@/api/request';
 import { shownError } from '@/api/shownErrors';
 import {
   studioAccessibleName, studioName, studioSweptParameterMissing, type StudioNameId,
 } from '@/components/activity/studioVocabulary';
 import { shownName } from '@/features/pipeline/planView';
-import type { DocumentPickerModel } from '@/features/projectWindow/DocumentPicker';
+import type { DocumentPickerModel, PickerTemplate } from '@/features/projectWindow/DocumentPicker';
+import { blankTask } from '@/generated/studioContracts';
 import type {
   Document, StudioProjectFilePatch, StudioSavedTrainKey, StudioTrialAuthoringRequest,
 } from '@/generated/studioContracts';
@@ -16,10 +17,11 @@ import { generatedName, holds } from './generatedName';
 export type DocumentRole = 'model' | 'task' | 'objective' | 'training' | 'analysis' | 'report';
 
 const supervisedTrainMethod = 'feedbax.supervised_gradient';
+const pythonTask = 'feedbax.spec.python_task';
 
 export const blankDocuments = {
   model: { schema: 'feedbax.spec.model', payload: { step_seconds: 0.01, ports: {}, interior: {} } },
-  task: { schema: 'feedbax.spec.python_task', payload: { type: 'feedbax.Reaching', params: {} } },
+  task: { schema: 'feedbax.spec.task_document', payload: blankTask },
   objective: { schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] } },
   training: {
     schema: 'feedbax.spec.training_document',
@@ -43,7 +45,7 @@ export const blankDocuments = {
 
 const schemas: Record<DocumentRole, readonly string[]> = {
   model: [blankDocuments.model.schema],
-  task: [blankDocuments.task.schema, 'feedbax.spec.task_document'],
+  task: [blankDocuments.task.schema, pythonTask],
   objective: [blankDocuments.objective.schema],
   training: [blankDocuments.training.schema],
   analysis: [blankDocuments.analysis.schema],
@@ -104,9 +106,9 @@ export function documentTreeOf(project: { documents?: Readonly<Record<string, Do
     const document = all[name];
     return 'base' in document && names.includes(document.base.document) ? document.base.document : undefined;
   };
-  const tree: { key: string; name: string; depth: number }[] = [];
+  const tree: { key: string; name: string; depth: number; python?: boolean }[] = [];
   const visit = (name: string, depth: number) => {
-    tree.push({ key: name, name: shownName(name, all[name]), depth });
+    tree.push({ key: name, name: shownName(name, all[name]), depth, python: all[name].schema === pythonTask || undefined });
     for (const child of names) if (baseOf(child) === name) visit(child, depth + 1);
   };
   for (const name of names) if (baseOf(name) === undefined) visit(name, 0);
@@ -116,6 +118,17 @@ export function documentTreeOf(project: { documents?: Readonly<Record<string, Do
 export function useProjectDocuments({ editor, stepId, run, scope, selectable, editable, detachRefused = [], onError }: ProjectDocumentInputs) {
   const { saved } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const projectId = saved.project_id;
+  const catalog = useAuthoringCatalog().data;
+  /** What a new task starts from beside Blank: the shipped example tasks, then the installed Python task types. */
+  const taskTemplates = new Map<string, { template: PickerTemplate; document: Document }>([
+    ...(catalog?.tasks.documents ?? []).map(({ name, document }) => [`example:${name}`, {
+      template: { key: `example:${name}`, name: document.label ?? name }, document: document as Document,
+    }] as const),
+    ...catalogEntries(catalog, 'python_tasks').map(({ key, label }) => [`python:${key}`, {
+      template: { key: `python:${key}`, name: label, python: true },
+      document: { schema: pythonTask, payload: { type: key, params: {} } } as Document,
+    }] as const),
+  ]);
   /** The document a step did not take in a role, and why: it lacks a parameter the step sweeps. */
   const [refused, setRefused] = useState<{ step: string; role: DocumentRole; reason: string }>();
   const refuse = (role: DocumentRole, reason?: string) => setRefused(reason && stepId ? { step: stepId, role, reason } : undefined);
@@ -166,10 +179,12 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
       label: labels[role], document, name: shownName(document, saved.project.documents?.[document]), documents, count,
       refusal: refused?.step === stepId && refused?.role === role ? refused.reason : undefined,
       choose: repoint ? (next) => { void attempt(role, () => point(studioAccessibleName('select', kind), role, next)); } : undefined,
-      create: repoint ? () => attempt(role, async () => {
+      templates: role === 'task' && taskTemplates.size ? [...taskTemplates.values()].map(({ template }) => template) : undefined,
+      create: repoint ? (template) => attempt(role, async () => {
         const { saved } = editor.getSnapshot();
         const id = generatedName(role, holds(saved.project.documents));
-        await editor.createFiles(studioAccessibleName('new', kind), [{ kind: 'document', id, document: blankDocuments[role] }],
+        const document = (template && taskTemplates.get(template)?.document) || blankDocuments[role];
+        await editor.createFiles(studioAccessibleName('new', kind), [{ kind: 'document', id, document }],
           saved.revision, (snapshot) => use(role, id, snapshot.revision));
         return id;
       }) : undefined,

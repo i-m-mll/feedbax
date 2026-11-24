@@ -3,7 +3,7 @@ import type {
   StudioPlanReviewSource,
 } from '@/generated/studioContracts';
 import { studioEvaluateValueSource, studioName, studioPlanValueSource, studioReason } from '@/components/activity/studioVocabulary';
-import { evaluateChange, withReset, type ChangeMark, type FieldModel } from '../fieldModel';
+import { evaluateChange, withReset, type ChangeMark, type FieldModel, type FieldRefusal } from '../fieldModel';
 
 export type ProjectedEdit = FieldTextEdit | FieldKindEdit | FieldNameEdit;
 
@@ -17,7 +17,7 @@ export type ExceptionMentions = (source: StudioPlanReviewSource) => ExceptionMen
 
 export interface FieldViewOptions {
   id: string;
-  commit?: (edit: ProjectedEdit) => Promise<string | undefined>;
+  commit?: (edit: ProjectedEdit) => Promise<FieldRefusal | undefined>;
   /** The kind of a value that is not a sweep, where the source knows it. */
   kind?: FieldKind;
   /** The field shows the value on a selection of rows rather than the document's. */
@@ -63,7 +63,7 @@ export function fromFieldView(field: StudioFieldView, options: FieldViewOptions)
   const effective = multipleRows ? undefined : field.effective ?? undefined;
   const base = { names: [], functions: [], kinds: [], type: { kind: 'number' } } as const;
   const part = (id: string, name: Parameters<typeof studioName>[0], text: string,
-    write: (text: string) => Promise<string | undefined>, integer = false): FieldModel => ({
+    write: (text: string) => Promise<FieldRefusal | undefined>, integer = false): FieldModel => ({
     ...base, id, label: studioName(name), text, kind: 'value', type: { kind: integer ? 'integer' : 'number' },
     commit: rule && ((edit) => edit.kind === 'text' ? write(edit.text) : Promise.resolve(undefined)),
   });

@@ -2,8 +2,10 @@ import { expect, test } from './fixtures/studio';
 import { type Locator } from '@playwright/test';
 import { mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import type { StudioJobSubmission, StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
-import { captureStudioWindow, enter, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { blankTask, type StudioJobSubmission, type StudioProjectSnapshot, type StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import {
+  captureStudioWindow, chooseSweepValue, enter, fixture, mapStep, runProjectFixture, seedManagedProject,
+} from './fixtures/canonicalTrain';
 import { scanStudio } from './fixtures/studioAccessibility';
 import { tabTo } from './fixtures/studioKeyboard';
 
@@ -93,7 +95,7 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', { ta
   const runButton = page.getByRole('button', { name: 'Run', exact: true });
   await expect(status).toBeEmpty();
   await expect(status).toHaveAttribute('aria-live', 'polite');
-  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   const activity = page.getByRole('region', { name: 'Activity', exact: true });
   const activityRow = activity.getByRole('region', { name: configuration.project, exact: true }).getByRole('listitem').filter({
     has: page.getByRole('button', { name: 'Train train', exact: true }),
@@ -436,7 +438,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   const [singleModel, chainModel] = JSON.parse(await runProjectFixture('tests.fixtures.scene_geometry', 'files'));
   const [,,, template] = await fixture('ordinary-files', '2');
   const task = { kind: 'document', id: 'task', document: {
-    schema: 'feedbax.spec.python_task', payload: { type: 'feedbax.Reaching', params: {} },
+    schema: 'feedbax.spec.task_document', payload: blankTask,
   } };
   const objective = { kind: 'document', id: 'objective', document: {
     schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] },
@@ -445,7 +447,7 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
     ...singleModel.document, payload: { step_seconds: 0.01, ports: {}, interior: {} },
   } };
   const documents = (model: string) => ({
-    model: { document: model }, python_task: { document: task.id }, objective: { document: objective.id },
+    model: { document: model }, task: { document: task.id }, objective: { document: objective.id },
   });
   const step = (id: string, model: string) => ({
     ...template, id, step: { ...template.step, base: { inline: {
@@ -583,10 +585,10 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   await expect(mapStep(page, 'rowless')).toHaveAttribute('aria-pressed', 'true');
 
   await problemButton.click();
-  // The group heading names the document, so the row does not repeat its place.
+  // The group heading names the document; the row names the field the problem is about.
   await list.locator('section').filter({ has: page.getByRole('heading', { name: 'empty-model', exact: true }) })
-    .getByRole('button', { name: /^Model has no components\./ }).click();
-  const emptyReason = page.getByText('Model · Model has no components.', { exact: true });
+    .getByRole('button', { name: /^Components · Model has no components\./ }).click();
+  const emptyReason = page.getByText('Components · Model has no components.', { exact: true });
   const empty = page.getByRole('tabpanel', { name: 'Model', exact: true }).filter({ has: emptyReason });
   await expect(empty.locator(':scope > header')).toContainText('empty-model');
   await expect(emptyReason).toBeFocused();
@@ -598,11 +600,47 @@ test('mounted Scene owns its drawer and inspector and Problems matches the saved
   await anchored();
 });
 
+test('a run whose own exception is refused dims its definition views with the problem', async ({ page, request }) => {
+  const files = await fixture('ordinary-files', '2', '0.001', '0.01');
+  const train = files[files.length - 1];
+  train.step.sweep.exceptions = { broken: {
+    where: { rows: ['rate=rate-0'] },
+    patches: { 'trial_documents.objective.terms.0.enabled': { value: true, op: 'replace' } },
+  } };
+  const { snapshot, projectPath } = await seedManagedProject(request, files);
+  const reads: string[] = [];
+  page.on('request', (sent) => {
+    if (new URL(sent.url()).pathname === projectPath + '/authoring/trials') reads.push(sent.postDataJSON().run.row);
+  });
+  await page.goto('/?project=' + snapshot.project_id);
+  const card = page.locator('[data-map-step="train"]');
+  await mapStep(page, 'train').click();
+  await chooseSweepValue(card, 'rate', '0.001');
+  for (const name of ['Task', 'Objective', 'Training']) {
+    const tab = page.getByRole('tab', { name, exact: true });
+    await expect(tab).toHaveAttribute('aria-disabled', 'true');
+    await tab.hover();
+    await expect(page.getByRole('tooltip')).toContainText("'0' is addressed by its id");
+  }
+  await expect(page.getByRole('button', { name: 'Retry', exact: true })).toHaveCount(0);
+  expect(reads).not.toContain('rate=rate-0');
+
+  await chooseSweepValue(card, 'rate', '0.01');
+  for (const name of ['Model', 'Objective']) {
+    await expect(page.getByRole('tab', { name, exact: true })).not.toHaveAttribute('aria-disabled', 'true');
+  }
+  const task = page.getByRole('tab', { name: 'Task', exact: true });
+  await expect(task).not.toHaveAttribute('aria-disabled', 'true');
+  await task.click();
+  await expect(page.getByRole('tabpanel', { name: 'Task', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Retry', exact: true })).toHaveCount(0);
+});
+
 test('a view with nothing to show is dimmed in the rail, and an open one gives way to the default view', async ({ page, request }) => {
   const [planarModel] = JSON.parse(await runProjectFixture('tests.fixtures.scene_geometry', 'files'));
   const [,,, template] = await fixture('ordinary-files', '2');
   const task = { kind: 'document', id: 'task', document: {
-    schema: 'feedbax.spec.python_task', payload: { type: 'feedbax.Reaching', params: {} },
+    schema: 'feedbax.spec.task_document', payload: blankTask,
   } };
   const objective = { kind: 'document', id: 'objective', document: {
     schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] },
@@ -612,7 +650,7 @@ test('a view with nothing to show is dimmed in the rail, and an open one gives w
   } };
   const step = (id: string, model: string) => ({
     ...template, id, step: { ...template.step, base: { inline: { ...template.step.base.inline, trial_documents: {
-      model: { document: model }, python_task: { document: task.id }, objective: { document: objective.id },
+      model: { document: model }, task: { document: task.id }, objective: { document: objective.id },
     } } } },
   });
   const { snapshot } = await seedManagedProject(request, [

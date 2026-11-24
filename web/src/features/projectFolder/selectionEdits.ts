@@ -1,8 +1,9 @@
 import {
   StepReferenceSchema, type InputBinding, type JsonValue, type ProjectValueEdit, type StepReference,
-  type Step, type StepKind, type StudioProjectWindowMapProblem,
+  type Step, type StepKind, type StudioProjectWindowMapProblem, type StudioSavedTrainKey,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
+import { savedRunId } from './projectWindowPlan';
 
 /** The step selections an input binds: one reference is a list of one; a binding of anything else has none. */
 export function stepSelections(binding: InputBinding | null | undefined): StepReference[] | undefined {
@@ -40,17 +41,49 @@ export function bindingEdit(
   };
 }
 
+/** A selection's problems, each on the field its path names. */
+export interface SelectionProblems {
+  /** A problem of the selection that names neither its Runs nor its Checkpoint, on its picker. */
+  readonly picker?: string;
+  /** A problem at the selection's `where`, on its Runs field. */
+  readonly rule?: string;
+  /** A problem at the selection's `checkpoint`, or the role's when the role lists selections. */
+  readonly checkpoint?: string;
+  /** The runs the selection reads that cannot run, and keep runs of the step from running. */
+  readonly blockedBy: readonly StudioSavedTrainKey[];
+}
+
+/** A problem's path in the planner's dotted form; the service reports some as JSON Pointers. */
+const dotted = (path: string) => path.startsWith('/') ? path.slice(1).split('/').join('.') : path;
+
 /**
- * The plan's refusal of selection `index` of `role`: a problem of the step at or under `inputs.<role>.<index>`, or
- * `inputs.<role>` when the role holds one reference rather than a list.
+ * The problems the plan reports on selection `index` of `role` of `step`, placed by path: under `inputs.<role>.<index>`,
+ * or `inputs.<role>` when the role holds one reference rather than a list.
  */
-export function selectionProblem(
+export function selectionProblems(
   problems: readonly StudioProjectWindowMapProblem[], step: string, variant: string | null, role: string, index: number,
   listed: boolean,
-): string | undefined {
-  const path = listed ? `inputs.${role}.${index}` : `inputs.${role}`;
-  return problems.find((problem) => problem.step === step && (problem.variant === null || problem.variant === variant) &&
-    (problem.path === path || problem.path.startsWith(path + '.')))?.detail;
+): SelectionProblems {
+  const own = listed ? `inputs.${role}.${index}` : `inputs.${role}`;
+  const placed: { picker?: string; rule?: string; checkpoint?: string; blockedBy: StudioSavedTrainKey[] } = { blockedBy: [] };
+  for (const problem of problems) {
+    if (problem.step !== step || (problem.variant !== null && problem.variant !== variant)) continue;
+    const path = dotted(problem.path);
+    const rest = path === own || path.startsWith(own + '.') ? path.slice(own.length)
+      : listed && (path === `inputs.${role}.checkpoint` || path.startsWith(`inputs.${role}.checkpoint.`)) ? path.slice(`inputs.${role}`.length)
+        : listed && index === 0 && path === `inputs.${role}` ? '' : undefined;
+    if (rest === undefined) continue;
+    if (problem.code === 'blocked_input') {
+      if (problem.blocked_by && !placed.blockedBy.some((key) => savedRunId(key) === savedRunId(problem.blocked_by!))) {
+        placed.blockedBy.push(problem.blocked_by);
+      }
+      continue;
+    }
+    const field = rest === '.where' || rest.startsWith('.where.') ? 'rule'
+      : rest === '.checkpoint' || rest.startsWith('.checkpoint.') ? 'checkpoint' : 'picker';
+    placed[field] ??= problem.detail;
+  }
+  return placed;
 }
 
 /**

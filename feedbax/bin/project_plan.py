@@ -290,6 +290,15 @@ def write_diagnostics(
     return problems
 
 
+def write_row_problems(output: CommandOutput, plan: ProjectPlan, variants: tuple[str, ...] | None) -> None:
+    """Write each Problem that keeps a planned row from running, as the window map lists it."""
+    from feedbax.web.services.project_plan import row_problems
+
+    for problem in row_problems(plan, variants):
+        assert problem.variant is not None and problem.step is not None and problem.row is not None
+        output.row_problem(problem, run=_address(RunKey(problem.variant, problem.step, problem.row), plan))
+
+
 def _plan(args: argparse.Namespace, output: CommandOutput) -> int:
     location, text, plan, external_paths, observed = _read_plan(
         args.project_dir, capture_sources=args.out is not None or args.check is not None,
@@ -317,6 +326,7 @@ def _plan(args: argparse.Namespace, output: CommandOutput) -> int:
         return targets
     scoped = select_plan_requests(current, variants)
     problems = write_diagnostics(output, plan, variants, declaration=text.declaration)
+    write_row_problems(output, plan, variants)
     changes: Mapping[RunKey | ElementKey, ElementChange] = {}
     if before is not None:
         before = select_plan_requests(before, variants)

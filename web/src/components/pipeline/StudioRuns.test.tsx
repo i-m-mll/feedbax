@@ -171,8 +171,20 @@ it("titles the inspector by step and kind, then by the chosen run's values, and 
   const stale = { ...train, runs: train.runs.map((run) => run.id === "b" ? { ...run, status: "stale" as const, change } : run) };
   rerender(inspect(stale, rows(["b"])));
   fireEvent.click(inspector.getByRole("button", { name: /^Seed · 0 → 1$/ }));
-  expect(reveal).toHaveBeenLastCalledWith(stale.runs[1], { place: change.place, detail: "0 → 1" });
+  expect(reveal).toHaveBeenLastCalledWith(stale.runs[1], { name: "Seed", place: change.place, detail: "0 → 1" });
   rerender(inspect({ ...evaluate, runs: [{ ...evaluate.runs[0], label: "default" }] },
     { ...selectStep(emptyPipelineSelection, "eval"), selection: { kind: "rows", stepId: "eval", runIds: ["a"] } }));
   expect(screen.getByRole("heading").textContent).toBe("Test reach");
+});
+
+// Catches Made From rows repeating, for a selected step, what its input fields already show.
+it("lists what a step's runs are made from only when runs are chosen; what uses them in both cases", () => {
+  const inspect = (state: PipelineSelectionState) =>
+    <StudioStepInspector plan={plan} step={evaluate} state={state} onChooseStep={() => {}} />;
+  const { rerender } = render(inspect(selectStep(emptyPipelineSelection, "eval")));
+  expect(screen.queryByRole("button", { name: /^Select Made From/ })).toBeNull();
+  rerender(inspect({ ...selectStep(emptyPipelineSelection, "eval"), selection: { kind: "rows", stepId: "eval", runIds: ["a"] } }));
+  expect(screen.getByRole("button", { name: "Select Made From Train arm 1 of 3" })).toBeDefined();
+  render(<StudioStepInspector plan={plan} step={train} state={selectStep(emptyPipelineSelection, "train")} onChooseStep={() => {}} />);
+  expect(screen.getByRole("button", { name: "Select Used By Test reach 1 of 1" })).toBeDefined();
 });

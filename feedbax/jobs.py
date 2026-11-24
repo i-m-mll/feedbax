@@ -239,6 +239,8 @@ class PlanJobAttempts:
     plan_ref: AuthoredTrainPlanRef | None = None
     checkpoint_producers: frozenset[RequestId] = frozenset()
     checkpoint_catalogs: Mapping[RequestId, tuple[int, ...]] = field(default_factory=dict)
+    finished_checkpoints: Mapping[RequestId, tuple[int, ...]] = field(default_factory=dict)
+    """The checkpoint coordinates each Train producer published on its way to success, once no attempt of it is live."""
     light_by_address: Mapping[str, tuple[PlanJobAttempt, ...]] = field(default_factory=dict)
     validity_checks: tuple[dict[str, Any], ...] = ()
 
@@ -438,8 +440,12 @@ class PlanJobReader:
             plan_ref,
             frozenset(catalogs),
             MappingProxyType(catalogs),
-            MappingProxyType({address: tuple(rows) for address, rows in light_attempts.items()}),
-            tuple(job for job in by_id.values() if "validity_check" in job["data"]),
+            finished_checkpoints=MappingProxyType({
+                request: tuple(coordinates)
+                for request, coordinates in snapshot.get("finished_checkpoints", {}).items()
+            }),
+            light_by_address=MappingProxyType({address: tuple(rows) for address, rows in light_attempts.items()}),
+            validity_checks=tuple(job for job in by_id.values() if "validity_check" in job["data"]),
         )
 
 
@@ -614,7 +620,7 @@ class JobService(PlanJobReader):
                 for problem in reversed(current.plan.diagnostics)
                 if problem.variant is not None and problem.step is not None and problem.row is not None
                 and problem.element is None
-            }
+            } | {row.key: row.problems[0] for row in current.plan.rows if row.problems}
             for name, key in heavy_selection.items():
                 old, run = before.get(key), after.get(key)
                 if (problem := row_problems.get(key)) is not None:
@@ -667,9 +673,6 @@ class JobService(PlanJobReader):
                 if old.request_id != run.request_id:
                     path = _changed_request_path(reviewed.plan, old.request_id, current.plan, run.request_id)
                     items[name] = _rejected(name, f"The selected Train request changed at {path}.")
-                    continue
-                if problem := run.admission_problem:
-                    items[name] = _rejected(name, f"{problem.path}: {problem.detail}")
                     continue
                 if run.requires:
                     items[name] = _rejected(name, "/requires: Train has unresolved capabilities.")

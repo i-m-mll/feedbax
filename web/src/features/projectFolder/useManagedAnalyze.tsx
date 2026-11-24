@@ -4,7 +4,7 @@ import { ChartLine, Database, Sigma } from 'lucide-react';
 import { useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import { readStudioAnalyze } from '@/api/studioAnalyze';
-import { studioAccessibleName, studioChangeDetail, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
 import { CanvasStrip } from '@/components/canvas/CanvasStrip';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { Button } from '@/components/ui/Button';
@@ -22,7 +22,7 @@ import { bindStudioCommand } from '@/features/projectWindow/studioCommands';
 import {
   AnalysisDocumentSchema, type AnalysisDocument, type InputBinding, type JsonPrimitive, type JsonValue, type OperationElement,
   type ParamSchema, type PresentationPosition, type StudioAnalyzeChange, type StudioProjectSnapshot,
-  type StudioSavedTrainKey, type StudioSavedTrainRuns,
+  type StudioSavedTrainKey, type StudioSavedTrainRuns, type SubsetTerms,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
 import { ManagedDocumentCanvas, type CanvasNode } from './ManagedDocumentCanvas';
@@ -37,12 +37,12 @@ import { SelectionRule } from './SelectionRule';
 import { changedSelections, stepSelections } from './selectionEdits';
 import { InputEditor } from './InputEditor';
 import { useAuthoringCatalog } from '@/api/studioAuthoring';
-import { selectionProblem } from './selectionEdits';
+import { selectionProblems } from './selectionEdits';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import type { ChangeMark } from '@/components/values/fieldModel';
-import { savedRunId } from './projectWindowPlan';
+import { savedRunId, stepSourceRows } from './projectWindowPlan';
 import { placeElement, type Reveal } from './projectWindowProblems';
-import { MentionRow, ProblemRow } from '@/features/projectWindow/StudioProblems';
+import { ChangeRow, ProblemRow } from '@/features/projectWindow/StudioProblems';
 import { SavedFigureResult } from './SavedLightProducts';
 import { ElementRequests, requestMember } from './ElementRequests';
 import { generatedName } from './generatedName';
@@ -55,7 +55,7 @@ const operationDragType = 'application/x-feedbax-operation';
 const figureItem = 'velocity_summary';
 
 export function useManagedAnalyze({
-  editor, key, projection, wholeStep, chosen, focusedView, reveal, savePosition, selection, sections, steps, failures,
+  editor, key, projection, wholeStep, chosen, focusedView, reveal, savePosition, selection, sections, steps, failures, selectStep,
 }: {
   editor: ProjectEditController;
   /** The steps an edit of the shown document is made for, when other steps read it too; the step alone otherwise. */
@@ -71,6 +71,8 @@ export function useManagedAnalyze({
   wholeStep: boolean;
   focusedView?: string | null;
   reveal?: Reveal;
+  /** Selects a step, which a blocked input links to. */
+  selectStep(step: string): void;
   savePosition(document: string, node: string, position: PresentationPosition): Promise<unknown>;
 }) {
   const { saved, draft, outside } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
@@ -374,23 +376,28 @@ export function useManagedAnalyze({
       refusal={landed && typeof landed.at === 'object' && 'key' in landed.at && landed.at.key === selected ? landed.reason : undefined} />}
     {selected && selectedInput && key && inputRole && <InputEditor label={humanizeLabel(selected)} role={inputRole}
       binding={step?.inputs?.[selected]} self={key.step} project={saved.project} steps={steps} picking={selection}
-      refusal={roleRefusal(selected, selected)} outputs={cardOutputs}
+      refusal={roleRefusal(selected, selected)} outputs={cardOutputs} onReveal={selectStep}
       selection={(index, reference) => {
         const binding = step?.inputs?.[selected];
         const listed = Array.isArray(binding);
         const subset = steps.find(({ id }) => id === key.step)?.inputs.find(({ id }) => id === (listed ? `${selected}.${index}` : selected))?.subset;
         const source = steps.find(({ id }) => id === reference.step);
         const where = reference.where ?? {};
+        const problems = selectionProblems(projection?.window_map?.problems ?? [], key.step, key.variant, selected, index, listed);
+        const write = (terms: SubsetTerms) => {
+          const next = { ...reference, where: terms };
+          bind(selected, listed ? changedSelections(stepSelections(binding)!, { kind: 'replace', index, reference: next }) : next);
+        };
         return {
-          problem: selectionProblem(projection?.window_map?.problems ?? [], key.step, key.variant, selected, index, listed),
+          problems,
           runs: source && projection && !('subset' in where) && <SelectionRule
             scope={{ project: saved.project_id, revision: projection.revision, variant: key.variant }} source={source}
             rule={where.rule ?? ''} pinned={where.rows?.map(({ key: row }) => row)} planned={subset} picking={selection}
-            disabled={!canBind} refusal={roleRefusal(selected, selected)}
+            disabled={!canBind} problem={problems.rule}
+            pick={{ rows: stepSourceRows(projection, source.id, key.variant), onCommit: write }}
             onCommit={(rule) => {
               const { rule: _written, ...rest } = where;
-              const next = { ...reference, where: rule ? { ...rest, rule } : rest };
-              bind(selected, listed ? changedSelections(stepSelections(binding)!, { kind: 'replace', index, reference: next }) : next);
+              write(rule ? { ...rest, rule } : rest);
             }} />,
         };
       }}
@@ -409,7 +416,7 @@ export function useManagedAnalyze({
     </p>}
     {mapped && selected && <ElementRequests requests={selectedElement.requests} selected={chosenMember}
       onSelect={(member) => setChosenRequest(member === undefined ? undefined : { scope, element: selected, member })} />}
-    {selectedPlan?.changed && <MentionRow place={selectedPlan.changed.place} detail={studioChangeDetail(selectedPlan.changed)} />}
+    {selectedPlan?.changed && <ChangeRow change={selectedPlan.changed} />}
     {operation && definition && key && <div className="grid gap-1">
       <SettingsForm key={selected} schema={definition.parameter_json_schema} value={operation.params ?? {}}
         projected={(path) => {

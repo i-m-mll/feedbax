@@ -8,13 +8,12 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from feedbax.builtins.reaching import REACHING_TASK
 from feedbax.cli import main
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.project import Project
 from feedbax.planner.project_plan import ElementKey, RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID
+from feedbax.examples import load_shipped_projects
 from feedbax.host.light_jobs import dataset_member
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset
@@ -33,13 +32,11 @@ def _saved_light_definition(*, paired=False):
     project = _report_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     evaluation = managed_evaluation_definition()
     train = evaluation["steps"]["train"]
-    inputs = train["base"]["inline"]["trial_documents"]
-    inputs["python_task"] = inputs.pop("task")
-    inputs.pop("input_overrides")
-    evaluation["documents"]["task"] = {
-        "schema": PYTHON_TASK_SCHEMA_ID,
-        "payload": {"type": REACHING_TASK, "params": {"x": 0.15, "n_steps": 8}},
-    }
+    task = load_shipped_projects()["point-mass-reaching"].documents["simple-reaches-task"].model_dump(mode="json", by_alias=True, exclude_unset=True)
+    task["payload"]["fixed_steps"] = 8
+    del task["payload"]["validation_trials"]
+    task["payload"]["epochs"][0]["end"]["length"]["value"] = 8
+    evaluation["documents"]["task"] = task
     project["documents"] = evaluation["documents"] | {
         name: project["documents"][name]
         for name in ("velocity-analysis", "velocity-figure", "velocity-report")
@@ -47,11 +44,12 @@ def _saved_light_definition(*, paired=False):
     project["documents"]["velocity-figure"]["payload"]["layers"][0]["style"] = {"label": "{condition}"}
     project["steps"]["train"] = train
     step = "conditions" if paired else "baseline"
-    evaluate = evaluation["steps"][step]
-    evaluate["base"]["inline"]["params"]["trial_set"] = {"kind": "sample", "count": len(_TRIALS)}
-    project["steps"][step] = evaluate
+    project["steps"][step] = evaluation["steps"][step]
+    for evaluate in project["steps"].values():
+        if evaluate.get("kind") == "evaluate":
+            evaluate["base"]["inline"]["params"]["trial_set"] = {"kind": "sample", "count": len(_TRIALS)}
     project["documents"]["velocity-analysis"]["payload"]["operations"]["align"]["params"]["target"] = (
-        "/v1/task/output/reach_target"
+        "/v1/task/output/target_pos"
     )
     return project
 

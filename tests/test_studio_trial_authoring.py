@@ -16,7 +16,6 @@ from feedbax.contracts.project import Project
 from feedbax.planner.project_plan import ProjectPlanMemo, RunKey, compile_project
 from feedbax.contracts.studio_trials import StudioTrialAuthoring
 from feedbax.contracts.request_identity import decode_request
-from feedbax.builtins.reaching import REACHING_TASK, ReachingParameters, reaching_document
 from feedbax.application.composition import application_python_tasks
 from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.web.app import create_app
@@ -26,6 +25,10 @@ from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_task_parity import _model_payload
 from tests.test_document_train_pair import authored_documents, document_project
 from tests.support.host import job_row, token, wait_until
+from tests.support.python_task import reaching_python_task  # noqa: F401
+from tests.support.plugins.reaching_task import REACHING_TASK, ReachingParameters, reaching_document
+
+pytestmark = pytest.mark.usefixtures("reaching_python_task")
 
 
 def _python_project():
@@ -44,7 +47,8 @@ def _python_project():
     return raw
 
 
-def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path, monkeypatch):
+def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_path, monkeypatch):
+    host = private_host
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
     app = create_app(projects_dir=tmp_path / "projects")
     with TestClient(app) as client:
@@ -92,7 +96,7 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path, mon
         initial = author(revision)
         assert initial.task_document == "task"
         assert initial.objective_document == "objective"
-        assert initial.task_types[0].type == REACHING_TASK
+        assert REACHING_TASK in {task.type for task in initial.task_types}
         assert [(signal.id, signal.name) for signal in initial.signals] == [("reach_target", "reach_target")]
         assert [epoch.id for epoch in initial.epochs] == ["move"]
         assert not initial.inputs
@@ -200,7 +204,7 @@ def test_revision_bound_task_and_objective_edits_run_on_host(host, tmp_path, mon
             "input_overrides": {"reach_input": "reach_target"}, "count": 1,
         })
         assert sample.status_code == 200, sample.text
-        np.testing.assert_allclose(sample.json()["trials"][0]["inputs"]["reach_target"], [[0.22, 0]] * 12)
+        np.testing.assert_allclose(sample.json()["drawn"]["trials"][0]["inputs"]["reach_target"], [[0.22, 0]] * 12)
 
         def submit(selected, name):
             response = client.post(f"/api/projects/{project}/train-runs", json={
@@ -290,7 +294,9 @@ def test_memoized_plan_uses_supplied_python_tasks():
     assert not actual.diagnostics
     assert len(actual.runs) == 1
     assert actual == expected
-    assert compile_project(project, memo=memo).diagnostics[0].path == "payload.trial_documents.python_task.type"
+    (unresolved,) = compile_project(project, memo=memo).runs
+    assert unresolved.admission_problem is not None
+    assert unresolved.admission_problem.path == "/trial_documents/python_task/type"
 
 
 def test_saved_window_applies_current_registry_to_canonical_python_selection(tmp_path, monkeypatch):
@@ -437,7 +443,7 @@ def test_scoped_objective_writes_preserve_other_requests(tmp_path, kind):
         if kind == "rows":
             expression = body | {
                 "revision": saved.json()["revision"],
-                "change": {"kind": "expression", "term": "term", "field": "weight", "edit": {"kind": "text", "text": "2"}},
+                "change": {"kind": "expression", "path": "/objective/terms/term/weight", "edit": {"kind": "text", "text": "2"}},
             }
             prepared = client.post(f"{route}/authoring/trials", json=expression)
             assert prepared.status_code == 200, prepared.text
@@ -594,7 +600,9 @@ def test_a_whole_step_task_edit_of_a_plain_evaluate_is_its_own_document(tmp_path
     with TestClient(create_app(projects_dir=tmp_path)) as client:
         reply = client.post("/api/projects/check/authoring/trials", json={
             "revision": before.revision, "run": run, "scope": {"kind": "step"},
-            "change": {"kind": "task", "edits": [{"op": "replace", "path": "/params/x", "value": 0.24}]},
+            "change": {"kind": "task", "edits": [
+                {"op": "replace", "path": "/variables/1/value/args/0/value", "value": 0.24},
+            ]},
         })
         assert reply.status_code == 200, reply.text
         edited = reply.json()
@@ -607,7 +615,7 @@ def test_a_whole_step_task_edit_of_a_plain_evaluate_is_its_own_document(tmp_path
         assert saved.status_code == 200, saved.text
         view = client.post("/api/projects/check/authoring/trials", json={"revision": saved.json()["revision"], "run": run})
         assert view.status_code == 200, view.text
-    assert view.json()["task"]["params"]["x"] == 0.24
+    assert view.json()["task"]["variables"][1]["value"]["args"][0]["value"] == 0.24
     assert view.json()["task_document"] == created["id"]
     trained = {row.key: row for row in before.plan.rows if row.key.step == "train"}
     after = folders.read_plan("check", revision=None).plan

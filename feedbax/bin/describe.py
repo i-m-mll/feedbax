@@ -74,6 +74,6 @@ def run(args: argparse.Namespace, output: CommandOutput) -> int:
     if output.json:
         output.response(result, exclude_unset=False)
     else:
-        payload = result.model_dump(mode="json") if isinstance(result, BaseModel) else result
+        payload = result.model_dump(mode="json", by_alias=True) if isinstance(result, BaseModel) else result
         output.write(json.dumps(payload, indent=2, ensure_ascii=False))
     return 0

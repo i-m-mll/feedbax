@@ -81,7 +81,7 @@ test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from A
     const plot = page.getByRole('img', { name: 'Metric train_loss', exact: true });
     await expect(plot.locator('line title').filter({ hasText: /samples?/ }).first()).toBeAttached({ timeout: 14_000 });
 
-    await page.getByRole('button', { name: 'Activity', exact: true }).click();
+    await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
     const activity = page.getByRole('region', { name: 'Activity', exact: true });
     const attempt = activity.getByRole('region', { name: configuration.project, exact: true }).getByRole('listitem');
     const stopping = responseFor(page, '/api/jobs/stop');
@@ -126,7 +126,7 @@ test('Activity shows the original CLI and Studio clients for a saved Train reque
   const label = 'Batch review';
   await page.goto('/?project=' + project);
   await select(page, 'train');
-  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   const activity = page.getByRole('region', { name: 'Activity', exact: true });
   const entries = activity.getByRole('region', { name: configuration.project, exact: true }).getByRole('listitem');
 
@@ -137,9 +137,9 @@ test('Activity shows the original CLI and Studio clients for a saved Train reque
   await expect(cli.getByText(label, { exact: true })).toBeVisible();
   await expect(cli.getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });
   await expect(runs(page).getByText('Done', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   const studioJob = await admit(page, projectPath);
-  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   const studioEntry = entries.filter({ has: page.getByText('Studio', { exact: true }) });
   await expect(studioEntry.getByText('Client', { exact: true })).toBeVisible();
   await expect(studioEntry.getByText('Label', { exact: true })).toHaveCount(0);
@@ -226,6 +226,13 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   const groupedLists = groupLabels.map((label) =>
     inputs.getByRole('list', { name: `Members ${label}`, exact: true }).getByRole('listitem'));
   const freeze = page.getByRole('menuitem', { name: 'To Rows', exact: true });
+  const unfrozen = async () => {
+    await rule.click({ button: 'right' });
+    await expect(page.getByRole('menuitem', { name: 'Pick Runs', exact: true })).toBeVisible();
+    await expect(freeze).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('menu')).toHaveCount(0);
+  };
   const saveWhere = async (click: () => Promise<void>) => {
     const saved = page.waitForResponse((response) => response.request().method() === 'PATCH'
       && new URL(response.url()).pathname === projectPath
@@ -298,8 +305,7 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
 
   await select(page, 'evaluate');
   for (const list of memberLists) await expect(list).toHaveText(['Rank 1', 'Rank 2']);
-  await rule.click({ button: 'right' });
-  await expect(freeze).toHaveCount(0);
+  await unfrozen();
   const ranked = (await readPlan()).window_map!.evaluations!.filter(({ key }) => key.step === 'evaluate');
   expect(ranked.map(({ key }) => key)).toEqual(ranks.map(({ key }) => key));
   if (grouped) {
@@ -311,8 +317,7 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
     await select(page, 'evaluate');
     await expect(groupedLists[0]).toHaveText(expected.slice(0, 2).map(({ label }, index) => `Rank ${index + 1} · ${label}`));
     await expect(groupedLists[1]).toHaveText(['Rank 1', 'Rank 2']);
-    await rule.click({ button: 'right' });
-    await expect(freeze).toHaveCount(0);
+    await unfrozen();
   }
   await launchRows(page, projectPath, (grouped ? ranked.slice(2) : ranked).map(({ key }) => key));
   await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(ranked.length, { timeout: 18_000 });

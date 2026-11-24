@@ -31,7 +31,7 @@ import {
 } from '@/components/activity/studioVocabulary';
 import { useCommandSource } from '@/features/projectWindow/heldGestures';
 import { commandAttributes, unboundStudioCommand, type StudioCommand } from '@/features/projectWindow/studioCommands';
-import type { ReferencePick, RuleChoice } from '@/features/projectWindow/elementSelection';
+import { rulePickSurface, type ReferencePick, type RuleChoice } from '@/features/projectWindow/elementSelection';
 import { StudioCanvas, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { Button, IconButton } from '@/components/ui/Button';
 import { InlineEdit } from '@/components/ui/InlineEdit';
@@ -50,7 +50,7 @@ import {
   type PipelineSelectionState,
   type RunSetsByStep,
 } from '@/features/pipeline/selection';
-import { PipelineRunMarks, type ApplyMapSelection, type AxisMenu } from './PipelineRunMarks';
+import { PipelineRunMarks, type ApplyMapSelection, type AxisMenu, type PickRuns } from './PipelineRunMarks';
 import { CommandContextMenu, CommandMenuItems, type RunMenu, type StepMenu } from './CommandContextMenu';
 import {
   compactMapCardWidth,
@@ -99,7 +99,7 @@ function chooseMapStep(apply: ApplyMapSelection, toggle?: ChooseStep): ChooseSte
 
 export interface StudioPipelineMapProps {
   plan: PlanView;
-  /** The runs a rule field being written chooses, boxed on their step's card. */
+  /** The runs a rule field being written chooses, boxed on their step's card; while they are picked, a press there toggles them. */
   choosing?: RuleChoice | null;
   state: PipelineSelectionState;
   onSelectionChange: (state: PipelineSelectionState) => void;
@@ -278,7 +278,7 @@ function NewSweep({ command, menu }: { command: StudioCommand; menu?: SweepMenu 
   return (
     <Menu open={!!menu} onOpenChange={(open) => { if (open) command.invoke(); else menu?.close(); }}>
       <MenuTrigger render={<IconButton variant="default" size="mark" label={command.label} icon={<Plus aria-hidden="true" />}
-        {...commandAttributes(command)} disabled={!command.enabled} />} />
+        className="studio-map-attention" {...commandAttributes(command)} disabled={!command.enabled} />} />
       <MenuContent aria-label={studioName('newSweep')}>{items.current}</MenuContent>
     </Menu>
   );
@@ -305,6 +305,7 @@ const StepCard = memo(function StepCard({
   upstream,
   downstream,
   boxed,
+  pickRuns,
   runMenu,
   axisMenu,
   stepMenu,
@@ -330,6 +331,7 @@ const StepCard = memo(function StepCard({
   upstream?: ReadonlySet<string>;
   downstream?: ReadonlySet<string>;
   boxed?: ReadonlySet<string>;
+  pickRuns?: PickRuns;
   runMenu?: RunMenu;
   axisMenu?: AxisMenu;
   stepMenu?: StepMenu;
@@ -354,6 +356,7 @@ const StepCard = memo(function StepCard({
     (upstream && downstream ? [...upstream].filter((id) => downstream.has(id)).length : 0);
   const problem = onProblems && ((opener: HTMLButtonElement) => onProblems(step.id, opener));
   const headSelection = selectionButton((extend) => {
+    if (pickRuns) return;
     if (pick) {
       if (pickable) pick.choose(picked);
     } else chooseStep(step.id, extend);
@@ -369,6 +372,7 @@ const StepCard = memo(function StepCard({
       data-map-dimmed={dimmed || undefined}
       data-document-scope={level}
       data-pick={pickable === undefined ? undefined : pickable ? 'allowed' : 'refused'}
+      {...pickRuns && { [rulePickSurface]: '' }}
       selected={selection?.kind === 'steps'}
       status={cardStatus(step.statusCounts)}
       tint={studioStep(step.kind).tint}
@@ -388,7 +392,7 @@ const StepCard = memo(function StepCard({
         <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'in')} className="pointer-events-none absolute -left-px top-1/2" />
         <span aria-hidden="true" data-map-anchor={mapAnchor(step.id, 'out')} className="pointer-events-none absolute -right-px top-1/2" />
         {connectable && <span aria-hidden="true" data-map-handle={step.id}
-          className="studio-map-handle nopan absolute -right-1.5 top-1/2 z-10 size-3 -translate-y-1/2 cursor-crosshair rounded-full border border-shell-muted bg-shell-chrome" />}
+          className="studio-map-attention nopan absolute -right-1.5 top-1/2 z-10 size-3 -translate-y-1/2 cursor-crosshair rounded-full border border-shell-muted bg-shell-chrome" />}
         {renamingStep(rename, step.id, 'card') ? (
           <div className="studio-map-card__head flex w-full px-3 py-2"><StepName step={step} rename={rename} /></div>
         ) : <CommandContextMenu commands={stepMenu && (() => stepMenu(step, { start: () => rename?.setEditing({ stepId: step.id, surface: 'card' }), surface: 'card' }))}
@@ -426,6 +430,7 @@ const StepCard = memo(function StepCard({
           upstream={upstream}
           downstream={downstream}
           boxed={boxed}
+          pickRuns={pickRuns}
           applySelection={applySelection}
           runMenu={runMenu}
           axisMenu={axisMenu}
@@ -448,7 +453,7 @@ const StepCard = memo(function StepCard({
       )}
       {newStep && (
         <IconButton variant="default" size="mark" label={newStep.label} icon={<Plus aria-hidden="true" />}
-          className="studio-card__attached"
+          className="studio-card__attached studio-map-attention"
           {...commandAttributes(newStep)} disabled={!newStep.enabled} onClick={newStep.invoke} />
       )}
       </>}
@@ -934,6 +939,7 @@ export function StudioPipelineMap({
                 upstream={upstream?.get(step.id)}
                 downstream={downstream?.get(step.id)}
                 boxed={choosing?.step === step.id ? choosing.runs : undefined}
+                pickRuns={choosing?.step === step.id ? choosing.toggle : undefined}
                 onPresentationChange={onPresentationChange}
                 newStep={newStepCommand?.({ stepId: step.id, selection: stepRunSelection(state.selection, step.id) }, step.label)}
                 newSweep={newSweepCommand?.(step.id, step.label)}

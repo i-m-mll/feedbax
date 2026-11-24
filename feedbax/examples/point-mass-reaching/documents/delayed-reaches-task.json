@@ -119,48 +119,57 @@
       {
         "id": "hold",
         "name": "hold",
-        "length": {
-          "kind": "draw",
-          "family": "uniform",
-          "args": [
-            {
-              "kind": "literal",
-              "value": 5,
-              "unit": "st"
-            },
-            {
-              "kind": "literal",
-              "value": 14,
-              "unit": "st"
-            }
-          ]
-        },
-        "max_steps": 14
+        "end": {
+          "kind": "length",
+          "length": {
+            "kind": "draw",
+            "family": "uniform",
+            "args": [
+              {
+                "kind": "literal",
+                "value": 5,
+                "unit": "st"
+              },
+              {
+                "kind": "literal",
+                "value": 14,
+                "unit": "st"
+              }
+            ]
+          },
+          "max_steps": 14
+        }
       },
       {
         "id": "cue",
         "name": "cue",
-        "length": {
-          "kind": "draw",
-          "family": "uniform",
-          "args": [
-            {
-              "kind": "literal",
-              "value": 10,
-              "unit": "st"
-            },
-            {
-              "kind": "literal",
-              "value": 19,
-              "unit": "st"
-            }
-          ]
-        },
-        "max_steps": 19
+        "end": {
+          "kind": "length",
+          "length": {
+            "kind": "draw",
+            "family": "uniform",
+            "args": [
+              {
+                "kind": "literal",
+                "value": 10,
+                "unit": "st"
+              },
+              {
+                "kind": "literal",
+                "value": 19,
+                "unit": "st"
+              }
+            ]
+          },
+          "max_steps": 19
+        }
       },
       {
         "id": "move",
-        "name": "move"
+        "name": "move",
+        "end": {
+          "kind": "rest"
+        }
       }
     ],
     "signals": [
@@ -178,6 +187,7 @@
         },
         "cells": [
           {
+            "id": "cue-move",
             "first_epoch": "cue",
             "last_epoch": "move",
             "value": {
@@ -202,6 +212,7 @@
         },
         "cells": [
           {
+            "id": "cue-move",
             "first_epoch": "cue",
             "last_epoch": "move",
             "value": {
@@ -235,6 +246,7 @@
         },
         "cells": [
           {
+            "id": "hold-cue",
             "first_epoch": "hold",
             "last_epoch": "cue",
             "value": {
@@ -243,6 +255,7 @@
             }
           },
           {
+            "id": "move",
             "first_epoch": "move",
             "last_epoch": "move",
             "value": {
@@ -274,6 +287,7 @@
         },
         "cells": [
           {
+            "id": "hold-cue",
             "first_epoch": "hold",
             "last_epoch": "cue",
             "value": {
@@ -282,6 +296,7 @@
             }
           },
           {
+            "id": "move",
             "first_epoch": "move",
             "last_epoch": "move",
             "value": {
@@ -313,6 +328,7 @@
         },
         "cells": [
           {
+            "id": "cue-move",
             "first_epoch": "cue",
             "last_epoch": "move",
             "value": {

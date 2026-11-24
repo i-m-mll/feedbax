@@ -153,6 +153,8 @@
 .studio-scroll-fade {
   /* Where the top fade starts, below content pinned to the top such as a table's header. */
   --fade-inset-top: 0px;
+  /* Where the left fade starts, right of content pinned to the left such as a table's held columns. */
+  --fade-inset-left: 0px;
   --fade-top: 0px;
   --fade-bottom: 0px;
   --fade-left: 0px;
@@ -161,10 +163,10 @@
   scroll-padding-block: calc(var(--fade-inset-top) + var(--studio-scroll-fade)) var(--studio-scroll-fade);
   -webkit-mask-image:
     linear-gradient(to bottom, #000 var(--fade-inset-top), transparent var(--fade-inset-top), #000 calc(var(--fade-inset-top) + var(--fade-top)), #000 calc(100% - var(--fade-bottom)), transparent),
-    linear-gradient(to right, transparent, #000 var(--fade-left), #000 calc(100% - var(--fade-right)), transparent);
+    linear-gradient(to right, #000 var(--fade-inset-left), transparent var(--fade-inset-left), #000 calc(var(--fade-inset-left) + var(--fade-left)), #000 calc(100% - var(--fade-right)), transparent);
   mask-image:
     linear-gradient(to bottom, #000 var(--fade-inset-top), transparent var(--fade-inset-top), #000 calc(var(--fade-inset-top) + var(--fade-top)), #000 calc(100% - var(--fade-bottom)), transparent),
-    linear-gradient(to right, transparent, #000 var(--fade-left), #000 calc(100% - var(--fade-right)), transparent);
+    linear-gradient(to right, #000 var(--fade-inset-left), transparent var(--fade-inset-left), #000 calc(var(--fade-inset-left) + var(--fade-left)), #000 calc(100% - var(--fade-right)), transparent);
   -webkit-mask-composite: source-in;
   mask-composite: intersect;
 }
@@ -173,6 +175,64 @@
 .studio-scroll-fade[data-overflow-bottom] { --fade-bottom: var(--studio-scroll-fade); }
 .studio-scroll-fade[data-overflow-left] { --fade-left: var(--studio-scroll-fade); }
 .studio-scroll-fade[data-overflow-right] { --fade-right: var(--studio-scroll-fade); }
+
+/* A table's held columns stay in place over the columns scrolling beneath them, opaque in the row's fill. */
+.studio-table {
+  --table-surface: var(--surface-main);
+}
+
+.studio-table[data-held] tr > :nth-child(1) { left: var(--held-left-1); }
+.studio-table[data-held] tr > :nth-child(2) { left: var(--held-left-2); }
+.studio-table[data-held] tr > :nth-child(3) { left: var(--held-left-3); }
+
+.studio-table[data-held="1"] tr > :nth-child(-n + 1),
+.studio-table[data-held="2"] tr > :nth-child(-n + 2),
+.studio-table[data-held="3"] tr > :nth-child(-n + 3) {
+  position: sticky;
+  z-index: 1;
+}
+
+.studio-table[data-held="1"] tbody tr > :nth-child(-n + 1),
+.studio-table[data-held="2"] tbody tr > :nth-child(-n + 2),
+.studio-table[data-held="3"] tbody tr > :nth-child(-n + 3) {
+  background:
+    linear-gradient(var(--cell-fill, transparent), var(--cell-fill, transparent)),
+    linear-gradient(var(--row-fill, transparent), var(--row-fill, transparent)),
+    var(--table-surface);
+}
+
+.studio-table[data-held="1"] thead tr > :nth-child(-n + 1),
+.studio-table[data-held="2"] thead tr > :nth-child(-n + 2),
+.studio-table[data-held="3"] thead tr > :nth-child(-n + 3) {
+  z-index: 2;
+  background-color: var(--surface-header);
+}
+
+/* Once the table is scrolled, a line divides the held columns from those beneath them. */
+.studio-table-box[data-overflow-left] .studio-table[data-held="1"] tr > :nth-child(1),
+.studio-table-box[data-overflow-left] .studio-table[data-held="2"] tr > :nth-child(2),
+.studio-table-box[data-overflow-left] .studio-table[data-held="3"] tr > :nth-child(3) {
+  box-shadow: inset -1px 0 var(--border-muted);
+}
+
+/* A field or a name's input in a cell is the cell (P35); the cell keeps no inset of its own. */
+.studio-table .studio-table-field-cell { padding-inline: 0; }
+.studio-cell-input:hover:not(:focus) { background: var(--surface-hover); }
+
+/* Focusing or selecting a field's cell draws the cell's border in the foreground colour over the cell's own fill. */
+.studio-table-field-cell:focus-within,
+.studio-table-field-cell[data-selected] {
+  outline: 1px solid var(--text-primary);
+  outline-offset: -1px;
+}
+
+.studio-table-field-cell[data-selected] {
+  --cell-fill: transparent;
+  background-color: transparent;
+}
+
+/* The potential row draws no lines. */
+.studio-table-add-row > td { border: 0; padding: 0; }
 
 .studio-card {
   position: relative;
@@ -260,13 +320,15 @@
   transform: translateY(-50%);
 }
 
-/* A card's output handle, from which a wire is dragged, shows while the card is hovered or has the keyboard. */
-.studio-map-handle {
+/* A card's own controls (its output handle, New Step, Add Sweep) show while the card is hovered, has the keyboard or is selected, and while one of them holds an open menu. */
+.studio-map-attention {
   opacity: 0;
 }
 
-.studio-map-card:hover .studio-map-handle,
-.studio-map-card:focus-within .studio-map-handle {
+.studio-map-card:hover .studio-map-attention,
+.studio-map-card:focus-within .studio-map-attention,
+.studio-map-card[data-selected] .studio-map-attention,
+.studio-map-attention[aria-expanded='true'] {
   opacity: 1;
 }
 

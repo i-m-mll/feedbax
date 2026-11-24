@@ -60,7 +60,9 @@ from feedbax.contracts.jobs import (
 from feedbax.contracts.project_inputs import (
     BatchCheckpoint, InputBinding, SelectedRow, StepReference, producer_member_key, subset_to_rows,
 )
-from feedbax.contracts.studio_place import StudioStepPlace, definition_place, path_parts, variation_targets
+from feedbax.contracts.studio_place import (
+    StudioStepPlace, definition_place, document_path, path_parts, variation_targets,
+)
 from feedbax.contracts.studio_project import AuthoredFileAddress
 from feedbax.contracts.studio_subset import (
     StudioRunRuleCheck, StudioRunRuleChosen, StudioRunRuleRefused, StudioRunRuleRequest, StudioSubsetToRowsEdit,
@@ -68,13 +70,15 @@ from feedbax.contracts.studio_subset import (
 )
 from feedbax.contracts.project_io import project_declaration_name
 from feedbax.planner.project_plan import (
-    BlockedRow, ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedInput, PlannedRow, PlannedRun, RunKey, authored_request_change,
+    BlockedRow, ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedInput, PlannedRow, PlannedRun, ProjectPlan, RunKey,
+    RunProblem,
+    authored_request_change,
 )
 from feedbax.planner.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.result_address import parse_labels
 from feedbax.contracts.project_sweep import CheckpointRuleAxis, axis_coordinates
-from feedbax.contracts.run_rule import RuleRefusal, choose, value_text
+from feedbax.contracts.run_rule import RuleRefusal, choose
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import (
     BatchMember, BatchSetMember, BestRank, LastMember, ProductRef, UpdateSeriesMember,
@@ -105,6 +109,7 @@ from feedbax.host.live_evaluate import live_objective_series
 from feedbax.contracts.rollout import CannotRun
 from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
 from feedbax.tasks.registry import PythonTaskRegistry
+from feedbax.web.services.axis_values import gather_axes
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, SettledProjectPlan
 
 
@@ -201,9 +206,9 @@ class ProjectPlanRead:
                 yield _analysis_status(row.key, label, problems[row.key], states)
                 yield from states
             elif isinstance(row, PlannedRun):
-                yield _planned_status(row.key, label, row_problems)
+                yield _planned_status(row.key, label, [*row_problems, *row.problems])
             else:
-                reason = None if row_problems else "No request could be planned."
+                reason = None if row_problems or row.problems else "No request could be planned."
                 yield PlanStatusRow(row.key, label, JobStatus.CANNOT_RUN, reason)
 
     @classmethod
@@ -269,6 +274,8 @@ class ProjectPlanRead:
         document_ids: dict[tuple[str, str], dict[str, str]] = {}
         document_uses: dict[tuple[str, str], set[str]] = defaultdict(set)
         for row in plan.rows:
+            if not row.resolved:
+                continue
             key = row.key.variant, row.key.step
             document_uses[key].update(row.document_uses - row.followed_documents)
             shared = document_ids.get(key)
@@ -344,14 +351,17 @@ class ProjectPlanRead:
         def includes(variant: str | None) -> bool:
             return variants is None or variant is None or variant in variants
 
-        rule_axes: dict[tuple[str, str], dict[str, dict[str, str]]] = defaultdict(dict)
         rule_metrics: dict[tuple[str, str], set[str]] = defaultdict(set)
+        step_rows: dict[tuple[str, str], list[PlannedRow]] = defaultdict(list)
         for row in plan.rows:
             at = row.key.variant, row.key.step
-            for axis, coordinate in axis_coordinates(row.coordinates, row.input_axes).items():
-                rule_axes[at].setdefault(axis, {}).setdefault(coordinate.value_id, value_text(coordinate))
+            step_rows[at].append(row)
             for attempt in self.attempts_by_run.get(row.key, ()):
                 rule_metrics[at].update(attempt.metric_names)
+        gathered = {at: gather_axes(rows) for at, rows in step_rows.items()}
+        axis_values = {
+            at: value for _, values in gathered.values() for at, value in values.items()
+        }
 
         return StudioProjectWindowMap(
             variants=[variant for variant in plan.variants if includes(variant)],
@@ -368,7 +378,7 @@ class ProjectPlanRead:
                         for name, rows in plan.exception_matches.get((variant, step_id), {}).items()
                     ],
                     status_counts=dict(counts[variant, step_id]),
-                    rule_axes=rule_axes[variant, step_id],
+                    axes=gathered[variant, step_id][0] if (variant, step_id) in gathered else [],
                     rule_metrics=sorted(rule_metrics[variant, step_id]),
                 )
                 for (variant, step_id), step in plan.steps.items() if includes(variant)
@@ -389,15 +399,20 @@ class ProjectPlanRead:
                     evaluation_conditions=task_conditions(row),
                     origin=row.train.origin if row.train is not None else None,
                     target_total=row.train.target_total if row.train is not None else None,
+                    resolved=row.resolved,
                     member_key=producer_member_key(row.key.variant, row.key.row, gathers_variants=False)
                     if row.kind in {"train", "evaluate"} else None,
                     coordinates={
-                        axis: StudioProjectWindowMapCoordinate.model_validate(coordinate, from_attributes=True)
+                        axis: StudioProjectWindowMapCoordinate(
+                            value_id=coordinate.value_id, label=coordinate.label, value=coordinate.value,
+                            axis_value=axis_values[row.key, axis],
+                        )
                         for axis, coordinate in row.coordinates.items()
                     },
                     input_axes={
                         axis: StudioProjectWindowMapInputAxis(
                             value_id=member.value_id, label=member.label, carries=list(member.carries),
+                            axis_value=axis_values[row.key, axis],
                         )
                         for axis, member in row.input_axes.items()
                     },
@@ -416,12 +431,7 @@ class ProjectPlanRead:
                     problem, declaration=project_declaration_name(self.settled.configuration.project),
                 )
                   for problem in plan.diagnostics if includes(problem.variant)),
-                *(StudioProjectWindowMapProblem(
-                    code="cannot_run", path=problem.path, detail=problem.detail,
-                    variant=run.key.variant, step=run.key.step, row=run.key.row,
-                    place=definition_place(path_parts(problem.path), run.document_ids.get, member=problem.model_address),
-                ) for run in plan.runs
-                  if includes(run.key.variant) and (problem := run.admission_problem) is not None),
+                *row_problems(plan, variants),
                 *(problem for problem in self.evaluation_problems if includes(problem.variant)),
             ],
             requests=[
@@ -464,6 +474,24 @@ class ProjectPlanRead:
             regroup_refused=sorted(self.settled.regroup_refused),
         )
 
+def row_problems(plan: ProjectPlan, variants: tuple[str, ...] | None = None) -> Iterator[StudioProjectWindowMapProblem]:
+    """Each Problem that keeps a row of ``plan`` from running, once, at its own path."""
+    for row in plan.rows:
+        if variants is not None and row.key.variant not in variants:
+            continue
+        for problem in row.problems:
+            parts = path_parts(problem.path)
+            place = definition_place(
+                parts, row.document_ids.get, member=problem.model_address, variable=problem.variable, start=problem.start,
+                variation=lambda _name, target=problem.variation_target: target,
+            )
+            yield StudioProjectWindowMapProblem(
+                code="cannot_run", path=problem.path, detail=problem.detail,
+                variant=row.key.variant, step=row.key.step, row=row.key.row,
+                place=place, document_path=document_path(parts, place), address=f"steps/{row.key.step}.json",
+            )
+
+
 def _by_element(elements: Iterable[PlannedElement]) -> dict[tuple[RunKey, str], list[PlannedElement]]:
     grouped: dict[tuple[RunKey, str], list[PlannedElement]] = {}
     for element in elements:
@@ -499,7 +527,7 @@ def _step_references(
 
 
 def _planned_status(
-    key: RunKey | ElementKey, label: str, problems: list[ProjectDiagnostic],
+    key: RunKey | ElementKey, label: str, problems: Sequence[ProjectDiagnostic | RunProblem],
 ) -> PlanStatusRow:
     status = JobStatus.CANNOT_RUN if problems else JobStatus.NOT_RUN
     return PlanStatusRow(key, label, status, None)
@@ -918,6 +946,17 @@ def _evaluation_row(
             jobs.checkpoint_catalogs.get(subject.request_id, ())
         ):
             raise CannotRun("/inputs/subject/checkpoint", "admitted Train catalogue omits requested batches")
+        if (
+            isinstance(subject, ProductRef) and isinstance(subject.select, BatchMember) and planned is not None
+            and planned.producer is not None
+            and (held := jobs.finished_checkpoints.get(subject.request_id)) is not None
+            and subject.select.batch not in held
+        ):
+            raise CannotRun(
+                _subject_checkpoint_path(settled, run, planned),
+                f"Update {subject.select.batch} was not saved by {planned.producer.step!r}, "
+                f"which saved updates {', '.join(map(str, held)) or 'none'}.",
+            )
     except CannotRun as error:
         problem = StudioProjectWindowMapProblem(
             code="cannot_run", path=error.path, detail=error.reason,
@@ -961,6 +1000,15 @@ def _evaluation_row(
         subject_rank_key=planned.member.key if isinstance(reference, BestRank) and reference.group else None,
         bound_subject=_planned_bound(attempts[-1].bound_subject, planned) if attempts else None,
     ), problem
+
+
+def _subject_checkpoint_path(settled: SettledProjectPlan, run: PlannedRun, planned: PlannedInput) -> str:
+    """Where the checkpoint of the selection that chose ``planned`` is authored: its list item's, or the role's."""
+    step = settled.plan.steps[run.key.variant, run.key.step]
+    authored = (step.inputs if step.inputs is not None else step.authored_inputs).get("subject")
+    if isinstance(authored, list) and planned.selection in authored:
+        return f"/inputs/subject/{authored.index(planned.selection)}/checkpoint"
+    return "/inputs/subject/checkpoint"
 
 
 def _planned_bound(bound: StudioBoundBestSubject | None, planned: PlannedInput | None) -> StudioBoundBestSubject | None:

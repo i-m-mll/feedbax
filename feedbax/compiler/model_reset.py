@@ -42,6 +42,7 @@ class ModelResetField:
     type: ValueType
     dtype: str
     finest: Level = Level.TRIAL
+    required: bool = False
 
 
 @dataclass(frozen=True)
@@ -204,7 +205,7 @@ def resolve_model_reset(
 
             def add(
                 path: tuple[str, ...], dtype, shape: tuple[int, ...], unit: str,
-                paths: tuple[tuple[str, ...], ...], override_port: str | None,
+                paths: tuple[tuple[str, ...], ...], override_port: str | None, required: bool = False,
             ) -> None:
                 if override_port is not None and ScopedPort((*scope, name), override_port) in driven:
                     return
@@ -217,7 +218,7 @@ def resolve_model_reset(
                     raise ModelResetError(address.to_text(), "Reset storage needs a real, integer or boolean dtype")
                 field = ModelResetField(address, ValueType(
                     base=base, shape=shape, dimensions=UNITS[unit].dimensions,
-                ), dtype.name)
+                ), dtype.name, required=required)
                 bindings.append(_ResetBinding(
                     field, node.type, node.revision, owner_class, paths, override_port,
                 ))
@@ -230,7 +231,7 @@ def resolve_model_reset(
                 sample = _read_path(prototype, reset.output_path)
                 add(
                     ("reset", *state.symbol.split("/")), sample.dtype, sample.shape, state.units,
-                    (state.fields, *reset.aliases), reset.override_port,
+                    (state.fields, *reset.aliases), reset.override_port, reset.required,
                 )
 
             config_paths = {

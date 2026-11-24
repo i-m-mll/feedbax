@@ -22,7 +22,7 @@ from feedbax.contracts.operation import DatasetPort, JaxOperation, ModelPort, Ta
 from feedbax.contracts.portable import ComponentOptions, Ports
 from feedbax.contracts.rollout import RAW_STATES_SCHEMA
 from feedbax.contracts.semantic_values import semantic_key
-from feedbax.contracts.task_document import Cell, Epoch, Signal, TaskDocument
+from feedbax.contracts.task_document import Cell, Epoch, Rest, Signal, TaskDocument
 from feedbax.dataset import Dataset, Variable
 from feedbax.runtime.graph import Component, Graph
 from feedbax.runtime.prototypes import input_passthrough_output_prototype
@@ -99,11 +99,11 @@ class DriveTask(PythonTask[DriveSettings]):
     def template(settings: DriveSettings) -> PythonTaskTemplate:
         vector = ValueType(base="real", shape=(1,))
         document = TaskDocument(
-            id="drive", variables=(), epochs=(Epoch(id="rollout", name="Rollout"),), fixed_steps=2,
+            id="drive", variables=(), epochs=(Epoch(id="rollout", name="Rollout", end=Rest()),), fixed_steps=2,
             signals=(Signal(
                 id="drive", name="drive", type=vector,
                 cells=(Cell(
-                    first_epoch="rollout", last_epoch="rollout",
+                    id="rollout", first_epoch="rollout", last_epoch="rollout",
                     value=CallValue(function="vector", args=(LiteralValue(value=settings.nominal),)),
                 ),),
             ),),

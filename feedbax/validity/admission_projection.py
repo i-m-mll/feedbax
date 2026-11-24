@@ -6,7 +6,6 @@ from collections.abc import Mapping
 from importlib import metadata
 from pathlib import Path
 import sys
-from types import ModuleType
 from typing import Literal
 
 from packaging.utils import canonicalize_name
@@ -14,6 +13,7 @@ from packaging.utils import canonicalize_name
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.code_validity import CodeTrace, RegistryBinding
 from feedbax.validity.occurrence import FileStamp, occurrence
+from feedbax.validity.source import package_spec
 
 
 class FileObservation(StrictModel):
@@ -82,8 +82,6 @@ def declaration_files(
         if (source := declaration.source_path) is not None and (root := roots.get(source.scope)) is not None:
             paths.setdefault(declaration.distribution, set()).add(root / source.path)
     for package, distribution in owners.items():
-        if isinstance(module := sys.modules.get(package), ModuleType):
-            source = vars(module).get("__file__")
-            if isinstance(source, str):
-                paths.setdefault(distribution, set()).add(Path(source).absolute())
+        if (spec := package_spec(package)) is not None and spec.has_location and spec.origin is not None:
+            paths.setdefault(distribution, set()).add(Path(spec.origin).absolute())
     return {dist: tuple(FileObservation.read(path) for path in sorted(files)) for dist, files in paths.items()}
