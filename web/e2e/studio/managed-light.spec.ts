@@ -233,7 +233,8 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   await page.keyboard.press('Enter');
   expect((await refusal).status()).toBe(422);
   // The refusal lands on the role field it was made in.
-  await expect(inspector.getByRole('alert')).toHaveText(/Requires dataset schemas/);
+  await expect(roleField('Velocity')).toHaveAccessibleDescription(/Requires dataset schemas/);
+  await expect(roleField('Velocity').getByRole('img', { name: 'Problem', exact: true })).toHaveAttribute('data-app-tip', /Requires dataset schemas/);
   expect((await snapshot()).revision).toBe(beforeRefusal.revision);
   await edit(() => chooseOption(page, roleField('Velocity'), 'aligned_velocity.velocity'));
 

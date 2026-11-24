@@ -170,6 +170,8 @@ export function TrialsEditor({ initial, domain, disabled, refusal, onSave }: {
     control={<>
       <Select aria-label={studioName('trials')} value={rule.kind} disabled={disabled} items={choices}
         aria-invalid={!sampling && refusal !== undefined} finalFocus={() => first.current}
+        aria-describedby={!sampling && refusal ? `${count}-kind-problem` : undefined}
+        trailing={!sampling && refusal && <FieldProblem reason={refusal} id={`${count}-kind-problem`} />}
         onValueChange={(kind) => {
           if (kind === initial.kind) return commit(initial);
           switch (kind) {
@@ -178,14 +180,15 @@ export function TrialsEditor({ initial, domain, disabled, refusal, onSave }: {
             case 'sample': return setRule({ kind: 'sample', count: Number.NaN });
           }
         }} />
-      {!sampling && refusal && <p role="alert">{refusal}</p>}
     </>}>
     {rule.kind === 'conditions' && domain.kind === 'fixed' && <fieldset disabled={disabled}>
       <Checkboxes options={[...conditionLabels(domain.conditions)].map(([id, label]) => ({ id, label }))} selected={rule.ids} disabled={disabled}
         onToggle={(id, checked) => commit({ kind: 'conditions', ids: toggle(rule.ids, id, checked) })} />
     </fieldset>}
-    {sampling && <FieldRow label={studioName('count')} htmlFor={count} below={refusal && <p role="alert">{refusal}</p>}>
+    {sampling && <FieldRow label={studioName('count')} htmlFor={count}>
       <NumberField ref={first} id={count} min={1} max={10_000} step={1} disabled={disabled} invalid={refusal !== undefined}
+        aria-describedby={refusal ? `${count}-problem` : undefined}
+        trailing={refusal && <FieldProblem reason={refusal} id={`${count}-problem`} />}
         value={Number.isNaN(rule.count) ? null : rule.count}
         onValueChange={(next) => setRule({ kind: 'sample', count: next ?? Number.NaN })}
         onValueCommitted={(next) => commit({ kind: 'sample', count: next ?? Number.NaN })} />
