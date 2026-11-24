@@ -106,7 +106,7 @@ test('a Model card added from the Library moves and redraws no other card', asyn
       frame = requestAnimationFrame(sample);
     };
     sample();
-    window.addEventListener('drop', () => { state.droppedAt = state.addFrames!.length; }, { capture: true, once: true });
+    window.addEventListener('pointerup', () => { state.droppedAt = state.addFrames!.length; }, { capture: true, once: true });
     state.stopAddFrames = () => cancelAnimationFrame(frame);
   });
   const pane = model.locator('.react-flow__pane');
