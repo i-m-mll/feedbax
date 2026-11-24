@@ -481,6 +481,10 @@ class _Lower:
                     match attachment.operation.lower():
                         case "scale" if type(parameters.get("factor")) in (int, float):
                             type_id, params = "feedbax.Scale", {"scale": parameters["factor"], "fixed": True}
+                        case "add" if isinstance(parameters.get("value"), list) and all(
+                            type(value) in (int, float) and isfinite(value) for value in parameters["value"]
+                        ):
+                            type_id, params = "feedbax.ConstantInput", {"arrays": parameters["value"], "active": True}
                         case "clamp" if all(type(parameters.get(name)) in (int, float) for name in ("low", "high")):
                             if parameters["low"] > parameters["high"]:
                                 raise self.problem(path, "attachment", "clamp bounds are reversed", parent=at, id=attachment.id)

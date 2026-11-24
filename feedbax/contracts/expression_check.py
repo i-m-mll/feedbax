@@ -227,6 +227,14 @@ def check(
             if isinstance(node, DrawValue) != (info.display_class == FunctionClass.DRAW):
                 problem(node, ProblemCode.STRUCTURE, f"{key!r} has the wrong expression form.", at)
                 return None
+            if isinstance(node, DrawValue) and node.weights is not None and (
+                key != "choice" or len(node.weights) != len(node.args) or not any(node.weights)
+            ):
+                problem(
+                    node, ProblemCode.STRUCTURE,
+                    "Choice needs one weight per entry and at least one positive weight.", (*at, "weights"),
+                )
+                return None
             kwargs = node.kwargs if isinstance(node, CallValue) else {}
             if (
                 not info.min_args <= len(node.args)

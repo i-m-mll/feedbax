@@ -271,7 +271,7 @@ def _interpolate(minimum_jerk: bool, context: CallContext, start, stop, *, over=
     return start + (stop - start) * fraction
 
 
-def _sample(family: str, context: CallContext, *args):
+def _sample(family: str, context: CallContext, *args, weights=None):
     import jax.numpy as jnp
     import jax.random as random
 
@@ -293,6 +293,8 @@ def _sample(family: str, context: CallContext, *args):
             )
         case "bernoulli":
             return random.bernoulli(key, args[0])
+        case "choice" if weights is not None:
+            return random.choice(key, jnp.stack(args), axis=0, p=weights / weights.sum())
         case "choice":
             return jnp.stack(args)[random.randint(key, (), 0, len(args))]
         case "truncexp":
