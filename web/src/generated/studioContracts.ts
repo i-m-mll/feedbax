@@ -969,6 +969,7 @@ export interface ModelEditApplied {
   undo_token?: string | null;
   created?: string[];
   problems?: ModelGraphProblem[];
+  sweep_problems?: StudioProjectWindowMapProblem[];
 }
 
 export interface ModelEditAsked {
@@ -1129,7 +1130,7 @@ export interface FieldResetEdit {
 export interface StudioSweepValue {
   id: string;
   label: string | null;
-  value: number;
+  value: number | UnresolvedValue;
 }
 
 export interface StudioSweepList {
@@ -4427,11 +4428,6 @@ export type StudioSubsetToRowsRequest = {
   "attempts": Array<string>;
 };
 
-export type StudioSweptParameterMissing = {
-  "class_label": string;
-  "parameter_label": string;
-};
-
 export type StudioTaskCatalog = {
   "blank": TaskDocument;
   "documents": Array<StudioLibraryDocument>;
@@ -4473,7 +4469,6 @@ export type StudioTrainAuthoring = {
   "created"?: Array<CreateNamedDocument>;
   "documents": Array<string>;
   "store_choices"?: Array<StudioStoreChoice> | null;
-  "refusal"?: StudioSweptParameterMissing | null;
   "sweep_problems"?: Array<StudioProjectWindowMapProblem>;
   "classes"?: Array<StudioClassField>;
   "removed_values"?: Record<string, Array<string>>;
@@ -4541,7 +4536,7 @@ export type StudioTrialAuthoring = {
   "variables": Array<ScopedValue>;
   "signals": Array<ScopedValue>;
   "epochs": Array<StudioTrialEpoch>;
-  "period_seconds": number;
+  "period_seconds": number | null;
   "n_steps": number | null;
   "batch_size": number | null;
   "reads_model": boolean;
@@ -4554,7 +4549,6 @@ export type StudioTrialAuthoring = {
   "files": Array<StudioProjectFilePatch>;
   "created"?: Array<CreateNamedDocument>;
   "store_choices"?: Array<StudioStoreChoice> | null;
-  "refusal"?: StudioSweptParameterMissing | null;
 };
 
 export type StudioTrialAuthoringRequest = {
@@ -7170,6 +7164,7 @@ export const ModelEditAppliedSchema: z.ZodType<ModelEditApplied> = z.lazy(() =>
       "undo_token": z.string().min(1).nullable().optional(),
       "created": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
       "problems": z.array(ModelGraphProblemSchema).optional(),
+      "sweep_problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelEditApplied>;
@@ -7430,7 +7425,7 @@ export const StudioSweepValueSchema: z.ZodType<StudioSweepValue> = z.lazy(() =>
     .object({
       "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
       "label": z.string().nullable(),
-      "value": z.union([z.number().int().safe(), z.number().finite()]),
+      "value": z.union([z.number().int().safe(), z.number().finite(), UnresolvedValueSchema]),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSweepValue>;
@@ -12373,13 +12368,6 @@ export const StudioSubsetToRowsRequestSchema: z.ZodType<StudioSubsetToRowsReques
   }).strict()
 ) as unknown as z.ZodType<StudioSubsetToRowsRequest>;
 
-export const StudioSweptParameterMissingSchema: z.ZodType<StudioSweptParameterMissing> = z.lazy(() =>
-  z.object({
-    "class_label": z.string().min(1),
-    "parameter_label": z.string().min(1),
-  }).strict()
-) as unknown as z.ZodType<StudioSweptParameterMissing>;
-
 export const StudioTaskCatalogSchema: z.ZodType<StudioTaskCatalog> = z.lazy(() =>
   z.object({
     "blank": TaskDocumentSchema,
@@ -12432,7 +12420,6 @@ export const StudioTrainAuthoringSchema: z.ZodType<StudioTrainAuthoring> = z.laz
     "created": z.array(CreateNamedDocumentSchema).optional(),
     "documents": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))),
     "store_choices": z.union([z.array(StudioStoreChoiceSchema), z.null()]).optional(),
-    "refusal": z.union([StudioSweptParameterMissingSchema, z.null()]).optional(),
     "sweep_problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
     "classes": z.array(StudioClassFieldSchema).optional(),
     "removed_values": z.record(z.string(), z.array(z.string())).optional(),
@@ -12512,7 +12499,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "variables": z.array(ScopedValueSchema),
     "signals": z.array(ScopedValueSchema),
     "epochs": z.array(StudioTrialEpochSchema),
-    "period_seconds": z.number().finite(),
+    "period_seconds": z.union([z.number().finite(), z.null()]),
     "n_steps": z.union([z.number().int().safe(), z.null()]),
     "batch_size": z.union([z.number().int().safe(), z.null()]),
     "reads_model": z.boolean(),
@@ -12525,7 +12512,6 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "files": z.array(StudioProjectFilePatchSchema),
     "created": z.array(CreateNamedDocumentSchema).optional(),
     "store_choices": z.union([z.array(StudioStoreChoiceSchema).min(1), z.null()]).optional(),
-    "refusal": z.union([StudioSweptParameterMissingSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialAuthoring>;
 

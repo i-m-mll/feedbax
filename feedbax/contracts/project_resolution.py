@@ -233,6 +233,17 @@ class BaseReaders:
     terminal_train: Callable[[str], TerminalTrainSource | None] | None = None
 
 
+def _at_sweep_origin(problem: ProjectDiagnostic, source: ValueSource) -> ProjectDiagnostic:
+    if source.kind == "document":
+        return replace(
+            problem, document=source.name, document_path=source.path,
+            authored_file=f"documents/{source.name}.json", authored_path="/payload" + source.path,
+        )
+    if source.step is not None:
+        return replace(problem, authored_file=f"steps/{source.step}.json", authored_path=source.path)
+    return problem
+
+
 class _Problem(Exception):
     def __init__(
         self,
@@ -542,10 +553,13 @@ class _Documents:
                             raise ValueError("A variant writes into an object payload only")
                         draft = apply_override_patch_copy(draft, item.patch)
                     except ValueError as error:
-                        raise _Problem(
+                        problem = _Problem(
                             ResolutionCode.INVALID_SWEEP, item.patch.path, str(error),
                             step=self.step, document=reference.document,
-                        ) from error
+                        )
+                        if (origin := item.source) is not None:
+                            problem.diagnostic = _at_sweep_origin(problem.diagnostic, origin)
+                        raise problem from error
                 self.edited[reference.document] = draft
             payload = self.edited[reference.document]
         if (
@@ -1105,9 +1119,7 @@ class _Resolver:
                                 origins, OverridePatch(op="add", path=slot, value=None), source_shape(value, None),
                             )
                         payload = read
-                    source, override = (None, None) if origins is None else self.row_source(
-                        row.patch_authors.get(patch.path, name), row, patch.path,
-                    )
+                    source, override = self.row_source(row.patch_authors.get(authored, name), row, authored)
                     documents.setdefault(document, []).append(_DocumentRowPatch(
                         patch.model_copy(update={"path": document_path}), source, override,
                     ))
@@ -1164,10 +1176,14 @@ class _Resolver:
                     ), SourceList(None, iter(sources), records))
                 payload = payload | {MODEL_ATTACHMENTS: batches | {batch: records}}
         except ValueError as error:
-            raise _Problem(
+            problem = _Problem(
                 ResolutionCode.INVALID_SWEEP, path, str(error), step=name, layer=row.id,
                 document=model_document, model_address=address,
-            ) from error
+            )
+            if path in row.patch_origins:
+                origin, _ = self.row_source(row.patch_authors.get(path, name), row, path)
+                problem.diagnostic = _at_sweep_origin(problem.diagnostic, origin)
+            raise problem from error
         return _StepState(
             payload, inputs=inputs, requires=state.requires, origins=origins, document_uses=document_uses,
             root_document=state.root_document, row_document_patches={
@@ -1330,6 +1346,11 @@ class StepTemplate:
         if not isinstance(payload, dict):
             raise ValueError("A root document reference is not an editable payload.")
         return to_jsonable_python(payload, by_alias=True)
+
+    def sweep_source(self, row: ExpandedRow, path: str) -> ValueSource:
+        """The authored location of a named patch applied to this row."""
+        source, _ = self._resolver.row_source(row.patch_authors.get(path, self.name), row, path)
+        return source
 
     def source_leaf(self, row: ExpandedRow, parts: tuple[str, ...]) -> ValueSource | None:
         try:

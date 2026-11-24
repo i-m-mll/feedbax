@@ -109,7 +109,7 @@ from feedbax.contracts.project_sweep import (
 )
 from feedbax.contracts.project_sources import ValueSource, changed_sources, patch_source, place_source, pointer, source_shape
 from feedbax.contracts.report_document import ReportDocument
-from feedbax.contracts.set_document import model_slot, resolve_set_axes
+from feedbax.contracts.set_document import SetProblem, model_slot, resolve_set_axes
 from feedbax.contracts.request_identity import EncodedRequest, RequestDocumentMemo
 from feedbax.contracts.request_refs import (
     BarrierMember,
@@ -1094,6 +1094,13 @@ def _sweep_problem(
     error: SweepExpansionError, *, step: str | None = None, variant: str | None = None,
     document: str | None = None,
 ) -> ProjectDiagnostic:
+    if isinstance(error, SetProblem):
+        path = pointer(error.location)
+        return ProjectDiagnostic(
+            ResolutionCode.INVALID_SWEEP, error.path, error.detail, step=step, variant=variant,
+            document=error.document, document_path=path,
+            authored_file=f"documents/{error.document}.json", authored_path="/payload" + path,
+        )
     address = None
     if error.target is not None:
         try:
@@ -1107,6 +1114,8 @@ def _sweep_problem(
     return ProjectDiagnostic(
         ResolutionCode.INVALID_SWEEP, error.path, error.detail, step=step, variant=variant,
         document=document if address is not None else None, model_address=address, span=error.span,
+        authored_file=f"steps/{step}.json" if step else None,
+        authored_path=pointer(error.path.split(".")),
     )
 
 
@@ -2166,6 +2175,31 @@ class _Compiler:
                 if (subset := self.subsets.get((key.variant, key.step, input_id))) is not None:
                     yield at, subset
 
+    def locate_sweep_problem(
+        self, problem: ProjectDiagnostic, composition: StepComposition, key: RunKey, row: ExpandedRow,
+    ) -> ProjectDiagnostic:
+        if problem.authored_path is not None or not row.patch_origins:
+            return problem
+        paths = []
+        if problem.model_address is not None:
+            paths = [
+                path for path in row.patch_origins
+                if (target := model_field_target(path)) is not None and target.address == problem.model_address
+            ]
+        elif key.step and (setting := problem.path.removeprefix("payload.")).startswith("settings."):
+            parts = setting.split(".")
+            # A union validation path includes its selected class between the field and its parameter.
+            paths = [
+                path for path in row.patch_origins if path.startswith("settings.")
+                and path.split(".")[-1] == parts[-1]
+                and all(part in set(parts) for part in path.split("."))
+            ]
+        if len(paths) != 1:
+            return problem
+        template = composition.bind(self.variants[key.variant], variant_sources=self.variant_sources.get(key.variant))
+        origin = template.sweep_source(row, paths[0])
+        return replace(self.locate_authored_problem(problem, origin), code=ResolutionCode.INVALID_SWEEP)
+
     def lower_row(
         self,
         composition: StepComposition,
@@ -2287,6 +2321,7 @@ class _Compiler:
                         key, payload, model_source, reference, has_differences, document_ids, read,
                     )
             if isinstance(payload, ProjectDiagnostic):
+                payload = self.locate_sweep_problem(payload, composition, key, row)
                 return _LoweredRow(
                     None, (payload,), lowering_stamp, document_ids=document_ids, document_uses=document_uses,
                     train=train,
@@ -2313,6 +2348,8 @@ class _Compiler:
             )
             return replace(
                 lowered,
+                diagnostics=tuple(self.locate_sweep_problem(problem, composition, key, row)
+                                  for problem in lowered.diagnostics),
                 document_ids=document_ids,
                 document_uses=document_uses,
                 model_source=lowered.model_source or authored_model,

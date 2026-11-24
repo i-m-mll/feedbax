@@ -5,15 +5,18 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.project import Project, RootDocument
-from feedbax.planner.project_plan import RunKey
-from feedbax.contracts.project_sweep import DEFAULT_SWEEP_ROW, ManualCombination, NamedAxis, SetAxis
+from feedbax.contracts.project_sources import pointer
+from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode
+from feedbax.planner.project_plan import RunKey, _sweep_problem
+from feedbax.contracts.project_sweep import DEFAULT_SWEEP_ROW, ManualCombination, NamedAxis, SetAxis, SweepExpansionError
 from feedbax.contracts.set_document import (
-    SET_DOCUMENT_SCHEMA_ID, axis_from_set, read_set, set_from_axis, sets_offered, step_model,
+    SET_DOCUMENT_SCHEMA_ID, SetMisfit, axis_from_set, check_fit, entry_pointer, read_set, resolve_set_axes, set_from_axis, sets_offered, step_model,
 )
 from feedbax.contracts.studio_project import AuthoredFileAddress, CreateNamedDocument, StudioProjectFilePatch
 from feedbax.contracts.studio_sets import (
-    ApplySet, DuplicateRun, InlineSet, RemoveAxisValue, SaveSet, StudioAxisValue, StudioSetEdit, StudioSetEditRequest,
+    AddSetEntry, ApplySet, DuplicateRun, InlineSet, RemoveAxisValue, SaveSet, StudioAxisValue, StudioSetEdit, StudioSetEditRequest,
     StudioSetsOffered, StudioSetsOfferedRequest,
 )
 from feedbax.contracts.model_edit import ListedRuns
@@ -21,7 +24,7 @@ from feedbax.project_members import generated_name
 from feedbax.web.services.axis_values import axis_values
 from feedbax.web.services.project_folder import ProjectFolderInvalid
 from feedbax.web.services.trial_scope import (
-    StoredEdit, SweepValuesRuns, _composed, content_edits, file_value, selected_value, selection_scope,
+    StoredEdit, SweepValuesRuns, _composed, content_edits, file_value, selected_value, selection_scope, preview_stored,
     set_document_write, set_readers,
 )
 
@@ -40,18 +43,36 @@ def set_edit(folders, project_id: str, body: StudioSetEditRequest) -> StudioSetE
     if step not in project.steps:
         raise ProjectFolderInvalid(f"{step} is not a step of this project.")
     selected = None
+    diagnoses = []
     if isinstance(command, DuplicateRun):
         stored, selected = _duplicate_run(folders, project_id, body.revision, project, command)
     elif isinstance(command, SaveSet):
         stored = _save_set(project, command)
     elif isinstance(command, InlineSet):
-        stored = _inline_set(project, command)
+        stored, diagnoses = _inline_set(project, command)
     elif isinstance(command, ApplySet):
         stored = _apply_set(project, command)
+    elif isinstance(command, AddSetEntry):
+        stored, selected = _add_set_entry(project, command)
     else:
         stored = _remove_value(project, command)
+    if isinstance(command, AddSetEntry | ApplySet | RemoveAxisValue | SaveSet):
+        preview = preview_stored(project, stored)
+        sweep = preview.steps[step].sweep
+        if sweep is not None:
+            if isinstance(command, ApplySet):
+                previous = project.steps[step].sweep
+                names = sweep.axes.keys() - (previous.axes.keys() if previous is not None else set())
+            else:
+                names = {command.axis}
+            affected = sweep.model_copy(update={"axes": {name: axis for name, axis in sweep.axes.items() if name in names}})
+            try:
+                resolve_set_axes(affected, preview.documents.get, step_model(preview, step))
+            except SweepExpansionError as error:
+                diagnoses.append(_sweep_problem(error, step=step))
     return StudioSetEdit(
         revision=body.revision, files=stored.files, created=list(stored.created), selected=selected,
+        problems=[StudioProjectWindowMapProblem.from_diagnostic(problem, declaration="") for problem in diagnoses],
     )
 
 
@@ -212,18 +233,27 @@ def _optional_value_added(project: Project, address, raw, name: str, axis, kept:
     """Another copy of the rows an optional axis applies to: a value with no differences."""
     sweep = raw["sweep"]
     if isinstance(axis, SetAxis):
-        content = _composed(project, axis.set)
-        entries = content["entries"]
-        value = generated_name(name, lambda key: key == name or key in entries)
-        edits = content_edits(content, content | {"entries": entries | {value: {"differences": {}}}})
-        return set_document_write(project, axis.set, edits, set_readers(project, axis.set)), StudioAxisValue(
-            axis=name, value=value,
-        )
+        return _insert_set_entry(project, name, axis.set)
     values = sweep["axes"][name]["values"]
     value = generated_name(name, lambda key: key == name or key in values)
     updated = sweep | {"axes": sweep["axes"] | {name: sweep["axes"][name] | {"values": values | {value: {}}}}}
     copies = {row: _divided(row, name, value) for row in kept}
     return StoredEdit([_with_sweep(address, raw, updated, copies)]), StudioAxisValue(axis=name, value=value)
+
+
+def _insert_set_entry(project: Project, axis: str, name: str) -> tuple[StoredEdit, StudioAxisValue]:
+    content = _composed(project, name)
+    entries = content["entries"]
+    value = generated_name(axis, lambda key: key == axis or key in entries)
+    edits = content_edits(content, content | {"entries": entries | {value: {"differences": {}}}})
+    return set_document_write(project, name, edits, set_readers(project, name)), StudioAxisValue(axis=axis, value=value)
+
+
+def _add_set_entry(project: Project, command: AddSetEntry) -> tuple[StoredEdit, StudioAxisValue]:
+    axis = _authored_axis(project, command.step, command.axis)
+    if not isinstance(axis, SetAxis):
+        raise ProjectFolderInvalid(f"{command.axis} reads no Set.")
+    return _insert_set_entry(project, command.axis, axis.set)
 
 
 def _save_set(project: Project, command: SaveSet) -> StoredEdit:
@@ -250,7 +280,7 @@ def _save_set(project: Project, command: SaveSet) -> StoredEdit:
     return StoredEdit([file], (created,))
 
 
-def _inline_set(project: Project, command: InlineSet) -> StoredEdit:
+def _inline_set(project: Project, command: InlineSet) -> tuple[StoredEdit, list[ProjectDiagnostic]]:
     axis = _authored_axis(project, command.step, command.axis)
     if not isinstance(axis, SetAxis):
         raise ProjectFolderInvalid(f"{command.axis} reads no set.")
@@ -258,18 +288,31 @@ def _inline_set(project: Project, command: InlineSet) -> StoredEdit:
     if model is None:
         raise ProjectFolderInvalid(f"{command.step} reads no Model document of its own.")
     try:
-        inline = axis_from_set(read_set(project.documents.get, axis.set), *model, axis.where)
+        document = read_set(project.documents.get, axis.set)
+        if not document.entries:
+            raise ValueError(f"{axis.set} has no entries to inline.")
+        inline = axis_from_set(document, *model, axis.where)
         inline.optional = axis.optional
     except ValueError as error:
         raise ProjectFolderInvalid(str(error)) from error
     address, raw = _step_raw(project, command.step)
     file = file_value(address, raw, ("sweep", "axes", command.axis), inline.model_dump(mode="json", exclude_unset=True))
-    return StoredEdit([file])
+    problems = []
+    try:
+        check_fit(document, model[1])
+    except SetMisfit as error:
+        target = next(path for path in inline.values[error.entry].patches if entry_pointer(model[0], path) == error.path)
+        problems.append(ProjectDiagnostic(
+            ResolutionCode.INVALID_SWEEP, f"sweep.axes.{command.axis}", str(error), step=command.step,
+            authored_file=f"steps/{command.step}.json",
+            authored_path=pointer(("sweep", "axes", command.axis, "values", error.entry, "patches", target)),
+        ))
+    return StoredEdit([file]), problems
 
 
 def _apply_set(project: Project, command: ApplySet) -> StoredEdit:
     if command.set not in sets_offered(project, command.step):
-        raise ProjectFolderInvalid(f"{command.set} does not apply to {command.step}'s Model.")
+        raise ProjectFolderInvalid(f"No Set {command.set!r} can be referenced by {command.step}.")
     address, raw = _step_raw(project, command.step)
     axes = (raw.get("sweep") or {}).get("axes", {})
     name = generated_name(command.set, axes.__contains__)
@@ -288,8 +331,6 @@ def _remove_value(project: Project, command: RemoveAxisValue) -> StoredEdit:
             return StoredEdit([_with_axes(address, raw, {
                 name: item for name, item in raw["sweep"]["axes"].items() if name != command.axis
             })])
-        if len(entries) == 1:
-            raise ProjectFolderInvalid("A set keeps at least one entry.")
         kept = {name: entry for name, entry in entries.items() if name != command.value}
         return set_document_write(
             project, axis.set, content_edits(content, content | {"entries": kept}), set_readers(project, axis.set),
