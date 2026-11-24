@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 from pydantic import Field
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.request_refs import Sha256
 from feedbax.contracts.studio_authoring import StudioRunSelection
@@ -55,10 +56,18 @@ class RemoveAxisValue(StrictModel):
     value: ProjectName
 
 
+class AddSetEntry(StrictModel):
+    """Add an entry with no differences to the Set read by this sweep axis."""
+
+    kind: Literal["add_set_entry"]
+    step: ProjectName
+    axis: ProjectName
+
+
 class StudioSetEditRequest(StrictModel):
     revision: Sha256
     command: Annotated[
-        DuplicateRun | SaveSet | InlineSet | ApplySet | RemoveAxisValue, Field(discriminator="kind"),
+        DuplicateRun | SaveSet | InlineSet | ApplySet | RemoveAxisValue | AddSetEntry, Field(discriminator="kind"),
     ]
 
 
@@ -74,6 +83,7 @@ class StudioSetEdit(StrictModel):
     files: list[StudioProjectFilePatch]
     created: list[CreateNamedDocument] = Field(default_factory=list)
     selected: StudioAxisValue | None = None
+    problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
 
 
 class StudioSetsOfferedRequest(StrictModel):
