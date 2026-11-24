@@ -8,7 +8,7 @@ from pydantic import Field, FiniteFloat
 from feedbax.contracts.expression_values import (
     LENGTH, CallValue, Level, LiteralValue, NameValue, ScopedValue, Site, ValueBase, ValueRecord, ValueType,
 )
-from feedbax.contracts.task_document import Cell, Epoch, PythonTaskSelection, Signal, TaskDocument, Variable
+from feedbax.contracts.task_document import Cell, Epoch, PythonTaskSelection, Rest, Signal, TaskDocument, Variable
 from feedbax.tasks.registry import PythonTask, PythonTaskTemplate
 
 
@@ -47,10 +47,10 @@ def reaching_document(params: ReachingParameters) -> TaskDocument:
                 args=(LiteralValue(value=params.x, unit="m"), LiteralValue(value=params.y, unit="m")),
             )),
         ),
-        epochs=(Epoch(id="move", name="Move"),),
+        epochs=(Epoch(id="move", name="Move", end=Rest()),),
         signals=(Signal(
             id="reach_target", name="reach_target", type=_POINT,
-            cells=(Cell(first_epoch="move", last_epoch="move", value=NameValue(
+            cells=(Cell(id="move", first_epoch="move", last_epoch="move", value=NameValue(
                 kind="name", reference="target",
             )),),
         ),),

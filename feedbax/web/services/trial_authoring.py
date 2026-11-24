@@ -31,11 +31,12 @@ from feedbax.studio.authoring import training_document_choice
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.contracts.studio_trials import (
     StudioTaskChoice, StudioTaskType, StudioTrialAuthoring, StudioTrialAuthoringRequest, StudioTrialBindingEdit,
-    StudioTrialDocumentEdit, StudioTrialDocumentReset, StudioTrialExpressionEdit, StudioTrialField, StudioTrialInput,
+    StudioTrialDocumentEdit, StudioTrialDocumentReset, StudioTrialEpoch, StudioTrialExpressionEdit, StudioTrialField,
+    StudioTrialInput,
     StudioTrialOutput, StudioTrialReset, StudioTrialSelectDocument, StudioTrialStepScope,
 )
 from feedbax.contracts.task_document import (
-    PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, Epoch, PythonTaskSelection, TaskDocument,
+    PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, TaskDocument,
 )
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument, ObjectiveTerm
@@ -63,7 +64,7 @@ class _Projection:
     pair: TrialPair | None
     variables: tuple[ScopedValue, ...]
     signals: tuple[ScopedValue, ...]
-    epochs: tuple[Epoch, ...]
+    epochs: tuple[StudioTrialEpoch, ...]
     fields: dict[tuple[str | int, ...], Site]
     problems: tuple[Problem, ...]
     task_origins: dict[tuple[str, ...], str] = field(default_factory=dict)
@@ -91,7 +92,7 @@ def _project(
         signals = tuple(ScopedValue(id=signal.id, name=signal.name, type=signal.type, level=Level.STEP)
                         for signal in task.signals)
         variables = ()
-        epochs = task.epochs
+        epochs = tuple(StudioTrialEpoch(id=epoch.id, name=epoch.name, steps=None) for epoch in task.epochs)
     def pair(task):
         sites = {}
         paired = pair_trial_source(
@@ -117,8 +118,11 @@ def _project(
         return _Projection(None, variables, signals, epochs, fields, paired)
     source = paired.task
     variables, signals = source.interface.variables, source.interface.signals
-    if isinstance(task, PythonTaskSelection):
-        epochs = tuple(Epoch(id=epoch, name=epoch) for epoch in source.epochs)
+    names = {epoch.id: epoch.name for epoch in epochs}
+    epochs = tuple(
+        StudioTrialEpoch(id=epoch, name=names.get(epoch, epoch), steps=steps)
+        for epoch, steps in zip(source.epochs, source.step_counts, strict=True)
+    )
     objective_sites = {}
     objective = compile_objective(
         documents.objective, (*paired.model.outputs, *variables, *signals), bundle.expression_functions,

@@ -1014,6 +1014,7 @@
     },
     "feedbax.contracts.task_document.Cell": {
       "first_epoch": {},
+      "id": {},
       "last_epoch": {},
       "value": {
         "families": [
@@ -1025,9 +1026,23 @@
       }
     },
     "feedbax.contracts.task_document.Epoch": {
+      "end": {
+        "families": [
+          "feedbax.contracts.task_document.Length",
+          "feedbax.contracts.task_document.Rest"
+        ]
+      },
       "id": {},
+      "name": {}
+    },
+    "feedbax.contracts.task_document.Length": {
+      "kind": {
+        "absent": "length",
+        "values": [
+          "length"
+        ]
+      },
       "length": {
-        "absent": null,
         "families": [
           "feedbax.contracts.expression_values.CallValue",
           "feedbax.contracts.expression_values.DrawValue",
@@ -1037,8 +1052,7 @@
       },
       "max_steps": {
         "absent": null
-      },
-      "name": {}
+      }
     },
     "feedbax.contracts.task_document.Link": {
       "model_field": {},
@@ -1049,6 +1063,14 @@
         "absent": {}
       },
       "type": {}
+    },
+    "feedbax.contracts.task_document.Rest": {
+      "kind": {
+        "absent": "rest",
+        "values": [
+          "rest"
+        ]
+      }
     },
     "feedbax.contracts.task_document.Signal": {
       "absent": {
@@ -3531,6 +3553,16 @@
         "field": "model_name",
         "migration": "relative-model-addresses",
         "model": "feedbax.contracts.training.TrialDocuments"
+      },
+      {
+        "field": "length",
+        "migration": "task-epoch-end",
+        "model": "feedbax.contracts.task_document.Epoch"
+      },
+      {
+        "field": "max_steps",
+        "migration": "task-epoch-end",
+        "model": "feedbax.contracts.task_document.Epoch"
       }
     ],
     "values": [

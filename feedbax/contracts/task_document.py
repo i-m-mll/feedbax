@@ -1,5 +1,7 @@
 """Stored task document values."""
 
+from typing import Annotated, Literal
+
 from pydantic import Field, JsonValue
 
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
@@ -16,14 +18,39 @@ class Variable(ValueRecord):
     value: Expression
 
 
-class Epoch(ValueRecord):
-    id: str
-    name: str
-    length: Expression | None = None
+class Length(ValueRecord):
+    """The epoch lasts its ``length``; a length that varies is bounded by ``max_steps``."""
+
+    kind: Literal["length"] = "length"
+    length: Expression
     max_steps: int | None = Field(default=None, ge=0)
 
 
+class Rest(ValueRecord):
+    """The epoch lasts what the trial's fixed length leaves."""
+
+    kind: Literal["rest"] = "rest"
+
+
+type End = Annotated[Length | Rest, Field(discriminator="kind")]
+
+
+class Epoch(ValueRecord):
+    id: str
+    name: str
+    end: End
+
+
+class EpochSteps(ValueRecord):
+    """The fewest, the nominal and the most steps an epoch of a compiled task lasts."""
+
+    least: int = Field(ge=0)
+    nominal: int = Field(ge=0)
+    greatest: int = Field(ge=0)
+
+
 class Cell(ValueRecord):
+    id: str
     first_epoch: str
     last_epoch: str
     value: Expression
