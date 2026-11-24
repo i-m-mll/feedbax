@@ -4548,6 +4548,7 @@ export type StudioTrialAuthoring = {
   "variables": Array<ScopedValue>;
   "signals": Array<ScopedValue>;
   "epochs": Array<StudioTrialEpoch>;
+  "epoch_instances"?: Array<StudioTrialEpochInstance>;
   "period_seconds": number | null;
   "n_steps": number | null;
   "batch_size": number | null;
@@ -4592,6 +4593,13 @@ export type StudioTrialEpoch = {
   "id": string;
   "name": string;
   "steps": EpochSteps | null;
+};
+
+export type StudioTrialEpochInstance = {
+  "id": string;
+  "name": string;
+  "steps": EpochSteps;
+  "occurrence": number;
 };
 
 export type StudioTrialExpressionEdit = {
@@ -12526,6 +12534,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "variables": z.array(ScopedValueSchema),
     "signals": z.array(ScopedValueSchema),
     "epochs": z.array(StudioTrialEpochSchema),
+    "epoch_instances": z.array(StudioTrialEpochInstanceSchema).optional(),
     "period_seconds": z.union([z.number().finite(), z.null()]),
     "n_steps": z.union([z.number().int().safe(), z.null()]),
     "batch_size": z.union([z.number().int().safe(), z.null()]),
@@ -12582,6 +12591,15 @@ export const StudioTrialEpochSchema: z.ZodType<StudioTrialEpoch> = z.lazy(() =>
     "steps": z.union([EpochStepsSchema, z.null()]),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialEpoch>;
+
+export const StudioTrialEpochInstanceSchema: z.ZodType<StudioTrialEpochInstance> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "name": z.string(),
+    "steps": EpochStepsSchema,
+    "occurrence": z.number().int().safe().min(0),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialEpochInstance>;
 
 export const StudioTrialExpressionEditSchema: z.ZodType<StudioTrialExpressionEdit> = z.lazy(() =>
   z.object({
