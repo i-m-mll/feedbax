@@ -417,6 +417,8 @@ class RunProblem:
     """The Model value a link at ``path`` is missing for."""
     variation_target: str | None = None
     """The dotted path the variation entry at ``path`` patches, which places the problem."""
+    sweep_source: ValueSource | None = None
+    """The authored sweep member that supplied the Model field at this Problem."""
 
 
 @dataclass(frozen=True)
@@ -2184,11 +2186,11 @@ class _Compiler:
                 if (subset := self.subsets.get((key.variant, key.step, input_id))) is not None:
                     yield at, subset
 
-    def locate_sweep_problem(
-        self, problem: ProjectDiagnostic, composition: StepComposition, key: RunKey, row: ExpandedRow,
-    ) -> ProjectDiagnostic:
-        if problem.authored_path is not None or not row.patch_origins:
-            return problem
+    def sweep_problem_source(
+        self, problem: ProjectDiagnostic | RunProblem, composition: StepComposition, key: RunKey, row: ExpandedRow,
+    ) -> ValueSource | None:
+        if not row.patch_origins:
+            return None
         paths = []
         if problem.model_address is not None:
             paths = [
@@ -2204,10 +2206,27 @@ class _Compiler:
                 and all(part in set(parts) for part in path.split("."))
             ]
         if len(paths) != 1:
-            return problem
+            return None
         template = composition.bind(self.variants[key.variant], variant_sources=self.variant_sources.get(key.variant))
-        origin = template.sweep_source(row, paths[0])
+        return template.sweep_source(row, paths[0])
+
+    def locate_sweep_problem(
+        self, problem: ProjectDiagnostic, composition: StepComposition, key: RunKey, row: ExpandedRow,
+    ) -> ProjectDiagnostic:
+        if problem.authored_path is not None or (origin := self.sweep_problem_source(problem, composition, key, row)) is None:
+            return problem
         return replace(self.locate_authored_problem(problem, origin), code=ResolutionCode.INVALID_SWEEP)
+
+    def locate_sweep_run_problems(
+        self, problems: tuple[RunProblem, ...], composition: StepComposition, key: RunKey, row: ExpandedRow,
+    ) -> tuple[RunProblem, ...]:
+        return tuple(
+            replace(problem, sweep_source=source)
+            if problem.model_address is not None
+            and (source := self.sweep_problem_source(problem, composition, key, row)) is not None
+            and source.kind == "sweep_value" else problem
+            for problem in problems
+        )
 
     def lower_row(
         self,
@@ -2387,7 +2406,8 @@ class _Compiler:
                 )
                 if payload.payload is None:
                     return _LoweredRow(
-                        None, (), lowering_stamp, problems=refusals, document_ids=document_ids,
+                        None, (), lowering_stamp,
+                        problems=self.locate_sweep_run_problems(refusals, composition, key, row), document_ids=document_ids,
                         document_uses=document_uses, train=train,
                     )
                 payload = payload.payload
@@ -2407,7 +2427,7 @@ class _Compiler:
                 document_uses=document_uses,
                 model_source=lowered.model_source or authored_model,
                 train=train,
-                problems=(*refusals, *lowered.problems),
+                problems=self.locate_sweep_run_problems((*refusals, *lowered.problems), composition, key, row),
             )
 
         if self.previous is None:
@@ -2707,13 +2727,15 @@ class _Compiler:
                 key, "evaluate", payload, inputs, None, self.work.request_documents,
                 self.prepare_train_trial, resolved.document_ids, self.python_tasks,
             )
+            problems = (*refusals, *narrowed.problems) if narrowed.request is not None else narrowed.problems
             return replace(
                 narrowed, document_ids=resolved.document_ids, document_uses=resolved.document_uses,
-                problems=(*refusals, *narrowed.problems) if narrowed.request is not None else narrowed.problems,
+                problems=self.locate_sweep_run_problems(problems, template.composition, key, row),
             ), inputs
         except ModelCompilationProblem as error:
+            problems = _trial_problems(model_compilation_problems(error), None, initial=True)
             return _LoweredRow(
-                None, (), problems=_trial_problems(model_compilation_problems(error), None, initial=True),
+                None, (), problems=self.locate_sweep_run_problems(problems, template.composition, key, row),
                 document_ids=resolved.document_ids, document_uses=resolved.document_uses,
             ), {}
         except (KeyError, ValueError) as error:
