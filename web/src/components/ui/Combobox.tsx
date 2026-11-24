@@ -53,7 +53,7 @@ export function Combobox<Value extends string>(props: ComboboxProps<Value>) {
       disabled={disabled}
       autoHighlight
     >
-      <BaseCombobox.InputGroup className={clsx(inline ? 'flex h-full min-w-0 items-center' : fieldBox, 'overflow-hidden', className)}>
+      <BaseCombobox.InputGroup data-field-box={inline ? undefined : ''} className={clsx(inline ? 'flex h-full min-w-0 items-center' : fieldBox, 'overflow-hidden', className)}>
         {/* The leading control's own presses, and those in popups it portals, do not open the list. */}
         {leading ? <span className={leadingSlot} onMouseDown={(event) => event.stopPropagation()}>{leading}</span> : null}
         <BaseCombobox.Input ref={inputRef} id={id} placeholder={shown} aria-invalid={invalid || undefined}

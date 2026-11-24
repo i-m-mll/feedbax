@@ -17,7 +17,7 @@ export const TextField = forwardRef<HTMLInputElement, TextFieldProps>(function T
   { onValueChange, invalid, leading, trailing, end, className, ...props }, ref,
 ) {
   return (
-    <div className={clsx(fieldBox, className)}>
+    <div data-field-box="" className={clsx(fieldBox, className)}>
       {leading ? <span className={leadingSlot}>{leading}</span> : null}
       <Input
         ref={ref}

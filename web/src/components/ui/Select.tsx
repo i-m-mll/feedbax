@@ -48,6 +48,7 @@ export function Select<Value extends string>(
     >
       <BaseSelect.Trigger
         id={id}
+        data-field-box=""
         className={clsx(
           'flex h-control min-w-0 select-none items-center gap-1 rounded-control border border-shell-field bg-shell-surface pr-control-inline text-shell-foreground',
           leading ? null : 'pl-control-inline',
