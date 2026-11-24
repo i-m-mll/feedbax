@@ -60,7 +60,7 @@ export async function authorEvaluateConditions({
 
   await expect(value).toBeEditable();
   await activate(page, control.getByRole('button', { name: field + ' kind: Value', exact: true }));
-  await activateMenuItem(page, page.getByRole('menuitem', { name: 'Sweep', exact: true }));
+  await activateMenuItem(page, page.getByRole('menuitemradio', { name: 'Sweep', exact: true }));
   await expect(control.getByRole('button', { name: field + ' kind: Sweep', exact: true })).toBeVisible();
   await expect(value).toBeEditable();
   const authored = await edit(() => number(page, value, conditions.join(', ')));

@@ -139,9 +139,11 @@ export const MenuGroup = BaseMenu.Group;
 
 export const MenuRadioGroup = BaseMenu.RadioGroup;
 
-export function MenuRadioItem({ value, disabled, mark, children }: {
+export function MenuRadioItem({ value, disabled, glyph, mark, children }: {
   value: string;
   disabled?: boolean;
+  /** A glyph after the check, such as a kind's. */
+  glyph?: ReactNode;
   /** A mark after the label, such as a machine's state. */
   mark?: ReactNode;
   children: ReactNode;
@@ -151,6 +153,7 @@ export function MenuRadioItem({ value, disabled, mark, children }: {
       <span className="flex size-[1em] shrink-0 items-center justify-center">
         <BaseMenu.RadioItemIndicator keepMounted={false}><Check /></BaseMenu.RadioItemIndicator>
       </span>
+      {glyph}
       <span className={primaryText}>{children}</span>
       {mark}
     </BaseMenu.RadioItem>

@@ -97,7 +97,7 @@ import {
   jsonPointerPath, StudioStepField, StudioTrainAuthoringForm, SweepFieldItems, useTrainClassFields, useTrainFieldLabels,
 } from './StudioTrainAuthoringForm';
 import {
-  TrialObjectiveAdd, TrialSweepItems, TrialObjectiveInspector, TrialObjectiveOutline, TrialObjectiveTable, type TrialRuns, TrialTaskForm, TrialTaskInspector, TrialTaskOutline, useTrialAuthoring,
+  TrialSweepItems, TrialObjectiveInspector, TrialObjectiveOutline, TrialObjectiveTable, type TrialRuns, TrialTaskForm, TrialTaskInspector, TrialTaskOutline, useTrialAuthoring,
   type TrialChangeScope,
 } from './StudioTrialAuthoring';
 import { inGrid, TrialGridInspector } from './task/trialGrid';
@@ -1834,13 +1834,12 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             const selected = element && { term: element.id, field: element.field };
             return {
               picker: pickDocument('objective', value.objective_document ?? undefined, documentScopes.objective),
-              header: <TrialObjectiveAdd view={value} commit={commit} select={choose(document)} />,
               body: withProblem(<FocusedFields className="contents" request={fieldFocus?.step === step?.id && fieldFocus?.target?.startsWith('objective:') ? fieldFocus : undefined}
                 onFocused={() => setFieldFocus(undefined)}>
                 <TrialObjectiveTable view={value} commit={commit} selected={selected} select={choose(document)} runs={runs} />
               </FocusedFields>),
               drawer: <TrialObjectiveOutline sections={drawerSections} view={value} commit={commit} selected={selected?.term} select={choose(document)} />,
-              inspector: <TrialObjectiveInspector view={value} commit={commit} selected={selected} runs={runs} />,
+              inspector: <TrialObjectiveInspector view={value} commit={commit} selected={selected} runs={runs} shown={trialClock.trial} />,
             };
           }
           if (view === 'training') {

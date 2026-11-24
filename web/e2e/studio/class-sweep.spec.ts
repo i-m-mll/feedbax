@@ -19,7 +19,7 @@ test('an optimizer swept with its classes crosses the learning rate, and a membe
 
   await authorLearningRateSweep(page.getByRole('region', { name: 'Learning Rate field', exact: true }));
   await optimizer.getByRole('button', { name: 'Optimizer kind: Value', exact: true }).click();
-  await page.getByRole('menuitem', { name: 'Sweep', exact: true }).click();
+  await page.getByRole('menuitemradio', { name: 'Sweep', exact: true }).click();
   await expect(optimizer.getByRole('button', { name: 'Optimizer kind: Sweep', exact: true })).toBeVisible();
   await pick(picker, 'SGD');
 
