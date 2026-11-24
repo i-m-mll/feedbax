@@ -24,7 +24,6 @@ from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, Evaluat
 from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.studio_authoring import StudioSweptParameterMissing
-from feedbax.contracts.studio_project import AuthoredFileAddress
 from feedbax.studio.authoring import training_document_choice
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.contracts.studio_trials import (
@@ -249,14 +248,28 @@ def _field_label(path) -> str:
     return str(path[-1]).replace("_", " ").capitalize()
 
 
-def _field_sweep(project, definition, step_id, path, site, label) -> TrialFieldSweep | None:
-    """The number at ``path`` of a document the Train step reads whole, when the step can sweep it."""
+def _swept_document(plan, key, definition, role) -> str | None:
+    """The document whose fields at ``role`` the run reads whole: a Train's own, and an Evaluate's own Task or else its
+    subject's."""
+    if plan.steps[key.variant, key.step].kind == "train":
+        return _whole_document(definition, f"payload.trial_documents.{role}")
+    if role != "task":
+        return None
+    if (own := _whole_document(definition, _evaluation_task_path(definition))) is not None:
+        return own
+    upstream = evaluate_subject(definition)
+    producer = next((row for row in plan.rows if upstream and row.key == upstream[0]), None)
+    return producer.document_ids.get("payload.trial_documents.task") if producer is not None else None
+
+
+def _field_sweep(project, plan, key, definition, path, site, label) -> TrialFieldSweep | None:
+    """The number at ``path`` of a document the step reads whole, when the step can sweep it."""
     role, *rest = path
     parse = {"objective": ObjectiveDocument.model_validate, "task": TaskDocument.model_validate}.get(role)
     if parse is None:
         return None
-    document = _whole_document(definition, f"payload.trial_documents.{role}")
-    return trial_field_sweep(project, step_id, document, role, tuple(map(str, rest)), site, label, parse)
+    document = _swept_document(plan, key, definition, role)
+    return trial_field_sweep(project, key.step, document, role, tuple(map(str, rest)), site, label, parse)
 
 
 def _task_field(task):
@@ -483,20 +496,22 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
     if expression is not None:
         path = json_pointer_parts(expression.path)
         site = projected.fields.get(path)
-        swept = _field_sweep(project, definition, key.step, path, site, _field_label(path)) if (
-            step.kind == "train" and site is not None and projected.pair is not None
+        swept = _field_sweep(project, plan, key, definition, path, site, _field_label(path)) if (
+            site is not None and projected.pair is not None
         ) else None
         if swept is not None and routes_to_sweep(expression.edit, swept, site, bundle.expression_functions):
             if scope is not None and not isinstance(scope, StudioTrialStepScope):
                 raise ProjectFolderInvalid("A field has one sweep for every run of the step.")
             readers = lambda name: plan.document_users(key.variant, name)  # noqa: E731
-            shown = _whole_document(definition, f"payload.trial_documents.{swept.role}")
+            shown = _swept_document(plan, key, definition, swept.role)
             entry = compose_document(project.documents.get, shown)
             if isinstance(entry, ProjectDiagnostic):
                 raise ProjectFolderInvalid(entry.detail)
+            variant = None if key.variant == plan.variants[0] else key.variant
             made = trial_field_sweep_edit(
                 expression.edit, swept, key.step, entry.payload, bundle.expression_functions,
-                lambda edits: document_write(project, shown, edits, {key.step}, readers),
+                (lambda edits: document_write(project, shown, edits, {key.step}, readers)) if step.kind == "train"
+                else lambda edits: evaluation_document_write(project, plan, shown, edits, {key.step}, "task", variant),
             )
             return (StoredEdit([]), made) if isinstance(made, tuple) else (made, ())
         change = _expression_edit(expression, documents, projected, bundle)
@@ -871,9 +886,9 @@ def trial_authoring(
         return site_expression(document, tuple(map(str, path[1:]))) if document is not None else None
 
     def sweep(path, site, label):
-        if step.kind != "train" or paired is None:
+        if paired is None:
             return None
-        return _field_sweep(snapshot.project, definition, key.step, path, site, label)
+        return _field_sweep(snapshot.project, plan, key, definition, path, site, label)
 
     return StudioTrialAuthoring(
         revision=snapshot.revision, run=body.run, model=model_document,

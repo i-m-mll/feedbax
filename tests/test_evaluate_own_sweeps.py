@@ -3,15 +3,17 @@
 import numpy as np
 import pytest
 
-from feedbax.application.bundle import new_application_registry_bundle
-from feedbax.builtins.reaching import REACHING_TASK
+from feedbax.application.composition import load_application
 from feedbax.contracts.project import Project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.jobs import JobService
 from feedbax.planner.project_plan import compile_project
 from feedbax.web.services.project_folder import ProjectFolderService
 from tests.support.host import job_row, token, wait_until
+from tests.support.python_task import REACHING_TASK, reaching_python_task  # noqa: F401
 from tests.test_canonical_evaluate_admission import _save_project, managed_evaluation_definition
+
+pytestmark = pytest.mark.usefixtures("reaching_python_task")
 
 X = "trial_documents.python_task.params.x"
 
@@ -42,7 +44,7 @@ def _project(seeds, axes):
 
 
 def _compile(project):
-    bundle = new_application_registry_bundle()
+    bundle = load_application().bundle
     return compile_project(
         project, components=bundle.components, functions=bundle.expression_functions, python_tasks=bundle.python_tasks,
     )
@@ -75,7 +77,7 @@ def test_an_axis_on_an_input_is_refused_at_its_path(path):
     assert {(problem.step, problem.path) for problem in plan.diagnostics} == {("baseline", path)}
 
 
-def test_a_task_field_value_reaches_the_evaluated_states(host, tmp_path, monkeypatch):
+def test_a_task_field_value_reaches_the_evaluated_states(private_host, tmp_path, monkeypatch):
     """Catches a planned Task axis whose value the Host never applies to the rollout."""
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
     monkeypatch.setenv("JAX_ENABLE_X64", "0")
@@ -84,7 +86,8 @@ def test_a_task_field_value_reaches_the_evaluated_states(host, tmp_path, monkeyp
     plan = folders.read_plan("own-sweeps", revision=None)
     train = next(run for run in plan.plan.runs if run.kind == "train")
     row = next(run for run in plan.plan.runs if run.kind == "evaluate" and run.key.row.endswith("x=v1"))
-    jobs = JobService(host, new_application_registry_bundle())
+    host = private_host
+    jobs = JobService(host, load_application().bundle)
     started = jobs.admit_plan(folders, plan, run_keys=(train.key, row.key), token=token("own-sweeps")).items
     assert all(item.disposition == "admitted" for item in started)
     job = started[-1].job_id
@@ -197,3 +200,41 @@ def test_a_range_on_an_integer_task_parameter_plans_whole_values():
         for run in plan.runs if run.kind == "evaluate"
     )
     assert values == [5, 7, 9] and all(type(value) is int for value in values)
+
+
+def test_a_sweep_typed_in_an_evaluate_s_task_field_leaves_its_subject_alone(tmp_path):
+    """Catches an Evaluate's Task field that offers no Sweep, or whose sweep rewrites the Task its subject trains on."""
+    from fastapi.testclient import TestClient
+
+    from feedbax.web.app import create_app
+
+    raw = managed_evaluation_definition()
+    raw["steps"] = {"train": raw["steps"]["train"], "baseline": raw["steps"]["baseline"]}
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, "task-sweep", Project.model_validate(raw))
+    before = folders.read_plan("task-sweep", revision=None)
+    (run,) = (run.key for run in before.plan.runs if run.kind == "evaluate")
+    field = "/task/signals/fixation/cells/hold-cue/value"
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        url = "/api/projects/task-sweep/authoring/trials"
+        selected = {"variant": run.variant, "step": run.step, "row": run.row}
+        shown = client.post(url, json={"revision": before.revision, "run": selected}).json()
+        assert next(item for item in shown["fields"] if item["path"] == field)["can_sweep"]
+        reply = client.post(url, json={"revision": before.revision, "run": selected, "change": {
+            "kind": "expression", "path": field, "edit": {"kind": "text", "text": "0.5, 0.75"},
+        }})
+        assert reply.status_code == 200, reply.text
+        assert not reply.json()["problems"], reply.json()["problems"]
+        saved = client.patch("/api/projects/task-sweep", json={"revision": before.revision, "files": reply.json()["files"]})
+        assert saved.status_code == 200, saved.text
+    after = folders.read_plan("task-sweep", revision=None).plan
+    assert after.diagnostics == ()
+    trained = {run.key: run.request_id for run in before.plan.runs if run.kind == "train"}
+    assert {run.key: run.request_id for run in after.runs if run.kind == "train"} == trained
+    values = sorted(
+        edit["value"]
+        for run in after.runs if run.kind == "evaluate"
+        for edit in decode_request(after.requests[run.request_id], after.documents.__getitem__).spec.params["variation"]
+        if edit["path"].startswith("task.signals.fixation.")
+    )
+    assert values == [0.5, 0.75]
