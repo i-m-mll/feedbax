@@ -376,8 +376,8 @@ def _base_source(step: Step) -> str:
     return "its own definition with differences written as text"
 
 
-class _TrainFields:
-    """A Train step's fields as the selected runs have them.
+class _StepFields:
+    """A Train or Evaluate step's own fields as the selected runs have them.
 
     ``current`` is the definition a write is made against, the step's own when absent. ``selected`` are the selected
     runs' definitions and ``shown`` the one fields are drawn from; a class-valued field draws the parameters every
@@ -390,9 +390,9 @@ class _TrainFields:
         runs: tuple[Mapping[str, SweepCoordinate], ...] | None = None,
     ) -> None:
         step = project.steps.get(step_id)
-        if step is None or step.kind != "train":
-            raise ValueError(f"Unknown Train step {step_id!r}")
-        direct = isinstance(step.base, InlineBase) and not (step.deltas or step.inputs)
+        if step is None or step.kind not in ("train", "evaluate"):
+            raise ValueError(f"Unknown Train or Evaluate step {step_id!r}")
+        direct = isinstance(step.base, InlineBase) and not (step.deltas or step.kind == "train" and step.inputs)
         inherits = isinstance(step.base, StepBase) and step.base.row is None
         if not (direct or inherits):
             raise ValueError(f"Train step {step_id!r} takes its definition from {_base_source(step)}")
@@ -559,6 +559,30 @@ class _TrainFields:
             source=self.sources.get(pointer((*_CHECKPOINT_POLICY, "mode"))),
             documents=scope[1] if scope is not None else (),
         )
+
+    def own(self, read_plan: _ReadPlan | None) -> None:
+        """Record the fields of the step's own definition."""
+        if self.step.kind == "evaluate":
+            self.evaluation()
+        else:
+            self.training(read_plan)
+
+    def evaluation(self) -> None:
+        params = self.payload.get("params")
+        if not isinstance(params, dict):
+            return
+        seed = ("params", "seed")
+        self.field(
+            seed, "Seed", params.get("seed", 0), StudioAuthoringNumber(kind="number", min=0, max=2**32 - 1, step=1),
+            lambda value: [self.set(seed, value)],
+        )
+        rule = params.get("trial_set")
+        if isinstance(rule, dict) and rule.get("kind") == "sample":
+            count = ("params", "trial_set", "count")
+            self.field(
+                count, "Trials", rule.get("count"), StudioAuthoringNumber(kind="number", min=1, max=10_000, step=1),
+                lambda value: [self.set(count, value)], name=("trials",),
+            )
 
     def training(self, read_plan: _ReadPlan | None) -> None:
         key = self.payload.get("method")
@@ -802,7 +826,7 @@ def project_train_fields(
     """Project the Train step's declared fields and the selected runs' settings, and store one atomic edit for the
     selected runs, or the reason the step's sweep refuses it."""
     payloads = selection.payloads
-    definition = _TrainFields(project, step_id, registry, selection.current, selected=payloads, runs=selection.coordinates)
+    definition = _StepFields(project, step_id, registry, selection.current, selected=payloads, runs=selection.coordinates)
     definition.training(read_plan)
     settings = definition.shown.get("settings")
     mixed = _differences([_effective(payload, registry) for payload in payloads]) if payloads else set()
@@ -873,7 +897,7 @@ def project_train_fields(
     )
 
 
-def _changed_definition(project: Project, step_id: str, definition: _TrainFields, settings: Any) -> set[str]:
+def _changed_definition(project: Project, step_id: str, definition: _StepFields, settings: Any) -> set[str]:
     """The pointers of the Train definition whose value a difference sets: its fields, its settings at every depth,
     and its classes, a class being changed where its tag is."""
     tags = {f"{at}/{field.tag}": at for at, field in definition.classes.items()}
@@ -892,7 +916,7 @@ def _pointers(value: Any, at: str = "") -> Iterator[str]:
             yield from _pointers(child, f"{at}/{str(key).replace('~', '~0').replace('/', '~1')}")
 
 
-def _class_sweep_edit(definition: _TrainFields, change: StudioClassSweepChange, selection: TrainSelection):
+def _class_sweep_edit(definition: _StepFields, change: StudioClassSweepChange, selection: TrainSelection):
     field = definition.classes.get(change.field)
     if field is None:
         raise ValueError(f"Train step {definition.step_id!r} has no class field {change.field!r}")
@@ -924,7 +948,7 @@ def _class_choice_at(
     return None
 
 
-def _settings_edit(definition: _TrainFields, change: StudioAuthoringChange) -> _Edit:
+def _settings_edit(definition: _StepFields, change: StudioAuthoringChange) -> _Edit:
     """Write one value under ``/settings`` when the method's settings model accepts the result.
 
     At a class-valued field, or at a class's tag, the value is the key of the class chosen in place of the current one.
@@ -981,15 +1005,19 @@ def _setting_errors(model: type[BaseModel], settings: JsonValue) -> list:
     return []
 
 
-def project_training_numeric_fields(
+def project_numeric_fields(
     project: Project, step_id: str, registry: TrainingMethodRegistry, functions: FunctionRegistry,
     body: TrainFieldRequest, selection: TrainSelection, read_plan: _ReadPlan,
 ) -> TrainFieldResponse:
-    definition = _TrainFields(
+    """The number fields of a Train or Evaluate step's own definition, each with its sweep, and the files that store
+    an edit of one."""
+    definition = _StepFields(
         project, step_id, registry, shown=selection.current, selected=selection.payloads, runs=selection.coordinates,
     )
-    definition.training(read_plan)
-    effective = [_effective(payload, registry) for payload in selection.payloads]
+    definition.own(read_plan)
+    effective = [
+        _effective(payload, registry) if definition.step.kind == "train" else payload for payload in selection.payloads
+    ]
     selected = (
         SelectedValues(selection.values, selection.current)
         if selection.values is not None and selection.current is not None else None
@@ -1026,7 +1054,7 @@ def project_training_numeric_fields(
     if body.edit is None:
         return TrainFieldResponse(fields=fields)
     if body.field not in targets:
-        raise ValueError(f"Train step {step_id!r} has no number field {body.field!r}")
+        raise ValueError(f"Step {step_id!r} has no number field {body.field!r}")
     field, numeric, axis = targets[body.field]
     if isinstance(body.edit, FieldResetEdit):
         stored = selection.store(reset_writes(project, step_id, body.field))
@@ -1041,7 +1069,7 @@ def project_training_numeric_fields(
         )
     elif definition.step.sweep and axis is None:
         return TrainFieldResponse(problems=[Problem(
-            code=ProblemCode.STRUCTURE, reason="This Train field has no writable sweep destination.",
+            code=ProblemCode.STRUCTURE, reason="This field has no writable sweep destination.",
         )])
     else:
         assert not isinstance(result, LiteralValue)
@@ -1105,7 +1133,7 @@ def training_document_choice(
         or not isinstance(entry.payload, dict)
     ):
         raise ValueError(f"{document} is not a Training document.")
-    definition = _TrainFields(project, step_id, registry)
+    definition = _StepFields(project, step_id, registry)
     definition.training(None)
     for key in TRAINING_DOCUMENT_KEYS:
         missing = swept_parameter_missing(
