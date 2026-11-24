@@ -14,6 +14,7 @@ import pytest
 from feedbax.builtins.runtime.feedback import SelectState
 from feedbax.builtins.runtime.channel import Channel, toggle_channel_noise
 from feedbax.component_registry import ComponentRegistry
+from feedbax.compiler.model_reset import resolve_model_reset
 from feedbax.builtins.runtime.affine_composer import AffineValueComposer
 from feedbax.builtins.runtime.components import Demux, ElementwiseAffineModulator
 from feedbax.contracts.graph import (
@@ -22,6 +23,7 @@ from feedbax.contracts.graph import (
     StudioTaskBindingSpec,
     WireSpec,
 )
+from feedbax.contracts.model_address import ModelAddress
 from feedbax.runtime._graph_key_schedule import derive_key, step_key
 from feedbax.runtime.graph import GraphTraceRequest, init_state_from_component
 from feedbax.runtime.iteration import run_component
@@ -778,6 +780,36 @@ def test_point_mass_feedback_rejects_invalid_selector_path_at_compile_time() -> 
 
     with pytest.raises(GraphCompilationError, match=r"feedback.*plant\.skeleton\.missing"):
         spec_to_graph(spec, component_registry=_components())
+
+
+def test_direct_point_mass_state_reaches_effector_and_feedback_history():
+    nested = _point_mass_feedback_spec(["effector.pos"], delay=2, add_noise=False)
+    feedback = nested.subgraphs["feedback"]
+    spec = nested.model_copy(update={
+        "nodes": {"mechanics": nested.nodes["mechanics"], **feedback.nodes},
+        "subgraphs": {},
+        "wires": [*feedback.wires, WireSpec(
+            source_node="mechanics", source_port="state", target_node="select", target_port="state",
+            temporality="recurrent", recurrent_initializer={"kind": "state_output", "seed_channel_history": True},
+        )],
+        "output_bindings": nested.output_bindings | feedback.output_bindings,
+    })
+    registry = _components()
+    plan = resolve_model_reset(resolve_graph_parameters(spec, {}, registry), registry)
+    graph = spec_to_graph(spec, component_registry=registry)
+    skeleton = ModelAddress.at_state((), "mechanics", "skeleton/position").to_text()
+    effector = ModelAddress.at_state((), "mechanics", "effector/position").to_text()
+    key = jr.key(0)
+
+    for inits, expected_effector in (({skeleton: 0.25}, 0.25), ({skeleton: 0.25, effector: 0.5}, 0.5)):
+        result = plan.prepare(graph, inits, key=key)
+        assert jnp.array_equal(graph.nodes["mechanics"].state_view(result.state).plant.skeleton.pos, jnp.full((2,), 0.25))
+        expected = jnp.full((2,), expected_effector)
+        assert jnp.array_equal(result.outputs["effector"].pos, expected)
+        carry = result.cycle_init["select", "state"]
+        assert jnp.array_equal(carry.effector.pos, expected)
+        channel = graph.nodes["channel"].state_view(result.state)
+        assert all(jnp.array_equal(sample, expected) for sample in channel.queue)
 
 
 def test_nested_feedback_rollout_preserves_mixed_state_dtypes() -> None:

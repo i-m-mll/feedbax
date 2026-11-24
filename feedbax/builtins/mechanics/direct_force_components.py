@@ -13,7 +13,7 @@ from feedbax.contracts.direct_force_presentation import (
     _two_link_arm_representation,
 )
 from feedbax.contracts.component import PortType
-from feedbax.contracts.model_values import ModelFacts, ModelValue, StateReset, StateValue
+from feedbax.contracts.model_values import ModelFacts, ModelValue, StateValue
 from feedbax.contracts.portable import Ports, ConfigBinding, ComponentOptions
 from feedbax.runtime.graph import Component
 from feedbax.mechanics.mechanics import Mechanics
@@ -61,19 +61,19 @@ class PointMass(Mechanics, Component):
             ModelValue("damping", "plant.skeleton.damping", "source"),
             ModelValue("dt", "dt", "source"),
         ),
-        states=(
-            StateValue("skeleton/position", ("plant", "skeleton", "pos"), "m", "xy", "world"),
-            StateValue("skeleton/velocity", ("plant", "skeleton", "vel"), "m/s", "xy", "world"),
-            StateValue("skeleton/force", ("plant", "skeleton", "force"), "N", "xy", "world"),
+        states=tuple(
             StateValue(
-                "effector/position", ("effector", "pos"), "m", "xy", "world",
-                reset=StateReset("effector", ("pos",)),
-            ),
-            StateValue(
-                "effector/velocity", ("effector", "vel"), "m/s", "xy", "world",
-                reset=StateReset("effector", ("vel",)),
-            ),
-            StateValue("effector/force", ("effector", "force"), "N", "xy", "world"),
+                f"{part}/{quantity}", (*storage, attribute), unit, "xy",
+                ("state", *storage, attribute), "world",
+                aliases=((*companion, attribute),) if quantity != "force" else (),
+            )
+            for part, storage, companion in (
+                ("skeleton", ("plant", "skeleton"), ("effector",)),
+                ("effector", ("effector",), ("plant", "skeleton")),
+            )
+            for quantity, attribute, unit in (
+                ("position", "pos", "m"), ("velocity", "vel", "m/s"), ("force", "force", "N"),
+            )
         ),
         scene_effector_port="effector",
         scene_position="effector/position",

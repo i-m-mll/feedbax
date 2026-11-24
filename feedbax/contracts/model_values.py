@@ -26,15 +26,16 @@ class StateValue:
     fields: tuple[str, ...]
     units: str
     axis: Literal["xy", "unit", "muscle"]
+    prototype: tuple[str, ...]
+    """The resolved output port and path that provide the storage shape and dtype."""
     frame: str | None = None
+    aliases: tuple[tuple[str, ...], ...] = ()
+    """Storage paths initialized with this value when they have no explicit initializer."""
     reset: StateReset | None = None
 
 
 @dataclass(frozen=True)
 class StateReset:
-    output_port: str
-    output_path: tuple[str, ...] = ()
-    aliases: tuple[tuple[str, ...], ...] = ()
     override_port: str | None = None
     required: bool = False
     """The component has no meaningful start of its own, so a task must initialize the field."""

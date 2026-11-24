@@ -11,6 +11,7 @@ from feedbax.contracts.expression_values import (
     LENGTH, CallValue, Level, LiteralValue, NameValue, Site, ValueBase, ValueRecord, ValueType,
 )
 from feedbax.contracts.task_document import Cell, Epoch, Rest, Signal, TaskDocument, Variable
+from feedbax.contracts.model_values import StateReset
 from feedbax.builtins.mechanics.direct_force_components import PointMass
 from feedbax.tasks.registry import PythonTask, PythonTaskTemplate
 
@@ -75,7 +76,7 @@ class AnchoredPointMass(PointMass):
     """A point mass with no start of its own: a task must initialize its effector's position."""
 
     model_facts = dataclass_replace(PointMass.model_facts, states=tuple(
-        dataclass_replace(state, reset=dataclass_replace(state.reset, required=True))
+        dataclass_replace(state, reset=StateReset(required=True))
         if state.symbol == "effector/position" else state
         for state in PointMass.model_facts.states
     ))
