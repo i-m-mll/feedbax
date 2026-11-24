@@ -1,6 +1,7 @@
 from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 
+from feedbax.compiler.model_templates import with_model_placement_reason
 from feedbax.plugins.declarations import missing_declaration
 from feedbax.contracts.studio_api import (
     ComponentDetailResponse,
@@ -13,7 +14,9 @@ router = APIRouter()
 @router.get("", response_model=ComponentListResponse)
 async def list_components(request: Request) -> ComponentListResponse:
     registry = request.app.state.bootstrap_state.bundle.components
-    return ComponentListResponse(data={"components": registry.list_all()})
+    return ComponentListResponse(data={
+        "components": [with_model_placement_reason(definition, registry) for definition in registry.list_all()],
+    })
 
 
 @router.get("/{name}", response_model=ComponentDetailResponse)
@@ -22,4 +25,4 @@ async def get_component(name: str, request: Request) -> ComponentDetailResponse:
     component = registry.get(name)
     if component is None:
         raise HTTPException(status_code=404, detail=missing_declaration("component", name))
-    return ComponentDetailResponse(data=registry._to_definition(component))
+    return ComponentDetailResponse(data=with_model_placement_reason(registry._to_definition(component), registry))

@@ -1,7 +1,10 @@
 """Project trial execution records into Studio's transport contracts."""
 
+from __future__ import annotations
+
 from collections.abc import Mapping, Sequence
 from math import prod
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -9,7 +12,8 @@ from feedbax.contracts.trial_record import (
     TaskEpochShare, TaskSignalAggregate, TaskTimelineCue, TaskVariableRange, TrialAggregate, TrialRecord,
     TrialTerm, TrialTermAggregate,
 )
-from feedbax.tasks.document import Trial
+if TYPE_CHECKING:
+    from feedbax.tasks.document import Trial
 
 
 _PERCENTILES = (5, 25, 50, 75, 95)

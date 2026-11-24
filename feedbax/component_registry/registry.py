@@ -487,7 +487,6 @@ class ComponentRegistry:
         return replace(meta, serialization=serialization)
 
     def _to_definition(self, meta: DeclaredComponent) -> ComponentDefinition:
-        from feedbax.compiler.model_templates import template_placement_reason
         from feedbax.compiler.normalization import stamp_component_versions
 
         meta = deepcopy(meta)
@@ -511,7 +510,6 @@ class ComponentRegistry:
                 if meta.template_graph is not None
                 else None
             ),
-            placement_reason=template_placement_reason(meta, self),
             template_ui_state=meta.template_ui_state,
             template_id=meta.template_id,
             template_kind=meta.template_kind,
