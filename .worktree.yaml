@@ -2,6 +2,6 @@ setup: git -c protocol.file.allow=always submodule update --init -- vendor/windo
 
 post-merge:
   - paths: [".gitmodules", "vendor/window-shell", ".bun-version", "web/package.json", "web/bun.lock"]
-    run: git submodule sync -- vendor/window-shell && git -c protocol.file.allow=always submodule update --init -- vendor/window-shell && cd web && bun install --frozen-lockfile
+    run: git -c protocol.file.allow=always submodule update --init -- vendor/window-shell && cd web && bun install --frozen-lockfile
   - paths: ["pyproject.toml", "uv.lock"]
     run: uv sync --locked --dev --all-extras
