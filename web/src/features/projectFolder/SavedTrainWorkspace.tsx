@@ -1249,7 +1249,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     const add = (axis: string, value: string) => chosen.set(axis, (chosen.get(axis) ?? new Set()).add(value));
     for (const row of where?.rows ?? []) {
       const coordinates = shown?.window_map?.rows.find(({ key }) => key.step === target.id && key.row === row)?.coordinates;
-      for (const [axis, { value_id }] of Object.entries(coordinates ?? {})) add(axis, value_id);
+      for (const [axis, { axis_value }] of Object.entries(coordinates ?? {})) add(axis, axis_value);
     }
     return [...where?.rule ? [where.rule] : [], ...[...chosen].filter(([axis, values]) => {
       const all = target.sweeps.find(({ id }) => id === axis)?.values;
@@ -1284,7 +1284,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   /** A sweep value as the value it sets, never its id. */
   function axisValueText(axis: string, valueId: string) {
     const coordinate = shown?.window_map?.rows.map(({ coordinates }) => coordinates[axis])
-      .find((item) => item?.value_id === valueId);
+      .find((item) => item?.axis_value === valueId);
     return coordinate ? valueText(coordinate.value) : valueId;
   }
 
