@@ -25,6 +25,7 @@ import {
   type FieldEdit, type FieldModel, type FieldOption, type FieldRefusal, type ValueKind,
 } from './fieldModel';
 import { clearDraw, DrawParts, startDraw, useDrawDraft, useShownDraw } from './DrawParts';
+import { ItemParts, listRead } from './ItemParts';
 import { FieldIntent } from './fieldIntent';
 import { useFieldGroup } from './fieldGroups';
 import './valueField.css';
@@ -210,8 +211,10 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
     </div>;
   }
 
-  const parts = (indented: boolean) => (indented || model.members || model.canList || draw) && <div className="value-field-parts grid gap-1">
+  const read = textual && !draw ? listRead(model) : undefined;
+  const parts = (indented: boolean) => (indented || model.members || model.canList || draw || read) && <div className="value-field-parts grid gap-1">
     {draw && <DrawParts model={model} draw={draw} />}
+    {read && <ItemParts model={model} read={read} />}
     {model.members && <Members model={model} />}
     {indented && model.parts!.map((part) => <ValueField key={part.id} model={part} />)}
     {model.canList && <Button variant="ghost" className="justify-self-start" disabled={readOnly}
