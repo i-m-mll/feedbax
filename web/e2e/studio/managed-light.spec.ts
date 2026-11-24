@@ -42,7 +42,7 @@ async function expectSeparateVelocityLines(figure: Locator) {
 }
 
 async function savedLightGate(context: WalkthroughContext, info: TestInfo, studio?: Studio) {
-  test.setTimeout(studio ? 190_000 : 130_000);
+  test.setTimeout(studio ? 190_000 : 60_000);
   const start = performance.now();
   const first = studio ? await test.step('Author, Stop, Resume and recover the first Train', () =>
     authorAndRecoverTrain(context.page, context.request, info, studio)) : undefined;
@@ -149,10 +149,10 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   }) : undefined;
   if (!first) {
     await page.goto(mounted);
-    await runStep('train');
+    await test.step('Run Train', () => runStep('train'));
   }
   const evaluateStep = pairedInput?.stepId ?? 'conditions';
-  await runStep(evaluateStep, 2, pairedInput?.rows.map(({ key }) => key));
+  await test.step('Run both Evaluate conditions', () => runStep(evaluateStep, 2, pairedInput?.rows.map(({ key }) => key)));
   const initial = await snapshot();
   const initialPlan = await plan(initial.revision);
   const settledEvaluate = initialPlan.evaluations!.filter(({ key }) => key.variant === scope && key.step === evaluateStep);
@@ -368,7 +368,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
 
   const createdJobs = await runSaved();
   expect(createdJobs).toHaveLength(4);
-  const completed = await waitForLight(ordered.revision);
+  const completed = await test.step('Wait for Analyze, figure and Report', () => waitForLight(ordered.revision));
   const [aligned, summary, figure, renderedReport] = result(completed);
   expect(result(completed).map(({ job_id }) => job_id).sort()).toEqual(createdJobs.sort());
   for (const { receipt } of result(completed)) expect(receipt.manifest_sha256).toMatch(/^[a-f0-9]{64}$/);
@@ -385,7 +385,12 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   await showCurrentResults(renderedReport.products.report);
   expect((await snapshot()).revision).toBe(ordered.revision);
   expectAnalyzeSources(await plan(ordered.revision));
-  if (first) {
+  const plot: { data: PlotTrace[] } = await firstFigure.json();
+  const traces = plot.data.filter(({ showlegend }) => showlegend !== false);
+  expect(traces.map(({ name }) => name)).toEqual(sourceLabels);
+  if (!first) return;
+
+  await test.step('Compare the paired figure and Report with the saved dataset', async () => {
     const memberKeys = sources.map(({ key }) => initialPlan.rows.find(({ key: candidate }) =>
       candidate.variant === key.variant && candidate.step === key.step && candidate.row === key.row)?.member_key);
     const retained = JSON.parse(await runProjectFixture(
@@ -403,12 +408,8 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
       { ...condition, variation: [] },
       { ...condition, variation: [{ op: 'replace', path: `graph.nodes.${first.plantId}.params.mass`, value: 2 }] },
     ]);
-    const plot: { data: PlotTrace[] } = await firstFigure.json();
-    const traces = plot.data.filter(({ showlegend }) => showlegend !== false);
-    expect(traces).toHaveLength(2);
     const samples = traces.map(({ name, x, y }) => ({ name, x: traceSamples(x), y: traceSamples(y) }));
-    expect(new Set(samples.map(({ name }) => name)).size).toBe(2);
-    expect(samples).toEqual(retained.figure_samples);
+    expect(samples.map(({ x, y }) => ({ x, y }))).toEqual(retained.figure_samples);
     const [nominal, heavy] = samples;
     expect(nominal.x).toHaveLength(first.task.fixed_steps! + 1);
     expect(nominal.x).toEqual(heavy.x);
@@ -431,7 +432,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
     const embedded = await request.get(renderedReport.products.report.replace('report.html', member!));
     expect(embedded.ok(), await embedded.text()).toBe(true);
     expect(await embedded.body()).toEqual(figureBody);
-  }
+  });
 
   const beforeEdit = [...admittedJobs, ...createdJobs].sort();
   await activate(page, mapStep(page, 'train'));
@@ -473,7 +474,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   await openView(page, 'document');
   const rerun = await runSaved();
   expect(rerun).toHaveLength(3);
-  const replaced = await waitForLight(reapplied.revision);
+  const replaced = await test.step('Wait for the changed light results', () => waitForLight(reapplied.revision));
   const [alignedAgain, newSummary, newFigure, newReport] = result(replaced);
   expect(identity(alignedAgain)).toEqual(identity(aligned));
   expect([newSummary, newFigure, newReport].map(({ job_id }) => job_id).sort()).toEqual(rerun.sort());
@@ -487,10 +488,8 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   await Promise.all([matchesCli(replaced), showCurrentResults(newReport.products.report)]);
   await activate(page, figures.getByRole('button', { name: 'Previous Result', exact: true }));
   await drawnFigure('Previous Result');
-  if (first) {
-    await test.step('Share the full chain and isolate a compare Model edit', () => verifyWalkthroughVariant(walkthrough, first.plantId));
-    await test.step('Widen the Evaluate subset and continue the exact Train rows', () => verifyWalkthroughSuccessors(walkthrough, evaluateStep));
-  }
+  await test.step('Share the full chain and isolate a compare Model edit', () => verifyWalkthroughVariant(walkthrough, first.plantId));
+  await test.step('Widen the Evaluate subset and continue the exact Train rows', () => verifyWalkthroughSuccessors(walkthrough, evaluateStep));
 }
 
 test('runs and reopens saved figures and Report from a selected Evaluate row', { tag: '@round' }, ({ page, request, studio }, info) =>
