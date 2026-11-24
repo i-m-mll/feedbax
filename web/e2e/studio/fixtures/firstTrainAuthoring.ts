@@ -182,6 +182,7 @@ export async function authorFirstTrain(
   await toggle(page.getByRole('option', { name: 'plant · effector position', exact: true }));
   await expect.poll(links).toEqual([{ model_field: plantLink, variable: 'start' }]);
   expect(await problems()).toEqual([]);
+  await page.keyboard.press('Meta+1');
   // A comparison of forces reads one reach: simple reaches' others point every way, and their mean along the reach is
   // flat. The Task view does not edit validation trials yet.
   const [reach] = shipped.validation_trials!;

@@ -93,7 +93,7 @@ function variables(view: TrialView, task: TaskDocument, types: readonly StudioNa
     const value: FieldModel = projection ? {
       ...fromFieldView({ ...projection, label: studioName('value'), effective: runs?.selected ? projection.effective : null }, {
         id: `value:${variable.id}`, kind: expressionKind(variable.value),
-        changed: changedAt(view, 'task', `/variables/${index}/value`, commit),
+        changed: changedAt(view, 'task', `/variables/${index}/value`, commit), source: view.task_source ?? undefined,
         commit: commit && ((edit) => commit(studioAccessibleName('set', variable.name), { kind: 'expression', path, edit })),
         selectedMembers: sweep ? runs?.values(sweep) : undefined,
         chooseMember: sweep && runs?.choose ? (member, extend) => runs.choose!(sweep, member, extend) : undefined,
