@@ -1,7 +1,6 @@
 import type { StudioRegionIssue } from '@/components/activity/StudioRegion';
 import type { ElementAddress } from '@/features/projectWindow/elementSelection';
-import { workspaceReplayFrameTimes, workspaceReplayTrialRef } from '@/features/scenario/workspaceReplay';
-import type { WorkspaceReplayTrial } from '@/generated/studioContracts';
+import type { TrialRecord } from '@/generated/studioContracts';
 import type { ScenePoint } from './planarProjection';
 
 /** A class of element the Scene draws, in Layers' order; Layers shows or hides each. */
@@ -50,7 +49,7 @@ export const emptyScene: Scene = { groups: [] };
 
 export type SceneDrawing =
   | { kind: 'geometry'; scene: Scene }
-  | { kind: 'replay'; scene: Scene; trial: WorkspaceReplayTrial };
+  | { kind: 'replay'; scene: Scene; trial: TrialRecord; stateTime: number[]; position: string | null };
 
 export type SceneView =
   | SceneDrawing
@@ -75,15 +74,14 @@ export function zoomScene(camera: SceneCamera, factor: number): SceneCamera {
 
 export function sceneTimeline(view: SceneView) {
   if (view.kind !== 'replay') return null;
-  const { trial } = view;
-  const frameTimes = workspaceReplayFrameTimes(trial);
+  const { trial, stateTime: frameTimes } = view;
   const duration = frameTimes[frameTimes.length - 1];
   if (frameTimes.length < 2 || !(duration > 0)) return null;
   return {
-    id: workspaceReplayTrialRef(trial),
+    id: `trial:${trial.id}`,
     frameTimes,
     duration,
-    units: trial.time.units,
+    units: 's',
   };
 }
 

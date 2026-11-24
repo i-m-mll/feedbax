@@ -17,6 +17,13 @@ class IdentityAbsent:
 
 
 @dataclass(frozen=True)
+class IdentityAuthoredAlternative:
+    """One editable field alternative that cannot enter an executable request."""
+
+    value_type: type
+
+
+@dataclass(frozen=True)
 class IdentityWideInteger:
     """Encode integers outside the JCS safe range as decimal text."""
 

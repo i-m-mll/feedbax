@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 
 from feedbax.contracts.expression_units import UNITS
+from feedbax.contracts.expression_text import resolve_expression
 from feedbax.contracts.expression_values import (
     DIMENSIONLESS,
     RESERVED_NAMES,
@@ -42,10 +43,12 @@ from feedbax.contracts.expression_registry import (
 class TypedNode:
     type: ValueType
     level: Level
+    implicit_item: bool = False
 
 
 @dataclass(frozen=True)
 class Checked:
+    tree: Expression
     root: TypedNode
     nodes: Mapping[NodePath, TypedNode]
     calls: Mapping[NodePath, tuple[Function, CallValue]]
@@ -55,9 +58,13 @@ def references(tree: Expression) -> frozenset[str]:
     return frozenset(node.reference for _, node in walk(tree) if isinstance(node, NameValue))
 
 
-def dependency_order(values: Mapping[str, Expression]) -> tuple[tuple[str, ...], tuple[Problem, ...]]:
+def dependency_order(
+    values: Mapping[str, Expression], *, counts: Mapping[str, Expression] = MappingProxyType({}),
+) -> tuple[tuple[str, ...], tuple[Problem, ...]]:
     """The definitions in dependency order, and a Problem on each definition in a cycle, which the order leaves out."""
     dependencies = {key: references(value) & values.keys() for key, value in values.items()}
+    for key, count in counts.items():
+        dependencies[key] |= references(count) & values.keys()
     index: dict[str, int] = {}
     low: dict[str, int] = {}
     stack: list[str] = []
@@ -150,8 +157,14 @@ def check(
     """Return path-addressed Problems for bad authored values."""
     if problems := scope_problems(site, path):
         return problems
+    if isinstance(tree, UnresolvedValue):
+        resolved = resolve_expression(tree, site, functions)
+        if isinstance(resolved, tuple):
+            return tuple(problem.model_copy(update={"path": (*path, *problem.path)}) for problem in resolved)
+        tree, spans = resolved.value, resolved.spans
     scope = {value.id: TypedNode(value.type, value.level) for value in site.names}
     by_name = {value.name: value for value in site.names}
+    lists = {value.id: value.list_count for value in site.names if value.list_count is not None}
     problems: list[Problem] = []
     checked: dict[NodePath, TypedNode] = {}
     calls: dict[NodePath, tuple[Function, CallValue]] = {}
@@ -171,6 +184,7 @@ def check(
         at: NodePath,
         dimension: Dimensions | None = None,
         requested: ValueBase | None = None,
+        *, indexed: bool = False,
     ) -> TypedNode | None:
         if isinstance(node, UnresolvedValue):
             problem(node, ProblemCode.PARSE, "The expression text has not resolved.", at)
@@ -204,6 +218,17 @@ def check(
                 )
                 problem(node, code, f"{_reference_label(node.reference)!r} is not in scope here.", at)
                 return None
+            if count := lists.get(node.reference):
+                if indexed:
+                    value = TypedNode(value.type.model_copy(update={"shape": (count, *value.type.shape)}), value.level)
+                elif site.list_count is None:
+                    problem(node, ProblemCode.TYPE_MISMATCH, "Choose an item from this list.", at)
+                    return None
+                elif site.list_count != count:
+                    problem(node, ProblemCode.LIST_COUNT, "The lists must have the same count.", at)
+                    return None
+                else:
+                    value = TypedNode(value.type, value.level, implicit_item=True)
         else:
             key = node.function if isinstance(node, CallValue) else node.family
             function = functions.resolve(key)
@@ -275,8 +300,22 @@ def check(
                 if function.argument_context is not None
                 else ((OperandHint(dimension, requested),) * len(node.args), {})
             )
+            if key == "index" and isinstance(source := node.args[0], NameValue) and source.reference in lists:
+                count = lists[source.reference]
+                item = node.args[1]
+                if isinstance(item, NameValue) and item.reference == "i" and site.repeat_count is not None:
+                    if site.repeat_count != count:
+                        problem(node, ProblemCode.LIST_COUNT, "The list and repeat must have the same count.", at)
+                        return None
+                elif isinstance(item, LiteralValue) and type(item.value) is int and item.unit is None:
+                    if not 0 <= item.value < count:
+                        problem(item, ProblemCode.LIST_COUNT, f"The list has {count} items.", (*at, "args", 1))
+                        return None
+                elif not isinstance(item, NameValue) or item.reference != "i":
+                    problem(item, ProblemCode.TYPE_MISMATCH, "A list item is an integer literal or i.", (*at, "args", 1))
+                    return None
             positional = [
-                visit(arg, (*at, "args", i), hint.dimensions, hint.base)
+                visit(arg, (*at, "args", i), hint.dimensions, hint.base, indexed=key == "index" and i == 0)
                 for i, (arg, hint) in enumerate(zip(node.args, hints, strict=True))
             ]
             named = {
@@ -344,7 +383,7 @@ def check(
     if problems:
         return tuple(problems)
     assert root is not None
-    return Checked(root, MappingProxyType(checked), MappingProxyType(calls))
+    return Checked(tree, root, MappingProxyType(checked), MappingProxyType(calls))
 
 
 def _reference_label(reference: str) -> str:

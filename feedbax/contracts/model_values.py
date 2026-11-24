@@ -25,13 +25,15 @@ class StateValue:
     symbol: str
     fields: tuple[str, ...]
     units: str
-    axis: Literal["xy", "unit", "muscle"]
+    axis: Literal["xy", "unit", "muscle", "joint"]
     prototype: tuple[str, ...]
     """The resolved output port and path that provide the storage shape and dtype."""
     frame: str | None = None
     aliases: tuple[tuple[str, ...], ...] = ()
     """Storage paths initialized with this value when they have no explicit initializer."""
     reset: StateReset | None = None
+    configuration: bool = False
+    space: Literal["point"] | None = None
 
 
 @dataclass(frozen=True)

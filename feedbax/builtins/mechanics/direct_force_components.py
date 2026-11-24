@@ -37,6 +37,29 @@ class TwoLinkArm(Mechanics, Component):
     component_presentation = PresentationOverride(representation=_two_link_arm_representation())
     component_sources = _PRESENTATION_SOURCES
     ports = _MECHANICS_PORTS
+    model_facts = ModelFacts(
+        values=(
+            ModelValue("link_lengths", "plant.skeleton.l", "source"),
+            ModelValue("dt", "dt", "source"),
+        ),
+        states=tuple(
+            StateValue(
+                symbol, storage, unit, axis, ("state", *storage), frame,
+                configuration=symbol == "skeleton/angle", space=space,
+            )
+            for symbol, storage, unit, axis, frame, space in (
+                ("skeleton/angle", ("plant", "skeleton", "angle"), "rad", "joint", None, None),
+                ("skeleton/angular_velocity", ("plant", "skeleton", "d_angle"), "rad/s", "joint", None, None),
+                ("skeleton/torque", ("plant", "skeleton", "torque"), "N*m", "joint", None, None),
+                ("skeleton/effector_force", ("plant", "skeleton", "effector_force"), "N", "xy", "world", None),
+                ("effector/position", ("effector", "pos"), "m", "xy", "world", "point"),
+                ("effector/velocity", ("effector", "vel"), "m/s", "xy", "world", None),
+                ("effector/force", ("effector", "force"), "N", "xy", "world", None),
+            )
+        ),
+        scene_effector_port="effector",
+        scene_position="effector/position",
+    )
     config_bindings = (ConfigBinding(path="plant.skeleton.l", name="link_lengths"),)
 
     def __init__(
@@ -66,6 +89,7 @@ class PointMass(Mechanics, Component):
                 f"{part}/{quantity}", (*storage, attribute), unit, "xy",
                 ("state", *storage, attribute), "world",
                 aliases=((*companion, attribute),) if quantity != "force" else (),
+                space="point" if quantity == "position" else None,
             )
             for part, storage, companion in (
                 ("skeleton", ("plant", "skeleton"), ("effector",)),

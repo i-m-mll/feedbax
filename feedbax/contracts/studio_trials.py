@@ -4,8 +4,9 @@ from typing import Annotated, Literal
 
 from pydantic import Field, JsonValue
 
+from feedbax.contracts.project_sweep import SetEntryParts, SetTrialSampling
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.expression_values import Level, Problem, ScopedValue, ValueType
+from feedbax.contracts.expression_values import Level, Problem, ScopedValue, ValueType, WeightPart
 from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import (
@@ -17,6 +18,7 @@ from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_authoring import StudioSweptParameterMissing
 from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioFieldView
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
+from feedbax.contracts.studio_scope import StudioStoreChoice
 from feedbax.contracts.task_document import EpochSteps, PythonTaskSelection, TaskDocument
 from feedbax.contracts.task_structure import TaskStructureChange
 
@@ -36,11 +38,12 @@ class StudioTaskType(StrictModel):
 
 
 class StudioTrialInput(StrictModel):
+    id: str
     address: ModelAddress
     name: str
     type: ValueType | None
     required: bool
-    signal: str | None
+    signal_id: str | None
     explicit: bool
 
 
@@ -81,8 +84,8 @@ class StudioTrialSelectDocument(StrictModel):
 
 class StudioTrialBindingEdit(StrictModel):
     kind: Literal["binding"]
-    input: ModelAddress
-    signal: str | None
+    input_id: str
+    signal_id: str | None
 
 
 class StudioTrialExpressionEdit(StrictModel):
@@ -114,6 +117,7 @@ class StudioTrialAuthoringRequest(StrictModel):
         | StudioTrialExpressionEdit | StudioTrialStructureEdit,
         Field(discriminator="kind"),
     ] | None = None
+    store_choice: Sha256 | None = Field(default=None, exclude_if=lambda value: value is None)
     scope: Annotated[
         StudioTrialStepScope | AxisValueRuns | ListedRuns,
         Field(discriminator="kind"),
@@ -138,6 +142,19 @@ class StudioTrialObjectiveSource(StrictModel):
     step: ProjectName
 
 
+class StudioSetFieldEntry(StrictModel):
+    entry: ProjectName | None
+    label: str | None = None
+    weight: WeightPart | SetEntryParts | None = None
+
+
+class StudioSetField(StrictModel):
+    axis: ProjectName
+    set: ProjectName
+    sampling: SetTrialSampling
+    entries: list[StudioSetFieldEntry]
+
+
 class StudioTrialAuthoring(StrictModel):
     revision: Sha256
     run: StudioSavedTrainKey
@@ -153,7 +170,7 @@ class StudioTrialAuthoring(StrictModel):
     """The same, in the Objective document."""
     objective: ObjectiveDocument | None
     objective_source: StudioTrialObjectiveSource | None = None
-    input_overrides: dict[str, str] = Field(default_factory=dict)
+    set_fields: list[StudioSetField] = Field(default_factory=list)
     task_types: list[StudioTaskType]
     tasks: list[StudioTaskChoice]
     variables: list[ScopedValue]
@@ -166,6 +183,7 @@ class StudioTrialAuthoring(StrictModel):
     the clock samples; null for an Evaluate of a fixed cohort's conditions."""
     reads_model: bool
     """Whether the paired task reads the model's outputs, so that no trial can be drawn from it without a model."""
+    input_bindings: dict[str, str | None]
     inputs: list[StudioTrialInput]
     outputs: list[StudioTrialOutput]
     resets: list[StudioTrialReset]
@@ -174,5 +192,9 @@ class StudioTrialAuthoring(StrictModel):
     files: list[StudioProjectFilePatch]
     created: list[CreateNamedDocument] = Field(default_factory=list)
     """Documents the edit creates, written before ``files``, which may name them."""
+    store_choices: list[StudioStoreChoice] | None = Field(
+        default=None, min_length=1, exclude_if=lambda value: value is None,
+    )
+    """An unanswered edit. No files or documents are proposed until the caller chooses a store."""
     refusal: StudioSweptParameterMissing | None = None
     """Why the chosen document was not taken: it lacks a parameter the step sweeps."""

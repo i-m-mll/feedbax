@@ -13,6 +13,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, cast
 
+from feedbax.contracts.execution_target import HostRuntime
 from feedbax.host.io import encode, private_directory, receive, socket_path
 from feedbax.host.protocol import (
     HANG_SECONDS,
@@ -231,6 +232,11 @@ class HostClient:
 
     def ping(self, *, timeout: float = HANG_SECONDS) -> JsonObject:
         return cast(JsonObject, self._call("ping", timeout=timeout))
+
+    def runtime_inventory(self) -> HostRuntime | None:
+        reply = self._call_existing("ping", include_runtime=True)
+        runtime = reply.get("runtime")
+        return HostRuntime.model_validate(runtime) if runtime is not None else None
 
     def session_epoch(self, session_id: str, operator: str, adoption_token: str) -> int:
         return cast(int, self._call(
