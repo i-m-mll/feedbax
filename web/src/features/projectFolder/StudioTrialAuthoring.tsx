@@ -22,12 +22,13 @@ import { SettingsForm } from '@/components/values/SettingsForm';
 import { FieldChange, ValueField } from '@/components/values/ValueField';
 import { setIn } from '@/components/values/adapters/jsonSchema';
 import { isRecord, rawField } from '@/components/values/adapters/raw';
-import { fromFieldView } from '@/components/values/adapters/fieldView';
+import { fromFieldView, type FieldViewOptions } from '@/components/values/adapters/fieldView';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type {
-  FieldKind, JsonValue, ObjectiveTerm, Problem, ProjectValueEdit, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
+  FieldKind, JsonValue, ObjectiveTerm, ProjectValueEdit, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
+  StudioTrialField,
 } from '@/generated/studioContracts';
-import { authoredPointer, authoredPointerParts } from './authoredEdits';
+import { authoredPointer } from './authoredEdits';
 import { BatchTrace, TrialTrace } from './task/SignalTrace';
 import type { TrialShown } from './task/trialSample';
 import { baseOf } from './documentPayload';
@@ -41,7 +42,8 @@ type Change = NonNullable<StudioTrialAuthoringRequest['change']>;
 export type TrialChangeScope = (change: Change) => StudioTrialAuthoringRequest['scope'] | undefined;
 /**
  * Applies a change; `removes` marks one that takes runs out of the project, which the run confirmation guards. A
- * refused field edit answers with the problem at that field, with the term of its text it is about.
+ * change is stored with whatever Problems it introduces, which the documents' fields mark; it answers with a reason
+ * only when the service refuses the write.
  */
 export type Commit = (name: string, change: Change, removes?: boolean) => Promise<FieldRefusal | undefined>;
 /** A step's Trial authoring, with what the changed values of its Task and Objective documents differ from. */
@@ -65,19 +67,19 @@ export function changedAt(view: TrialView, document: 'task' | 'objective', path:
   return { from, reset: commit && (() => commit(studioName('reset'), { kind: 'reset', document, paths: [path] })) };
 }
 
-/** The problem that refuses `change`: for a field's edit, the one at that field, with its term's place in the text. */
-function refusalOf(change: Change, problems: readonly Problem[]): FieldRefusal {
-  const at = change.kind === 'expression' ? authoredPointerParts(change.path) : undefined;
-  const own = at && [...problems].reverse().find(({ path = [] }) => path.length === at.length &&
-    path.every((part, index) => String(part) === at[index]));
-  const chosen = own ?? problems[0];
-  return chosen.span ? { reason: chosen.reason, span: chosen.span } : chosen.reason;
-}
-
 /** The kind a stored expression reads as, which its field's mark shows. */
 export function expressionKind(value: JsonValue | undefined): FieldKind {
   const kind = isRecord(value) ? value.kind : undefined;
   return kind === 'name' ? 'link' : kind === 'call' || kind === 'unresolved' ? 'formula' : kind === 'draw' ? 'draw' : 'value';
+}
+
+/** A field the service projects in a step's Task or Objective, marked with its first stored Problem. */
+export function trialField(projection: StudioTrialField, label: string, runs: TrialRuns | undefined, options: FieldViewOptions): FieldModel {
+  const [problem] = projection.problems ?? [];
+  return {
+    ...fromFieldView({ ...projection, label, effective: runs?.selected ? projection.effective : null }, options),
+    reason: problem?.reason, span: problem?.span ?? undefined,
+  };
 }
 
 export function useTrialAuthoring(
@@ -120,8 +122,6 @@ export function useTrialAuthoring(
       await editor.flush();
       const settled = await stored;
       if (settled.status === 'refused') return shownError(settled.error);
-    } else if (result.problems.length) {
-      return refusalOf(change, result.problems);
     }
     return undefined;
   }).catch(shownError) : undefined;
@@ -288,7 +288,7 @@ function termFields(view: TrialView, term: ObjectiveTerm, index: number, commit?
     if (!projection) throw new Error(`The Objective's ${field} of term ${term.id} has no field`);
     const kind = expressionKind(term[field] as JsonValue | undefined);
     const sweep = projection.sweep?.id;
-    const model = fromFieldView({ ...projection, label, effective: runs?.selected ? projection.effective : null }, {
+    const model = trialField(projection, label, runs, {
       id: term.id + field, kind, changed: changed(field),
       commit: commit && ((edit) => commit('Set ' + label, { kind: 'expression', path: projection.path, edit })),
       selectedMembers: sweep ? runs?.values(sweep) : undefined,
