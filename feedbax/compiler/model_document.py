@@ -396,8 +396,7 @@ class _Lower:
                 )
             else:
                 definition = self.components.get(component.type)
-                if definition is None or definition.is_composite:
-                    raise self.problem(path, "component", f"unknown leaf type {component.type!r}", id=key)
+                assert definition is not None and not definition.is_composite
                 self.plugins.add(definition.owner)
                 params = self.parameters(component, path, key)
                 if "dt" in params or "control_dt" in params:
@@ -851,7 +850,8 @@ def lower_model_document(
     *, supplied_inputs: frozenset[str] = frozenset(),
 ) -> LoweredModelDocument:
     """Project one authored model through the graph compiler's registered declarations."""
-    problems = tuple(model_graph_problems(model, ports=ModelRegistryPorts(components).port))
+    ports = ModelRegistryPorts(components)
+    problems = tuple(model_graph_problems(model, ports=ports.port, component_problem=ports.registration_problem))
     if problems:
         first, *related = problems
         raise ModelCompilationProblem(first.address, first.reason, related=tuple(related))

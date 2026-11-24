@@ -41,13 +41,15 @@ def _ports(component, direction, port):
     return SCALAR if (direction, port) in {("input", "in"), ("output", "out")} else None
 
 
-def _accepts(component, domain):
-    return component["kind"] == "composite" or (component["type"] == "mass") == (domain is not None)
+def _component_problem(component, domain):
+    if component["kind"] == "leaf" and (component["type"] == "mass") != (domain is not None):
+        return "Component is unavailable in this interior"
+    return None
 
 
 def _execute(state, op, **fields):
     command = ModelEditCommand.model_validate({"operation": {"op": op, **fields}})
-    return apply_model_edit(state, command, ports=_ports, accepts=_accepts)
+    return apply_model_edit(state, command, ports=_ports, component_problem=_component_problem)
 
 
 def _bytes(state):
@@ -212,7 +214,7 @@ def test_ungroup_refuses_an_unconnected_input_default():
 def _ungroup_reason(state, address):
     target = ModelAddress.model_validate(address)
     return next(
-        item.reason for item in model_edit.ModelEditDraft(state, _ports, _accepts).ungroup_eligibility()
+        item.reason for item in model_edit.ModelEditDraft(state, _ports).ungroup_eligibility()
         if item.address == target
     )
 

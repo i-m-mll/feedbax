@@ -13,6 +13,7 @@ import optax
 from pydantic import BaseModel, JsonValue, TypeAdapter, ValidationError
 from pydantic.fields import FieldInfo
 
+from feedbax.compiler.model_templates import with_model_placement_reason
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.task_document import BLANK_TASK, TASK_DOCUMENT_SCHEMA_ID, VALUE_TYPES, TaskDocument
@@ -182,7 +183,10 @@ def authoring_surface(
         tasks=_task_catalog(),
         registries={
             COMPONENTS.family: StudioAuthoringRegistry(
-                entries=sorted(bundle.components.list_all(), key=lambda definition: definition.name),
+                entries=[
+                    with_model_placement_reason(definition, bundle.components)
+                    for definition in sorted(bundle.components.list_all(), key=lambda definition: definition.name)
+                ],
                 origins=_origins(bundle.components.declaration_record(key) for key in bundle.components.names()),
             ),
             OPERATIONS.family: StudioAuthoringRegistry(

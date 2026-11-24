@@ -236,7 +236,7 @@ def test_trial_refusals_keep_the_model_address_for_each_step(authored, prepared_
         })
 
 
-def test_variant_model_field_edit_does_not_reach_inheriting_variants(tmp_path, authored):
+def test_variant_model_field_edit_asks_before_reaching_inheriting_variants(tmp_path, authored):
     from fastapi.testclient import TestClient
 
     from feedbax.web.app import create_app
@@ -256,8 +256,15 @@ def test_variant_model_field_edit_does_not_reach_inheriting_variants(tmp_path, a
             "address": owner | {"element": {"kind": "field", "parent": owner["element"], "path": ["fields", "mass"]}},
             "edit": {"kind": "text", "text": "2"},
         })
-    assert result.status_code == 422, result.text
-    assert "supplies inherited patches" in result.json()["detail"]
+    assert result.status_code == 200, result.text
+    body = result.json()
+    assert not body["files"] and not body["created"]
+    (store,) = body["store_choices"]
+    assert (store["kind"], store["steps"]) == ("variant", ["train"])
+    assert store["runs"] == [
+        {"variant": variant, "step": "train", "row": "default"}
+        for variant in ("compare", "follow")
+    ]
     assert folders.read("variant").revision == revision
 
 

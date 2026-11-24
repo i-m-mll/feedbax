@@ -39,7 +39,7 @@ class Port:
 
 
 type LeafPorts = Callable[[Record, Direction, str], Port | None]
-type AcceptComponent = Callable[[Record, str | None], bool]
+type ComponentProblem = Callable[[Record, str | None], str | None]
 
 
 @dataclass(frozen=True)
@@ -196,7 +196,10 @@ def _copy_endpoint(end: Record, ids: dict[str, str]) -> Record:
 
 
 class ModelEditDraft:
-    def __init__(self, state: edits.ModelEditState, ports: LeafPorts, accepts: AcceptComponent):
+    def __init__(
+        self, state: edits.ModelEditState, ports: LeafPorts,
+        component_problem: ComponentProblem = lambda *_: None,
+    ):
         self.document = state.document.model_dump(mode="json")
         self.positions = state.positions.copy()
         self.flipped = state.flipped.copy()
@@ -205,7 +208,7 @@ class ModelEditDraft:
         self.changed: list[ModelAddress] = []
         self.relocations: dict[str, ModelAddress] = {}
         self.leaf_ports = ports
-        self.accepts_component = accepts
+        self.component_problem = component_problem
 
     def layout(self) -> dict[str, MutableMapping[str, Any]]:
         return {
@@ -466,7 +469,7 @@ class ModelEditDraft:
             graph[collection][element.id] |= {end: previous[end] for end in ends}
         elif element.kind == "attachment":
             parent = element.parent.model_dump(mode="json")
-            earlier = ModelEditDraft(reference, self.leaf_ports, self.accepts_component).attachment_chain(address, parent)
+            earlier = ModelEditDraft(reference, self.leaf_ports, self.component_problem).attachment_chain(address, parent)
             index = next(index for index, item in enumerate(earlier) if item["id"] == element.id)
             chain = self.attachment_chain(address, parent, create=True)
             chain.insert(min(index, len(chain)), difference.definition.model_dump(mode="json"))
@@ -1068,8 +1071,14 @@ class ModelEditDraft:
     def _graph_problems(self, owner: Record, scope: tuple[str, ...]) -> Iterator[edits.ModelGraphProblem]:
         graph = owner["interior"]
         unresolved: dict[str, edits.ModelGraphProblem] = {}
+        unavailable = {
+            key: reason for key, component in graph["components"].items()
+            if (reason := self.component_problem(component, graph["physical_domain"])) is not None
+        }
 
         def port(end: Record, direction: Direction, at: ModelAddress) -> tuple[bool, Port | None]:
+            if end.get("component") in unavailable:
+                return False, None
             try:
                 return True, self.port(owner, graph, end, direction)
             except ValueError as error:
@@ -1080,6 +1089,9 @@ class ModelEditDraft:
 
         def problem(at: ModelAddress, reason: str) -> edits.ModelGraphProblem:
             return edits.ModelGraphProblem(address=at, reason=reason)
+
+        for key, reason in unavailable.items():
+            yield problem(_address(scope, "component", id=key), reason)
 
         for direction, boundary in (("input", "inputs"), ("output", "outputs"), ("physical", "boundary")):
             ports = _port_list(owner, direction)
@@ -1141,8 +1153,6 @@ class ModelEditDraft:
 
         yield from attachments(graph["attachments"], None)
         for key, component in graph["components"].items():
-            if not self.accepts_component(component, graph["physical_domain"]):
-                yield problem(_address(scope, "component", id=key), "Component is unavailable in this interior")
             yield from attachments(component["attachments"], key)
             if component["kind"] == "composite":
                 yield from self._graph_problems(component, (*scope, key))
@@ -1156,15 +1166,15 @@ def _attachment_problem(chain: list[Record]) -> str | None:
 
 
 def model_ungroup_eligibility(document: ModelDocument) -> tuple[edits.ModelUngroupEligibility, ...]:
-    draft = ModelEditDraft(edits.ModelEditState(document=document), lambda *_: None, lambda *_: True)
+    draft = ModelEditDraft(edits.ModelEditState(document=document), lambda *_: None)
     return tuple(draft.ungroup_eligibility())
 
 
 def model_graph_problems(
-    document: ModelDocument, *, ports: LeafPorts, accepts: AcceptComponent = lambda *_: True,
+    document: ModelDocument, *, ports: LeafPorts, component_problem: ComponentProblem,
 ) -> Iterator[edits.ModelGraphProblem]:
     """Check authored identities and connections independently of graph lowering."""
-    return ModelEditDraft(edits.ModelEditState(document=document), ports, accepts).graph_problems()
+    return ModelEditDraft(edits.ModelEditState(document=document), ports, component_problem).graph_problems()
 
 
 @cache
@@ -1225,7 +1235,6 @@ def review_model_connections(
     edit = ModelEditDraft(
         edits.ModelEditState(document=document),
         lambda component, direction, port: available(component).get((direction, port)),
-        lambda *_: False,
     )
     owner, graph = edit.graph(address)
     source = None if task_signal is not None else review.source.model_dump(mode="json")
@@ -1277,7 +1286,7 @@ def apply_model_edit(
     command: edits.ModelEditCommand,
     *,
     ports: LeafPorts,
-    accepts: AcceptComponent,
+    component_problem: ComponentProblem,
     functions=None,
     task_signal: Callable[[edits.ConnectTaskSignal], edits.ModelTaskSignal] | None = None,
     next_input: Callable[[Record], tuple[str, str, int] | None] | None = None,
@@ -1289,7 +1298,7 @@ def apply_model_edit(
     ``reference`` gives the Model a structural difference is reset to, when the shown one differs from another.
     """
     operation = command.operation
-    edit = ModelEditDraft(state, ports, accepts)
+    edit = ModelEditDraft(state, ports, component_problem)
     clipboard = None
     primary = _address((), "graph")
     try:

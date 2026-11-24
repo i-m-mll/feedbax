@@ -22,7 +22,7 @@ from feedbax.contracts import request_identity
 from feedbax.planner import project_plan
 from feedbax.contracts.jobs import StudioJobEventHistory
 from feedbax.contracts.model_address import ModelAddress
-from feedbax.contracts.project import InlineBase, Project, StepBase
+from feedbax.contracts.project import InlineBase, Project, StepBase, member_name
 from feedbax.builtins.training import StandardTrainingSettings, supervised_gradient
 from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project, load_text_project
 from feedbax.planner.project_plan import RunKey, compile_project
@@ -1536,7 +1536,7 @@ class _Training:
         return (self.root / "steps" / f"{step}.json").read_bytes()
 
     def choose(self, step, document):
-        row = min(key.row for key in self.requests(step))
+        row = min(row.key.row for row in self.plan().rows if row.key.step == step)
         return self.client.post(f"{_URL}/authoring/trials", json={
             "revision": self.revision, "run": {"variant": "default", "step": step, "row": row},
             "change": {"kind": "select_document", "role": "training", "document": document},
@@ -1636,7 +1636,7 @@ def test_the_chosen_readers_of_a_document_share_one_document_based_on_it(tmp_pat
             "chosen_steps": ["train", "third"],
         })
         assert refused.status_code == 422, refused.text
-        assert "training-3" in refused.json()["detail"]
+        assert member_name(documents, "training-3") in refused.json()["detail"]
 
 
 def test_a_continuation_keeps_the_document_it_read_when_its_parent_moves(tmp_path):
@@ -1757,10 +1757,17 @@ def test_a_sweep_on_a_training_document_step_is_the_step_s_own(tmp_path):
                 "kind": "document", "id": name, "document": {"schema": "feedbax.spec.training_document", "payload": payload},
             }})
             assert created.status_code == 201, created.text
-        refused = train.choose("train", "training-3")
-        assert refused.status_code == 200, refused.text
-        assert refused.json()["refusal"] == {"class_label": "training-3", "parameter_label": "Learning Rate"}
-        assert not refused.json()["files"]
+        changed = train.choose("train", "training-3")
+        assert changed.status_code == 200, changed.text
+        recipe = changed.json()
+        assert recipe["files"], recipe
+        saved = client.patch(_URL, json={"revision": train.revision, "files": recipe["files"]})
+        assert saved.status_code == 200, saved.text
+        assert any(
+            problem.step == "train" and problem.code == ResolutionCode.INVALID_SWEEP
+            and "learning_rate" in (problem.path + problem.detail)
+            for problem in train.plan().diagnostics
+        )
         train.save(train.choose("train", "training-2"))
         plan = train.plan()
         definitions = {key: value for key, value in plan.selected_definitions.items() if key.step == "train"}

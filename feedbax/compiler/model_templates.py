@@ -5,6 +5,7 @@ from __future__ import annotations
 from feedbax.compiler.model_document import lower_model_document
 from feedbax.component_registry import ComponentRegistry
 from feedbax.component_registry.declarations import DeclaredComponent
+from feedbax.contracts.component import ComponentDefinition
 from feedbax.contracts.graph import GraphSpec, WireSpec
 from feedbax.contracts.model_address import ComponentPortEnd, InputBoundaryEnd, OutputBoundaryEnd
 from feedbax.contracts.model_document import (
@@ -20,15 +21,18 @@ def instantiate_model_template(name: str, registry: ComponentRegistry, period: f
     return _template_component(declaration, registry, period)
 
 
-def template_placement_reason(declaration: DeclaredComponent, registry: ComponentRegistry) -> str | None:
-    """An intrinsic reason a template cannot be placed, independent of the receiving Model."""
+def with_model_placement_reason(
+    definition: ComponentDefinition, registry: ComponentRegistry,
+) -> ComponentDefinition:
+    """Annotate a Library definition with any intrinsic reason it cannot be placed in a Model."""
+    declaration = registry.declaration_record(definition.name).value
     if not isinstance(declaration.template_graph, GraphSpec) and declaration.name != "feedbax.AcausalSystem":
-        return None
+        return definition
     try:
         _template_component(declaration, registry, None)
     except ValueError as error:
-        return str(error)
-    return None
+        return definition.model_copy(update={"placement_reason": str(error)})
+    return definition
 
 
 def _template_component(

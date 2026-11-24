@@ -120,7 +120,7 @@ def resolve_effective_model(
     if not differences:
         return model
     ports = ModelRegistryPorts(components)
-    edit = ModelEditDraft(ModelEditState(document=model), ports.port, ports.accepts)
+    edit = ModelEditDraft(ModelEditState(document=model), ports.port)
     draft = edit.document
     chains: dict[str, _Chain] = {}
 
