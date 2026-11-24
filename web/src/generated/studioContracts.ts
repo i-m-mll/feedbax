@@ -4393,6 +4393,7 @@ export type StudioTrialField = {
   "members"?: Array<StudioSweepValue>;
   "changed"?: boolean;
   "path": string;
+  "problems"?: Array<Problem>;
 };
 
 export type StudioTrialInput = {
@@ -12085,6 +12086,7 @@ export const StudioTrialFieldSchema: z.ZodType<StudioTrialField> = z.lazy(() =>
     "members": z.array(StudioSweepValueSchema).optional(),
     "changed": z.boolean().optional(),
     "path": z.string(),
+    "problems": z.array(ProblemSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialField>;
 

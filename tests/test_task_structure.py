@@ -87,3 +87,26 @@ def test_removing_a_variable_that_is_read_leaves_a_problem_where_it_is_read(tmp_
         assert "catch" not in [item["id"] for item in project.composed(TASK)["variables"]]
         read = ("signals", "goal", "cells", "move", "value")
         assert any(problem.path[:len(read)] == read for problem in problems), problems
+
+
+def test_a_problem_about_a_name_carries_the_name_s_place_in_the_field_s_text(tmp_path):
+    """Catches a field that loses its text, or marks its whole value, when one name in it does not resolve."""
+    project = _project(tmp_path)
+    with project.client:
+        _made(project, {"op": "remove", "member": "variable", "id": "catch"})
+        path = "/task/signals/goal/cells/move/value"
+        field = next(field for field in _change(project, None).fields if field.path == path)
+        (problem,) = field.problems
+        assert field.text[problem.span.start:problem.span.end] == "catch", (field.text, problem)
+
+        row = next(row for row in project.plan().rows if row.kind == "train")
+        text = "where(scale, start, target)"
+        response = project.client.post(f"{_URL}/authoring/trials", json={
+            "revision": project.snapshot()["revision"],
+            "run": {"variant": row.key.variant, "step": row.key.step, "row": row.key.row},
+            "change": {"kind": "expression", "path": path, "edit": {"kind": "text", "text": text}},
+        })
+        view = StudioTrialAuthoring.model_validate(response.json())
+        refused = [problem for problem in view.problems if problem.path == ("task", "signals", "goal", "cells", "move", "value")]
+        assert not view.files and refused, view.problems
+        assert text[refused[-1].span.start:refused[-1].span.end] == "scale", refused
