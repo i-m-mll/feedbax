@@ -249,6 +249,8 @@ def observe(home: str, project: str, revision: str, trial_index: str):
         reads.append(name)
         return original(reader, name)
 
+    from feedbax.contracts.semantic_values import model_state_address
+
     observed = {}
     for key, row in view.evaluations.items():
         if row.result is None:
@@ -288,6 +290,7 @@ def observe(home: str, project: str, revision: str, trial_index: str):
             "size_bytes": result.size_bytes,
             "trial_index": trial,
             "tensor_reads": [name for name in reads if name != "checkpoint"],
+            "position_address": model_state_address(variable).to_text(),
         }
         if row.result.checkpoint_sources:
             facts["checkpoint_coordinate_reads"] = reads.count("checkpoint")

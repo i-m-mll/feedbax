@@ -175,7 +175,9 @@ class StudioSavedEvaluationRead(StrictModel):
 
 
 class StudioSavedEvaluationReplayRequest(StudioSavedEvaluationRead):
-    trial: str
+    trial: str | None = None
+    """When absent, select every retained trial at the checkpoint."""
+    aggregate: bool = False
     checkpoint: int | None = Field(default=None, ge=0)
 
 

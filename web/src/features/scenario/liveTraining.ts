@@ -1,6 +1,6 @@
 import type {
   TrainingTrajectoryPayload,
-  WorkspaceReplayTrack,
+  StudioTrajectoryTrack,
 } from '@/generated/studioContracts';
 
 export const LIVE_TRAINING_TRAJECTORY_SCHEMA_ID = 'feedbax.event.studio.training_trajectory';
@@ -8,10 +8,10 @@ export const LIVE_TRAINING_TRAJECTORY_SCHEMA_VERSION =
   'feedbax.event.studio.training_trajectory.v1';
 
 export interface LiveTrainingFrame {
-  tracks: WorkspaceReplayTrack[];
+  tracks: StudioTrajectoryTrack[];
 }
 
-function primaryEffectorTrack(tracks: WorkspaceReplayTrack[]): WorkspaceReplayTrack | null {
+function primaryEffectorTrack(tracks: StudioTrajectoryTrack[]): StudioTrajectoryTrack | null {
   return (
     tracks.find((track) => track.selector.role !== 'target' && track.anchor_id === 'effector') ??
     tracks.find((track) => track.selector.role !== 'target' && track.selector.compact.includes('effector')) ??
@@ -22,7 +22,7 @@ function primaryEffectorTrack(tracks: WorkspaceReplayTrack[]): WorkspaceReplayTr
 
 export function liveTrainingTargetTrack(
   frame: Pick<LiveTrainingFrame, 'tracks'> | null | undefined
-): WorkspaceReplayTrack | null {
+): StudioTrajectoryTrack | null {
   return (
     frame?.tracks.find((track) => track.selector.role === 'target') ??
     frame?.tracks.find((track) => track.selector.compact.includes('target')) ??
@@ -32,7 +32,7 @@ export function liveTrainingTargetTrack(
 
 export function liveTrainingEffectorTrack(
   frame: Pick<LiveTrainingFrame, 'tracks'> | null | undefined
-): WorkspaceReplayTrack | null {
+): StudioTrajectoryTrack | null {
   return primaryEffectorTrack(frame?.tracks ?? []);
 }
 

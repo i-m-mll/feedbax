@@ -6,7 +6,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DrawerSections } from '@/features/projectWindow/DrawerForms';
 import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
 import { elementKey, type ElementAddress } from '@/features/projectWindow/elementSelection';
-import { WORKSPACE_REPLAY_FIXTURE } from '@/test/workspaceReplay.fixture';
 import { SceneClockControls } from './SceneClockControls';
 import { SceneCanvas, SceneDrawer, SceneElementInspector, SceneLayers, sceneContents } from './SceneRegion';
 import { emptyScene, fittedCamera, sceneTimeline, type Scene, type SceneElement, type SceneLayer, type SceneView } from './sceneView';
@@ -71,7 +70,11 @@ describe('Scene regions', () => {
   });
 
   it('scrubs a replay and a separate view on the same clock, with no clock for geometry', () => {
-    const replay = WORKSPACE_REPLAY_FIXTURE.trials![0];
+    const position = 'arm/effector';
+    const trial = {
+      id: 'trial-a', inits: {}, inputs: {}, present: {}, variables: {}, variable_defined: {}, timeline: [],
+      states: { [position]: { samples: [[0, 0], [0.1, 0.1], [0.2, 0.2]], units: 'm', frame: 'world' } },
+    };
     const onSelect = vi.fn();
     function View({ view }: { view: SceneView }) {
       const [time, onTimeChange] = useState(0);
@@ -85,7 +88,7 @@ describe('Scene regions', () => {
         </>
       );
     }
-    const { container, rerender } = render(<View view={{ kind: 'replay', scene: emptyScene, trial: replay }} />);
+    const { container, rerender } = render(<View view={{ kind: 'replay', scene: emptyScene, trial, position, stateTime: [0, 0.6, 1.2] }} />);
     const initialX = container.querySelector('[data-scene-cursor]')?.getAttribute('cx');
     expect(initialX).toBeDefined();
     fireEvent.change(screen.getByRole('slider'), { target: { value: '0.60' } });
