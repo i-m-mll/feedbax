@@ -1,4 +1,5 @@
 import type { ChangeMark, FieldModel } from '@/components/values/fieldModel';
+import type { ValueType } from '@/generated/studioContracts';
 import type { TimelineEpoch, TimelineRepeat } from '@/components/timeline/EpochTimeline';
 
 /**
@@ -12,8 +13,8 @@ export interface TaskVariable {
   readonly name: string;
   /** The type's name, from the catalogue's types. */
   readonly type: string;
-  /** The type's parts: its base, shape and unit. */
-  readonly typeParts: string;
+  /** The type as its parts: its base, shape and unit's dimensions. */
+  readonly valueType: ValueType;
   /** The type as a choice of the catalogue's types. */
   readonly typeChoice: FieldModel;
   /** A list's length. */

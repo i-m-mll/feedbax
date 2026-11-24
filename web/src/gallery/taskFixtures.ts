@@ -3,7 +3,7 @@
  * document as shipped, the three-reach task of issue 7f0c01f's acceptance 8 (an Until End, a × 3 repeat, a list
  * variable, `targets[i]` cells), the stabilization document (which leaves the model's input unfed), and a Python task.
  */
-import type { FunctionInfo, ScopedValue, TextSpan } from '@/generated/studioContracts';
+import type { FunctionInfo, ScopedValue, TextSpan, ValueType } from '@/generated/studioContracts';
 import type { TimelineEpoch, TimelineInterval } from '@/components/timeline/EpochTimeline';
 import type { ChangeMark, FieldModel, ValueKind } from '@/components/values/fieldModel';
 import { rawField } from '@/components/values/adapters/raw';
@@ -48,10 +48,12 @@ export interface PythonSpec {
   values: Record<string, string | number | boolean>;
 }
 
-/** The catalogue's types by name, each with its parts. */
-export const types: Readonly<Record<string, string>> = {
-  Number: 'real', Integer: 'integer', Boolean: 'boolean', Duration: 'real · time', Distance: 'real · length',
-  Point: 'real · 2 · length', Velocity: 'real · 2 · length/time', Vector: 'real · 2',
+/** The catalogue's types by name. */
+export const types: Readonly<Record<string, ValueType>> = {
+  Number: { base: 'real' }, Integer: { base: 'integer' }, Boolean: { base: 'boolean' },
+  Duration: { base: 'real', dimensions: { time: 1 } }, Distance: { base: 'real', dimensions: { length: 1 } },
+  Point: { base: 'real', shape: [2], dimensions: { length: 1 } },
+  Velocity: { base: 'real', shape: [2], dimensions: { length: 1, time: -1 } }, Vector: { base: 'real', shape: [2] },
 };
 
 const functions: FunctionInfo[] = [
@@ -190,7 +192,7 @@ export function documentView(spec: DocumentSpec, texts: Readonly<Record<string, 
     : { from: { kind: 'base', document: spec.base ?? '' }, reset: async () => undefined };
   const bounds = epochBounds({ ...spec, epochs: spec.epochs.map((epoch) => ({ ...epoch, end: text(`end:${epoch.id}`, epoch.end) })) });
   const variables: TaskVariable[] = spec.variables.map((variable) => ({
-    id: variable.id, name: variable.name, type: variable.type, typeParts: types[variable.type], count: variable.count,
+    id: variable.id, name: variable.name, type: variable.type, valueType: types[variable.type], count: variable.count,
     level: variable.level ?? 'trial',
     typeChoice: rawField({ id: `type:${variable.id}`, label: 'Type', value: variable.type, change: () => undefined,
       type: { kind: 'choice', options: Object.keys(types).map((type) => ({ value: type, label: type })) } }),

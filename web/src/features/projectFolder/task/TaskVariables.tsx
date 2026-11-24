@@ -2,7 +2,7 @@ import { appTip } from '@window-shell/browser/tooltip';
 import clsx from 'clsx';
 import { Activity, GripVertical, MoreHorizontal } from 'lucide-react';
 import { useState, type DragEvent } from 'react';
-import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioName, studioValueType } from '@/components/activity/studioVocabulary';
 import { IconButton } from '@/components/ui/Button';
 import { FieldProblem } from '@/components/ui/FieldProblem';
 import { InlineEdit } from '@/components/ui/InlineEdit';
@@ -128,7 +128,7 @@ export function TaskVariables({ variables, selected, select, edits }: {
             </Menu>}
           </span>
         </TableFieldCell>
-        <TableFieldCell {...appTip(variable.typeParts)}>
+        <TableFieldCell {...appTip(studioValueType(variable.valueType))}>
           <ValueField form="cell" model={variable.typeChoice} />
         </TableFieldCell>
         <TableFieldCell><ValueField form="cell" model={variable.value} /></TableFieldCell>

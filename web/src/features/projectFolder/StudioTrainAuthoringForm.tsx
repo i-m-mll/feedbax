@@ -23,6 +23,7 @@ import type {
   TrainFieldRequest, TrainFieldView,
 } from '@/generated/studioContracts';
 import type { ChangeMark, FieldCommit, FieldKindOffer, FieldModel } from '@/components/values/fieldModel';
+import { reasonOf } from '@/components/values/fieldModel';
 import { baseOf } from './documentPayload';
 import type { ClassProjection } from '@/components/values/adapters/jsonSchema';
 import { sameAuthoredFile, type AuthoredProject } from './authoredEdits';
@@ -381,7 +382,7 @@ export function StudioTrainAuthoringForm(props: Props) {
           below={methodReason && <p role="alert">{methodReason}</p>}>
           <CatalogPicker aria-labelledby={methodLabel} aria-describedby={methodChange ? methodChangeId : undefined} className="w-full" entries={methods}
             trailing={methodChange && <FieldChange change={methodChange} id={methodChangeId}
-              onReset={() => { void methodChange!.reset!().then(setMethodReason); }} />}
+              onReset={() => { void methodChange!.reset!().then((refusal) => setMethodReason(reasonOf(refusal))); }} />}
             value={typeof methodField.value === 'string' && !isMixed('/method') ? methodField.value : null}
             placeholder={isMixed('/method') ? studioName('mixed') : undefined}
             disabled={!editable || !methodField.control}

@@ -1,9 +1,9 @@
 import type { JsonValue } from '@/generated/studioContracts';
 import { studioReason } from '@/components/activity/studioVocabulary';
-import { withReset, type ChangeMark, type FieldModel, type FieldType } from '../fieldModel';
+import { withReset, type ChangeMark, type FieldModel, type FieldRefusal, type FieldType } from '../fieldModel';
 
 /** Writes a value the client holds raw; answers with a reason when it refuses. */
-export type RawChange = (value: JsonValue) => Promise<string | undefined> | string | undefined | void;
+export type RawChange = (value: JsonValue) => Promise<FieldRefusal | undefined> | FieldRefusal | undefined | void;
 
 function parse(type: FieldType, label: string, text: string): { value: JsonValue } | { reason: string } {
   if (type.kind === 'number' || type.kind === 'integer') {
@@ -27,7 +27,7 @@ export function rawField({ id, label, type, value, unit, origin, change, parts, 
   id: string; label: string; type: FieldType; value: JsonValue | undefined; unit?: string; origin?: string;
   change?: RawChange; parts?: readonly FieldModel[]; changed?: ChangeMark;
 }): FieldModel {
-  const write = async (next: JsonValue): Promise<string | undefined> => (await change!(next)) || undefined;
+  const write = async (next: JsonValue): Promise<FieldRefusal | undefined> => (await change!(next)) || undefined;
   const commit = withReset(change && (async (edit) => {
     if (edit.kind === 'set') return write(edit.value);
     if (edit.kind !== 'text') return undefined;

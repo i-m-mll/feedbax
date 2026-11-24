@@ -28,6 +28,9 @@ export type FieldCommit = (edit: FieldEdit) => Promise<FieldRefusal | undefined>
 /** Why a source refused an edit: a reason, or a reason about the term of the edit's text at `span`. */
 export type FieldRefusal = string | { readonly reason: string; readonly span?: TextSpan };
 
+/** The reason of a refusal, for a control that marks the whole value. */
+export const reasonOf = (refusal: FieldRefusal | undefined) => typeof refusal === 'string' ? refusal : refusal?.reason;
+
 /**
  * What a changed value differs from: the base of the document whose difference sets it, the document's value where the
  * field shows the selected runs' other one, or the Evaluate step whose document changes it. A field that shows the
@@ -42,7 +45,7 @@ export type ChangeSource =
 /** The changed mark of a value: what it differs from, and the Reset that gives the value the inherited one. */
 export interface ChangeMark {
   readonly from: ChangeSource;
-  readonly reset?: () => Promise<string | undefined>;
+  readonly reset?: () => Promise<FieldRefusal | undefined>;
 }
 
 /** The mark of a value an Evaluate step changes; a value it trains is not a change, and is its origin. */

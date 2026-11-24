@@ -91,9 +91,10 @@ import {
   jsonPointerPath, StudioTrainAuthoringForm, SweepFieldItems, useTrainClassFields, useTrainFieldLabels,
 } from './StudioTrainAuthoringForm';
 import {
-  ObjectiveSweepItems, TrialObjectiveAdd, TrialObjectiveInspector, TrialObjectiveOutline, TrialObjectiveTable, type TrialRuns, TrialTaskForm, TrialTaskInspector, TrialTaskOutline, useTrialAuthoring,
+  TrialObjectiveAdd, TrialSweepItems, TrialObjectiveInspector, TrialObjectiveOutline, TrialObjectiveTable, type TrialRuns, TrialTaskForm, TrialTaskInspector, TrialTaskOutline, useTrialAuthoring,
   type TrialChangeScope,
 } from './StudioTrialAuthoring';
+import { selectedVariable, TrialTaskDocument, TrialVariableInspector, unfedTasks } from './task/trialTask';
 import { documentFamily, useProjectDocuments, type DocumentRole } from './useProjectDocuments';
 import { useManagedAnalyze } from './useManagedAnalyze';
 import { useSavedPlan } from './useSavedPlan';
@@ -1471,12 +1472,12 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         setWindowState((window) => showProjectWindowView({ ...window, inspectorOpen: true }, 'runs', focusSlot));
         setFieldFocus({ key: crypto.randomUUID(), step: sweepStep, target: anchor, kind: 'sweep' });
       }} />
-      <ObjectiveSweepItems project={saved.project_id} revision={saved.revision}
+      <TrialSweepItems project={saved.project_id} revision={saved.revision}
         run={shown?.window_map?.rows.find(({ key }) => key.step === sweepStep && key.variant === variant)?.key}
-        onChoose={(anchor) => {
+        onChoose={(anchor, view) => {
           selection.select(selectStep(latestState.current, sweepStep));
           setSweepStep(undefined);
-          setWindowState((window) => showProjectWindowView(window, 'objective', focusSlot));
+          setWindowState((window) => showProjectWindowView(window, view, focusSlot));
           setFieldFocus({ key: crypto.randomUUID(), step: sweepStep, target: anchor, kind: 'sweep' });
         }} />
       <OfferedSets editor={editor} step={sweepStep} choose={(set) => sets.applySet(sweepStep, set, () => {
@@ -1773,26 +1774,35 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             const named = (document: string) => first && !isModelAddress(first) && first.document === document ? first.element : undefined;
             const choose = (document: string) => (id: string | null, field?: string) => id === null
               ? clearSelection(elements) : selectElement(elements, { document, element: { kind: 'named', id, field } });
-            if (view === 'task') {
-              const document = value.task_document ?? step?.id ?? '';
-              const selected = named(document)?.id;
-              return {
-                padded: true,
-                picker: pickDocument('task', value.task_document ?? undefined, documentScopes.task),
-                body: withProblem(<TrialTaskForm view={value} commit={commit} />),
-                drawer: <TrialTaskOutline sections={drawerSections} view={value} selected={selected} select={choose(document)} />,
-                inspector: selected && <TrialTaskInspector view={value} commit={commit} selected={selected} />,
-              };
-            }
-            const document = value.objective_document ?? step?.id ?? '';
-            const element = named(document);
-            const selected = element && { term: element.id, field: element.field };
             const runs: TrialRuns = {
               selected: !wholeTrialStep,
               values: (sweep) => new Set(step && state.selection && state.selection.kind !== 'steps'
                 ? selectedRuns(step, state.selection).map((row) => row.values[sweep]).filter(Boolean) : []),
               choose: authoring?.onChooseSweepValue,
             };
+            if (view === 'task') {
+              const document = value.task_document ?? step?.id ?? '';
+              const selected = named(document)?.id;
+              const picker = pickDocument('task', value.task_document ?? undefined, documentScopes.task);
+              const unfed = unfedTasks(value);
+              const variable = selectedVariable(selected);
+              return {
+                padded: true,
+                picker: picker && { ...picker, documents: picker.documents.map((entry) => ({ ...entry, problem: unfed.get(entry.key) })) },
+                body: withProblem('variables' in value.task
+                  ? <FocusedFields className="contents" request={fieldFocus?.step === step?.id && fieldFocus?.target?.startsWith('task:') ? fieldFocus : undefined}
+                    onFocused={() => setFieldFocus(undefined)}>
+                    <TrialTaskDocument view={value} commit={commit} runs={runs} selected={selected} select={choose(document)} />
+                  </FocusedFields>
+                  : <TrialTaskForm view={value} commit={commit} />),
+                drawer: <TrialTaskOutline sections={drawerSections} view={value} selected={selected} select={choose(document)} />,
+                inspector: variable ? <TrialVariableInspector view={value} commit={commit} runs={runs} id={variable.id} />
+                  : selected && <TrialTaskInspector view={value} commit={commit} selected={selected} />,
+              };
+            }
+            const document = value.objective_document ?? step?.id ?? '';
+            const element = named(document);
+            const selected = element && { term: element.id, field: element.field };
             return {
               picker: pickDocument('objective', value.objective_document ?? undefined, documentScopes.objective),
               header: <TrialObjectiveAdd view={value} commit={commit} select={choose(document)} />,
