@@ -70,7 +70,8 @@ def model_projection(folders, project_id, body, components):
         if selected_signal_id(port.id, port.name, names, overrides) in ids
     )
     supplied = {port.name for port in bound}
-    problems = tuple(ModelRegistryPorts(components).problems(model))
+    authority = ModelRegistryPorts(components)
+    problems = tuple(authority.problems(model))
     task_inputs = tuple(
         ModelAddress.model_validate({
             "composites": [],
@@ -79,7 +80,7 @@ def model_projection(folders, project_id, body, components):
     )
     known = dict(
         task_signals=task_signals, task_inputs=task_inputs, resolved_model=model,
-        problems=problems, **differences,
+        problems=problems, ungroup=tuple(authority.ungroup_eligibility(model)), **differences,
     )
     if problems:
         return ModelProjection(**known)
