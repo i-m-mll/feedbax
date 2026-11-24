@@ -158,7 +158,7 @@ def start_train_step(
 def project_train_numeric_fields(
     project_id: ProjectName, step_id: ProjectName, body: TrainFieldRequest, request: Request, response: Response,
 ) -> TrainFieldResponse:
-    from feedbax.studio.authoring import project_training_numeric_fields
+    from feedbax.studio.authoring import project_numeric_fields
     from feedbax.web.services.trial_scope import train_selection
 
     def project_fields() -> TrainFieldResponse:
@@ -170,7 +170,7 @@ def project_train_numeric_fields(
             body.chosen_steps,
         )
         try:
-            return project_training_numeric_fields(
+            return project_numeric_fields(
                 snapshot.project, step_id, bundle.training_methods, bundle.expression_functions, body, selection,
                 lambda keys: folders.read_plan(project_id, revision=body.revision, source_runs=keys).plan,
             )

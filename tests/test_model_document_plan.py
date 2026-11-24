@@ -1211,8 +1211,8 @@ def test_an_evaluate_attachment_for_selected_runs_changes_only_their_request(tmp
 
 
 # The ids the variant's evaluation had at a9b3bb7d, where the change was stored in the step's payload.
-_VARIANT_WIRE = "evaluate:e8e71a6e3f3f7f6c879e6522d407edcb9524d059adba3df32272d3b6d9dbf2c4"
-_VARIANT_FIELD = "evaluate:0e7664ca54fc8f3e4689a6cff29fce09381eea61a5618de2be396deb0e502abf"
+_VARIANT_WIRE = "evaluate:b62012d6a1978258070b4f523fab4cbbe813a1c2a37eb2591bac40a740e33554"
+_VARIANT_FIELD = "evaluate:e37d427b989acfd00a42a8936770f688bcf57ba3a9df5e5f9d39c316827b4e17"
 
 
 @pytest.mark.parametrize(("operation", "expected"), [

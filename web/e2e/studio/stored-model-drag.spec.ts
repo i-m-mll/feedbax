@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import { type APIRequestContext, type CDPSession, type Locator, type Page } from '@playwright/test';
-import type { ModelDocument, ModelEditResponse, ModelFieldResponse, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
+import { blankTask, type ModelDocument, type ModelEditResponse, type ModelFieldResponse, type StudioSavedTrainRuns } from '../../src/generated/studioContracts';
 import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { rootPayload } from './fixtures/rootPayload';
 
@@ -299,7 +299,7 @@ test('measures drag updates in the mounted Model at 20 and 100 cards', async ({ 
       const { snapshot, projectPath } = await seedManagedProject(request, [
         { kind: 'document', id: 'model', document: { schema: 'feedbax.spec.model', payload: modelFixture(cards) } },
         { kind: 'document', id: 'task', document: {
-          schema: 'feedbax.spec.python_task', payload: { type: 'feedbax.Reaching', params: {} },
+          schema: 'feedbax.spec.task_document', payload: blankTask,
         } },
         { kind: 'document', id: 'objective', document: {
           schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] },

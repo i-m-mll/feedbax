@@ -34,9 +34,18 @@ class ExternalTrial(PythonTask[Settings]):
 
     @staticmethod
     def template(settings: Settings) -> PythonTaskTemplate:
-        from feedbax.builtins.reaching import Reaching, ReachingParameters
+        from dataclasses import replace
 
-        return Reaching.template(ReachingParameters(n_steps=sum(settings.increments)))
+        from feedbax.contracts.task_document import Epoch, Rest, TaskDocument
+        from feedbax.tasks.document import compile_task
+
+        document = TaskDocument(
+            id="external", variables=(), signals=(), fixed_steps=sum(settings.increments),
+            epochs=(Epoch(id="move", name="Move", end=Rest()),),
+        )
+        return PythonTaskTemplate(
+            signals={}, prepare=lambda model, functions: compile_task(document, functions, model=replace(model, inputs=())),
+        )
 
 
 def initialize(settings: Settings, model, key):

@@ -1,6 +1,7 @@
 """A row whose input's producer cannot run is kept and blocked; it never removes the rows that read sound producers."""
 
 from fastapi.testclient import TestClient
+import pytest
 
 from feedbax.contracts.project import Project
 from feedbax.planner.project_plan import BlockedRow, PlannedRun, ProjectPlanMemo, RunKey, compile_project
@@ -16,6 +17,7 @@ from tests.test_document_train_pair import _two_optimizer_rates, authored_docume
 from tests.test_model_document_plan import _end, _model_controller, _wire
 from tests.test_studio_trial_authoring import _python_project
 from tests.support.host import token
+from tests.support.python_task import reaching_python_task  # noqa: F401
 
 BAD_LINEAR = {"kind": "leaf", "name": "Left", "type": "feedbax.equinox.Linear", "fields": {}}
 
@@ -196,13 +198,14 @@ def test_objective_expressions_stay_editable_when_the_model_does_not_pair(tmp_pa
         assert fields["/objective/terms/effort/measure"] == "sqnorm(command)"
         assert fields["/objective/terms/effort/weight"] == "1"
         edit = client.post("/api/projects/unpaired/authoring/trials", json=body | {
-            "change": {"kind": "expression", "term": "effort", "field": "weight", "edit": {"kind": "text", "text": "2"}},
+            "change": {"kind": "expression", "path": "/objective/terms/effort/weight", "edit": {"kind": "text", "text": "2"}},
         })
         assert edit.status_code == 200, edit.text
         assert edit.json()["files"], edit.text
         assert not [problem for problem in edit.json()["problems"] if problem["path"][:1] == ["objective"]]
 
 
+@pytest.mark.usefixtures("reaching_python_task")
 def test_a_lowered_row_waiting_on_its_producer_cannot_run_and_is_never_submitted(host, tmp_path):
     folders = ProjectFolderService(tmp_path / "projects")
     _save_project(folders, "waiting", Project.model_validate(_python_project()))

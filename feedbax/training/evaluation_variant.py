@@ -42,9 +42,18 @@ class EvaluationVariant:
 
     def task_refusal(self, problem: Problem) -> CannotRun:
         """Locate a failed trial pairing at the responsible Task edit when identifiable."""
-        if problem.path[:2] == ("python_task", "params") and len(problem.path) > 2:
-            if field := self.edit_origins.get(("task", "params", str(problem.path[2]))):
-                return CannotRun(field, problem.reason)
+        path = tuple(map(str, problem.path))
+        at = (
+            ("task", *path[1:]) if path[:1] in {("task",), ("python_task",)}
+            else ("task", *path) if isinstance(self.task, TaskDocument) and path[:1] and path[0] in TaskDocument.model_fields
+            else ()
+        )
+        edits = [
+            target for target in self.edit_origins
+            if len(target) > 1 and at and (target == at[:len(target)] or at == target[:len(at)])
+        ]
+        if edits:
+            return CannotRun(self.edit_origins[max(edits, key=len)], problem.reason)
         if problem.path[:1] in {("task",), ("python_task",)} or problem.path[:2] == ("model", "inputs"):
             task_edits = [origin for target, origin in self.edit_origins.items() if target[0] == "task"]
             if len(task_edits) == 1:
@@ -130,10 +139,13 @@ def resolve_evaluation_variant(
                 edit_origins = {target: origin for target, origin in edit_origins.items() if target[0] != "task"}
                 edit_origins[("task",)] = path
                 continue
-            if len(parts) == 3 and parts[:2] == ["task", "params"] and isinstance(replacement, PythonTaskSelection):
+            if parts[0] == "task" and len(parts) > 1 and (
+                isinstance(replacement, TaskDocument)
+                or len(parts) == 3 and parts[1] == "params"
+            ):
                 selected = {"task": replacement.model_dump(mode="json")}
                 apply_override_patch_in_place(selected, patch)
-                replacement = PythonTaskSelection.model_validate(selected["task"])
+                replacement = type(replacement).model_validate(selected["task"])
                 edit_origins[tuple(parts)] = path
                 continue
             if parts[0] != "graph":

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import Counter, OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping
 from copy import deepcopy
@@ -1145,6 +1146,21 @@ def _integer_train_site(
     return annotation is int
 
 
+def _integer_subject_task_site(
+    path: str, tasks: Iterable[TaskDocument | PythonTaskSelection | None], python_tasks: PythonTaskRegistry,
+) -> bool:
+    """Whether ``path`` names an integer parameter of the Python Task an Evaluate runs from every subject."""
+    from feedbax.tasks.registry import python_task_parameter_site
+
+    sites = {
+        site is not None and site.expected.base is ValueBase.INTEGER and not site.expected.shape
+        for task in tasks
+        for site in (python_task_parameter_site(path, {"python_task": task.model_dump(mode="json")}, python_tasks)
+                     if isinstance(task, PythonTaskSelection) else None,)
+    }
+    return sites == {True}
+
+
 @dataclass(frozen=True)
 class _RowLoweringStamp:
     kind: StepKind
@@ -1860,6 +1876,10 @@ class _Compiler:
             for item, _ in members.get("subject", ())
             for key in item.sources
         ) if kind == "evaluate" else ()
+        subject_tasks = tuple(
+            producer.train.task for _, producer in members.get("subject", ())
+            if producer is not None and producer.train is not None
+        )
 
         def expand(read_document=None, _previous=None):
             @cache
@@ -1896,6 +1916,8 @@ class _Compiler:
             def integer_site(path: str) -> bool:
                 target = model_field_target(path)
                 if target is None:
+                    if kind == "evaluate":
+                        return _integer_subject_task_site(path, subject_tasks, self.python_tasks)
                     if kind != "train":
                         return False
                     resolved = resolved_definition()
@@ -1932,9 +1954,17 @@ class _Compiler:
                     resolved = resolved_definition()
                     if isinstance(resolved, ProjectDiagnostic):
                         return resolved, {}
+                    model = model_slot(resolved.payload, resolved.document_ids, resolved.document_pointers)
+                    if model is None and kind == "evaluate":
+                        read = {(source.document, to_json(source.model.model_dump(mode="json"))) for source in subjects
+                                if source is not None and source.document is not None}
+                        if len(read) > 1:
+                            raise SweepExpansionError(
+                                SweepExpansionCode.INVALID_SET, "inputs.subject", "the subject runs read different Models",
+                            )
+                        model = next(((name, json.loads(content)) for name, content in read), None)
                     sets = resolve_set_axes(
-                        composition.sweep, read_document or self.variants[variant].documents.get,
-                        model_slot(resolved.payload, resolved.document_ids, resolved.document_pointers),
+                        composition.sweep, read_document or self.variants[variant].documents.get, model,
                     )
                 for axis_name, axis in (composition.sweep.axes if composition.sweep is not None else {}).items():
                     if axis_name in RESERVED_LABELS and not isinstance(axis, InputAxis):

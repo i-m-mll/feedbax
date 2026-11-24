@@ -48,7 +48,7 @@ def _model_project():
     functions, authored_model, task, objective = authored_documents()
     signal = Signal(
         id="test_signal", name="test_signal", type=ValueType(base=ValueBase.REAL),
-        cells=(Cell(first_epoch="hold", last_epoch="move", value=LiteralValue(value=1.0)),),
+        cells=(Cell(id="hold-move", first_epoch="hold", last_epoch="move", value=LiteralValue(value=1.0)),),
     )
     task = task.model_copy(update={"signals": (*task.signals, signal)})
     raw = document_project((functions, authored_model, task, objective))

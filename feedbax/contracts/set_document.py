@@ -11,7 +11,7 @@ from feedbax.contracts.project import (
     DifferenceNotApplied, Differences, Document, Payload, Project, RemoveDocumentValue,
     SetDocumentValue, apply_differences, check_disjoint, json_pointer_parts,
 )
-from feedbax.contracts.project_inputs import ProjectName
+from feedbax.contracts.project_inputs import ProjectName, StepReference
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document, compose_step
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_sweep import (
@@ -157,14 +157,19 @@ def resolve_set_axes(
 
 
 def step_model(project: Project, step: str) -> tuple[str, Payload] | None:
-    """The Model document a Train or Evaluate step's default row reads, with its composed payload."""
+    """The Model document a Train or Evaluate step's default row reads, with its composed payload: an Evaluate that
+    names no Model of its own reads its subject step's."""
     if (authored := project.steps.get(step)) is None or authored.kind not in ("train", "evaluate"):
         return None
     template = compose_step(project, step)
     resolved = template if isinstance(template, ProjectDiagnostic) else template.resolve()
     if isinstance(resolved, ProjectDiagnostic):
         return None
-    return model_slot(resolved.payload, resolved.document_ids, resolved.document_pointers)
+    model = model_slot(resolved.payload, resolved.document_ids, resolved.document_pointers)
+    subject = authored.inputs.get("subject")
+    if model is None and authored.kind == "evaluate" and isinstance(subject, StepReference) and subject.step != step:
+        return step_model(project, subject.step)
+    return model
 
 
 def model_slot(
