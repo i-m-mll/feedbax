@@ -966,6 +966,7 @@ export interface ModelEditApplied {
   clipboard?: ModelClipboard | null;
   undo_token?: string | null;
   created?: string[];
+  problems?: ModelGraphProblem[];
 }
 
 export interface ModelEditRefused {
@@ -999,6 +1000,18 @@ export interface TaskSignalSource {
 export interface ModelConnectionVerdict {
   target: ComponentPortEnd | OutputBoundaryEnd;
   reason: string | null;
+  problem?: string | null;
+  replaced?: ModelWireReplacement[];
+}
+
+export interface ModelWireReplacement {
+  address: ModelAddress;
+  attachments: ModelAddress[];
+}
+
+export interface ModelGraphProblem {
+  address: ModelAddress;
+  reason: string;
 }
 
 export interface ModelLibraryConnection {
@@ -1044,6 +1057,7 @@ export interface ModelProjection {
   resolved_model?: ModelDocument | null;
   base_differences?: Array<ModelAddedElement | ModelRemovedElement | ModelRewiredElement>;
   value_differences?: Array<ModelAddedElement | ModelRemovedElement | ModelRewiredElement>;
+  problems?: ModelGraphProblem[];
 }
 
 export interface ModelProjectionRequest {
@@ -7105,6 +7119,7 @@ export const ModelEditAppliedSchema: z.ZodType<ModelEditApplied> = z.lazy(() =>
       "clipboard": ModelClipboardSchema.nullable().optional(),
       "undo_token": z.string().min(1).nullable().optional(),
       "created": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
+      "problems": z.array(ModelGraphProblemSchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelEditApplied>;
@@ -7162,9 +7177,29 @@ export const ModelConnectionVerdictSchema: z.ZodType<ModelConnectionVerdict> = z
     .object({
       "target": z.union([ComponentPortEndSchema, OutputBoundaryEndSchema]),
       "reason": z.string().nullable(),
+      "problem": z.string().nullable().optional(),
+      "replaced": z.array(ModelWireReplacementSchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelConnectionVerdict>;
+
+export const ModelWireReplacementSchema: z.ZodType<ModelWireReplacement> = z.lazy(() =>
+  z
+    .object({
+      "address": ModelAddressSchema,
+      "attachments": z.array(ModelAddressSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelWireReplacement>;
+
+export const ModelGraphProblemSchema: z.ZodType<ModelGraphProblem> = z.lazy(() =>
+  z
+    .object({
+      "address": ModelAddressSchema,
+      "reason": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelGraphProblem>;
 
 export const ModelLibraryConnectionSchema: z.ZodType<ModelLibraryConnection> = z.lazy(() =>
   z
@@ -7235,6 +7270,7 @@ export const ModelProjectionSchema: z.ZodType<ModelProjection> = z.lazy(() =>
       "resolved_model": ModelDocumentSchema.nullable().optional(),
       "base_differences": z.array(z.union([ModelAddedElementSchema, ModelRemovedElementSchema, ModelRewiredElementSchema])).optional(),
       "value_differences": z.array(z.union([ModelAddedElementSchema, ModelRemovedElementSchema, ModelRewiredElementSchema])).optional(),
+      "problems": z.array(ModelGraphProblemSchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelProjection>;
