@@ -90,8 +90,7 @@ test('the epochs grid merges cells, draws an absent cell apart from a zero, reor
 
   await page.setViewportSize({ width: 900, height: 900 });
   const box = grid.locator('xpath=ancestor::*[contains(@class, "studio-table-box")][1]');
-  const widths = await box.evaluate((node) => ({ scroll: node.scrollWidth, client: node.clientWidth }));
-  expect(widths.scroll).toBeGreaterThan(widths.client);
+  await expect.poll(() => box.evaluate((node) => node.scrollWidth - node.clientWidth)).toBeGreaterThan(0);
   const columnWidth = (await header('hold').boundingBox())!.width;
   const rem = await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize));
   expect(columnWidth).toBeGreaterThanOrEqual(8 * rem - 1);
