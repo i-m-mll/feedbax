@@ -240,12 +240,13 @@ def _selected_task(project, document) -> TaskDocument | PythonTaskSelection | No
     return None
 
 
-def _with_task(documents, task):
+def _with_task(documents, task, *, input_bindings: dict[str, str | None] | None = None):
+    bindings = documents.input_bindings if input_bindings is None else input_bindings
     if isinstance(documents, _InitialTrialDocuments):
-        return replace(documents, task_source=task)
+        return replace(documents, task_source=task, input_bindings=bindings)
     if isinstance(task, PythonTaskSelection):
-        return documents.model_copy(update={"task": None, "python_task": task})
-    return documents.model_copy(update={"task": task, "python_task": None})
+        return documents.model_copy(update={"task": None, "python_task": task, "input_bindings": bindings})
+    return documents.model_copy(update={"task": task, "python_task": None, "input_bindings": bindings})
 
 
 def _field_document(documents, role):
@@ -536,9 +537,7 @@ def _evaluate_documents(plan, key, definition, bundle):
                 code=ProblemCode.STRUCTURE, path=("variation",), reason=str(error),
             )),
         ), None
-    documents = _with_task(documents, task).model_copy(update={
-        "input_bindings": documents.input_bindings | params.input_bindings,
-    })
+    documents = _with_task(documents, task, input_bindings=documents.input_bindings | params.input_bindings)
     paired = _project(documents, bundle, graph_override=graph, objective_use=objective_use)
     return documents, replace(paired, task_origins=variant.edit_origins), graph
 

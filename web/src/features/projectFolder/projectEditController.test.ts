@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { ApiRequestError } from '@/api/request';
 import type { AuthoredFileAddress, ProjectValueEdit, StudioProjectDocument, StudioProjectFilePatch, StudioProjectSnapshot, StudioSavedTrainRuns } from '@/generated/studioContracts';
 import { addressKey, applyAuthoredEdits, declarationAddress, presentationAddress } from './authoredEdits';
-import { ProjectEditConflictError, ProjectEditController, type ProjectEditTransport } from './projectEditController';
+import { ProjectEditConflictError, ProjectEditController, type ProjectEditTransport, type StoredEdit } from './projectEditController';
 import { createCheckpointTrain } from './createCheckpointTrain';
 import { createTrain } from './createTrain';
 import { projectWindowPlan, savedRunId } from './projectWindowPlan';
@@ -656,10 +656,10 @@ it('undoes a document command and the step use that joined it as one entry', asy
 it('undoes a narrowed edit, the document it creates and the patch that follows, as one entry', async () => {
   const { editor, current, write, replay } = fixture();
   const before = current();
-  const edit = {
+  const edit: StoredEdit = {
     created: [{ kind: 'document', id: 'model-2', document: { schema: 'graph', base: { document: 'model' }, differences: { '/value': { value: 2 } } } }],
     files: [{ address: task, patches: [value(7)] }],
-  } as const;
+  };
   const settled = await editor.storeEdit('Set Value', edit, { reviewedRevision: before.revision });
   expect(settled).toEqual({ status: 'saved' });
   expect(write).toHaveBeenCalledExactlyOnceWith(before.project_id, {
