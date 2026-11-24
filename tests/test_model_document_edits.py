@@ -486,3 +486,30 @@ def test_template_zero_carry_preserves_a_recurrent_controller_rollout():
         return graph(inputs, graph.init_state(key=key), key=key, n_steps=5)[0]["output"]
 
     np.testing.assert_allclose(rollout(restored), rollout(original), rtol=1e-6, atol=1e-6)
+
+
+def test_library_previews_the_same_reason_as_an_unplaceable_template_edit(tmp_path):
+    """The Library must warn before offering a drop whose reset cannot be represented."""
+    data = _data()
+    data["steps"] = {}
+    project = _Project(tmp_path, data)
+    graph = {"composites": [], "element": {"kind": "graph"}}
+    with project.client:
+        before = project.snapshot()
+        response = project.client.get("/api/components")
+        assert response.status_code == 200, response.text
+        library = {entry["name"]: entry["placement_reason"] for entry in response.json()["data"]["components"]}
+        assert library["feedbax.CDEStandard"] is None
+        assert library["feedbax.RecurrentController"] is None
+        assert library["feedbax.PointMass"] is None
+        reason = library["feedbax.SimpleFeedbackLoop"]
+        assert reason
+        refused = project.model_edit({
+            "op": "add_component", "graph": graph, "position": {"x": 20, "y": 30},
+            "component": {"kind": "definition", "definition": "feedbax.SimpleFeedbackLoop"},
+        })
+        assert refused.status_code == 200, refused.text
+        result = refused.json()["result"]
+        assert result["status"] == "refused"
+        assert result["problem"] == {"address": graph, "detail": reason}
+        assert project.snapshot()["revision"] == before["revision"]
