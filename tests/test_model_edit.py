@@ -256,6 +256,142 @@ def test_addressed_route_settles_document_and_position_and_rejects_raw_patch(tmp
         assert client.get(url).json() == replacement
 
 
+@pytest.mark.parametrize("ambiguous", [False, True])
+def test_connection_review_edit_and_undo_keep_the_addressed_model(tmp_path, ambiguous):
+    """Catch lost wire annotations, arbitrary selection among ambiguous wires, and refusal of invalid authored edits."""
+    destination = {"owner": "outputs", "port": "out"}
+    original = {"owner": "inputs", "port": "old"}
+    replacement = {"owner": "inputs", "port": "new"}
+    dangling = {"owner": "inputs", "port": "missing"}
+    attachments = [{"kind": "intervention", "id": "transform", "operation": "scale", "fields": {"factor": 2}}]
+    wires = {
+        "hold": {"source": original, "target": destination, "attachments": attachments},
+        "dangling": {"source": dangling, "target": {"owner": "outputs", "port": "spare"}},
+    }
+    if ambiguous:
+        wires["alternate"] = {"source": dangling, "target": destination}
+    payload = {
+        "step_seconds": 0.01,
+        "ports": {
+            "inputs": [
+                {"id": "old", "name": "Old", "type": {"shape": [2]}},
+                {"id": "new", "name": "New", "type": {"shape": []}},
+            ],
+            "outputs": [
+                {"id": "out", "name": "Out", "type": {"shape": [2]}},
+                {"id": "spare", "name": "Spare", "type": {}},
+            ],
+        },
+        "interior": {"wires": wires},
+    }
+    project = Project(documents={"model": RootDocument(schema="feedbax.spec.model", payload=payload)})
+    path = tmp_path / "project"
+    for name, data in dump_text_project(project, ProjectConfiguration(project="project", store="store")).items():
+        file = path / name
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_bytes(data)
+    hold = ModelAddress.model_validate(_address(kind="wire", id="hold"))
+    stale_layout = ModelAddress.model_validate(_address(kind="wire", id="old-layout"))
+    layout = {hold.to_text(): [{"x": 2, "y": 3}], stale_layout.to_text(): [{"x": 9, "y": 4}]}
+    url = "/api/projects/project"
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        before = client.get(url).json()
+        response = client.put(url + "/presentation", json={
+            "revision": before["presentation_revision"],
+            "presentation": {"documents": {"model": {"waypoints": layout}}},
+        })
+        assert response.status_code == 200, response.text
+        before = client.get(url).json()
+        context = {
+            "revision": before["revision"], "presentation_revision": before["presentation_revision"],
+            "document": "model",
+        }
+
+        def review(source):
+            response = client.post(url + "/model/connections", json={
+                "revision": before["revision"], "document": "model", "graph": _address(), "source": source,
+            })
+            assert response.status_code == 200, response.text
+            return next(item for item in response.json()["targets"] if item["target"] == destination)
+
+        if not ambiguous:
+            assert review(original)["reason"] == "This input already has that source"
+        verdict = review(replacement)
+        assert verdict["reason"] is None and verdict["problem"]
+        old_wires = {"hold", "alternate"} if ambiguous else {"hold"}
+        assert {item["address"]["element"]["id"] for item in verdict["replaced"]} == old_wires
+        old_hold = next(item for item in verdict["replaced"] if item["address"]["element"]["id"] == "hold")
+        assert [item["element"]["id"] for item in old_hold["attachments"]] == ["transform"]
+
+        response = client.post(url + "/model/edit", json=context | {"command": {"operation": {
+            "op": "connect", "graph": _address(), "source": replacement, "target": destination,
+        }}})
+        assert response.status_code == 200, response.text
+        result = response.json()["result"]
+        assert result["status"] == "applied", result
+        saved = client.get(url).json()
+        assert saved["revision"] != before["revision"]
+        saved_wires = saved["project"]["documents"]["model"]["payload"]["interior"]["wires"]
+        (key, wire), = [(key, wire) for key, wire in saved_wires.items() if wire["target"] == destination]
+        assert wire["source"] == replacement
+        assert {p["address"]["element"]["id"] for p in result["problems"]} == {key, "dangling"}
+        assert saved_wires["dangling"] == wires["dangling"]
+        saved_layout = saved["presentation"]["documents"]["model"]["waypoints"]
+        if ambiguous:
+            assert key not in old_wires and not wire.get("attachments")
+            assert saved_layout == {stale_layout.to_text(): layout[stale_layout.to_text()]}
+        else:
+            original_wire = before["project"]["documents"]["model"]["payload"]["interior"]["wires"]["hold"]
+            assert key == "hold" and wire["attachments"] == original_wire["attachments"]
+            assert saved_layout == layout
+
+        response = client.post(url + "/model/undo", json={
+            "revision": saved["revision"], "presentation_revision": saved["presentation_revision"],
+            "token": result["undo_token"],
+        })
+        assert response.status_code == 200, response.text
+        undone = response.json()["result"]["snapshot"]
+        assert undone["project"] == before["project"]
+        assert undone["presentation"] == before["presentation"]
+
+        response = client.post(url + "/model/edit", json=context | {
+            "revision": undone["revision"], "presentation_revision": undone["presentation_revision"],
+            "command": {"operation": {
+                "op": "rename", "address": _address(kind="port", end=replacement), "name": "Old",
+            }},
+        })
+        assert response.status_code == 200, response.text
+        renamed = response.json()["result"]
+        assert renamed["status"] == "applied", renamed
+        snapshot = client.get(url).json()
+        stored = snapshot["project"]["documents"]["model"]["payload"]
+        assert [(port["id"], port["name"]) for port in stored["ports"]["inputs"]] == [("old", "Old"), ("new", "Old")]
+        response = client.post(url + "/model/projection", json={"revision": snapshot["revision"], "document": "model"})
+        assert response.status_code == 200, response.text
+        projection = response.json()
+        assert projection["resolved_model"]["interior"]["wires"] == stored["interior"]["wires"]
+        ports = {p["address"]["element"]["end"]["port"] for p in projection["problems"]
+                 if p["address"]["element"]["kind"] == "port"}
+        assert ports == {"old", "new"}
+
+
+def test_incompatible_local_physical_ports_keep_an_addressed_connection():
+    """Catch a refusal after connecting two existing ports in a physical interior."""
+    data = _start().model_dump(mode="json")
+    physics = data["document"]["interior"]["components"]["physics"]
+    physics["ports"]["physical"][0]["type"] = "rotational"
+    state = ModelEditState.model_validate(data)
+    result = _execute(
+        state, "connect_physical", graph=_address(("physics",)),
+        connection={"a": _end("mass", "flange"), "b": {"owner": "boundary", "port": "frame"}},
+    )
+    graph = result.state.document.interior.components["physics"].interior
+    connection, = graph.connections.values()
+    assert connection.a.port == "flange" and connection.b.port == "frame"
+    problem, = result.problems
+    assert problem.address == result.changed[0]
+
+
 def _graphs(owner, scope=()):
     graph = owner.interior
     yield scope, owner, graph

@@ -258,7 +258,7 @@ class ModelProjectionRequest(StrictModel):
     entry, the projection gives that value's differences from the step's Model."""
 
     revision: Sha256
-    run: StudioSavedTrainKey
+    run: StudioSavedTrainKey | None = None
     document: ProjectName
     rows: list[RowKey] = Field(default_factory=list)
     axes: dict[ProjectName, list[Name]] = Field(default_factory=dict)
@@ -333,6 +333,7 @@ class ModelEditResult(StrictModel):
     state: ModelEditState
     changed: tuple[ModelAddress, ...] = ()
     clipboard: ModelClipboard | None = None
+    problems: tuple[ModelGraphProblem, ...] = ()
 
 
 class ModelEditRequest(StrictModel):
