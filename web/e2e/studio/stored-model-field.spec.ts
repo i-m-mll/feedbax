@@ -110,9 +110,15 @@ test('edits and reopens a stored Model field sweep through project history', asy
   await enter(hidden, 'U(0, 1)');
   const { problems } = await (await invalid).json() as ModelFieldResponse;
   expect(problems![0].reason).toContain('Value, Sweep, Formula');
-  await expect(hidden.locator('..').getByRole('img', { name: 'Problem', exact: true }))
-    .toHaveAttribute('data-app-tip', /Value, Sweep, Formula/);
+  // The text is stored in the selected run's sweep value, and its Problem is marked there and kept on reopening.
+  await expect(hidden).toHaveAttribute('aria-invalid', 'true');
+  await expect(hidden).toHaveAccessibleDescription(/Value, Sweep, Formula/);
   await hidden.press('Escape');
-  await expect(hidden).toHaveValue('64, 100, 128');
+  await expect(hidden).toHaveValue('U(0, 1), 100, 128');
   await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.reload();
+  await mapStep(page, 'train').click();
+  await model.locator('.react-flow__node').filter({ hasText: 'GRU' }).locator('header').click();
+  await expect(hidden).toHaveValue('U(0, 1), 100, 128');
+  await expect(hidden).toHaveAccessibleDescription(/Value, Sweep, Formula/);
 });
