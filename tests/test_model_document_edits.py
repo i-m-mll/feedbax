@@ -12,6 +12,7 @@ from feedbax.contracts.project_io import ProjectConfiguration, dump_text_project
 from feedbax.planner.project_plan import compile_project
 from feedbax.contracts.project_resolution import compose_document
 from feedbax.web.app import create_app
+from feedbax.web.services.project_plan import row_problems
 from tests.support.managed_train_fixture import managed_evaluation_step
 from tests.test_evaluate_documents import FEE, MASS, TASK, _based, _data, _model, _with_mass, _with_push
 
@@ -379,6 +380,65 @@ def test_invalid_model_field_survives_reopen_and_can_be_repaired(tmp_path):
         project.edit(recipe["command"]["operation"], files=recipe["files"])
         (fee,) = [run for run in project.plan().runs if run.key.step == "fee"]
         assert fee.admission_problem is None
+
+
+def test_invalid_swept_field_edits_the_active_member_and_marks_its_axis(tmp_path):
+    owner = {"composites": [], "element": {"kind": "component", "id": "cell"}}
+    address = ModelAddress.model_validate({"composites": [], "element": {
+        "kind": "field", "parent": owner["element"], "path": ["fields", "hidden_size"],
+    }})
+    path = address.to_text()
+    readout_input = ModelAddress.model_validate({"composites": [], "element": {
+        "kind": "field", "parent": {"kind": "component", "id": "readout"}, "path": ["fields", "input_size"],
+    }}).to_text()
+    entries = {
+        f"value-{index}": {"value": value, "patches": {path: {"value": value}, readout_input: {"value": value}}}
+        for index, value in enumerate((64, 100, 128), start=1)
+    }
+    data = _data()
+    del data["steps"]["check"]
+    data["steps"]["fee"]["sweep"] = {"axes": {"hidden-size": {"values": entries}}}
+    project = _Project(tmp_path, data)
+
+    with project.client:
+        revision = project.snapshot()["revision"]
+        before = project.plan()
+        assert len(before.runs) == 3 and all(not row.problems for row in before.runs)
+        active = next(
+            row.key for row in before.rows
+            if row.key.step == "fee" and row.coordinates["hidden-size"].value_id == "value-1"
+        )
+        payload = {
+            "revision": revision, "document": "model", "owner": owner,
+            "run": {"variant": active.variant, "step": active.step, "row": active.row}, "rows": [],
+            "address": address.model_dump(mode="json"), "edit": {"kind": "text", "text": "U(0, 1)"},
+        }
+        response = project.client.post(f"{_URL}/model/fields", json=payload)
+        assert response.status_code == 200, response.text
+        recipe = response.json()
+        assert recipe.get("command") is None and not recipe["store_choices"], recipe
+        (file,) = recipe["files"]
+        assert file["address"] == {"kind": "step", "id": "fee"}
+        assert recipe["problems"][0]["model_address"] == payload["address"]
+        saved = project.client.patch(_URL, json={"revision": revision, "files": [file]})
+        assert saved.status_code == 200, saved.text
+
+        reopened = project.project()
+        values = reopened.steps["fee"].sweep.axes["hidden-size"].values
+        unresolved = {"kind": "unresolved", "text": "U(0, 1)"}
+        assert values["value-1"].value == values["value-1"].patches[path].value == unresolved
+        assert values["value-1"].patches[readout_input].value == 64
+        assert [values[member].value for member in ("value-2", "value-3")] == [100, 128]
+        assert reopened.documents["model"].payload == data["documents"]["model"]["payload"]
+        after = project.plan()
+        (problem,) = row_problems(after)
+        assert problem.path == "sweep.axes.hidden-size.values.value-1"
+        assert problem.address == "steps/fee.json" and problem.row == active.row
+        assert problem.authored_path.startswith("/sweep/axes/hidden-size/values/value-1/")
+        assert problem.place.member == address
+        assert {run.key: run.request_id for run in before.runs if run.key.step == "fee" and run.key != active} == {
+            run.key: run.request_id for run in after.runs if run.key.step == "fee" and run.key != active
+        }
 
 
 def test_removing_a_swept_model_field_keeps_other_fields_readable(tmp_path):
