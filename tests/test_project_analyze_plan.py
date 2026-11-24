@@ -30,6 +30,7 @@ from feedbax.contracts.project_resolution import BaseReaders, ResolutionCode
 from feedbax.contracts.project_sweep import Sweep
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import ProductRef
+from feedbax.contracts.rollout import RolloutParameters
 from feedbax.application.bundle import new_application_registry_bundle
 from tests.support.managed_train_fixture import managed_evaluation_step, managed_train_project
 
@@ -142,6 +143,9 @@ def test_text_and_studio_compile_the_same_saved_evaluate_element_plan(tmp_path):
     )
     assert row.elements[ElementKey(_KEY, "profile")].inputs["summary"][0].element == ElementKey(_KEY, "summarize")
     assert figure.spec.document == FigureDocument.model_validate(project.documents["velocity-figure"].payload)
+    rollout = decode_request(plan.requests[evaluate.request_id], plan.documents.__getitem__)
+    condition = RolloutParameters.model_validate(rollout.spec.params).condition_id()
+    assert figure.spec.names["condition"] == {condition: "default"}
     source = plan.sources[_KEY]["/payload/operations/summarize/params/bounds_scale"]
     assert (source.kind, source.name, source.path) == (
         "document",

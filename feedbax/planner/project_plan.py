@@ -215,12 +215,11 @@ RESERVED_LABELS = frozenset({*STEP_LABELS, "variant", "member"})
 
 @dataclass(frozen=True)
 class LabelName:
-    """What a step-valued label value names: a step, an operation, a stored Train run by its request, or the Model
-    document of a model that was never trained."""
+    """What a coordinate value names in the project."""
 
     key: str
     label: str | None = None
-    kind: Literal["step", "run", "document", "element"] = "step"
+    kind: Literal["step", "row", "run", "document", "element"] = "step"
     card: str | None = None
     """The Analyze card holding an element, which tells apart elements of one key in two cards."""
 
@@ -230,7 +229,7 @@ class LabelName:
 
 
 type LabelNames = Mapping[str, Mapping[str, LabelName]]
-"""Each step-valued label's value IDs in one request, and what each names."""
+"""Each named coordinate's value IDs in one request, and what each names."""
 
 
 def label_value_names(labels: Mapping[str, MemberLabel], names: LabelNames) -> dict[str, str]:
@@ -3496,11 +3495,15 @@ class _Compiler:
 
         assert self.operations is not None
         evaluations = {
-            producer.request_id: request_identity.decode_request(
-                self.requests[producer.request_id], self.documents.__getitem__,
-            ).spec
+            source.producer: (
+                request_identity.decode_request(
+                    self.requests[producer.request_id], self.documents.__getitem__,
+                ).spec,
+                LabelName(source.producer.row, self.rows[source.producer].label, kind="row"),
+            )
             for sources in inputs.values() for source in sources
-            if isinstance(producer := source.member.reference, ProductRef)
+            if source.producer is not None
+            and isinstance(producer := source.member.reference, ProductRef)
             and producer.request_id.startswith("evaluate:")
         }
         elements, encoded, problems, figures = lower_analyze(

@@ -173,7 +173,7 @@ class _Lowerer:
         document_pointers: Mapping[str, str],
         documents: Mapping[str, Document],
         step_inputs: Mapping[str, tuple[PlannedInput, ...]],
-        evaluations: Mapping[str, RequestSpec],
+        evaluations: Mapping[RunKey, tuple[RequestSpec, LabelName]],
         upstream: Mapping[ElementKey, PlannedElement],
         operations: OperationRegistry,
         figure_templates: FigureTemplateRegistry | None,
@@ -272,8 +272,8 @@ class _Lowerer:
         schemas = set()
         for binding in inputs:
             reference = binding.member.reference
-            assert isinstance(reference, ProductRef)
-            evaluation = self.evaluations[reference.request_id]
+            assert isinstance(reference, ProductRef) and binding.producer is not None
+            evaluation, _ = self.evaluations[binding.producer]
             if (
                 not isinstance(evaluation, EvaluationRequestSpec)
                 or evaluation.evaluation_type != ROLLOUT_TYPE
@@ -377,11 +377,20 @@ class _Lowerer:
             raise _ElementIssue(f"inputs.{role}", f"Required input {role!r} is missing.")
 
     def _names(self, inputs: Mapping[str, tuple[PlannedInput, ...]]) -> dict[str, dict[str, LabelName]]:
-        return _merged(*(
+        names = _merged(*(
             producer.names
             for bindings in inputs.values() for binding in bindings
             if (producer := self._producer(binding)) is not None
         ), _names(inputs))
+        for bindings in inputs.values():
+            for binding in bindings:
+                if binding.producer is None or (evaluation := self.evaluations.get(binding.producer)) is None:
+                    continue
+                spec, name = evaluation
+                if isinstance(spec, EvaluationRequestSpec) and spec.evaluation_type == ROLLOUT_TYPE:
+                    condition = RolloutParameters.model_validate(spec.params).condition_id()
+                    names.setdefault("condition", {}).setdefault(condition, name)
+        return names
 
     def _record(
         self,
@@ -648,7 +657,7 @@ def lower_analyze(
     documents: Mapping[str, Document],
     document_problems: tuple[ProjectDiagnostic, ...],
     step_inputs: Mapping[str, tuple[PlannedInput, ...]],
-    evaluations: Mapping[str, RequestSpec],
+    evaluations: Mapping[RunKey, tuple[RequestSpec, LabelName]],
     upstream: Mapping[ElementKey, PlannedElement],
     operations: OperationRegistry,
     *,
