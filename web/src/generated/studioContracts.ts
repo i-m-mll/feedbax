@@ -838,6 +838,7 @@ export interface EvaluateModelState {
   field_sources?: Record<string, StudioEvaluateValueSource>;
   changed_from?: string | null;
   problems?: StudioProjectWindowMapProblem[];
+  ungroup?: ModelUngroupEligibility[];
 }
 
 export interface StudioEvaluateValueSource {
@@ -1083,7 +1084,6 @@ export interface ModelProjection {
   resolved_model?: ModelDocument | null;
   base_differences?: Array<ModelAddedElement | ModelRemovedElement | ModelRewiredElement>;
   value_differences?: Array<ModelAddedElement | ModelRemovedElement | ModelRewiredElement>;
-  problems?: ModelGraphProblem[];
   ungroup?: ModelUngroupEligibility[];
 }
 
@@ -6922,6 +6922,7 @@ export const EvaluateModelStateSchema: z.ZodType<EvaluateModelState> = z.lazy(()
       "field_sources": z.record(z.string(), StudioEvaluateValueSourceSchema).optional(),
       "changed_from": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
       "problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
+      "ungroup": z.array(ModelUngroupEligibilitySchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<EvaluateModelState>;
@@ -7362,7 +7363,6 @@ export const ModelProjectionSchema: z.ZodType<ModelProjection> = z.lazy(() =>
       "resolved_model": ModelDocumentSchema.nullable().optional(),
       "base_differences": z.array(z.union([ModelAddedElementSchema, ModelRemovedElementSchema, ModelRewiredElementSchema])).optional(),
       "value_differences": z.array(z.union([ModelAddedElementSchema, ModelRemovedElementSchema, ModelRewiredElementSchema])).optional(),
-      "problems": z.array(ModelGraphProblemSchema).optional(),
       "ungroup": z.array(ModelUngroupEligibilitySchema).optional(),
     })
     .strict()

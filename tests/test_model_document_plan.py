@@ -1085,7 +1085,6 @@ def test_model_projection_keeps_the_declared_input_size_after_wiring(tmp_path, s
         message = next(problem["reason"] for problem in edited["problems"] if problem["address"] == address)
         assert "Receiver · input" in message
         assert ("Sender · output" if source == "linear" else "Inputs · target_pos") in message
-        assert {"address": address, "reason": message} in view["problems"]
         plan = folders.read_plan("nested", revision=saved.revision).plan
         row, = (row for row in plan.rows if row.key.step == "train")
         assert ModelAddress.model_validate(address) in [problem.model_address for problem in row.problems]
