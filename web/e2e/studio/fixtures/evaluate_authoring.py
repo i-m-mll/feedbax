@@ -87,5 +87,31 @@ def files():
     ]
 
 
+def own_sweep_files():
+    """A Train of two seeds and an Evaluate of each of its runs, sampling one trial."""
+    project = _train_definition()
+    train = project["steps"]["train"]
+    train["sweep"] = {"axes": {"seed": {"values": {
+        f"s{seed}": {"value": seed, "patches": {"seed": {"op": "add", "value": seed}}} for seed in (0, 1)
+    }}}}
+    evaluate = {
+        "kind": "evaluate",
+        "base": {"inline": {"evaluation_type": ROLLOUT_TYPE, "params": {
+            "seed": 731, "trial_set": {"kind": "sample", "count": 1}, "trial_policy": "paired", "variation": {},
+        }}},
+        "inputs": {"subject": {"step": "train", "checkpoint": "last"}},
+        "sweep": {"axes": {"trained": {"input": "subject"}}},
+    }
+    return [
+        *({"kind": "document", "id": name, "document": document} for name, document in project["documents"].items()),
+        {"kind": "step", "id": "train", "step": train},
+        {"kind": "step", "id": "probe", "step": evaluate},
+    ]
+
+
 if __name__ == "__main__":
-    print(json.dumps(seed_train_variants(*sys.argv[1:]) if sys.argv[1:] else files()))
+    arguments = sys.argv[1:]
+    if arguments == ["own-sweep-files"]:
+        print(json.dumps(own_sweep_files()))
+    else:
+        print(json.dumps(seed_train_variants(*arguments) if arguments else files()))
