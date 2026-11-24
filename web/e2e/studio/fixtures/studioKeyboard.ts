@@ -135,3 +135,10 @@ export async function chooseOutlineRow(page: Page, row: Locator, name: string) {
   await page.keyboard.type(name.split(' ')[0]);
   await expect(row).toHaveAttribute('aria-selected', 'true');
 }
+
+/** Opens the Studio home and makes a new project with its `+`, which opens the new project's window. */
+export async function startProject(page: Page) {
+  await page.goto('/');
+  await page.getByRole('table', { name: 'Projects', exact: true }).getByRole('button', { name: 'New Project', exact: true }).click();
+  await page.waitForURL(/[?&]project=/);
+}

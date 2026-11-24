@@ -2,7 +2,7 @@ import { expect, test } from './fixtures/studio';
 import type { Locator, Page } from '@playwright/test';
 import type { ModelDocument } from '../../src/generated/studioContracts';
 import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
-import { palette, post, readSaved } from './fixtures/studioKeyboard';
+import { palette, post, readSaved, startProject } from './fixtures/studioKeyboard';
 import { rootPayload } from './fixtures/rootPayload';
 import { hold } from './fixtures/heldRequest';
 
@@ -153,7 +153,7 @@ test('a Model card added from the Library moves and redraws no other card', asyn
  */
 test('Model cards added from the Library overlap no other card and stay put across a reload', async ({ page }) => {
   const creation = post(page, '/api/projects');
-  await page.goto('/');
+  await startProject(page);
   expect((await creation).status()).toBe(201);
   await palette(page, 'newStep', 'New Step');
   await expect(page.getByRole('menu').getByRole('menuitem', { name: 'Train', exact: true })).toBeFocused();

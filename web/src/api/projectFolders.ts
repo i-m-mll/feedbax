@@ -40,6 +40,14 @@ async function readFolder<K extends 'StudioProjectSnapshot' | 'StudioProjectDocu
   }
 }
 
+export async function listProjectFolders(signal?: AbortSignal) {
+  try {
+    return parseContract('StudioProjectList', await requestJson(projectsPath, { signal, cache: 'no-store' })).projects;
+  } catch (error) {
+    throw asApiRequestError(error, projectsPath);
+  }
+}
+
 export function createProjectFolder(signal?: AbortSignal) {
   return readFolder('StudioProjectDocument', undefined, projectsPath, { method: 'POST', signal });
 }
