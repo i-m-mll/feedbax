@@ -1080,6 +1080,20 @@
       },
       "type": {}
     },
+    "feedbax.contracts.task_document.Repeat": {
+      "count": {
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
+        ]
+      },
+      "first_epoch": {},
+      "id": {},
+      "last_epoch": {}
+    },
     "feedbax.contracts.task_document.Rest": {
       "kind": {
         "absent": "rest",
@@ -1113,6 +1127,9 @@
       "links": {
         "absent": []
       },
+      "repeats": {
+        "absent": []
+      },
       "signals": {},
       "validation_trials": {
         "absent": [
@@ -1130,6 +1147,16 @@
       }
     },
     "feedbax.contracts.task_document.Variable": {
+      "count": {
+        "absent": null,
+        "families": [
+          "feedbax.contracts.expression_values.CallValue",
+          "feedbax.contracts.expression_values.DrawValue",
+          "feedbax.contracts.expression_values.LiteralValue",
+          "feedbax.contracts.expression_values.NameValue",
+          "feedbax.contracts.expression_values.UnresolvedValue"
+        ]
+      },
       "id": {},
       "name": {},
       "type": {},
