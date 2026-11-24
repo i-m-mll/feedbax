@@ -2902,7 +2902,13 @@ export type EpochSteps = {
   "greatest": number;
 };
 
-export type Expression = LiteralValue | NameValue | CallValue | DrawValue;
+export type Expression = LiteralValue | NameValue | CallValue | DrawValue | UnresolvedValue;
+
+export type ExpressionPartSite = {
+  "path": Array<string | number>;
+  "functions": Array<string>;
+  "names": Array<string>;
+};
 
 export type ExternalBase = {
   "path": string;
@@ -3143,6 +3149,7 @@ export type MakePresent = {
   "op": "present";
   "signal": string;
   "epoch": string;
+  "text"?: string | null;
 };
 
 export type ManualCombination = {
@@ -3395,8 +3402,27 @@ export type RemoveProjectValue = {
   "path": DifferencePointer;
 };
 
+export type RemoveRepeat = {
+  "op": "remove_repeat";
+  "id": string;
+};
+
 export type RemoveValue = {
   "op": "remove";
+};
+
+export type Repeat = {
+  "id": string;
+  "first_epoch": string;
+  "last_epoch": string;
+  "count": Expression;
+};
+
+export type RepeatEpochs = {
+  "op": "repeat";
+  "first_epoch": string;
+  "last_epoch": string;
+  "count"?: Expression;
 };
 
 export type ReplayDeclarationAddress = {
@@ -3476,6 +3502,7 @@ export type ScopedValue = {
   "name": string;
   "type": ValueType;
   "level": Level;
+  "list_count"?: number | null;
 };
 
 export type SelectedRow = {
@@ -3506,6 +3533,12 @@ export type SetProjectValue = {
   "value": JsonValue;
 };
 
+export type SetRepeatCount = {
+  "op": "set_repeat_count";
+  "id": string;
+  "count": Expression;
+};
+
 export type SetSpan = {
   "op": "set_span";
   "signal": string;
@@ -3526,6 +3559,12 @@ export type SetValue = {
   "op"?: "add" | "replace";
 };
 
+export type SetVariableCount = {
+  "op": "set_variable_count";
+  "id": string;
+  "count": Expression | null;
+};
+
 export type Sha256 = string;
 
 export type Signal = {
@@ -3541,12 +3580,16 @@ export type Site = {
   "finest": Level;
   "names"?: Array<ScopedValue>;
   "structural"?: boolean;
+  "list_count"?: number | null;
+  "repeat_count"?: number | null;
 };
 
 export type SiteProjection = {
   "site": Site;
   "kinds": Array<FieldKind>;
   "functions": Array<FunctionInfo>;
+  "parts": Array<ExpressionPartSite>;
+  "name_paths"?: Record<string, ModelAddress>;
 };
 
 export type SourceDifference = {
@@ -4562,6 +4605,7 @@ export type TaskDocument = {
   "variables": Array<Variable>;
   "epochs": Array<Epoch>;
   "signals": Array<Signal>;
+  "repeats"?: Array<Repeat>;
   "links"?: Array<Link>;
   "fixed_steps"?: number | null;
   "validation_trials"?: Array<ValidationTrial>;
@@ -4577,7 +4621,7 @@ export type TaskPort = {
   "task_key"?: string | null;
 };
 
-export type TaskStructureChange = AddMember | RemoveMember | feedbax__contracts__task_structure__RenameMember | MoveMember | SetType | SetSpan | MakeAbsent | MakePresent | SetLink;
+export type TaskStructureChange = AddMember | RemoveMember | feedbax__contracts__task_structure__RenameMember | MoveMember | SetType | SetSpan | MakeAbsent | MakePresent | SetLink | RepeatEpochs | SetRepeatCount | RemoveRepeat | SetVariableCount;
 
 export type TextSpan = {
   "start": number;
@@ -4596,6 +4640,11 @@ export type TrialDocuments = {
   "objective": ObjectiveDocument;
   "input_overrides"?: Record<string, string>;
   "python_task"?: PythonTaskSelection | null;
+};
+
+export type UnresolvedValue = {
+  "kind"?: "unresolved";
+  "text": string;
 };
 
 export type UpdateCadence = {
@@ -4653,6 +4702,7 @@ export type Variable = {
   "name": string;
   "type": ValueType;
   "value": Expression;
+  "count"?: Expression | null;
 };
 
 export type VariableBinding = {
@@ -10210,8 +10260,16 @@ export const EpochStepsSchema: z.ZodType<EpochSteps> = z.lazy(() =>
 ) as unknown as z.ZodType<EpochSteps>;
 
 export const ExpressionSchema: z.ZodType<Expression> = z.lazy(() =>
-  z.union([LiteralValueSchema, NameValueSchema, CallValueSchema, DrawValueSchema])
+  z.union([LiteralValueSchema, NameValueSchema, CallValueSchema, DrawValueSchema, UnresolvedValueSchema])
 ) as unknown as z.ZodType<Expression>;
+
+export const ExpressionPartSiteSchema: z.ZodType<ExpressionPartSite> = z.lazy(() =>
+  z.object({
+    "path": z.array(z.union([z.string(), z.number().int().safe()])),
+    "functions": z.array(z.string()),
+    "names": z.array(z.string()),
+  }).strict()
+) as unknown as z.ZodType<ExpressionPartSite>;
 
 export const ExternalBaseSchema: z.ZodType<ExternalBase> = z.lazy(() =>
   z.object({
@@ -10529,6 +10587,7 @@ export const MakePresentSchema: z.ZodType<MakePresent> = z.lazy(() =>
     "op": z.literal("present"),
     "signal": z.string(),
     "epoch": z.string(),
+    "text": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<MakePresent>;
 
@@ -10878,11 +10937,36 @@ export const RemoveProjectValueSchema: z.ZodType<RemoveProjectValue> = z.lazy(()
   }).strict()
 ) as unknown as z.ZodType<RemoveProjectValue>;
 
+export const RemoveRepeatSchema: z.ZodType<RemoveRepeat> = z.lazy(() =>
+  z.object({
+    "op": z.literal("remove_repeat"),
+    "id": z.string(),
+  }).strict()
+) as unknown as z.ZodType<RemoveRepeat>;
+
 export const RemoveValueSchema: z.ZodType<RemoveValue> = z.lazy(() =>
   z.object({
     "op": z.literal("remove"),
   }).strict()
 ) as unknown as z.ZodType<RemoveValue>;
+
+export const RepeatSchema: z.ZodType<Repeat> = z.lazy(() =>
+  z.object({
+    "id": z.string(),
+    "first_epoch": z.string(),
+    "last_epoch": z.string(),
+    "count": ExpressionSchema,
+  }).strict()
+) as unknown as z.ZodType<Repeat>;
+
+export const RepeatEpochsSchema: z.ZodType<RepeatEpochs> = z.lazy(() =>
+  z.object({
+    "op": z.literal("repeat"),
+    "first_epoch": z.string(),
+    "last_epoch": z.string(),
+    "count": ExpressionSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<RepeatEpochs>;
 
 export const ReplayDeclarationAddressSchema: z.ZodType<ReplayDeclarationAddress> = z.lazy(() =>
   z.object({
@@ -10990,6 +11074,7 @@ export const ScopedValueSchema: z.ZodType<ScopedValue> = z.lazy(() =>
     "name": z.string().min(1),
     "type": ValueTypeSchema,
     "level": LevelSchema,
+    "list_count": z.union([z.number().int().safe().gt(0), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<ScopedValue>;
 
@@ -11031,6 +11116,14 @@ export const SetProjectValueSchema: z.ZodType<SetProjectValue> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<SetProjectValue>;
 
+export const SetRepeatCountSchema: z.ZodType<SetRepeatCount> = z.lazy(() =>
+  z.object({
+    "op": z.literal("set_repeat_count"),
+    "id": z.string(),
+    "count": ExpressionSchema,
+  }).strict()
+) as unknown as z.ZodType<SetRepeatCount>;
+
 export const SetSpanSchema: z.ZodType<SetSpan> = z.lazy(() =>
   z.object({
     "op": z.literal("set_span"),
@@ -11057,6 +11150,14 @@ export const SetValueSchema: z.ZodType<SetValue> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<SetValue>;
 
+export const SetVariableCountSchema: z.ZodType<SetVariableCount> = z.lazy(() =>
+  z.object({
+    "op": z.literal("set_variable_count"),
+    "id": z.string(),
+    "count": z.union([ExpressionSchema, z.null()]),
+  }).strict()
+) as unknown as z.ZodType<SetVariableCount>;
+
 export const Sha256Schema: z.ZodType<Sha256> = z.lazy(() =>
   z.string().regex(new RegExp("^[a-f0-9]{64}$"))
 ) as unknown as z.ZodType<Sha256>;
@@ -11077,6 +11178,8 @@ export const SiteSchema: z.ZodType<Site> = z.lazy(() =>
     "finest": LevelSchema,
     "names": z.array(ScopedValueSchema).optional(),
     "structural": z.boolean().optional(),
+    "list_count": z.union([z.number().int().safe().gt(0), z.null()]).optional(),
+    "repeat_count": z.union([z.number().int().safe().gt(0), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<Site>;
 
@@ -11085,6 +11188,8 @@ export const SiteProjectionSchema: z.ZodType<SiteProjection> = z.lazy(() =>
     "site": SiteSchema,
     "kinds": z.array(FieldKindSchema),
     "functions": z.array(FunctionInfoSchema),
+    "parts": z.array(ExpressionPartSiteSchema),
+    "name_paths": z.record(z.string(), ModelAddressSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<SiteProjection>;
 
@@ -12396,6 +12501,7 @@ export const TaskDocumentSchema: z.ZodType<TaskDocument> = z.lazy(() =>
     "variables": z.array(VariableSchema),
     "epochs": z.array(EpochSchema).min(1),
     "signals": z.array(SignalSchema),
+    "repeats": z.array(RepeatSchema).optional(),
     "links": z.array(LinkSchema).optional(),
     "fixed_steps": z.union([z.number().int().safe().min(0), z.null()]).optional(),
     "validation_trials": z.array(ValidationTrialSchema).min(1).optional(),
@@ -12417,7 +12523,7 @@ export const TaskPortSchema: z.ZodType<TaskPort> = z.lazy(() =>
 ) as unknown as z.ZodType<TaskPort>;
 
 export const TaskStructureChangeSchema: z.ZodType<TaskStructureChange> = z.lazy(() =>
-  z.union([AddMemberSchema, RemoveMemberSchema, feedbax__contracts__task_structure__RenameMemberSchema, MoveMemberSchema, SetTypeSchema, SetSpanSchema, MakeAbsentSchema, MakePresentSchema, SetLinkSchema])
+  z.union([AddMemberSchema, RemoveMemberSchema, feedbax__contracts__task_structure__RenameMemberSchema, MoveMemberSchema, SetTypeSchema, SetSpanSchema, MakeAbsentSchema, MakePresentSchema, SetLinkSchema, RepeatEpochsSchema, SetRepeatCountSchema, RemoveRepeatSchema, SetVariableCountSchema])
 ) as unknown as z.ZodType<TaskStructureChange>;
 
 export const TextSpanSchema: z.ZodType<TextSpan> = z.lazy(() =>
@@ -12444,6 +12550,13 @@ export const TrialDocumentsSchema: z.ZodType<TrialDocuments> = z.lazy(() =>
     "python_task": z.union([PythonTaskSelectionSchema, z.null()]).optional(),
   }).strict().superRefine((value, ctx) => { if ((value.task == null) === (value.python_task == null)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Select one Task document or registered Python task." }); })
 ) as unknown as z.ZodType<TrialDocuments>;
+
+export const UnresolvedValueSchema: z.ZodType<UnresolvedValue> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("unresolved").optional(),
+    "text": z.string(),
+  }).strict()
+) as unknown as z.ZodType<UnresolvedValue>;
 
 export const UpdateCadenceSchema: z.ZodType<UpdateCadence> = z.lazy(() =>
   z.object({
@@ -12523,6 +12636,7 @@ export const VariableSchema: z.ZodType<Variable> = z.lazy(() =>
     "name": z.string(),
     "type": ValueTypeSchema,
     "value": ExpressionSchema,
+    "count": z.union([ExpressionSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<Variable>;
 
