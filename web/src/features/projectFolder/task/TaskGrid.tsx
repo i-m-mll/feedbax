@@ -10,6 +10,7 @@ import {
   ContextMenu, ContextMenuContent, ContextMenuTrigger, Menu, MenuCheckboxItem, MenuContent, MenuItem, MenuTrigger,
 } from '@/components/ui/Menu';
 import { Table, TableAddColumn, TableFieldCell, TableHeaderCell, TableRowHeader } from '@/components/ui/Table';
+import type { FieldModel } from '@/components/values/fieldModel';
 import { ValueField } from '@/components/values/ValueField';
 import { withAttention } from './attention';
 import {
@@ -105,6 +106,16 @@ function AbsentCell({ text }: { text: string }) {
 }
 
 const stop = (event: SyntheticEvent) => event.stopPropagation();
+
+/** A present cell's field, whose text committed empty makes the cell absent. */
+function emptiedAbsent(field: FieldModel, absent: (() => Made) | undefined): FieldModel {
+  const { commit } = field;
+  if (!commit || !absent) return field;
+  return {
+    ...field,
+    commit: async (edit) => edit.kind === 'text' && !edit.text.trim() ? (await absent()) || undefined : commit(edit),
+  };
+}
 
 /**
  * A press on one of a cell's own buttons (its menu, the insert control) acts on that control, not on the selection;
@@ -334,7 +345,8 @@ export function TaskGrid({ epochs, repeats, signals, selected, select, edits }: 
                   if (!pressed.current && !inSpan) choose(false);
                   pressed.current = false;
                 }}>
-                {cell.kind === 'absent' ? <AbsentCell text={signal.absent.text ?? ''} /> : <ValueField form="cell" model={cell.value} />}
+                {cell.kind === 'absent' ? <AbsentCell text={signal.absent.text ?? ''} /> : <ValueField form="cell" model={emptiedAbsent(cell.value,
+                  edits.absent && (() => edits.absent!(signal.id, [cell.id])))} />}
                 {refusal?.at === cell.id && <span className="absolute inset-y-0 right-6 flex items-center"><FieldProblem reason={refusal.reason} /></span>}
                 {inSpan && cell === span.cells.at(-1) && <SelectionMenu commands={commands}
                   className="absolute right-0.5 top-1/2 z-10 -translate-y-1/2" />}
