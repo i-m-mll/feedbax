@@ -189,8 +189,15 @@ def _missing_sweep_target(studio):
     assert reopened["project"]["steps"]["fee"]["sweep"]["axes"]["mass"]["path"] == _MASS_TARGET
     assert any(
         (problem["address"], problem.get("authored_path")) == ("steps/fee.json", "/sweep/axes/mass/path")
-        for problem in studio.plan_problems(reopened["revision"])
+        for problem in edit["sweep_problems"]
     )
+    problems = studio.plan_problems(reopened["revision"])
+    assert any(
+        problem["address"] == "steps/fee.json"
+        and (problem.get("authored_path") or "").startswith("/sweep/axes/mass/")
+        and (problem.get("place") or {}).get("member") == MASS
+        for problem in problems
+    ), problems
 
 
 def _set_project():
