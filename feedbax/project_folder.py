@@ -34,7 +34,6 @@ from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
-from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.project import (
     BasedDocument, Document, Project, RootDocument, Sha256, diff, json_pointer_parts, same_json,
 )
@@ -105,7 +104,7 @@ if TYPE_CHECKING:
     from feedbax.plot.templates import FigureTemplateRegistry
     from feedbax.component_registry import ComponentRegistry
     from feedbax.contracts.model_edit import (
-        ModelClipboard, ModelEditProblem, ModelEditRequest, ModelGraphProblem,
+        ModelClipboard, ModelEditAsked, ModelEditProblem, ModelEditRequest, ModelGraphProblem,
     )
 
 
@@ -334,7 +333,9 @@ def document_file(
     )])
 
 
-type ModelStore = Callable[[Project, ModelEditRequest, dict[str, JsonValue], dict[str, JsonValue]], StoredEdit]
+type ModelStore = Callable[
+    [Project, ModelEditRequest, dict[str, JsonValue], dict[str, JsonValue]], StoredEdit | ModelEditAsked,
+]
 """Store a Model edit's change of the shown document's composed content, from the first payload to the second, after
 the request's step files: the documents it creates and the patches of files."""
 
@@ -1395,13 +1396,13 @@ class ProjectFolder:
     def apply_model_command(
         self, project_id: str, body: ModelEditRequest, components: ComponentRegistry, store: ModelStore,
         source: dict[str, JsonValue] | None = None,
-    ) -> AppliedModelEdit | ModelEditProblem:
+    ) -> AppliedModelEdit | ModelEditProblem | ModelEditAsked:
         """Apply a named Model operation to the shown document's composed content, or to ``source``, the selected runs'
         copy of it, and commit what ``store`` makes of it with the layout, in one write.
 
         A document the edit creates gets the layout of its base, the edited layout when its base is the shown one.
         """
-        from feedbax.contracts.model_edit import ModelEditProblem, ModelEditState, ModelProjectionRequest, SetField
+        from feedbax.contracts.model_edit import ModelEditAsked, ModelEditProblem, ModelEditState, ModelProjectionRequest, SetField
         from feedbax.compiler.model_edit import ModelEditDraft, apply_model_edit
         from feedbax.compiler.model_ports import ModelRegistryPorts
         from feedbax.project_model_selection import selected_task_signal
@@ -1434,6 +1435,8 @@ class ProjectFolder:
         )
         if isinstance(result, ModelEditProblem):
             return result
+        if body.store_choice is not None and result.state.document == state.document and not body.files:
+            raise ProjectRevisionConflict("project", body.revision)
         if any(file.address.kind != "step" for file in body.files):
             raise ProjectFolderInvalid("A Model edit writes step files alongside its command.")
         change = None
@@ -1452,6 +1455,8 @@ class ProjectFolder:
                     next_layout.pop(key, None)
             stored = store(snapshot.project, body, payload, next_payload) if next_payload is not payload or body.files \
                 else StoredEdit([])
+            if isinstance(stored, ModelEditAsked):
+                return stored
             assert snapshot.presentation is not None
             layouts: dict[str, dict[str, JsonValue]] = {}
             narrowed = False

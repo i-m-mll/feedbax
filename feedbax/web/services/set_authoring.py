@@ -26,11 +26,13 @@ from feedbax.contracts.studio_sets import (
 from feedbax.contracts.model_edit import ListedRuns
 from feedbax.contracts.studio_trials import StudioSetField, StudioSetFieldEntry
 from feedbax.project_members import generated_name
+from feedbax.web.services.authored_scope import choose_authored_store, choose_prepared_edit, selected_edit_runs
 from feedbax.web.services.axis_values import axis_values
 from feedbax.web.services.project_folder import ProjectFolderInvalid
+from feedbax.web.services.store_choice import EditStore
 from feedbax.web.services.trial_scope import (
-    StoredEdit, SweepValuesRuns, _composed, content_edits, file_value, selected_value, selection_scope, preview_stored,
-    set_document_write, set_readers,
+    StoredEdit, SweepValuesRuns, _composed, content_edits, file_value, selected_value, selection_scope,
+    preview_stored, reached_steps, set_document_write, set_readers,
 )
 
 
@@ -86,8 +88,11 @@ def set_edit(folders, project_id: str, body: StudioSetEditRequest) -> StudioSetE
         stored, selected = _add_set_entry(project, command)
     else:
         stored = _remove_value(project, command)
+    result = _set_store(folders, project_id, project, step, body, stored)
+    if isinstance(result, list):
+        return StudioSetEdit(revision=body.revision, files=[], store_choices=result)
     if isinstance(command, AddSetEntry | ApplySet | RemoveAxisValue | SaveSet):
-        preview = preview_stored(project, stored)
+        preview = preview_stored(project, result)
         sweep = preview.steps[step].sweep
         if sweep is not None:
             if isinstance(command, ApplySet):
@@ -101,8 +106,62 @@ def set_edit(folders, project_id: str, body: StudioSetEditRequest) -> StudioSetE
             except SweepExpansionError as error:
                 diagnoses.append(_sweep_problem(error, step=step))
     return StudioSetEdit(
-        revision=body.revision, files=stored.files, created=list(stored.created), selected=selected,
+        revision=body.revision, files=result.files, created=list(result.created), selected=selected,
         problems=[StudioProjectWindowMapProblem.from_diagnostic(problem, declaration="") for problem in diagnoses],
+    )
+
+
+def _set_store(folders, project_id: str, project: Project, step: str, body: StudioSetEditRequest, stored: StoredEdit):
+    command = body.command
+    plan = folders.read_plan(project_id, revision=body.revision).plan
+    scope = body.selection or (command if isinstance(command, DuplicateRun) else None)
+    selected = selected_edit_runs(plan, step, scope)
+    intent = body.model_dump(mode="json", exclude={"store_choice"})
+    if isinstance(command, SaveSet | InlineSet | SetToField | SetToSweep):
+        attached = reached_steps(project, {step})
+        reached = frozenset(row.key for row in plan.rows if row.key.step in attached)
+        if not selected and body.store_choice is None:
+            return stored
+        result = choose_authored_store(
+            body.revision, intent, selected, EditStore("whole_step", "Whole Step", step, reached, stored),
+            (), body.store_choice,
+        )
+        return result if isinstance(result, list) else result.value
+    if isinstance(command, RemoveAxisValue) and (body.selection is None or not body.selection.rows):
+        values = axis_values(row for row in plan.rows if row.key in selected)
+        selected = frozenset(key for key in selected if values.get((key, command.axis)) == command.value)
+        if not selected:
+            raise ProjectFolderInvalid("The selected axis value changed.")
+    names = {
+        file.address.id for file in stored.files if file.address.kind == "document"
+        and project.documents[file.address.id].schema_id == SET_DOCUMENT_SCHEMA_ID
+    }
+    alternatives = []
+    if names:
+        content = preview_stored(project, stored)
+        chosen = {key.step for key in selected} or {step}
+        narrow = StoredEdit(list(stored.files), stored.created)
+        for name in sorted(names):
+            readers = set_readers(project, name)
+            targets = chosen & readers
+            if not targets or targets == readers:
+                continue
+            edits = content_edits(_composed(project, name), _composed(content, name))
+            narrowed = set_document_write(project, name, edits, targets)
+            narrow = StoredEdit(
+                [file for file in narrow.files if file.address.id != name
+                 and (file.address.kind != "step" or file.address.id in targets)],
+                narrow.created,
+            ) + narrowed
+        if narrow != stored:
+            alternatives.append(("selected_readers", "Selected Readers", ",".join(sorted(names)), narrow))
+    kind, label = ("set_entry", "Set Entry") if names else ("whole_step", "Whole Step")
+    return choose_prepared_edit(
+        folders, project_id, body.revision, project, selected,
+        intent, body.store_choice,
+        (kind, label, ",".join(sorted(names)) or step, stored), alternatives,
+        reader_steps=frozenset().union(*(set_readers(project, name) for name in names)),
+        copies_selection=isinstance(command, DuplicateRun),
     )
 
 
