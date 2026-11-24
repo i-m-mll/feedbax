@@ -32,6 +32,7 @@ from feedbax.contracts.expression_values import (
     SweepRange,
     SweepSample,
     TextSpan,
+    UnresolvedValue,
     scope_problems,
 )
 from feedbax.contracts.expression_registry import POINT_INTERPOLATIONS, FunctionClass, FunctionRegistry
@@ -487,6 +488,8 @@ def _print(node: Expression, names: Mapping[str, str], least: int = 0) -> str:
 
 def _printed(node: Expression, names: Mapping[str, str]) -> tuple[str, int]:
     match node:
+        case UnresolvedValue(text=text):
+            return text, _ATOM
         case LiteralValue(value=value, unit=unit):
             text = str(value).lower() + ("°" if unit == "°" else f" {unit}" if unit else "")
             return text, _UNARY if text.startswith("-") else _ATOM

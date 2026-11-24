@@ -27,7 +27,7 @@ from feedbax.contracts.request_specs import DocumentTrainingConfig, DocumentTrai
 from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.studio_authoring import StudioSweptParameterMissing
-from feedbax.contracts.studio_place import task_start
+from feedbax.contracts.studio_place import task_start_path
 from feedbax.studio.authoring import training_document_choice
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.contracts.studio_trials import (
@@ -1041,7 +1041,7 @@ def trial_authoring(
         inputs=_input_rows(documents, projected),
         outputs=[StudioTrialOutput(address=ModelAddress.from_text(value.id), value=value)
                  for value in paired.model.outputs] if paired else [],
-        resets=[StudioTrialReset(address=field.address, name=task_start(documents.model, field.address).name,
+        resets=[StudioTrialReset(address=field.address, path=task_start_path(documents.model, field.address),
                                  type=field.type, finest=field.finest, required=field.required)
                 for field in projected.resets],
         fields=[
