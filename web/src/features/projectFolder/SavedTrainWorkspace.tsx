@@ -1665,11 +1665,11 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     windowState.mode !== 'map' && focusView === 'runs' && pivotCommand(focusSlot),
     bindStudioCommand('undo', () => { void moveHistory('undo'); }, {
       enabled: !!snapshot.undoName && !outside,
-      subject: snapshot.undoName === studioName('outsideChange') ? snapshot.undoName : undefined,
+      subject: snapshot.undoName ?? undefined,
     }),
     bindStudioCommand('redo', () => { void moveHistory('redo'); }, {
       enabled: !!snapshot.redoName && !outside,
-      subject: snapshot.redoName === studioName('outsideChange') ? snapshot.redoName : undefined,
+      subject: snapshot.redoName ?? undefined,
     }),
     bindStudioCommand('clearFocus', () => selection.select({ ...state, focus: null }), { enabled: !!state.focus }),
     activity, problemCommand, failure && !isStudioDefect(failureCause) && retryCommand,
