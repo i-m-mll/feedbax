@@ -32,10 +32,13 @@ class RegisteredComponent(StrictModel):
     definition: Name
 
 
+type ComponentToPlace = LeafComponent | CompositeComponent | RegisteredComponent
+
+
 class AddComponent(StrictModel):
     op: Literal["add_component"]
     graph: ModelAddress
-    component: LeafComponent | CompositeComponent | RegisteredComponent
+    component: ComponentToPlace
     position: ModelPosition
     id: ModelElementId | None = None
     connect_from: SignalSource | None = None
@@ -140,7 +143,7 @@ class MoveWireAttachment(StrictModel):
 class InsertComponentOnWire(StrictModel):
     op: Literal["insert_component"]
     address: ModelAddress
-    component: LeafComponent | CompositeComponent
+    component: ComponentToPlace
     input_port: ModelElementId
     output_port: ModelElementId
     position: ModelPosition
