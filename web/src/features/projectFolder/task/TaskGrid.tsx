@@ -222,8 +222,7 @@ export function TaskGrid({ epochs, repeats, signals, selected, select, edits }: 
       ? ids.slice(columns.first, columns.last + 1) : [epoch.id];
     const remove = edits.removeEpochs && chosen.length < epochs.length
       ? () => settle(chosen[0], edits.removeEpochs!(chosen)) : undefined;
-    const bracketed = repeats.some(({ first, last }) => index(first) <= index(chosen.at(-1)!) && index(last) >= index(chosen[0]));
-    const repeat = edits.repeat && !bracketed ? () => settle(chosen[0], edits.repeat!(chosen[0], chosen.at(-1)!)) : undefined;
+    const repeat = edits.repeat && (() => settle(chosen[0], edits.repeat!(chosen[0], chosen.at(-1)!)));
     return {
       on: 'epoch', of: epoch.name,
       items: <>
@@ -279,8 +278,8 @@ export function TaskGrid({ epochs, repeats, signals, selected, select, edits }: 
       disabled: !!adding }}
     addRow={edits.addSignal && { label: studioName('addSignal'), onAdd: () => setAdding({ kind: 'signal' }), disabled: !!adding }}>
     <thead>
-      {repeats.length > 0 && <RepeatLane epochs={epochs} repeats={repeats} selected={selected} select={select}
-        commands={repeatCommands} refusal={refusal} />}
+      {repeatRows(epochs, repeats).map((row, at) => <RepeatLane key={at} epochs={epochs} repeats={row} selected={selected}
+        select={select} commands={repeatCommands} refusal={refusal} />)}
       <TableHeaderRow>
         <TableHeaderCell aria-hidden="true" />
         {epochs.flatMap((epoch, column) => [
@@ -423,8 +422,27 @@ function NewMember({ name, add, done, header }: { name: StudioNameId; add(name: 
 }
 
 /**
- * The repeats over the columns, as a lane above them: a bracket over each, its count a field at its end. A bracket is
- * selected by a click and removed from its menu, which keeps its epochs.
+ * The repeats in rows above the columns: each in the first row where it meets no other, so that a nested or crossing
+ * repeat is drawn on a row of its own; the outermost first.
+ */
+function repeatRows(epochs: readonly TaskEpoch[], repeats: readonly TaskRepeat[]) {
+  const index = (id: string) => epochs.findIndex((epoch) => epoch.id === id);
+  const span = (repeat: TaskRepeat) => [index(repeat.first), index(repeat.last)] as const;
+  const rows: TaskRepeat[][] = [];
+  const widest = [...repeats].filter((repeat) => span(repeat)[0] >= 0 && span(repeat)[1] >= span(repeat)[0])
+    .sort((a, b) => (span(b)[1] - span(b)[0]) - (span(a)[1] - span(a)[0]));
+  for (const repeat of widest) {
+    const [first, last] = span(repeat);
+    const free = rows.find((row) => row.every((other) => span(other)[1] < first || span(other)[0] > last));
+    if (free) free.push(repeat);
+    else rows.push([repeat]);
+  }
+  return rows;
+}
+
+/**
+ * One row of repeats over the columns: a bracket over each, its count a field at its end, its Problem marked on it. A
+ * bracket is selected by a click and removed from its menu, which keeps its epochs.
  */
 function RepeatLane({ epochs, repeats, selected, select, commands, refusal }: {
   epochs: readonly TaskEpoch[]; repeats: readonly TaskRepeat[]; selected?: TaskSelection; select(selection: TaskSelection): void;
@@ -449,7 +467,8 @@ function RepeatLane({ epochs, repeats, selected, select, commands, refusal }: {
         className="group/owner relative px-1 pb-0.5 pt-1 font-normal"
         onPointerDown={(event) => { if (!onControl(event) && !chosen) select(selection); }}>
         <span className={clsx('flex items-end gap-1', chosen && 'text-shell-foreground')}>
-          <span aria-hidden="true" className={clsx('h-2 grow border-x border-t', chosen ? 'border-shell-foreground' : 'border-shell-muted')} />
+          <span aria-hidden="true" className={clsx('h-2 grow border-x border-t',
+            reason ? 'border-shell-status-failure' : chosen ? 'border-shell-foreground' : 'border-shell-muted')} />
           {reason && <FieldProblem reason={reason} />}
           <span className="flex w-16 shrink-0 items-center gap-0.5 text-xs text-shell-muted">×<ValueField form="cell" model={repeat.count} /></span>
           {chosen && <SelectionMenu commands={own} />}

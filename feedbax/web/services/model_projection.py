@@ -98,7 +98,6 @@ def model_projection(folders, project_id, body, components):
     )
     supplied = {port.name for port in bound}
     authority = ModelRegistryPorts(components)
-    problems = tuple(authority.problems(model))
     ports = {port.address.to_text(): port for port in _declared_ports(authority, model)}
     task_inputs = tuple(
         ModelAddress.model_validate({
@@ -108,10 +107,8 @@ def model_projection(folders, project_id, body, components):
     )
     known = dict(
         task_signals=task_signals, task_inputs=task_inputs, resolved_model=model,
-        problems=problems, ungroup=tuple(authority.ungroup_eligibility(model)), **differences,
+        ungroup=tuple(authority.ungroup_eligibility(model)), **differences,
     )
-    if problems:
-        return ModelProjection(ports=tuple(ports.values()), **known)
     try:
         lowered = lower_model_document(
             model, components, supplied_inputs=frozenset(supplied),

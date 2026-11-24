@@ -460,7 +460,7 @@ def test_connection_review_edit_and_undo_keep_the_addressed_model(tmp_path, ambi
         assert response.status_code == 200, response.text
         projection = response.json()
         assert projection["resolved_model"]["interior"]["wires"] == stored["interior"]["wires"]
-        ports = {p["address"]["element"]["end"]["port"] for p in projection["problems"]
+        ports = {p["address"]["element"]["end"]["port"] for p in renamed["problems"]
                  if p["address"]["element"]["kind"] == "port"}
         assert ports == {"old", "new"}
 

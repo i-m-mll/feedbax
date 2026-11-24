@@ -10,6 +10,18 @@ const documents = {
   dangling: { schema, base: { document: 'arm', unresolved: true }, differences: {} },
 } as unknown as Record<string, Document>;
 
+describe('the picker tree', () => {
+  it('orders documents by the names it shows, not by their keys', () => {
+    const labelled = {
+      'simple-reaches-2': { schema, label: 'Simple reaches 2', payload: {} },
+      'simple-reaches-task': { schema, label: 'Simple reaches', payload: {} },
+      'reaches-10': { schema, label: 'Simple reaches 10', payload: {} },
+    } as unknown as Record<string, Document>;
+    expect(documentTree({ documents: labelled }, 'model').map(({ name }) => name))
+      .toEqual(['Simple reaches', 'Simple reaches 2', 'Simple reaches 10']);
+  });
+});
+
 describe('a base kept unresolved', () => {
   it('reads nothing from the document that later took its spelling, and the picker draws it as a root', () => {
     expect(baseChain(documents, 'narrowed')).toEqual(['narrowed', 'arm']);

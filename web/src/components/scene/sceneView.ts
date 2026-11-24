@@ -46,14 +46,19 @@ export interface Scene {
   readonly groups: readonly SceneGroup[];
   /** The mechanisms at rest, drawn faint beneath a recorded pose. */
   readonly rest: readonly SceneShape[];
-  /** Each recorded world-frame track, drawn as a path. */
+  /** Each recorded world-frame track, drawn as a path, the picked trial's last. */
   readonly tracks: readonly SceneTrack[];
 }
 
-/** A recorded world-frame track: its path, and where it is at the playhead. */
+/**
+ * A recorded world-frame track: its whole path, how many of its points are drawn (all of them, or those up to the
+ * playhead under Trails), where it is at the playhead, and whether it is the picked trial's, drawn heavier.
+ */
 export interface SceneTrack {
   readonly points: readonly ScenePoint[];
+  readonly drawn: number;
   readonly head?: ScenePoint;
+  readonly picked: boolean;
 }
 
 export const emptyScene: Scene = { groups: [], rest: [], tracks: [] };

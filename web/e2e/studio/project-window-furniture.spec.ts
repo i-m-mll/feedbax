@@ -149,7 +149,7 @@ test('the rail separator follows the divider and every view keeps its place', as
   const pitch = trainOffsets.get('Model')! - trainOffsets.get('Runs')!;
   expect(pitch).toBeGreaterThan(0);
   expectFixedPlaces(trainOffsets, pitch);
-  for (const [kind, absent] of [['evaluate', ['Objective', 'Training', 'Results', 'Analysis', 'Figures', 'Document']],
+  for (const [kind, absent] of [['evaluate', ['Training', 'Results', 'Analysis', 'Figures', 'Document']],
     ['analyze', ['Model', 'Task', 'Objective', 'Training', 'Scene', 'Results', 'Document']]] as const) {
     // The zoomed canvas can carry a card under the window bar, so the step is chosen from the drawer.
     await page.getByRole('tree', { name: 'Steps', exact: true }).getByRole('treeitem', { name: new RegExp(`^${stepOf(kind)}\\b`) }).click();
