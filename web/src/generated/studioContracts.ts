@@ -4565,7 +4565,7 @@ export type StudioTrialOutput = {
 
 export type StudioTrialReset = {
   "address": ModelAddress;
-  "name": string;
+  "path": Array<string>;
   "type": ValueType;
   "finest": Level;
   "required": boolean;
@@ -12497,7 +12497,7 @@ export const StudioTrialOutputSchema: z.ZodType<StudioTrialOutput> = z.lazy(() =
 export const StudioTrialResetSchema: z.ZodType<StudioTrialReset> = z.lazy(() =>
   z.object({
     "address": ModelAddressSchema,
-    "name": z.string(),
+    "path": z.array(z.string()),
     "type": ValueTypeSchema,
     "finest": LevelSchema,
     "required": z.boolean(),

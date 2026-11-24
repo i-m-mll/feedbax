@@ -27,8 +27,11 @@ const fits = (field: ValueType, variable: ValueType) => {
 const typeName = (type: ValueType, types: readonly StudioNamedValueType[]) =>
   types.find((named) => sameType(named.type, type))?.name ?? studioValueType(type);
 
-const startOf = (reset: StudioTrialReset): ModelStart =>
-  ({ id: addressKey(reset.address), name: reset.name });
+function startOf(reset: StudioTrialReset): ModelStart {
+  const components = (reset.address.composites?.length ?? 0) + 1;
+  const name = [...reset.path.slice(0, components), reset.path.slice(components).join(' ')].join(' · ');
+  return { id: addressKey(reset.address), name };
+}
 
 /** A linked Model field the paired Model does not have: its component's id and its path. */
 function missingStart(id: string): ModelStart {
