@@ -743,6 +743,7 @@ def test_document_pair_drives_signed_model_graph_with_real_reset(kind, functions
     term = ObjectiveTerm(
         id="effort",
         measure=expression("sqnorm(command)", (command,)),
+        weight=expression("2.3"),
         reduction=Reduction.SUM,
         epochs=("move",),
     )
@@ -755,9 +756,16 @@ def test_document_pair_drives_signed_model_graph_with_real_reset(kind, functions
     assert isinstance(executor, ObjectiveExecutor), executor
     loss = executor.evaluate({command.id: output}, trials, run_key=run_key, trial_keys=keys)
     mask = jnp.arange(STEPS) >= trials.epochs.starts[:, -1, None]
-    expected = jnp.mean(jnp.sum(jnp.where(mask, jnp.sum(output**2, axis=-1), 0), axis=-1))
+    expected = 2.3 * jnp.mean(jnp.sum(jnp.where(mask, jnp.sum(output**2, axis=-1), 0), axis=-1))
     assert int(loss.terms["effort"].covered) == len(keys)
     assert float(loss.loss) == pytest.approx(float(expected), rel=2e-6)
+    # A plotted term must reduce to the score from the same rollout.
+    trial = jax.tree.map(lambda batch: batch[0], trials)
+    term = executor.trial_terms({command.id: output[0]}, trial, run_key, keys[0])["effort"]
+    scored = executor.evaluate_trial({command.id: output[0]}, trial, run_key, keys[0])["effort"]
+    assert term.values is not None
+    assert jnp.sum(term.values[term.steps]) == pytest.approx(float(scored.value), rel=2e-6)
+    np.testing.assert_array_equal(term.steps, mask[0])
 
 
 @pytest.mark.parametrize("kind", ["simple", "stabilization"])
@@ -822,3 +830,80 @@ def test_each_independent_problem_is_reported_and_a_bad_variable_marks_its_reade
         "signals": document.signals[:1],
     })
     assert isinstance(compile_task(mended, functions, model=PORTLESS), DocumentTask)
+
+
+def _reaches(list_count):
+    def literal(value, unit=None):
+        return {"kind": "literal", "value": value, "unit": unit}
+
+    def name(reference):
+        return {"kind": "name", "reference": reference}
+
+    def call(function, *args):
+        return {"kind": "call", "function": function, "args": args}
+
+    def name_scope(key):
+        return ScopedValue(id=key, name=key, type=REAL, level=Level.TRIAL)
+
+    return TaskDocument.model_validate({
+        "id": "three-reaches",
+        "variables": [
+            {"id": "n", "name": "total", "type": {"base": "integer"}, "value": literal(3)},
+            {
+                "id": "angles", "name": "angles", "type": dict(VALUE_TYPES)["Angle"],
+                "count": list_count,
+                "value": {"kind": "draw", "family": "uniform", "args": [literal(0, "°"), literal(360, "°")]},
+            },
+            {
+                "id": "targets", "name": "targets", "type": POINT, "count": list_count,
+                "value": call("polar", literal(0.15, "m"), name("angles")),
+            },
+        ],
+        "epochs": [
+            {"id": key, "name": key, "end": {"kind": "length", "length": literal(steps, "st")}}
+            for key, steps in (("fixate", 1), ("move", 2), ("hold", 1))
+        ],
+        "repeats": [{"id": "reaches", "first_epoch": "move", "last_epoch": "hold", "count": name("n")}],
+        "signals": [{
+            "id": "target", "name": "target", "type": POINT, "cells": [{
+                "id": "reach-target", "first_epoch": "move", "last_epoch": "hold",
+                "value": expression("targets[i]", (name_scope("targets"), name_scope("i"))),
+            }],
+        }],
+    })
+
+
+def test_three_reaches_draw_one_target_per_move_and_hold_and_score_every_move(functions):
+    """Catches a repeat that copies the epochs but always emits the same item or scores only the last move."""
+    task = compile_task(_reaches({"kind": "name", "reference": "n"}), functions, model=PORTLESS)
+    assert isinstance(task, DocumentTask), task
+    run_key, trial_key = jr.split(jr.key(0))
+    trial = jax.jit(task.ahead)(TaskParameters(), run_key, trial_key)
+    assert task.epochs == ("fixate", "move", "hold", "move", "hold", "move", "hold")
+    np.testing.assert_array_equal(trial.epochs.starts, [0, 1, 3, 4, 6, 7, 9])
+    np.testing.assert_array_equal(trial.epochs.ends, [1, 3, 4, 6, 7, 9, 10])
+    targets = np.asarray(trial.variables["targets"])
+    assert np.unique(targets, axis=0).shape[0] == 3
+    np.testing.assert_allclose(trial.inputs["target"][1:], np.repeat(targets, 3, axis=0))
+
+    objective = ObjectiveDocument.model_validate({
+        "id": "score", "terms": [{
+            "id": "distance", "epochs": ["move"], "reduction": "sum",
+            "measure_type": dict(VALUE_TYPES)["Distance"],
+            "measure": {"kind": "call", "function": "norm", "args": [{"kind": "name", "reference": "target"}]},
+        }],
+    })
+    executor = compile_objective(objective, task.interface.signals, functions, task=task)
+    assert isinstance(executor, ObjectiveExecutor), executor
+    term = executor.evaluate_trial({}, trial, run_key, trial_key)["distance"]
+    assert term.covered
+    np.testing.assert_allclose(term.value, 6 * 0.15)
+
+
+def test_wrong_list_count_marks_the_cell_that_uses_the_repeat_index(functions):
+    """Catches truncation, wrapping, or a missing Problem when the bracket and list disagree."""
+    result = compile_task(_reaches({"kind": "literal", "value": 2}), functions, model=PORTLESS)
+    assert not isinstance(result, DocumentTask)
+    assert [(error.code, error.path) for error in result] == [
+        ("list_count", ("signals", "target", "cells", "reach-target", "value"))
+    ]

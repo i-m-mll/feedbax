@@ -127,9 +127,13 @@ def test_a_value_is_stored_in_a_task_that_already_has_problems(tmp_path):
         assert project.composed(TASK)["variables"][0]["value"]["function"] == "vector"
 
 
-def test_removing_an_epoch_shortens_the_cells_that_span_it(tmp_path):
+def test_removing_an_epoch_shortens_the_cells_and_repeat_that_span_it(tmp_path):
     project = _project(tmp_path)
     with project.client:
+        assert _made(project, [
+            {"op": "repeat", "first_epoch": "hold", "last_epoch": "cue"},
+            {"op": "set_repeat_count", "id": "repeat", "count": {"kind": "literal", "value": 1}},
+        ]) == []
         assert _made(project, {"op": "remove", "member": "epoch", "id": "cue"}) == []
         spans = {
             signal["id"]: [(cell["first_epoch"], cell["last_epoch"]) for cell in signal["cells"]]
@@ -137,6 +141,12 @@ def test_removing_an_epoch_shortens_the_cells_that_span_it(tmp_path):
         }
         assert spans["goal"] == [("hold", "hold"), ("move", "move")]
         assert spans["target_pos"] == [("move", "move")]
+        task = TaskDocument.model_validate(project.composed(TASK))
+        (repeat,) = task.repeats
+        assert repeat.first_epoch == repeat.last_epoch == "hold"
+        assert repeat.count == LiteralValue(value=1)
+        assert _made(project, {"op": "remove_repeat", "id": repeat.id}) == []
+        assert not TaskDocument.model_validate(project.composed(TASK)).repeats
 
 
 def test_a_list_of_changes_is_one_edit_and_a_refused_one_refuses_the_list(tmp_path):

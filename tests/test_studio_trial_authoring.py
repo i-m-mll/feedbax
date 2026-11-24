@@ -333,7 +333,8 @@ def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_p
         test_run = {**run, "step": "baseline", "row": "seed=test"}
         control_run = {**test_run, "row": "seed=control"}
         evaluated_task = author(revision, selected=control_run)
-        assert evaluated_task.objective is None
+        assert [term.id for term in evaluated_task.objective.terms] == ["effort"]
+        assert evaluated_task.objective_source.model_dump() == {"kind": "train", "step": "train"}
         assert evaluated_task.task.params == {"x": 0.22, "y": 0.0, "n_steps": 12}
         assert [epoch.id for epoch in evaluated_task.epochs] == ["move"]
         scope = {"kind": "rows", "rows": ["seed=test"]}
@@ -356,7 +357,8 @@ def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_p
         revision = save(author(revision, {"kind": "select_document", "role": "task", "document": "probe-task"},
                                selected=test_run, scope=scope))
         probe = author(revision, selected=test_run)
-        assert not probe.problems and probe.objective is None
+        assert not probe.problems
+        assert probe.objective_source.model_dump() == {"kind": "train", "step": "train"}
         assert [epoch.id for epoch in probe.epochs] == ["probe"]
         after = ids()
         assert {key for key in before if before[key] != after[key]} == {RunKey("default", "baseline", "seed=test")}
@@ -429,6 +431,8 @@ def test_task_saves_unresolved_text_and_binds_it_when_a_variable_appears(tmp_pat
     raw = document_project(authored_documents())
     task_file = raw["documents"]["task"]["payload"]
     target = next(variable for variable in task_file["variables"] if variable["id"] == "target")
+    terms = raw["documents"]["objective"]["payload"]["terms"]
+    terms.append(terms[0] | {"id": "disabled", "enabled": False})
     project = "held-expression"
     folders = app.state.project_folders
     _save_project(folders, project, Project.model_validate(raw))
@@ -456,6 +460,14 @@ def test_task_saves_unresolved_text_and_binds_it_when_a_variable_appears(tmp_pat
             return next(field for field in view.fields if field.path == path)
 
         assert not author().problems
+        disabled_path = "/objective/terms/disabled/weight"
+        disabled = author({"kind": "expression", "path": disabled_path, "edit": {
+            "kind": "text", "text": "(",
+        }})
+        disabled_field = next(field for field in disabled.fields if field.path == disabled_path)
+        assert disabled.files and disabled_field.text == "("
+        (disabled_problem,) = disabled_field.problems
+        assert disabled_problem.code == "parse" and disabled_problem in disabled.problems
         edit = author({"kind": "expression", "path": path, "edit": {
             "kind": "text", "text": "start + offset",
         }})
@@ -862,3 +874,57 @@ def test_a_whole_step_task_edit_of_a_plain_evaluate_is_its_own_document(tmp_path
     }
     if variant != "default":
         assert folders.read("check").project.steps == Project.model_validate(raw).steps
+
+
+def test_initial_model_evaluate_uses_and_edits_its_own_objective(tmp_path):
+    """The baseline must score its own Objective, and an edit must reach that document."""
+    from feedbax.contracts.rollout import ROLLOUT_TYPE
+
+    app = create_app(projects_dir=tmp_path / "projects")
+    raw = document_project(authored_documents())
+    raw["steps"] = {
+        "evaluate": {
+            "kind": "evaluate",
+            "base": {"inline": {"evaluation_type": ROLLOUT_TYPE, "params": {
+                "seed": 0, "trial_policy": "paired", "variation": [],
+                "trial_set": {"kind": "every_condition"},
+                "input_overrides": {"reach_target": "target_pos"},
+            }}},
+            "inputs": {
+                "subject": {"kind": "initial_model", "source": {"document": "reach-model"}},
+                "task": {"kind": "task", "source": {"document": "task"}},
+                "objective": {"kind": "objective", "source": {"document": "objective"}},
+            },
+        },
+    }
+    raw["steps"]["unscored"] = deepcopy(raw["steps"]["evaluate"])
+    del raw["steps"]["unscored"]["inputs"]["objective"]
+
+    with TestClient(app) as client:
+        folders = app.state.project_folders
+        project = "initial-evaluate"
+        _save_project(folders, project, Project.model_validate(raw))
+        revision = folders.read(project).revision
+
+        def author(step, change=None):
+            response = client.post(f"/api/projects/{project}/authoring/trials", json={
+                "revision": revision, "run": {"variant": "default", "step": step, "row": "default"},
+                "change": change,
+            })
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        view = author("evaluate")
+        assert view["objective_document"] == "objective"
+        assert view["objective_source"] == {"kind": "own", "step": "evaluate"}
+        assert view["objective"]["terms"][0]["id"] == "effort"
+        assert any(field["path"] == "/objective/terms/effort/measure" for field in view["fields"])
+        assert author("unscored")["objective"] is None
+        assert author("unscored")["objective_source"] is None
+        changed = author("evaluate", {"kind": "objective", "edits": [
+            {"op": "add", "path": "/terms/0/name", "value": "Command effort"},
+        ]})
+        response = client.patch(f"/api/projects/{project}", json={"revision": revision, "files": changed["files"]})
+        assert response.status_code == 200, response.text
+        revision = response.json()["revision"]
+        assert author("evaluate")["objective"]["terms"][0]["name"] == "Command effort"
