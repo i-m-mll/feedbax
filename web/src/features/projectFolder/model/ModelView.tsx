@@ -741,7 +741,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     }
     const position = point ?? available;
     const source = from && wireEnd(from);
-    const component = definition.template_kind ? { kind: 'definition', definition: definition.name } as const : leaf(definition);
+    const component = registered(definition);
     void place(drawn(definition), position, false, (id) => apply(studioName('addComponent'), {
       op: 'add_component', graph, position, id,
       ...(source && to && (source.owner === 'inputs' || source.owner === 'component')
@@ -759,6 +759,10 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     } finally {
       setPlacing((prior) => prior.filter((other) => other !== item));
     }
+  }
+  /** The component an add or insert sends for `definition`: a template by its name, for the Service to instantiate. */
+  function registered(definition: ComponentDefinition) {
+    return definition.template_kind ? { kind: 'definition', definition: definition.name } as const : leaf(definition);
   }
   /** The card drawn for `definition` while its add is pending: a template is drawn as a composite with its ports. */
   function drawn(definition: ComponentDefinition): Component {
@@ -787,13 +791,9 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   function insert(definition: ComponentDefinition, point: ModelPosition, edge: ModelEdge, flipped: boolean) {
     const address = edge.data?.address;
     if (!model || address?.element.kind !== 'wire') return;
-    if (definition.template_kind) {
-      add(definition, point);
-      return;
-    }
     const source = portAt(edge.source, edge.sourceHandle ?? null);
     const target = portAt(edge.target, edge.targetHandle ?? null);
-    const candidate = componentPorts('new', leaf(definition), registry).filter((port) => !port.growing && !port.taskSignal);
+    const candidate = componentPorts('new', drawn(definition), registry).filter((port) => !port.growing && !port.taskSignal);
     const inputs = candidate.filter((port) => port.direction === 'input');
     const outputs = candidate.filter((port) => port.direction === 'output');
     // A port whose type differs still receives the wire, which is stored with its Problem.
@@ -803,8 +803,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       add(definition, point);
       return;
     }
-    const component = leaf(definition);
-    void place(component, point, flipped, (id) => apply(studioName('insertComponent'), {
+    const component = registered(definition);
+    void place(drawn(definition), point, flipped, (id) => apply(studioName('insertComponent'), {
       op: 'insert_component', address, component, position: point, flipped, id,
       input_port: input.end.port, output_port: output.end.port,
     }));
