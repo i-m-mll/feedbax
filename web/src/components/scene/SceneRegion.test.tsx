@@ -8,7 +8,6 @@ import { studioAccessibleName, studioName } from '@/components/activity/studioVo
 import { normalizeTrainingTrajectoryPayload } from '@/features/scenario/liveTraining';
 import type { ResolvedScene } from '@/features/scenario/projections';
 import { WORKSPACE_REPLAY_FIXTURE } from '@/test/workspaceReplay.fixture';
-import { SceneClockControls } from './SceneClockControls';
 import { SceneCanvas, SceneDrawer, SceneElementInspector, SceneLayers, sceneLayers } from './SceneRegion';
 import { fittedCamera, sceneTimeline, type SceneOverlay, type SceneView } from './sceneView';
 
@@ -79,29 +78,16 @@ describe('Scene regions', () => {
     expect(canvas.getByRole('button', { name: studioAccessibleName('select', 'Far goal') }).getAttribute('aria-pressed')).toBe('true');
   });
 
-  it('scrubs a replay and a separate view on the same clock, with no clock for geometry', () => {
+  it('draws a replay at the time it is given, and no cursor for geometry', () => {
     const replay = WORKSPACE_REPLAY_FIXTURE.trials![0];
-    const onSelect = vi.fn();
-    function View({ view }: { view: SceneView }) {
-      const [time, onTimeChange] = useState(0);
-      return (
-        <>
-          <SceneCanvas view={view} time={time} selectedId={null} onSelect={onSelect}
-            camera={fittedCamera} onCameraChange={vi.fn()} hiddenOverlays={noOverlaysHidden} />
-          <div data-testid="results-cursor">{time}</div>
-          <SceneClockControls timeline={sceneTimeline(view)} time={time} speed={1}
-            onTimeChange={onTimeChange} onSpeedChange={vi.fn()} />
-        </>
-      );
-    }
-    const { container, rerender } = render(<View view={{ kind: 'replay', scene, trial: replay }} />);
+    const canvas = (view: SceneView, time: number) => <SceneCanvas view={view} time={time} selectedId={null} onSelect={vi.fn()}
+      camera={fittedCamera} onCameraChange={vi.fn()} hiddenOverlays={noOverlaysHidden} />;
+    const { container, rerender } = render(canvas({ kind: 'replay', scene, trial: replay }, 0));
     const initialX = container.querySelector('[data-scene-cursor]')?.getAttribute('cx');
     expect(initialX).toBeDefined();
-    fireEvent.change(screen.getByRole('slider'), { target: { value: '0.60' } });
-    expect(screen.getByTestId('results-cursor').textContent).toBe('0.6');
+    rerender(canvas({ kind: 'replay', scene, trial: replay }, 0.6));
     expect(container.querySelector('[data-scene-cursor]')?.getAttribute('cx')).not.toBe(initialX);
-    rerender(<View view={{ kind: 'geometry', scene }} />);
-    expect(screen.queryByRole('slider')).toBeNull();
+    rerender(canvas({ kind: 'geometry', scene }, 0.6));
     expect(container.querySelector('[data-scene-cursor]')).toBeNull();
   });
 

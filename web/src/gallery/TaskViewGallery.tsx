@@ -43,7 +43,7 @@ function useSample(key: string, spec: DocumentSpec | PythonSpec, seed: number) {
     const steps = Math.round(spec.duration / spec.stepSeconds);
     return {
       trials,
-      batch: aggregate(trials, steps, spec.stepSeconds, spec.epochs, spec.variables.map(({ id }) => id)),
+      batch: aggregate(trials, steps, spec.epochs),
     };
   }, [key, spec, seed]);
 }
@@ -64,15 +64,17 @@ function shelfTask(view: TaskDocumentView): ShelfTask {
 /** The shelf's rows for the nominal trial, one sampled trial, or the batch. */
 function shelfRows(view: TaskDocumentView, shown: TrialShown): ShelfRow[] {
   const step = view.stepSeconds ?? view.duration / 100;
-  return shown.kind === 'trial' ? trialRows(shelfTask(view), shown.trial, step)
-    : shown.kind === 'batch' ? batchRows(shelfTask(view), shown.batch, step)
-      : nominalRows(shelfTask(view));
+  switch (shown.kind) {
+    case 'definition': return nominalRows(shelfTask(view));
+    case 'one': return trialRows(shelfTask(view), shown.record, step);
+    case 'all': return batchRows(shelfTask(view), shown.aggregate, step);
+  }
 }
 
 function shownOf(choice: TrialChoice, sample: ReturnType<typeof useSample>): TrialShown {
   if (!sample || choice === 'definition') return { kind: 'definition' };
-  if (choice === 'all') return { kind: 'batch', batch: sample.batch };
-  return { kind: 'trial', index: choice, count: stepped, trial: sample.trials[choice] };
+  if (choice === 'all') return { kind: 'all', count: sample.trials.length, aggregate: sample.batch };
+  return { kind: 'one', index: choice, count: stepped, record: sample.trials[choice] };
 }
 
 function moved<T extends { id: string }>(items: readonly T[], id: string, to: number) {

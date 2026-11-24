@@ -2,7 +2,8 @@ import { studioName } from '@/components/activity/studioVocabulary';
 import type { ShelfBar, ShelfRow, ShelfSegment } from '@/components/timeline/Shelf';
 import type { NamedElementAddress } from '@/features/projectWindow/elementSelection';
 import type { EpochBounds } from './taskModel';
-import type { SampledTrial, SignalSteps, TrialBatch } from './trialSample';
+import type { TrialAggregate, TrialRecord } from '@/generated/studioContracts';
+import { signalSteps, type SignalSteps } from './trialSample';
 
 /** What the shelf draws of a task document: its epochs' bounds in order, and the epochs each signal's cells cover. */
 export interface ShelfTask {
@@ -79,18 +80,18 @@ function presence(steps: SignalSteps, stepSeconds: number): ShelfBar[] {
 }
 
 /** One trial's rows: each epoch instance where it began and ended, each signal present where the trial has it. */
-export function trialRows(task: ShelfTask, trial: SampledTrial, stepSeconds: number): ShelfRow[] {
+export function trialRows(task: ShelfTask, record: TrialRecord, stepSeconds: number): ShelfRow[] {
   return [
     {
       kind: 'segments', key: 'epochs', name: studioName('epochs'),
-      segments: trial.intervals.flatMap((interval, index) => interval.end > interval.start ? [{
-        key: `${interval.id}:${index}`, name: interval.name, start: interval.start, end: interval.end,
-        selects: named(task.document, `epoch:${interval.id}`),
+      segments: record.timeline.flatMap(({ epoch, label, start, end }, index) => end > start ? [{
+        key: `${epoch}:${index}`, name: label, start: start * stepSeconds, end: end * stepSeconds,
+        selects: named(task.document, `epoch:${epoch}`),
       }] : []),
     },
     ...task.signals.map((signal): ShelfRow => ({
       kind: 'bars', key: `signal:${signal.id}`, name: signal.name, selects: named(task.document, `signal:${signal.id}`),
-      bars: presence(trial.signals[signal.id] ?? [], stepSeconds),
+      bars: presence(signalSteps(record, signal.name), stepSeconds),
     })),
   ];
 }
@@ -112,14 +113,14 @@ function shareBars(share: readonly number[], stepSeconds: number): ShelfBar[] {
  * A batch of trials' rows: one per epoch, since epochs of different trials overlap in time, and one per signal; each
  * heavy where every trial is in the epoch or has the signal, light where some do.
  */
-export function batchRows(task: ShelfTask, batch: TrialBatch, stepSeconds: number): ShelfRow[] {
+export function batchRows(task: ShelfTask, aggregate: TrialAggregate, stepSeconds: number): ShelfRow[] {
   return [
-    ...batch.epochs.map(({ id, name, share }): ShelfRow => ({
-      kind: 'bars', key: `epoch:${id}`, name, selects: named(task.document, `epoch:${id}`), bars: shareBars(share, stepSeconds),
+    ...aggregate.epochs.map(({ epoch, label, share }): ShelfRow => ({
+      kind: 'bars', key: `epoch:${epoch}`, name: label, selects: named(task.document, `epoch:${epoch}`), bars: shareBars(share, stepSeconds),
     })),
     ...task.signals.map((signal): ShelfRow => ({
       kind: 'bars', key: `signal:${signal.id}`, name: signal.name, selects: named(task.document, `signal:${signal.id}`),
-      bars: shareBars(batch.signals[signal.id]?.presence ?? [], stepSeconds),
+      bars: shareBars(aggregate.signals[signal.name]?.presence ?? [], stepSeconds),
     })),
   ];
 }

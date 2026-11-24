@@ -1,9 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
 import { sampleTaskTrials } from '@/api/studioAuthoring';
-import type { ModelDocument, TrialRecord, StudioTrialAuthoring, TaskDocument, TrialAggregate, TaskTrialSampleResponse } from '@/generated/studioContracts';
+import type { ModelDocument, StudioTrialAuthoring, TaskDocument, TaskTrialSampleRequest, TaskTrialSampleResponse } from '@/generated/studioContracts';
 import type { EpochBounds } from './taskModel';
 import type { ShelfTask } from './shelfRows';
-import type { Percentiles, SampledTrial, SignalSteps, TrialBatch } from './trialSample';
+import type { TrialsUnavailable } from './trialSample';
 
 /** The task document a step's Trial authoring reads, when it is one. */
 export const taskDocumentOf = (view: StudioTrialAuthoring): TaskDocument | undefined =>
@@ -33,83 +33,42 @@ export function shelfTask(view: StudioTrialAuthoring, document: string): ShelfTa
   };
 }
 
-const numbers = (value: unknown): number[] => Array.isArray(value) ? value.flatMap(numbers)
-  : typeof value === 'boolean' ? [Number(value)] : typeof value === 'number' ? [value] : [];
-
-function drawnText(value: unknown): string {
-  if (typeof value === 'boolean') return String(value);
-  if (typeof value === 'number') return String(Number(value.toPrecision(3)));
-  if (Array.isArray(value)) return `[${value.map(drawnText).join(', ')}]`;
-  return '';
-}
-
-/** A trial the route drew, as the shelf, the Variables table and the Inspector read it; values are keyed by name. */
-export function sampledTrial(view: StudioTrialAuthoring, task: TaskDocument, trial: TrialRecord): SampledTrial {
-  const period = view.period_seconds;
-  return {
-    intervals: trial.timeline.map(({ epoch, label, start, end }) => ({ id: epoch, name: label, start: start * period, end: end * period })),
-    variables: Object.fromEntries(task.variables.flatMap(({ id, name }) =>
-      name in trial.variables ? [[id, drawnText(trial.variables[name])]] : [])),
-    signals: Object.fromEntries(task.signals.map(({ id, name }): [string, SignalSteps] => {
-      const values = trial.inputs[name];
-      const present = trial.present[name];
-      const steps = Array.isArray(values) ? values : [];
-      return [id, steps.map((value, step) => Array.isArray(present) && present[step] ? numbers(value) : null)];
-    })),
-  };
-}
-
-/** The range of a variable's drawn values, component by component, as text: one value where they all agree. */
-function rangeText(least: unknown, greatest: unknown): string {
-  if (Array.isArray(least) && Array.isArray(greatest)) return `[${least.map((low, index) => rangeText(low, greatest[index])).join(', ')}]`;
-  if (least === greatest) return drawnText(least);
-  return typeof least === 'boolean' ? `${drawnText(least)}, ${drawnText(greatest)}` : `${drawnText(least)}…${drawnText(greatest)}`;
-}
-
-/** A batch's aggregate, as the shelf, the Variables table and the Inspector read it; values are keyed by id. */
-export function trialBatch(task: TaskDocument, count: number, aggregate: TrialAggregate): TrialBatch {
-  return {
-    count,
-    epochs: aggregate.epochs.map(({ epoch, label, share }) => ({ id: epoch, name: label, share })),
-    variables: Object.fromEntries(task.variables.flatMap(({ id, name }) => {
-      const range = aggregate.variables[name];
-      return range ? [[id, rangeText(range.least, range.greatest)]] : [];
-    })),
-    signals: Object.fromEntries(task.signals.flatMap(({ id, name }) => {
-      const signal = aggregate.signals[name];
-      return signal ? [[id, {
-        presence: signal.presence,
-        ...signal.percentiles && { percentiles: signal.percentiles as (Percentiles[] | null)[] },
-      }]] : [];
-    })),
-  };
-}
-
 type Drawn = TaskTrialSampleResponse['drawn'];
 
-function drawnAs<Kind extends Drawn['kind']>(drawn: Drawn, kind: Kind): Extract<Drawn, { kind: Kind }> {
-  if (drawn.kind === 'problems') throw new Error(drawn.problems.map(({ reason }) => reason).join('\n'));
-  if (drawn.kind !== kind) throw new Error(`The sampling route answered ${drawn.kind} where ${kind} was asked for.`);
-  return drawn as Extract<Drawn, { kind: Kind }>;
+/** The route's answer as `kind`, or the Problems it answered with instead. */
+function drawnAs<Kind extends 'trials' | 'aggregate'>(drawn: Drawn, kind: Kind): Extract<Drawn, { kind: Kind }> | TrialsUnavailable {
+  if (drawn.kind === 'problems' || drawn.kind === kind) return drawn as Extract<Drawn, { kind: Kind }> | TrialsUnavailable;
+  throw new Error(`The sampling route answered ${drawn.kind} where ${kind} was asked for.`);
+}
+
+/** The request that draws `count` trials under `seed` from the step's pairing: its Task, its Model, its bindings and its Objective. */
+function sampleRequest(view: StudioTrialAuthoring, task: TaskDocument, model: ModelDocument, seed: number, count: number,
+  aggregate: boolean): TaskTrialSampleRequest {
+  return {
+    model, task, seed, count, aggregate, input_overrides: view.input_overrides,
+    ...view.objective && { objective: view.objective },
+  };
 }
 
 function useDrawn<Shown>(view: StudioTrialAuthoring | undefined, model: ModelDocument | undefined, seed: number, count: number,
-  aggregate: boolean, enabled: boolean, read: (task: TaskDocument, drawn: Drawn) => Shown) {
+  aggregate: boolean, enabled: boolean, read: (drawn: Drawn) => Shown) {
   const task = view && taskDocumentOf(view);
+  const body = view && task && model ? sampleRequest(view, task, model, seed, count, aggregate) : undefined;
   return useQuery({
-    queryKey: ['task-trials', model, task, seed, count, aggregate],
-    queryFn: async ({ signal }) => read(task!, (await sampleTaskTrials({ model: model!, task: task!, seed, count, aggregate }, signal)).drawn),
-    enabled: enabled && !!task && !!model,
+    queryKey: ['task-trials', body],
+    queryFn: async ({ signal }) => read((await sampleTaskTrials(body!, signal)).drawn),
+    enabled: enabled && !!body,
     staleTime: Infinity,
   });
 }
 
-/** The `count` trials drawn under `seed` from the step's task document, when `enabled`. */
+/** The `count` trials drawn under `seed` from the step's pairing, when `enabled`. */
 export const useTaskSamples = (view: StudioTrialAuthoring | undefined, model: ModelDocument | undefined, seed: number, count: number,
-  enabled: boolean) => useDrawn(view, model, seed, count, false, enabled,
-  (task, drawn) => drawnAs(drawn, 'trials').trials.map((trial) => sampledTrial(view!, task, trial)));
+  enabled: boolean) => useDrawn(view, model, seed, count, false, enabled, (drawn) => {
+  const answer = drawnAs(drawn, 'trials');
+  return answer.kind === 'problems' ? answer : answer.trials;
+});
 
-/** The aggregate of the `count` trials drawn under `seed` from the step's task document, when `enabled`. */
+/** The aggregate of the `count` trials drawn under `seed` from the step's pairing, when `enabled`. */
 export const useTaskBatch = (view: StudioTrialAuthoring | undefined, model: ModelDocument | undefined, seed: number, count: number,
-  enabled: boolean) => useDrawn(view, model, seed, count, true, enabled,
-  (task, drawn) => trialBatch(task, count, drawnAs(drawn, 'aggregate')));
+  enabled: boolean) => useDrawn(view, model, seed, count, true, enabled, (drawn) => drawnAs(drawn, 'aggregate'));

@@ -60,6 +60,7 @@ import { authoredPointer, ownDefinition, modelDocumentId } from './authoredEdits
 import { withBaseDescendants } from './baseDescendants';
 import { useManagedProjectDetails, useStoredModel, type NamedDocumentScope } from './managedProjectDetails';
 import { useTrialClock } from './useTrialClock';
+import { drawnVariables } from './task/trialSample';
 import { usePlayheadStore } from '@/components/timeline/trialClock';
 import { viewOffer, viewsByKind } from './viewContent';
 import {
@@ -638,6 +639,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     windowState, setWindowState, projectId: saved.project_id, revision: saved.revision, view: trial.view,
     taskDocument: trial.view && (trial.view.task_document ?? step?.id), stored, evaluation: selectedEvaluation,
     sceneVisible: windowState.mode !== 'map' && [primaryView, secondaryView].includes('scene'), elements, playhead,
+    shelfView: windowState.mode === 'map' ? undefined : primaryView ?? undefined,
   });
   const evaluationReplay = trialClock.replay;
   const documentBase = authored && 'document' in authored.base && !authored.base.pointer ? authored.base.document : undefined;
@@ -1803,7 +1805,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                   ? <FocusedFields className="contents" request={fieldFocus?.step === step?.id && fieldFocus?.target?.startsWith('task:') ? fieldFocus : undefined}
                     onFocused={() => setFieldFocus(undefined)}>
                     <TrialTaskDocument view={value} commit={commit} runs={runs} selected={selected} select={choose(document)}
-                      drawn={trialClock.trial && (trialClock.trial.kind === 'batch' ? trialClock.trial.batch : trialClock.trial.trial).variables} />
+                      drawn={'variables' in value.task ? drawnVariables(trialClock.trial, value.task.variables) : undefined} />
                   </FocusedFields>
                   : <TrialTaskForm view={value} commit={commit} />),
                 drawer: <TrialTaskOutline sections={drawerSections} view={value} selected={selected} select={choose(document)} />,
