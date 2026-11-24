@@ -1026,6 +1026,11 @@ export interface ModelGraphProblem {
   reason: string;
 }
 
+export interface ModelUngroupEligibility {
+  address: ModelAddress;
+  reason: string | null;
+}
+
 export interface ModelLibraryConnection {
   component: string;
   target_port: string;
@@ -1070,6 +1075,7 @@ export interface ModelProjection {
   base_differences?: Array<ModelAddedElement | ModelRemovedElement | ModelRewiredElement>;
   value_differences?: Array<ModelAddedElement | ModelRemovedElement | ModelRewiredElement>;
   problems?: ModelGraphProblem[];
+  ungroup?: ModelUngroupEligibility[];
 }
 
 export interface ModelProjectionRequest {
@@ -7272,6 +7278,15 @@ export const ModelGraphProblemSchema: z.ZodType<ModelGraphProblem> = z.lazy(() =
     .strict()
 ) as unknown as z.ZodType<ModelGraphProblem>;
 
+export const ModelUngroupEligibilitySchema: z.ZodType<ModelUngroupEligibility> = z.lazy(() =>
+  z
+    .object({
+      "address": ModelAddressSchema,
+      "reason": z.string().nullable(),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelUngroupEligibility>;
+
 export const ModelLibraryConnectionSchema: z.ZodType<ModelLibraryConnection> = z.lazy(() =>
   z
     .object({
@@ -7342,6 +7357,7 @@ export const ModelProjectionSchema: z.ZodType<ModelProjection> = z.lazy(() =>
       "base_differences": z.array(z.union([ModelAddedElementSchema, ModelRemovedElementSchema, ModelRewiredElementSchema])).optional(),
       "value_differences": z.array(z.union([ModelAddedElementSchema, ModelRemovedElementSchema, ModelRewiredElementSchema])).optional(),
       "problems": z.array(ModelGraphProblemSchema).optional(),
+      "ungroup": z.array(ModelUngroupEligibilitySchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelProjection>;
