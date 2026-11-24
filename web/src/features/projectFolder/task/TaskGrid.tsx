@@ -34,8 +34,8 @@ export interface GridEdits {
   /** The cell spans its first epoch alone; the others it spanned are absent. */
   split?(signal: string, cell: TaskCell): Made;
   absent?(signal: string, cells: readonly string[]): Made;
-  /** A cell over each of `epochs`, which no cell of the signal spans. */
-  present?(signal: string, epochs: readonly string[]): Made;
+  /** A cell over each of `epochs`, which no cell of the signal spans, holding `text` or else the absent value. */
+  present?(signal: string, epochs: readonly string[], text?: string): Made;
 }
 
 /**
@@ -97,12 +97,15 @@ function Grip({ type, id, name, axis }: { type: string; id: string; name: string
   </span>;
 }
 
-/** An absent cell: the signal's absent value, muted over the hatch, which fills the cell. */
-function AbsentCell({ text }: { text: string }) {
-  return <span role="img" aria-label={studioAccessibleName('absent', text)}
-    className="flex h-[calc(var(--row-height)-1px)] min-w-0 items-center truncate px-row-inline font-mono text-xs text-shell-muted bg-[repeating-linear-gradient(135deg,var(--studio-control-border)_0_1px,transparent_1px_5px)]">
-    {text}
-  </span>;
+/**
+ * An absent cell: the signal's absent value, muted over the hatch, which fills the cell. It takes a caret as any cell
+ * does; the text it commits makes it present with that value.
+ */
+function AbsentCell({ text, present }: { text: string; present?: (text: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  return <InlineEdit form="cell" value="" empty={text} editing={editing} onEditingChange={setEditing}
+    aria-label={studioAccessibleName('absent', text)} onCommit={present ?? (() => false)}
+    className="font-mono text-xs placeholder:text-shell-muted bg-[repeating-linear-gradient(135deg,var(--studio-control-border)_0_1px,transparent_1px_5px)]" />;
 }
 
 const stop = (event: SyntheticEvent) => event.stopPropagation();
@@ -345,7 +348,8 @@ export function TaskGrid({ epochs, repeats, signals, selected, select, edits }: 
                   if (!pressed.current && !inSpan) choose(false);
                   pressed.current = false;
                 }}>
-                {cell.kind === 'absent' ? <AbsentCell text={signal.absent.text ?? ''} /> : <ValueField form="cell" model={emptiedAbsent(cell.value,
+                {cell.kind === 'absent' ? <AbsentCell text={signal.absent.text ?? ''}
+                  present={edits.present && ((text) => settle(cell.id, edits.present!(signal.id, [cell.first], text)))} /> : <ValueField form="cell" model={emptiedAbsent(cell.value,
                   edits.absent && (() => edits.absent!(signal.id, [cell.id])))} />}
                 {refusal?.at === cell.id && <span className="absolute inset-y-0 right-6 flex items-center"><FieldProblem reason={refusal.reason} /></span>}
                 {inSpan && cell === span.cells.at(-1) && <SelectionMenu commands={commands}
