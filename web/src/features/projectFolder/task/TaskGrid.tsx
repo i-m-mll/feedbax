@@ -1,7 +1,7 @@
 import { appTip } from '@window-shell/browser/tooltip';
 import clsx from 'clsx';
 import { GripHorizontal, GripVertical, MoreHorizontal, Plus } from 'lucide-react';
-import { useEffect, useState, type DragEvent, type ReactElement, type ReactNode, type SyntheticEvent } from 'react';
+import { useEffect, useRef, useState, type DragEvent, type ReactElement, type ReactNode, type SyntheticEvent } from 'react';
 import { studioAccessibleName, studioName, studioValueType, type StudioNameId } from '@/components/activity/studioVocabulary';
 import { IconButton } from '@/components/ui/Button';
 import { FieldProblem } from '@/components/ui/FieldProblem';
@@ -145,6 +145,8 @@ export function TaskGrid({ epochs, repeats, signals, selected, select, edits }: 
 }) {
   const [extent, setExtent] = useState<Extent>();
   const [dragging, setDragging] = useState(false);
+  /** A press has chosen the cell it went down on, so the focus it gives the cell's field chooses nothing again. */
+  const pressed = useRef(false);
   const [adding, setAdding] = useState<{ readonly kind: 'epoch'; readonly at: number } | { readonly kind: 'signal' }>();
   const [refusal, setRefusal] = useState<{ readonly at: string; readonly reason: string }>();
   useEffect(() => {
@@ -313,13 +315,17 @@ export function TaskGrid({ epochs, repeats, signals, selected, select, edits }: 
                 data-cell={cell.id} className="group/owner relative border-l"
                 onPointerDown={(event) => {
                   if (event.button !== 0) return;
+                  pressed.current = true;
                   choose(event.shiftKey);
                   setDragging(true);
                 }}
                 onPointerEnter={() => {
                   if (dragging && shown?.kind === 'cells' && shown.signal === signal.id) chooseCell(signal, cell, true);
                 }}
-                onFocusCapture={() => { if (!inSpan) choose(false); }}>
+                onFocusCapture={() => {
+                  if (!pressed.current && !inSpan) choose(false);
+                  pressed.current = false;
+                }}>
                 {cell.kind === 'absent' ? <AbsentCell text={signal.absent.text ?? ''} /> : <ValueField form="cell" model={cell.value} />}
                 {refusal?.at === cell.id && <span className="absolute inset-y-0 right-6 flex items-center"><FieldProblem reason={refusal.reason} /></span>}
                 {inSpan && cell === span.cells.at(-1) && <SelectionMenu commands={commands}
