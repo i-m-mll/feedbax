@@ -12,6 +12,7 @@ import { Select } from '@/components/ui/Select';
 import { Table, TableCell, TableHeaderCell, TableRow } from '@/components/ui/Table';
 import { ValueField } from '@/components/values/ValueField';
 import { rawField } from '@/components/values/adapters/raw';
+import type { JsonValue } from '@/generated/studioContracts';
 import type { PlanRunView, PlanStepView } from '@/features/pipeline/planView';
 import { setRemovalThreshold, useRemovalThreshold } from '@/features/projectFolder/runRemoval';
 import {
@@ -90,7 +91,7 @@ function Specimen() {
             items={seeds.values.map(({ id, label }) => ({ value: id, label }))} />
         </FieldRow>
       </div>
-      <Table aria-label={studioName('runs')} columns={[{ least: '5rem', fixed: true }, { least: '3rem' }, { least: '4rem' }]}
+      <Table aria-label={studioName('runs')} columns={[{ least: '4rem' }, { least: '3rem' }, { least: '4rem' }]}
         box={{ className: 'rounded-control border border-shell-divider' }}>
         <thead><tr>
           <TableHeaderCell scope="col">{studioName('run')}</TableHeaderCell>
@@ -123,12 +124,13 @@ function ThresholdRow() {
   );
 }
 
-function Hosts() {
+/** Each machine a run can be started on, with the devices it reports. */
+function Machines() {
   const targets = useQuery({ queryKey: ['execution-targets', []], queryFn: ({ signal }) => fetchExecutionTargets([], signal) });
   return targets.data?.targets.map(({ profile }) => {
-    const devices = profile.kind === 'session'
-      ? Object.entries(profile.resources).map(([name, value]) => `${name} ${typeof value === 'object' ? JSON.stringify(value) : String(value)}`).join(' · ')
-      : '';
+    const devices = profile.kind === 'local'
+      ? profile.runtime?.devices.join(' · ') ?? ''
+      : Object.entries(profile.resources).map(([name, value]) => `${name} ${typeof value === 'object' ? JSON.stringify(value) : String(value)}`).join(' · ');
     return (
       <SettingRow key={profile.id} label={profile.label} search={devices}>
         {devices && <span className="text-shell-muted">{devices}</span>}
@@ -160,7 +162,7 @@ export function StudioSettings({ project }: { project?: ReactNode }) {
         </div>
       ),
     },
-    { id: 'machines', title: studioName('machines'), rows: <div className="shell-settings__rows"><Hosts /></div> },
+    { id: 'machines', title: studioName('machines'), rows: <div className="shell-settings__rows"><Machines /></div> },
     ...project ? [{ id: 'project', title: studioName('thisProject'), rows: <div className="shell-settings__rows">{project}</div> }] : [],
   ];
   return <SettingsPage label={studioName('settings')} searchLabel={studioName('searchSettings')} sections={sections} />;
@@ -170,7 +172,7 @@ export function StudioSettings({ project }: { project?: ReactNode }) {
 export function ProjectSettingRows({ settings, steps, change }: {
   settings: Readonly<Record<string, unknown>>;
   steps: readonly { id: string; label: string }[];
-  change: (name: string, settings: Readonly<Record<string, unknown>>) => void;
+  change: (name: string, setting: 'keep_superseded' | 'run_only_on_request', value: JsonValue) => void;
 }) {
   const [draft, setDraft] = useState<number | null>();
   const stored = settings.keep_superseded;
@@ -185,7 +187,7 @@ export function ProjectSettingRows({ settings, steps, change }: {
           onValueChange={setDraft}
           onValueCommitted={(next) => {
             setDraft(undefined);
-            if (next !== null && next !== days) change(keepLabel, { ...settings, keep_superseded: next });
+            if (next !== null && next !== days) change(keepLabel, 'keep_superseded', next);
           }} />
         <span className="text-shell-muted">{studioUnit('day')}</span>
       </SettingRow>
@@ -194,7 +196,7 @@ export function ProjectSettingRows({ settings, steps, change }: {
           {steps.map(({ id, label }) => (
             <Checkbox key={id} label={label} checked={held.has(id)} onCheckedChange={(checked) => {
               const next = checked ? [...held, id] : [...held].filter((step) => step !== id);
-              change(holdLabel, { ...settings, run_only_on_request: steps.map((step) => step.id).filter((step) => next.includes(step)) });
+              change(holdLabel, 'run_only_on_request', steps.map((step) => step.id).filter((step) => next.includes(step)));
             }} />
           ))}
         </div>

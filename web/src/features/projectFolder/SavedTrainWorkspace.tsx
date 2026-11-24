@@ -57,7 +57,7 @@ import {
 } from '@/generated/studioContracts';
 import { useConnection } from '@/api/connection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
-import { authoredPointer, ownDefinition, modelDocumentId } from './authoredEdits';
+import { authoredPointer, declarationAddress, ownDefinition, modelDocumentId } from './authoredEdits';
 import { withBaseDescendants } from './baseDescendants';
 import { useManagedProjectDetails, useStoredModel, type NamedDocumentScope } from './managedProjectDetails';
 import { useTrialClock } from './useTrialClock';
@@ -110,9 +110,6 @@ import { OfferedSets, setAuthoring } from './setAuthoring';
 type EditorSession = ReturnType<typeof bindProjectEditor>;
 /** The anchor of an Evaluate's sampled number of trials, which the Trials editor draws. */
 const trialCount = '/params/trial_set/count';
-
-/** The project's declaration file, which holds the project's settings. */
-const projectDeclaration = { kind: 'declaration', id: 'declaration' } as const;
 
 function valueText(value: JsonValue) {
   return typeof value === 'string' ? value : JSON.stringify(value);
@@ -1675,9 +1672,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
 
   const projectSettings = <ProjectSettingRows settings={configuration.settings ?? {}}
     steps={Object.entries(saved.project.steps ?? {}).map(([id, step]) => ({ id, label: shownName(id, step) }))}
-    change={(name, settings) => editor.edit(
-      // @ts-expect-error The PATCH contract does not yet take the project declaration's address.
-      projectDeclaration, name, [{ op: 'add', path: '/settings', value: settings as JsonValue }])} />;
+    change={(name, setting, value) => editor.edit(declarationAddress, name, [{ op: 'add', path: `/settings/${setting}`, value }])} />;
 
   return (
     <RunRemovalContext.Provider value={runRemoval.confirm}>
