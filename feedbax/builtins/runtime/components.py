@@ -1715,7 +1715,7 @@ class Switch(Component):
 
     ports: ClassVar[Ports] = Ports(
         inputs={
-            "condition": PortType(dtype="scalar"),
+            "condition": PortType(dtype="any"),
             "true_input": PortType(dtype="any"),
             "false_input": PortType(dtype="any"),
         },

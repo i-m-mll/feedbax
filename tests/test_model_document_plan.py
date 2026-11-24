@@ -124,7 +124,7 @@ def test_noncontiguous_group_preserves_rollout_and_gradient(delay, initial_value
         ],
     }})
     grouped = apply_model_edit(
-        ModelEditState(document=model), command, ports=ports.port, accepts=ports.accepts,
+        ModelEditState(document=model), command, ports=ports.port, component_problem=ports.placement_problem,
     )
     assert isinstance(grouped, ModelEditResult), grouped
     group = grouped.changed[-1].element.id
@@ -158,7 +158,7 @@ def test_noncontiguous_group_preserves_rollout_and_gradient(delay, initial_value
         "op": "ungroup", "address": grouped.changed[-1].model_dump(mode="json"),
     }})
     ungrouped = apply_model_edit(
-        grouped.state, command, ports=ports.port, accepts=ports.accepts,
+        grouped.state, command, ports=ports.port, component_problem=ports.placement_problem,
     )
     assert isinstance(ungrouped, ModelEditResult), ungrouped
     assert ungrouped.state.document == model
@@ -956,7 +956,7 @@ def _group_reaching_pipeline(raw, registry):
         ],
     }})
     result = apply_model_edit(
-        state, command, ports=ports.port, accepts=ports.accepts,
+        state, command, ports=ports.port, component_problem=ports.placement_problem,
     )
     assert isinstance(result, ModelEditResult), result
     raw["documents"]["reach-model"]["payload"] = result.state.document.model_dump(mode="json")
@@ -1463,7 +1463,7 @@ def test_group_keeps_delay_on_a_crossing_gru_output():
         }],
     }})
     result = apply_model_edit(
-        state, command, ports=ports.port, accepts=ports.accepts,
+        state, command, ports=ports.port, component_problem=ports.placement_problem,
     )
     assert isinstance(result, ModelEditResult), result
     raw["documents"]["reach-model"]["payload"] = result.state.document.model_dump(mode="json")
