@@ -56,6 +56,8 @@ export type ModelCardData = {
   rename?: (name: string) => void;
   renaming?: boolean;
   endRename?: () => void;
+  /** The type's short name and headline value, or a composite's kind, shown at the header's right. */
+  headline?: string;
   /** Opens, at the empty handle, the list of signals outside that can be brought in as a new port. */
   addPort?: (anchor: DOMRect) => void;
 };
@@ -137,6 +139,7 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
             if (event.key === 'Escape') { event.stopPropagation(); data.endRename?.(); }
           }} />
       </form>}
+      {data.headline && <span>{data.headline}</span>}
       {data.problem && <span role="img" aria-label={studioName('problems')} aria-description={data.problem}>◆</span>}
       {data.change && <ChangeMark className="nodrag nopan" {...data.change} />}
     </CardHead>
