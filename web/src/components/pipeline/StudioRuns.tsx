@@ -3,7 +3,7 @@ import type { RuleChoice } from "@/features/projectWindow/elementSelection";
 import { StudioRegion, StudioRegionBoundary, useRegionPending, type StudioRegionState } from "@/components/activity/StudioRegion";
 import { StudioRunStatus } from "@/components/activity/StudioRunStatus";
 import {
-  studioAccessibleName, studioChangeDetail, studioCountOf, studioEnvironmentNotice, studioName, studioPlaceReason, studioProblemDetail,
+  studioAccessibleName, studioChangeDetail, studioCountOf, studioEnvironmentNotice, studioMentionReason, studioName, studioPlaceName, studioProblemName,
   studioReason, studioRunStatus, studioValidityReason, type StudioPlace, type StudioResultState, type StudioValidityRows,
 } from "@/components/activity/studioVocabulary";
 import { StatusMark } from "@/components/ui/StatusMark";
@@ -199,6 +199,8 @@ function runName(step: PlanStepView, run: PlanRunView) {
 
 /** A reason a run names, which its row reveals. */
 export interface RunMention {
+  /** The name of what the reason is about. */
+  readonly name: string;
   readonly place: StudioPlace | null;
   readonly detail: string;
   readonly problem?: StudioProjectWindowMapProblem;
@@ -238,14 +240,14 @@ export function StudioStepInspector({
   const mentions = new Map<string, { run?: PlanRunView; mention: RunMention }>();
   const openingErrors = new Set(chosen ? selected.flatMap((run) => run.openingErrors ?? []) : []);
   const validity = new Map<string, { state: StudioResultState; rows: StudioValidityRows }>();
-  if (revealed) mentions.set(studioPlaceReason(revealed.place, revealed.detail), { mention: revealed });
+  if (revealed) mentions.set(studioMentionReason(revealed.name, revealed.detail), { mention: revealed });
   for (const run of chosen ? selected : []) {
     counts.set(run.state, (counts.get(run.state) ?? 0) + 1);
     const named: RunMention[] = [
-      ...(run.problems ?? []).map((problem) => ({ place: problem.place, detail: studioProblemDetail(problem), problem })),
-      ...run.change ? [{ place: run.change.place, detail: studioChangeDetail(run.change) }] : [],
+      ...(run.problems ?? []).map((problem) => ({ name: studioProblemName(problem), place: problem.place, detail: problem.detail, problem })),
+      ...run.change ? [{ name: studioPlaceName(run.change.place), place: run.change.place, detail: studioChangeDetail(run.change) }] : [],
     ];
-    for (const mention of named) mentions.set(studioPlaceReason(mention.place, mention.detail), { run, mention });
+    for (const mention of named) mentions.set(studioMentionReason(mention.name, mention.detail), { run, mention });
     if (run.reason && !named.length && !run.results.some(({ validity }) => validity.reasons?.length)) reasons.add(run.reason);
     for (const { validity: { state, reasons: typed = [], environment } } of run.results) {
       const mark = state === "current" ? "succeeded" : state;
@@ -292,7 +294,7 @@ export function StudioStepInspector({
     {mentions.size > 0 && <ul className="text-xs"
       aria-label={studioName([...mentions.values()].some(({ mention }) => mention.problem) ? "problems" : "changes")}>
       {[...mentions].map(([key, { run, mention }]) => <li key={key} className="break-words">
-        <MentionRow place={mention.place} detail={mention.detail} placeShown={!namedByStep(mention.place)}
+        <MentionRow name={mention.name} detail={mention.detail} placeShown={!namedByStep(mention)}
           onReveal={run && onReveal && (() => onReveal(run, mention))} />
       </li>)}
     </ul>}
@@ -311,8 +313,8 @@ export function StudioStepInspector({
 }
 
 /** Whether a place is the step itself, which the inspector's title line already names. */
-function namedByStep(place: StudioPlace | null) {
-  return place === null || place.part === "step" && !place.field;
+function namedByStep({ place, problem }: RunMention) {
+  return !problem?.document_path && (place === null || place.part === "step" && !place.field);
 }
 
 const lowRunCommands = new Set<StudioCommandId>(["openRun", "pivot"]);

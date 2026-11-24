@@ -7,7 +7,7 @@ import { isStudioDefect, shownError } from '@/api/shownErrors';
 import { prepareCheckpointRuleEdit, prepareSubsetToRows, prepareTrainStart, useAuthoringCatalog } from '@/api/studioAuthoring';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import {
-  studioAccessibleName, studioCountOf, studioFormat, studioName, studioPlaceName, studioProblemDetail, studioReason, studioRunReason, studioRunStatus, type StudioPlace,
+  studioAccessibleName, studioCountOf, studioFormat, studioName, studioPlaceIsDocument, studioProblemName, studioReason, studioRunReason, studioRunStatus,
 } from '@/components/activity/studioVocabulary';
 import { HeaderActivity } from '@/components/layout/HeaderActivity';
 import {
@@ -386,8 +386,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const revealed = problemReveal?.revision === saved.revision && problemReveal.variant === variant &&
     problemReveal.reveal.step === step?.id && problemReveal.runId === (state.focus?.runId ?? null)
     ? problemReveal.reveal : undefined;
-  /** A revealed place among the step's own fields, which the inspector draws and reveals instead of a banner. */
-  const fieldReveal = revealed?.view === 'runs' && placeField(revealed.place) ? revealed : undefined;
+  /** A revealed field its view marks and focuses itself, instead of a banner; a step's own fields are in the inspector. */
+  const fieldReveal = revealed && revealed.view === placeView(revealed.place) && placeField(revealed.place) ? revealed : undefined;
   /** The steps an edit of the selected step reaches outside a document view, drawn lit: it and the steps based on it. */
   const reachedSteps = wholeStep && step?.kind === 'train' ? withBaseDescendants(saved.project, [step.id]) : undefined;
   /**
@@ -856,8 +856,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       step_id === at.step && scope === (at.variant ?? variant));
   }
   /** Show the place a reason names in its step's view, at the run the reason belongs to. */
-  function reveal(at: { step: string | null; variant: string | null; row: string | null }, place: StudioPlace | null,
-    reason: string, problem?: StudioProjectWindowMapProblem) {
+  function reveal(at: { step: string | null; variant: string | null; row: string | null },
+    { name, place, detail: reason, problem }: RunMention) {
     const destination = addressedStep(at);
     if (!destination) return;
     const { step_id: stepId, variant: scope, kind } = destination;
@@ -867,24 +867,24 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     const view = kind === 'analyze' ? 'analysis' : kind === 'report' ? 'document'
       : viewsByKind[kind].some((item) => item === named) ? named : 'runs';
     const runId = row ? savedRunId(row.key) : null;
-    const field = view === 'runs' ? placeField(place) : null;
+    const field = view === named ? placeField(place) : null;
     selection.select(runId
       ? selectRun(state, { stepId, runId })
       : selectStep(state, stepId), scope);
     setExcludedUsers({});
-    setProblemReveal({ revision: saved.revision, variant: scope, runId, reveal: { step: stepId, place, view, reason, problem } });
-    setWindowState((current) => showProjectWindowView(field ? { ...current, inspectorOpen: true } : current, view, focusSlot));
+    setProblemReveal({ revision: saved.revision, variant: scope, runId, reveal: { step: stepId, name, place, view, reason, problem } });
+    setWindowState((current) => showProjectWindowView(field && view === 'runs' ? { ...current, inspectorOpen: true } : current, view, focusSlot));
     if (field) setFieldFocus({ key: crypto.randomUUID(), step: stepId, target: field.target });
     else requestSlotFocus((count) => count + 1);
     setPanel(null);
   }
   function revealProblem(problem: StudioProjectWindowMapProblem) {
-    reveal(problem, problem.place, studioProblemDetail(problem), problem);
+    reveal(problem, { name: studioProblemName(problem), place: problem.place, detail: problem.detail, problem });
   }
   function revealRunMention(run: PlanRunView, mention: RunMention) {
     if (mention.problem) return revealProblem(mention.problem);
     const [variantId, stepId, rowId] = JSON.parse(run.id) as [string, string, string];
-    reveal({ variant: variantId, step: stepId, row: rowId }, mention.place, mention.detail);
+    reveal({ variant: variantId, step: stepId, row: rowId }, mention);
   }
   const graphRepair = revealed?.problem && removeGraphVariation(saved.project, revealed.problem);
   function removeRefusedVariation() {
@@ -1884,7 +1884,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                   onCommit={(key) => changeStepKey?.(step.id, key)}
                   refusal={refusal?.kind === 'key' && refusal.step === step.id ? refusal.reason : undefined} />}
                 onChooseStep={(stepId) => selection.select(selectStep(state, stepId))}
-                revealed={fieldReveal && { place: fieldReveal.place, detail: fieldReveal.reason, problem: fieldReveal.problem }}
+                revealed={fieldReveal?.view === 'runs'
+                  ? { name: fieldReveal.name, place: fieldReveal.place, detail: fieldReveal.reason, problem: fieldReveal.problem } : undefined}
                 upstreamDetail={checkpointLineage()}
                 detail={selectedEvaluation?.checkpoint_series
                   ? <StudioEvaluationAttemptDetails evaluation={selectedEvaluation}
@@ -1968,8 +1969,7 @@ function ProblemDestination({ reveal, action, children }: { reveal: Reveal; acti
   return <div className="flex h-full min-h-0 flex-col">
     <div className="flex items-center justify-between gap-2 border-b border-shell-divider px-3 py-2 text-sm">
       <p ref={reason} tabIndex={-1}>
-        <span className="font-medium">{studioPlaceName(reveal.place)}</span>{' · '}
-        {action && reveal.problem && <>{reveal.problem.path}{' · '}</>}{reveal.reason}
+        <span className="font-medium">{reveal.name}</span>{' · '}{reveal.reason}
       </p>
       {action}
     </div>
@@ -1983,10 +1983,10 @@ function problemHolder(problem: StudioProjectWindowMapProblem) {
   return place && 'document' in place && place.document ? place.document : problem.step;
 }
 
-/** Whether a place is its document as a whole, which the group heading naming that document already says. */
+/** Whether a problem is about its document as a whole, which the group heading naming that document already says. */
 function namedByHolder(problem: StudioProjectWindowMapProblem, holder: string | null) {
   const place = problem.place;
-  return !!place && 'document' in place && place.document === holder && !(place.part === 'task' && place.parameter);
+  return !!place && 'document' in place && place.document === holder && studioPlaceIsDocument(place) && !problem.document_path;
 }
 
 function ProblemList({ entries: listed, refusal, onChoose, canReveal, showVariant }: {

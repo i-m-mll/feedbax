@@ -7,6 +7,36 @@ import type { ValueType } from '@/generated/studioContracts';
  */
 export type VariableLevel = 'trial' | 'step';
 
+/** A value of the paired Model that a variable may initialize: read once, when a trial starts. */
+export interface ModelStart {
+  /** The Model field's address, as a link names it. */
+  readonly id: string;
+  /** Its components' names and its path. */
+  readonly name: string;
+  /** The Model has no start of its own for it, so a variable must initialize it. */
+  readonly required: boolean;
+}
+
+/** The Model values a variable initializes, and those its type fits. */
+export interface VariableInitializes {
+  /** The `data-field` a revealed problem of its links focuses. */
+  readonly anchor: string;
+  readonly chosen: readonly ModelStart[];
+  readonly options: readonly ModelStart[];
+  /** The problem of one of its links. */
+  readonly reason?: string;
+  readonly changed?: ChangeMark;
+  /** Initializes the value, or stops initializing it; a refusal's reason, or nothing once made. */
+  toggle?(id: string): Promise<string | undefined> | void;
+}
+
+/** A Model value no variable initializes, at the foot of Variables with its type fixed and its name empty. */
+export interface UninitializedStart extends ModelStart {
+  /** The type's name. */
+  readonly type: string;
+  readonly valueType: ValueType;
+}
+
 export interface TaskVariable {
   readonly id: string;
   readonly name: string;
@@ -20,6 +50,7 @@ export interface TaskVariable {
   readonly count?: number;
   readonly level: VariableLevel;
   readonly value: FieldModel;
+  readonly initializes?: VariableInitializes;
 }
 
 /**
@@ -77,6 +108,8 @@ export interface TaskSignal {
 export interface TaskDocumentView {
   readonly kind: 'document';
   readonly variables: readonly TaskVariable[];
+  /** The paired Model's values no variable initializes. */
+  readonly starts?: readonly UninitializedStart[];
   readonly epochs: readonly TaskEpoch[];
   readonly repeats: readonly TaskRepeat[];
   readonly signals: readonly TaskSignal[];

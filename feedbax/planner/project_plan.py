@@ -410,6 +410,8 @@ class RunProblem:
     """A path in the row's request, or in its definition's ``inputs``, as a JSON pointer or a dotted path."""
     detail: str
     model_address: ModelAddress | None = None
+    variable: str | None = None
+    """The Task variable a link at ``path`` belongs to."""
     variation_target: str | None = None
     """The dotted path the variation entry at ``path`` patches, which places the problem."""
 
@@ -1268,7 +1270,7 @@ def _trial_problems(problems: Iterable[Problem], *, initial: bool = False) -> tu
             ("inputs", "subject" if role == "model" else "task" if role == "python_task" else role) if initial
             else ("trial_documents", role)
         )
-        placed.append(RunProblem(pointer((*slot, *parts)), problem.reason, problem.model_address))
+        placed.append(RunProblem(pointer((*slot, *parts)), problem.reason, problem.model_address, problem.variable))
     return tuple(placed)
 
 

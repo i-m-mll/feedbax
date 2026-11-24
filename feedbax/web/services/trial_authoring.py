@@ -14,6 +14,7 @@ from feedbax.tasks.registry import resolve_python_task_instance
 from feedbax.tasks.structure import restructure
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.matrix_core import stored_parts
+from feedbax.compiler.model_reset import ModelResetField
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import VariantRuns
 from feedbax.contracts.project import (
@@ -69,6 +70,7 @@ class _Projection:
     fields: dict[tuple[str | int, ...], Site]
     problems: tuple[Problem, ...]
     task_origins: dict[tuple[str, ...], str] = field(default_factory=dict)
+    resets: tuple[ModelResetField, ...] = ()
 
 
 def _project(
@@ -94,12 +96,15 @@ def _project(
                         for signal in task.signals)
         variables = ()
         epochs = tuple(StudioTrialEpoch(id=epoch.id, name=epoch.name, steps=None) for epoch in task.epochs)
+    resets = []
+
     def pair(task):
         sites = {}
+        resets.clear()
         paired = pair_trial_source(
             documents.model, task, bundle.components, bundle.expression_functions,
             python_tasks=bundle.python_tasks, input_overrides=documents.input_overrides,
-            task_sites=sites, graph_override=graph_override,
+            task_sites=sites, graph_override=graph_override, reset_fields=resets,
         )
         return paired, sites
 
@@ -116,7 +121,7 @@ def _project(
     if isinstance(paired, tuple):
         if show_objective:
             fields.update(_unpaired_objective_sites(documents, signals))
-        return _Projection(None, variables, signals, epochs, fields, paired)
+        return _Projection(None, variables, signals, epochs, fields, paired, resets=tuple(resets))
     source = paired.task
     variables, signals = source.interface.variables, source.interface.signals
     names = {epoch.id: epoch.name for epoch in epochs}
@@ -134,7 +139,7 @@ def _project(
     if not isinstance(objective, ObjectiveExecutor):
         problems += tuple(problem.model_copy(update={"path": ("objective", *problem.path)})
                           for problem in objective)
-    return _Projection(paired, variables, signals, epochs, fields, problems)
+    return _Projection(paired, variables, signals, epochs, fields, problems, resets=tuple(resets))
 
 
 def _unpaired_objective_sites(documents, signals) -> dict[tuple[str | int, ...], Site]:
@@ -252,6 +257,16 @@ def _expression_edit(change, documents, projection, bundle):
     return StudioTrialDocumentEdit(kind=role, edits=[SetProjectValue(
         op="replace" if stored else "add", path=path, value=parsed.value.model_dump(mode="json"),
     )])
+
+
+def _reset_name(model, address: ModelAddress) -> str:
+    """A Model field a trial starts from, by its components' names and its path below the reset or field slot."""
+    names, interior = [], model.interior
+    for id in (*address.composites, address.element.parent.id):
+        component = interior.components.get(id)
+        names.append(component.name if component is not None else id)
+        interior = getattr(component, "interior", interior)
+    return " · ".join((*names, " ".join(map(str, address.element.path[1:]))))
 
 
 def _end_of(document, role, rest) -> str | None:
@@ -975,7 +990,6 @@ def trial_authoring(
                     task_source = source
                 else:
                     task_field_sources[target[-1]] = source
-    links = dict(paired.task.interface.links) if paired else {}
     row = next((item for item in plan.rows if item.key == key), None)
 
     def expression(path):
@@ -1020,9 +1034,9 @@ def trial_authoring(
         inputs=_input_rows(documents, projected),
         outputs=[StudioTrialOutput(address=ModelAddress.from_text(value.id), value=value)
                  for value in paired.model.outputs] if paired else [],
-        resets=[StudioTrialReset(address=field.address, type=field.type, finest=field.finest,
-                                variable=links.get(field.address.to_text()))
-                for field in paired.model.reset.fields] if paired else [],
+        resets=[StudioTrialReset(address=field.address, name=_reset_name(documents.model, field.address),
+                                 type=field.type, finest=field.finest, required=field.required)
+                for field in projected.resets],
         fields=[
             field for path, site in projected.fields.items() if path[1:2] != ("validation_trials",)
             for field in _trial_fields(

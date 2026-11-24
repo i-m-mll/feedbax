@@ -52,7 +52,7 @@ from feedbax.tasks.document import (
     compile_task,
 )
 from feedbax.runtime.graph import GraphTraceRequest
-from feedbax.compiler.model_reset import ModelResetError
+from feedbax.compiler.model_reset import ModelResetError, ModelResetPlan
 from tests.test_model_document_plan import _nested_model
 
 PERIOD = 0.01
@@ -646,6 +646,23 @@ def test_trial_configuration_changes_force_without_mutating_model():
     assert not bool(curl.configuration_values()["active"])
 
 
+def test_a_start_the_model_requires_is_a_problem_until_a_variable_initializes_it(functions, paired_model):
+    """Catches a task that pairs with a Model whose state has no start of its own, leaving it at whatever the
+    component's storage holds."""
+    interface, _ = paired_model
+    position = reset_position(interface).to_text()
+    required = replace(interface, reset=ModelResetPlan(tuple(
+        replace(binding, field=replace(binding.field, required=True))
+        if binding.field.address.to_text() == position else binding
+        for binding in interface.reset._bindings
+    )))
+    doc, _ = example("simple", functions, interface=interface)
+    overrides = {"reach_target": "target_pos"}
+    unset = compile_task(doc.model_copy(update={"links": ()}), functions, model=required, input_overrides=overrides)
+    assert [problem.path for problem in unset] == [("links", position)]
+    assert not isinstance(compile_task(doc, functions, model=required, input_overrides=overrides), tuple)
+
+
 @pytest.mark.parametrize("kind", ["simple", "delayed", "stabilization"])
 def test_document_pair_drives_signed_model_graph_with_real_reset(kind, functions, paired_model):
     interface, graph = paired_model
@@ -674,6 +691,8 @@ def test_document_pair_drives_signed_model_graph_with_real_reset(kind, functions
     )
     assert bad[0].path == ("links", read_only.to_text())
     assert bad[0].code.value == "unknown_name"
+    # Catches a link problem not tied to its variable, which Studio would then mark on the Task as a whole.
+    assert bad[0].variable == "start"
 
     run_key = jr.key(8)
     keys = jr.split(run_key, 6)

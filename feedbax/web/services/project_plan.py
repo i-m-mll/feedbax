@@ -482,7 +482,7 @@ def row_problems(plan: ProjectPlan, variants: tuple[str, ...] | None = None) -> 
         for problem in row.problems:
             parts = path_parts(problem.path)
             place = definition_place(
-                parts, row.document_ids.get, member=problem.model_address,
+                parts, row.document_ids.get, member=problem.model_address, variable=problem.variable,
                 variation=lambda _name, target=problem.variation_target: target,
             )
             yield StudioProjectWindowMapProblem(

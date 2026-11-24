@@ -171,7 +171,7 @@ it("titles the inspector by step and kind, then by the chosen run's values, and 
   const stale = { ...train, runs: train.runs.map((run) => run.id === "b" ? { ...run, status: "stale" as const, change } : run) };
   rerender(inspect(stale, rows(["b"])));
   fireEvent.click(inspector.getByRole("button", { name: /^Seed · 0 → 1$/ }));
-  expect(reveal).toHaveBeenLastCalledWith(stale.runs[1], { place: change.place, detail: "0 → 1" });
+  expect(reveal).toHaveBeenLastCalledWith(stale.runs[1], { name: "Seed", place: change.place, detail: "0 → 1" });
   rerender(inspect({ ...evaluate, runs: [{ ...evaluate.runs[0], label: "default" }] },
     { ...selectStep(emptyPipelineSelection, "eval"), selection: { kind: "rows", stepId: "eval", runIds: ["a"] } }));
   expect(screen.getByRole("heading").textContent).toBe("Test reach");

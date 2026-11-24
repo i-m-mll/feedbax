@@ -154,13 +154,19 @@ function expectPositionSamples(samples: number[][]) {
 
 async function showTrial(page: Page, path: string, row: StudioSavedEvaluationRow, label: string, checkpoint?: number) {
   const trialId = row.trials[trialIndex];
+  // The picked trial is the window's: once picked for one run, the Scene opens the next run on the same trial, so its
+  // replay can be requested as soon as the Scene shows that run.
+  const response = page.waitForResponse((response) => {
+    const request = response.request();
+    return request.method() === 'POST' && new URL(response.url()).pathname === path &&
+      request.postDataJSON()?.trial === trialId && request.postDataJSON()?.job_id === row.result!.job_id;
+  });
   await chooseStep(page, row.key.step);
   await plans(page).getByRole('button', { name: runName(label) }).click();
   await tab(page, 'Scene').click();
   const scene = page.getByRole('tabpanel', { name: 'Scene', exact: true });
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
   await reveal(page, 'Drawer');
-  const response = posted(page, path, trialId);
   await pickRecordedTrial(page, trialIndex);
   const reply = await response;
   expect(reply.ok(), await reply.text()).toBe(true);
@@ -920,8 +926,10 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
   expect(new Set(descriptions).size).toBe(descriptions.length);
   await scanStudio(page, info, 'evaluate-model');
   await tab(page, 'Task').click();
-  // The Evaluate reads its Task from the Train it evaluates, so the view names that source instead of a document.
-  await expect(page.getByRole('tabpanel', { name: 'Task', exact: true }).getByText('Trained by train', { exact: true })).toBeVisible();
+  // The Evaluate reads its Task from the Train it evaluates, so a variable's value names that source.
+  await page.getByRole('tabpanel', { name: 'Task', exact: true }).getByRole('table', { name: 'Variables', exact: true })
+    .getByRole('img', { name: /^Move / }).first().click();
+  await expect(page.getByRole('complementary', { name: 'Inspector', exact: true }).getByText('Trained by train', { exact: true })).toBeVisible();
   await scanStudio(page, info, 'evaluate-task');
   await chooseStep(page, 'finite');
   await footer(page).getByRole('button', { name: /^Activity( \d+)?$/ }).click();

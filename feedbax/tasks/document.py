@@ -383,8 +383,8 @@ def compile_task(
     if not isfinite(period) or period <= 0:
         return (Problem(code=ProblemCode.STRUCTURE, reason="The model period must be positive."),)
 
-    def problem(code, reason, path):
-        problems.append(Problem(code=code, reason=reason, path=path))
+    def problem(code, reason, path, variable=None):
+        problems.append(Problem(code=code, reason=reason, path=path, variable=variable))
 
     def unique(items, section):
         result, names = {}, set()
@@ -602,17 +602,26 @@ def compile_task(
         variable = scope.get(link.variable)
         path = ("links", link.model_field)
         if target is None:
-            problem(ProblemCode.UNKNOWN_NAME, f"{link.variable} is linked to a field the Model does not have.", path)
+            name = variable.name if variable is not None else link.variable
+            problem(
+                ProblemCode.UNKNOWN_NAME, f"{name} is linked to a field the Model does not have.", path,
+                link.variable if variable is not None else None,
+            )
         elif variable is None:
             problem(ProblemCode.UNKNOWN_NAME, f"{link.variable} is not a variable of the Task.", path)
         elif link.variable in broken:
-            problem(ProblemCode.UNKNOWN_NAME, f"{variable.name!r} has problems.", path)
+            problem(ProblemCode.UNKNOWN_NAME, f"{variable.name!r} has problems.", path, link.variable)
         elif variable.level > target.finest or not target.type.accepts(variable.type):
-            problem(ProblemCode.TYPE_MISMATCH, f"{link.variable} does not fit its Model field.", path)
+            problem(ProblemCode.TYPE_MISMATCH, f"{variable.name} does not fit its Model field.", path, link.variable)
         elif link.model_field in links:
-            problem(ProblemCode.STRUCTURE, f"{link.variable} links a Model field that is already linked.", path)
+            problem(
+                ProblemCode.STRUCTURE, f"{variable.name} links a Model field that is already linked.", path, link.variable,
+            )
         else:
             links[link.model_field] = link.variable
+    for address, field in writable.items():
+        if field.required and all(link.model_field != address for link in document.links):
+            problem(ProblemCode.STRUCTURE, "The Model needs this value at the start of each trial.", ("links", address))
     rows = []
     first = document.validation_trials[0]
     for index, row in enumerate(document.validation_trials):
