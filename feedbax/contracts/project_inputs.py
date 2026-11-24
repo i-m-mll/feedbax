@@ -31,6 +31,8 @@ type Pointer = Annotated[str, StringConstraints(pattern=r"^(?:/(?:[^~/]|~[01])*)
 class DocumentReference(StrictModel):
     document: ProjectName
     pointer: Pointer | None = None
+    unresolved: Literal[True] | None = Field(default=None, exclude_if=lambda value: value is None)
+    """The original spelling of a missing target whose key was subsequently taken."""
 
 
 class InitialModelReference[DocumentT](StrictModel):
@@ -108,6 +110,7 @@ class StoreSubset(SubsetTerms):
 
 class NamedSubset(StrictModel):
     subset: ProjectName
+    unresolved: Literal[True] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 def select_step_rows[Row](
@@ -197,6 +200,7 @@ class StepReference(StrictModel):
     checkpoint: CheckpointRule | None = None
     element: ProjectName | None = Field(default=None, exclude_if=lambda value: value is None)
     product: ProjectName | None = Field(default=None, exclude_if=lambda value: value is None)
+    unresolved: Literal[True] | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
     def _check_row_selector(self) -> StepReference:
