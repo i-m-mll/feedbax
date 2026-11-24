@@ -22,6 +22,8 @@ class TrialTerm(BaseModel):
     covered: bool
     values: list[float] | None = None
     """The weighted measure at each step, when recorded."""
+    value: float | None = None
+    """The reduced value for the entire recorded trial, when covered."""
 
 
 class TrialStateTrack(BaseModel):
@@ -77,6 +79,10 @@ class TrialTermAggregate(BaseModel):
     """At each step, the share of trials on which the term applies."""
     covered: float
     """The share of trials the term covers."""
+    value: float | None = None
+    """The mean reduced value across covered recorded trials."""
+    percentiles: list[list[float] | None] | None = None
+    """At each covered step, the 5th, 25th, 50th, 75th and 95th percentiles."""
 
 
 class TrialAggregate(BaseModel):
