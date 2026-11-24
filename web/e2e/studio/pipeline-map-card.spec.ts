@@ -121,3 +121,42 @@ test('choosing one value of a sweep selects and boxes only its row or column', a
     for (const [boxed, pressed] of cells) expect(pressed).toBe(boxed);
   }
 });
+
+test('a card draws New Step and Add Sweep only while hovered, focused or selected, without changing its size', async ({ page, request }) => {
+  const [model, task, objective, train, successor] = await fixture('managed-files');
+  const { snapshot } = await seedManagedProject(request, [model, task, objective, train, successor]);
+  await page.goto(`/?project=${snapshot.project_id}`);
+
+  const card = page.locator('[data-map-step="train"]');
+  const controls = [card.getByRole('button', { name: /^New Step/ }), card.getByRole('button', { name: /^Add Sweep/ })];
+  const shown = async (opacity: string) => {
+    for (const control of controls) await expect(control).toHaveCSS('opacity', opacity);
+  };
+  const size = () => card.evaluate((element: HTMLElement) => [element.offsetWidth, element.offsetHeight]);
+  const away = async () => {
+    await page.mouse.move(1, 899);
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  };
+  await mapStep(page, 'successor').click();
+  await away();
+  await expect(card).not.toHaveAttribute('data-selected');
+  await expect(card.locator('.studio-map-run-mark').first()).toBeVisible();
+  const rest = await size();
+  await shown('0');
+
+  await card.locator('.studio-card__head').hover();
+  await shown('1');
+  expect(await size()).toEqual(rest);
+
+  await away();
+  await shown('0');
+  await mapStep(page, 'train').focus();
+  await expect(card).not.toHaveAttribute('data-selected');
+  await shown('1');
+
+  await mapStep(page, 'train').click();
+  await expect(card).toHaveAttribute('data-selected', 'true');
+  await away();
+  await shown('1');
+  expect(await size()).toEqual(rest);
+});

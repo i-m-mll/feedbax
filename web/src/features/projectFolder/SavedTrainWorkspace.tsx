@@ -80,7 +80,7 @@ import { settledWindowSelection, useProjectWindowSelection } from './projectWind
 import { planWithRefusal, problemKey, type GestureFailures, type Refusal } from './refusals';
 import { SubjectDocuments, TrialsEditor, type StepField } from './StudioEvaluateAuthoring';
 import { SelectionRule } from './SelectionRule';
-import { bindingEdit, connection, selectionProblem, stepSelections, subjectAxisEdits } from './selectionEdits';
+import { bindingEdit, connection, selectionProblems, stepSelections, subjectAxisEdits } from './selectionEdits';
 import { InputEditor, type InputGesture } from './InputEditor';
 import { documentChoice } from './referenceChoices';
 import { documentsOfRole } from './useProjectDocuments';
@@ -220,7 +220,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   }, [armedPick, elements]);
   const selectedElements = useStore(elements, (current) => current.selection);
   const mapViewport = useRef<CanvasViewport>(null);
-  const selection = useProjectWindowSelection(Object.keys(saved.project.steps ?? {})[0] ?? null);
+  const jobsVersion = `${jobs.data?.cursor}:${jobs.data?.remote_version}`;
+  const plans = useSavedPlan(editor, jobsVersion);
+  const selection = useProjectWindowSelection(Object.keys(saved.project.steps ?? {})[0] ?? null, plans.inTurn);
   /** The failure of the last gesture that has no object of its own to land on. */
   const [commandError, setCommandError] = useState<unknown>();
   /** The last refused gesture, shown on the object it acted on. */
@@ -272,8 +274,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const [reportChoices, setReportChoices] = useState<{ revision: string; figures: ReportFigureSource[] }>();
   const [sweepStep, setSweepStep] = useState<string>();
   const submission = useRef<{ intent: string; token: string }>();
-  const jobsVersion = `${jobs.data?.cursor}:${jobs.data?.remote_version}`;
-  const plans = useSavedPlan(editor, jobsVersion);
   const { shown } = plans;
   /** The plan shown is of an earlier revision while the shown revision's plan is read, which its regions mark. */
   const planPending = !!shown && !plans.current;
@@ -358,13 +358,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const { row, scene: sceneRows, evaluation: selectedEvaluation } = shownResult;
   const definitionRows = shown?.window_map?.rows.filter(({ key }) => key.step === step?.id && key.variant === variant) ?? [];
   const selectedDefinitionRows = definitionRows.filter(({ key }) => runIds.has(savedRunId(key)));
-  const namedRun = selectedDefinitionRows.find(({ key }) => savedRunId(key) === state.focus?.runId)?.key ??
-    selectedDefinitionRows[0]?.key ?? definitionRows[0]?.key;
+  const namedRow = selectedDefinitionRows.find(({ key }) => savedRunId(key) === state.focus?.runId) ??
+    selectedDefinitionRows[0] ?? definitionRows[0];
+  const namedRun = namedRow?.key;
   const modelSource = step?.kind === 'evaluate' ? modelDocumentId(plan.steps.find(({ id }) =>
     id === step.inputs.find(({ id }) => id === 'subject')?.sourceStepId)?.documentIds) : undefined;
   const stored = useStoredModel(editor, step, modelSource);
   const views = !step ? noViews : viewOffer({
-    step, trainingForm: !!trainingDocument && !!authoring, planRead: !!shown, run: !!namedRun, model: stored?.value,
+    step, trainingForm: !!trainingDocument && !!authoring, planRead: !!shown, run: !namedRow ? 'none' : namedRow.resolved === false ? 'unresolved' : 'resolved', model: stored?.value,
     evaluation: shownResult.evaluation,
     runProblems: (namedRun && step.runs.find(({ id }) => id === savedRunId(namedRun))?.problems) ?? [],
     results: !!plans.error || !!shownResult.row || !!shownResult.evaluation?.checkpoint_series,
@@ -702,6 +703,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     chosen: documentScopes.analysis?.lit,
     focusedView: windowState.mode === 'map' ? null : focusView, reveal: revealed, savePosition: saveElementPosition, selection: elements,
     sections: drawerSections, steps: plan.steps, failures: stepFailures(step?.kind === 'analyze' ? step.id : undefined),
+    selectStep: (source) => selection.select(selectStep(state, source)),
   });
   const report = useManagedReport({
     editor, snapshot, plan, projection: shown, variant, stepId: step?.kind === 'report' ? step.id : undefined,
@@ -1062,29 +1064,16 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     </>;
   }
 
-  /** A selection none of whose runs can run: the Cannot Run mark, and a link to the step it reads. */
-  function blockedSelectionMark(role: string, index: number) {
-    const rows = selectionRows(role, index);
-    if (!rows.length || rows.some(({ status }) => status !== 'cannot_run')) return undefined;
-    const source = rows[0].key.step;
-    return <span className="inline-flex items-center gap-1.5">
-      <StatusMark status="cannot_run" label={studioRunStatus('cannot_run')} />
-      <Button variant="bare" size="content" className="underline-offset-2 hover:underline"
-        onClick={() => selection.select(selectStep(state, source))}>
-        {rows.length === 1 ? studioFormat('blockedRun', { step: stepLabel(source), run: rows[0].label }) : stepLabel(source)}
-      </Button>
-    </span>;
-  }
-
   const refusedAt = (field: StepField) =>
     refusal?.kind === 'field' && refusal.step === step?.id && refusal.field === field ? refusal.reason : undefined;
 
-  /** The problem the plan reports on selection `index` of the step's input `role`. */
-  const inputProblem = (role: string, index: number) => step && selectionProblem(shown?.window_map?.problems ?? [], step.id,
-    variant ?? null, role, index, Array.isArray(authored?.inputs?.[role]));
+  /** The problems the plan reports on selection `index` of the step's input `role`, each on the field it names. */
+  const inputProblems = (role: string, index: number) => step ? selectionProblems(shown?.window_map?.problems ?? [], step.id,
+    variant ?? null, role, index, Array.isArray(authored?.inputs?.[role])) : undefined;
   /** Selection `index` of input `role` as its rule field edits it: its terms, unless a named subset holds them. */
   function selectionRuns(role: string, index: number, reference: StepReference, onCommit: (terms: SubsetTerms) => void,
     onToRows?: () => void) {
+    const problem = refusedAt(`subset.${index}`) ?? inputProblems(role, index)?.rule;
     const source = plan.steps.find(({ id }) => id === reference.step);
     const where = reference.where ?? {};
     if (!source || !shown || !variant || 'subset' in where) return undefined;
@@ -1093,7 +1082,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     return <SelectionRule key={JSON.stringify([step?.id, role, index, source.id])}
       scope={{ project: saved.project_id, revision: shown.revision, variant }} source={source} rule={where.rule ?? ''}
       pinned={where.rows?.map(({ key }) => key)} planned={subset} picking={elements} disabled={!applies}
-      refusal={refusedAt(`subset.${index}`)} onToRows={onToRows}
+      problem={problem} onToRows={onToRows}
       onCommit={(rule) => {
         const { rule: _written, ...rest } = where;
         onCommit(rule ? { ...rest, rule } : rest);
@@ -1105,12 +1094,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const subjectRole = stepInputs?.evaluate?.subject;
   const startSelections = stepSelections(authored?.inputs?.checkpoint);
   const startCheckpoints = startSelections && selectionCheckpoints(startSelections);
-  const inputEditor = step && (trainStart && startRole ? <InputEditor label={studioName('start')} role={startRole}
+  /** An input's drafts belong to the runs they were made on, so its editor is remade for another selection. */
+  const inputEditorKey = JSON.stringify([variant, selection.pipeline]);
+  const inputEditor = step && (trainStart && startRole ? <InputEditor key={inputEditorKey} label={studioName('start')} role={startRole}
     binding={authored?.inputs?.checkpoint} self={step.id} steps={plan.steps} project={saved.project} picking={elements}
     absent={documentChoice('model', trainStart)} refusal={refusedAt('input')}
+    onReveal={(source) => selection.select(selectStep(state, source))}
     selection={(index, reference) => ({
-      problem: inputProblem('checkpoint', index),
-      mark: blockedSelectionMark('checkpoint', index),
+      problems: inputProblems('checkpoint', index),
       runs: wholeStep && selectionRuns('checkpoint', index, reference,
         (terms) => onCurrentPlan('startTrain')({ ...reference, where: terms }, `subset.${index}`)),
     })}
@@ -1120,16 +1111,15 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       onSave: (rule) => onCurrentPlan('startTrain')({ ...startSelections[0], checkpoint: rule }, 'checkpoint'),
     }}
     onChange={applies ? onCurrentPlan('changeTrainStart') : undefined} />
-    : evaluateInputs && subjectRole ? <InputEditor label={studioName('subject')} role={subjectRole}
+    : evaluateInputs && subjectRole ? <InputEditor key={inputEditorKey} label={studioName('subject')} role={subjectRole}
       binding={evaluateInputs.inputs?.subject} self={step.id} steps={plan.steps} project={saved.project} picking={elements}
-      refusal={refusedAt('input')}
+      refusal={refusedAt('input')} onReveal={(source) => selection.select(selectStep(state, source))}
       selection={(index, reference) => {
         const inputId = Array.isArray(evaluateInputs.inputs?.subject) ? `subject.${index}` : 'subject';
         const input = step.inputs.find(({ id }) => id === inputId);
         const attempts = freezeAttempts(inputId);
         return {
-          problem: inputProblem('subject', index),
-          mark: blockedSelectionMark('subject', index),
+          problems: inputProblems('subject', index),
           runs: <>
             {input && inputDetail(input, !!evaluationEditor)}
             {evaluationEditor && selectionRuns('subject', index, reference,
@@ -1249,7 +1239,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     const add = (axis: string, value: string) => chosen.set(axis, (chosen.get(axis) ?? new Set()).add(value));
     for (const row of where?.rows ?? []) {
       const coordinates = shown?.window_map?.rows.find(({ key }) => key.step === target.id && key.row === row)?.coordinates;
-      for (const [axis, { value_id }] of Object.entries(coordinates ?? {})) add(axis, value_id);
+      for (const [axis, { axis_value }] of Object.entries(coordinates ?? {})) add(axis, axis_value);
     }
     return [...where?.rule ? [where.rule] : [], ...[...chosen].filter(([axis, values]) => {
       const all = target.sweeps.find(({ id }) => id === axis)?.values;
@@ -1284,7 +1274,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   /** A sweep value as the value it sets, never its id. */
   function axisValueText(axis: string, valueId: string) {
     const coordinate = shown?.window_map?.rows.map(({ coordinates }) => coordinates[axis])
-      .find((item) => item?.value_id === valueId);
+      .find((item) => item?.axis_value === valueId);
     return coordinate ? valueText(coordinate.value) : valueId;
   }
 

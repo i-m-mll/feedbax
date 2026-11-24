@@ -54,8 +54,11 @@ export function withReset(commit: FieldCommit | undefined, change: ChangeMark | 
   return (edit) => edit.kind === 'reset' ? reset() : commit(edit);
 }
 
+/** A field's kind: one its site offers, or an epoch End's Until or Rest, which only an End's site offers. */
+export type ValueKind = FieldKind | 'until' | 'rest';
+
 export interface FieldKindOffer {
-  readonly kind: FieldKind;
+  readonly kind: ValueKind;
   readonly enabled: boolean;
 }
 
@@ -89,7 +92,7 @@ export interface FieldModel {
   readonly unit?: string;
   readonly text: string | null;
   readonly value?: JsonValue;
-  readonly kind: FieldKind;
+  readonly kind: ValueKind;
   /** The kinds the site offers. One offer of Value means the field has no mark and no menu. */
   readonly kinds: readonly FieldKindOffer[];
   readonly members?: FieldMembers;
@@ -125,15 +128,19 @@ export function hasMark(model: FieldModel) {
  * The edit that turns the field into `kind`, where one does. Formula, Draw, Shape and Link have none: the kind is
  * read from the text, so the mark shows them and no command makes them.
  */
-export function kindEdit(model: FieldModel, kind: FieldKind): FieldKindEdit | undefined {
+export function kindEdit(model: FieldModel, kind: ValueKind): FieldKindEdit | undefined {
   if (kind === 'sweep' && model.kind !== 'sweep') return { kind: 'to_sweep' };
   if (kind === 'value' && model.kind === 'sweep' && model.keeps) return { kind: 'to_value', value_id: model.keeps };
   return undefined;
 }
 
-/** The kinds the field's kind menu offers: those an edit converts it to, and Draw, whose parts make the edit. */
+/**
+ * The kinds the field's kind menu offers: those an edit converts it to; Draw, whose parts make the edit; Rest, whose
+ * text is `rest`; and Until, made by the text it commits.
+ */
 export function kindOffers(model: FieldModel) {
-  return model.kinds.filter(({ kind }) => kindEdit(model, kind) || kind === 'draw' && model.kind !== 'draw');
+  return model.kinds.filter(({ kind }) => kindEdit(model, kind) ||
+    (kind === 'draw' || kind === 'rest' || kind === 'until') && model.kind !== kind);
 }
 
 /** A draw as its parts: a family, the text of each argument (undefined while unfilled), and when it is drawn. */

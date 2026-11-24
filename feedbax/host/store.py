@@ -1415,17 +1415,20 @@ class Store:
     @inspect_without_recording()
     def _project_checkpoints(
         self, rows: list[dict], project: str, root: str, requests: list[str], *, include_producers: bool,
-    ) -> tuple[dict, dict]:
+    ) -> tuple[dict, dict, dict]:
         from feedbax.host.current_checkpoints import CurrentCheckpoints
 
         view = self._success_view(root)
         selection = CurrentCheckpoints(self, view, project)
         wanted = set(requests)
         producers = {}
+        held = {}
         if include_producers:
             for request in {job["request"] for job in rows if job["request"].startswith("train:")}:
                 if (anchor := selection.native_anchor(request)) is not None:
                     producers[request] = anchor
+                    if (coordinates := self._finished_checkpoints(anchor)) is not None:
+                        held[request] = list(coordinates)
         differences = {}
         for job in rows:
             if (
@@ -1444,7 +1447,43 @@ class Store:
                 launch = json.loads(self.get(job["id"])["launch"])
             if (difference := selection.compare(receipt, launch)) is not None:
                 differences[job["id"]] = difference.model_dump(mode="json")
-        return differences, producers
+        return differences, producers, held
+
+    def _finished_checkpoints(self, anchor: str) -> tuple[int, ...] | None:
+        """The checkpoint coordinates a Train lineage published on its way to success; None while no attempt of it
+        has succeeded or one is still live, since it may yet publish more."""
+        lineage = {
+            row["id"]: row for row in self.db.execute(
+                """WITH RECURSIVE lineage(id) AS (
+                       VALUES (?) UNION ALL
+                       SELECT child.id FROM jobs child JOIN lineage ON child.continues=lineage.id
+                   )
+                   SELECT jobs.* FROM jobs JOIN lineage USING (id) ORDER BY jobs.seq""",
+                (anchor,),
+            )
+        }
+        if any(row["state"] in LIVE_STATES for row in lineage.values()):
+            return None
+        tip = next((row for row in reversed(lineage.values()) if row["state"] == "succeeded"), None)
+        path = []
+        while tip is not None:
+            path.append(tip)
+            tip = lineage.get(tip["continues"]) if tip["continues"] is not None else None
+        if not path:
+            return None
+        held = set()
+        upper = None
+        for attempt in path:
+            resume = json.loads(attempt["launch"])["payload"].get("resume")
+            lower = resume["completed_updates"] if resume is not None else 0
+            for (key,) in self.db.execute(
+                "SELECT key FROM publications WHERE job=? AND key LIKE 'checkpoint:%'", (attempt["id"],),
+            ):
+                coordinate = int(key.split(":")[1])
+                if lower < coordinate and (upper is None or coordinate <= upper):
+                    held.add(coordinate)
+            upper = lower
+        return tuple(sorted(held))
 
     def jobs_snapshot(
         self, *, record_keys: list[str] | None = None, checkpoint_progress_root: str | None = None,
@@ -1482,11 +1521,13 @@ class Store:
             project = filters.get("project")
             if project is None:
                 raise HostError("invalid_request", "Checkpoint admission requires one project.")
-            differences, producers = self._project_checkpoints(
+            differences, producers, held = self._project_checkpoints(
                 snapshot["jobs"], project, *checkpoint_admission,
                 include_producers=bool(filters.get("include_launch")),
             )
-            snapshot.update(checkpoint_differences=differences, checkpoint_producers=producers)
+            snapshot.update(
+                checkpoint_differences=differences, checkpoint_producers=producers, finished_checkpoints=held,
+            )
         return snapshot
 
     @inspect_without_recording()

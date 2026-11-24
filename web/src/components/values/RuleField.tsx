@@ -2,6 +2,7 @@ import { Autocomplete } from '@base-ui/react/autocomplete';
 import clsx from 'clsx';
 import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { studioName } from '@/components/activity/studioVocabulary';
+import { FieldProblem } from '@/components/ui/FieldProblem';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { ContextMenu, ContextMenuContent, ContextMenuTrigger, MenuItem } from '@/components/ui/Menu';
 import { usePopupLayer } from '@/components/ui/popupLayer';
@@ -26,8 +27,8 @@ export interface RuleFieldProps {
   count?: string;
   /** The rows To Rows pinned beside the rule, by name. */
   pinned?: readonly string[];
-  /** Why the rule, or the last one committed, is refused. */
-  refusal?: string;
+  /** Why the rule, or the last one committed, is refused, or why the saved rule chooses nothing. */
+  problem?: string;
   disabled?: boolean;
   commands?: readonly RuleFieldCommand[];
   /** The rule as it is being written while the field has focus; null once it is left. */
@@ -41,7 +42,7 @@ export interface RuleFieldProps {
  * highest with the result names after them, once the rule is written in or ArrowDown is pressed. Enter or leaving the
  * field saves; Escape restores the saved rule.
  */
-export function RuleField({ label, value, vocabulary, count, pinned, refusal, disabled, commands, onDraft, onCommit }: RuleFieldProps) {
+export function RuleField({ label, value, vocabulary, count, pinned, problem, disabled, commands, onDraft, onCommit }: RuleFieldProps) {
   const id = useId();
   const [draft, setDraft] = useDraft(value);
   const [caret, setCaret] = useState(value.length);
@@ -67,7 +68,7 @@ export function RuleField({ label, value, vocabulary, count, pinned, refusal, di
   }
   const field = <div className={clsx(fieldBox, 'min-w-0')}>
     <Autocomplete.Input ref={input} id={id} disabled={disabled} spellCheck={false} autoComplete="off"
-      aria-invalid={refusal !== undefined || undefined} aria-describedby={refusal ? `${id}-refusal` : undefined}
+      aria-invalid={problem !== undefined || undefined} aria-describedby={problem ? `${id}-problem` : undefined}
       className={clsx(fieldInput, 'font-mono')}
       onSelect={(event) => setCaret(event.currentTarget.selectionStart ?? draft.length)}
       onFocus={() => { setFocused(true); setDismissed(true); onDraft?.(draft); }}
@@ -85,8 +86,9 @@ export function RuleField({ label, value, vocabulary, count, pinned, refusal, di
       }} />
     {pinned?.length ? <span className="shrink-0 pr-1 text-shell-muted" aria-description={pinned.join(', ')}>{studioName('rows')}</span> : null}
     {count ? <span className="shrink-0 pr-control-inline tabular-nums text-shell-muted">{count}</span> : null}
+    {problem && <FieldProblem reason={problem} id={`${id}-problem`} className="mr-1" />}
   </div>;
-  return <FieldRow label={label} htmlFor={id} below={refusal && <p id={`${id}-refusal`} role="alert">{refusal}</p>}>
+  return <FieldRow label={label} htmlFor={id}>
     <Autocomplete.Root items={completions} filter={null} value={draft} mode="list"
       itemToStringValue={(item: RuleCompletion) => item.text}
       open={focused && !dismissed && completions.length > 0}

@@ -1,6 +1,6 @@
 """Store an edit of a step's definition by the scope of the runs it is made for."""
 
-from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from functools import partial
@@ -22,22 +22,22 @@ from feedbax.contracts.project import (
     document_edit_value, json_pointer_parts, same_json,
 )
 from feedbax.contracts.project_inputs import SweepExceptionTerms
-from feedbax.planner.project_plan import PlannedRow, RunKey, compile_project
+from feedbax.planner.project_plan import RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.project_resolution import (
     ProjectDiagnostic, StepTemplate, compose_document, compose_step, document_write_target,
 )
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_sweep import (
-    AxisCondition, NamedAxis, SetAxis, SetValue, RemoveValue, SweepCoordinate, _compose_writes, axis_coordinates,
+    AxisCondition, NamedAxis, SetAxis, SetValue, RemoveValue, _compose_writes,
 )
 from feedbax.contracts.run_matrix import MatrixCompositionDelta
-from feedbax.contracts.run_rule import value_text
 from feedbax.contracts.studio_project import AuthoredFileAddress, CreateNamedDocument, StudioProjectFilePatch
 from feedbax.project_members import generated_name
 from feedbax.project_folder import _free_member_name, document_file
 from feedbax.studio.selection import StoredEdit, TrainSelection, merged_files
 from feedbax.studio.step_differences import normalized_patches
+from feedbax.web.services.axis_values import axis_values, values_rule
 from feedbax.web.services.project_folder import ProjectFolderInvalid, preview_authored_files
 
 
@@ -82,13 +82,10 @@ def runs_scope(project, plan, key, rows, axes) -> RunScope:
     available = {row.key.row: row for row in plan.rows if (row.key.variant, row.key.step) == (key.variant, key.step)}
     if not set(rows) <= available.keys() or len(set(rows)) != len(rows):
         raise ProjectFolderInvalid("The selected rows no longer belong to this step.")
+    ids = axis_values(available.values())
     covered = {
         row_id for row_id, row in available.items()
-        if all(
-            (coordinate := axis_coordinates(row.coordinates, row.input_axes).get(axis)) is not None
-            and coordinate.value_id in values
-            for axis, values in axes.items()
-        )
+        if all(ids.get((row.key, axis)) in values for axis, values in axes.items())
     }
     if not axes or set(rows) != covered:
         return ListedRuns(kind="rows", rows=tuple(rows))
@@ -100,18 +97,6 @@ def runs_scope(project, plan, key, rows, axes) -> RunScope:
             return AxisValueRuns(kind="axis_value", axis=axis, value=values[0])
     return SweepValuesRuns(
         {axis: tuple(values) for axis, values in axes.items()}, values_rule(available.values(), axes),
-    )
-
-
-def values_rule(rows: Iterable[PlannedRow], axes: Mapping[str, Iterable[str]]) -> str:
-    """The run rule naming, for each axis, the values whose IDs are ``axes[axis]``."""
-    coordinates: dict[tuple[str, str], SweepCoordinate] = {}
-    for row in rows:
-        for axis, coordinate in axis_coordinates(row.coordinates, row.input_axes).items():
-            coordinates.setdefault((axis, coordinate.value_id), coordinate)
-    return " ".join(
-        f"{axis}=" + ",".join(value_text(coordinates[axis, value]) for value in sorted(set(values)))
-        for axis, values in sorted(axes.items())
     )
 
 
@@ -130,10 +115,8 @@ def selected_runs(plan, key, scope, *, chosen_steps=()):
     if isinstance(scope, VariantRuns):
         selected = {row.key for row in rows if row.key.variant == scope.variant}
     elif isinstance(scope, AxisValueRuns):
-        selected = {
-            row.key for row in rows
-            if (coordinate := row.coordinates.get(scope.axis)) is not None and coordinate.value_id == scope.value
-        }
+        ids = axis_values(rows)
+        selected = {row.key for row in rows if ids.get((row.key, scope.axis)) == scope.value}
     elif isinstance(scope, ListedRuns):
         selected = {row.key for row in rows if row.key.row in scope.rows}
         if {item.row for item in selected} != set(scope.rows):
@@ -1000,11 +983,13 @@ def _scoped_runs(project, plan, key: RunKey, scope: RunScope, chosen: Collection
         return frozenset()
     variants = set(plan.variants)
     reached = reached_steps(project, chosen)
+    rows = [row for row in plan.rows if row.key.variant in variants and row.key.step == key.step]
+    ids = axis_values(rows)
     picked = {
-        row.key for row in plan.rows if row.key.variant in variants and row.key.step == key.step and (
+        row.key for row in rows if (
             row.key.row in scope.rows if isinstance(scope, ListedRuns)
             else all(
-                (coordinate := row.coordinates.get(axis)) is not None and coordinate.value_id in values
+                ids.get((row.key, axis)) in values
                 for axis, values in ({scope.axis: (scope.value,)} if isinstance(scope, AxisValueRuns)
                                      else scope.axes).items()
             )

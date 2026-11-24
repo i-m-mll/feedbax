@@ -4,7 +4,7 @@ import {
   runResultState, shownName, type PlanResultView, type PlanRunView, type PlanStepView, type PlanSweepView, type PlanView,
 } from '@/features/pipeline/planView';
 import type {
-  Project, SelectedRow, StudioSavedLightResult, StudioBestRankGroup, StudioBoundBestSubject, StudioProjectWindowMapCoordinate, StudioProjectWindowMapSubset, StudioSavedTrainRuns,
+  Project, SelectedRow, StudioSavedLightResult, StudioBestRankGroup, StudioBoundBestSubject, StudioProjectWindowMapSubset, StudioSavedTrainRuns,
   SubsetTerms,
 } from '@/generated/studioContracts';
 
@@ -47,13 +47,6 @@ export function planVariants(saved: StudioSavedTrainRuns | undefined) {
 export function bestRankGroups(subset: StudioProjectWindowMapSubset | null | undefined): readonly StudioBestRankGroup[] {
   if (subset?.rank_groups?.length) return subset.rank_groups;
   return subset?.ranks?.length ? [{ coordinates: {}, ranks: subset.ranks }] : [];
-}
-
-/** A coordinate is drawn as its label, else its single value, else its name. */
-function coordinateText({ value, label, value_id }: StudioProjectWindowMapCoordinate) {
-  if (label != null) return label;
-  if (typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean') return String(value);
-  return value_id;
 }
 
 function subsetTerms(terms: SubsetTerms): string[] {
@@ -206,12 +199,14 @@ export function projectWindowPlan(
   const models = new Map((map?.edges ?? []).flatMap(({ from_key, to_key }) =>
     to_key.variant === scope && gathered.get(to_key.step)?.has(from_key.step)
       ? [[savedRunId(to_key), from_key.step] as const] : []));
-  const sweepsByStep = new Map<string, Map<string, Map<string, string>>>();
+  /** Each step's axes as the window map gathers them, each value's label by its ID. */
+  const sweepsByStep = new Map(map?.steps.filter(({ variant }) => variant === scope).map(({ step_id, axes }) =>
+    [step_id, new Map(axes?.map(({ id, values }) => [id, new Map(values.map((value) => [value.id, value.label]))]))]));
+  /** Each gathered Evaluate step's model axis, its Train steps' names by ID. */
+  const modelsByStep = new Map<string, Map<string, string>>();
   const runsByStep = new Map<string, PlanRunView[]>();
   /** Each input axis of a step, with the coordinates its members carry. */
   const carriesByStep = new Map<string, Map<string, Set<string>>>();
-  /** The steps given the gathered model axis. */
-  const modelAxisSteps = new Set<string>();
   function addRun(step: string, run: PlanRunView) {
     const runs = runsByStep.get(step);
     if (runs) runs.push(run);
@@ -259,23 +254,14 @@ export function projectWindowPlan(
     const values: Record<string, string> = {};
     const model = models.get(savedRunId(row.key));
     if (model !== undefined && !(gatheredModelAxis in row.coordinates)) {
-      let entries = sweeps.get(gatheredModelAxis);
-      if (!entries) sweeps.set(gatheredModelAxis, entries = new Map());
+      let entries = modelsByStep.get(row.key.step);
+      if (!entries) modelsByStep.set(row.key.step, entries = new Map());
       entries.set(model, shownName(model, project.steps?.[model]));
       values[gatheredModelAxis] = model;
-      modelAxisSteps.add(row.key.step);
     }
-    for (const [sweep, coordinate] of Object.entries(row.coordinates)) {
-      let entries = sweeps.get(sweep);
-      if (!entries) sweeps.set(sweep, entries = new Map());
-      entries.set(coordinate.value_id, coordinateText(coordinate));
-      values[sweep] = coordinate.value_id;
-    }
+    for (const [sweep, coordinate] of Object.entries(row.coordinates)) values[sweep] = coordinate.axis_value;
     for (const [axis, member] of Object.entries(row.input_axes ?? {})) {
-      let entries = sweeps.get(axis);
-      if (!entries) sweeps.set(axis, entries = new Map());
-      entries.set(member.value_id, member.label ?? member.value_id);
-      values[axis] = member.value_id;
+      values[axis] = member.axis_value;
       let carried = carriesByStep.get(row.key.step);
       if (!carried) carriesByStep.set(row.key.step, carried = new Map());
       carried.set(axis, new Set([...carried.get(axis) ?? [], ...member.carries]));
@@ -363,21 +349,25 @@ export function projectWindowPlan(
       return label ? { ...run, label } : run;
     }) : runs;
     const carries = carriesByStep.get(id);
+    const modelAxis = modelsByStep.get(id);
     return {
       id, label: shownName(id, project.steps?.[id]), kind, group,
       documentIds: projected?.document_ids,
       documentUses: projected?.document_uses,
       inputs,
-      sweeps: drawnAxes([...(sweepsByStep.get(id) ?? [])].map(([axis, values]): StepAxis => {
+      sweeps: drawnAxes([
+        ...modelAxis ? [[gatheredModelAxis, modelAxis] as const] : [], ...sweepsByStep.get(id) ?? [],
+      ].map(([axis, values]): StepAxis => {
         const read = project.steps?.[id]?.sweep?.axes?.[axis];
         const view = { id: axis, label: read && 'set' in read ? read.set : axis, values: [...values].map(([id, label]) => ({ id, label })) };
         const carried = carries?.get(axis);
         return carried ? { ...view, kind: 'input', carries: carried }
-          : axis === gatheredModelAxis && modelAxisSteps.has(id) ? { ...view, kind: 'step' } : { ...view, kind: 'coordinate' };
+          : axis === gatheredModelAxis && modelAxis ? { ...view, kind: 'step' } : { ...view, kind: 'coordinate' };
       }), labelled),
       runs: labelled,
       statusCounts: resultCounts(projected?.status_counts ?? {}, runs),
-      ruleAxes: projected?.rule_axes,
+      ruleAxes: projected?.axes && Object.fromEntries(projected.axes.map(({ id, values }) =>
+        [id, Object.fromEntries(values.map((value) => [value.id, value.rule]))])),
       ruleMetrics: projected?.rule_metrics,
     };
   });
