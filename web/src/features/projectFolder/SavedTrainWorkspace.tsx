@@ -79,7 +79,7 @@ import {
 } from './evaluateAuthoring';
 import { bindProjectEditor } from './openProjectEditor';
 import type { ProjectEditController } from './projectEditController';
-import { bestRankGroups, projectWindowPlan, planVariants, savedRunId, stepSourceRows, unvalued } from './projectWindowPlan';
+import { axisProblems, bestRankGroups, projectWindowPlan, planVariants, savedRunId, stepSourceRows, unvalued } from './projectWindowPlan';
 import { placeField, placeMember, placeView, removeGraphVariation, type Reveal } from './projectWindowProblems';
 import { settledWindowSelection, useProjectWindowSelection } from './projectWindowSelection';
 import { planWithRefusal, problemKey, type GestureFailures, type Refusal } from './refusals';
@@ -315,12 +315,22 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const choiceMenu = useChoiceMenu();
   const sets = setAuthoring({
     editor, project: saved.project, applies: !outside && reachable && variantApplies,
-    perform, state: () => latestState.current, select: (next) => selection.select(next),
+    perform, state: () => latestState.current, select: (next) => selection.select(next), confirmRemoval: runRemoval.confirm,
   });
-  const axisMenu: AxisMenu = (stepId, axis) => ({
-    picker: sets.axisPicker(stepId, axis), commands: sets.axisCommands(stepId, axis),
-    refusal: refusal?.kind === 'axis' && refusal.step === stepId && refusal.axis === axis ? refusal.reason : undefined,
-  });
+  const axisMenu: AxisMenu = (stepId, axis) => {
+    const planned = plan.steps.find(({ id }) => id === stepId);
+    const values = planned?.sweeps.find(({ id }) => id === axis)?.values ?? [];
+    const subject = planned?.kind === 'evaluate' ? planned.inputs.find(({ id }) => id === 'subject')?.sourceStepId : undefined;
+    const model = modelDocumentId(planned?.documentIds) ??
+      (subject ? modelDocumentId(plan.steps.find(({ id }) => id === subject)?.documentIds) : undefined);
+    const [problem] = axisProblems(shown?.window_map, stepId, axis, variant);
+    return {
+      picker: sets.axisPicker(stepId, axis),
+      commands: sets.axisCommands(stepId, axis, { model: !!model, empty: !values.some(({ id }) => id !== unvalued) }),
+      removeValue: (value, label) => sets.removeValue(stepId, axis, value, label),
+      refusal: refusal?.kind === 'axis' && refusal.step === stepId && refusal.axis === axis ? refusal.reason : problem?.detail,
+    };
+  };
   const step = plan.steps.find(({ id }) => id === selection.stepId);
   const state = shown ? settledWindowSelection(plan, selection.pipeline) : selection.pipeline;
   const latestState = useRef(state);

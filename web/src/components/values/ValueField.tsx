@@ -27,6 +27,7 @@ import {
 } from './fieldModel';
 import { DrawParts, startDraw } from './DrawParts';
 import { FormulaParts } from './FormulaParts';
+import { ItemParts, listRead } from './ItemParts';
 import { LinkParts } from './LinkParts';
 import { partDraft, setPartDraft, usePartDraft, type PartDraft } from './partDrafts';
 import { ShapeParts } from './ShapeParts';
@@ -254,7 +255,10 @@ const optionIndex = (options: readonly FieldOption[], value: unknown) =>
 const textualKind = (kind: FieldModel['type']['kind']) =>
   !['boolean', 'choice', 'class', 'vector', 'group', 'list'].includes(kind);
 
-/** The parts of the field's value, or of its unfilled draft: a Draw's, a Formula's, a Shape's or a Link's. */
+/**
+ * The parts of the field's value, or of its unfilled draft: a Draw's, a list item's (a root that reads a list), a
+ * Formula's, a Shape's or a Link's.
+ */
 function partsOf(model: FieldModel, draft: PartDraft | undefined) {
   switch (draft?.kind) {
     case 'draw': return <DrawParts model={model} draw={draft.draw} />;
@@ -264,6 +268,8 @@ function partsOf(model: FieldModel, draft: PartDraft | undefined) {
   }
   const value = model.structure?.value;
   if (!value) return undefined;
+  const read = listRead(model);
+  if (read) return <ItemParts model={model} read={read} />;
   const call = callOf(model);
   switch (valueKind(value, model.functions)) {
     case 'draw': return <DrawParts model={model} draw={drawOf(model)!} />;
