@@ -7,8 +7,8 @@ const target = { kind: 'call', function: 'sqnorm', args: [{ kind: 'name', refere
 const squared = { base: 'real', dimensions: { length: 2 } };
 
 // Catches a term's bar that disagrees with where training applies it (drawn over its whole window, ignoring that the
-// target is absent before the cue), a term that applies nowhere losing its row, and a term row whose selection does not
-// reach the Objective view or the Inspector.
+// target is absent before the cue), a term that applies nowhere losing its row, a term that does not compile looking
+// like one that applies nowhere, and a term row whose selection does not reach the Objective view or the Inspector.
 test('each term that is on has a row on the shelf, barred where it applies, and selects the term', async ({ page, request }) => {
   const files = await fixture('delayed-reaches-files') as { document?: { payload: Record<string, any> } }[];
   for (const file of files) {
@@ -17,6 +17,7 @@ test('each term that is on has a row on the shelf, barred where it applies, and 
       { id: 'reach', name: 'reach', measure: target, measure_type: squared, epochs: ['move', 'hold'] },
       { id: 'held', name: 'held', measure: target, measure_type: squared, epochs: ['hold'] },
       { id: 'off', name: 'off', measure: target, measure_type: squared, enabled: false },
+      { id: 'untyped', name: 'untyped', measure: target, epochs: ['move'] },
     );
   }
   const { snapshot } = await seedManagedProject(request, files);
@@ -41,6 +42,8 @@ test('each term that is on has a row on the shelf, barred where it applies, and 
   await expect(row('held')).toBeVisible();
   await expect(row('held').locator('[data-start]')).toHaveCount(0);
   await expect(row('off')).toHaveCount(0);
+  await expect(row('held').locator('[data-status-mark]')).toHaveCount(0);
+  await expect(row('untyped').locator('[data-status-mark="cannot_run"]')).toHaveAccessibleName(/\S/);
 
   await row('reach').getByRole('button', { name: 'reach', exact: true }).click();
   await expect(page.getByRole('complementary', { name: 'Inspector', exact: true }).getByRole('region', { name: 'reach', exact: true })).toBeVisible();

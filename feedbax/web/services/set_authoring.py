@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
-from feedbax.contracts.project import Project, RootDocument, RunBase, StepBase
+from feedbax.contracts.project import Project, RootDocument, RunBase, StepBase, member_name
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode
 from feedbax.planner.project_plan import RunKey, _sweep_problem
@@ -176,7 +176,7 @@ def _authored_axis(project: Project, step: str, axis: str):
     sweep = project.steps[step].sweep
     found = sweep.axes.get(axis) if sweep is not None else None
     if found is None:
-        raise ProjectFolderInvalid(f"{axis} is not an axis authored on {step}.")
+        raise ProjectFolderInvalid(f"{axis} is not an axis authored on {member_name(project.steps, step)}.")
     return found
 
 
@@ -351,7 +351,7 @@ def _save_set(project: Project, command: SaveSet) -> StoredEdit:
         raise ProjectFolderInvalid("Only an axis of named values is saved as a set.")
     model = step_model(project, command.step)
     if model is None:
-        raise ProjectFolderInvalid(f"{command.step} reads no Model document of its own.")
+        raise ProjectFolderInvalid(f"{member_name(project.steps, command.step)} reads no Model document of its own.")
     try:
         document = set_from_axis(axis, model[0])
     except ValueError as error:
@@ -375,11 +375,11 @@ def _inline_set(project: Project, command: InlineSet) -> tuple[StoredEdit, list[
         raise ProjectFolderInvalid(f"{command.axis} reads no set.")
     model = step_model(project, command.step)
     if model is None:
-        raise ProjectFolderInvalid(f"{command.step} reads no Model document of its own.")
+        raise ProjectFolderInvalid(f"{member_name(project.steps, command.step)} reads no Model document of its own.")
     try:
         document = read_set(project.documents.get, axis.set)
         if not document.entries:
-            raise ValueError(f"{axis.set} has no entries to inline.")
+            raise ValueError(f"{member_name(project.documents, axis.set)} has no entries to inline.")
         inline = axis_from_set(document, *model, axis.where)
         inline.optional = axis.optional
     except ValueError as error:
@@ -401,7 +401,8 @@ def _inline_set(project: Project, command: InlineSet) -> tuple[StoredEdit, list[
 
 def _apply_set(project: Project, command: ApplySet) -> StoredEdit:
     if command.set not in sets_offered(project, command.step):
-        raise ProjectFolderInvalid(f"No Set {command.set!r} can be referenced by {command.step}.")
+        name, step = member_name(project.documents, command.set), member_name(project.steps, command.step)
+        raise ProjectFolderInvalid(f"{step} cannot reference the Set {name}.")
     address, raw = _step_raw(project, command.step)
     axes = (raw.get("sweep") or {}).get("axes", {})
     name = generated_name(command.set, axes.__contains__)
@@ -440,7 +441,7 @@ def _move_set(project: Project, command: SetToField | SetToSweep) -> StoredEdit:
             axes.pop(command.axis)
     else:
         if command.axis not in field_sets:
-            raise ProjectFolderInvalid(f"{command.axis} is not a Set field of {command.step}.")
+            raise ProjectFolderInvalid(f"{command.axis} is not a Set field of {member_name(project.steps, command.step)}.")
         if axes.get(command.axis) is not None:
             raise ProjectFolderInvalid(f"{command.axis} already names a sweep axis.")
         axes[command.axis] = field_sets.pop(command.axis)["axis"]
@@ -456,7 +457,7 @@ def _remove_value(project: Project, command: RemoveAxisValue) -> StoredEdit:
         content = _composed(project, axis.set)
         entries = content["entries"]
         if command.value not in entries:
-            raise ProjectFolderInvalid(f"{axis.set} has no entry {command.value}.")
+            raise ProjectFolderInvalid(f"{member_name(project.documents, axis.set)} has no entry {command.value}.")
         if len(entries) == 1 and axis.optional:
             return StoredEdit([_with_axes(address, raw, {
                 name: item for name, item in raw["sweep"]["axes"].items() if name != command.axis

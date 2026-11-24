@@ -172,6 +172,11 @@ def _signal_end_name(owner: Record, graph: Record, end: Record, direction: Direc
     return _port_name(component, direction, end["port"]) if "ports" in component else end["port"]
 
 
+def _signal_end_label(owner: Record, graph: Record, end: Record, direction: Direction) -> str:
+    card = graph["components"][end["component"]]["name"] if end["owner"] == "component" else end["owner"].title()
+    return f"{card} · {_signal_end_name(owner, graph, end, direction)}"
+
+
 def _new_port(owner: Record, direction: Direction, name: str, port: Port) -> Record:
     names = {item["name"] for item in _port_list(owner, direction)}
     base = name
@@ -1095,7 +1100,9 @@ class ModelEditDraft:
             if (source_known and output is None) or (target_known and input_port is None):
                 yield problem(at, "Wire does not name a local source and target port")
             elif output is not None and input_port is not None and (reason := _signal_mismatch(output, input_port)):
-                yield problem(at, reason)
+                source_name = _signal_end_label(owner, graph, source, "output")
+                target_name = _signal_end_label(owner, graph, target, "input")
+                yield problem(at, f"{source_name} → {target_name}: {reason}")
             if targets[_target_key(target)] > 1:
                 yield problem(at, "More than one wire drives this input")
             if reason := _attachment_problem(wire["attachments"]):
@@ -1270,6 +1277,7 @@ def apply_model_edit(
     task_signal: Callable[[edits.ConnectTaskSignal], edits.ModelTaskSignal] | None = None,
     next_input: Callable[[Record], tuple[str, str, int] | None] | None = None,
     reference: Callable[[], edits.ModelEditState | None] | None = None,
+    instantiate_template: Callable[[str], CompositeComponent] | None = None,
 ) -> edits.ModelEditResult | edits.ModelEditProblem:
     """Apply one command to a private draft and return its complete transaction.
 
@@ -1281,7 +1289,11 @@ def apply_model_edit(
     primary = _address((), "graph")
     try:
         match operation:
-            case edits.AddComponent(graph=primary):
+            case edits.AddComponent(graph=primary, component=component):
+                if isinstance(component, edits.RegisteredComponent):
+                    if instantiate_template is None:
+                        raise _Refusal(primary, "Component templates need a registered definition")
+                    operation = operation.model_copy(update={"component": instantiate_template(component.definition)})
                 edit.add_component(operation)
             case edits.MoveCards(placements=placements):
                 primary = placements[0].address

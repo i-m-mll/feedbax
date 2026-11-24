@@ -115,7 +115,7 @@ import type { StateValues } from '@/components/scene/trialScene';
 
 type EditorSession = ReturnType<typeof bindProjectEditor>;
 /** The Model's own initial state, at which the Scene's geometry tells whether the Model has anything to draw. */
-const restState: StateValues = {};
+const restPose: readonly StateValues[] = [{}];
 /** The anchor of an Evaluate's sampled number of trials, which the Trials editor draws. */
 const trialCount = '/params/trial_set/count';
 
@@ -392,7 +392,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const modelSource = step?.kind === 'evaluate' ? modelDocumentId(plan.steps.find(({ id }) =>
     id === step.inputs.find(({ id }) => id === 'subject')?.sourceStepId)?.documentIds) : undefined;
   const stored = useStoredModel(editor, step, modelSource);
-  const restGeometry = useSceneGeometry(saved.project_id, stored ? { document_id: stored.id, revision: saved.revision } : null, restState);
+  const restGeometry = useSceneGeometry(saved.project_id, stored ? { document_id: stored.id, revision: saved.revision } : null, restPose)?.(0);
   const scoredBy = authored?.kind === 'evaluate' ? evaluateSubject(authored) : undefined;
   /** An Evaluate is scored by the Objective of the Train that made its checkpoint, or by the one it names itself. */
   const scored = authored?.kind !== 'evaluate' || scoredBy?.kind === 'steps' || scoredBy?.kind === 'document' && !!scoredBy.objective;
