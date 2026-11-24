@@ -90,13 +90,14 @@ export function useFieldFocus(root: RefObject<HTMLElement>, request: FieldFocusR
         focused.current();
         return true;
       }
-      // The named field, or without a name the step's own first field, once it can take the keyboard;
-      // the first field of any kind when the fields shown do not include it.
+      // The named field, or without a name the step's own first field once no region before it is loading, as soon
+      // as it can take the keyboard; the first field of any kind when the fields shown do not include it.
+      const busy = element.querySelector('[aria-busy="true"]');
       const scope = target === undefined ? '[data-field]' : `[data-field="${CSS.escape(target)}"]`;
       const named = element.querySelector(scope);
+      if (target === undefined && named && busy && busy.compareDocumentPosition(named) & Node.DOCUMENT_POSITION_FOLLOWING) return false;
       if (named) unfold(named, element);
-      const shown = named === null && (element.querySelector('[data-field]') !== null ||
-        element.querySelector('[aria-busy="true"]') === null);
+      const shown = named === null && (element.querySelector('[data-field]') !== null || busy === null);
       const chosen = named || shown ? element.querySelector<HTMLElement>(named ? `${scope} :is(${field})` : field) : null;
       if (!chosen) return false;
       chosen.focus();
