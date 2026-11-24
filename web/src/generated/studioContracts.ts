@@ -2548,6 +2548,14 @@ export interface InspectionStatusResponse {
   treescope_version?: string | null;
 }
 
+export type AddMember = {
+  "op": "add";
+  "member": Member;
+  "name": string;
+  "index"?: number | null;
+  "type"?: ValueType | null;
+};
+
 export type AnalysisDocument = {
   "schema_version"?: "feedbax.analysis_document.v1";
   "inputs"?: Record<string, AnalyzeDatasetInput | AnalyzeModelInput | AnalyzeTaskInput>;
@@ -3117,6 +3125,18 @@ export type LocatedSpan = {
   "span": TextSpan;
 };
 
+export type MakeAbsent = {
+  "op": "absent";
+  "signal": string;
+  "cell": string;
+};
+
+export type MakePresent = {
+  "op": "present";
+  "signal": string;
+  "epoch": string;
+};
+
 export type ManualCombination = {
   "manual": Array<Record<string, string>>;
 };
@@ -3129,6 +3149,8 @@ export type MatrixCompositionDelta = {
   "schema_version"?: string | null;
 };
 
+export type Member = "variable" | "epoch" | "signal";
+
 export type MemberFamily = "documents" | "steps";
 
 export type MergeCards = {
@@ -3139,6 +3161,13 @@ export type MergeCards = {
 
 export type ModelPort = {
   "kind"?: "model";
+};
+
+export type MoveMember = {
+  "op": "move";
+  "member": Member;
+  "id": string;
+  "index": number;
 };
 
 export type Name = string;
@@ -3346,6 +3375,12 @@ export type RemoveDocumentValue = {
   "op": "remove";
 };
 
+export type RemoveMember = {
+  "op": "remove";
+  "member": Member;
+  "id": string;
+};
+
 export type RemoveProjectValue = {
   "op": "remove";
   "path": DifferencePointer;
@@ -3353,14 +3388,6 @@ export type RemoveProjectValue = {
 
 export type RemoveValue = {
   "op": "remove";
-};
-
-export type RenameMember = {
-  "family": KeyedFamily;
-  "member": string;
-  "document"?: string | null;
-  "kind": "rename";
-  "label": string | null;
 };
 
 export type ReplayDeclarationAddress = {
@@ -3458,10 +3485,31 @@ export type SetDocumentValue = {
   "value": JsonValue;
 };
 
+export type SetLink = {
+  "op": "link";
+  "model_field": string;
+  "variable": string | null;
+};
+
 export type SetProjectValue = {
   "op": "add" | "replace";
   "path": DifferencePointer;
   "value": JsonValue;
+};
+
+export type SetSpan = {
+  "op": "set_span";
+  "signal": string;
+  "cell": string;
+  "first_epoch": string;
+  "last_epoch": string;
+};
+
+export type SetType = {
+  "op": "set_type";
+  "member": "variable" | "signal";
+  "id": string;
+  "type": ValueType;
 };
 
 export type SetValue = {
@@ -3869,7 +3917,7 @@ export type StudioLibraryDocument = {
 export type StudioMemberCommand = {
   "revision": Sha256;
   "presentation_revision": Sha256;
-  "command": RenameMember | ChangeKey | DuplicateMember | DetachMember | SplitCard | MergeCards;
+  "command": feedbax__contracts__studio_project__RenameMember | ChangeKey | DuplicateMember | DetachMember | SplitCard | MergeCards;
 };
 
 export type StudioMemberCommandResult = {
@@ -4341,7 +4389,7 @@ export type StudioTrialAuthoring = {
 export type StudioTrialAuthoringRequest = {
   "revision": Sha256;
   "run": StudioSavedTrainKey;
-  "change"?: StudioTrialDocumentEdit | StudioTrialDocumentReset | StudioTrialBindingEdit | StudioTrialSelectDocument | StudioTrialExpressionEdit | null;
+  "change"?: StudioTrialDocumentEdit | StudioTrialDocumentReset | StudioTrialBindingEdit | StudioTrialSelectDocument | StudioTrialExpressionEdit | StudioTrialStructureEdit | null;
   "scope"?: StudioTrialStepScope | AxisValueRuns | ListedRuns | null;
 };
 
@@ -4424,6 +4472,11 @@ export type StudioTrialStepScope = {
   "chosen_steps"?: Array<string>;
 };
 
+export type StudioTrialStructureEdit = {
+  "kind": "structure";
+  "change": TaskStructureChange;
+};
+
 export type StudioValueStructure = {
   "value": FieldValue;
   "arguments"?: Array<string>;
@@ -4496,6 +4549,8 @@ export type TaskPort = {
   "kind"?: "task";
   "task_key"?: string | null;
 };
+
+export type TaskStructureChange = AddMember | RemoveMember | feedbax__contracts__task_structure__RenameMember | MoveMember | SetType | SetSpan | MakeAbsent | MakePresent | SetLink;
 
 export type TextSpan = {
   "start": number;
@@ -4580,6 +4635,21 @@ export type VariableBinding = {
 
 export type WholeDimensions = {
   "parameter": string;
+};
+
+export type feedbax__contracts__studio_project__RenameMember = {
+  "family": KeyedFamily;
+  "member": string;
+  "document"?: string | null;
+  "kind": "rename";
+  "label": string | null;
+};
+
+export type feedbax__contracts__task_structure__RenameMember = {
+  "op": "rename";
+  "member": Member;
+  "id": string;
+  "name": string;
 };
 
 export const acausalReportDefaults = {
@@ -9131,6 +9201,16 @@ export const InspectionStatusResponseSchema: z.ZodType<InspectionStatusResponse>
     .strict()
 ) as unknown as z.ZodType<InspectionStatusResponse>;
 
+export const AddMemberSchema: z.ZodType<AddMember> = z.lazy(() =>
+  z.object({
+    "op": z.literal("add"),
+    "member": MemberSchema,
+    "name": z.string().min(1),
+    "index": z.union([z.number().int().safe().min(0), z.null()]).optional(),
+    "type": z.union([ValueTypeSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<AddMember>;
+
 export const AnalysisDocumentSchema: z.ZodType<AnalysisDocument> = z.lazy(() =>
   z.object({
     "schema_version": z.literal("feedbax.analysis_document.v1").optional(),
@@ -9902,6 +9982,22 @@ export const LocatedSpanSchema: z.ZodType<LocatedSpan> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<LocatedSpan>;
 
+export const MakeAbsentSchema: z.ZodType<MakeAbsent> = z.lazy(() =>
+  z.object({
+    "op": z.literal("absent"),
+    "signal": z.string(),
+    "cell": z.string(),
+  }).strict()
+) as unknown as z.ZodType<MakeAbsent>;
+
+export const MakePresentSchema: z.ZodType<MakePresent> = z.lazy(() =>
+  z.object({
+    "op": z.literal("present"),
+    "signal": z.string(),
+    "epoch": z.string(),
+  }).strict()
+) as unknown as z.ZodType<MakePresent>;
+
 export const ManualCombinationSchema: z.ZodType<ManualCombination> = z.lazy(() =>
   z.object({
     "manual": z.array(z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.string().min(1))),
@@ -9917,6 +10013,10 @@ export const MatrixCompositionDeltaSchema: z.ZodType<MatrixCompositionDelta> = z
     "schema_version": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<MatrixCompositionDelta>;
+
+export const MemberSchema: z.ZodType<Member> = z.lazy(() =>
+  z.union([z.literal("variable"), z.literal("epoch"), z.literal("signal")])
+) as unknown as z.ZodType<Member>;
 
 export const MemberFamilySchema: z.ZodType<MemberFamily> = z.lazy(() =>
   z.union([z.literal("documents"), z.literal("steps")])
@@ -9935,6 +10035,15 @@ export const ModelPortSchema: z.ZodType<ModelPort> = z.lazy(() =>
     "kind": z.literal("model").optional(),
   }).strict()
 ) as unknown as z.ZodType<ModelPort>;
+
+export const MoveMemberSchema: z.ZodType<MoveMember> = z.lazy(() =>
+  z.object({
+    "op": z.literal("move"),
+    "member": MemberSchema,
+    "id": z.string(),
+    "index": z.number().int().safe().min(0),
+  }).strict()
+) as unknown as z.ZodType<MoveMember>;
 
 export const NameSchema: z.ZodType<Name> = z.lazy(() =>
   z.string()
@@ -10219,6 +10328,14 @@ export const RemoveDocumentValueSchema: z.ZodType<RemoveDocumentValue> = z.lazy(
   }).strict()
 ) as unknown as z.ZodType<RemoveDocumentValue>;
 
+export const RemoveMemberSchema: z.ZodType<RemoveMember> = z.lazy(() =>
+  z.object({
+    "op": z.literal("remove"),
+    "member": MemberSchema,
+    "id": z.string(),
+  }).strict()
+) as unknown as z.ZodType<RemoveMember>;
+
 export const RemoveProjectValueSchema: z.ZodType<RemoveProjectValue> = z.lazy(() =>
   z.object({
     "op": z.literal("remove"),
@@ -10231,16 +10348,6 @@ export const RemoveValueSchema: z.ZodType<RemoveValue> = z.lazy(() =>
     "op": z.literal("remove"),
   }).strict()
 ) as unknown as z.ZodType<RemoveValue>;
-
-export const RenameMemberSchema: z.ZodType<RenameMember> = z.lazy(() =>
-  z.object({
-    "family": KeyedFamilySchema,
-    "member": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-    "document": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
-    "kind": z.literal("rename"),
-    "label": z.union([z.string().min(1), z.null()]),
-  }).strict()
-) as unknown as z.ZodType<RenameMember>;
 
 export const ReplayDeclarationAddressSchema: z.ZodType<ReplayDeclarationAddress> = z.lazy(() =>
   z.object({
@@ -10373,6 +10480,14 @@ export const SetDocumentValueSchema: z.ZodType<SetDocumentValue> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<SetDocumentValue>;
 
+export const SetLinkSchema: z.ZodType<SetLink> = z.lazy(() =>
+  z.object({
+    "op": z.literal("link"),
+    "model_field": z.string(),
+    "variable": z.union([z.string(), z.null()]),
+  }).strict()
+) as unknown as z.ZodType<SetLink>;
+
 export const SetProjectValueSchema: z.ZodType<SetProjectValue> = z.lazy(() =>
   z.object({
     "op": z.union([z.literal("add"), z.literal("replace")]),
@@ -10380,6 +10495,25 @@ export const SetProjectValueSchema: z.ZodType<SetProjectValue> = z.lazy(() =>
     "value": jsonValueSchema,
   }).strict()
 ) as unknown as z.ZodType<SetProjectValue>;
+
+export const SetSpanSchema: z.ZodType<SetSpan> = z.lazy(() =>
+  z.object({
+    "op": z.literal("set_span"),
+    "signal": z.string(),
+    "cell": z.string(),
+    "first_epoch": z.string(),
+    "last_epoch": z.string(),
+  }).strict()
+) as unknown as z.ZodType<SetSpan>;
+
+export const SetTypeSchema: z.ZodType<SetType> = z.lazy(() =>
+  z.object({
+    "op": z.literal("set_type"),
+    "member": z.union([z.literal("variable"), z.literal("signal")]),
+    "id": z.string(),
+    "type": ValueTypeSchema,
+  }).strict()
+) as unknown as z.ZodType<SetType>;
 
 export const SetValueSchema: z.ZodType<SetValue> = z.lazy(() =>
   z.object({
@@ -10915,7 +11049,7 @@ export const StudioMemberCommandSchema: z.ZodType<StudioMemberCommand> = z.lazy(
   z.object({
     "revision": Sha256Schema,
     "presentation_revision": Sha256Schema,
-    "command": z.union([RenameMemberSchema, ChangeKeySchema, DuplicateMemberSchema, DetachMemberSchema, SplitCardSchema, MergeCardsSchema]),
+    "command": z.union([feedbax__contracts__studio_project__RenameMemberSchema, ChangeKeySchema, DuplicateMemberSchema, DetachMemberSchema, SplitCardSchema, MergeCardsSchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioMemberCommand>;
 
@@ -11513,7 +11647,7 @@ export const StudioTrialAuthoringRequestSchema: z.ZodType<StudioTrialAuthoringRe
   z.object({
     "revision": Sha256Schema,
     "run": StudioSavedTrainKeySchema,
-    "change": z.union([z.union([StudioTrialDocumentEditSchema, StudioTrialDocumentResetSchema, StudioTrialBindingEditSchema, StudioTrialSelectDocumentSchema, StudioTrialExpressionEditSchema]), z.null()]).optional(),
+    "change": z.union([z.union([StudioTrialDocumentEditSchema, StudioTrialDocumentResetSchema, StudioTrialBindingEditSchema, StudioTrialSelectDocumentSchema, StudioTrialExpressionEditSchema, StudioTrialStructureEditSchema]), z.null()]).optional(),
     "scope": z.union([z.union([StudioTrialStepScopeSchema, AxisValueRunsSchema, ListedRunsSchema]), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialAuthoringRequest>;
@@ -11619,6 +11753,13 @@ export const StudioTrialStepScopeSchema: z.ZodType<StudioTrialStepScope> = z.laz
   }).strict()
 ) as unknown as z.ZodType<StudioTrialStepScope>;
 
+export const StudioTrialStructureEditSchema: z.ZodType<StudioTrialStructureEdit> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("structure"),
+    "change": TaskStructureChangeSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioTrialStructureEdit>;
+
 export const StudioValueStructureSchema: z.ZodType<StudioValueStructure> = z.lazy(() =>
   z.object({
     "value": FieldValueSchema,
@@ -11717,6 +11858,10 @@ export const TaskPortSchema: z.ZodType<TaskPort> = z.lazy(() =>
     "task_key": z.union([z.string(), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<TaskPort>;
+
+export const TaskStructureChangeSchema: z.ZodType<TaskStructureChange> = z.lazy(() =>
+  z.union([AddMemberSchema, RemoveMemberSchema, feedbax__contracts__task_structure__RenameMemberSchema, MoveMemberSchema, SetTypeSchema, SetSpanSchema, MakeAbsentSchema, MakePresentSchema, SetLinkSchema])
+) as unknown as z.ZodType<TaskStructureChange>;
 
 export const TextSpanSchema: z.ZodType<TextSpan> = z.lazy(() =>
   z.object({
@@ -11836,6 +11981,25 @@ export const WholeDimensionsSchema: z.ZodType<WholeDimensions> = z.lazy(() =>
     "parameter": z.string().min(1),
   }).strict()
 ) as unknown as z.ZodType<WholeDimensions>;
+
+export const feedbax__contracts__studio_project__RenameMemberSchema: z.ZodType<feedbax__contracts__studio_project__RenameMember> = z.lazy(() =>
+  z.object({
+    "family": KeyedFamilySchema,
+    "member": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "document": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+    "kind": z.literal("rename"),
+    "label": z.union([z.string().min(1), z.null()]),
+  }).strict()
+) as unknown as z.ZodType<feedbax__contracts__studio_project__RenameMember>;
+
+export const feedbax__contracts__task_structure__RenameMemberSchema: z.ZodType<feedbax__contracts__task_structure__RenameMember> = z.lazy(() =>
+  z.object({
+    "op": z.literal("rename"),
+    "member": MemberSchema,
+    "id": z.string(),
+    "name": z.string().min(1),
+  }).strict()
+) as unknown as z.ZodType<feedbax__contracts__task_structure__RenameMember>;
 
 export const contractSchemas = {
   KeepOpen: KeepOpenSchema,
