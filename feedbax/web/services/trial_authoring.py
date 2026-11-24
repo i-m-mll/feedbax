@@ -984,6 +984,7 @@ def trial_authoring(
         variables=list(projected.variables), signals=list(projected.signals), epochs=list(projected.epochs),
         period_seconds=documents.model.step_seconds,
         n_steps=paired.task.n_steps if paired else None,
+        reads_model=paired.task.reads_model if paired else False,
         tasks=[
             StudioTaskChoice(document=name, problems=list(_project(
                 _with_task(documents, other), bundle, show_objective=step.kind == "train", graph_override=graph,

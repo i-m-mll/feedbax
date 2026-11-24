@@ -4332,6 +4332,7 @@ export type StudioTrialAuthoring = {
   "epochs": Array<StudioTrialEpoch>;
   "period_seconds": number;
   "n_steps": number | null;
+  "reads_model": boolean;
   "inputs": Array<StudioTrialInput>;
   "outputs": Array<StudioTrialOutput>;
   "resets": Array<StudioTrialReset>;
@@ -12013,6 +12014,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "epochs": z.array(StudioTrialEpochSchema),
     "period_seconds": z.number().finite(),
     "n_steps": z.union([z.number().int().safe(), z.null()]),
+    "reads_model": z.boolean(),
     "inputs": z.array(StudioTrialInputSchema),
     "outputs": z.array(StudioTrialOutputSchema),
     "resets": z.array(StudioTrialResetSchema),

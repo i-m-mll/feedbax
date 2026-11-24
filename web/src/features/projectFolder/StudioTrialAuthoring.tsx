@@ -28,6 +28,8 @@ import type {
   FieldKind, JsonValue, ObjectiveTerm, Problem, ProjectValueEdit, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
 } from '@/generated/studioContracts';
 import { authoredPointer, authoredPointerParts } from './authoredEdits';
+import { TrialTrace } from './task/SignalTrace';
+import type { SampledTrial } from './task/trialSample';
 import { baseOf } from './documentPayload';
 import type { ProjectEditController } from './projectEditController';
 import { filesRemoval, type ConfirmRunRemoval } from './runRemoval';
@@ -211,10 +213,31 @@ export function TrialTaskOutline({ sections, view, selected, select }: {
     select={(chosen, id) => select(`${outlineKinds[chosen]}:${id}`)} />;
 }
 
-/** The Inspector of a Model input the Task feeds: the signal it reads. */
-export function TrialTaskInspector({ view, commit, selected }: { view: TrialView; commit?: Commit; selected?: string }) {
-  if (!selected?.startsWith('input:')) return null;
-  const key = selected.slice('input:'.length);
+/**
+ * The Inspector of a signal, an epoch or a Model input the drawer or the shelf selects; a signal, with a trial drawn,
+ * shows its plot over that trial.
+ */
+export function TrialTaskInspector({ view, commit, selected, trial }: {
+  view: TrialView; commit?: Commit; selected?: string; trial?: SampledTrial;
+}) {
+  if (!selected) return null;
+  const [kind, ...rest] = selected.split(':');
+  const key = rest.join(':');
+  if (kind === 'signal') {
+    const value = view.signals.find(({ id }) => id === key);
+    const steps = trial?.signals[key];
+    return value ? <Inspector name={humanizeLabel(value.name)} type={value.type.shape?.join(' × ') || value.type.base}>
+      {trial && steps && <section aria-label={studioName('plot')} className="grid gap-1">
+        <TrialTrace label={value.name} steps={steps} duration={steps.length * view.period_seconds}
+          boundaries={trial.intervals.slice(1).map(({ start }) => Math.round(start / view.period_seconds))} />
+      </section>}
+    </Inspector> : null;
+  }
+  if (kind === 'epoch') {
+    const epoch = view.epochs.find(({ id }) => id === key);
+    return epoch ? <Inspector name={epoch.name} type={studioName('epochs')} /> : null;
+  }
+  if (kind !== 'input') return null;
   const input = view.inputs.find(({ name }) => name === key);
   if (!input) return null;
   return <Inspector name={input.name} type={studioName('modelInputs')}>

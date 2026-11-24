@@ -2,8 +2,8 @@ import { expect, test } from '@playwright/test';
 
 test.use({ trace: 'off' });
 
-/** Catches a Task view part that throws or logs an error on either fixture's shape (a repeat, an Until End, a batch). */
-test('draws the Task view mockup for both fixtures, and their states sampled and as a batch, without a console error', async ({ page }) => {
+/** Catches a Task view part or the shelf throwing or logging an error on either fixture's shape (a repeat, an Until End, a batch). */
+test('draws the Task view mockup and the shelf for both fixtures without a console error', async ({ page }) => {
   const errors: string[] = [];
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
   page.on('pageerror', (error) => errors.push(error.message));
@@ -11,7 +11,7 @@ test('draws the Task view mockup for both fixtures, and their states sampled and
 
   for (const name of ['Delayed reaches', 'Three reaches']) {
     const states = page.getByRole('region', { name, exact: true });
-    await expect(states.getByRole('group', { name: 'Timeline' })).toHaveCount(3);
+    await expect(states.getByRole('region', { name: 'Shelf' })).toHaveCount(2);
     await expect(states.getByRole('img', { name: /^Plot / })).toHaveCount(2);
   }
   const window = page.locator('.studio-project-window');

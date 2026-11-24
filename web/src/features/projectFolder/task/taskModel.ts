@@ -1,6 +1,5 @@
 import type { ChangeMark, FieldModel } from '@/components/values/fieldModel';
 import type { ValueType } from '@/generated/studioContracts';
-import type { TimelineEpoch, TimelineRepeat } from '@/components/timeline/EpochTimeline';
 
 /**
  * How often a variable's value is read again: once per trial, or every step when it reads `time` or the model. A
@@ -52,13 +51,27 @@ export interface TaskVariable {
   readonly initializes?: VariableInitializes;
 }
 
+/**
+ * An epoch as a definition fixes it, in seconds: its least, nominal and greatest length. A drawn length spans least
+ * to greatest around its nominal; a condition ends it somewhere between its least and its limit; Rest is what remains
+ * of the trial.
+ */
+export interface EpochBounds {
+  readonly id: string;
+  readonly name: string;
+  readonly ends: 'length' | 'drawn' | 'condition' | 'rest';
+  readonly least: number;
+  readonly nominal: number;
+  readonly greatest: number;
+}
+
 export interface TaskEpoch {
   readonly id: string;
   readonly name: string;
   /** The epoch's End: a length's kinds, Until, or Rest. */
   readonly end: FieldModel;
   /** The epoch's least, nominal and greatest length, as the compiled task reports them. */
-  readonly bounds: TimelineEpoch;
+  readonly bounds: EpochBounds;
 }
 
 /** Adjacent epochs from `first` to `last` repeated `count` times; the count is written as the total. */

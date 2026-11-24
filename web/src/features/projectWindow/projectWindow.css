@@ -311,6 +311,13 @@
   padding-inline-start: var(--space-1);
 }
 
+.studio-window-shelf {
+  min-width: 0;
+  max-height: 40vh;
+  overflow-y: auto;
+  border-top: 1px solid var(--border-muted);
+}
+
 .studio-window-settings {
   position: absolute;
   inset: 0;

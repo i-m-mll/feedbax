@@ -137,13 +137,16 @@ export const selectedVariable = (selected: string | undefined): TaskSelection | 
   selected?.startsWith('variable:') ? { kind: 'variable', id: selected.slice('variable:'.length) } : undefined;
 
 /** The Task view of a task document: Variables, and the grid of epochs and signals. */
-export function TrialTaskDocument({ view, commit, runs, selected, select }: {
+export function TrialTaskDocument({ view, commit, runs, selected, select, drawn }: {
   view: TrialView; commit?: Commit; runs?: TrialRuns; selected?: string; select(id: string): void;
+  /** Each variable's value in the trial the clock shows, by variable id, when that trial was drawn. */
+  drawn?: Readonly<Record<string, string>>;
 }) {
   const shown = useVariables(view, commit, runs);
   if (!shown) return null;
   return <TaskDocumentBody variables={<TaskVariables variables={shown.variables} starts={shown.starts} selected={selectedVariable(selected)}
-    select={(selection) => select(`${selection.kind}:${selection.id}`)} edits={variableEdits(shown.task, commit)} />} />;
+    select={(selection) => select(`${selection.kind}:${selection.id}`)} edits={variableEdits(shown.task, commit)}
+    drawn={drawn} />} />;
 }
 
 /** The Inspector of a task document's variable: its value with the value's parts, and its type. */

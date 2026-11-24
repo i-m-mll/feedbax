@@ -153,6 +153,8 @@ class StudioTrialAuthoring(StrictModel):
     epochs: list[StudioTrialEpoch]
     period_seconds: float
     n_steps: int | None
+    reads_model: bool
+    """Whether the paired task reads the model's outputs, so that no trial can be drawn from it without a model."""
     inputs: list[StudioTrialInput]
     outputs: list[StudioTrialOutput]
     resets: list[StudioTrialReset]
