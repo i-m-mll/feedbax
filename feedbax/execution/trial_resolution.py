@@ -133,6 +133,7 @@ def pair_trial_source(
     graph_override: GraphSpec | None = None,
     task_sites: dict[tuple[str | int, ...], Site] | None = None,
     reset_fields: list[ModelResetField] | None = None,
+    nominal: bool = False,
 ) -> TrialPair | tuple[Problem, ...]:
     """The Model and Task paired for execution, or the Problems that refuse them. ``task_sites`` receives the Task's
     field sites, and ``reset_fields`` the Model fields a trial starts from, once the Model resolves."""
@@ -184,6 +185,7 @@ def pair_trial_source(
     if isinstance(task, TaskDocument):
         compiled = compile_task(
             task, functions, model=replace(interface, inputs=()), sites=task_sites, link_problems=links,
+            nominal=nominal,
         )
     else:
         assert template is not None
@@ -236,27 +238,30 @@ def preview_trial_source(
     *,
     python_tasks: PythonTaskRegistry,
     input_overrides: Mapping[str, str],
+    nominal: bool = False,
 ) -> PreviewTrialSource | tuple[Problem, ...]:
     """Compile the Task's trial, including each Model link that can be resolved."""
     paired = pair_trial_source(
         model, task, components, functions, python_tasks=python_tasks, input_overrides=input_overrides,
+        nominal=nominal,
     )
     if isinstance(paired, TrialPair):
         return PreviewTrialSource(paired.task, paired.model.outputs)
     if any(problem.path[:1] != ("model",) for problem in paired):
         return tuple(problem for problem in paired if problem.path[:1] != ("links",))
-    return compile_unpaired_task(model, task, functions, python_tasks=python_tasks)
+    return compile_unpaired_task(model, task, functions, python_tasks=python_tasks, nominal=nominal)
 
 
 def compile_unpaired_task(
     model: ModelDocument, task: TaskDocument | PythonTaskSelection, functions: FunctionRegistry,
     *, python_tasks: PythonTaskRegistry, sites: dict[tuple[str | int, ...], Site] | None = None,
+    nominal: bool = False,
 ) -> PreviewTrialSource | tuple[Problem, ...]:
     """Compile values that need only the authored Model period and output declarations."""
     outputs = declared_model_outputs(model)
     interface = ResolvedModelInterface(model.step_seconds, (), outputs, (), ())
     if isinstance(task, TaskDocument):
-        compiled = compile_task(task, functions, model=interface, sites=sites, link_problems=[])
+        compiled = compile_task(task, functions, model=interface, sites=sites, link_problems=[], nominal=nominal)
     else:
         template = resolve_python_task(task, python_tasks)
         if isinstance(template, tuple):

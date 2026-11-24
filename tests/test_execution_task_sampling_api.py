@@ -130,3 +130,20 @@ def test_delayed_reaches_term_applies_where_move_and_target_overlap(client, expr
     assert trial["terms"]["target"]["covered"]
     assert not any(trial["terms"]["absent"]["steps"])
     assert not trial["terms"]["absent"]["covered"]
+
+
+def test_nominal_trial_uses_representative_values_and_the_same_task_timeline(client, expression_functions):
+    """The nominal trial must keep its values and bars when the sampler controls change."""
+    payload = authored_preview("delayed", expression_functions) | {"nominal": True}
+    response = client.post("/api/execution/task-trials/sample", json=payload)
+    changed_controls = client.post("/api/execution/task-trials/sample", json=payload | {"seed": 2, "count": 10})
+    assert response.status_code == changed_controls.status_code == 200, response.text
+    assert response.json() == changed_controls.json()
+    (trial,) = response.json()["drawn"]["trials"]
+    assert trial["id"] == "nominal"
+    assert trial["variables"]["start"] == pytest.approx([0.05, 0.075])
+    assert trial["variables"]["catch"] is False
+    assert [(cue["epoch"], cue["start"], cue["end"]) for cue in trial["timeline"]] == [
+        ("hold", 0, 10), ("cue", 10, 24), ("move", 24, 80),
+    ]
+    assert trial["present"]["target_pos"] == [False] * 10 + [True] * 70

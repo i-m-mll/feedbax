@@ -373,6 +373,7 @@ def compile_task(
     input_overrides: Mapping[str, str] | None = None,
     sites: dict[tuple[str | int, ...], Site] | None = None,
     link_problems: list[Problem] | None = None,
+    nominal: bool = False,
 ) -> DocumentTask | tuple[Problem, ...]:
     """Compile a bounded ahead-of-rollout task from resolved model field types, or every independent Problem.
 
@@ -426,6 +427,7 @@ def compile_task(
             reset_on_epoch=epoch,
             discrete_uniform=discrete,
             path=address,
+            nominal=nominal,
         )
         marks = [
             Problem(

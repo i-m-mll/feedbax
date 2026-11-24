@@ -286,6 +286,7 @@ def compile_objective(
     task: TrialSource,
     sites: dict[tuple[str | int, ...], Site] | None = None,
     use: ObjectiveUse = ObjectiveUse.TRAIN,
+    nominal: bool = False,
 ) -> ObjectiveExecutor | tuple[Problem, ...]:
     """Compile an authored objective or rebind the validated Train terms to Evaluate."""
     period = task.period
@@ -347,6 +348,7 @@ def compile_objective(
             field_address=(document.id, *path, "measure"),
             period_seconds=period,
             path=(*path, "measure"),
+            nominal=nominal,
         )
         if not isinstance(measure, Compiled):
             problems.extend(measure)
@@ -370,6 +372,7 @@ def compile_objective(
             field_address=(document.id, *path, "weight"),
             period_seconds=period,
             path=(*path, "weight"),
+            nominal=nominal,
         )
         if not isinstance(weight, Compiled):
             problems.extend(weight)

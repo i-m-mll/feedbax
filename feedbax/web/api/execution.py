@@ -76,11 +76,14 @@ async def sample_task_trials(
     selected = payload.task if payload.task is not None else payload.python_task
     assert selected is not None
     task_id = selected.id if isinstance(selected, TaskDocument) else selected.type
-    count = len(payload.evaluation_trials) if payload.evaluation_trials is not None else payload.count
+    count = 1 if payload.nominal else (
+        len(payload.evaluation_trials) if payload.evaluation_trials is not None else payload.count
+    )
+    seed = 0 if payload.nominal else payload.seed
 
     def unavailable(*problems: Problem):
         return TaskTrialSampleResponse(
-            task=task_id, seed=payload.seed, count=count, n_steps=None,
+            task=task_id, seed=seed, count=count, n_steps=None,
             drawn=TrialUnavailable(kind="problems", problems=list(problems)),
         )
 
@@ -91,7 +94,7 @@ async def sample_task_trials(
         ))
     preview = preview_trial_source(
         payload.model, selected, bundle.components, bundle.expression_functions,
-        python_tasks=bundle.python_tasks, input_overrides=payload.input_overrides,
+        python_tasks=bundle.python_tasks, input_overrides=payload.input_overrides, nominal=payload.nominal,
     )
     if isinstance(preview, tuple):
         return unavailable(*preview)
@@ -102,9 +105,12 @@ async def sample_task_trials(
             reason="This task needs model outputs to produce a trial.",
         ))
 
-    key = jax.random.PRNGKey(payload.seed)
+    key = jax.random.PRNGKey(seed)
     parameters = TaskParameters()
-    if payload.evaluation_trials is not None:
+    if payload.nominal or payload.evaluation_trials is None:
+        ids = ("nominal",) if payload.nominal else tuple(f"trial:{index}" for index in range(count))
+        samples, keys = sample_training_trials(lambda sample: (task.ahead(parameters, key, sample), sample), key, count)
+    else:
         ids = tuple(payload.evaluation_trials)
         try:
             trial_indices(ids, task.condition_ids)
@@ -113,15 +119,12 @@ async def sample_task_trials(
                 code=ProblemCode.STRUCTURE, path=("evaluation_trials",), reason=str(error),
             ))
         samples, keys = sample_evaluation_trials(task, parameters, key=key, trial_ids=ids)
-    else:
-        ids = tuple(f"trial:{index}" for index in range(count))
-        samples, keys = sample_training_trials(lambda sample: (task.ahead(parameters, key, sample), sample), key, count)
 
     term_traces = {}
     if payload.objective is not None:
         scorer = compile_objective(
             payload.objective, (*preview.outputs, *task.interface.variables, *task.interface.signals),
-            bundle.expression_functions, task=task, use=ObjectiveUse.PREVIEW,
+            bundle.expression_functions, task=task, use=ObjectiveUse.PREVIEW, nominal=payload.nominal,
         )
         assert isinstance(scorer, ObjectiveExecutor)
         outputs = {
@@ -144,5 +147,6 @@ async def sample_task_trials(
         )
         for index, id in enumerate(ids)
     ]
-    drawn = aggregate_trials(trials, task.n_steps) if payload.aggregate else TrialRecords(kind="trials", trials=trials)
-    return TaskTrialSampleResponse(task=task_id, seed=payload.seed, count=count, n_steps=task.n_steps, drawn=drawn)
+    drawn = (aggregate_trials(trials, task.n_steps) if payload.aggregate and not payload.nominal
+             else TrialRecords(kind="trials", trials=trials))
+    return TaskTrialSampleResponse(task=task_id, seed=seed, count=count, n_steps=task.n_steps, drawn=drawn)
