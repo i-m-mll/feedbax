@@ -22,15 +22,19 @@ it('keeps open and bounded cadences as authored rules', () => {
   expect(editableCheckpointRule({ batches: [14, 7] })).toBeUndefined();
 });
 
-it('holds an empty draft without a reason and puts an invalid one on its field', () => {
+// Catches a list that says no rule dropped on Enter instead of saved as its text, and a number no rule takes saved.
+it('saves nothing for an empty draft, a list that says no rule as its text, and an invalid number not at all', () => {
   expect(checkpointDraftRule({ kind: 'at', at: null })).toEqual({});
   expect(checkpointDraftRule({ kind: 'every', every: null, from: 3, through: null })).toEqual({});
-  expect(checkpointDraftRule({ kind: 'list', updates: '7, 14, 7' })).toMatchObject({ field: 'updates' });
-  expect(checkpointDraftRule({ kind: 'list', updates: '7, 0' })).toMatchObject({ field: 'updates' });
-  expect(checkpointDraftRule({ kind: 'list', updates: '7 14' })).toMatchObject({ field: 'updates' });
-  expect(checkpointDraftRule({ kind: 'at', at: 9007199254740992 })).toMatchObject({ field: 'at' });
-  expect(checkpointDraftRule({ kind: 'every', every: 0, from: null, through: null })).toMatchObject({ field: 'every' });
-  expect(checkpointDraftRule({ kind: 'every', every: 7, from: 21, through: 14 })).toMatchObject({ field: 'through' });
+  for (const updates of ['7, 14, 7', '7, 0', '7 14']) {
+    expect(checkpointDraftRule({ kind: 'list', updates })).toMatchObject({
+      rule: { kind: 'unresolved', text: updates }, problem: { field: 'updates' },
+    });
+  }
+  expect(checkpointDraft({ kind: 'unresolved', text: '7 14' })).toEqual({ kind: 'list', updates: '7 14' });
+  expect(checkpointDraftRule({ kind: 'at', at: 9007199254740992 })).toEqual({ problem: expect.objectContaining({ field: 'at' }) });
+  expect(checkpointDraftRule({ kind: 'every', every: 0, from: null, through: null })).toEqual({ problem: expect.objectContaining({ field: 'every' }) });
+  expect(checkpointDraftRule({ kind: 'every', every: 7, from: 21, through: 14 })).toEqual({ problem: expect.objectContaining({ field: 'through' }) });
   expect(checkpointDraftRule({ kind: 'every', every: 1, from: null, through: 9007199254740991 })).toHaveProperty('rule');
 });
 
@@ -80,8 +84,8 @@ it('refuses an update outside the range every run read has, on its field, naming
   expect(checkpointDraftRule({ kind: 'at', at: 8000 }, range)).toEqual({ rule: { at: 8000 } });
   expect(checkpointDraftRule({ kind: 'at', at: 101 }, range)).toEqual({ rule: { at: 101 } });
   const late = checkpointDraftRule({ kind: 'at', at: 9000 }, range);
-  expect(late).toMatchObject({ field: 'at', reason: expect.stringMatching(/^train-2 · .*101\b.*8000/) });
+  expect(late).toMatchObject({ rule: { at: 9000 }, problem: { field: 'at', reason: expect.stringMatching(/^train-2 · .*101\b.*8000/) } });
   const early = checkpointDraftRule({ kind: 'list', updates: '100, 200' }, range);
-  expect(early).toMatchObject({ field: 'updates', reason: expect.stringMatching(/^train · .*101\b.*8000/) });
+  expect(early).toMatchObject({ rule: [{ at: 100 }, { at: 200 }], problem: { field: 'updates', reason: expect.stringMatching(/^train · .*101\b.*8000/) } });
   expect(checkpointDraftRule({ kind: 'last' }, range)).toEqual({ rule: 'last' });
 });
