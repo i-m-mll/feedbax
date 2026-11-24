@@ -1436,7 +1436,7 @@ class ProjectFolder:
             return ModelEditState.model_validate({"document": restored[0], **restored[1]})
 
         result = apply_model_edit(
-            state, body.command, ports=authority.port, accepts=authority.accepts,
+            state, body.command, ports=authority.port, component_problem=authority.placement_problem,
             next_input=authority.next_input, functions=self.functions, reference=reference,
             instantiate_template=lambda name: instantiate_model_template(name, components, state.document.step_seconds),
             task_signal=lambda command: selected_task_signal(self, project_id, ModelProjectionRequest(
@@ -1486,8 +1486,8 @@ class ProjectFolder:
                     and any(file.address == shown_file for file in files)):
                 step_files = [file for file in files if file.address.kind == "step"]
                 candidate = preview_authored_files(snapshot.project, step_files)
-                before_draft = ModelEditDraft(state, authority.port, authority.accepts)
-                after_draft = ModelEditDraft(result.state, authority.port, authority.accepts)
+                before_draft = ModelEditDraft(state, authority.port)
+                after_draft = ModelEditDraft(result.state, authority.port)
                 moved, sweep_problems = _model_sweep_changes(
                     candidate, body.document, before_draft, after_draft, result.relocations, functions=self.functions,
                     read_plan=lambda: self.read_plan(project_id, revision=body.revision).plan,
