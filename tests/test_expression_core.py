@@ -217,8 +217,16 @@ def test_bad_documents_return_path_addressed_problems(functions):
     )
     assert read_field("true", expected, functions)[0].code == ProblemCode.TYPE_MISMATCH
     assert check(parsed("U(0,1)", site()), site(), functions)[0].code == ProblemCode.LEVEL_TOO_FINE
-    (cycle,) = dependency_order({"a": NameValue(reference="b"), "b": NameValue(reference="a")})
-    assert (cycle.code, cycle.path) == (ProblemCode.CYCLE, ("variables", "b", "value"))
+    order, cycles = dependency_order({
+        "a": NameValue(reference="b"), "b": NameValue(reference="c"), "c": NameValue(reference="a"),
+        "d": NameValue(reference="a"), "e": LiteralValue(value=1),
+    })
+    assert order == ("d", "e")
+    assert [(cycle.code, cycle.path[1], cycle.reason) for cycle in cycles] == [
+        (ProblemCode.CYCLE, "a", "a → b → c → a"),
+        (ProblemCode.CYCLE, "b", "b → c → a → b"),
+        (ProblemCode.CYCLE, "c", "c → a → b → c"),
+    ]
 
 
 def evaluate(implementation, inputs):
