@@ -192,6 +192,7 @@ class ProjectFolderService(ProjectFolder):
         return ModelEditResponse(result=ModelEditApplied(
             status="applied", snapshot=result.snapshot, changed=result.changed, clipboard=result.clipboard,
             undo_token=token, created=result.created, problems=result.problems,
+            sweep_problems=result.sweep_problems,
         ))
 
     def undo_model(self, project_id: str, body: ModelUndoRequest) -> ModelEditResponse:
