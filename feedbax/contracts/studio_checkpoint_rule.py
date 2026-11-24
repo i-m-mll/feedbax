@@ -5,7 +5,8 @@ from typing import Annotated, Literal
 from pydantic import Field
 
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.jobs import StudioSavedTrainKey
+from feedbax.contracts.expression_values import UnresolvedValue
+from feedbax.contracts.jobs import StudioProjectWindowMapProblem, StudioSavedTrainKey
 from feedbax.contracts.model_edit import AxisValueRuns, ListedRuns
 from feedbax.contracts.project_inputs import BatchCheckpoint
 from feedbax.contracts.request_refs import Sha256, UpdateRule
@@ -14,7 +15,7 @@ from feedbax.contracts.studio_project import StudioProjectFilePatch
 
 class StudioCheckpointRuleSet(StrictModel):
     kind: Literal["set"]
-    rule: Literal["last"] | BatchCheckpoint | UpdateRule
+    rule: Literal["last"] | BatchCheckpoint | UpdateRule | UnresolvedValue
     scope: Annotated[AxisValueRuns | ListedRuns, Field(discriminator="kind")]
 
 
@@ -31,3 +32,4 @@ class StudioCheckpointRuleRequest(StrictModel):
 class StudioCheckpointRuleEdit(StrictModel):
     revision: Sha256
     files: list[StudioProjectFilePatch]
+    problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
