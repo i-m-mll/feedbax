@@ -335,13 +335,14 @@ def test_connection_review_edit_and_undo_keep_the_addressed_model(tmp_path, ambi
         (key, wire), = [(key, wire) for key, wire in saved_wires.items() if wire["target"] == destination]
         assert wire["source"] == replacement
         assert {p["address"]["element"]["id"] for p in result["problems"]} == {key, "dangling"}
-        assert saved_wires["dangling"] == wires["dangling"] | {"attachments": []}
+        assert saved_wires["dangling"] == wires["dangling"]
         saved_layout = saved["presentation"]["documents"]["model"]["waypoints"]
         if ambiguous:
-            assert key not in old_wires and wire["attachments"] == []
+            assert key not in old_wires and not wire.get("attachments")
             assert saved_layout == {stale_layout.to_text(): layout[stale_layout.to_text()]}
         else:
-            assert key == "hold" and wire["attachments"] == [attachments[0] | {"window": None}]
+            original_wire = before["project"]["documents"]["model"]["payload"]["interior"]["wires"]["hold"]
+            assert key == "hold" and wire["attachments"] == original_wire["attachments"]
             assert saved_layout == layout
 
         response = client.post(url + "/model/undo", json={
@@ -372,6 +373,23 @@ def test_connection_review_edit_and_undo_keep_the_addressed_model(tmp_path, ambi
         ports = {p["address"]["element"]["end"]["port"] for p in projection["problems"]
                  if p["address"]["element"]["kind"] == "port"}
         assert ports == {"old", "new"}
+
+
+def test_incompatible_local_physical_ports_keep_an_addressed_connection():
+    """Catch a refusal after connecting two existing ports in a physical interior."""
+    data = _start().model_dump(mode="json")
+    physics = data["document"]["interior"]["components"]["physics"]
+    physics["ports"]["physical"][0]["type"] = "rotational"
+    state = ModelEditState.model_validate(data)
+    result = _execute(
+        state, "connect_physical", graph=_address(("physics",)),
+        connection={"a": _end("mass", "flange"), "b": {"owner": "boundary", "port": "frame"}},
+    )
+    graph = result.state.document.interior.components["physics"].interior
+    connection, = graph.connections.values()
+    assert connection.a.port == "flange" and connection.b.port == "frame"
+    problem, = result.problems
+    assert problem.address == result.changed[0]
 
 
 def _graphs(owner, scope=()):

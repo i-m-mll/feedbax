@@ -1059,7 +1059,7 @@ def _attachment_problem(chain: list[Record]) -> str | None:
 
 
 def model_graph_problems(
-    document: ModelDocument, *, ports: LeafPorts, accepts: AcceptComponent,
+    document: ModelDocument, *, ports: LeafPorts, accepts: AcceptComponent = lambda *_: True,
 ) -> Iterator[edits.ModelGraphProblem]:
     """Check authored identities and connections independently of graph lowering."""
     return ModelEditDraft(edits.ModelEditState(document=document), ports, accepts).graph_problems()

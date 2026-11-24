@@ -12,6 +12,7 @@ import numpy as np
 from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler.resolution import GraphParameterResolution, resolve_graph_parameters
 from feedbax.compiler.prototypes import prototypes_from_task_bindings
+from feedbax.compiler.model_edit import model_graph_problems
 from feedbax.compiler.model_ports import ModelRegistryPorts
 from feedbax.contracts.acausal import AcausalConnectionSpec, AcausalGraphSpec, PlanarDynamicsSpec, SolverConfigSpec
 from feedbax.contracts.acausal_interface import (
@@ -824,7 +825,7 @@ def lower_model_document(
     lower = _Lower(model, components)
     names = frozenset(item.label for item in task.exposed_data if item.bindable) if task else frozenset()
     graph = lower.graph(model.interior, model.ports, (), available=names | supplied_inputs)
-    if (problem := next(ModelRegistryPorts(components).problems(model), None)) is not None:
+    if (problem := next(model_graph_problems(model, ports=ModelRegistryPorts(components).port), None)) is not None:
         raise ModelCompilationProblem(problem.address, problem.reason)
     lower.reject_within_step_paths(graph)
     binding = lower.root_inputs(task, graph) if task is not None else None
