@@ -2016,6 +2016,7 @@ export interface ScenePlanarGeometry {
 export interface ScenePointGeometry {
   kind: "point";
   address: ModelAddress;
+  point: ModelAddress;
   position: [number, number];
 }
 
@@ -2023,7 +2024,6 @@ export interface StudioSceneGeometryRequest {
   revision: string;
   document_id: string;
   state_values?: Record<string, JsonValue>;
-  configurations?: Record<string, Record<string, JsonValue>>;
 }
 
 export interface StudioSceneGeometryResponse {
@@ -8961,6 +8961,7 @@ export const ScenePointGeometrySchema: z.ZodType<ScenePointGeometry> = z.lazy(()
     .object({
       "kind": z.literal("point"),
       "address": ModelAddressSchema,
+      "point": ModelAddressSchema,
       "position": z.tuple([z.number().finite(), z.number().finite()]),
     })
     .strict()
@@ -8972,7 +8973,6 @@ export const StudioSceneGeometryRequestSchema: z.ZodType<StudioSceneGeometryRequ
       "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
       "document_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
       "state_values": z.record(z.string(), jsonValueSchema).optional(),
-      "configurations": z.record(z.string(), z.record(z.string(), jsonValueSchema)).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSceneGeometryRequest>;

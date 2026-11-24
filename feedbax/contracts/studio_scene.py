@@ -68,6 +68,7 @@ class SceneMuscleGeometry(StrictModel):
 class ScenePointGeometry(StrictModel):
     kind: Literal["point"]
     address: ModelAddress
+    point: ModelAddress
     position: ScenePoint
 
 
@@ -90,9 +91,7 @@ class StudioSceneModelSource(StrictModel):
 
 class StudioSceneGeometryRequest(StudioSceneModelSource):
     state_values: dict[str, JsonValue] = Field(default_factory=dict)
-    """Trial initial values or one recorded step, keyed by canonical state Model address."""
-    configurations: dict[str, dict[str, JsonValue]] = Field(default_factory=dict)
-    """One recorded step, keyed by canonical component Model address and then state symbol."""
+    """Trial initial values or one recorded step, including configuration, by state Model address."""
 
 
 class StudioSceneGeometryResponse(StudioSceneModelSource):
