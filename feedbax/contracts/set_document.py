@@ -35,7 +35,7 @@ class SetEntry(StrictModel):
 
 
 class SetDocument(StrictModel):
-    entries: dict[ProjectName, SetEntry] = Field(min_length=1)
+    entries: dict[ProjectName, SetEntry]
 
 
 class SetMisfit(ValueError):
