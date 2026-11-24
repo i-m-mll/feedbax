@@ -333,7 +333,9 @@ def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_p
         test_run = {**run, "step": "baseline", "row": "seed=test"}
         control_run = {**test_run, "row": "seed=control"}
         evaluated_task = author(revision, selected=control_run)
-        assert [term.id for term in evaluated_task.objective.terms] == ["effort"]
+        assert [term.id for term in evaluated_task.objective.terms] == [
+            "effort", "move-effort", "target-variable", "target-signal",
+        ]
         assert evaluated_task.objective_source.model_dump() == {"kind": "train", "step": "train"}
         assert evaluated_task.task.params == {"x": 0.22, "y": 0.0, "n_steps": 12}
         assert [epoch.id for epoch in evaluated_task.epochs] == ["move"]
