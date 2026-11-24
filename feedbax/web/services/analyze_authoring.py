@@ -273,8 +273,8 @@ def analyze_authoring(
         for reference in references
     )
     try:
-        view = service.read(project_id, revision=body.revision)
-        plan = view.settled.plan
+        settled = service.folders.read_plan(project_id, revision=body.revision)
+        plan = settled.plan
         if plan.variants and plan.variants[0] != key.variant:
             raise ValueError(f"The Analyze step is shared by all variants and is edited in {plan.variants[0]!r}, not {key.variant!r}")
         problems = [
@@ -291,7 +291,10 @@ def analyze_authoring(
                 ResolutionCode.BAD_REFERENCE, "inputs.states", "Select Evaluate runs of this variant.", key.step,
                 variant=key.variant, row=key.row,
             ))
-        states = _states_port(service, view, row, key, states_available)
+        states = None
+        if row is not None and states_available and row.inputs.get("states"):
+            view = service.read(project_id, revision=body.revision)
+            states = _states_port(service, view, row, key, states_available)
         registry = service.jobs.registries.operations
         definitions = list(registry.definitions())
         dimensions = sorted({
@@ -300,7 +303,7 @@ def analyze_authoring(
         }) if row is not None else []
         stored = analyze_edit(
             project, plan, key, step.base.document, body.change, frozenset(body.chosen_steps), registry, states,
-            readers=view.settled.readers, figure_templates=service.jobs.registries.figure_templates,
+            readers=settled.readers, figure_templates=service.jobs.registries.figure_templates,
         ) if body.change else StoredEdit([])
     except (JobConflict, JobNotFound, KeyError, ValueError) as error:
         raise ProjectFolderInvalid(str(error)) from error
@@ -318,7 +321,7 @@ def analyze_authoring(
         created=list(stored.created),
         problems=[
             StudioProjectWindowMapProblem.from_diagnostic(
-                problem, declaration=project_declaration_name(view.settled.configuration.project),
+                problem, declaration=project_declaration_name(settled.configuration.project),
             ) for problem in problems
         ],
     )

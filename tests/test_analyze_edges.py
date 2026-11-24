@@ -5,6 +5,7 @@ import pytest
 
 from feedbax.contracts.project_inputs import StepReference
 from feedbax.web.app import create_app
+from feedbax.web.services.project_plan import ProjectPlanRead
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_project_report_plan import _report_project
 
@@ -80,8 +81,11 @@ def test_split_and_merge_are_refused_for_a_shared_document(studio):
     assert _snapshot(client)["project"] == before
 
 
-def test_split_and_merge_keep_a_broken_analyze_input_and_the_readable_operations(studio):
+def test_split_and_merge_keep_a_broken_analyze_input_and_the_readable_operations(studio, monkeypatch):
     client, folders = studio
+    monkeypatch.setattr(client.app.state.project_plan, "read", lambda project, *, revision: (
+        ProjectPlanRead.without_history(folders.read_plan(project, revision=revision))
+    ))
     project = _report_project()
     analysis = project.documents["velocity-analysis"]
     analysis.payload["views"]["profile"]["inputs"]["summary"] = {"input": "missing_role"}

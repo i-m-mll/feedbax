@@ -2199,13 +2199,12 @@ class _Compiler:
                 evaluation_graph=evaluation if isinstance(evaluation, GraphSpec) else None,
                 evaluation_problem=evaluation if isinstance(evaluation, ProjectDiagnostic) else None,
             )
-        source_stamp = (
-            tuple(source.stamp if source is not None else None for source in (
-                self.model_sources.get(producer) for producer in subject.candidates
-            ))
-            if subject is not None and subject.candidates else
-            (model_source.stamp,) if model_source is not None else ()
+        source_models = (
+            tuple(self.model_sources.get(producer) for producer in subject.candidates)
+            if subject is not None and subject.candidates
+            else (model_source,) if model_source is not None else ()
         )
+        source_stamp = tuple(source.stamp if source is not None else None for source in source_models)
         source_problem = model_source.evaluation_problem if model_source is not None else None
         checkpoint = inputs.get("checkpoint") if kind == "train" else None
         trained = self.model_sources.get(checkpoint.producer) if checkpoint is not None and checkpoint.producer else None
@@ -2236,9 +2235,19 @@ class _Compiler:
             remember_train = None
             train = _train_facts(payload, self.python_tasks) if kind == "train" else None
             has_differences = MODEL_ATTACHMENTS in payload
+            model_lineage = ()
+            if kind == "evaluate" and (document := document_ids.get(EVALUATION_MODEL)) is not None:
+                authored = self.variants[key.variant].documents
+                names = (document, *(source.document for source in source_models if source and source.document))
+                model_lineage = tuple(base_chain(authored, name) for name in names)
+                if reader is not None:
+                    for chain in model_lineage:
+                        for name in chain:
+                            reader(name)
             lowering_stamp = (
                 _RowLoweringStamp(kind, sha256_bytes(to_json((
-                    payload, tuple(sorted(document_ids.items())), tuple(sorted(document_pointers.items())), source_stamp,
+                    payload, tuple(sorted(document_ids.items())), tuple(sorted(document_pointers.items())),
+                    source_stamp, model_lineage,
                 ))), member)
                 if basis is not None else None
             )
