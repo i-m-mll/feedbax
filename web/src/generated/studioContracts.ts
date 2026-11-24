@@ -3606,6 +3606,8 @@ export type StepReference = {
   "product"?: string | null;
 };
 
+export type StoreKind = "all_readers" | "selected_readers" | "sweep_value" | "set_entry" | "row_exception" | "variant" | "other_runs" | "whole_step";
+
 export type StoreSubset = {
   "rule"?: string;
   "rows"?: Array<SelectedRow>;
@@ -4249,6 +4251,14 @@ export type StudioStepPlace = {
   "field"?: string | null;
 };
 
+export type StudioStoreChoice = {
+  "id": Sha256;
+  "kind": StoreKind;
+  "label": string;
+  "steps": Array<string>;
+  "runs": Array<StudioSavedTrainKey>;
+};
+
 export type StudioSubsetToRowsEdit = {
   "revision": string;
   "files": Array<StudioProjectFilePatch>;
@@ -4380,6 +4390,7 @@ export type StudioTrialAuthoring = {
   "problems": Array<Problem>;
   "files": Array<StudioProjectFilePatch>;
   "created"?: Array<CreateNamedDocument>;
+  "store_choices"?: Array<StudioStoreChoice> | null;
   "refusal"?: StudioSweptParameterMissing | null;
 };
 
@@ -4387,6 +4398,7 @@ export type StudioTrialAuthoringRequest = {
   "revision": Sha256;
   "run": StudioSavedTrainKey;
   "change"?: StudioTrialDocumentEdit | StudioTrialDocumentReset | StudioTrialBindingEdit | StudioTrialSelectDocument | StudioTrialExpressionEdit | StudioTrialStructureEdit | null;
+  "store_choice"?: Sha256 | null;
   "scope"?: StudioTrialStepScope | AxisValueRuns | ListedRuns | null;
 };
 
@@ -11136,6 +11148,10 @@ export const StepReferenceSchema: z.ZodType<StepReference> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<StepReference>;
 
+export const StoreKindSchema: z.ZodType<StoreKind> = z.lazy(() =>
+  z.union([z.literal("all_readers"), z.literal("selected_readers"), z.literal("sweep_value"), z.literal("set_entry"), z.literal("row_exception"), z.literal("variant"), z.literal("other_runs"), z.literal("whole_step")])
+) as unknown as z.ZodType<StoreKind>;
+
 export const StoreSubsetSchema: z.ZodType<StoreSubset> = z.lazy(() =>
   z.object({
     "rule": z.string().optional(),
@@ -11969,6 +11985,16 @@ export const StudioStepPlaceSchema: z.ZodType<StudioStepPlace> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<StudioStepPlace>;
 
+export const StudioStoreChoiceSchema: z.ZodType<StudioStoreChoice> = z.lazy(() =>
+  z.object({
+    "id": Sha256Schema,
+    "kind": StoreKindSchema,
+    "label": z.string(),
+    "steps": z.array(z.string()).min(1),
+    "runs": z.array(StudioSavedTrainKeySchema).min(1),
+  }).strict()
+) as unknown as z.ZodType<StudioStoreChoice>;
+
 export const StudioSubsetToRowsEditSchema: z.ZodType<StudioSubsetToRowsEdit> = z.lazy(() =>
   z.object({
     "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
@@ -12129,6 +12155,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "problems": z.array(ProblemSchema),
     "files": z.array(StudioProjectFilePatchSchema),
     "created": z.array(CreateNamedDocumentSchema).optional(),
+    "store_choices": z.union([z.array(StudioStoreChoiceSchema).min(1), z.null()]).optional(),
     "refusal": z.union([StudioSweptParameterMissingSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialAuthoring>;
@@ -12138,6 +12165,7 @@ export const StudioTrialAuthoringRequestSchema: z.ZodType<StudioTrialAuthoringRe
     "revision": Sha256Schema,
     "run": StudioSavedTrainKeySchema,
     "change": z.union([z.union([StudioTrialDocumentEditSchema, StudioTrialDocumentResetSchema, StudioTrialBindingEditSchema, StudioTrialSelectDocumentSchema, StudioTrialExpressionEditSchema, StudioTrialStructureEditSchema]), z.null()]).optional(),
+    "store_choice": z.union([Sha256Schema, z.null()]).optional(),
     "scope": z.union([z.union([StudioTrialStepScopeSchema, AxisValueRunsSchema, ListedRunsSchema]), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialAuthoringRequest>;
