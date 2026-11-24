@@ -342,7 +342,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         const result = await projectModelFields(saved.project_id, {
           ...fieldBody, revision: current.revision, address, edit, chosen_steps: [...chosenSteps],
         }, editor.signal);
-        if (result.problems?.length) return result.problems[0].reason;
+        if (!result.command && !result.files?.length && result.problems?.length) return result.problems[0].reason;
         if (result.command) {
           if (result.files?.length && !await confirmRunRemoval(sweepValueRuns(result.removed_values))) return undefined;
           const applied = await editor.editModel('Set Value', fieldBody.document, result.command, current, fieldBody.run && {
@@ -392,7 +392,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       multipleRows: !evaluate && (fieldRows?.length ?? 0) > 1,
       selectedMembers: field.sweep ? selectedSweepValues?.get(field.sweep.id) : undefined,
     });
-    return { ...model, id: fieldName(field.address) };
+    const [problem] = field.problems ?? [];
+    return { ...model, id: fieldName(field.address), reason: problem?.reason, span: problem?.span ?? undefined };
   }));
   const projectedFields = sharedFields(projectedLists);
   const fieldScope = JSON.stringify([saved.project_id, model?.id, fieldRows, fieldOwners.map(addressKey)]);
