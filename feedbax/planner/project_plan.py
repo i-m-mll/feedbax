@@ -1861,7 +1861,7 @@ class _Compiler:
                     continue
                 problems.append(ProjectDiagnostic(
                     ResolutionCode.INVALID_DOCUMENT, f"payload.{key.family}.{key.element}",
-                    f"{key.element!r} is also held by {key.holder}, which is unrelated to this document.",
+                    f"{member_name(self.variants[variant].documents, key.holder)} holds the same key in an unrelated document.",
                     document=key.document, element=key.element,
                     variant=None if key in everywhere else variant,
                 ))
@@ -3665,8 +3665,11 @@ class _Compiler:
         for label, coordinate in {"model": SweepCoordinate(name.key, name.label), **trained}.items():
             prior = coordinates.setdefault(label, coordinate)
             if prior.value_id != coordinate.value_id:
+                project = self.variants[run.key.variant]
+                step_name = member_name(project.steps, run.key.step)
+                subject_name = member_name(project.documents, name.key) if name.kind == "document" else name.printed
                 raise ValueError(
-                    f"{run.key.step}/{run.key.row} and its subject {name.key!r} "
+                    f"{step_name}/{run.key.row} and its subject {subject_name!r} "
                     f"give label {label!r} different values"
                 )
         return coordinates

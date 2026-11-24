@@ -838,6 +838,7 @@ export interface EvaluateModelState {
   field_sources?: Record<string, StudioEvaluateValueSource>;
   changed_from?: string | null;
   problems?: StudioProjectWindowMapProblem[];
+  ungroup?: ModelUngroupEligibility[];
 }
 
 export interface StudioEvaluateValueSource {
@@ -903,7 +904,7 @@ export interface FlipComponent {
 export interface InsertComponentOnWire {
   op: "insert_component";
   address: ModelAddress;
-  component: LeafComponent | CompositeComponent;
+  component: LeafComponent | CompositeComponent | RegisteredComponent;
   input_port: string;
   output_port: string;
   position: ModelPosition;
@@ -1083,7 +1084,6 @@ export interface ModelProjection {
   resolved_model?: ModelDocument | null;
   base_differences?: Array<ModelAddedElement | ModelRemovedElement | ModelRewiredElement>;
   value_differences?: Array<ModelAddedElement | ModelRemovedElement | ModelRewiredElement>;
-  problems?: ModelGraphProblem[];
   ungroup?: ModelUngroupEligibility[];
 }
 
@@ -2101,6 +2101,7 @@ export interface ComponentDefinition {
   interior_domain?: string | null;
   is_composite?: boolean;
   template_graph?: GraphSpec | AcausalGraphSpec | null;
+  placement_reason?: string | null;
   template_ui_state?: GraphUIState | null;
   template_id?: string | null;
   template_kind?: string | null;
@@ -6922,6 +6923,7 @@ export const EvaluateModelStateSchema: z.ZodType<EvaluateModelState> = z.lazy(()
       "field_sources": z.record(z.string(), StudioEvaluateValueSourceSchema).optional(),
       "changed_from": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
       "problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
+      "ungroup": z.array(ModelUngroupEligibilitySchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<EvaluateModelState>;
@@ -7065,7 +7067,7 @@ export const InsertComponentOnWireSchema: z.ZodType<InsertComponentOnWire> = z.l
     .object({
       "op": z.literal("insert_component"),
       "address": ModelAddressSchema,
-      "component": z.union([LeafComponentSchema, CompositeComponentSchema]),
+      "component": z.union([LeafComponentSchema, CompositeComponentSchema, RegisteredComponentSchema]),
       "input_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
       "output_port": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
       "position": ModelPositionSchema,
@@ -7362,7 +7364,6 @@ export const ModelProjectionSchema: z.ZodType<ModelProjection> = z.lazy(() =>
       "resolved_model": ModelDocumentSchema.nullable().optional(),
       "base_differences": z.array(z.union([ModelAddedElementSchema, ModelRemovedElementSchema, ModelRewiredElementSchema])).optional(),
       "value_differences": z.array(z.union([ModelAddedElementSchema, ModelRemovedElementSchema, ModelRewiredElementSchema])).optional(),
-      "problems": z.array(ModelGraphProblemSchema).optional(),
       "ungroup": z.array(ModelUngroupEligibilitySchema).optional(),
     })
     .strict()
@@ -9159,6 +9160,7 @@ export const ComponentDefinitionSchema: z.ZodType<ComponentDefinition> = z.lazy(
       "interior_domain": z.string().nullable().optional(),
       "is_composite": z.boolean().optional(),
       "template_graph": z.union([GraphSpecSchema, AcausalGraphSpecSchema, z.null()]).optional(),
+      "placement_reason": z.string().nullable().optional(),
       "template_ui_state": GraphUIStateSchema.nullable().optional(),
       "template_id": z.string().nullable().optional(),
       "template_kind": z.string().nullable().optional(),
