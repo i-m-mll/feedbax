@@ -454,3 +454,35 @@ def test_place_registered_template_as_an_editable_composite(tmp_path, name, hidd
     inputs = {"obs": jnp.ones((1, 1)), "obs_prev": jnp.ones((1, 1)), "h_prev": jnp.full((1, 1), 2.0)}
     outputs, _ = graph(inputs, graph.init_state(key=key), key=key, n_steps=1)
     assert float(outputs["h_new"][0, 0]) == pytest.approx(hidden)
+
+
+def test_template_zero_carry_preserves_a_recurrent_controller_rollout():
+    """Replacing a template carry with a Model Delay must preserve reset and later steps."""
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+
+    from feedbax.application.composition import load_application
+    from feedbax.compiler.graph import GraphDocument, compile_graph
+    from feedbax.compiler.model_document import lower_model_document
+    from feedbax.compiler.model_templates import instantiate_model_template
+    from feedbax.contracts.graph import GraphSpec
+    from feedbax.contracts.model_document import ModelDocument
+
+    registry = load_application().bundle.components
+    name = "feedbax.RecurrentController"
+    original = registry.get(name).template_graph
+    assert isinstance(original, GraphSpec)
+    placed = instantiate_model_template(name, registry, 0.01)
+    model = ModelDocument(step_seconds=0.01, ports=placed.ports, interior=placed.interior)
+    restored = lower_model_document(model, registry).graph
+    key = jax.random.key(19)
+    inputs = {"input": jnp.arange(15, dtype=jnp.float32).reshape((5, 3)) / 10,
+              "feedback": jnp.full((5, 3), 0.1)}
+
+    def rollout(spec):
+        prototypes = {bound: jax.ShapeDtypeStruct((3,), jnp.float32) for bound in spec.input_bindings.values()}
+        graph = compile_graph(GraphDocument(graph=spec), registry, prototypes).graph
+        return graph(inputs, graph.init_state(key=key), key=key, n_steps=5)[0]["output"]
+
+    np.testing.assert_allclose(rollout(restored), rollout(original), rtol=1e-6, atol=1e-6)
