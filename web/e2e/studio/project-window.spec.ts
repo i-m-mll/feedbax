@@ -626,6 +626,9 @@ test('a run whose own exception is refused dims its definition views with the pr
   expect(reads).not.toContain('rate=rate-0');
 
   await chooseSweepValue(card, 'rate', '0.01');
+  for (const name of ['Model', 'Objective']) {
+    await expect(page.getByRole('tab', { name, exact: true })).not.toHaveAttribute('aria-disabled', 'true');
+  }
   const task = page.getByRole('tab', { name: 'Task', exact: true });
   await expect(task).not.toHaveAttribute('aria-disabled', 'true');
   await task.click();

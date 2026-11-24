@@ -269,6 +269,8 @@ class ProjectPlanRead:
         document_ids: dict[tuple[str, str], dict[str, str]] = {}
         document_uses: dict[tuple[str, str], set[str]] = defaultdict(set)
         for row in plan.rows:
+            if not row.resolved:
+                continue
             key = row.key.variant, row.key.step
             document_uses[key].update(row.document_uses - row.followed_documents)
             shared = document_ids.get(key)
