@@ -33,16 +33,16 @@ const typeName = (type: ValueType, types: readonly StudioNamedValueType[]) =>
 function startOf(reset: StudioTrialReset): ModelStart {
   const components = (reset.address.composites?.length ?? 0) + 1;
   const name = [...reset.path.slice(0, components), reset.path.slice(components).join(' ')].join(' · ');
-  return { id: addressKey(reset.address), name };
+  return { id: addressKey(reset.address), name, path: reset.path };
 }
 
 /** A linked Model field the paired Model does not have: its component's id and its path. */
 function missingStart(id: string): ModelStart {
   const { element } = ModelAddressSchema.parse(JSON.parse(id));
-  if (element.kind !== 'field' || element.parent.kind !== 'component') return { id, name: id };
+  if (element.kind !== 'field' || element.parent.kind !== 'component') return { id, name: id, path: [id] };
   const [kind, ...members] = element.path;
-  const label = kind === 'state' ? String(members[0]).split('/').join(' ') : members.join(' ');
-  return { id, name: `${element.parent.id} · ${label}` };
+  const segments = kind === 'state' ? String(members[0]).split('/') : members.map(String);
+  return { id, name: `${element.parent.id} · ${segments.join(' ')}`, path: [element.parent.id, ...segments] };
 }
 
 /** The Model values `variable` initializes, the choice of those its type fits, and its links' problem and change. */

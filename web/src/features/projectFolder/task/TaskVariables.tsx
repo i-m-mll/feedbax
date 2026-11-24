@@ -3,13 +3,13 @@ import { Activity } from 'lucide-react';
 import { useState } from 'react';
 import { studioAccessibleName, studioName, studioValueType } from '@/components/activity/studioVocabulary';
 import { ChangeMark } from '@/components/ui/ChangeMark';
-import { Combobox } from '@/components/ui/Combobox';
 import { FieldProblem } from '@/components/ui/FieldProblem';
 import { InlineEdit } from '@/components/ui/InlineEdit';
 import { MenuItem } from '@/components/ui/Menu';
 import {
   Table, TableCell, TableFieldCell, TableHeaderCell, TableHeaderRow, TableRow, type TableColumn,
 } from '@/components/ui/Table';
+import { TreeChoice } from '@/components/ui/TreeChoice';
 import { changeTip, ValueField } from '@/components/values/ValueField';
 import type { TaskSelection, TaskVariable, UninitializedStart, VariableInitializes } from './taskModel';
 
@@ -41,15 +41,15 @@ const columns: readonly TableColumn[] = [{ least: '5rem', greatest: '16rem' }, {
 const drawnColumn: TableColumn = { least: '5rem' };
 const initializesColumn: TableColumn = { least: '8rem' };
 
-/** The Model values a variable initializes, as a choice with type-ahead of those its type fits. */
+/** The Model values a variable initializes, as a choice over the Model's tree of those its type fits. */
 function Initializes({ variable, initializes }: { variable: string; initializes?: VariableInitializes }) {
   const [refusal, setRefusal] = useState<string>();
   if (!initializes) return null;
   const { anchor, chosen, options, reason, changed, toggle } = initializes;
   const items = [...options, ...chosen.filter(({ id }) => !options.some((option) => option.id === id))];
   const shown = refusal ?? reason;
-  return <div data-field={anchor} className="contents"><Combobox className="w-full" aria-label={studioAccessibleName('initializes', variable)}
-    items={items.map(({ id, name }) => ({ value: id, label: name }))}
+  return <div data-field={anchor} className="contents"><TreeChoice className="w-full" aria-label={studioAccessibleName('initializes', variable)}
+    options={items.map(({ id, path }) => ({ value: id, path }))}
     checked={chosen.map(({ id }) => id)} text={chosen.map(({ name }) => name).join(', ')}
     disabled={!toggle} invalid={!!shown}
     trailing={(shown || changed) && <>
