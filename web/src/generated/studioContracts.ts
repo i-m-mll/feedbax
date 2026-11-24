@@ -4946,6 +4946,7 @@ export const blankTask = {
 
 export const firstTrainTask: Document = {
   "schema": "feedbax.spec.task_document",
+  "label": "Simple reaches",
   "payload": {
     "id": "simple-reaches",
     "variables": [
