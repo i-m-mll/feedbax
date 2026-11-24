@@ -389,10 +389,10 @@ test('a narrowed edit in the Training view makes a document based on the shown o
   expect(alone.sibling).toBe(edited.sibling);
   expect(await document('training')).toEqual(files.documents?.training);
   expect(await document('training-2')).toMatchObject({ base: { document: 'training' } });
-  await expect(picker('Training')).toHaveText('training-2');
+  await expect(picker('Training')).toHaveText('training 2');
   await expect(batches).toHaveValue('9');
   expect(await indent('training')).toBe('0px');
-  expect(await indent('training-2')).not.toBe('0px');
+  expect(await indent('training 2')).not.toBe('0px');
 
   await primary.focus();
   await page.keyboard.press('Meta+Z');
@@ -411,12 +411,13 @@ test('a narrowed edit in the Training view makes a document based on the shown o
   const revision = (await saved()).revision;
   await weight.fill('0.5');
   await weight.press('Enter');
+  await page.getByRole('menu', { name: 'Apply To', exact: true }).getByRole('menuitem', { name: 'Only This Step', exact: true }).click();
   await expect.poll(async () => (await saved()).revision).not.toBe(revision);
   const reached = await requests();
   expect(reached.train).not.toBe(edited.train);
   expect(reached.sibling).toBe(edited.sibling);
   expect(await document(key)).toEqual(before);
-  await expect(objective).toHaveText(`${key}-2`);
+  await expect(objective).toHaveText(`${name} 2`);
 });
 
 test('a continuation taken out keeps its runs, and Detach cuts a based document from its base', async ({ page, request }) => {

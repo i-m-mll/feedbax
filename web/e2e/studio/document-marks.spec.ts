@@ -215,7 +215,8 @@ test('a based Objective document marks the term value it changes, and Reset give
   await mapStep(page, 'sibling').click({ modifiers: ['Shift'] });
   await name.fill('Effort');
   await name.press('Enter');
-  await expect(picker).toHaveText('simple-reaches-objective-2');
+  await page.getByRole('menu', { name: 'Apply To', exact: true }).getByRole('menuitem', { name: 'Only This Step', exact: true }).click();
+  await expect(picker).toHaveText('Simple reaches 2');
   await name.click();
   await expect(inspected).toHaveValue('Effort');
   await expect(inspected).toHaveAccessibleDescription('Changed from simple-reaches-objective');
