@@ -119,7 +119,8 @@ def prepared_reach(
         if row is None:
             return None
         definition = plan.selected_definitions.get(key)
-        return row.label, row.coordinates, row.problems, row.resolved, definition.payload if definition else None
+        fields = plan.variant_projects[key.variant].steps[key.step].set_fields
+        return row.label, row.coordinates, row.problems, row.resolved, definition.payload if definition else None, fields
 
     return frozenset(
         key for key in observed & edited_authored_rows(before, candidate)

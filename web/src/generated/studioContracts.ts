@@ -3552,6 +3552,15 @@ export type SetEntryParts = {
   "off"?: WeightPart;
 };
 
+export type SetFieldWeight = {
+  "kind": "set_field_weight";
+  "step": string;
+  "axis": string;
+  "entry": string | null;
+  "part"?: "on" | "off" | null;
+  "weight": WeightPart;
+};
+
 export type SetLink = {
   "op": "link";
   "model_field": string;
@@ -4093,6 +4102,16 @@ export type StudioProjectFilePatch = {
   "patches": Array<ProjectValueEdit>;
 };
 
+export type StudioProjectList = {
+  "projects": Array<StudioProjectListEntry>;
+};
+
+export type StudioProjectListEntry = {
+  "project_id": string;
+  "name": string;
+  "modified": string;
+};
+
 export type StudioProjectPatch = {
   "address": AuthoredFileAddress;
   "patches": Array<ProjectValueEdit>;
@@ -4381,7 +4400,7 @@ export type StudioSetEditRequest = {
   "revision": string;
   "selection"?: StudioRunSelection | null;
   "store_choice"?: string | null;
-  "command": DuplicateRun | SaveSet | InlineSet | ApplySet | SetToField | SetToSweep | RemoveAxisValue | AddSetEntry;
+  "command": DuplicateRun | SaveSet | InlineSet | ApplySet | SetToField | SetToSweep | SetFieldWeight | RemoveAxisValue | AddSetEntry;
 };
 
 export type StudioSetField = {
@@ -11241,6 +11260,17 @@ export const SetEntryPartsSchema: z.ZodType<SetEntryParts> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<SetEntryParts>;
 
+export const SetFieldWeightSchema: z.ZodType<SetFieldWeight> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("set_field_weight"),
+    "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "entry": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]),
+    "part": z.union([z.union([z.literal("on"), z.literal("off")]), z.null()]).optional(),
+    "weight": WeightPartSchema,
+  }).strict()
+) as unknown as z.ZodType<SetFieldWeight>;
+
 export const SetLinkSchema: z.ZodType<SetLink> = z.lazy(() =>
   z.object({
     "op": z.literal("link"),
@@ -11956,6 +11986,20 @@ export const StudioProjectFilePatchSchema: z.ZodType<StudioProjectFilePatch> = z
   }).strict()
 ) as unknown as z.ZodType<StudioProjectFilePatch>;
 
+export const StudioProjectListSchema: z.ZodType<StudioProjectList> = z.lazy(() =>
+  z.object({
+    "projects": z.array(StudioProjectListEntrySchema),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectList>;
+
+export const StudioProjectListEntrySchema: z.ZodType<StudioProjectListEntry> = z.lazy(() =>
+  z.object({
+    "project_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "name": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "modified": z.string().datetime({ offset: true }),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectListEntry>;
+
 export const StudioProjectPatchSchema: z.ZodType<StudioProjectPatch> = z.lazy(() =>
   z.object({
     "address": AuthoredFileAddressSchema,
@@ -12315,7 +12359,7 @@ export const StudioSetEditRequestSchema: z.ZodType<StudioSetEditRequest> = z.laz
     "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
     "selection": z.union([StudioRunSelectionSchema, z.null()]).optional(),
     "store_choice": z.union([z.string().regex(new RegExp("^[0-9a-f]{64}$")), z.null()]).optional(),
-    "command": z.union([DuplicateRunSchema, SaveSetSchema, InlineSetSchema, ApplySetSchema, SetToFieldSchema, SetToSweepSchema, RemoveAxisValueSchema, AddSetEntrySchema]),
+    "command": z.union([DuplicateRunSchema, SaveSetSchema, InlineSetSchema, ApplySetSchema, SetToFieldSchema, SetToSweepSchema, SetFieldWeightSchema, RemoveAxisValueSchema, AddSetEntrySchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioSetEditRequest>;
 
@@ -13063,6 +13107,7 @@ export const contractSchemas = {
   StudioProjectCreateFile: StudioProjectCreateFileSchema,
   StudioProjectCreateFiles: StudioProjectCreateFilesSchema,
   StudioProjectDocument: StudioProjectDocumentSchema,
+  StudioProjectList: StudioProjectListSchema,
   StudioProjectWindowMap: StudioProjectWindowMapSchema,
   StudioProjectPatch: StudioProjectPatchSchema,
   StudioProjectPatchBatch: StudioProjectPatchBatchSchema,
@@ -13228,6 +13273,7 @@ export interface ContractTypeMap {
   StudioProjectCreateFile: StudioProjectCreateFile;
   StudioProjectCreateFiles: StudioProjectCreateFiles;
   StudioProjectDocument: StudioProjectDocument;
+  StudioProjectList: StudioProjectList;
   StudioProjectWindowMap: StudioProjectWindowMap;
   StudioProjectPatch: StudioProjectPatch;
   StudioProjectPatchBatch: StudioProjectPatchBatch;

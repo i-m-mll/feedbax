@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field, FiniteFloat, JsonValue, model_validator
+from pydantic import AwareDatetime, Field, FiniteFloat, JsonValue, model_validator
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
@@ -138,6 +138,17 @@ class StudioPresentationWrite(StrictModel):
 class StudioProjectDocument(StrictModel):
     configuration: ProjectConfiguration
     snapshot: StudioProjectSnapshot
+
+
+class StudioProjectListEntry(StrictModel):
+    project_id: ProjectName
+    name: ProjectName
+    modified: AwareDatetime
+    """When the most recently modified authored project file was saved."""
+
+
+class StudioProjectList(StrictModel):
+    projects: list[StudioProjectListEntry]
 
 
 class StudioProjectRename(StrictModel):

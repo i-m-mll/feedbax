@@ -50,7 +50,7 @@ import {
   noViews, projectWindowSlotView, showProjectWindowView, useProjectWindowState, type ProjectWindowSlot, type ProjectWindowView,
 } from '@/features/projectWindow/projectWindowState';
 import {
-  ModelAddressSchema, StepReferenceSchema, type PresentationDocument, type PresentationPosition, type ProjectValueEdit,
+  ModelAddressSchema, StepReferenceSchema, StudioProjectRenameSchema, type PresentationDocument, type PresentationPosition, type ProjectValueEdit,
   type StudioActivityJob, type StudioJobSubmission, type StudioMachineQuote, type StudioProjectDocument, type StudioProjectWindowMapProblem,
   type StudioSavedTrainKey, type StudioSavedTrainRuns, type StepReference, type SubsetTerms,
   type StudioCheckpointRuleRequest, type JsonValue, type SweepExceptionTerms, type StudioPlanReviewSource, type StudioProjectWindowMapException, type ModelAddress, type PatchValue,
@@ -252,6 +252,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const stepInputs = useAuthoringCatalog().data?.step_inputs;
   const [machineQuote, setMachineQuote] = useState<StudioMachineQuote>();
   const [rename, setRename] = useState<{ name: string; revision: string }>();
+  const projectNameProblemId = useId();
+  const projectNameProblem = refusal?.kind === 'projectName' && rename?.revision === saved.revision && !outside
+    ? refusal.reason : undefined;
   /** How many of its edits are waiting or in flight. */
   const [edits, setEdits] = useState(0);
   const busy = edits > 0;
@@ -1732,6 +1735,11 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             panelClassName="w-[min(22rem,90vw)]">
             <form className="grid gap-2" onSubmit={(event) => {
               event.preventDefault();
+              const checked = StudioProjectRenameSchema.safeParse(rename);
+              if (!checked.success && checked.error.issues.some(({ path }) => path[0] === 'name')) {
+                setRefusal({ kind: 'projectName', reason: studioReason('projectNameCharacters', studioName('project')) });
+                return;
+              }
               void perform(async () => {
                 await editor.rename(rename.name, rename.revision);
                 setRename(undefined);
@@ -1740,11 +1748,16 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
               <label className="grid gap-1">
                 {studioName('name')}
                 <TextField data-dialog-autofocus value={rename.name} required
-                  onValueChange={(name) => setRename({ ...rename, name })} />
+                  invalid={!!projectNameProblem}
+                  aria-describedby={projectNameProblem ? projectNameProblemId : undefined}
+                  onValueChange={(name) => {
+                    setRename({ ...rename, name });
+                    setRefusal((current) => current?.kind === 'projectName' ? undefined : current);
+                  }} />
               </label>
               {rename.revision !== saved.revision || outside
                 ? <div role="alert">{studioReason('nameChangedDuringEdit', studioName('project'))}</div>
-                : refusal?.kind === 'projectName' && <div role="alert">{refusal.reason}</div>}
+                : projectNameProblem && <div id={projectNameProblemId} role="alert">{projectNameProblem}</div>}
               <Button type="submit" className="justify-self-end" disabled={!!outside || rename.revision !== saved.revision}>
                 {studioName('rename')}
               </Button>
