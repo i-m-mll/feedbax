@@ -491,9 +491,11 @@ export function TrialObjectiveTable({ view, commit, selected, select, runs, scor
             <FieldChange change={fields.name.change} id={`${term.id}-name-change`} />
           </span>
         </TableFieldCell>}
-        <TableFieldCell {...cell('measure')}><ValueField model={fields.measure} form="cell" /></TableFieldCell>
+        {commit ? <TableFieldCell {...cell('measure')}><ValueField model={fields.measure} form="cell" /></TableFieldCell>
+          : <TableCell {...cell('measure')}>{fields.measure.text}</TableCell>}
         <TableFieldCell {...cell('window')}><TermWindow view={view} term={term} index={index} commit={commit} /></TableFieldCell>
-        <TableFieldCell {...cell('weight')}><ValueField model={fields.weight} form="cell" /></TableFieldCell>
+        {commit ? <TableFieldCell {...cell('weight')}><ValueField model={fields.weight} form="cell" /></TableFieldCell>
+          : <TableCell {...cell('weight')}>{fields.weight.text}</TableCell>}
         {score && <>
           <TableCell className="text-right tabular-nums" {...cell('value')}>{score.value}</TableCell>
           <TableCell className="tabular-nums" {...cell('covered')}>{score.covered}</TableCell>

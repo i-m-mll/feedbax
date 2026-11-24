@@ -11,11 +11,19 @@ const terms = (page: Page) => slot(page).getByRole('table', { name: 'Objective T
 const tab = (page: Page, name: string) => page.getByRole('tablist', { name: 'Details' }).getByRole('tab', { name, exact: true });
 const column = (page: Page, name: string) => terms(page).getByRole('columnheader').allInnerTexts()
   .then((names) => names.indexOf(name));
-const measures = (page: Page) => terms(page).getByRole('textbox', { name: 'Measure', exact: true })
+/** Each term's Measure in an editable table, as its field holds it. */
+const fieldMeasures = (page: Page) => terms(page).getByRole('textbox', { name: 'Measure', exact: true })
   .evaluateAll((inputs: HTMLInputElement[]) => inputs.map(({ value }) => value));
+/** Each term's Measure in a read-only table, as its cell's text. */
+const shownMeasures = async (page: Page) => {
+  const column = await terms(page).getByRole('columnheader').allInnerTexts().then((names) => names.indexOf('Measure'));
+  if (column < 0) return [];
+  return terms(page).locator('tbody tr').filter({ has: page.getByRole('rowheader') })
+    .evaluateAll((rows, at) => rows.map((row) => row.querySelectorAll('th, td')[at]?.textContent ?? ''), column);
+};
 
-// Catches an Evaluate of a checkpoint that shows no Objective or one other than its Train's, a cell of the inherited
-// Objective that takes an edit, and a finished run whose terms have no Value or do not count the trials they cover.
+// Catches an Evaluate of a checkpoint that shows no Objective or one other than its Train's, a field of the inherited
+// Objective that the keyboard can reach, and a finished run whose terms have no Value or do not count the trials they cover.
 test("an Evaluate of a checkpoint reads its Train's Objective, and after the run each term's Value and Covered",
   { tag: '@round' }, async ({ page, studio }) => {
     test.setTimeout(80_000);
@@ -23,18 +31,19 @@ test("an Evaluate of a checkpoint reads its Train's Objective, and after the run
     await page.goto(`/?project=${encodeURIComponent(projectId)}`);
     await mapStep(page, 'train').click();
     await tab(page, 'Objective').click();
-    await expect(terms(page).locator('tbody tr')).not.toHaveCount(0);
-    const trained = await measures(page);
+    await expect.poll(() => fieldMeasures(page)).not.toEqual([]);
+    const trained = await fieldMeasures(page);
 
     await mapStep(page, 'baseline').click();
     await tab(page, 'Objective').click();
-    await expect.poll(() => measures(page)).toEqual(trained);
-    await expect(terms(page).locator('input:not([readonly]):not([disabled]), [contenteditable="true"]')).toHaveCount(0);
-    const measure = terms(page).getByRole('textbox', { name: 'Measure', exact: true }).first();
-    const before = await measure.inputValue();
-    await measure.click();
-    await page.keyboard.type('x');
-    await expect(measure).toHaveValue(before);
+    await expect.poll(() => shownMeasures(page)).toEqual(trained);
+    const focused = await terms(page).locator('tbody tr').filter({ has: page.getByRole('rowheader') }).evaluateAll((rows) =>
+      rows.flatMap((row) => [...row.querySelectorAll<HTMLElement>('*')]).filter((element) => {
+        if (element.tabIndex < 0) return false;
+        element.focus();
+        return document.activeElement === element;
+      }).map((element) => element.outerHTML.slice(0, 80)));
+    expect(focused).toEqual([]);
     await expect(slot(page).getByRole('button', { name: 'train', exact: true })).toBeVisible();
 
     const runs = `/api/projects/${projectId}/train-runs`;
