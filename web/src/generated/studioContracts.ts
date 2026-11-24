@@ -3610,6 +3610,11 @@ export type SetValue = {
   "op"?: "add" | "replace";
 };
 
+export type SetVariableChoices = {
+  "set": string;
+  "entries": Array<string | null>;
+};
+
 export type SetVariableCount = {
   "op": "set_variable_count";
   "id": string;
@@ -4818,6 +4823,7 @@ export type Variable = {
   "type": ValueType;
   "value": Expression;
   "count"?: Expression | null;
+  "set_choices"?: SetVariableChoices | null;
 };
 
 export type VariableBinding = {
@@ -11316,6 +11322,13 @@ export const SetValueSchema: z.ZodType<SetValue> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<SetValue>;
 
+export const SetVariableChoicesSchema: z.ZodType<SetVariableChoices> = z.lazy(() =>
+  z.object({
+    "set": z.string(),
+    "entries": z.array(z.union([z.string(), z.null()])),
+  }).strict()
+) as unknown as z.ZodType<SetVariableChoices>;
+
 export const SetVariableCountSchema: z.ZodType<SetVariableCount> = z.lazy(() =>
   z.object({
     "op": z.literal("set_variable_count"),
@@ -12879,6 +12892,7 @@ export const VariableSchema: z.ZodType<Variable> = z.lazy(() =>
     "type": ValueTypeSchema,
     "value": ExpressionSchema,
     "count": z.union([ExpressionSchema, z.null()]).optional(),
+    "set_choices": z.union([SetVariableChoicesSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<Variable>;
 

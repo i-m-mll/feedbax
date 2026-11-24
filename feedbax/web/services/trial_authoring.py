@@ -54,6 +54,7 @@ from feedbax.objectives.document import ObjectiveExecutor, ObjectiveUse, compile
 from feedbax.application.bundle import ApplicationRegistryBundle
 from feedbax.web.services.evaluate_sources import evaluate_subject, evaluate_value_source
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
+from feedbax.web.services.set_authoring import trial_set_fields
 from feedbax.studio.selection import StoredEdit
 from feedbax.studio.numeric_fields import project_numeric_field
 from feedbax.web.services.trial_fields import (
@@ -1169,6 +1170,7 @@ def trial_authoring(
             definition, objective_path,
         )) if objective_source is not None and objective_source.kind == "own" else [],
         task_source=task_source, task_field_sources=task_field_sources,
+        set_fields=trial_set_fields(snapshot.project, key.step),
         task_types=[StudioTaskType(type=key, label=entry.label, parameter_schema=entry.parameters.model_json_schema())
                     for key in bundle.python_tasks.keys() if (entry := bundle.python_tasks.resolve(key))],
         variables=list(projected.variables), signals=list(projected.signals), epochs=list(projected.epochs),

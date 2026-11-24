@@ -951,6 +951,7 @@ class _ModelSource:
     trained: _TrainedSource | None = None
     unpaired: bool = False
     """The Train's Model, Task and Objective do not pair, so nothing evaluates what it would train."""
+    authored_model: ModelDocument | None = None
 
 
 @dataclass(frozen=True)
@@ -1034,6 +1035,8 @@ def _with_train_model(
 
 
 def _train_model_definition(definition: SelectedRunDefinition, model: _ModelSource) -> SelectedRunDefinition:
+    if model.authored_model is not None:
+        model = replace(model, model=model.authored_model)
     payload = _with_train_model(definition.payload, model, definition.document_ids, definition.document_pointers)
     prefix = ("trial_documents", "model")
     sources = dict(definition.sources)
@@ -2177,6 +2180,7 @@ class _Compiler:
         definition: SelectedRunDefinition | None,
         train_rows: _TrainRows | None = None,
     ) -> _LoweredRow:
+        fields = self.variants[key.variant].steps[key.step].set_fields
         member = to_json(tuple(
             (role, binding.member.model_dump(mode="json")) for role, binding in sorted(inputs.items())
         ))
@@ -2231,6 +2235,8 @@ class _Compiler:
                 document_ids = definition.document_ids
                 document_uses = definition.document_uses
                 document_pointers = definition.document_pointers
+            if fields:
+                document_uses = document_uses | frozenset(field.axis.set for field in fields.values())
             authored_model = None
             prepared_train = None
             remember_train = None
@@ -2240,9 +2246,9 @@ class _Compiler:
                 _RowLoweringStamp(kind, sha256_bytes(to_json((
                     payload, tuple(sorted(document_ids.items())), tuple(sorted(document_pointers.items())), source_stamp,
                 ))), member)
-                if basis is not None else None
+                if basis is not None and not fields else None
             )
-            if previous is not None and previous.lowering_stamp == lowering_stamp:
+            if previous is not None and lowering_stamp is not None and previous.lowering_stamp == lowering_stamp:
                 return replace(
                     previous, document_ids=document_ids, document_uses=document_uses,
                 )
@@ -2265,7 +2271,7 @@ class _Compiler:
                 trial = payload.get("trial_documents")
                 if (
                     train_rows is not None and isinstance(trial, dict)
-                    and train_rows.resolution.contains(trial) and not has_differences
+                    and train_rows.resolution.contains(trial) and not has_differences and not fields
                 ):
                     if (entry := train_rows.prepared) is not None and entry[0] is trial:
                         prepared_train = entry[1]
@@ -2274,6 +2280,38 @@ class _Compiler:
                             train_rows.prepared = trial, prepared
                 if prepared_train is None:
                     payload, authored_model = self.lower_train_model(key, payload, document_ids, document_pointers)
+                from feedbax.compiler.set_fields import SetFieldProblem, has_trial_windows, lower_trial_sets
+
+                if isinstance(payload, dict) and authored_model is not None and (
+                    fields or has_trial_windows(authored_model.model)
+                ):
+                    trial = payload["trial_documents"]
+                    try:
+                        authored_task = TaskDocument.model_validate(trial.get("task"))
+                        model, task = lower_trial_sets(
+                            authored_model.model, authored_task, fields,
+                            reader or self.variants[key.variant].documents.get,
+                        )
+                    except (SetFieldProblem, ValidationError) as error:
+                        if isinstance(error, SetFieldProblem):
+                            place = ("set_fields", error.axis)
+                            if error.entry is not None:
+                                place = (*place, "entries", error.entry)
+                            problem = RunProblem(pointer(place), str(error))
+                        else:
+                            problem = RunProblem("/trial_documents/task", "A Set field needs a Task document.")
+                        return _LoweredRow(
+                            None, (), lowering_stamp, problems=(problem,), document_ids=document_ids,
+                            document_uses=document_uses, train=train,
+                        )
+                    authored_model = replace(
+                        authored_model, model=model, authored_model=authored_model.model,
+                        stamp=sha256_bytes(to_json((authored_model.document, model.model_dump(mode="json")))),
+                    )
+                    payload = _with_train_model(payload, authored_model, document_ids, document_pointers)
+                    trial = payload["trial_documents"]
+                    trial["task"] = task.model_dump(mode="json")
+                    train = _train_facts(payload, self.python_tasks)
             elif kind == "evaluate":
                 reference = subject.member.reference if subject is not None else None
                 read = reader or self.variants[key.variant].documents.get
@@ -2326,7 +2364,8 @@ class _Compiler:
             self.previous.rows,
             self.work.rows,
             key,
-            (kind, basis, to_json(tuple(row.patches.items())), tuple(sorted(inputs.items())), source_stamp),
+            (kind, basis, to_json(tuple(row.patches.items())), tuple(sorted(inputs.items())), source_stamp,
+             to_json({name: value.model_dump(mode="json") for name, value in fields.items()})),
             self.authored_inputs[key.variant],
             lower,
         )
