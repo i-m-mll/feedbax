@@ -202,7 +202,7 @@ test('a based Objective document marks the term value it changes, and Reset give
   const primary = page.locator('[data-slot="primary"]').getByRole('tabpanel');
   const picker = primary.locator('.studio-window-slot__header').getByRole('button', { name: /^Objective Document / });
   const table = primary.getByRole('table', { name: 'Objective Terms', exact: true });
-  const name = table.getByRole('textbox', { name: 'Name', exact: true });
+  const name = table.getByRole('textbox', { name: /^Rename / });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const inspected = inspector.getByRole('textbox', { name: 'Name', exact: true });
 

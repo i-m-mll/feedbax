@@ -7,11 +7,12 @@ import { fieldBox, fieldInput, glyph, leadingSlot, popupItem, popupSurface, prim
 import { usePopupLayer } from './popupLayer';
 
 /**
- * One item chosen; or a set of items checked, which choosing an item checks or unchecks, with the box showing `text`.
+ * One item chosen; or a set of items checked, which choosing an item checks or unchecks, with the box showing `text`,
+ * or with `tokens` each checked item's label as a token.
  */
 type ComboboxSelection<Value extends string> =
   | { value: NoInfer<Value> | null; onValueChange: (value: Value | null) => void; checked?: undefined }
-  | { checked: readonly NoInfer<Value>[]; onToggle: (value: Value) => void; text: string };
+  | { checked: readonly NoInfer<Value>[]; onToggle: (value: Value) => void; text: string; tokens?: boolean };
 
 export type ComboboxProps<Value extends string> = ComboboxSelection<Value> & {
   items: readonly Option<Value>[];
@@ -37,7 +38,7 @@ export function Combobox<Value extends string>(props: ComboboxProps<Value>) {
   const aria = { 'aria-label': props['aria-label'], 'aria-labelledby': props['aria-labelledby'] };
   const value = props.checked ? null : props.value;
   const selected = useMemo(() => items.find((item) => item.value === value) ?? null, [items, value]);
-  const shown = props.checked ? props.text : placeholder;
+  const shown = props.checked ? props.tokens ? '' : props.text : placeholder;
   const indicator = (item: Option<Value>) => props.checked
     ? props.checked.includes(item.value) && <Check />
     : <BaseCombobox.ItemIndicator className="flex"><Check /></BaseCombobox.ItemIndicator>;
@@ -56,6 +57,10 @@ export function Combobox<Value extends string>(props: ComboboxProps<Value>) {
       <BaseCombobox.InputGroup data-field-box={inline ? undefined : ''} className={clsx(inline ? 'flex h-full min-w-0 items-center' : fieldBox, 'overflow-hidden', className)}>
         {/* The leading control's own presses, and those in popups it portals, do not open the list. */}
         {leading ? <span className={leadingSlot} onMouseDown={(event) => event.stopPropagation()}>{leading}</span> : null}
+        {props.checked && props.tokens && <span className="flex min-w-0 shrink items-center gap-1 overflow-hidden pl-control-inline">
+          {items.filter((item) => props.checked!.includes(item.value)).map((item) =>
+            <span key={item.value} className="shrink-0 rounded-sm bg-shell-hover px-1 font-mono text-xs leading-5">{item.label}</span>)}
+        </span>}
         <BaseCombobox.Input ref={inputRef} id={id} placeholder={shown} aria-invalid={invalid || undefined}
           size={inline ? Math.max(1, (selected?.label ?? shown ?? '').length) : undefined}
           className={clsx(fieldInput, 'text-ellipsis', inline && 'pr-0', leading && 'pl-1',
