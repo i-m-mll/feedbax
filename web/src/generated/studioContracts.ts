@@ -1996,46 +1996,6 @@ export interface DomainDiagnostic {
   details?: Record<string, unknown>;
 }
 
-export interface ScenePlanarLink {
-  body_id: string;
-  joint_id: string;
-  parent_frame: string;
-  child_frame: string;
-  qpos_index: number;
-  parent_pivot: [number, number];
-  body_pivot: [number, number];
-  reference_angle: number;
-  length: number;
-}
-
-export interface ScenePlanarMuscle {
-  node_id: string;
-  points: RepresentationMusclePathPointSpec[] | null;
-}
-
-export interface ScenePlanarModel {
-  model_identity: string;
-  world_frame: string;
-  links: ScenePlanarLink[];
-  reference_qpos: number[];
-  muscles: ScenePlanarMuscle[];
-}
-
-export interface StudioPlanarSceneRequest {
-  revision: string;
-  document_id: string;
-  node_path: string[];
-}
-
-export interface StudioPlanarSceneResponse {
-  revision: string;
-  document_id: string;
-  node_path: string[];
-  project_id: string;
-  model: ScenePlanarModel | null;
-  diagnostics: DomainDiagnostic[];
-}
-
 export interface SceneLinkGeometry {
   body: ModelAddress;
   body_name: string;
@@ -9029,66 +8989,6 @@ export const DomainDiagnosticSchema: z.ZodType<DomainDiagnostic> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<DomainDiagnostic>;
 
-export const ScenePlanarLinkSchema: z.ZodType<ScenePlanarLink> = z.lazy(() =>
-  z
-    .object({
-      "body_id": z.string(),
-      "joint_id": z.string(),
-      "parent_frame": z.string(),
-      "child_frame": z.string(),
-      "qpos_index": z.number().int().safe().gte(0),
-      "parent_pivot": z.tuple([z.number().finite(), z.number().finite()]),
-      "body_pivot": z.tuple([z.number().finite(), z.number().finite()]),
-      "reference_angle": z.number().finite(),
-      "length": z.number().finite().gt(0),
-    })
-    .strict()
-) as unknown as z.ZodType<ScenePlanarLink>;
-
-export const ScenePlanarMuscleSchema: z.ZodType<ScenePlanarMuscle> = z.lazy(() =>
-  z
-    .object({
-      "node_id": z.string(),
-      "points": z.array(RepresentationMusclePathPointSpecSchema).min(2).nullable(),
-    })
-    .strict()
-) as unknown as z.ZodType<ScenePlanarMuscle>;
-
-export const ScenePlanarModelSchema: z.ZodType<ScenePlanarModel> = z.lazy(() =>
-  z
-    .object({
-      "model_identity": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
-      "world_frame": z.string(),
-      "links": z.array(ScenePlanarLinkSchema).min(1),
-      "reference_qpos": z.array(z.number().finite()).min(1),
-      "muscles": z.array(ScenePlanarMuscleSchema),
-    })
-    .strict()
-) as unknown as z.ZodType<ScenePlanarModel>;
-
-export const StudioPlanarSceneRequestSchema: z.ZodType<StudioPlanarSceneRequest> = z.lazy(() =>
-  z
-    .object({
-      "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
-      "document_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-      "node_path": z.array(z.string()).min(1),
-    })
-    .strict()
-) as unknown as z.ZodType<StudioPlanarSceneRequest>;
-
-export const StudioPlanarSceneResponseSchema: z.ZodType<StudioPlanarSceneResponse> = z.lazy(() =>
-  z
-    .object({
-      "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
-      "document_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-      "node_path": z.array(z.string()).min(1),
-      "project_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-      "model": ScenePlanarModelSchema.nullable(),
-      "diagnostics": z.array(DomainDiagnosticSchema),
-    })
-    .strict()
-) as unknown as z.ZodType<StudioPlanarSceneResponse>;
-
 export const SceneLinkGeometrySchema: z.ZodType<SceneLinkGeometry> = z.lazy(() =>
   z
     .object({
@@ -13147,8 +13047,6 @@ export const contractSchemas = {
   ComponentDetailResponse: ComponentDetailResponseSchema,
   DomainListResponse: DomainListResponseSchema,
   DomainCompileReport: DomainCompileReportSchema,
-  StudioPlanarSceneRequest: StudioPlanarSceneRequestSchema,
-  StudioPlanarSceneResponse: StudioPlanarSceneResponseSchema,
   StudioSceneGeometryRequest: StudioSceneGeometryRequestSchema,
   StudioSceneGeometryResponse: StudioSceneGeometryResponseSchema,
   StudioErrorReport: StudioErrorReportSchema,
@@ -13313,8 +13211,6 @@ export interface ContractTypeMap {
   ComponentDetailResponse: ComponentDetailResponse;
   DomainListResponse: DomainListResponse;
   DomainCompileReport: DomainCompileReport;
-  StudioPlanarSceneRequest: StudioPlanarSceneRequest;
-  StudioPlanarSceneResponse: StudioPlanarSceneResponse;
   StudioSceneGeometryRequest: StudioSceneGeometryRequest;
   StudioSceneGeometryResponse: StudioSceneGeometryResponse;
   StudioErrorReport: StudioErrorReport;

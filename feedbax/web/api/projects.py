@@ -43,9 +43,6 @@ from feedbax.contracts.studio_subset import (
     StudioRunRuleCheck, StudioRunRuleRequest, StudioSubsetToRowsEdit, StudioSubsetToRowsRequest,
 )
 from feedbax.contracts.studio_scene import (
-    StudioPlanarSceneRequest,
-    StudioPlanarSceneResponse,
-    StudioSceneGeometryFrame,
     StudioSceneGeometryRequest,
     StudioSceneGeometryResponse,
 )
@@ -284,27 +281,6 @@ def read_analyze_authoring(
     )
 
 
-@router.post("/{project_id}/scene/planar")
-def read_planar_scene(
-    project_id: ProjectName, body: StudioPlanarSceneRequest, request: Request, response: Response,
-) -> StudioPlanarSceneResponse:
-    from feedbax.studio.scene_geometry import prepare_project_scene
-
-    def prepare() -> StudioPlanarSceneResponse:
-        snapshot = request.app.state.project_folders.read(project_id)
-        if snapshot.revision != body.revision:
-            raise ProjectRevisionConflict("project", snapshot.revision)
-        model, diagnostics = prepare_project_scene(
-            snapshot.project, body.document_id, body.node_path,
-            request.app.state.bootstrap_state.bundle.components,
-        )
-        return StudioPlanarSceneResponse(
-            project_id=project_id, **body.model_dump(), model=model, diagnostics=diagnostics,
-        )
-
-    return _project_response(response, prepare)
-
-
 @router.post("/{project_id}/scene/geometry")
 def read_scene_geometry(
     project_id: ProjectName, body: StudioSceneGeometryRequest, request: Request, response: Response,
@@ -315,13 +291,10 @@ def read_scene_geometry(
         snapshot = request.app.state.project_folders.read(project_id)
         if snapshot.revision != body.revision:
             raise ProjectRevisionConflict("project", snapshot.revision)
-        registry = request.app.state.bootstrap_state.bundle.components
-        frames = []
-        for pose in body.poses:
-            mechanisms, diagnostics = prepare_scene_geometry(
-                snapshot.project, body.document_id, pose, registry,
-            )
-            frames.append(StudioSceneGeometryFrame(mechanisms=mechanisms, diagnostics=diagnostics))
+        frames = prepare_scene_geometry(
+            snapshot.project, body.document_id, body.poses,
+            request.app.state.bootstrap_state.bundle.components,
+        )
         return StudioSceneGeometryResponse(
             project_id=project_id, revision=body.revision, document_id=body.document_id, frames=frames,
         )
