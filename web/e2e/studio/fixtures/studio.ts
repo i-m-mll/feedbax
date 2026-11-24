@@ -1,4 +1,4 @@
-import { expect, test as base } from '@playwright/test';
+import { expect, test as base, type Page } from '@playwright/test';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
@@ -157,8 +157,23 @@ export async function launchStudio(backend: StudioBackend, frontend: StudioFront
  * Traces are off; `FEEDBAX_STUDIO_TRACE=<spec file>[,<spec file>…]` records one for each failing
  * test in those specs. Tracing the context here, not through the worker-scoped `trace` option, keeps the spec
  * in the shared workers and their Studio.
+ *
+ * `FEEDBAX_STUDIO_CPU_THROTTLE=<rate>` slows every page's CPU by that factor, to reproduce what a spec does under load.
  */
-const traced = base.extend<{ namedTrace: void }, { fixtureRunner: void }>({
+const traced = base.extend<{ namedTrace: void; cpuThrottle: void }, { fixtureRunner: void }>({
+  cpuThrottle: [async ({ context }, use) => {
+    const rate = Number(process.env.FEEDBAX_STUDIO_CPU_THROTTLE ?? 1);
+    if (!(rate >= 1)) throw new Error('FEEDBAX_STUDIO_CPU_THROTTLE must be a number of at least 1.');
+    const throttle = async (page: Page) => {
+      const session = await context.newCDPSession(page);
+      await session.send('Emulation.setCPUThrottlingRate', { rate });
+    };
+    if (rate > 1) {
+      context.on('page', (page) => void throttle(page));
+      await Promise.all(context.pages().map(throttle));
+    }
+    await use();
+  }, { auto: true }],
   fixtureRunner: [async ({}, use) => {
     startFixtureRunner();
     await use();
