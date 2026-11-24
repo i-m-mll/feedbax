@@ -9,7 +9,6 @@ import pytest
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project import Project
 from feedbax.web.app import create_app
-from feedbax.web.services.project_plan import ProjectPlanRead
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.support.managed_train_fixture import managed_evaluation_step
 from tests.test_document_train_pair import authored_documents, document_project
@@ -488,8 +487,7 @@ def test_detach_stores_a_problem_for_the_evaluation_that_loses_its_model_base(ba
     raw["documents"]["model-4"] = deepcopy(raw["documents"]["model-2"])
     _save_project(folders, PROJECT, Project.model_validate(raw))
     snapshot = _snapshot(client)
-    settled = folders.read_plan(PROJECT, revision=snapshot["revision"])
-    assert ProjectPlanRead.without_history(settled).window_map().detach_refused == []
+    assert not folders.read_plan(PROJECT, revision=snapshot["revision"]).plan.diagnostics
     detached = _command(client, snapshot, {"kind": "detach", "member": "model-2"})
     saved = _snapshot(client)
     assert "base" not in saved["project"]["documents"]["model-2"]

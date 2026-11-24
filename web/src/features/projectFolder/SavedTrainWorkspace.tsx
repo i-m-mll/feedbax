@@ -29,7 +29,7 @@ import { useDrawerSections, useFieldFocus, type FieldFocusRequest } from '@/feat
 import { FieldIntent } from '@/components/values/fieldIntent';
 import { X } from 'lucide-react';
 import { Button, IconButton } from '@/components/ui/Button';
-import { ChoiceMenuContext, useChoiceMenu } from '@/components/ui/ChoiceMenu';
+import { editedElement, useChoiceMenu } from '@/components/ui/ChoiceMenu';
 import { Dialog } from '@/components/ui/Dialog';
 import { Select } from '@/components/ui/Select';
 import { TextField } from '@/components/ui/TextField';
@@ -61,7 +61,7 @@ import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { authoredPointer, declarationAddress, ownDefinition, modelDocumentId } from './authoredEdits';
 import { withBaseDescendants } from './baseDescendants';
 import { stepDocument } from './documentPayload';
-import { useManagedProjectDetails, useStoredModel, type NamedDocumentScope } from './managedProjectDetails';
+import { useManagedProjectDetails, useRecordedTerms, useStoredModel, type NamedDocumentScope } from './managedProjectDetails';
 import { useTrialClock } from './useTrialClock';
 import { drawnVariables } from './task/trialSample';
 import { usePlayheadStore } from '@/components/timeline/trialClock';
@@ -93,7 +93,7 @@ import { documentsOfRole } from './useProjectDocuments';
 import { StudioEvaluationAttemptDetails } from './StudioEvaluationResults';
 import { focusedResult, SavedResults } from './SavedResults';
 import { filesRemoval, RunRemovalContext, useRunRemovalDialog } from './runRemoval';
-import { askStoreWith } from './storeChoice';
+import { AskStoreContext, askStoreWith, sendWithStore } from './storeChoice';
 import {
   jsonPointerPath, StudioStepField, StudioTrainAuthoringForm, SweepFieldItems, useTrainClassFields, useTrainFieldLabels,
 } from './StudioTrainAuthoringForm';
@@ -321,6 +321,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const sets = setAuthoring({
     editor, project: saved.project, applies: !outside && reachable && variantApplies,
     perform, state: () => latestState.current, select: (next) => selection.select(next), confirmRemoval: runRemoval.confirm,
+    ask: (anchor, choices) => askStore(anchor, choices),
   });
   const axisMenu: AxisMenu = (stepId, axis) => {
     const planned = plan.steps.find(({ id }) => id === stepId);
@@ -392,8 +393,12 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     id === step.inputs.find(({ id }) => id === 'subject')?.sourceStepId)?.documentIds) : undefined;
   const stored = useStoredModel(editor, step, modelSource);
   const restGeometry = useSceneGeometry(saved.project_id, stored ? { document_id: stored.id, revision: saved.revision } : null, restState);
+  const scoredBy = authored?.kind === 'evaluate' ? evaluateSubject(authored) : undefined;
+  /** An Evaluate is scored by the Objective of the Train that made its checkpoint, or by the one it names itself. */
+  const scored = authored?.kind !== 'evaluate' || scoredBy?.kind === 'steps' || scoredBy?.kind === 'document' && !!scoredBy.objective;
   const views = !step ? noViews : viewOffer({
-    step, trainingForm: !!trainingDocument && !!authoring, planRead: !!shown, run: !namedRow ? 'none' : namedRow.resolved === false ? 'unresolved' : 'resolved', model: stored?.value,
+    step, trainingForm: !!trainingDocument && !!authoring, planRead: !!shown, run: !namedRow ? 'none' : namedRow.resolved === false ? 'unresolved' : 'resolved',
+    objective: scored, model: stored?.value,
     scenePlaces: restGeometry?.kind === 'ready' ? restGeometry.geometry.mechanisms.length > 0 : undefined,
     runProblems: (namedRun && step.runs.find(({ id }) => id === savedRunId(namedRun))?.problems) ?? [],
     results: !!plans.error || !!shownResult.row || !!shownResult.evaluation?.checkpoint_series,
@@ -639,12 +644,13 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const documentEditable = !outside;
   const trialEditable = documentEditable && Boolean(trialScope);
   const trialChangeScope: TrialChangeScope = () => trialEditScope;
+  const askStore = askStoreWith(choiceMenu.ask, {
+    step: stepLabel,
+    run: (key) => shown?.window_map?.rows.find((row) => savedRunId(row.key) === savedRunId(key))?.label ?? key.row,
+  });
   // A run whose own definition is refused has no Task or Objective to read; its views are dimmed by its problems.
   const trial = useTrialAuthoring(editor, saved.project_id, saved.revision, namedRun, trialStep && namedRow?.resolved !== false,
-    trialEditable, trialChangeScope, runRemoval.confirm, askStoreWith(choiceMenu.ask, {
-      step: stepLabel,
-      run: (key) => shown?.window_map?.rows.find((row) => savedRunId(row.key) === savedRunId(key))?.label ?? key.row,
-    }));
+    trialEditable, trialChangeScope, runRemoval.confirm, askStore);
   const trialClock = useTrialClock({
     windowState, setWindowState, projectId: saved.project_id, revision: saved.revision, view: trial.view,
     taskDocument: trial.view && (trial.view.task_document ?? step?.id),
@@ -653,6 +659,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     shelfView: windowState.mode === 'map' ? undefined : primaryView ?? undefined,
   });
   const evaluationReplay = trialClock.replay;
+  const scoredEvaluation = step?.kind === 'evaluate' && selectedEvaluation?.status === 'succeeded' ? selectedEvaluation : undefined;
+  const recordedTerms = useRecordedTerms(saved.project_id, saved.revision, scoredEvaluation, evaluationReplay.checkpoint,
+    windowState.mode !== 'map' && [primaryView, secondaryView].includes('objective'));
   const documentBase = authored && stepDocument(authored.base);
   const pickDocument = useProjectDocuments({
     editor, stepId: step?.id, run: namedRun, scope: trialEditScope,
@@ -693,7 +702,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const detailInputs = {
     editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection,
     variantId: variant, evaluation: selectedEvaluation, sceneTrial: trialClock.scene, checkpoints: evaluationReplay.checkpoints,
-    namedRun, documentScopes, planCurrent: plans.current, elements, valueEditing: !!selectedValue, evaluateScope: evaluateScope || undefined, stored, modelProblems, selectedSweepValues, confirmRunRemoval: runRemoval.confirm,
+    namedRun, documentScopes, planCurrent: plans.current, elements, valueEditing: !!selectedValue, evaluateScope: evaluateScope || undefined, stored, modelProblems, selectedSweepValues, confirmRunRemoval: runRemoval.confirm, askStore,
     drawerSections,
     openModelProblems: (element: ModelAddress, opener: HTMLElement) => {
       const owner = modelProblems?.find((problem) => {
@@ -1379,10 +1388,13 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
 
   async function applyCheckpointSweepEdit(edit: StudioCheckpointRuleRequest['edit']) {
     if (!step || !subject || !namedRun || !applies) return;
+    const from = document.activeElement;
     await perform(async (current) => {
-      const reviewed = await prepareCheckpointRuleEdit(current.project_id, {
-        revision: current.revision, run: namedRun, edit,
-      }, editor.signal);
+      const reviewed = await sendWithStore(askStore, () => editedElement(from, from), () => editor.flush(),
+        (store_choice) => prepareCheckpointRuleEdit(current.project_id, {
+          revision: current.revision, run: namedRun, edit, store_choice,
+        }, editor.signal), (answer) => answer.store_choices);
+      if (!reviewed) return;
       if (!await runRemoval.confirm(filesRemoval(saved.project_id, reviewed.revision, reviewed.files, editor.signal))) return;
       editor.editFiles(edit.kind === 'to_sweep' ? 'Sweep Evaluate checkpoints' : 'Set Evaluate checkpoints',
         reviewed.files, { reviewedRevision: reviewed.revision,
@@ -1670,11 +1682,11 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     windowState.mode !== 'map' && focusView === 'runs' && pivotCommand(focusSlot),
     bindStudioCommand('undo', () => { void moveHistory('undo'); }, {
       enabled: !!snapshot.undoName && !outside,
-      subject: snapshot.undoName === studioName('outsideChange') ? snapshot.undoName : undefined,
+      subject: snapshot.undoName ?? undefined,
     }),
     bindStudioCommand('redo', () => { void moveHistory('redo'); }, {
       enabled: !!snapshot.redoName && !outside,
-      subject: snapshot.redoName === studioName('outsideChange') ? snapshot.redoName : undefined,
+      subject: snapshot.redoName ?? undefined,
     }),
     bindStudioCommand('clearFocus', () => selection.select({ ...state, focus: null }), { enabled: !!state.focus }),
     activity, problemCommand, failure && !isStudioDefect(failureCause) && retryCommand,
@@ -1685,7 +1697,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     change={(name, setting, value) => editor.edit(declarationAddress, name, [{ op: 'add', path: `/settings/${setting}`, value }])} />;
 
   return (
-    <RunRemovalContext.Provider value={runRemoval.confirm}><ChoiceMenuContext.Provider value={choiceMenu.ask}>
+    <RunRemovalContext.Provider value={runRemoval.confirm}><AskStoreContext.Provider value={askStore}>
       <ProjectWindow
         projectSettings={projectSettings}
         state={windowState} onStateChange={setWindowState} projectName={configuration.project}
@@ -1810,7 +1822,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             const termElement = named(objectiveDocument);
             const term = termElement && value.objective?.terms?.some(({ id }) => id === termElement.id)
               ? { term: termElement.id, field: termElement.field } : undefined;
-            const termInspector = term && <TrialObjectiveInspector view={value} commit={commit} selected={term} runs={runs}
+            // An Evaluate of a checkpoint is scored by the Objective of the Train that made it, which it shows unedited.
+            const train = value.objective_source?.kind === 'train' ? plan.steps.find(({ id }) => id === value.objective_source!.step) : undefined;
+            const scoring = train ? undefined : commit;
+            const termInspector = term && <TrialObjectiveInspector view={value} commit={scoring} selected={term} runs={runs}
               shown={trialClock.trial} />;
             if (view === 'task') {
               const document = value.task_document ?? step?.id ?? '';
@@ -1836,13 +1851,19 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                     : selected && <TrialTaskInspector view={value} commit={commit} selected={selected} shown={trialClock.trial} />),
               };
             }
+            const picker = train ? undefined : pickDocument('objective', value.objective_document ?? undefined, documentScopes.objective);
+            const scores = scoredEvaluation && recordedTerms
+              ? { shown: trialClock.trial, run: recordedTerms, trials: scoredEvaluation.trials.length } : undefined;
             return {
-              picker: pickDocument('objective', value.objective_document ?? undefined, documentScopes.objective),
+              picker: picker && step?.kind === 'evaluate'
+                ? { ...picker, choose: trialEditable ? (next) => chooseSubjectDocument('objective', next) : undefined } : picker,
+              header: train && <Button variant="bare" size="content" className="underline-offset-2 hover:underline"
+                onClick={() => selection.select(selectStep(state, train.id))}>{train.label}</Button>,
               body: withProblem(<FocusedFields className="contents" request={fieldFocus?.step === step?.id && fieldFocus?.target?.startsWith('objective:') ? fieldFocus : undefined}
                 onFocused={() => setFieldFocus(undefined)}>
-                <TrialObjectiveTable view={value} commit={commit} selected={term} select={choose(objectiveDocument)} runs={runs} />
+                <TrialObjectiveTable view={value} commit={scoring} selected={term} select={choose(objectiveDocument)} runs={runs} scores={scores} />
               </FocusedFields>),
-              drawer: <TrialObjectiveOutline sections={drawerSections} view={value} commit={commit} selected={term?.term} select={choose(objectiveDocument)} />,
+              drawer: <TrialObjectiveOutline sections={drawerSections} view={value} commit={scoring} selected={term?.term} select={choose(objectiveDocument)} />,
               inspector: termInspector,
             };
           }
@@ -1967,7 +1988,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       />
       {runRemoval.dialog}
       {choiceMenu.menu}
-    </ChoiceMenuContext.Provider></RunRemovalContext.Provider>
+    </AskStoreContext.Provider></RunRemovalContext.Provider>
   );
 }
 

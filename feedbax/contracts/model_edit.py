@@ -27,10 +27,15 @@ class ModelPosition(StrictModel):
     y: Annotated[float, Field(allow_inf_nan=False)]
 
 
+class RegisteredComponent(StrictModel):
+    kind: Literal["definition"]
+    definition: Name
+
+
 class AddComponent(StrictModel):
     op: Literal["add_component"]
     graph: ModelAddress
-    component: LeafComponent | CompositeComponent
+    component: LeafComponent | CompositeComponent | RegisteredComponent
     position: ModelPosition
     id: ModelElementId | None = None
     connect_from: SignalSource | None = None
@@ -77,6 +82,7 @@ class ConnectSignal(StrictModel):
     graph: ModelAddress
     source: SignalSource
     target: SignalTarget
+    grow_source: bool = False
     grow_target: bool = False
 
 
@@ -86,6 +92,7 @@ class ConnectTaskSignal(StrictModel):
     run: StudioSavedTrainKey
     signal: str
     target: SignalTarget
+    grow_target: bool = False
 
 
 class ConnectPhysical(StrictModel):
@@ -218,17 +225,15 @@ class ModelGraphProblem(StrictModel):
     reason: str
 
 
+class ModelUngroupEligibility(StrictModel):
+    address: ModelAddress
+    reason: str | None
+
+
 class TaskSignalSource(StrictModel):
     owner: Literal["task"]
     run: StudioSavedTrainKey
     signal: str
-
-
-class ModelConnectionReviewRequest(StrictModel):
-    revision: Sha256
-    document: ProjectName
-    graph: ModelAddress
-    source: Annotated[SignalSource | TaskSignalSource, Field(discriminator="owner")]
 
 
 class ModelWireReplacement(StrictModel):
@@ -241,6 +246,7 @@ class ModelConnectionVerdict(StrictModel):
     reason: str | None
     problem: str | None = None
     replaced: tuple[ModelWireReplacement, ...] = ()
+    growing: bool = False
 
 
 class ModelConnectionReview(StrictModel):
@@ -262,6 +268,13 @@ class ModelProjectionRequest(StrictModel):
     document: ProjectName
     rows: list[RowKey] = Field(default_factory=list)
     axes: dict[ProjectName, list[Name]] = Field(default_factory=dict)
+
+
+class ModelConnectionReviewRequest(ModelProjectionRequest):
+    graph: ModelAddress
+    source: Annotated[SignalSource | TaskSignalSource, Field(discriminator="owner")]
+    evaluate_scope: SelectedRuns | None = None
+    grow_source: bool = False
 
 
 class ModelPortProjection(StrictModel):
@@ -323,6 +336,7 @@ class ModelProjection(StrictModel):
     base_differences: tuple[ModelStructuralDifference, ...] = ()
     value_differences: tuple[ModelStructuralDifference, ...] = ()
     problems: tuple[ModelGraphProblem, ...] = ()
+    ungroup: tuple[ModelUngroupEligibility, ...] = ()
 
 
 class ModelEditState(ModelLayout):

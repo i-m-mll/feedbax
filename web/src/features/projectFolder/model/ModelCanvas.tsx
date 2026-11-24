@@ -7,7 +7,7 @@ import {
   createContext, memo, useCallback, useContext, useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState,
   type MouseEvent as ReactMouseEvent, type ReactNode, type Ref,
 } from 'react';
-import { Lock, Plus, Unlock, ChevronsDownUp } from 'lucide-react';
+import { Lock, Unlock, ChevronsDownUp } from 'lucide-react';
 import { appTip } from '@window-shell/browser/tooltip';
 import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
 import { CanvasStrip } from '@/components/canvas/CanvasStrip';
@@ -56,7 +56,8 @@ export type ModelCardData = {
   rename?: (name: string) => void;
   renaming?: boolean;
   endRename?: () => void;
-  addPort?: () => void;
+  /** Opens, at the empty handle, the list of signals outside that can be brought in as a new port. */
+  addPort?: (anchor: DOMRect) => void;
 };
 export type ModelCard = Node<ModelCardData, 'modelCard'>;
 export type ModelEdgeData = {
@@ -69,7 +70,8 @@ export type ModelEdgeData = {
   }[];
   ghost?: boolean;
   change?: ChangeMarkProps;
-  self?: number;
+  /** Nesting order among the wires between the same cards, innermost first, for a wire routed under them. */
+  rank?: number;
   bundleCount?: number;
   moveWaypoint?: (index: number, point: ModelPosition) => void;
   problem?: string;
@@ -196,8 +198,12 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
         {!data.collapsed && reason && <span className="studio-model-port-reason" role="status">{reason}</span>}
       </div>;
     })}
-    {data.addPort && <IconButton className="nodrag studio-model-add-port" size="mark" label={studioName('addPort')} icon={<Plus />}
-      onClick={(event) => { event.stopPropagation(); data.addPort?.(); }} />}
+    {data.addPort && !data.collapsed && <div className="studio-model-port" data-hollow="true" data-side={data.flipped ? 'left' : 'right'}>
+      <Button variant="bare" size="content" aria-label={studioName('addPort')} aria-haspopup="menu"
+        className={`nodrag react-flow__handle react-flow__handle-${data.flipped ? 'left' : 'right'}`}
+        onClick={(event) => { event.stopPropagation(); data.addPort?.(event.currentTarget.getBoundingClientRect()); }} />
+      <span>{studioName('addPort')}</span>
+    </div>}
   </SurfaceCard>;
 });
 
@@ -214,21 +220,25 @@ function rounded(points: readonly ModelPosition[]) {
   return `${path} L ${last.x},${last.y}`;
 }
 
-const Wire = memo(function Wire({ id, data, type, source, sourceX, sourceY, targetX, targetY,
+const Wire = memo(function Wire({ id, data, type, source, target, sourceX, sourceY, targetX, targetY,
   sourcePosition, targetPosition, markerEnd }: EdgeProps<ModelEdge>) {
   const { screenToFlowPosition } = useReactFlow();
   const [moving, setMoving] = useState<{ index: number; point: ModelPosition }>();
   const physical = type === 'physical';
   const start = { x: sourceX, y: sourceY }, end = { x: targetX, y: targetY };
-  const a = { x: sourceX + (sourcePosition === Position.Left ? -16 : 16), y: sourceY };
-  const b = { x: targetX + (targetPosition === Position.Left ? -16 : 16), y: targetY };
-  const self = data?.self;
-  const bottom = useStore((state) => {
-    if (self === undefined) return 0;
-    const node = state.nodeLookup.get(source);
+  const exit = sourcePosition === Position.Left ? -1 : 1;
+  const entry = targetPosition === Position.Left ? 1 : -1;
+  /** A wire whose ends face the same way, or whose target lies behind its source's side, runs under both cards rather than through them. */
+  const under = !physical && (exit !== entry || (targetX - sourceX) * exit < 32);
+  const rank = data?.rank ?? 0;
+  const reach = under ? 16 + rank * 10 : 16;
+  const a = { x: sourceX + exit * reach, y: sourceY };
+  const b = { x: targetX - entry * reach, y: targetY };
+  const bottom = useStore((state) => under ? Math.max(...[source, target].map((card) => {
+    const node = state.nodeLookup.get(card);
     return node ? node.internals.positionAbsolute.y + (node.measured.height ?? 0) : 0;
-  });
-  const bend = self === undefined ? (sourceY + targetY) / 2 : Math.max(sourceY, targetY, bottom) + 20 + self * 10;
+  })) : 0);
+  const bend = under ? Math.max(sourceY, targetY, bottom) + 20 + rank * 10 : (sourceY + targetY) / 2;
   const waypoints = data?.waypoints?.map((point, index) => moving?.index === index ? moving.point : point);
   const pivots = waypoints?.length ? waypoints
     : [{ x: a.x, y: bend }, { x: b.x, y: bend }];
@@ -241,7 +251,7 @@ const Wire = memo(function Wire({ id, data, type, source, sourceX, sourceY, targ
   const turns = points.filter((point, index) => index === 0 || point.x !== points[index - 1].x || point.y !== points[index - 1].y);
   const geometry = { sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition };
   const [path, labelX, labelY] = physical ? getBezierPath(geometry)
-    : self === undefined && !waypoints?.length ? getSmoothStepPath({ ...geometry, borderRadius: 6, offset: 16 })
+    : !under && !waypoints?.length ? getSmoothStepPath({ ...geometry, borderRadius: 6, offset: 16 })
       : [rounded(turns), (a.x + b.x) / 2, bend];
   const mid = { x: labelX, y: labelY };
   const delayed = data?.attachments?.some((item) => item.delay);

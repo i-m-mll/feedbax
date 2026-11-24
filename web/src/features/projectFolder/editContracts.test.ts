@@ -65,7 +65,7 @@ function subjectEdits(step: Step): Record<string, ProjectValueEdit[]> {
 
 function expectWritable(content: ProjectEditContent, address: AuthoredFileAddress, patches: ProjectValueEdit[]) {
   parseContract('StudioProjectPatch', { revision, address, patches });
-  const { project: after, inverse } = applyAuthoredEdits(content, address, patches, true);
+  const { project: after, inverse } = applyAuthoredEdits(content, address, patches);
   parseContract('StudioProjectPatch', { revision, address, patches: inverse });
   return after;
 }
@@ -98,5 +98,39 @@ describe('every edit builder writes what its contract accepts', () => {
         revision, run: { step: 'evaluate', variant: 'default', row: 'subject=seed=0' }, scope: { kind: 'axis_value', axis: 'subject', value },
       });
     }
+  });
+});
+
+/** The file's members in the order a server applying `patches` in turn writes them: removes delete, adds append. */
+function written(file: Record<string, unknown>, patches: readonly ProjectValueEdit[]) {
+  const entries = new Map(Object.entries(structuredClone(file)));
+  for (const patch of patches) {
+    const [key, ...rest] = patch.path.slice(1).split('/');
+    if (rest.length) throw new Error('A top-level member edit was expected.');
+    if (patch.op === 'remove') entries.delete(key);
+    else if (patch.op === 'add') entries.set(key, patch.value);
+    else entries.set(key, patch.value);
+  }
+  return [...entries.keys()];
+}
+
+describe('an authored edit keeps the order of the file it writes', () => {
+  const address: AuthoredFileAddress = { kind: 'document', id: 'task' };
+  const content = (task: Record<string, unknown>) => ({ documents: { task } }) as unknown as ProjectEditContent;
+
+  // Catches Undo of a removed member putting it back last, which reorders the authored file.
+  it('restores a removed member where it was', () => {
+    const task = { schema: 'x', reach: 1, hold: 2, rest: 3 };
+    const { edits, inverse } = applyAuthoredEdits(content(task), address, [{ op: 'remove', path: '/hold' }]);
+    expect(written(task, [...edits, ...inverse])).toEqual(['schema', 'reach', 'hold', 'rest']);
+  });
+
+  // Catches an edit of a value inside members keyed by number being refused, or written whole in another order.
+  it('edits a value among members keyed by number', () => {
+    const task = { epochs: { 2: { length: 5 }, 10: { length: 7 } } };
+    const { project, edits, inverse } = applyAuthoredEdits(content(task), address,
+      [{ op: 'replace', path: '/epochs', value: { 2: { length: 6 }, 10: { length: 7 } } }]);
+    expect(edits).toEqual([{ op: 'replace', path: '/epochs/2', value: { length: 6 } }]);
+    expect(applyAuthoredEdits(project, address, inverse).project).toEqual(content(task));
   });
 });

@@ -147,3 +147,31 @@ def test_nominal_trial_uses_representative_values_and_the_same_task_timeline(cli
         ("hold", 0, 10), ("cue", 10, 24), ("move", 24, 80),
     ]
     assert trial["present"]["target_pos"] == [False] * 10 + [True] * 70
+
+
+def test_term_preview_distinguishes_compile_problem_from_empty_window(client, expression_functions):
+    """A term with a bad measure type must be marked even if its shelf row has no bars."""
+    payload = authored_preview("delayed", expression_functions) | {"count": 2}
+    measure = CallValue(function="sqnorm", args=(NameValue(reference="target_pos"),))
+    payload["objective"] = ObjectiveDocument(id="reach", terms=(
+        ObjectiveTerm(id="bad-measure", measure=measure, epochs=("move",)),
+        ObjectiveTerm(
+            id="valid-without-coverage", measure=measure, epochs=("hold",),
+            measure_type=ValueType(base=ValueBase.REAL, dimensions=LENGTH.raised(2)),
+        ),
+    )).model_dump(mode="json")
+
+    for controls in ({}, {"nominal": True}, {"aggregate": True}):
+        response = client.post("/api/execution/task-trials/sample", json=payload | controls)
+        assert response.status_code == 200, response.text
+        drawn = response.json()["drawn"]
+        records = [drawn] if drawn["kind"] == "aggregate" else drawn["trials"]
+        for record in records:
+            broken = record["terms"]["bad-measure"]
+            absent = record["terms"]["valid-without-coverage"]
+            assert not any(broken["steps"]) and not any(absent["steps"])
+            assert not broken["covered"] and not absent["covered"]
+            (problem,) = broken["problems"]
+            assert problem["code"] == "unit_mismatch"
+            assert problem["path"][:4] == ["objective", "terms", "bad-measure", "measure"]
+            assert absent["problems"] == []

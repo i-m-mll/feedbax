@@ -271,3 +271,8 @@ type NamedFileCreation = Annotated[
 class StudioProjectCreateFile(StrictModel):
     revision: Sha256
     file: NamedFileCreation
+
+
+class StudioProjectCreateFiles(StrictModel):
+    revision: Sha256
+    files: list[NamedFileCreation] = Field(min_length=1)
