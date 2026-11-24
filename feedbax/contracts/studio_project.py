@@ -7,6 +7,7 @@ from typing import Annotated, Literal
 from pydantic import Field, FiniteFloat, JsonValue, model_validator
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.jobs import StudioProjectWindowMapProblem
 from feedbax.contracts.project import Document, Project, Sha256, Step
 from feedbax.contracts.project import ProjectValueEdit as ProjectValueEdit
 from feedbax.contracts.project import RemoveProjectValue as RemoveProjectValue
@@ -78,6 +79,7 @@ class StudioProjectSnapshot(StudioProjectRevision):
     declaration: StudioAuthoredDeclaration | None = None
     composed: dict[str, JsonValue] = Field(default_factory=dict)
     """The composed payload of each based document whose base chain composes."""
+    problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
 
 
 class StudioProjectFilePatch(StrictModel):
@@ -223,6 +225,7 @@ class StudioMemberCommand(StrictModel):
 class StudioMemberCommandResult(StrictModel):
     member: ProjectName
     snapshot: StudioProjectSnapshot
+    problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
 
 
 class StudioTrainStep(Step):

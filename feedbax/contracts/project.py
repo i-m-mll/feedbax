@@ -134,6 +134,7 @@ def check_disjoint(differences: Differences) -> None:
 
 class DocumentBase(StrictModel):
     document: ProjectName
+    unresolved: Literal[True] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class BasedDocument(StrictModel):
@@ -257,6 +258,7 @@ class InlineBase(StrictModel):
 class StepBase(StrictModel):
     step: ProjectName
     row: RowKey | None = None
+    unresolved: Literal[True] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class RunBase(StrictModel):

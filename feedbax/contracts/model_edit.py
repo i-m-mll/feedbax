@@ -13,7 +13,7 @@ from feedbax.contracts.model_document import (
     CompositeComponent, LeafComponent, ModelName, ModelPhysicalConnection,
     ModelDocument, ModelWire, PhysicalPort, SignalInput, SignalOutput, SignalType, WireAttachment,
 )
-from feedbax.contracts.jobs import StudioSavedTrainKey
+from feedbax.contracts.jobs import StudioProjectWindowMapProblem, StudioSavedTrainKey
 from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import AxisValueId, ProjectName, RowKey
 from feedbax.contracts.request_refs import Name
@@ -412,6 +412,7 @@ class EvaluateModelState(StrictModel):
     changed_from: ProjectName | None = None
     """The nearest document the read Model document shares with the subject's, when they differ: what the
     evaluation changes is the read document's differences from it."""
+    problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
 
 
 class ModelEditApplied(StrictModel):

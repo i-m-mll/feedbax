@@ -15,7 +15,7 @@ from feedbax.contracts.project import RootDocument, Sha256, StepKind
 from feedbax.contracts.task_document import TaskDocument
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName, StepReference
 from feedbax.contracts.request_refs import Name
-from feedbax.contracts.jobs import StudioSavedTrainKey
+from feedbax.contracts.jobs import StudioProjectWindowMapProblem, StudioSavedTrainKey
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
 
 
@@ -249,6 +249,7 @@ class StudioTrainStartRequest(StrictModel):
 class StudioTrainStartEdit(StrictModel):
     revision: Sha256
     files: list[StudioProjectFilePatch]
+    problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
 
 
 class StudioSweptParameterMissing(StrictModel):
