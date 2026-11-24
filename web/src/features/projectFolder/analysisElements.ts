@@ -1,6 +1,6 @@
 import { shownName } from '@/features/pipeline/planView';
-import type { Document, JsonValue } from '@/generated/studioContracts';
-import { documentPayload } from './documentPayload';
+import type { Base, Document, JsonValue } from '@/generated/studioContracts';
+import { documentPayload, stepDocument } from './documentPayload';
 import { documentsOfRole } from './useProjectDocuments';
 
 type Documents = Readonly<Record<string, Document>> | null | undefined;
@@ -25,11 +25,9 @@ export function heldElementKeys(documents: Documents, composed: Composed): Reado
 
 /** The shown name of `element` of the Analysis document `step` reads. */
 export function stepElementName(
-  project: { readonly documents?: Documents; readonly steps?: Readonly<Record<string, { readonly base?: unknown }>> | null },
+  project: { readonly documents?: Documents; readonly steps?: Readonly<Record<string, { readonly base?: Base }>> | null },
   composed: Composed, step: string, element: string,
 ) {
-  const base = project.steps?.[step]?.base;
-  const document = base && typeof base === 'object' && 'document' in base && typeof base.document === 'string'
-    ? base.document : undefined;
+  const document = stepDocument(project.steps?.[step]?.base);
   return shownName(element, document ? payloadElements(documentPayload(project.documents, composed, document))[element] : undefined);
 }

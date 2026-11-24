@@ -537,6 +537,7 @@
     "canResume": "{value} can resume",
     "changed": "{value} changed",
     "invalidPath": "{value} is invalid",
+    "taken": "{value} is taken",
     "unreadable": "{value} is unreadable",
     "definitionUnavailable": "{value} definition is unavailable for this selection",
     "definitionReadOnly": "{value} is shared with other definitions",
