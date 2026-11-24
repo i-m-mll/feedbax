@@ -535,6 +535,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
             step: readBody.run.step, chosen_steps: [...chosenSteps], ...evaluateEditRuns(scope, readBody.run, fieldRows),
           });
           if (applied.status === 'refused') throw new Error(applied.problem.detail);
+          if (applied.status === 'asked') throw new Error('Choose where to store this edit.');
           shown = follow(applied) ?? shown;
           const [first] = applied.changed;
           if (!first) throw new Error('The edit changed nothing.');

@@ -62,7 +62,7 @@ test('connects the saved Model task signal from the keyboard', async ({ page, re
   const applied = await edit;
   const { result } = await applied.json() as ModelEditResponse;
   expect(applied.ok(), JSON.stringify(result)).toBe(true);
-  if (result.status !== 'applied') throw new Error(result.problem.detail);
+  if (result.status !== 'applied') throw new Error(JSON.stringify(result));
   const saved = rootPayload(result.snapshot.project.documents![modelFile.id]) as unknown as ModelDocument;
   const taskPort = saved.ports.inputs?.find(({ name }) => name === signal);
   expect(taskPort).toBeDefined();
