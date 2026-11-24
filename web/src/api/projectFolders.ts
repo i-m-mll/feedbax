@@ -11,6 +11,7 @@ import {
   type StudioMemberCommand,
   type StudioPresentationWrite,
   type StudioProjectCreateFile,
+  type StudioProjectCreateFiles,
   type StudioProjectPatch,
   type StudioProjectPatchBatch,
   type StudioProjectRename,
@@ -58,10 +59,12 @@ export function renameProjectFolder(id: string, body: StudioProjectRename, signa
   });
 }
 
-export function createProjectFile(id: string, body: StudioProjectCreateFile, signal?: AbortSignal) {
+export function createProjectFile(id: string, body: StudioProjectCreateFile | StudioProjectCreateFiles, signal?: AbortSignal) {
   const path = `${projectPath(id)}/files`;
+  const data = 'files' in body ? sentBody('StudioProjectCreateFiles', body, path)
+    : sentBody('StudioProjectCreateFile', body, path);
   return readFolder('StudioProjectDocument', id, path, {
-    method: 'POST', body: sentBody('StudioProjectCreateFile', body, path), signal,
+    method: 'POST', body: data, signal,
   });
 }
 

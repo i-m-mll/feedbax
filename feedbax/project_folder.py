@@ -91,6 +91,7 @@ from feedbax.contracts.studio_project import (
     StudioPresentationWrite,
     StudioProjectDocument,
     StudioProjectCreateFile,
+    StudioProjectCreateFiles,
     StudioProjectPatch,
     StudioProjectPatchBatch,
     StudioProjectRename,
@@ -1134,30 +1135,38 @@ class ProjectFolder:
                 text = self._load(root)
             return self._document(folder.location, text)
 
-    def create_file(self, project_id: str, body: StudioProjectCreateFile) -> StudioProjectDocument:
-        file = body.file
-        family = _FAMILIES[file.kind]
-        relative = f"{family}/{file.id}.json"
+    def create_file(
+        self, project_id: str, body: StudioProjectCreateFile | StudioProjectCreateFiles,
+    ) -> StudioProjectDocument:
+        files = [body.file] if isinstance(body, StudioProjectCreateFile) else body.files
         with self._locked_folder(project_id) as folder:
             root = folder.path
             text = self._load(root)
             check_revision("project", body.revision, text.revision)
-            entries = text.project.documents if isinstance(file, CreateNamedDocument) else text.project.steps
-            if file.id in entries:
-                raise ProjectFileExists(relative)
-            entry = file.document if isinstance(file, CreateNamedDocument) else file.step
-            project = Project.model_validate({
-                **text.project.model_dump(mode="json", by_alias=True, exclude_unset=True),
-                family: {**entries, file.id: entry},
-            })
-            data = dump_text_project(project, text.configuration)[relative]
+            documents = dict(text.project.documents)
+            steps = dict(text.project.steps)
+            additions = {}
+            for file in files:
+                address = AuthoredFileAddress(kind=file.kind, id=file.id)
+                relative = _relative_file(address)
+                if relative in text.files or relative in additions:
+                    raise ProjectFileExists(relative)
+                additions[relative] = address
+                if isinstance(file, CreateNamedDocument):
+                    documents[file.id] = file.document
+                else:
+                    steps[file.id] = file.step
+            project = Project(documents=documents, steps=steps, sweep=text.project.sweep)
+            encoded = dump_text_project(project, text.configuration)
+            _check_file_spellings(root, encoded)
+
             def guard() -> None:
                 check_revision("project", text.revision, self._load(root).revision)
 
-            try:
-                folder.write(root / relative, data, replace=False, before_publish=guard)
-            except FileExistsError as error:
-                raise ProjectFileExists(relative) from error
+            _publish_patch(folder, [
+                _PendingFile(address=address, before=None, data=encoded[relative].decode())
+                for relative, address in additions.items()
+            ], guard)
             return self._document(folder.location, self._load(root))
 
     def revision(self, project_id: str) -> StudioProjectRevision:

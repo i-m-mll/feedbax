@@ -28,6 +28,7 @@ from feedbax.contracts.studio_project import (
     StudioMemberCommandResult,
     StudioPresentationWrite,
     StudioProjectCreateFile,
+    StudioProjectCreateFiles,
     StudioProjectDocument,
     StudioProjectPatch,
     StudioProjectPatchBatch,
@@ -461,7 +462,7 @@ def rename_project(
 
 @router.post("/{project_id}/files", status_code=201, response_model_exclude_unset=True)
 def create_project_file(
-    project_id: ProjectName, body: StudioProjectCreateFile, request: Request, response: Response
+    project_id: ProjectName, body: StudioProjectCreateFile | StudioProjectCreateFiles, request: Request, response: Response,
 ) -> StudioProjectDocument:
     return _project_response(
         response, lambda: request.app.state.project_folders.create_file(project_id, body)
