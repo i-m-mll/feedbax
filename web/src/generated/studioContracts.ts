@@ -2185,19 +2185,37 @@ export interface TaskTimelineCue {
   outcome: number;
 }
 
-export interface SampledTaskTrial {
+export interface TrialRecord {
   id: string;
-  inits: Record<string, unknown>;
-  inputs: Record<string, unknown>;
-  present: Record<string, unknown>;
-  variables: Record<string, unknown>;
-  variable_defined: Record<string, unknown>;
+  inits: Record<string, JsonValue>;
+  inputs: Record<string, JsonValue>;
+  present: Record<string, JsonValue>;
+  variables: Record<string, JsonValue>;
+  variable_defined: Record<string, JsonValue>;
   timeline: TaskTimelineCue[];
+  terms?: Record<string, TrialTerm>;
+  states?: Record<string, JsonValue>;
 }
 
-export interface SampledTaskTrials {
+export interface TrialRecords {
   kind: "trials";
-  trials: SampledTaskTrial[];
+  trials: TrialRecord[];
+}
+
+export interface TrialTerm {
+  steps: boolean[];
+  covered: boolean;
+  values?: number[] | null;
+}
+
+export interface TrialTermAggregate {
+  steps: number[];
+  covered: number;
+}
+
+export interface TrialUnavailable {
+  kind: "problems";
+  problems: Problem[];
 }
 
 export interface TaskEpochShare {
@@ -2212,15 +2230,16 @@ export interface TaskSignalAggregate {
 }
 
 export interface TaskVariableRange {
-  least: unknown;
-  greatest: unknown;
+  least: JsonValue;
+  greatest: JsonValue;
 }
 
-export interface TaskTrialAggregate {
+export interface TrialAggregate {
   kind: "aggregate";
   epochs: TaskEpochShare[];
   signals: Record<string, TaskSignalAggregate>;
   variables: Record<string, TaskVariableRange>;
+  terms?: Record<string, TrialTermAggregate>;
 }
 
 export interface TaskTrialSampleRequest {
@@ -2228,6 +2247,8 @@ export interface TaskTrialSampleRequest {
   task?: TaskDocument | null;
   python_task?: PythonTaskSelection | null;
   input_overrides?: Record<string, string>;
+  objective?: ObjectiveDocument | null;
+  evaluation_trials?: string[] | null;
   seed?: number;
   count?: number;
   aggregate?: boolean;
@@ -2238,8 +2259,8 @@ export interface TaskTrialSampleResponse {
   task: string;
   seed: number;
   count: number;
-  n_steps: number;
-  drawn: SampledTaskTrials | TaskTrialAggregate;
+  n_steps: number | null;
+  drawn: TrialRecords | TrialAggregate | TrialUnavailable;
 }
 
 export interface ParentRef {
@@ -4363,6 +4384,8 @@ export type StudioTrialAuthoring = {
   "task_changed"?: Array<Pointer>;
   "objective_changed"?: Array<Pointer>;
   "objective": ObjectiveDocument | null;
+  "objective_source"?: StudioTrialObjectiveSource | null;
+  "input_overrides"?: Record<string, string>;
   "task_types": Array<StudioTaskType>;
   "tasks": Array<StudioTaskChoice>;
   "variables": Array<ScopedValue>;
@@ -4444,6 +4467,11 @@ export type StudioTrialInput = {
   "required": boolean;
   "signal": string | null;
   "explicit": boolean;
+};
+
+export type StudioTrialObjectiveSource = {
+  "kind": "train" | "own";
+  "step": string;
 };
 
 export type StudioTrialOutput = {
@@ -9120,28 +9148,58 @@ export const TaskTimelineCueSchema: z.ZodType<TaskTimelineCue> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<TaskTimelineCue>;
 
-export const SampledTaskTrialSchema: z.ZodType<SampledTaskTrial> = z.lazy(() =>
+export const TrialRecordSchema: z.ZodType<TrialRecord> = z.lazy(() =>
   z
     .object({
       "id": z.string(),
-      "inits": z.record(z.string(), z.unknown()),
-      "inputs": z.record(z.string(), z.unknown()),
-      "present": z.record(z.string(), z.unknown()),
-      "variables": z.record(z.string(), z.unknown()),
-      "variable_defined": z.record(z.string(), z.unknown()),
+      "inits": z.record(z.string(), jsonValueSchema),
+      "inputs": z.record(z.string(), jsonValueSchema),
+      "present": z.record(z.string(), jsonValueSchema),
+      "variables": z.record(z.string(), jsonValueSchema),
+      "variable_defined": z.record(z.string(), jsonValueSchema),
       "timeline": z.array(TaskTimelineCueSchema),
+      "terms": z.record(z.string(), TrialTermSchema).optional(),
+      "states": z.record(z.string(), jsonValueSchema).optional(),
     })
     .strict()
-) as unknown as z.ZodType<SampledTaskTrial>;
+) as unknown as z.ZodType<TrialRecord>;
 
-export const SampledTaskTrialsSchema: z.ZodType<SampledTaskTrials> = z.lazy(() =>
+export const TrialRecordsSchema: z.ZodType<TrialRecords> = z.lazy(() =>
   z
     .object({
       "kind": z.literal("trials"),
-      "trials": z.array(SampledTaskTrialSchema),
+      "trials": z.array(TrialRecordSchema),
     })
     .strict()
-) as unknown as z.ZodType<SampledTaskTrials>;
+) as unknown as z.ZodType<TrialRecords>;
+
+export const TrialTermSchema: z.ZodType<TrialTerm> = z.lazy(() =>
+  z
+    .object({
+      "steps": z.array(z.boolean()),
+      "covered": z.boolean(),
+      "values": z.array(z.number().finite()).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialTerm>;
+
+export const TrialTermAggregateSchema: z.ZodType<TrialTermAggregate> = z.lazy(() =>
+  z
+    .object({
+      "steps": z.array(z.number().finite()),
+      "covered": z.number().finite(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialTermAggregate>;
+
+export const TrialUnavailableSchema: z.ZodType<TrialUnavailable> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("problems"),
+      "problems": z.array(ProblemSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialUnavailable>;
 
 export const TaskEpochShareSchema: z.ZodType<TaskEpochShare> = z.lazy(() =>
   z
@@ -9165,22 +9223,23 @@ export const TaskSignalAggregateSchema: z.ZodType<TaskSignalAggregate> = z.lazy(
 export const TaskVariableRangeSchema: z.ZodType<TaskVariableRange> = z.lazy(() =>
   z
     .object({
-      "least": z.unknown(),
-      "greatest": z.unknown(),
+      "least": jsonValueSchema,
+      "greatest": jsonValueSchema,
     })
     .strict()
 ) as unknown as z.ZodType<TaskVariableRange>;
 
-export const TaskTrialAggregateSchema: z.ZodType<TaskTrialAggregate> = z.lazy(() =>
+export const TrialAggregateSchema: z.ZodType<TrialAggregate> = z.lazy(() =>
   z
     .object({
       "kind": z.literal("aggregate"),
       "epochs": z.array(TaskEpochShareSchema),
       "signals": z.record(z.string(), TaskSignalAggregateSchema),
       "variables": z.record(z.string(), TaskVariableRangeSchema),
+      "terms": z.record(z.string(), TrialTermAggregateSchema).optional(),
     })
     .strict()
-) as unknown as z.ZodType<TaskTrialAggregate>;
+) as unknown as z.ZodType<TrialAggregate>;
 
 export const TaskTrialSampleRequestSchema: z.ZodType<TaskTrialSampleRequest> = z.lazy(() =>
   z
@@ -9189,6 +9248,8 @@ export const TaskTrialSampleRequestSchema: z.ZodType<TaskTrialSampleRequest> = z
       "task": TaskDocumentSchema.nullable().optional(),
       "python_task": PythonTaskSelectionSchema.nullable().optional(),
       "input_overrides": z.record(z.string(), z.string()).optional(),
+      "objective": ObjectiveDocumentSchema.nullable().optional(),
+      "evaluation_trials": z.array(z.string()).min(1).nullable().optional(),
       "seed": z.number().int().safe().optional(),
       "count": z.number().int().safe().gte(1).optional(),
       "aggregate": z.boolean().optional(),
@@ -9212,8 +9273,8 @@ export const TaskTrialSampleResponseSchema: z.ZodType<TaskTrialSampleResponse> =
       "task": z.string(),
       "seed": z.number().int().safe(),
       "count": z.number().int().safe(),
-      "n_steps": z.number().int().safe(),
-      "drawn": z.union([SampledTaskTrialsSchema, TaskTrialAggregateSchema]),
+      "n_steps": z.number().int().safe().nullable(),
+      "drawn": z.union([TrialRecordsSchema, TrialAggregateSchema, TrialUnavailableSchema]),
     })
     .strict()
 ) as unknown as z.ZodType<TaskTrialSampleResponse>;
@@ -12111,6 +12172,8 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "task_changed": z.array(PointerSchema).optional(),
     "objective_changed": z.array(PointerSchema).optional(),
     "objective": z.union([ObjectiveDocumentSchema, z.null()]),
+    "objective_source": z.union([StudioTrialObjectiveSourceSchema, z.null()]).optional(),
+    "input_overrides": z.record(z.string(), z.string()).optional(),
     "task_types": z.array(StudioTaskTypeSchema),
     "tasks": z.array(StudioTaskChoiceSchema),
     "variables": z.array(ScopedValueSchema),
@@ -12210,6 +12273,13 @@ export const StudioTrialInputSchema: z.ZodType<StudioTrialInput> = z.lazy(() =>
     "explicit": z.boolean(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialInput>;
+
+export const StudioTrialObjectiveSourceSchema: z.ZodType<StudioTrialObjectiveSource> = z.lazy(() =>
+  z.object({
+    "kind": z.union([z.literal("train"), z.literal("own")]),
+    "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<StudioTrialObjectiveSource>;
 
 export const StudioTrialOutputSchema: z.ZodType<StudioTrialOutput> = z.lazy(() =>
   z.object({
