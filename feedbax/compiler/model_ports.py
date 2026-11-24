@@ -9,7 +9,8 @@ from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.component import derive_dynamic_port_count, derive_dynamic_port_layout
 from feedbax.contracts.model_document import ModelDocument, SignalType
 from feedbax.contracts.strict_json import strict_json_loads
-from feedbax.compiler.model_edit import Direction, Port, Record, model_graph_problems
+from feedbax.compiler.model_edit import Direction, ModelEditDraft, Port, Record, model_graph_problems
+from feedbax.contracts.model_edit import ModelEditState
 
 
 class ModelRegistryPorts:
@@ -38,6 +39,9 @@ class ModelRegistryPorts:
 
     def problems(self, document: ModelDocument):
         return model_graph_problems(document, ports=self.port, accepts=self.accepts)
+
+    def ungroup_eligibility(self, document: ModelDocument):
+        return ModelEditDraft(ModelEditState(document=document), self.port, self.accepts).ungroup_eligibility()
 
     def layout(self, component: Record) -> dict[tuple[Direction, str], Port]:
         return self._layout(

@@ -165,6 +165,7 @@ def test_added_component_takes_the_id_it_is_given_and_refuses_one_in_use():
 
 def test_ungroup_preserves_attachment_order_and_refuses_shared_delay():
     address = _address(("outer",), "component", id="child")
+    assert _ungroup_reason(_start(decorated=True), address) is None
     accepted = _execute(_start(decorated=True), "ungroup", address=address)
     assert not isinstance(accepted, ModelEditProblem), accepted
     wires = accepted.state.document.interior.components["outer"].interior.wires.values()
@@ -177,6 +178,7 @@ def test_ungroup_preserves_attachment_order_and_refuses_shared_delay():
     refused = _execute(start, "ungroup", address=address)
     assert isinstance(refused, ModelEditProblem)
     assert refused.address == ModelAddress.model_validate(_address(("outer",), "wire", id="in"))
+    assert _ungroup_reason(start, address) == refused.detail
     assert _bytes(start) == before
 
 
@@ -190,17 +192,29 @@ def test_ungroup_refuses_port_attachments(outside):
         ProbeAttachment(kind="probe", id="probe", name="Read"),
     )
     before = _bytes(state)
-    result = _execute(state, "ungroup", address=_address(("outer",), "component", id="child"))
+    address = _address(("outer",), "component", id="child")
+    result = _execute(state, "ungroup", address=address)
     assert isinstance(result, ModelEditProblem)
     assert result.address.element.kind == "port"
+    assert _ungroup_reason(state, address) == result.detail
     assert _bytes(state) == before
 
 
 def test_ungroup_refuses_an_unconnected_input_default():
     state = _start(default=True)
-    result = _execute(state, "ungroup", address=_address(("outer",), "component", id="child"))
+    address = _address(("outer",), "component", id="child")
+    result = _execute(state, "ungroup", address=address)
     assert isinstance(result, ModelEditProblem)
     assert result.address.element.kind == "port"
+    assert _ungroup_reason(state, address) == result.detail
+
+
+def _ungroup_reason(state, address):
+    target = ModelAddress.model_validate(address)
+    return next(
+        item.reason for item in model_edit.ModelEditDraft(state, _ports, _accepts).ungroup_eligibility()
+        if item.address == target
+    )
 
 
 def test_addressed_route_settles_document_and_position_and_rejects_raw_patch(tmp_path):
