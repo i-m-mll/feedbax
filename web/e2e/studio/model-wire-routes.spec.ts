@@ -47,11 +47,14 @@ function crosses(a: readonly Point[], b: readonly Point[]) {
 }
 
 async function wiredPair(page: Page) {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(`${error.message}\n${error.stack}`));
   const model = await newModel(page);
   const first = await add(page, model, 'Linear');
   const second = await add(page, model, 'Linear');
   const handle = (card: Locator, id: string) => card.locator(`[data-handleid="${id}"]`);
   await wire(page, handle(first, 'output:output'), handle(second, 'input:input'));
+  expect(errors).toEqual([]);
   const passesBehind = async () => {
     const points = await route(model, '.output → ');
     const cards = [await inside(first), await inside(second)];
@@ -84,6 +87,8 @@ test('a wire to a card on its source\'s left passes behind no card', async ({ pa
 
 /** Two wires from a card back to itself nest: they do not cross, and the pair of lower ports takes the inner route. */
 test('wires from a card back to itself nest with the lowest ports innermost', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(`${error.message}\n${error.stack}`));
   const model = await newModel(page);
   const gru = await add(page, model, 'GRU');
   const handle = (id: string) => gru.locator(`[data-handleid="${id}"]`);
@@ -96,4 +101,5 @@ test('wires from a card back to itself nest with the lowest ports innermost', as
   expect(hidden.y).toBeGreaterThan(output.y);
   expect(crosses(outer, inner)).toBe(false);
   expect(lowest(inner)).toBeLessThan(lowest(outer));
+  expect(errors).toEqual([]);
 });
