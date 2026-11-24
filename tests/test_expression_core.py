@@ -1,11 +1,13 @@
 """Contract checks for authoring text and the core numerical evaluator."""
 
 
+from hypothesis import given, strategies as st
 import jax
 import jax.numpy as jnp
 import pytest
 
 from feedbax.contracts.expression_values import (
+    CallValue,
     LENGTH,
     TIME,
     Level,
@@ -87,6 +89,62 @@ def test_text_round_trip_without_edit_history(text):
     first = parsed(text, expected)
     assert parsed(print_field(first, expected), expected) == first
     assert '"id"' not in first.model_dump_json()
+
+
+_OPERANDS = tuple(
+    ScopedValue(id=f"{name}-id", name=name, type=ValueType(base=ValueBase.REAL), level=Level.RUN) for name in "abc"
+)
+_LEAVES = st.one_of(
+    st.sampled_from([NameValue(reference=item.id) for item in _OPERANDS]),
+    st.builds(
+        LiteralValue,
+        value=st.one_of(st.booleans(), st.integers(-5, 5), st.floats(-10, 10, allow_nan=False)),
+    ),
+    st.builds(LiteralValue, value=st.integers(-5, 5), unit=st.sampled_from(["s", "mm", "°"])),
+)
+_TREES = st.recursive(
+    _LEAVES,
+    lambda child: st.one_of(
+        st.builds(
+            lambda function, left, right: CallValue(function=function, args=(left, right)),
+            st.sampled_from(["add", "sub", "mul", "div", "mod", "eq", "lt", "ge", "and", "or", "index"]),
+            child, child,
+        ),
+        st.builds(
+            lambda function, operand: CallValue(function=function, args=(operand,)),
+            st.sampled_from(["neg", "pos", "not", "hold"]), child,
+        ),
+        st.builds(lambda items: CallValue(function="vector", args=tuple(items)), st.lists(child, min_size=1, max_size=3)),
+    ),
+    max_leaves=12,
+)
+
+
+@given(_TREES)
+def test_printed_text_reads_back_as_the_same_value(tree):
+    """Catches a printer whose operators or parentheses change what the text means when it is read back."""
+    names = site(names=_OPERANDS)
+    assert parsed(print_field(tree, names), names) == tree
+
+
+@pytest.mark.parametrize(
+    ("written", "shown"),
+    [
+        ("a + b", "a + b"),
+        ("a+(b*c)", "a + b * c"),
+        ("(a + b) * c", "(a + b) * c"),
+        ("a - (b - c)", "a - (b - c)"),
+        ("(a - b) - c", "a - b - c"),
+        ("-(a + b)[0]", "-(a + b)[0]"),
+        ("not (a < b and c)", "not (a < b and c)"),
+        ("a + polar(b, c)", "a + polar(b, c)"),
+        ("add(a, b)", "a + b"),
+    ],
+)
+def test_text_is_shown_back_as_written_with_operators_infix(written, shown):
+    """Catches text stored as written ``a + b`` and shown back as ``add(a, b)``, or with parentheses it never needed."""
+    names = site(names=_OPERANDS)
+    assert print_field(parsed(written, names), names) == shown
 
 
 def test_scope_ids_survive_rename_and_duplicate_names_report_second():
