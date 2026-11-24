@@ -292,6 +292,7 @@ def compile_objective(
     sites: dict[tuple[str | int, ...], Site] | None = None,
     use: ObjectiveUse = ObjectiveUse.TRAIN,
     nominal: bool = False,
+    preview_problems: list[Problem] | None = None,
 ) -> ObjectiveExecutor | tuple[Problem, ...]:
     """Compile an authored objective or rebind the validated Train terms to Evaluate."""
     period = task.period
@@ -398,6 +399,8 @@ def compile_objective(
     if problems and use is not ObjectiveUse.PREVIEW:
         return tuple(problems)
     if problems:
+        if preview_problems is not None:
+            preview_problems.extend(problems)
         compiled_ids = {term.id for term in terms}
         missing = dict.fromkeys(term.id for term in document.terms if term.enabled and term.id not in compiled_ids)
         terms.extend(map(_UncoveredTerm, missing))

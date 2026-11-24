@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
+
 import jax
 import jax.numpy as jnp
 from fastapi import APIRouter, Request
@@ -122,12 +124,18 @@ async def sample_task_trials(
         samples, keys = sample_evaluation_trials(task, parameters, key=key, trial_ids=ids)
 
     term_traces = {}
+    term_problems: dict[str, list[Problem]] = defaultdict(list)
     if payload.objective is not None:
+        preview_problems: list[Problem] = []
         scorer = compile_objective(
             payload.objective, (*preview.outputs, *task.interface.variables, *task.interface.signals),
             bundle.expression_functions, task=task, use=ObjectiveUse.PREVIEW, nominal=payload.nominal,
+            preview_problems=preview_problems,
         )
         assert isinstance(scorer, ObjectiveExecutor)
+        for problem in preview_problems:
+            term_id = str(problem.path[1])
+            term_problems[term_id].append(problem.model_copy(update={"path": ("objective", *problem.path)}))
         outputs = {
             output.id: jnp.zeros((task.n_steps, *output.type.shape), _DTYPES[output.type.base])
             for output in scorer.names
@@ -147,6 +155,7 @@ async def sample_task_trials(
             terms={
                 name: TrialTerm(
                     steps=trace.steps[index].tolist(), covered=bool(trace.covered[index]),
+                    problems=term_problems.get(name, []),
                     weights=trial_weight_values(trace.weight.value[index], trace.weight.defined[index])
                     if trace.weight is not None and not aggregate else None,
                 )
