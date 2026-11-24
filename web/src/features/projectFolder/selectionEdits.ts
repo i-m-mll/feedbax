@@ -1,6 +1,6 @@
 import {
   StepReferenceSchema, type InputBinding, type JsonValue, type ProjectValueEdit, type StepReference,
-  type Step, type StepKind, type StudioProjectWindowMapProblem, type StudioSavedTrainKey,
+  type Step, type StepKind, type StudioProjectWindowMapProblem, type StudioSavedTrainKey, type TextSpan,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
 import { savedRunId } from './projectWindowPlan';
@@ -41,12 +41,21 @@ export function bindingEdit(
   };
 }
 
+/** A plan's problem on a run rule, and the characters of the saved rule it is about. */
+export interface RuleProblem {
+  readonly reason: string;
+  readonly span?: TextSpan;
+}
+
+const ruleProblem = (problem: StudioProjectWindowMapProblem): RuleProblem =>
+  ({ reason: problem.detail, ...problem.span && { span: problem.span } });
+
 /** A selection's problems, each on the field its path names. */
 export interface SelectionProblems {
   /** A problem of the selection that names neither its Runs nor its Checkpoint, on its picker. */
   readonly picker?: string;
-  /** A problem at the selection's `where`, on its Runs field. */
-  readonly rule?: string;
+  /** A problem at the selection's `where`, on its Runs field, with the term of the rule it is about. */
+  readonly rule?: RuleProblem;
   /** A problem at the selection's `checkpoint`, or the role's when the role lists selections. */
   readonly checkpoint?: string;
   /** The runs the selection reads that cannot run, and keep runs of the step from running. */
@@ -65,7 +74,7 @@ export function selectionProblems(
   listed: boolean,
 ): SelectionProblems {
   const own = listed ? `inputs.${role}.${index}` : `inputs.${role}`;
-  const placed: { picker?: string; rule?: string; checkpoint?: string; blockedBy: StudioSavedTrainKey[] } = { blockedBy: [] };
+  const placed: { picker?: string; rule?: RuleProblem; checkpoint?: string; blockedBy: StudioSavedTrainKey[] } = { blockedBy: [] };
   for (const problem of problems) {
     if (problem.step !== step || (problem.variant !== null && problem.variant !== variant)) continue;
     const path = dotted(problem.path);
@@ -79,11 +88,23 @@ export function selectionProblems(
       }
       continue;
     }
-    const field = rest === '.where' || rest.startsWith('.where.') ? 'rule'
-      : rest === '.checkpoint' || rest.startsWith('.checkpoint.') ? 'checkpoint' : 'picker';
-    placed[field] ??= problem.detail;
+    if (rest === '.where' || rest.startsWith('.where.')) {
+      placed.rule ??= ruleProblem(problem);
+      continue;
+    }
+    placed[rest === '.checkpoint' || rest.startsWith('.checkpoint.') ? 'checkpoint' : 'picker'] ??= problem.detail;
   }
   return placed;
+}
+
+/** The problem the plan reports on the rule of `step`'s sweep exception `id`. */
+export function exceptionRuleProblem(
+  problems: readonly StudioProjectWindowMapProblem[], step: string, variant: string | null, id: string,
+): RuleProblem | undefined {
+  const own = `sweep.exceptions.${id}.where`;
+  const problem = problems.find((problem) => problem.step === step && (problem.variant === null || problem.variant === variant)
+    && (dotted(problem.path) === own || dotted(problem.path).startsWith(own + '.')));
+  return problem && ruleProblem(problem);
 }
 
 /**

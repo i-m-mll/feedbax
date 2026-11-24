@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { sampleTaskTrials } from '@/api/studioAuthoring';
 import { studioAccessibleName } from '@/components/activity/studioVocabulary';
 import type { ModelDocument, StudioTrialAuthoring, TaskDocument, TaskTrialSampleRequest, TaskTrialSampleResponse } from '@/generated/studioContracts';
+import { epochInstances } from './repeats';
 import type { EpochBounds } from './taskModel';
 import type { ShelfTask } from './shelfRows';
 import type { TrialsUnavailable } from './trialSample';
@@ -29,13 +30,15 @@ export function shelfTask(view: StudioTrialAuthoring, document: string, objectiv
       least: steps.least * period, nominal: steps.nominal * period, greatest: steps.greatest * period,
     });
   }
+  const order = task.epochs.map(({ id }) => id);
   const terms = (view.objective?.terms ?? []).flatMap(({ id, name, enabled }, index) =>
     enabled === false ? [] : [{ id, name: name ?? studioAccessibleName('term', index + 1) }]);
   return {
-    document, epochs, duration: view.n_steps * period,
+    document, duration: view.n_steps * period,
+    epochs: epochInstances(epochs, task.repeats ?? [], task.variables).map(({ epoch }) => epoch),
     ...objectiveDocument && { objective: { document: objectiveDocument, terms } },
     signals: task.signals.map(({ id, name, cells }) => ({
-      id, name, cells: cells.map(({ first_epoch, last_epoch }) => ({ first: first_epoch, last: last_epoch })),
+      id, name, covers: cells.flatMap(({ first_epoch, last_epoch }) => order.slice(order.indexOf(first_epoch), order.indexOf(last_epoch) + 1)),
     })),
   };
 }

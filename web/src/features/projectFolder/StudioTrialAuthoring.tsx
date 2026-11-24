@@ -8,6 +8,7 @@ import { shownError } from '@/api/shownErrors';
 import { studioAccessibleName, studioDefinitionStatus, studioEvaluateValueSource, studioName, studioRunReason } from '@/components/activity/studioVocabulary';
 import { IconButton } from '@/components/ui/Button';
 import { Inspector } from '@/components/ui/Inspector';
+import { editedElement } from '@/components/ui/ChoiceMenu';
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '@/components/ui/Menu';
 import { StatusMark } from '@/components/ui/StatusMark';
 import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
@@ -29,11 +30,13 @@ import type {
   StudioTrialField,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
+import { addressKey } from './model/modelGraph';
 import { BatchTrace, TermTrace, TrialTrace } from './task/SignalTrace';
 import { epochBoundaries, signalAggregate, signalSteps, type TrialShown } from './task/trialSample';
 import { baseOf } from './documentPayload';
 import type { ProjectEditController } from './projectEditController';
 import { filesRemoval, type ConfirmRunRemoval } from './runRemoval';
+import type { AskStore } from './storeChoice';
 import { SweepTargetItem, type SweepTarget } from './StudioTrainAuthoringForm';
 import { TaskOutline, type OutlineGroup } from './task/TaskOutline';
 
@@ -84,7 +87,7 @@ export function trialField(projection: StudioTrialField, label: string, runs: Tr
 
 export function useTrialAuthoring(
   editor: ProjectEditController, project: string, revision: string, run: StudioSavedTrainKey | undefined,
-  enabled: boolean, editable: boolean, scope: TrialChangeScope, confirmRemoval: ConfirmRunRemoval,
+  enabled: boolean, editable: boolean, scope: TrialChangeScope, confirmRemoval: ConfirmRunRemoval, askStore: AskStore,
 ) {
   const query = useQuery({
     queryKey: ['trial-authoring', project, revision, run],
@@ -105,26 +108,35 @@ export function useTrialAuthoring(
     };
     return { ...data, changedFrom: { task: from(data.task_document), objective: from(data.objective_document) } };
   }, [data, authored, run]);
-  const commit: Commit | undefined = editable && run && query.data ? (name, change, removes) => editor.command(async (saved) => {
-    const result = await readStudioTrialAuthoring(saved.project_id, {
-      revision: saved.revision, run, change, scope: scope(change),
-    }, editor.signal);
-    if (result.files.length) {
-      if (removes && !await confirmRemoval(filesRemoval(saved.project_id, saved.revision, result.files, editor.signal))) return;
-      const documents = [result.model, result.task_document, result.objective_document];
-      const stored = editor.storeEdit(name, result, {
-        reviewedRevision: saved.revision,
-        dependencies: [
-          { kind: 'step', id: run.step },
-          ...documents.flatMap((id) => id ? [{ kind: 'document' as const, id }] : []),
-        ],
-      });
-      await editor.flush();
-      const settled = await stored;
-      if (settled.status === 'refused') return shownError(settled.error);
-    }
-    return undefined;
-  }).catch(shownError) : undefined;
+  const commit: Commit | undefined = editable && run && query.data ? (name, change, removes) => {
+    const committedFrom = document.activeElement;
+    return editor.command(async (saved) => {
+      const request = { revision: saved.revision, run, change, scope: scope(change) };
+      let result = await readStudioTrialAuthoring(saved.project_id, request, editor.signal);
+      if (result.store_choices) {
+        // The edit reaches beyond the selection: it waits here, holding later commands, until a store is chosen.
+        const choice = await askStore(editedElement(committedFrom), result.store_choices);
+        if (!choice) return undefined;
+        result = await readStudioTrialAuthoring(saved.project_id, { ...request, store_choice: choice }, editor.signal);
+        if (result.store_choices) throw new Error('The chosen store was offered again.');
+      }
+      if (result.files.length || result.created?.length) {
+        if (removes && !await confirmRemoval(filesRemoval(saved.project_id, saved.revision, result.files, editor.signal))) return;
+        const documents = [result.model, result.task_document, result.objective_document];
+        const stored = editor.storeEdit(name, result, {
+          reviewedRevision: saved.revision,
+          dependencies: [
+            { kind: 'step', id: run.step },
+            ...documents.flatMap((id) => id ? [{ kind: 'document' as const, id }] : []),
+          ],
+        });
+        await editor.flush();
+        const settled = await stored;
+        if (settled.status === 'refused') return shownError(settled.error);
+      }
+      return undefined;
+    }).catch(shownError);
+  } : undefined;
   return { view, error: query.error, retry: () => { void query.refetch(); }, commit };
 }
 
@@ -205,7 +217,11 @@ export function TrialTaskOutline({ sections, view, selected, select }: {
     variables: task && entries('variables', task.variables),
     epochs: task && entries('epochs', task.epochs),
     signals: task ? entries('signals', task.signals) : view.signals.map(({ id, name }) => ({ id, name: humanizeLabel(name) })),
-    modelInputs: view.inputs.map(({ id, name, signal_id }) => ({ id, name, muted: !signal_id })),
+    modelInputs: view.inputs.map(({ id, name, address, signal_id }) => {
+      const signal = view.signals.find((item) => item.id === signal_id)?.name;
+      const reason = view.problems.find(({ model_address }) => model_address && addressKey(model_address) === addressKey(address))?.reason;
+      return { id, name, muted: !signal_id, reason, detail: signal === name ? undefined : signal };
+    }),
   };
   const [kind, ...rest] = selected?.split(':') ?? [];
   const group = (Object.keys(outlineKinds) as OutlineGroup[]).find((key) => outlineKinds[key] === kind);

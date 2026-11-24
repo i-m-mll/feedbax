@@ -187,3 +187,44 @@ test('authors a set across runs: Duplicate Run, Save Set, a set as a sweep, Inli
   expect((await snapshot()).project.steps!.pair.sweep!.axes!.run).toMatchObject({ optional: true, values: expect.any(Object) });
   expect(await evaluations('pair')).toEqual(edited);
 });
+
+test('a required Set keeps its axis when its last entry is removed, marked until an entry is added', async ({ page, request, studio }) => {
+  const project = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.set_authoring', 'seed_entries', studio.home, 'entries'));
+  const card = page.locator('[data-map-step="train"]');
+  const marks = card.locator('.studio-map-run-mark');
+  const label = () => sweepLabel(card, 'set');
+  // The label's own description, not its accessible one, which a hover tip it showed last can still supply.
+  const empty = 'A required Set has no entries.';
+  async function entries() {
+    const response = await request.get('/api/projects/' + project);
+    expect(response.ok(), await response.text()).toBe(true);
+    return Object.keys(((await response.json() as StudioProjectSnapshot).project.documents!.set as { payload: { entries: object } })
+      .payload.entries).sort();
+  }
+  async function removeEntry(entry: string) {
+    await label().click();
+    await page.getByRole('menuitem', { name: 'Remove Entry', exact: true }).hover();
+    await page.getByRole('menu', { name: 'Remove Entry', exact: true }).getByRole('menuitem', { name: entry, exact: true }).click();
+    await expect(page.getByText('Edited', { exact: true })).toBeHidden();
+  }
+
+  await page.goto('/?project=' + encodeURIComponent(project), { waitUntil: 'domcontentloaded' });
+  await expect(marks).toHaveCount(2);
+  await removeEntry('light');
+  await expect(marks).toHaveCount(1);
+  await expect(label()).not.toHaveAttribute('aria-description');
+
+  // The last entry goes too: the Set is stored empty, and its axis stays on the card with the Problem, after a reload.
+  await removeEntry('heavy');
+  await expect(marks).toHaveCount(0);
+  expect(await entries()).toEqual([]);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await expect(label()).toHaveAttribute('aria-description', empty);
+
+  // Add Entry, offered on the empty Set's axis, repairs it.
+  await label().click();
+  await page.getByRole('menuitem', { name: 'Add Entry', exact: true }).click();
+  await expect(marks).toHaveCount(1);
+  await expect(label()).not.toHaveAttribute('aria-description');
+  expect(await entries()).toHaveLength(1);
+});

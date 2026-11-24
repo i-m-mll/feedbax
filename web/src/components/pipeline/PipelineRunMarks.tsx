@@ -37,7 +37,7 @@ import type { DocumentPickerModel } from '@/features/projectWindow/DocumentPicke
 import { useCommandSource } from '@/features/projectWindow/heldGestures';
 import type { StudioCommand } from '@/features/projectWindow/studioCommands';
 import { Button } from '@/components/ui/Button';
-import { Menu, MenuContent, MenuItem, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuTrigger } from '@/components/ui/Menu';
+import { Menu, MenuContent, MenuItem, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuSubmenu, MenuTrigger } from '@/components/ui/Menu';
 import { ScrollFade } from '@/components/ui/ScrollFade';
 
 export type ApplyMapSelection = (change: (state: PipelineSelectionState) => PipelineSelectionState) => void;
@@ -46,7 +46,9 @@ export type ApplyMapSelection = (change: (state: PipelineSelectionState) => Pipe
 export type AxisMenu = (stepId: string, axis: string) => {
   readonly picker?: DocumentPickerModel;
   readonly commands: readonly StudioCommand[];
-  /** Why the axis's last command was refused. */
+  /** The command that removes one of the axis's values, for an axis whose values are authored. */
+  readonly removeValue?: (value: string, label: string) => StudioCommand | undefined;
+  /** Why the axis's last command was refused, or else the first Problem the authored axis has. */
   readonly refusal?: string;
 };
 
@@ -91,6 +93,10 @@ function MapAxisLabel({
   const authored = axisMenu?.(step.id, sweep.id);
   useCommandSource(axisMenu && (() => axisMenu(step.id, sweep.id)));
   const picker = authored?.picker;
+  const removals = authored?.removeValue ? sweep.values.flatMap((value) => {
+    const command = authored.removeValue!(value.id, value.label);
+    return command ? [{ value, command }] : [];
+  }) : [];
   function drop(event: DragEvent) {
     const from = dragging.current;
     if (!from || !exchange) return;
@@ -157,10 +163,13 @@ function MapAxisLabel({
           <MenuItem disabled={!picker.duplicate} onClick={() => { void picker.duplicate?.(); }}>{studioName('duplicate')}</MenuItem>
           {picker.detach && <MenuItem onClick={picker.detach}>{studioName('detach')}</MenuItem>}
         </>}
-        {!!authored?.commands.length && <>
-          <MenuSeparator />
-          <CommandMenuItems commands={() => authored.commands} />
-        </>}
+        {(!!authored?.commands.length || !!removals.length) && <MenuSeparator />}
+        {!!removals.length && <MenuSubmenu label={studioName(removals[0].command.name)}>
+          {removals.map(({ value, command }) => <MenuItem key={value.id} disabled={!command.enabled} onClick={command.invoke}>
+            {value.label}
+          </MenuItem>)}
+        </MenuSubmenu>}
+        {!!authored?.commands.length && <CommandMenuItems commands={() => authored.commands} />}
         {placeAt && <>
           <MenuSeparator />
           <MenuRadioGroup value={folded ? '' : place}
@@ -375,7 +384,8 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
     for (const row of byRow) row.sort((a, b) => a.column - b.column);
     return { byRow, rowCount, columnCount, size: mapMarkSize(columnCount, rowCount) };
   }, [step.runs, sweeps, axes]);
-  if (!grid.rowCount) return null;
+  // A step with no runs still draws its axes, such as one whose required Set has no entries, to mark and repair them.
+  if (!grid.rowCount && !sweeps.length) return null;
   const { rows, columns, folded } = axes;
   const { size } = grid;
   const terms = selection?.kind === 'values' && selection.stepId === step.id ? selection.terms : [];
@@ -405,7 +415,7 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
           {folded.map((sweep) => label(sweep, 'folded'))}
         </div>
       )}
-      <ScrollFade axis="both" className="nowheel max-h-56 p-1">
+      {grid.rowCount > 0 && <ScrollFade axis="both" className="nowheel max-h-56 p-1">
         <div role="grid" aria-label={studioName('runs')} aria-rowcount={grid.rowCount} aria-colcount={grid.columnCount}
           data-mark-size={size.id} onKeyDown={navigateMarks}
           className="studio-map-run-grid relative grid w-max"
@@ -438,7 +448,7 @@ export const PipelineRunMarks = memo(function PipelineRunMarks({
             </div>
           ))}
         </div>
-      </ScrollFade>
+      </ScrollFade>}
     </div>
   );
 });
