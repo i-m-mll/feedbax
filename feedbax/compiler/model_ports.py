@@ -5,6 +5,7 @@ from __future__ import annotations
 from functools import cache
 
 from feedbax.component_registry import ComponentRegistry
+from feedbax.compiler.graph_schema import _component_port_dimension
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.component import derive_dynamic_port_count, derive_dynamic_port_layout
 from feedbax.contracts.model_document import ModelDocument, SignalType
@@ -97,10 +98,14 @@ class ModelRegistryPorts:
                 if spec and spec.kind == "conserving":
                     result["physical", port] = Port(spec.physical_domain)
                     continue
+                dimension = _component_port_dimension(
+                    component_type=type_id, node_params=params, port=port, direction=direction,
+                )
+                shape = dimension["shape"] if dimension is not None else spec.shape if spec else None
                 result[direction, port] = Port(
                     SignalType(
                         base=spec.dtype if spec else None,
-                        shape=tuple(spec.shape) if spec and spec.shape is not None else None,
+                        shape=tuple(shape) if shape is not None else None,
                     ),
                     reads_state_only=direction == "output" and port in declaration.compiler.state_only_outputs,
                 )

@@ -163,6 +163,20 @@ def _port_name(owner: Record, direction: Direction, port: str) -> str:
     return item["name"] if item else port
 
 
+def _signal_end_name(owner: Record, graph: Record, end: Record, direction: Direction) -> str:
+    port = end["port"]
+    match end["owner"]:
+        case "inputs":
+            return f"Inputs · {_port_name(owner, 'input', port)}"
+        case "outputs":
+            return f"Outputs · {_port_name(owner, 'output', port)}"
+        case "component":
+            component = graph["components"][end["component"]]
+            name = _port_name(component, direction, port) if component["kind"] == "composite" else port
+            return f"{component['name']} · {name}"
+    raise AssertionError(f"Expected a signal endpoint: {end}")
+
+
 def _new_port(owner: Record, direction: Direction, name: str, port: Port) -> Record:
     names = {item["name"] for item in _port_list(owner, direction)}
     base = name
@@ -1076,7 +1090,9 @@ class ModelEditDraft:
             if (source_known and output is None) or (target_known and input_port is None):
                 yield problem(at, "Wire does not name a local source and target port")
             elif output is not None and input_port is not None and (reason := _signal_mismatch(output, input_port)):
-                yield problem(at, reason)
+                source_name = _signal_end_name(owner, graph, source, "output")
+                target_name = _signal_end_name(owner, graph, target, "input")
+                yield problem(at, f"{source_name} → {target_name}: {reason}")
             if targets[_target_key(target)] > 1:
                 yield problem(at, "More than one wire drives this input")
             if reason := _attachment_problem(wire["attachments"]):
