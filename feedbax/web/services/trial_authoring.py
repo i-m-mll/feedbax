@@ -21,7 +21,7 @@ from feedbax.contracts.model_edit import AxisValueRuns, ListedRuns, VariantRuns
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES
 from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.contracts.project import (
-    RemoveProjectValue, SetProjectValue, apply_document_edits, json_pointer_parts,
+    RemoveProjectValue, SetProjectValue, apply_document_edits, json_pointer_parts, member_name,
 )
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.planner.project_plan import EVALUATION_TASK, RunKey, compile_project, own_task_variation
@@ -35,7 +35,8 @@ from feedbax.studio.authoring import training_document_choice
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
 from feedbax.contracts.studio_trials import (
     StudioTaskChoice, StudioTaskType, StudioTrialAuthoring, StudioTrialAuthoringRequest, StudioTrialBindingEdit,
-    StudioTrialDocumentEdit, StudioTrialDocumentReset, StudioTrialEpoch, StudioTrialExpressionEdit, StudioTrialField,
+    StudioTrialDocumentEdit, StudioTrialDocumentReset, StudioTrialEpoch, StudioTrialEpochInstance,
+    StudioTrialExpressionEdit, StudioTrialField,
     StudioTrialInput, StudioTrialObjectiveSource,
     StudioTrialOutput, StudioTrialReset, StudioTrialSelectDocument, StudioTrialStepScope, StudioTrialStructureEdit,
 )
@@ -55,7 +56,7 @@ from feedbax.application.bundle import ApplicationRegistryBundle
 from feedbax.web.services.evaluate_sources import evaluate_subject, evaluate_value_source
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
 from feedbax.web.services.set_authoring import trial_set_fields
-from feedbax.web.services.store_choice import EditStore, choose_store
+from feedbax.web.services.store_choice import EditStore, all_readers_store, choose_store
 from feedbax.studio.selection import StoredEdit
 from feedbax.studio.numeric_fields import project_numeric_field
 from feedbax.web.services.trial_fields import (
@@ -91,6 +92,7 @@ class _Projection:
     task_origins: dict[tuple[str, ...], str] = field(default_factory=dict)
     resets: tuple[ModelResetField, ...] = ()
     partial_task: TrialSource | None = None
+    epoch_instances: tuple[StudioTrialEpochInstance, ...] = ()
 
 
 def _project(
@@ -147,9 +149,13 @@ def _project(
     outputs = paired.model.outputs if paired is not None else partial.outputs
     variables, signals = source.interface.variables, source.interface.signals
     names = {epoch.id: epoch.name for epoch in epochs}
+    epoch_instances = tuple(
+        StudioTrialEpochInstance(id=epoch, name=names.get(epoch, epoch), steps=steps, occurrence=occurrence)
+        for occurrence, (epoch, steps) in enumerate(zip(source.epochs, source.step_counts, strict=True))
+    )
     epochs = tuple(
-        StudioTrialEpoch(id=epoch, name=names.get(epoch, epoch), steps=steps)
-        for epoch, steps in dict(zip(source.epochs, source.step_counts, strict=True)).items()
+        StudioTrialEpoch(id=instance.id, name=instance.name, steps=instance.steps)
+        for instance in {item.id: item for item in epoch_instances}.values()
     )
     if documents.objective is not None:
         objective_sites = {} if show_objective else None
@@ -164,7 +170,7 @@ def _project(
                               for problem in objective)
     return _Projection(
         paired, variables, signals, epochs, fields, problems, resets=tuple(resets),
-        partial_task=source if paired is None else None,
+        partial_task=source if paired is None else None, epoch_instances=epoch_instances,
     )
 
 
@@ -447,13 +453,15 @@ _DOCUMENT_SCHEMAS = {"model": MODEL_DOCUMENT_SCHEMA_ID, "objective": OBJECTIVE_D
 def _chosen_document(project, document, role):
     entry = project.documents.get(document)
     if entry is None or entry.schema_id != _DOCUMENT_SCHEMAS[role]:
-        raise ProjectFolderInvalid(f"{document} is not a{'n' if role == 'objective' else ''} {role.title()} document.")
+        raise ProjectFolderInvalid(
+            f"{member_name(project.documents, document)} is not a{'n' if role == 'objective' else ''} {role.title()} document."
+        )
 
 
 def _chosen_task(project, document):
     task = _selected_task(project, document)
     if task is None:
-        raise ProjectFolderInvalid(f"{document} is not a Task document.")
+        raise ProjectFolderInvalid(f"{member_name(project.documents, document)} is not a Task document.")
     return task
 
 
@@ -960,12 +968,12 @@ def _validate_files(
         authored = preview_stored(project, stored)
         after = compile_sources(authored, possible)
         runs = _changed_runs(before, after, key, stored)
-        steps = {run.step for run in runs}
+        value = stored, authored, after
         if kind == "all_readers":
-            label = f"All {len(steps)} Steps" if len(steps) > 1 else "Whole Step"
-        elif kind == "selected_readers" and len(steps) > 1:
+            return all_readers_store(source, runs, value)
+        if kind == "selected_readers" and len({run.step for run in runs}) > 1:
             label = "Selected Steps"
-        return EditStore(kind, label, source, runs, (stored, authored, after))
+        return EditStore(kind, label, source, runs, value)
 
     preferred, *alternatives = [preview(*candidate) for candidate in candidates]
     missed = selected - preferred.runs
@@ -1024,7 +1032,8 @@ def _changed_runs(before, after, key: RunKey, stored: StoredEdit) -> frozenset[R
     def values(plan):
         return {
             row.key: (
-                definition.payload if (definition := plan.selected_definitions.get(row.key)) is not None else None,
+                (definition.payload, definition.input_documents)
+                if (definition := plan.selected_definitions.get(row.key)) is not None else None,
                 row.document_ids, row.coordinates,
             )
             for row in plan.rows if row.kind in {"train", "evaluate"} and (
@@ -1234,6 +1243,7 @@ def trial_authoring(
         task_types=[StudioTaskType(type=key, label=entry.label, parameter_schema=entry.parameters.model_json_schema())
                     for key in bundle.python_tasks.keys() if (entry := bundle.python_tasks.resolve(key))],
         variables=list(projected.variables), signals=list(projected.signals), epochs=list(projected.epochs),
+        epoch_instances=list(projected.epoch_instances),
         period_seconds=documents.model.step_seconds if isinstance(documents.model.step_seconds, float) else None,
         n_steps=compiled.n_steps if compiled else None,
         batch_size=_batch_size(step.kind, definition.payload),

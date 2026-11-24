@@ -151,6 +151,46 @@ def test_removing_an_epoch_shortens_the_cells_and_repeat_that_span_it(tmp_path):
         assert not TaskDocument.model_validate(project.composed(TASK)).repeats
 
 
+def test_epoch_instances_use_the_resolved_count_and_keep_authored_columns(tmp_path):
+    """Catches a shelf that misses a named count or gets duplicate keys for repeated bars."""
+    project = _project(tmp_path)
+    with project.client:
+        assert _made(project, {"op": "add", "member": "variable", "name": "total", "type": {"base": "integer"}}) == []
+        count = _change(project, None, body={
+            "kind": "expression", "path": "/task/variables/total/value", "edit": {"kind": "text", "text": "1 + 1"},
+        })
+        assert count.files and not count.problems
+        _save(project, count)
+        assert _made(project, {"op": "repeat", "first_epoch": "hold", "last_epoch": "cue",
+                               "count": {"kind": "name", "reference": "total"}}) == []
+        view = _change(project, None)
+        assert [epoch.id for epoch in view.epochs] == ["hold", "cue", "move"]
+        assert [(epoch.occurrence, epoch.id) for epoch in view.epoch_instances] == [
+            (0, "hold"), (1, "cue"), (2, "hold"), (3, "cue"), (4, "move"),
+        ]
+        steps = {epoch.id: epoch.steps for epoch in view.epochs}
+        assert all(epoch.steps == steps[epoch.id] for epoch in view.epoch_instances)
+
+
+def test_nested_and_crossing_repeat_edits_keep_their_brackets_and_problems(tmp_path):
+    """Catches a repeat edit that writes nothing or lets an ambiguous bracket become runnable."""
+    project = _project(tmp_path)
+    with project.client:
+        assert _made(project, [
+            {"op": "add", "member": "epoch", "name": "settle", "index": 1},
+            {"op": "repeat", "first_epoch": "hold", "last_epoch": "cue"},
+        ]) == []
+        for identifier, first, last in (("repeat-2", "settle", "settle"), ("repeat-3", "cue", "move")):
+            edit = {"op": "repeat", "first_epoch": first, "last_epoch": last}
+            assert any(problem.path == ("repeats", identifier) and problem.code == "structure"
+                       for problem in _made(project, edit))
+            view = _change(project, None)
+            assert view.n_steps is None and not view.epoch_instances
+            assert [epoch.id for epoch in view.epochs] == ["hold", "settle", "cue", "move"]
+            stored = next(repeat for repeat in view.task.repeats if repeat.id == identifier)
+            assert (stored.first_epoch, stored.last_epoch) == (first, last)
+
+
 def test_a_list_of_changes_is_one_edit_and_a_refused_one_refuses_the_list(tmp_path):
     """Catches a batch (Absent over several cells) that writes only its first change, or stores the changes before a
     refused one."""

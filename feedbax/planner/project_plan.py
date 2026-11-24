@@ -39,7 +39,7 @@ from feedbax.contracts.studio_authoring import InputProducer, InputRole
 from feedbax.contracts.studio_place import StudioTaskStart, path_parts, task_start, variation_targets
 from feedbax.contracts.project import (
     DifferenceNotApplied, Differences, Document, InlineBase, Payload, Project, RootDocument, Step, StepBase, StepKind,
-    apply_differences, base_chain, diff, json_pointer_parts, nearest_shared_base,
+    apply_differences, base_chain, diff, json_pointer_parts, member_display_name, member_name, nearest_shared_base,
 )
 from feedbax.contracts.run_rule import RuleRefusal
 from feedbax.contracts.expression_text import RuleBest
@@ -1226,7 +1226,7 @@ class _Unpaired:
     ``payload`` is None when the Task does not resolve, so its trial rule does not lower."""
 
     payload: Payload | None
-    problem: ProjectDiagnostic
+    problems: tuple[ProjectDiagnostic, ...]
 
 
 def _map_problem[T](
@@ -1236,7 +1236,7 @@ def _map_problem[T](
     if isinstance(result, ProjectDiagnostic):
         return move(result)
     if isinstance(result, _Unpaired):
-        return replace(result, problem=move(result.problem))
+        return replace(result, problems=tuple(map(move, result.problems)))
     return result
 
 
@@ -2381,10 +2381,10 @@ class _Compiler:
                 )
             refusals: tuple[RunProblem, ...] = ()
             if isinstance(payload, _Unpaired):
-                unpaired = payload.problem
-                refusals = (RunProblem(
-                    unpaired.path, unpaired.detail, unpaired.model_address, unpaired.variation_target,
-                ),)
+                refusals = tuple(
+                    RunProblem(problem.path, problem.detail, problem.model_address, problem.variation_target)
+                    for problem in payload.problems
+                )
                 if payload.payload is None:
                     return _LoweredRow(
                         None, (), lowering_stamp, problems=refusals, document_ids=document_ids,
@@ -2564,10 +2564,8 @@ class _Compiler:
                 return problem(EVALUATION_MODEL, "Name a Model document.")
             shared = nearest_shared_base(documents, subject, name) if subject is not None else None
             if shared is None:
-                return replace(
-                    problem(EVALUATION_MODEL, f"Shares no document with {subject}." if subject else "Requires a subject Model document."),
-                    code=ResolutionCode.BAD_REFERENCE,
-                )
+                detail = f"Shares no document with {member_name(documents, subject)}." if subject else "Requires a subject Model document."
+                return replace(problem(EVALUATION_MODEL, detail), code=ResolutionCode.BAD_REFERENCE)
             base = compose_document(read, shared)
             if isinstance(base, ProjectDiagnostic):
                 return replace(base, step=key.step, row=key.row, variant=key.variant)
@@ -2596,7 +2594,7 @@ class _Compiler:
             return self.lower_evaluate_trials(key, payload, reference, model_source)
         original = payload.get("params")
         lowered = self.lower_evaluate_model(key, payload, model_source, reference, model)
-        if isinstance(lowered, ProjectDiagnostic):
+        if isinstance(lowered, (ProjectDiagnostic, _Unpaired)):
             return lowered
         result = self.lower_evaluate_trials(key, lowered, reference, model_source)
         # Derived Model patches append to an ordered copy. Report a Task
@@ -2626,7 +2624,7 @@ class _Compiler:
         self, template: StepComposition, key: RunKey, row: ExpandedRow,
     ) -> tuple[_LoweredRow, dict[str, PlannedInput]]:
         from feedbax.compiler.model_document import ModelCompilationProblem
-        from feedbax.execution.trial_resolution import evaluation_conditions, pair_trial_source
+        from feedbax.execution.trial_resolution import evaluation_conditions, model_compilation_problems, pair_trial_source
         from feedbax.contracts.rollout import CannotRun
         from feedbax.tasks.registry import resolve_python_task_instance
         from feedbax.training.evaluation_variant import resolve_evaluation_variant
@@ -2694,8 +2692,11 @@ class _Compiler:
                     )
                     conditions = evaluation_conditions(variant.task, tasks)
                     if isinstance(paired, tuple) or paired.problems:
-                        refusal = variant.task_refusal((paired if isinstance(paired, tuple) else paired.problems)[0])
-                        refusals = (RunProblem(refusal.path, refusal.reason),)
+                        problems = paired if isinstance(paired, tuple) else paired.problems
+                        refusals = tuple(
+                            RunProblem(refusal.path, refusal.reason, problem.model_address)
+                            for problem, refusal in ((item, variant.task_refusal(item)) for item in problems)
+                        )
             trials = resolve_trial_ids(raw["trial_set"], conditions)
             payload = payload | {"params": {
                 **{name: value for name, value in raw.items() if name != "trial_set"},
@@ -2711,9 +2712,9 @@ class _Compiler:
                 problems=(*refusals, *narrowed.problems) if narrowed.request is not None else narrowed.problems,
             ), inputs
         except ModelCompilationProblem as error:
-            problem = _model_difference_problem(key, resolved.document_ids.get("inputs.subject"), error.address, str(error))
             return _LoweredRow(
-                None, (problem,), document_ids=resolved.document_ids, document_uses=resolved.document_uses,
+                None, (), problems=_trial_problems(model_compilation_problems(error), None, initial=True),
+                document_ids=resolved.document_ids, document_uses=resolved.document_uses,
             ), {}
         except (KeyError, ValueError) as error:
             return _LoweredRow(None, (ProjectDiagnostic(
@@ -2752,7 +2753,9 @@ class _Compiler:
                 return replace(lowered, detail=f"Best candidate {name}: {lowered.detail}")
             if isinstance(lowered, _Unpaired):
                 unpaired = unpaired or replace(
-                    lowered, problem=replace(lowered.problem, detail=f"Best candidate {name}: {lowered.problem.detail}"),
+                    lowered, problems=tuple(
+                        replace(problem, detail=f"Best candidate {name}: {problem.detail}") for problem in lowered.problems
+                    ),
                 )
                 if lowered.payload is None:
                     return unpaired
@@ -2798,7 +2801,7 @@ class _Compiler:
                 model_source.evaluation_graph, documents.task_source, settings.variation,
                 components=self.components or _builtin_model_registry(),
             )
-            refusal = None
+            refusals = ()
             if settings.input_bindings or any(target[0] == "task" for target in variant.edit_origins):
                 pairing = pair_trial_source(
                     documents.model, variant.task,
@@ -2808,15 +2811,17 @@ class _Compiler:
                 )
                 problems = pairing if isinstance(pairing, tuple) else pairing.problems
                 if problems:
-                    cannot = variant.task_refusal(problems[0])
-                    refusal = ProjectDiagnostic(
-                        ResolutionCode.INVALID_PAYLOAD, cannot.path, cannot.reason, key.step,
-                        row=key.row, variant=key.variant, model_address=problems[0].model_address,
+                    refusals = tuple(
+                        ProjectDiagnostic(
+                            ResolutionCode.INVALID_PAYLOAD, cannot.path, cannot.reason, key.step,
+                            row=key.row, variant=key.variant, model_address=problem.model_address,
+                        )
+                        for problem, cannot in ((item, variant.task_refusal(item)) for item in problems)
                     )
                     if isinstance(variant.task, PythonTaskSelection) and isinstance(
                         resolve_python_task_instance(variant.task, self.python_tasks), tuple,
                     ):
-                        return _Unpaired(None, refusal)
+                        return _Unpaired(None, refusals)
                     conditions = evaluation_conditions(variant.task, self.python_tasks)
                 else:
                     conditions = pairing.task.condition_ids
@@ -2826,7 +2831,7 @@ class _Compiler:
             lowered = payload | {"params": {name: value for name, value in raw.items() if name != "trial_set"} | {
                 "trials": list(trials),
             }}
-            return _Unpaired(lowered, refusal) if refusal is not None else lowered
+            return _Unpaired(lowered, refusals) if refusals else lowered
         except ValueError as error:
             return ProjectDiagnostic(
                 ResolutionCode.INVALID_PAYLOAD,
@@ -2846,7 +2851,7 @@ class _Compiler:
     def lower_evaluate_model(
         self, key: RunKey, payload: Payload, model_source: _ModelSource | None, reference: object,
         model: _EvaluationModel | None = None,
-    ) -> Payload | ProjectDiagnostic:
+    ) -> Payload | ProjectDiagnostic | _Unpaired:
         from feedbax.compiler.model_attachment import lower_evaluate_attachments
         from feedbax.compiler.model_document import ModelCompilationProblem
         from feedbax.compiler.graph_schema import validate_graph_connection_schema
@@ -2918,8 +2923,11 @@ class _Compiler:
                 "variation": [edit.model_dump(mode="json", exclude_unset=True) for edit in variation],
             }}
         except ModelCompilationProblem as error:
-            address = error.address
-            detail = str(error)
+            return _Unpaired(None, tuple(
+                _model_difference_problem(key, document, problem.address, problem.reason,
+                                          path=pointer(problem.address.stored_path()))
+                for problem in error.problems
+            ))
         except CannotRun as error:
             return _model_difference_problem(key, document, address, error.reason, path=error.path)
         except ValueError as error:
@@ -3816,7 +3824,7 @@ class _Compiler:
             )
         if reference.unresolved:
             target = reference.element or reference.step
-            return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, f"Unresolved target {target!r}.", name)
+            return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, f"Unresolved target {member_display_name(target)}.", name)
         if role.operation_outputs and reference.element is not None and reference.product is not None:
             role = replace(role, producer_kind="analyze", product_role=reference.product)
         element_input = role.producer_kind == "analyze"
@@ -3847,7 +3855,8 @@ class _Compiler:
             subset_document = terms.subset
             if terms.unresolved:
                 return ProjectDiagnostic(
-                    ResolutionCode.MISSING_DOCUMENT, f"{path}.where", subset_document, name, document=subset_document,
+                    ResolutionCode.MISSING_DOCUMENT, f"{path}.where", member_display_name(subset_document),
+                    name, document=subset_document,
                 )
             document = compose_document(self.variants[variant].documents.get, subset_document)
             if isinstance(document, ProjectDiagnostic):
@@ -3889,15 +3898,16 @@ class _Compiler:
         for source_variant in variants:
             target = source_variant, reference.step
             if target in active:
-                chain = " -> ".join(f"{v}/{s}" for v, s in (*active, target))
+                chain = " -> ".join(f"{v}/{member_name(self.variants[v].steps, s)}" for v, s in (*active, target))
                 return ProjectDiagnostic(ResolutionCode.STEP_CYCLE, path, chain, name)
             project = self.variants.get(source_variant)
             producer = project.steps.get(reference.step) if project is not None else None
             if producer is None or producer.kind != role.producer_kind:
+                label = member_name(project.steps if project is not None else self.project.steps, reference.step)
                 return ProjectDiagnostic(
                     ResolutionCode.BAD_REFERENCE,
                     path,
-                    f"{source_variant}/{reference.step} must be a {role.producer_kind} step",
+                    f"{source_variant}/{label} must be a {role.producer_kind} step",
                     name,
                 )
             self.step(*target, active)
@@ -3926,7 +3936,7 @@ class _Compiler:
                 address=lambda run: (run.key.variant, run.key.row),
                 member_key=member_key,
                 coordinates=lambda run: axis_coordinates(run.coordinates, run.input_axes),
-                producer=self.variants[variants[0]].steps[reference.step].label or reference.step,
+                producer=member_name(self.variants[variants[0]].steps, reference.step),
             )
         except RuleRefusal as error:
             return ProjectDiagnostic(
@@ -3946,7 +3956,7 @@ class _Compiler:
             return ProjectDiagnostic(
                 ResolutionCode.BAD_REFERENCE,
                 path,
-                f"no rows of {reference.step!r} are selected",
+                f"No rows of {member_name(self.variants[variants[0]].steps, reference.step)} are selected.",
                 name,
             )
         rule = None if role.name == "subject" else reference.checkpoint

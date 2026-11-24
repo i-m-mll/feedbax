@@ -22,6 +22,11 @@ class EditStore[T]:
     value: T
 
 
+def all_readers_store[T](source: str, runs: frozenset[RunKey], value: T) -> EditStore[T]:
+    count = len({run.step for run in runs})
+    return EditStore("all_readers", f"All {count} Steps" if count > 1 else "Whole Step", source, runs, value)
+
+
 def choose_store[T](
     revision: str,
     intent: JsonValue,

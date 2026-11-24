@@ -225,6 +225,11 @@ class ModelGraphProblem(StrictModel):
     reason: str
 
 
+class ModelUngroupEligibility(StrictModel):
+    address: ModelAddress
+    reason: str | None
+
+
 class TaskSignalSource(StrictModel):
     owner: Literal["task"]
     run: StudioSavedTrainKey
@@ -331,6 +336,7 @@ class ModelProjection(StrictModel):
     base_differences: tuple[ModelStructuralDifference, ...] = ()
     value_differences: tuple[ModelStructuralDifference, ...] = ()
     problems: tuple[ModelGraphProblem, ...] = ()
+    ungroup: tuple[ModelUngroupEligibility, ...] = ()
 
 
 class ModelEditState(ModelLayout):

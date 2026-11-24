@@ -998,6 +998,99 @@ def _use_initial_evaluation(raw):
     evaluation["base"]["inline"]["params"]["input_bindings"] = dict(trial["input_bindings"])
 
 
+def test_plan_reports_all_authored_graph_problems_for_train_and_initial_evaluate():
+    """Catch a dangling wire in an invalid Model masking an independently repairable wire."""
+    raw = _model_project()
+    _use_initial_evaluation(raw)
+    wires = raw["documents"]["reach-model"]["payload"]["interior"]["wires"]
+    for key in ("dangling-first", "dangling-second"):
+        wires[key] = _wire({"owner": "inputs", "port": key}, {"owner": "outputs", "port": key})
+    plan = compile_project(Project.model_validate(raw))
+    for step in ("train", "baseline"):
+        row, = (row for row in plan.rows if row.key.step == step)
+        assert {item.model_address.element.id for item in row.problems} == {"dangling-first", "dangling-second"}
+
+
+@pytest.mark.parametrize("source", ["linear", "task"])
+def test_model_projection_keeps_the_declared_input_size_after_wiring(tmp_path, source):
+    """Catch a connected sample's shape overwriting the field that constrains its target."""
+    raw = _model_project()
+    interior = raw["documents"]["reach-model"]["payload"]["interior"]
+    before_size, after_size = (1, 3) if source == "linear" else (2, 7)
+    interior["components"]["receiver"] = {
+        "kind": "leaf", "name": "Receiver", "type": "feedbax.Linear" if source == "linear" else "feedbax.GRU",
+        "fields": {"input_size": before_size},
+    }
+    if source == "linear":
+        interior["components"]["sender"] = {
+            "kind": "leaf", "name": "Sender", "type": "feedbax.Linear", "fields": {"input_size": 2, "output_size": 1},
+        }
+        interior["wires"]["sender-input"] = _wire({"owner": "inputs", "port": "task-input"}, _end("sender", "input"))
+        interior["wires"]["receiver-input"] = _wire(_end("sender", "output"), _end("receiver", "input"))
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, "nested", Project.model_validate(raw))
+    document = "reach-model"
+    graph = {"composites": [], "element": {"kind": "graph"}}
+    run = {"variant": "default", "step": "train", "row": "default"}
+    base = "/api/projects/nested/model"
+
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        def apply(operation):
+            snapshot = folders.read("nested")
+            reply = client.post(base + "/edit", json={
+                "revision": snapshot.revision, "presentation_revision": snapshot.presentation_revision,
+                "document": document, "command": {"operation": operation},
+            })
+            assert reply.status_code == 200, reply.text
+            result = reply.json()["result"]
+            assert result["status"] == "applied", result
+            return result
+
+        def projection(snapshot):
+            reply = client.post(base + "/projection", json={
+                "revision": snapshot.revision, "document": document, "run": run,
+            })
+            assert reply.status_code == 200, reply.text
+            return reply.json()
+
+        def projected_type(view, end):
+            return next(
+                item["type"] for item in view["ports"]
+                if not item["address"]["composites"] and item["address"]["element"]["end"] == end
+            )
+
+        if source == "task":
+            apply({
+                "op": "connect_task_signal", "graph": graph, "run": run,
+                "signal": "target_pos", "target": _end("receiver", "input"),
+            })
+            snapshot = folders.read("nested")
+            model = snapshot.project.documents[document].payload
+            task_port = next(port for port in model["ports"]["inputs"] if port["name"] == "target_pos")
+            task_type = {"base": "float", "shape": [2], "unit": "m"}
+            assert task_port["type"] == task_type
+            assert projected_type(projection(snapshot), {"owner": "inputs", "port": task_port["id"]}) == task_type
+
+        edited = apply({
+            "op": "set_field", "address": {"composites": [], "element": {
+                "kind": "field", "parent": {"kind": "component", "id": "receiver"}, "path": ["fields", "input_size"],
+            }}, "value": after_size,
+        })
+        saved = folders.read("nested")
+        wires = saved.project.documents[document].payload["interior"]["wires"]
+        wire_id, = (key for key, wire in wires.items() if wire["target"] == _end("receiver", "input"))
+        view = projection(saved)
+        assert projected_type(view, _end("receiver", "input") | {"direction": "input"})["shape"] == [after_size]
+        address = {"composites": [], "element": {"kind": "wire", "id": wire_id}}
+        message = next(problem["reason"] for problem in edited["problems"] if problem["address"] == address)
+        assert "Receiver · input" in message
+        assert ("Sender · output" if source == "linear" else "Inputs · target_pos") in message
+        assert {"address": address, "reason": message} in view["problems"]
+        plan = folders.read_plan("nested", revision=saved.revision).plan
+        row, = (row for row in plan.rows if row.key.step == "train")
+        assert ModelAddress.model_validate(address) in [problem.model_address for problem in row.problems]
+
+
 def test_unresolved_relative_link_is_reported_at_the_task():
     from tests.test_document_train_pair import authored_documents, document_project
 

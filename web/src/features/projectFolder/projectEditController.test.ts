@@ -197,6 +197,33 @@ it('binds the first compatible documents by name, scaffolds only the missing typ
   editor.dispose();
 });
 
+it('records the server’s document bytes when batch creation succeeds but loses its response', async () => {
+  const { editor, create, replay, restore, current } = fixture();
+  const authored = { schema: 'feedbax.spec.model', payload: { interior: {} }, label: 'Model' };
+  const stored = { schema: authored.schema, label: authored.label, payload: authored.payload };
+  const address = { kind: 'document', id: 'blank-model' } as const;
+  const data = btoa(JSON.stringify(stored, null, 2) + '\n');
+  create.mockImplementationOnce(async () => {
+    restore({
+      ...initial, revision: hex(53),
+      project: { ...initial.project, documents: { ...initial.project.documents, [address.id]: stored } },
+      file_revisions: [...initial.file_revisions, { address, revision: hex(52), data }],
+    });
+    throw new ApiRequestError('network', '/files', 'Response lost');
+  });
+  const file = { ...address, document: authored };
+  await editor.createFiles('New Model', [file], initial.revision);
+  expect(create.mock.calls[0][1]).toEqual({ revision: initial.revision, files: [file] });
+  expect(editor.getSnapshot().undoName).toBe('New Model');
+  expect(replay).not.toHaveBeenCalled();
+
+  await editor.undo();
+  expect(current().project.documents?.[address.id]).toBeUndefined();
+  await editor.redo();
+  expect(current().file_revisions.find((entry) => entry.address.id === address.id)?.data).toBe(data);
+  editor.dispose();
+});
+
 it('acknowledges every file of a scoped edit after a lost response and undoes it together', async () => {
   const { editor, external, write, current } = fixture();
   write.mockImplementationOnce(async (_id, body) => {

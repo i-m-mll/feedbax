@@ -2,7 +2,7 @@ import type { StudioRegionIssue } from '@/components/activity/StudioRegion';
 import { studioName } from '@/components/activity/studioVocabulary';
 import { elementKey, type ElementAddress } from '@/features/projectWindow/elementSelection';
 import type {
-  DomainDiagnostic, JsonValue, ModelAddress, StudioSceneGeometryResponse, TaskDocument, TrialRecord, ValueType,
+  DomainDiagnostic, JsonValue, ModelAddress, StudioSceneGeometryFrame, TaskDocument, TrialRecord, ValueType,
 } from '@/generated/studioContracts';
 import type { TrialShown } from '@/features/projectFolder/task/trialSample';
 import type { ScenePoint } from './planarProjection';
@@ -10,6 +10,7 @@ import type { Scene, SceneElement, SceneGroup, SceneShape, SceneTrack } from './
 
 /** Values of a Model's states, by state address, that pose its mechanisms. */
 export type StateValues = Readonly<Record<string, JsonValue>>;
+export type SceneModelGeometry = StudioSceneGeometryFrame & { document_id: string };
 
 /** Whether a value of `type` has a place in the world: a position, two lengths. */
 export function hasPlace(type: ValueType) {
@@ -63,7 +64,7 @@ export function recordedTracks(record: TrialRecord | undefined, frame: number): 
 const component = (address: ModelAddress) => address.element.kind === 'component' ? address.element.id : undefined;
 
 /** Each mechanism the geometry holds, with its bodies, joints and muscles, and each diagnostic on the element it names. */
-export function mechanismGroups(geometry: StudioSceneGeometryResponse): SceneGroup[] {
+export function mechanismGroups(geometry: SceneModelGeometry): SceneGroup[] {
   const document = geometry.document_id;
   const located = (address: ModelAddress): ElementAddress => ({ document, address });
   const named = new Set<string>();
@@ -102,7 +103,7 @@ export function mechanismGroups(geometry: StudioSceneGeometryResponse): SceneGro
 }
 
 /** The shapes of each mechanism the geometry holds. */
-export const mechanismShapes = (geometry: StudioSceneGeometryResponse): SceneShape[] =>
+export const mechanismShapes = (geometry: SceneModelGeometry): SceneShape[] =>
   mechanismGroups(geometry).flatMap((group) => group.elements.flatMap((element) => element.shape ?? []));
 
 /** A task variable's place at `step` of `record`: its value, or its value at that step when it varies within the trial. */
@@ -167,8 +168,8 @@ export interface SceneTrial {
 
 /** The Scene of what the clock shows: the posed mechanisms, the rest pose beneath, the recorded tracks and the task. */
 export function trialScene({ posed, rest, task, shown, possible, frame }: {
-  posed: StudioSceneGeometryResponse;
-  rest: StudioSceneGeometryResponse | undefined;
+  posed: SceneModelGeometry;
+  rest: SceneModelGeometry | undefined;
   task: SceneTask | undefined;
   shown: TrialShown | undefined;
   possible: readonly TrialRecord[];

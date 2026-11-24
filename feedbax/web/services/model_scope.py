@@ -16,7 +16,7 @@ from feedbax.planner.project_plan import ProjectPlan
 from feedbax.studio.selection import StoredEdit
 from feedbax.web.services.authored_scope import choose_authored_store, preview_plan
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService, ProjectRevisionConflict
-from feedbax.web.services.store_choice import EditStore
+from feedbax.web.services.store_choice import EditStore, all_readers_store
 from feedbax.web.services.trial_scope import (
     RowModel, model_document_store, preview_stored, scoped_model_store, selected_value, set_entry_write,
     set_readers, source_value_file,
@@ -151,8 +151,11 @@ def model_edit_store(
             }), before, after)
         )
         narrow = model_document_store(folders, project_id, project, body, before, after)
-        kind, label = ("all_readers", "All Readers") if body.variant is None else ("variant", "Variant")
-        preferred = EditStore(kind, label, body.document, reach(broad), broad)
+        reached = reach(broad)
+        preferred = (
+            all_readers_store(body.document, reached, broad) if body.variant is None
+            else EditStore("variant", "Variant", body.document, reached, broad)
+        )
         narrowed = EditStore("selected_readers", "Selected Readers", body.document, reach(narrow), narrow)
         if narrow != broad and not narrow.created and narrowed.runs and narrowed.runs <= selected:
             preferred, options = narrowed, []

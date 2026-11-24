@@ -28,6 +28,7 @@ from feedbax.contracts.studio_project import (
     StudioMemberCommandResult,
     StudioPresentationWrite,
     StudioProjectCreateFile,
+    StudioProjectCreateFiles,
     StudioProjectDocument,
     StudioProjectPatch,
     StudioProjectPatchBatch,
@@ -43,8 +44,6 @@ from feedbax.contracts.studio_subset import (
     StudioRunRuleCheck, StudioRunRuleRequest, StudioSubsetToRowsEdit, StudioSubsetToRowsRequest,
 )
 from feedbax.contracts.studio_scene import (
-    StudioPlanarSceneRequest,
-    StudioPlanarSceneResponse,
     StudioSceneGeometryRequest,
     StudioSceneGeometryResponse,
 )
@@ -283,27 +282,6 @@ def read_analyze_authoring(
     )
 
 
-@router.post("/{project_id}/scene/planar")
-def read_planar_scene(
-    project_id: ProjectName, body: StudioPlanarSceneRequest, request: Request, response: Response,
-) -> StudioPlanarSceneResponse:
-    from feedbax.studio.scene_geometry import prepare_project_scene
-
-    def prepare() -> StudioPlanarSceneResponse:
-        snapshot = request.app.state.project_folders.read(project_id)
-        if snapshot.revision != body.revision:
-            raise ProjectRevisionConflict("project", snapshot.revision)
-        model, diagnostics = prepare_project_scene(
-            snapshot.project, body.document_id, body.node_path,
-            request.app.state.bootstrap_state.bundle.components,
-        )
-        return StudioPlanarSceneResponse(
-            project_id=project_id, **body.model_dump(), model=model, diagnostics=diagnostics,
-        )
-
-    return _project_response(response, prepare)
-
-
 @router.post("/{project_id}/scene/geometry")
 def read_scene_geometry(
     project_id: ProjectName, body: StudioSceneGeometryRequest, request: Request, response: Response,
@@ -314,12 +292,12 @@ def read_scene_geometry(
         snapshot = request.app.state.project_folders.read(project_id)
         if snapshot.revision != body.revision:
             raise ProjectRevisionConflict("project", snapshot.revision)
-        mechanisms, diagnostics = prepare_scene_geometry(
-            snapshot.project, body, request.app.state.bootstrap_state.bundle.components,
+        frames = prepare_scene_geometry(
+            snapshot.project, body.document_id, body.poses,
+            request.app.state.bootstrap_state.bundle.components,
         )
         return StudioSceneGeometryResponse(
-            project_id=project_id, revision=body.revision, document_id=body.document_id,
-            mechanisms=mechanisms, diagnostics=diagnostics,
+            project_id=project_id, revision=body.revision, document_id=body.document_id, frames=frames,
         )
 
     return _project_response(response, prepare)
@@ -461,7 +439,7 @@ def rename_project(
 
 @router.post("/{project_id}/files", status_code=201, response_model_exclude_unset=True)
 def create_project_file(
-    project_id: ProjectName, body: StudioProjectCreateFile, request: Request, response: Response
+    project_id: ProjectName, body: StudioProjectCreateFile | StudioProjectCreateFiles, request: Request, response: Response,
 ) -> StudioProjectDocument:
     return _project_response(
         response, lambda: request.app.state.project_folders.create_file(project_id, body)

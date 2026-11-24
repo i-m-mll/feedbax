@@ -14,7 +14,7 @@ from feedbax.contracts.operation import (
     require_dataset_fields,
     require_dataset_port,
 )
-from feedbax.contracts.project import DocumentReference, DocumentEdit, Project, RemoveProjectValue, SetProjectValue
+from feedbax.contracts.project import DocumentReference, DocumentEdit, Project, RemoveProjectValue, SetProjectValue, member_name
 from feedbax.contracts.project_io import project_declaration_name
 from feedbax.contracts.project_inputs import StepReference
 from feedbax.planner.project_plan import PlannedAnalyzeRun, RunKey, compile_project
@@ -262,7 +262,7 @@ def analyze_authoring(
         or step.base.pointer
         or step.deltas
     ):
-        raise ProjectFolderInvalid(f"Analyze step {key.step!r} has no named analysis document")
+        raise ProjectFolderInvalid(f"{member_name(project.steps, key.step)} has no named Analysis document.")
     document = None if step.base.unresolved else project.documents.get(step.base.document)
     if body.change and (document is None or document.schema_id != "feedbax.analysis_document.v1"):
         raise ProjectFolderInvalid("The selected step has no saved analysis document.")
@@ -283,7 +283,7 @@ def analyze_authoring(
         ]
         row = next((row for row in plan.rows if row.key == key and isinstance(row, PlannedAnalyzeRun)), None)
         if row is None and not problems:
-            raise ValueError(f"Run {key.row!r} no longer belongs to step {key.step!r}.")
+            raise ValueError(f"Run {key.row!r} no longer belongs to {member_name(project.steps, key.step)}.")
         if bound is not None and not states_available and not any(
             problem.path.startswith("inputs.states") for problem in problems
         ):
