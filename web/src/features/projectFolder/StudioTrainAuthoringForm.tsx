@@ -29,6 +29,8 @@ import type { ClassProjection } from '@/components/values/adapters/jsonSchema';
 import { sameAuthoredFile, type AuthoredProject } from './authoredEdits';
 import { ProjectEditConflictError, type ProjectEditController, type ProjectEditValidation } from './projectEditController';
 import { filesRemoval, sweepValueRuns, useRunRemoval } from './runRemoval';
+import { sendWithStore, useAskStore } from './storeChoice';
+import { editedElement } from '@/components/ui/ChoiceMenu';
 import { inTrainingDocument, trainFieldDocument } from './trainingDocument';
 
 interface Props {
@@ -143,10 +145,16 @@ function useTrainFields(
   const { outside } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const { body, fields } = useTrainFieldsQuery(editor, stepId, selection, runPending);
   const confirmRemoval = useRunRemoval();
+  const askStore = useAskStore();
   function edit(field: string, change: ProjectedEdit | FieldResetEdit): Promise<string | undefined> {
+    const from = document.activeElement;
     return editor.command(async (saved) => {
-      const { problems = [], files = [], created = [], dependencies = [], removed_values: removedValues } = await projectTrainFields(
-        saved.project_id, stepId, { ...body, revision: saved.revision, field, edit: change }, editor.signal);
+      const answer = await sendWithStore(askStore, () => editedElement(from, from), () => editor.flush(),
+        (store_choice) => projectTrainFields(
+          saved.project_id, stepId, { ...body, revision: saved.revision, field, edit: change, store_choice }, editor.signal),
+        (projected) => projected.store_choices);
+      if (!answer) return undefined;
+      const { problems = [], files = [], created = [], dependencies = [], removed_values: removedValues } = answer;
       if (problems[0]) return problems[0].reason;
       if ((files.length || created.length) && await confirmRemoval(sweepValueRuns(removedValues))) {
         const stored = editor.storeEdit(studioName('setField'), { files, created }, {
@@ -237,6 +245,7 @@ function useTrainForm(props: Props) {
   });
   const catalog = useAuthoringCatalog();
   const confirmRemoval = useRunRemoval();
+  const askStore = useAskStore();
   const numeric = useTrainFields(editor, stepId, scope, props.runPending);
   const active = useRef<AbortController | null>(null);
   const shown = definition.data;
@@ -257,10 +266,14 @@ function useTrainForm(props: Props) {
   function apply(change: Pick<StudioTrainAuthoringRequest, 'change' | 'class_sweep' | 'reset'>, label: string): Promise<string | undefined> {
     const lifetime = active.current;
     if (!lifetime) return Promise.resolve(undefined);
+    const from = document.activeElement;
     return editor.command(async (saved) => {
       if (lifetime.signal.aborted) return undefined;
       const { revision } = saved;
-      const recipe = await readStudioTrainAuthoring(saved.project_id, stepId, { revision, ...scope, ...change }, editor.signal);
+      const recipe = await sendWithStore(askStore, () => editedElement(from, from), () => editor.flush(),
+        (store_choice) => readStudioTrainAuthoring(saved.project_id, stepId, { revision, ...scope, ...change, store_choice }, editor.signal),
+        (answer) => answer.store_choices);
+      if (!recipe) return undefined;
       if (!recipe.files.length && !recipe.created?.length ||
           !await confirmRemoval(sweepValueRuns(recipe.removed_values))) return undefined;
       const latest = editor.getSnapshot();

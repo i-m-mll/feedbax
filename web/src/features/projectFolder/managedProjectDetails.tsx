@@ -27,6 +27,7 @@ import type { ProjectEditController } from './projectEditController';
 import { useStoredModelView } from './model/ModelView';
 import type { DrawerSections } from '@/features/projectWindow/DrawerForms';
 import type { ConfirmRunRemoval } from './runRemoval';
+import type { AskStore } from './storeChoice';
 import { modelSchema } from './model/modelGraph';
 import { elementKey, isModelAddress, selectedElement, type ElementAddress, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import { useStore } from 'zustand';
@@ -70,6 +71,7 @@ interface DetailInputs {
   readonly namedRun?: StudioSavedTrainKey;
   readonly selectedSweepValues: ReadonlyMap<string, ReadonlySet<string>>;
   readonly confirmRunRemoval: ConfirmRunRemoval;
+  readonly askStore: AskStore;
   readonly fieldRows?: readonly string[];
   /** Whether one value of a named axis or a set's entry is selected, which a Model edit is then stored on. */
   readonly valueEditing?: boolean;
@@ -243,6 +245,7 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     active: activeView === 'model',
     selectedSweepValues: input.selectedSweepValues,
     confirmRunRemoval: input.confirmRunRemoval,
+    askStore: input.askStore,
     fieldChosenSteps: graphScope?.lit,
     planCurrent: input.planCurrent,
     fieldRows: input.fieldRows,

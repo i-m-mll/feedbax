@@ -6,6 +6,7 @@ import type {
 import { appendManagedFiles, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind, palette } from './fixtures/studioKeyboard';
 import { rootPayload } from './fixtures/rootPayload';
+import { applyTo } from './fixtures/controls';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -497,7 +498,8 @@ test('a narrowed edit in the Model view makes a document based on the shown one,
   const before = await requests();
   await mass.fill('2.5');
   await mass.press('Enter');
-  await expect(picker).toHaveText('point-mass-2');
+  await applyTo(page).getByRole('menuitem', { name: 'Selected Readers', exact: true }).click();
+  await expect(picker).toHaveText('Point mass 2');
   await expect.poll(async () => (await saved()).project.documents?.['point-mass-2']).toMatchObject({ base: { document: 'point-mass' } });
   expect((await saved()).project.documents?.['point-mass']).toEqual(files.documents?.['point-mass']);
   const after = await requests();
