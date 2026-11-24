@@ -223,8 +223,8 @@ const Wire = memo(function Wire({ id, data, type, source, target, sourceX, sourc
   const start = { x: sourceX, y: sourceY }, end = { x: targetX, y: targetY };
   const exit = sourcePosition === Position.Left ? -1 : 1;
   const entry = targetPosition === Position.Left ? 1 : -1;
-  /** A wire whose target lies behind its source's side runs under both cards rather than back through them. */
-  const under = !physical && exit === entry && (targetX - sourceX) * exit < 32;
+  /** A wire whose ends face the same way, or whose target lies behind its source's side, runs under both cards rather than through them. */
+  const under = !physical && (exit !== entry || (targetX - sourceX) * exit < 32);
   const rank = data?.rank ?? 0;
   const reach = under ? 16 + rank * 10 : 16;
   const a = { x: sourceX + exit * reach, y: sourceY };
