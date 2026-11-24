@@ -403,6 +403,7 @@ test('keyboard reaches the last Runs column in a narrow split', async ({ page, r
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await mapStep(page, 'train').click();
   await page.getByRole('button', { name: 'Split Details', exact: true }).click();
+  await page.getByRole('tablist', { name: 'Details' }).getByRole('tab', { name: 'Model', exact: true }).click();
   await page.getByRole('button', { name: 'Show Details', exact: true }).click();
   await page.getByRole('tabpanel', { name: 'Runs', exact: true }).focus();
   await page.getByRole('button', { name: 'Hide Inspector', exact: true }).click();
