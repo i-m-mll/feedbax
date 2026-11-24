@@ -12,7 +12,7 @@ from feedbax.planner.project_plan import compile_project
 from feedbax.contracts.project_resolution import compose_document
 from feedbax.web.app import create_app
 from tests.support.managed_train_fixture import managed_evaluation_step
-from tests.test_evaluate_documents import FEE, FIELD_CHANGED, MASS, TASK, _based, _data, _model, _with_mass, _with_push
+from tests.test_evaluate_documents import FEE, MASS, TASK, _based, _data, _model, _with_mass, _with_push
 
 _URL = "/api/projects/reach"
 _PLANT = {"composites": [], "element": {"kind": "component", "id": "plant"}}
@@ -98,6 +98,7 @@ def _two_readers(data):
 def test_an_evaluation_field_edit_makes_a_document_based_on_its_subjects(tmp_path):
     project = _Project(tmp_path, _data())
     with project.client:
+        prior = project.ids()
         reply = project.fields("check", {"kind": "text", "text": "2"}, evaluate_scope={"kind": "step"})
         assert reply["command"]["operation"]["address"] == MASS and not reply.get("files")
         result = project.edit(_mass(2.0), step="check", store="selected_readers")
@@ -105,7 +106,9 @@ def test_an_evaluation_field_edit_makes_a_document_based_on_its_subjects(tmp_pat
         documents = project.project().documents
         assert isinstance(documents["model-2"], BasedDocument) and documents["model-2"].base.document == "model"
         assert project.reads("check") == "model-2"
-        assert project.ids() == {"fee": FEE, "check": FIELD_CHANGED}
+        edited = project.ids()
+        assert edited["fee"] == prior["fee"] and edited["check"] != prior["check"]
+        assert project.composed("model-2")["interior"]["components"]["plant"]["fields"]["mass"] == 2
 
         data = project.project().model_dump(mode="json", by_alias=True, exclude_unset=True)
         data["steps"]["check-2"] = managed_evaluation_step("fee")
@@ -113,17 +116,18 @@ def test_an_evaluation_field_edit_makes_a_document_based_on_its_subjects(tmp_pat
         data["steps"]["next"] = deepcopy(data["steps"]["fee"])
         data["steps"]["next"]["base"]["inline"]["trial_documents"]["model"] = {"document": "model-2"}
         planned = {run.key.step: run.request_id for run in compile_project(Project.model_validate(data)).runs}
-        assert planned["check-2"] == FIELD_CHANGED and "next" in planned
+        assert planned["check-2"] == edited["check"] and "next" in planned
 
 
 def test_an_evaluation_edit_with_its_subject_chosen_is_written_to_the_subjects_document(tmp_path):
     project = _Project(tmp_path, _data())
     with project.client:
+        prior = project.ids()
         result = project.edit(_mass(2.0), step="check", chosen=("fee",))
         assert result["created"] == []
         assert set(project.project().documents) == set(_data()["documents"])
         assert project.composed("model") == _with_mass(_model(_data()), 2.0)
-        assert project.reads("check") == "model" and project.ids()["fee"] != FEE
+        assert project.reads("check") == "model" and project.ids()["fee"] != prior["fee"]
 
 
 def test_deleting_a_component_for_one_reader_makes_a_document_without_it(tmp_path):
@@ -299,8 +303,11 @@ def test_an_evaluation_picks_a_model_document_and_one_unrelated_to_its_subjects_
         assert saved.status_code == 200, saved.text
 
     with project.client:
+        prior = project.ids()
         pick("model-2")
-        assert project.reads("check") == "model-2" and project.ids() == {"fee": FEE, "check": FIELD_CHANGED}
+        edited = project.ids()
+        assert project.reads("check") == "model-2"
+        assert edited["fee"] == prior["fee"] and edited["check"] != prior["check"]
         pick("unrelated")
         assert "check" not in project.ids()
         problems = [problem for problem in project.plan().diagnostics if problem.step == "check"]

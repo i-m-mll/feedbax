@@ -117,7 +117,7 @@ def _set_store(folders, project_id: str, project: Project, step: str, body: Stud
     scope = body.selection or (command if isinstance(command, DuplicateRun) else None)
     selected = selected_edit_runs(plan, step, scope)
     intent = body.model_dump(mode="json", exclude={"store_choice"})
-    if isinstance(command, SaveSet | InlineSet):
+    if isinstance(command, SaveSet | InlineSet | SetToField | SetToSweep):
         attached = reached_steps(project, {step})
         reached = frozenset(row.key for row in plan.rows if row.key.step in attached)
         if not selected and body.store_choice is None:
