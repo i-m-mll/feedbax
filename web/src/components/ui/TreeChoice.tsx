@@ -31,7 +31,7 @@ export type TreeChoiceProps<Value extends string> = TreeSelection<Value> & {
 type Row<Value extends string> =
   | { key: string; kind: 'up'; label: string }
   | { key: string; kind: 'branch'; label: string; segment: string }
-  | { key: string; kind: 'option'; label: string; detail?: string; value: Value };
+  | { key: string; kind: 'option'; label: string; detail?: string; value: Value; path: readonly string[] };
 
 const within = (path: readonly string[], at: readonly string[]) => at.every((segment, index) => path[index] === segment);
 
@@ -39,7 +39,7 @@ function rows<Value extends string>(options: readonly TreeOption<Value>[], at: r
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   if (words.length) {
     return options.filter(({ path }) => words.every((word) => path.join(' ').toLowerCase().includes(word)))
-      .map(({ value, path }) => ({ key: `option:${value}`, kind: 'option', value, label: path.at(-1)!, detail: path.slice(0, -1).join(' · ') }));
+      .map(({ value, path }) => ({ key: `option:${value}`, kind: 'option', value, path, label: path.at(-1)!, detail: path.slice(0, -1).join(' · ') }));
   }
   const here = options.filter(({ path }) => path.length > at.length && within(path, at));
   const branches = [...new Set(here.filter(({ path }) => path.length > at.length + 1).map(({ path }) => path[at.length]))];
@@ -47,7 +47,7 @@ function rows<Value extends string>(options: readonly TreeOption<Value>[], at: r
     ...at.length ? [{ key: 'up', kind: 'up' as const, label: at.join(' · ') }] : [],
     ...branches.map((segment) => ({ key: `branch:${segment}`, kind: 'branch' as const, label: segment, segment })),
     ...here.filter(({ path }) => path.length === at.length + 1)
-      .map(({ value, path }) => ({ key: `option:${value}`, kind: 'option' as const, value, label: path.at(-1)! })),
+      .map(({ value, path }) => ({ key: `option:${value}`, kind: 'option' as const, value, path, label: path.at(-1)! })),
   ];
 }
 
@@ -113,6 +113,7 @@ export function TreeChoice<Value extends string>(props: TreeChoiceProps<Value>) 
             onMouseDown={(event) => event.preventDefault()}>
             <Command.List className="max-h-[min(22rem,var(--available-height))] overflow-y-auto">
               {shown.map((row) => <Command.Item key={row.key} value={row.key} onSelect={() => choose(row)}
+                aria-label={row.kind === 'option' ? row.path.join(' · ') : undefined}
                 className={clsx(popupItem, 'data-[selected=true]:bg-shell-hover', row.kind === 'up' && 'text-shell-muted')}>
                 <span className="flex w-[1.15em] justify-center">
                   {row.kind === 'up' ? <ChevronLeft /> : row.kind === 'option' && chosen.includes(row.value) && <Check />}
