@@ -74,7 +74,7 @@ def initial_rollout(tmp_path):
         store.store_object(raw)
     params = RolloutParameters(
         trials=task.condition_ids[:2], seed=29, trial_policy="paired", variation=(),
-        input_overrides={"reach_target": "target_pos"},
+        input_bindings={"task-input": "target_pos"},
     )
 
     def prepare():

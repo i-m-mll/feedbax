@@ -534,7 +534,9 @@ def _evaluate_documents(plan, key, definition, bundle):
                 code=ProblemCode.STRUCTURE, path=("variation",), reason=str(error),
             )),
         ), None
-    documents = _with_task(documents, task)
+    documents = _with_task(documents, task).model_copy(update={
+        "input_bindings": documents.input_bindings | params.input_bindings,
+    })
     paired = _project(documents, bundle, graph_override=graph, objective_use=objective_use)
     return documents, replace(paired, task_origins=variant.edit_origins), graph
 
@@ -689,6 +691,14 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
         ) if writes else StoredEdit([])
     if not stored.files and not stored.created:
         return StoredEdit([]), (), None
+    if isinstance(change, StudioTrialDocumentEdit) and change.kind == "task" and any(
+        (parts := json_pointer_parts(edit.path))[:1] == ("signals",)
+        and (len(parts) <= 2 or parts[2:] == ("name",))
+        for edit in change.edits
+    ):
+        from feedbax.web.services.trial_bindings import preserve_renamed_bindings
+
+        stored = preserve_renamed_bindings(folders, project_id, body.revision, project, stored)
     variants = {key.variant} if variant and whole else set(plan.variants)
     reach = reached_runs(plan, variants, selected, stored.reached - {key.step})
     return _validate_files(

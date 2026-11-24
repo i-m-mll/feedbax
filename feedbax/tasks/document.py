@@ -205,7 +205,7 @@ class DocumentTask:
             jnp.where(reached, int(EpochEnd.LENGTH), int(EpochEnd.UNREACHED)),
         )
         absent = {
-            signal.name: signal.absent.evaluate(parameters, prepared, values)
+            signal.id: signal.absent.evaluate(parameters, prepared, values)
             for signal in self.signals
         }
         prepared = prepared._replace(epochs=epochs, absent=absent)
@@ -237,14 +237,14 @@ class DocumentTask:
                 )
                 values[variable.id] = result.value
                 defined[variable.id] = result.defined
-                dynamic[variable.name] = result.value
-                dynamic_defined[variable.name] = result.defined
+                dynamic[variable.id] = result.value
+                dynamic_defined[variable.id] = result.defined
 
         outputs = {}
         present = {}
         next_cells = []
         for signal, cell_states in zip(self.signals, previous_cells, strict=True):
-            output = variables.absent[signal.name]
+            output = variables.absent[signal.id]
             available = False
             next_signal = []
             for cell, previous in zip(signal.cells, cell_states, strict=True):
@@ -266,8 +266,8 @@ class DocumentTask:
                 supplied = active & result.defined
                 output = jnp.where(supplied, result.value, output)
                 available = available | supplied
-            outputs[signal.name] = output
-            present[signal.name] = jnp.asarray(available)
+            outputs[signal.id] = output
+            present[signal.id] = jnp.asarray(available)
             next_cells.append(tuple(next_signal))
         return (next_variables, tuple(next_cells)), outputs, present, dynamic, dynamic_defined
 
@@ -280,7 +280,7 @@ class DocumentTask:
 
         _, (inputs, present, traces, defined) = jax.lax.scan(step, state, jnp.arange(self.n_steps))
         fixed = {
-            variable.name: variables.values[variable.id]
+            variable.id: variables.values[variable.id]
             for variable in self.interface.variables
             if variable.level < Level.STEP
         }
