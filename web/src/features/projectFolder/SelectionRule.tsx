@@ -29,7 +29,7 @@ const check = (scope: RuleScope, step: string, rule: string, ranked: boolean) =>
  * `source`'s card. A rule the check refuses is not saved, and the refusal is shown on the field.
  */
 export function SelectionRule({ scope, source, rule, pinned, planned, ranked = true, label = studioName('runs'), picking,
-  disabled, refusal, onToRows, onCommit }: {
+  disabled, problem, onToRows, onCommit }: {
   scope: RuleScope;
   source: PlanStepView;
   rule: string;
@@ -40,7 +40,8 @@ export function SelectionRule({ scope, source, rule, pinned, planned, ranked = t
   label?: string;
   picking?: ElementSelectionStore;
   disabled: boolean;
-  refusal?: string;
+  /** The plan's problem on the saved rule, or why the last edit of it was refused. */
+  problem?: string;
   onToRows?: () => void;
   onCommit(rule: string): void;
 }) {
@@ -75,6 +76,6 @@ export function SelectionRule({ scope, source, rule, pinned, planned, ranked = t
   return <RuleField label={label} value={rule} disabled={disabled} count={count} pinned={pinned}
     vocabulary={{ axes: Object.fromEntries(Object.entries(source.ruleAxes ?? {}).map(([axis, values]) => [axis, Object.values(values)])),
       metrics: ranked ? source.ruleMetrics ?? [] : undefined }}
-    refusal={refused && (draft === null || draft.trim() === refused.rule) ? refused.reason : refusal}
+    problem={refused && (draft === null || draft.trim() === refused.rule) ? refused.reason : problem}
     commands={commands} onDraft={setDraft} onCommit={(next) => void commit(next)} />;
 }

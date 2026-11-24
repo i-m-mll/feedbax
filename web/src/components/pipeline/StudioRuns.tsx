@@ -39,6 +39,8 @@ interface StudioRunsProps extends RunSelectionProps {
   axisMenu?: AxisMenu;
 }
 
+const noRuns: RunSetsByStep = new Map();
+
 /** The steps the chosen runs were made from and are used by, one row each; pressed, a row selects its step. */
 function StudioRunLineage({
   plan,
@@ -223,9 +225,10 @@ export function StudioStepInspector({
   const selected = useMemo(() => selectedRuns(step, state.selection), [step, state.selection]);
   const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
   const roots = useMemo(() => selected.map(({ id }) => ({ stepId: step.id, runId: id })), [selected, step.id]);
-  const upstream = useMemo(() => lineage.upstream(roots), [lineage, roots]);
-  const downstream = useMemo(() => lineage.downstream(roots), [lineage, roots]);
   const chosen = state.selection?.kind !== "steps" && selected.length > 0;
+  /** With the step selected its inputs' fields name what it is made from; with runs selected, the rows say which. */
+  const upstream = useMemo(() => chosen ? lineage.upstream(roots) : noRuns, [chosen, lineage, roots]);
+  const downstream = useMemo(() => lineage.downstream(roots), [lineage, roots]);
   const single = selected.length === 1;
   const counts = new Map<StudioResultState, number>();
   const reasons = new Set<string>();

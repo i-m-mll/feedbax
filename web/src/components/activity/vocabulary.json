@@ -257,6 +257,7 @@
     "figure": "Figure",
     "document": "Document",
     "documents": "Documents",
+    "problem": "Problem",
     "problems": "Problems",
     "commandPalette": "Command Palette",
     "showMap": "Show Map",

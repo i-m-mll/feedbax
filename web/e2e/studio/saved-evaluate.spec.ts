@@ -534,7 +534,7 @@ test('authors selected saved Evaluate Model and Task inputs and repairs a refuse
 });
 
 test('authors checkpoint rules and replays covered updates from Results', { tag: '@round' }, async ({ page, request }, info) => {
-  test.setTimeout(54_000);
+  test.setTimeout(60_000);
   const files = JSON.parse(await runProjectFixture(fixture, 'series-files'));
   const { snapshot, projectPath } = await seedManagedProject(request, files);
   const runsPath = projectPath + '/train-runs';
@@ -588,7 +588,8 @@ test('authors checkpoint rules and replays covered updates from Results', { tag:
   await updates.fill('2, 2');
   await updates.press('Enter');
   await expect(updates).toHaveAttribute('aria-invalid', 'true');
-  await expect(checkpoint.getByRole('alert')).toBeVisible();
+  await expect(updates).toHaveAccessibleDescription(/\S/);
+  await expect(checkpoint.getByRole('img', { name: 'Problem', exact: true })).toBeVisible();
   const explicit = await saved(async () => {
     await updates.fill('4, 3, 2');
     await updates.press('Enter');
@@ -692,6 +693,18 @@ test('authors checkpoint rules and replays covered updates from Results', { tag:
   await chooseStep(page, 'evaluate');
   await reveal(page, 'Inspector');
   await expect(updates).toHaveValue('4, 3, 2');
+
+  // An update the finished Train never saved is the Checkpoint field's problem before anything runs.
+  await pick(kind, 'At');
+  const update = checkpoint.getByRole('textbox', { name: 'Update', exact: true });
+  const missing = await saved(async () => {
+    await update.fill('3');
+    await update.press('Enter');
+  });
+  expect(missing.project.steps!.evaluate.inputs?.subject).toMatchObject({ checkpoint: { at: 3 } });
+  await expect(checkpoint.getByRole('img', { name: 'Problem', exact: true }))
+    .toHaveAttribute('data-app-tip', /Update 3 .*2, 4/);
+  await expect(update).toHaveAttribute('aria-invalid', 'true');
 });
 
 test('edits the checkpoint rule in the selected authored variant', async ({ page, request, studio }, info) => {
