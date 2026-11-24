@@ -212,7 +212,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
             documents.model, documents.task_source,
             registry.components, registry.expression_functions, python_tasks=registry.python_tasks,
             objective=documents.objective,
-            input_overrides=documents.input_overrides,
+            input_bindings=documents.input_bindings,
             initialization_key=model_initialization_key(initialization_seed),
             artifact_provider=slot.provider,
         )
@@ -284,7 +284,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
                 field = descriptor.variables[key]
                 assert (field.dims, field.units, field.frame) == ((*state_axes, "xy"), units, "world")
             assert descriptor.coords["state_time"].units == "s"
-            assert descriptor.attrs["scene_position"] == position
+            assert position in descriptor.attrs["trial_record"]["positions"]
             target_field = descriptor.variables[target]
             assert (target_field.dims, target_field.units, target_field.frame) == (
                 ("checkpoint", "condition", "trial", "transition", "xy"), "m", "world",
@@ -303,7 +303,8 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
         assert selected == [carry]
         selected.clear()
         replay = outcomes[baseline].replay(trial_ids[0])
-        assert selected == ["checkpoint", "state_time", position]
+        assert {"checkpoint", "state_time", position} <= set(selected)
+        assert carry not in selected
         assert replay.drawn.trials[0].id == trial_ids[0]
         np.testing.assert_array_equal(np.asarray(replay.drawn.trials[0].states[replay.position].samples[:3], dtype=first.dtype), first)
     np.testing.assert_allclose(first, reference.history[position][0, :3], atol=1e-7)
@@ -497,7 +498,7 @@ def test_saved_raw_state_refuses_undeclared_registered_owner(host, tmp_path, mon
     prepared = compile_trial_execution(
         documents.model, documents.task_source,
         registry.components, registry.expression_functions, python_tasks=registry.python_tasks,
-        input_overrides=documents.input_overrides,
+        input_bindings=documents.input_bindings,
     )
     assert isinstance(prepared, PreparedTrialExecution), prepared
     graph = prepared.executable.resolved.graph

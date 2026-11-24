@@ -5,7 +5,7 @@ import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonica
 test.use({ viewport: { width: 1440, height: 900 } });
 
 const position = JSON.stringify({ composites: [], element: {
-  kind: 'field', parent: { id: 'plant', kind: 'component' }, path: ['reset', 'effector', 'position'],
+  kind: 'field', parent: { id: 'plant', kind: 'component' }, path: ['state', 'effector/position'],
 } });
 
 // Catches a Model start the Model needs that no row shows or marks, a row whose name does not write the variable and

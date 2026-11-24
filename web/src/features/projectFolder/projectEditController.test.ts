@@ -175,7 +175,7 @@ it('binds the first compatible documents by name, scaffolds only the missing typ
   await createTrain(editor, initial.revision);
   expect(create).toHaveBeenCalledWith('New Step', [
     { kind: 'document', id: 'objective-2', document: {
-      schema: 'feedbax.spec.objective_document', payload: { id: 'objective', terms: [] },
+      schema: 'feedbax.spec.objective_document', label: 'Objective', payload: { id: 'objective', terms: [] },
     } },
     { kind: 'document', id: 'training', document: expect.objectContaining({ schema: 'feedbax.spec.training_document' }) },
     expect.objectContaining({ kind: 'step', id: 'train-2', step: expect.objectContaining({

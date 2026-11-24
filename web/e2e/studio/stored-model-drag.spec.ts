@@ -149,7 +149,7 @@ async function measureField(page: Page, context: CDPSession, projectPath: string
     const acknowledgedAt = performance.now();
     expect(response.ok(), await response.text()).toBe(true);
     const { result } = await response.json() as ModelEditResponse;
-    if (result.status !== 'applied') throw new Error(result.problem.detail);
+    if (result.status !== 'applied') throw new Error(JSON.stringify(result));
     return { snapshot: result.snapshot, acknowledgedAt };
   });
   const settled = page.waitForResponse(async (response) => {

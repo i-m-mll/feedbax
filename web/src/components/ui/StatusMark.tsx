@@ -58,7 +58,6 @@ const spinning: ReadonlySet<StatusMarkStatus> = new Set(['checking', 'busy']);
 
 export function StatusMark({ status, label, tip, className, ...props }: StatusMarkProps) {
   const [tone, fill, path] = marks[status];
-  const unchecked = status === 'unchecked';
   return (
     <span
       role={label ? 'img' : undefined}
@@ -67,9 +66,8 @@ export function StatusMark({ status, label, tip, className, ...props }: StatusMa
       {...(label ? appTip(tip ?? label) : {})}
       data-status-mark={status}
       className={clsx(
-        'relative inline-flex size-4 shrink-0 items-center justify-center rounded-sm border-[1.5px] border-current',
+        'inline-flex size-4 shrink-0 items-center justify-center rounded-sm border-[1.5px] border-current',
         tone,
-        unchecked && '[:root[data-unchecked=badge]_&]:bg-current',
         fill === 'solid' && 'bg-current',
         className,
       )}
@@ -79,19 +77,12 @@ export function StatusMark({ status, label, tip, className, ...props }: StatusMa
         className={clsx(
           'size-3.5 shrink-0',
           fill === 'solid' ? 'text-shell-status-ink' : 'text-current',
-          unchecked && '[:root[data-unchecked=badge]_&]:text-shell-status-ink',
           spinning.has(status) && 'motion-safe:animate-spin',
         )}
         viewBox="0 0 12 12"
       >
         <path d={path} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
       </svg>
-      {unchecked ? (
-        <span className={clsx(
-          'absolute -right-[3px] -top-[3px] hidden size-[7px] rounded-full border-[1.5px] border-shell-surface bg-shell-status-warning',
-          '[:root[data-unchecked=badge]_&]:block',
-        )} />
-      ) : null}
     </span>
   );
 }

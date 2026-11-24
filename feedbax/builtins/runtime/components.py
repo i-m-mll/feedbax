@@ -1397,10 +1397,10 @@ class GRU(Component):
         ),
         states=(
             StateValue(
-                "hidden", ("hidden",), "1", "unit",
-                reset=StateReset("hidden", aliases=(("output",),), override_port="hidden"),
+                "hidden", ("hidden",), "1", "unit", ("hidden",),
+                aliases=(("output",),), reset=StateReset(override_port="hidden"),
             ),
-            StateValue("output", ("output",), "1", "unit"),
+            StateValue("output", ("output",), "1", "unit", ("output",)),
         ),
         optional_state_flag="stateful",
     )

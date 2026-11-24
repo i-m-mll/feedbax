@@ -5,8 +5,9 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 import json
+from operator import or_
 from enum import Enum
-from functools import cache
+from functools import cache, reduce
 from types import UnionType
 from typing import Annotated, Any, ForwardRef, Literal, TypeAliasType, Union, get_args, get_origin, get_type_hints
 
@@ -27,7 +28,7 @@ from feedbax.contracts.graph import (
     RetainedObservableSpec,
 )
 from feedbax.contracts.objective_document import ObjectiveTerm
-from feedbax.contracts.request_identity_guard import IdentityAbsent, IdentityWideInteger
+from feedbax.contracts.request_identity_guard import IdentityAbsent, IdentityAuthoredAlternative, IdentityWideInteger
 from feedbax.contracts.request_refs import ReferenceValue
 
 
@@ -154,9 +155,24 @@ def _wide_integer(model: type[BaseModel], name: str) -> bool:
 
 
 @cache
+def _authored_alternative(model: type[BaseModel], name: str) -> type | None:
+    return next(
+        (item.value_type for item in model.model_fields[name].metadata if isinstance(item, IdentityAuthoredAlternative)),
+        None,
+    )
+
+
+@cache
 def _field_annotation(model: type[BaseModel], name: str) -> Any:
     annotation = model.model_fields[name].annotation
-    return get_type_hints(model, include_extras=True)[name] if isinstance(annotation, ForwardRef) else annotation
+    if isinstance(annotation, ForwardRef):
+        annotation = get_type_hints(model, include_extras=True)[name]
+    if (authored := _authored_alternative(model, name)) is not None:
+        choices = get_args(annotation)
+        if get_origin(annotation) not in (Union, UnionType) or authored not in choices:
+            raise ValueError(f"Missing authored alternative in {model.__name__}.{name}")
+        return reduce(or_, (part for part in choices if part is not authored))
+    return annotation
 
 
 def same_typed_value(left: Any, right: Any) -> bool:
@@ -193,6 +209,7 @@ class _EncodingField:
     wire_default: str | None
     wide_integer: bool
     array_parameters: bool
+    authored_alternative: type | None
     absent: Any
     projected_absence: tuple[Any, bytes] | None = None
 
@@ -209,6 +226,7 @@ def _encoding_field(
         model.model_fields[name].default if _wire(model, name) else None,
         _wide_integer(model, name),
         model is ComponentSpec and name == "params",
+        _authored_alternative(model, name),
         absent,
     )
 
@@ -272,6 +290,8 @@ class PinnedFields:
 def _encode_field(
     field: _EncodingField, value: Any, pins: PinnedFields | None, *, explicit: bool = False
 ) -> Any:
+    if field.authored_alternative is not None and isinstance(value, field.authored_alternative):
+        raise ValueError(f"{field.name} contains unresolved authored text")
     if value is not None and field.wide_integer:
         return str(value) if abs(value) > _SAFE_INT else value
     if field.array_parameters:

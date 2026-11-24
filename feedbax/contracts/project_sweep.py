@@ -17,7 +17,7 @@ from pydantic import Field, JsonValue, PrivateAttr, TypeAdapter, model_validator
 
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.expression_values import DrawValue, WeightPart
+from feedbax.contracts.expression_values import DrawValue, TextSpan, WeightPart
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_address import FieldElement, ModelAddress
 from feedbax.contracts.model_attachment import SetField
@@ -60,6 +60,20 @@ def checkpoint_rule_write(subject: object, write: PatchValue) -> StepReference:
     if not isinstance(write, SetValue):
         raise ValueError("A checkpoint rule edit requires a rule")
     return subject.model_copy(update={"checkpoint": _CHECKPOINT_RULE.validate_python(write.value)})
+
+
+def checkpoint_sweep_refusal(subject: object, sweep: Sweep | None, *, project_swept: bool) -> str | None:
+    """Why an authored checkpoint rule cannot be moved to an update axis."""
+    if project_swept:
+        return "Checkpoint sweep edits belong to the step definition."
+    if not isinstance(subject, StepReference) or not isinstance(subject.checkpoint, (tuple, UpdateCadence)):
+        return "Choose a locally authored checkpoint list or cadence."
+    if sweep is not None:
+        if sweep.combination not in (None, "cross") or any(sweep.rows.values()):
+            return "To Sweep requires a cross of generated rows."
+        if sweep.axes.get("update") is not None:
+            return "This step already has an update axis."
+    return None
 
 
 @dataclass(frozen=True)
@@ -487,11 +501,15 @@ class SweepExpansionCode(StrEnum):
 class SweepExpansionError(ValueError):
     """A sweep refusal with a path suitable for an authored diagnostic."""
 
-    def __init__(self, code: SweepExpansionCode, path: str, detail: str, *, target: str | None = None):
+    def __init__(
+        self, code: SweepExpansionCode, path: str, detail: str, *,
+        target: str | None = None, span: TextSpan | None = None,
+    ):
         self.code = code
         self.path = path
         self.detail = detail
         self.target = target
+        self.span = span
         super().__init__(f"{path}: {detail}")
 
 
@@ -803,7 +821,7 @@ def _conditional_order(axes: Mapping[str, Axis]) -> tuple[str, ...]:
             names = rule_names(where.rule)
         except RuleRefusal as error:
             raise SweepExpansionError(
-                SweepExpansionCode.INVALID_CONDITION, f"sweep.axes.{name}.where.rule", error.detail
+                SweepExpansionCode.INVALID_CONDITION, f"sweep.axes.{name}.where.rule", error.detail, span=error.span,
             ) from error
         if name in names:
             raise SweepExpansionError(
@@ -1155,7 +1173,7 @@ def _select_exception_rows(
     except RuleRefusal as error:
         term = f".{error.path}" if error.path else ""
         raise SweepExpansionError(
-            SweepExpansionCode.INVALID_EXCEPTION, f"{path}.where{term}", error.detail
+            SweepExpansionCode.INVALID_EXCEPTION, f"{path}.where{term}", error.detail, span=error.span,
         ) from error
 
 
@@ -1252,7 +1270,7 @@ def _condition_picks(name: str, where: AxisCondition, rows: Sequence[ExpandedRow
     except RuleRefusal as error:
         term = f".{error.path}" if error.path else ""
         raise SweepExpansionError(
-            SweepExpansionCode.INVALID_CONDITION, f"sweep.axes.{name}.where{term}", error.detail
+            SweepExpansionCode.INVALID_CONDITION, f"sweep.axes.{name}.where{term}", error.detail, span=error.span,
         ) from error
     return tuple(id(row) in picked for row in rows)
 
