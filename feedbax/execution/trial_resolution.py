@@ -178,8 +178,7 @@ def pair_trial_source(
             lowered = replace(lowered, graph=graph_override)
         interface = lowered.interface(model, components, input_prototypes=prototypes)
     except ModelCompilationProblem as error:
-        return (Problem(code=ProblemCode.STRUCTURE, reason=str(error),
-                        path=("model", *error.address.stored_path()), model_address=error.address),)
+        return model_compilation_problems(error)
     except ParameterResolutionError as error:
         return tuple(_parameter_problem(lowered, item) for item in (
             error.errors if isinstance(error, ParameterResolutionErrors) else (error,)
@@ -380,14 +379,7 @@ def resolve_trial_execution(
             GraphDocument(graph=pairing.lowered.graph), components, pairing.prototypes,
         )
     except ModelCompilationProblem as error:
-        return (
-            Problem(
-                code=ProblemCode.STRUCTURE,
-                reason=str(error),
-                path=("model", *error.address.stored_path()),
-                model_address=error.address,
-            ),
-        )
+        return model_compilation_problems(error)
     except GraphCompilationError as error:
         return _graph_problems(error)
     return ResolvedTrialExecution(
@@ -396,6 +388,18 @@ def resolve_trial_execution(
         scorer,
         pairing.lowered,
         pairing.task_source,
+    )
+
+
+def model_compilation_problems(error: ModelCompilationProblem) -> tuple[Problem, ...]:
+    return tuple(
+        Problem(
+            code=ProblemCode.STRUCTURE,
+            reason=problem.reason,
+            path=("model", *problem.address.stored_path()),
+            model_address=problem.address,
+        )
+        for problem in error.problems
     )
 
 
