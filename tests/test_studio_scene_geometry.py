@@ -3,17 +3,24 @@
 from fastapi.testclient import TestClient
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from feedbax.builtins.mechanics.direct_force_components import TwoLinkArm
+from feedbax.compiler.model_document import lower_planar_scene_interior
+from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.model_address import ModelAddress
+from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.project_io import load_text_project
+from feedbax.mechanics.authored_model import compile_planar_model
 from feedbax.runtime.graph import init_state_from_component
+from feedbax.studio import scene_geometry
 from feedbax.web.app import create_app
-from tests.fixtures.scene_geometry import native_scene_samples, scene_files, seed_scene_project
+from tests.fixtures.scene_geometry import scene_files, seed_scene_project
 
 
 _PROJECT = "/api/projects/scene"
-_SCENE = f"{_PROJECT}/scene/planar"
+_SCENE = f"{_PROJECT}/scene/geometry"
 
 
 @pytest.fixture
@@ -31,7 +38,7 @@ def _source(client, document):
     return {
         "revision": snapshot.json()["revision"],
         "document_id": document,
-        "node_path": ["mechanics"],
+        "poses": [{}],
     }
 
 
@@ -58,40 +65,69 @@ def _edit(client, document, component, path, value):
     assert response.json()["result"]["status"] == "applied", response.text
 
 
-def test_scene_binds_the_exact_revision_and_preserves_authored_coordinates(project):
+def test_scene_batches_native_poses_at_one_revision(project, monkeypatch):
+    import mujoco
+
     root, client = project
+    saved = load_text_project(root)
+    model = ModelDocument.model_validate(saved.project.documents["chain"].payload)
+    topology = lower_planar_scene_interior(model, ("mechanics",), ComponentRegistry())
+    compiled = compile_planar_model(topology)
+    data = mujoco.MjData(compiled.model)
+    effector = compiled.site_ids[compiled.effector_site]
+    joint_coordinates = ([0.43, -0.67, 0.26], compiled.model.qpos0, [-0.31, 0.58, -0.48])
+    tips = []
+    for qpos in joint_coordinates:
+        data.qpos[:] = qpos
+        mujoco.mj_kinematics(compiled.model, data)
+        tips.append(data.site_xpos[effector, :2].tolist())
+
+    compile_count = 0
+
+    def count_compiles(graph):
+        nonlocal compile_count
+        compile_count += 1
+        return compile_planar_model(graph)
+
+    monkeypatch.setattr(scene_geometry, "compile_planar_model", count_compiles)
     source = _source(client, "chain")
-    model = _read(client, source)["model"]
-    assert model["model_identity"] == native_scene_samples(root, "chain")["identity"]
-    assert [(link["joint_id"], link["qpos_index"]) for link in model["links"]] == [
-        ("shoulder", 0),
-        ("elbow", 1),
-        ("wrist", 2),
-    ]
-    assert model["reference_qpos"] == [0, 0, 0]
-    assert model["links"][1]["child_frame"] == "forearm.distal"
-    assert model["muscles"][0]["points"][1]["frame"] == "forearm.distal"
-    assert model["muscles"][0]["points"][1]["position"] == pytest.approx([0.03, -0.09])
+    configuration = ModelAddress.at_state((), "mechanics", "skeleton/qpos").to_text()
+    request = {**source, "poses": [
+        {configuration: joint_coordinates[0]}, {configuration: [0.1]},
+        {}, {configuration: joint_coordinates[2]},
+    ]}
+    frames = _read(client, request)["frames"]
+    assert compile_count == 1
+    assert len(frames) == 4
+    assert frames[1]["mechanisms"] == []
+    assert "3 finite joint coordinates" in frames[1]["diagnostics"][0]["message"]
+    for index, expected in zip((0, 2, 3), tips, strict=True):
+        frame = frames[index]
+        assert frame["diagnostics"] == []
+        mechanism, = frame["mechanisms"]
+        assert mechanism["links"][-1]["end"] == pytest.approx(expected)
+        assert [link["joint"]["element"]["id"] for link in mechanism["links"]] == [
+            "shoulder", "elbow", "wrist",
+        ]
 
     _edit(client, "chain", "forearm", ["length"], 0.37)
     _edit(client, "chain", "cross_chain", ["path_points", 1, "offset"], [0.05, -0.07])
-    assert client.post(_SCENE, json=source).status_code == 409
-    updated = _read(client, _source(client, "chain"))["model"]
-    assert updated["model_identity"] != model["model_identity"]
-    assert updated["links"][1]["length"] == 0.37
-    assert updated["muscles"][0]["points"][1]["frame"] == "forearm.distal"
-    assert updated["muscles"][0]["points"][1]["position"] == pytest.approx([0.05, -0.07])
+    assert client.post(_SCENE, json=request).status_code == 409
+    updated, = _read(client, _source(client, "chain"))["frames"]
+    mechanism, = updated["mechanisms"]
+    link = mechanism["links"][1]
+    assert np.linalg.norm(np.subtract(link["end"], link["start"])) == pytest.approx(0.37)
+    muscle, = mechanism["muscles"]
+    assert np.linalg.norm(np.subtract(muscle["points"][1], link["end"])) == pytest.approx(
+        np.hypot(0.05, -0.07),
+    )
 
 
-def test_scene_reports_missing_frames_and_unresolved_occurrences(project):
+def test_scene_reports_missing_frames(project):
     _, client = project
-    source = _source(client, "chain")
-    wrong_node = _read(client, {**source, "node_path": ["unknown", "mechanics"]})
-    assert wrong_node["model"] is None
-    assert "unknown" in wrong_node["diagnostics"][0]["message"]
     _edit(client, "chain", "cross_chain", ["path_points", 1, "frame"], "missing.distal")
-    invalid = _read(client, _source(client, "chain"))
-    assert invalid["model"] is None
+    invalid, = _read(client, _source(client, "chain"))["frames"]
+    assert invalid["mechanisms"] == []
     assert [(entry["code"], entry["node_ids"]) for entry in invalid["diagnostics"]] == [
         ("mechanics.muscle_path_missing_frame", ["cross_chain"]),
     ]

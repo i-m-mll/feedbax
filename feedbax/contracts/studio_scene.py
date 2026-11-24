@@ -8,45 +8,7 @@ from feedbax.contracts.base import StrictModel
 from feedbax.contracts.domain import DomainDiagnostic
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project_inputs import ProjectName
-from feedbax.contracts.representation import RepresentationMusclePathPointSpec
 from feedbax.contracts.request_refs import Sha256
-
-
-class ScenePlanarLink(StrictModel):
-    body_id: str
-    joint_id: str
-    parent_frame: str
-    child_frame: str
-    qpos_index: int = Field(ge=0)
-    parent_pivot: tuple[FiniteFloat, FiniteFloat]
-    body_pivot: tuple[FiniteFloat, FiniteFloat]
-    reference_angle: FiniteFloat
-    length: FiniteFloat = Field(gt=0)
-
-
-class ScenePlanarMuscle(StrictModel):
-    node_id: str
-    points: Annotated[list[RepresentationMusclePathPointSpec], Field(min_length=2)] | None
-
-
-class ScenePlanarModel(StrictModel):
-    model_identity: Sha256
-    world_frame: str
-    links: list[ScenePlanarLink] = Field(min_length=1)
-    reference_qpos: list[FiniteFloat] = Field(min_length=1)
-    muscles: list[ScenePlanarMuscle]
-
-
-class StudioPlanarSceneRequest(StrictModel):
-    revision: Sha256
-    document_id: ProjectName
-    node_path: list[str] = Field(min_length=1)
-
-
-class StudioPlanarSceneResponse(StudioPlanarSceneRequest):
-    project_id: ProjectName
-    model: ScenePlanarModel | None
-    diagnostics: list[DomainDiagnostic]
 
 
 type ScenePoint = tuple[FiniteFloat, FiniteFloat]
@@ -96,7 +58,10 @@ class StudioSceneModelSource(StrictModel):
 
 class StudioSceneGeometryRequest(StudioSceneModelSource):
     poses: Annotated[list[dict[str, JsonValue]], Field(min_length=1)]
-    """State values by Model address for each frame. An empty map requests the rest pose."""
+    """State values by Model address for each frame. An empty map requests the rest pose.
+
+    A native planar pose uses its mechanism's `skeleton/qpos` state in compiled joint order.
+    """
 
 
 class StudioSceneGeometryFrame(StrictModel):

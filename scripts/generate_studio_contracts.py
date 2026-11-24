@@ -59,11 +59,6 @@ from feedbax.contracts.analysis_document import AnalysisDocument
 from feedbax.contracts.report_document import ReportDocument
 from feedbax.contracts.studio_analyze import StudioAnalyzeAuthoring, StudioAnalyzeRequest
 from feedbax.contracts.studio_scene import (
-    ScenePlanarLink,
-    ScenePlanarModel,
-    ScenePlanarMuscle,
-    StudioPlanarSceneRequest,
-    StudioPlanarSceneResponse,
     SceneLinkGeometry,
     SceneMuscleGeometry,
     ScenePlanarGeometry,
@@ -725,11 +720,6 @@ MODEL_TYPES: list[type[BaseModel]] = [
     DomainTheme,
     DomainMeta,
     DomainDiagnostic,
-    ScenePlanarLink,
-    ScenePlanarMuscle,
-    ScenePlanarModel,
-    StudioPlanarSceneRequest,
-    StudioPlanarSceneResponse,
     SceneLinkGeometry,
     SceneMuscleGeometry,
     ScenePlanarGeometry,
@@ -898,8 +888,6 @@ CONTRACT_MODEL_NAMES = [
     "ComponentDetailResponse",
     "DomainListResponse",
     "DomainCompileReport",
-    "StudioPlanarSceneRequest",
-    "StudioPlanarSceneResponse",
     "StudioSceneGeometryRequest",
     "StudioSceneGeometryResponse",
     "StudioErrorReport",
