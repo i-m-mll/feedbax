@@ -28,23 +28,21 @@ const at = (values: JsonValue | undefined, step: number) =>
   Array.isArray(values) && values.length ? values[Math.min(step, values.length - 1)] : undefined;
 
 /**
- * The state values `record` recorded at state frame `frame`: each configuration and each world-frame track. Undefined
+ * The state values `record` recorded at each state frame: each configuration and each world-frame track. Undefined
  * when the record holds no recorded state, as a trial drawn before a run does not.
  */
-export function recordedState(record: TrialRecord, frame: number): StateValues | undefined {
-  const configurations = Object.entries(record.configurations ?? {});
-  const tracks = Object.entries(record.states ?? {});
-  if (!configurations.length && !tracks.length) return undefined;
-  return Object.fromEntries([
-    ...tracks.flatMap(([address, track]) => {
-      const sample = at(track.samples, frame);
-      return sample === undefined ? [] : [[address, sample]];
-    }),
-    ...configurations.flatMap(([address, history]) => {
-      const sample = at(history, frame);
-      return sample === undefined ? [] : [[address, sample]];
-    }),
-  ]);
+export function recordedStates(record: TrialRecord): StateValues[] | undefined {
+  const histories: [string, JsonValue[]][] = [
+    ...Object.entries(record.states ?? {}).map(([address, track]): [string, JsonValue[]] => [address, track.samples]),
+    ...Object.entries(record.configurations ?? {}).flatMap(([address, history]): [string, JsonValue[]][] =>
+      Array.isArray(history) ? [[address, history]] : []),
+  ];
+  if (!histories.length) return undefined;
+  const frames = Math.max(...histories.map(([, history]) => history.length));
+  return Array.from({ length: frames }, (_, frame) => Object.fromEntries(histories.flatMap(([address, history]) => {
+    const sample = at(history, frame);
+    return sample === undefined ? [] : [[address, sample]];
+  })));
 }
 
 /**
