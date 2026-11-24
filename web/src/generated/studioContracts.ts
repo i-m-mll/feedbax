@@ -596,7 +596,7 @@ export interface InputDefault {
 export interface DelayAttachment {
   kind: "delay";
   id: string;
-  delay: ModelTime;
+  delay: ModelTime | UnresolvedValue;
   initial?: JsonValue;
 }
 
@@ -670,7 +670,7 @@ export interface CompositeComponent {
   name: string;
   ports: ModelPorts;
   interior: GraphInterior | PhysicalInterior;
-  substeps?: number;
+  substeps?: number | UnresolvedValue;
   attachments?: ModelPortAttachments;
 }
 
@@ -695,7 +695,7 @@ export interface ModelWorld {
 
 export interface ModelDocument {
   schema_version?: "feedbax.spec.model.v1";
-  step_seconds: number;
+  step_seconds: number | UnresolvedValue;
   ports: ModelPorts;
   interior: GraphInterior;
   world?: ModelWorld | null;
@@ -1177,6 +1177,7 @@ export interface ModelFieldView {
   members?: StudioSweepValue[];
   changed?: boolean;
   address: ModelAddress;
+  problems?: Problem[];
   sources?: StudioPlanReviewSource[];
 }
 
@@ -2551,6 +2552,12 @@ export type AddMember = {
   "index"?: number | null;
   "type"?: ValueType | null;
   "initializes"?: Array<string>;
+};
+
+export type AddSetEntry = {
+  "kind": "add_set_entry";
+  "step": string;
+  "axis": string;
 };
 
 export type AnalysisDocument = {
@@ -4327,11 +4334,12 @@ export type StudioSetEdit = {
   "files": Array<StudioProjectFilePatch>;
   "created"?: Array<CreateNamedDocument>;
   "selected"?: StudioAxisValue | null;
+  "problems"?: Array<StudioProjectWindowMapProblem>;
 };
 
 export type StudioSetEditRequest = {
   "revision": string;
-  "command": DuplicateRun | SaveSet | InlineSet | ApplySet | SetToField | SetToSweep | RemoveAxisValue;
+  "command": DuplicateRun | SaveSet | InlineSet | ApplySet | SetToField | SetToSweep | RemoveAxisValue | AddSetEntry;
 };
 
 export type StudioSetField = {
@@ -4428,6 +4436,7 @@ export type StudioTrainAuthoring = {
   "created"?: Array<CreateNamedDocument>;
   "documents": Array<string>;
   "refusal"?: StudioSweptParameterMissing | null;
+  "sweep_problems"?: Array<StudioProjectWindowMapProblem>;
   "classes"?: Array<StudioClassField>;
   "removed_values"?: Record<string, Array<string>>;
   "changed"?: Array<string>;
@@ -6424,7 +6433,7 @@ export const DelayAttachmentSchema: z.ZodType<DelayAttachment> = z.lazy(() =>
     .object({
       "kind": z.literal("delay"),
       "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
-      "delay": ModelTimeSchema,
+      "delay": z.union([ModelTimeSchema, UnresolvedValueSchema]),
       "initial": jsonValueSchema.optional(),
     })
     .strict()
@@ -6560,7 +6569,7 @@ export const CompositeComponentSchema: z.ZodType<CompositeComponent> = z.lazy(()
       "name": z.string().min(1),
       "ports": ModelPortsSchema,
       "interior": z.union([GraphInteriorSchema, PhysicalInteriorSchema]),
-      "substeps": z.number().int().safe().gte(1).optional(),
+      "substeps": z.union([z.number().int().safe().gte(1), UnresolvedValueSchema]).optional(),
       "attachments": ModelPortAttachmentsSchema.optional(),
     })
     .strict()
@@ -6636,7 +6645,7 @@ export const ModelDocumentSchema: z.ZodType<ModelDocument> = z.lazy(() =>
   z
     .object({
       "schema_version": z.literal("feedbax.spec.model.v1").optional(),
-      "step_seconds": z.number().finite().gt(0),
+      "step_seconds": z.union([z.number().finite().gt(0), UnresolvedValueSchema]),
       "ports": ModelPortsSchema,
       "interior": GraphInteriorSchema,
       "world": ModelWorldSchema.nullable().optional(),
@@ -7450,6 +7459,7 @@ export const ModelFieldViewSchema: z.ZodType<ModelFieldView> = z.lazy(() =>
       "members": z.array(StudioSweepValueSchema).optional(),
       "changed": z.boolean().optional(),
       "address": ModelAddressSchema,
+      "problems": z.array(ProblemSchema).optional(),
       "sources": z.array(StudioPlanReviewSourceSchema).optional(),
     })
     .strict()
@@ -9835,6 +9845,14 @@ export const AddMemberSchema: z.ZodType<AddMember> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<AddMember>;
 
+export const AddSetEntrySchema: z.ZodType<AddSetEntry> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("add_set_entry"),
+    "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<AddSetEntry>;
+
 export const AnalysisDocumentSchema: z.ZodType<AnalysisDocument> = z.lazy(() =>
   z.object({
     "schema_version": z.literal("feedbax.analysis_document.v1").optional(),
@@ -12202,13 +12220,14 @@ export const StudioSetEditSchema: z.ZodType<StudioSetEdit> = z.lazy(() =>
     "files": z.array(StudioProjectFilePatchSchema),
     "created": z.array(CreateNamedDocumentSchema).optional(),
     "selected": z.union([StudioAxisValueSchema, z.null()]).optional(),
+    "problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioSetEdit>;
 
 export const StudioSetEditRequestSchema: z.ZodType<StudioSetEditRequest> = z.lazy(() =>
   z.object({
     "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
-    "command": z.union([DuplicateRunSchema, SaveSetSchema, InlineSetSchema, ApplySetSchema, SetToFieldSchema, SetToSweepSchema, RemoveAxisValueSchema]),
+    "command": z.union([DuplicateRunSchema, SaveSetSchema, InlineSetSchema, ApplySetSchema, SetToFieldSchema, SetToSweepSchema, RemoveAxisValueSchema, AddSetEntrySchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioSetEditRequest>;
 
@@ -12335,6 +12354,7 @@ export const StudioTrainAuthoringSchema: z.ZodType<StudioTrainAuthoring> = z.laz
     "created": z.array(CreateNamedDocumentSchema).optional(),
     "documents": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))),
     "refusal": z.union([StudioSweptParameterMissingSchema, z.null()]).optional(),
+    "sweep_problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
     "classes": z.array(StudioClassFieldSchema).optional(),
     "removed_values": z.record(z.string(), z.array(z.string())).optional(),
     "changed": z.array(z.string()).optional(),
