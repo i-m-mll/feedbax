@@ -54,8 +54,8 @@ class StudioTrialReset(StrictModel):
     """A value of the paired Model that a variable of the Task may initialize at the start of each trial."""
 
     address: ModelAddress
-    name: str
-    """The component's name and the field's path."""
+    path: tuple[str, ...]
+    """Display segments for enclosing composites, the component, and the state or parameter."""
     type: ValueType
     finest: Level
     required: bool
