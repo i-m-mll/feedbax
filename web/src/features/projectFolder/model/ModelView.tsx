@@ -41,7 +41,7 @@ import { ModelCanvas, type ModelCard, type ModelEdge } from './ModelCanvas';
 import { attachmentFields, componentFields, delayText, initialField, modelFields, sharedFields, type Attachment, type FieldChange } from './ModelInspector';
 import {
   accepts, addressKey, at, attachmentAddress, boundaryPorts, componentPorts, endKey, fieldAddress, graphKind, modelPath,
-  holds, modelRegistry, portId, portTypeLabel, shortName, wireEnd, withRemoved, type Component, type Port,
+  holds, isTemplate, modelRegistry, portId, portTypeLabel, shortName, wireEnd, withRemoved, type Component, type Port,
 } from './modelGraph';
 import { choosePick, clearSelection, selectElement, useModelSelection, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import { Drawer, DrawerSection, focusInspectorField, type DrawerSections } from '@/features/projectWindow/DrawerForms';
@@ -184,7 +184,7 @@ function signalFits(source: Port, target: Port) {
 
 /** The Library group a definition is listed under: a template's is Templates, whatever its category. */
 function libraryGroup(definition: ComponentDefinition) {
-  return definition.template_kind ? studioName('templates') : definition.category;
+  return isTemplate(definition) ? studioName('templates') : definition.category;
 }
 
 function LeafChoices({ definitions, query, choose, disabled }: {
@@ -741,7 +741,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     }
     const position = point ?? available;
     const source = from && wireEnd(from);
-    const component = definition.template_kind ? { kind: 'definition', definition: definition.name } as const : leaf(definition);
+    const component = isTemplate(definition) ? { kind: 'definition', definition: definition.name } as const : leaf(definition);
     void place(drawn(definition), position, false, (id) => apply(studioName('addComponent'), {
       op: 'add_component', graph, position, id,
       ...(source && to && (source.owner === 'inputs' || source.owner === 'component')
@@ -762,7 +762,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   }
   /** The card drawn for `definition` while its add is pending: a template is drawn as a composite with its ports. */
   function drawn(definition: ComponentDefinition): Component {
-    if (!definition.template_kind) return leaf(definition);
+    if (!isTemplate(definition)) return leaf(definition);
     const ports = (names: readonly string[] | undefined) => (names ?? []).map((name) => ({ id: name, name, type: {} }));
     return {
       kind: 'composite', name: shortName(definition.name), interior: { components: {}, wires: {} },
@@ -787,7 +787,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   function insert(definition: ComponentDefinition, point: ModelPosition, edge: ModelEdge, flipped: boolean) {
     const address = edge.data?.address;
     if (!model || address?.element.kind !== 'wire') return;
-    if (definition.template_kind) {
+    if (isTemplate(definition)) {
       add(definition, point);
       return;
     }

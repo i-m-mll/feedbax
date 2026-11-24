@@ -39,21 +39,21 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   await expect(chooser.getByRole('menuitem')).toHaveText(['Train', 'Evaluate', 'Analyze', 'Report']);
   await expect(chooser.getByRole('menuitem', { name: 'Evaluate', exact: true })).toHaveAttribute('aria-disabled', 'true');
   const replayPath = `${projectPath}/history/replay`;
-  const creation = post(page, replayPath);
+  const creation = post(page, `${projectPath}/files`);
   await train.click();
   const created = await creation;
   expect(created.ok(), await created.text()).toBe(true);
-  const saved = await created.json() as StudioProjectSnapshot;
+  const { snapshot: saved } = await created.json() as StudioProjectDocument;
   expect(Object.keys(saved.project.steps ?? {})).toEqual(['train']);
   expect(saved.project.steps?.train).toMatchObject({
     kind: 'train', base: { inline: { trial_documents: {
-      model: { document: 'model' }, task: { document: 'task' },
+      model: { document: 'model' }, task: { document: 'simple-reaches' },
       objective: { document: 'objective' },
     } } },
   });
   expect(saved.project.documents).toMatchObject({
     model: { schema: 'feedbax.spec.model', payload: { ports: {}, interior: {} } },
-    task: firstTrainTask,
+    'simple-reaches': firstTrainTask,
     objective: { schema: 'feedbax.spec.objective_document', payload: { terms: [] } },
   });
 
@@ -62,7 +62,7 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   await expect(model).toBeFocused();
   await expect(model.locator('.react-flow')).toBeVisible();
   await expect(model.locator('[data-boundary="true"]')).toHaveCount(2);
-  await expect(model.getByRole('button', { name: 'Model Document model', exact: true })).toBeVisible();
+  await expect(model.getByRole('button', { name: 'Model Document Model', exact: true })).toBeVisible();
   const card = page.getByRole('article', { name: 'Train train', exact: true });
   await expect(card.locator('[data-status-mark="cannot_run"]')).toBeVisible();
 
@@ -92,7 +92,7 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   expect(run).toMatchObject({ key: { step: 'train', row: 'default' }, status: 'cannot_run', attempts: [] });
   expect(plan.window_map?.rows.map(({ key }) => key)).toEqual([run.key]);
   expect(plan.window_map?.problems).toMatchObject([
-    { code: 'cannot_run', path: expect.stringMatching(/^\/trial_documents\/task\/links\//), place: { document: 'task' } },
+    { code: 'cannot_run', path: expect.stringMatching(/^\/trial_documents\/task\/links\//), place: { document: 'simple-reaches' } },
   ]);
   const refused = await request.post(`${projectPath}/train-runs`, {
     data: { revision: saved.revision, run_keys: [run.key], token: crypto.randomUUID() },
@@ -113,14 +113,14 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   await mapStep(page, 'train').click();
   await tab('Model').click();
   await expect(model.locator('.react-flow')).toBeVisible();
-  await expect(model.getByRole('button', { name: 'Model Document model', exact: true })).toBeVisible();
+  await expect(model.getByRole('button', { name: 'Model Document Model', exact: true })).toBeVisible();
   await expect(card.locator('[data-status-mark="cannot_run"]')).toBeVisible();
   const persisted = await readSaved(request, projectPath);
   expect(persisted).toMatchObject({ project_id: snapshot.project_id, revision: current.revision, project: current.project });
   const reopened = await readPlan(persisted.revision);
   expect(reopened.rows).toMatchObject([{ key: run.key, status: 'cannot_run', attempts: [] }]);
   expect(reopened.window_map?.problems).toMatchObject([
-    { code: 'cannot_run', path: expect.stringMatching(/^\/trial_documents\/task\/links\//), place: { document: 'task' } },
+    { code: 'cannot_run', path: expect.stringMatching(/^\/trial_documents\/task\/links\//), place: { document: 'simple-reaches' } },
   ]);
 });
 
@@ -253,6 +253,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   expect(trial).toBeTruthy();
   expect(result.trials).toHaveLength((rootPayload(firstTrainTask) as { validation_trials: unknown[] }).validation_trials.length);
 
+  const replaying = post(page, projectPath + '/evaluate-replay');
   await page.reload();
   await activate(page, mapStep(page, 'evaluate'));
   await page.keyboard.press('Meta+1');
@@ -267,10 +268,8 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   });
   const sceneTab = page.getByRole('tab', { name: 'Scene', exact: true });
   await expect(sceneTab).toHaveAttribute('aria-keyshortcuts', 'Meta+6');
-  const [replayed] = await Promise.all([
-    post(page, projectPath + '/evaluate-replay'),
-    page.keyboard.press('Meta+6'),
-  ]);
+  await page.keyboard.press('Meta+6');
+  const replayed = await replaying;
   await expect(sceneTab).toHaveAttribute('aria-selected', 'true');
   expect(replayed.ok(), await replayed.text()).toBe(true);
   expect(replayed.request().postDataJSON()).toMatchObject({ revision: evaluated.revision, key: result.key, job_id: evaluation.job_id, trial });
