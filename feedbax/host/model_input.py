@@ -146,7 +146,7 @@ def prepare_model_task(
     artifacts: ImmutableArtifactBlobProvider,
     objective: ObjectiveDocument | None = None,
     objective_use: ObjectiveUse = ObjectiveUse.TRAIN,
-    input_overrides: Mapping[str, str] | None = None,
+    input_bindings: Mapping[str, str | None] | None = None,
     graph_override: GraphSpec | None = None,
 ) -> PreparedModelTask | tuple[Problem, ...]:
     """Pair a source with task-derived prototypes and its optional objective."""
@@ -154,7 +154,7 @@ def prepare_model_task(
     resolved = resolve_trial_execution(
         definition.document, task, registry.components, registry.expression_functions,
         python_tasks=registry.python_tasks, objective=objective, objective_use=objective_use,
-        input_overrides=input_overrides, graph_override=graph_override,
+        input_bindings=input_bindings, graph_override=graph_override,
     )
     if isinstance(resolved, tuple):
         return resolved

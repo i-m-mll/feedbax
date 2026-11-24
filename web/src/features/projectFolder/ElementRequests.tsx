@@ -16,7 +16,7 @@ export function ElementRequests({ requests, selected, onSelect }: {
   onSelect(member: string | undefined): void;
 }) {
   const labels = [...new Set(requests.flatMap((request) => Object.keys(request.labels ?? {})))];
-  const mark = { least: '1.75rem', fixed: true };
+  const mark = { least: '1.75rem', greatest: '1.75rem' };
   return <Table aria-label={studioName('runs')} held={1}
     columns={[mark, ...labels.map(() => ({ least: '6rem' })), mark]}>
     <thead><tr>

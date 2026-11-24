@@ -12,7 +12,7 @@ from functools import lru_cache
 from hashlib import file_digest, sha256
 from importlib import metadata
 from importlib.machinery import ModuleSpec, PathFinder
-from importlib.util import find_spec
+from importlib.util import find_spec, resolve_name
 from os import path as os_path
 from pathlib import Path
 import stat
@@ -200,6 +200,35 @@ def _admission_catalog(roots: tuple[tuple[str, Path], ...]) -> SourceCatalog:
 def admission_source_catalog(project_root: Path, owners: Mapping[str, str]) -> SourceCatalog:
     """Reuse source bytes while the composed package and project roots match."""
     return _admission_catalog(tuple(_catalog_roots(project_root, owners).items()))
+
+
+@lru_cache(maxsize=512)
+def module_imports(data: bytes, package: str, entered: frozenset[str]) -> frozenset[str]:
+    """Imports in a module's namespace and the bodies entered by the delivery."""
+    pending: list[tuple[ast.AST, str]] = [(node, "") for node in _parse(data).body]
+    imports = set()
+    while pending:
+        node, scope = pending.pop()
+        if isinstance(node, ast.Import):
+            imports.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            name = node.module or ""
+            if node.level:
+                try:
+                    name = resolve_name("." * node.level + name, package)
+                except ImportError:
+                    continue
+            imports.add(name)
+            imports.update(f"{name}.{alias.name}" for alias in node.names if alias.name != "*")
+        elif isinstance(node, ast.If) and isinstance(node.test, ast.Name) and node.test.id == "TYPE_CHECKING":
+            pending.extend((child, scope) for child in node.orelse)
+        elif isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            name = f"{scope}{node.name}"
+            if isinstance(node, ast.ClassDef) or name in entered:
+                pending.extend((child, name + ".") for child in node.body)
+        else:
+            pending.extend((child, scope) for child in ast.iter_child_nodes(node))
+    return frozenset(imports)
 
 
 @lru_cache(maxsize=512)

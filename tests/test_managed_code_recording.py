@@ -14,6 +14,7 @@ from types import ModuleType
 
 import pytest
 
+from feedbax.application.composition import load_application
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.code_validity import SourcePath
 from feedbax.contracts.effective_success import Product
@@ -22,11 +23,13 @@ from feedbax.contracts.request_identity import encode_request
 from feedbax.contracts.request_refs import ContentRef
 from feedbax.contracts.request_specs import ReportRequestSpec
 from feedbax.contracts.store_closure import StoreClosureRef
+from feedbax.contracts.task_document import PythonTaskSelection
 from feedbax.host import worker
 from feedbax.host.io import EVIDENCE_FILE, TOKEN_ENV, append, read_worker_result
 from feedbax.host.source_roster import SourceRoster
 from feedbax.host.worker import _record_execution
 from feedbax.revision import FeedbaxProvenance
+from feedbax.tasks.registry import PythonTaskInstance, resolve_python_task_instance
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView, store_request
 from feedbax.persistence.reachability import measure_store
@@ -34,9 +37,10 @@ from feedbax.persistence.receipt_closure import ReceiptClosure
 from feedbax.persistence.store_sync import sync_store
 from feedbax.plugins.declarations import DeclarationRegistry, DistributionSource
 from feedbax.validity.environment import EnvironmentMismatch, InstalledInventory, read_environment
-from feedbax.persistence.evidence import read_execution_evidence
+from feedbax.persistence.evidence import read_execution_evidence, stage_evidence
+from feedbax.validity.project_admission import ProjectValidity
 from feedbax.validity.recording import WorkerRecorder, checkpoint_execution_endpoint, numerical_work
-from feedbax.validity.source import SourceCatalog, source_catalog
+from feedbax.validity.source import SourceCatalog, plugin_packages, source_catalog
 
 
 def test_source_comparison_counts_new_names_and_only_observed_function_bodies(tmp_path):
@@ -88,6 +92,110 @@ def test_plugin_source_names_do_not_depend_on_what_the_process_imported(tmp_path
     monkeypatch.setattr(sys, "modules", dict(sys.modules))
     importlib.import_module("example_plugin.declarations")
     assert source_catalog(tmp_path / "project").locate(helper) == expected
+
+
+def _install_plugin(site, name, init=""):
+    package = site / name
+    package.mkdir()
+    (package / "__init__.py").write_text(init)
+    metadata = site / f"{name}-1.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text(f"Name: {name}\nVersion: 1\n")
+    (metadata / "entry_points.txt").write_text(f"[feedbax.plugins]\n{name} = {name}\n")
+    return package, metadata
+
+
+@pytest.fixture
+def task_result(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    site = tmp_path / "site"
+    site.mkdir()
+    monkeypatch.syspath_prepend(str(site))
+    monkeypatch.setattr(sys, "modules", dict(sys.modules))
+    monkeypatch.setattr(
+        "feedbax.validity.recording.resolve_feedbax_provenance",
+        lambda: FeedbaxProvenance(Path("/example/feedbax"), "a" * 40, False),
+    )
+    task, _ = _install_plugin(site, "v2_task")
+    (task / "task.py").write_text(
+        "from pydantic import BaseModel\n"
+        "from feedbax.tasks.registry import PythonTask, PythonTaskTemplate\n"
+        "class Settings(BaseModel):\n    pass\n"
+        "class Task(PythonTask[Settings]):\n"
+        "    settings_model = Settings\n"
+        "    @staticmethod\n"
+        "    def template(settings):\n"
+        "        from .setting_alias import CONDITION\n"
+        "        return PythonTaskTemplate({}, lambda *_: None, (CONDITION,))\n"
+    )
+    (task / "setting_alias.py").write_text("from .settings import CONDITION\n")
+    settings = task / "settings.py"
+    settings.write_text('CONDITION = "selected"\n')
+    unused, unused_metadata = _install_plugin(site, "v2_unused", "def earlier(): return 1\n")
+    (unused / "discovery.py").write_text(
+        "from pathlib import Path\n"
+        "VALUE = Path(__file__).with_name('metadata.txt').read_text()\n"
+    )
+    (unused / "metadata.txt").write_text("discovered")
+
+    plugin_packages.cache_clear()
+    store = ImmutableArtifactBlobProvider(tmp_path / "store")
+    view = SuccessView(store)
+    try:
+        with SourceRoster(3, "test task result source") as roster:
+            roster.enable()
+            recorder = WorkerRecorder(roster, boot_ns=time.time_ns())
+            with recorder.monitor():
+                recorder.bind_project(project)
+                recorder.start_delivery()
+                with recorder.delivery("earlier", store.root, tmp_path / "scratch"):
+                    assert importlib.import_module("v2_unused").earlier() == 1
+                recorder.start_delivery()
+                with recorder.delivery("result", store.root, tmp_path / "scratch"):
+                    registries = load_application().bundle
+                    selected = resolve_python_task_instance(
+                        PythonTaskSelection(type="v2_task.Task", params={}), registries.python_tasks,
+                    )
+                    assert isinstance(selected, PythonTaskInstance)
+                    assert selected.template().condition_ids == ("selected",)
+                    evidence = stage_evidence(store, lambda: recorder.snapshot(store))
+
+        report = ReportDocument(title="Task result", blocks=(ReportText(markdown="selected"),))
+        request = store_request(store, encode_request(ReportRequestSpec(document=report), {}))
+        blob = store.store_object(b"selected")
+        product = Product(name="report", content=ContentRef(sha256=blob.sha256, size=blob.size_bytes))
+        result = view.publish_bound(
+            request, attempt="result", products={"report": (product,)}, bindings={}, execution_evidence=evidence,
+        )
+        yield project, site, settings, unused, unused_metadata, view, result
+    finally:
+        plugin_packages.cache_clear()
+
+
+def test_installing_an_unrelated_plugin_keeps_a_retained_result_current(task_result):
+    project, site, _, unused, unused_metadata, view, result = task_result
+    original = ProjectValidity(project, load_application().bundle)
+    assert original.inspect(view, result).decision.state == "current"
+
+    unused.rename(site.parent / unused.name)
+    unused_metadata.rename(site.parent / unused_metadata.name)
+    _install_plugin(site, "v2_new_plugin", "VALUE = 42\n")
+    importlib.invalidate_caches()
+
+    assert original.projection.current((result.receipt.trace,))
+    assert ProjectValidity(project, load_application().bundle).inspect(view, result).decision.state == "current"
+
+
+def test_editing_an_imported_task_module_makes_its_result_stale(task_result):
+    project, _, settings, _, _, view, result = task_result
+    settings.write_text('CONDITION = "changed"\n')
+
+    observed = ProjectValidity(project, load_application().bundle).inspect(view, result)
+
+    assert observed.decision.state == "stale"
+    (difference,) = observed.conditions.code + observed.conditions.outside_computation
+    assert difference.path == SourcePath(scope="plugin:v2-task", path="settings.py")
 
 
 def test_warm_job_retains_observed_source_registry_and_file_identity(tmp_path, monkeypatch):
@@ -144,7 +252,7 @@ def test_warm_job_retains_observed_source_registry_and_file_identity(tmp_path, m
     boot_ns = time.time_ns()
     with SourceRoster(3, "test managed worker source") as roster:
         roster.enable()
-        recorder = WorkerRecorder(roster.names, boot_ns=boot_ns)
+        recorder = WorkerRecorder(roster, boot_ns=boot_ns)
         with recorder.monitor():
             spec.loader.exec_module(module)
             recorder.observe_new_sources()
@@ -256,7 +364,7 @@ def test_reusable_worker_retires_after_edit_to_source_loaded_by_failed_delivery(
     control, peer = socket.socketpair()
     with peer, (tmp_path / "reports").open("wb") as reports, SourceRoster(3, "test worker source") as roster:
         roster.enable()
-        recorder = WorkerRecorder(roster.names, boot_ns=time.time_ns())
+        recorder = WorkerRecorder(roster, boot_ns=time.time_ns())
         with recorder.monitor():
             assert worker._serve(
                 {"preload": [], "warm_entrypoint": entrypoint, "light_affinity": ["project", "store"]},
@@ -290,7 +398,7 @@ def test_warm_worker_retires_when_a_dependency_and_lock_upgrade_together(tmp_pat
     lock.write_text('version = 1\n[[package]]\nname = "example-lib"\nversion = "1"\n')
     authored = tmp_path / "staged-project"
     authored.mkdir()
-    recorder = WorkerRecorder({}, boot_ns=time.time_ns())
+    recorder = WorkerRecorder(SourceRoster(3, "test worker source"), boot_ns=time.time_ns())
     recorder.bind_project(authored, environment_root=tmp_path)
     assert not recorder.changed()
 
@@ -357,7 +465,7 @@ def test_checkpoint_custody_carries_incremental_observations_to_another_store(tm
 
     with SourceRoster(3, "test checkpoint worker source") as roster:
         roster.enable()
-        recorder = WorkerRecorder(roster.names, boot_ns=time.time_ns())
+        recorder = WorkerRecorder(roster, boot_ns=time.time_ns())
         with recorder.monitor():
             spec.loader.exec_module(module)
             recorder.bind_project(project)
@@ -409,7 +517,7 @@ def test_recorder_follows_each_delivery_project_until_it_loads_project_code(tmp_
     for project in (first, second):
         project.mkdir()
     (second / "_held_project_source.py").write_text("value = 1\n")
-    recorder = WorkerRecorder({}, boot_ns=time.time_ns())
+    recorder = WorkerRecorder(SourceRoster(3, "test worker source"), boot_ns=time.time_ns())
     recorder.bind_project(first)
     recorder.bind_project(second)
     assert recorder.held_project is None

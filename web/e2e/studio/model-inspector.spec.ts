@@ -72,7 +72,7 @@ test('the Model inspector frames the document, one component and two', async ({ 
   }).toBe(true);
 });
 
-test('selecting a body in the Scene selects its card in the Model', async ({ page, studio }) => {
+test('each Layers entry hides one class, and selecting a body in the Scene selects its card in the Model', async ({ page, studio }) => {
   const id = 'inspector-scene';
   const folder = join(studio.home, 'state', 'web', 'projects', id);
   await runProjectFixture('tests.fixtures.scene_geometry', 'seed', folder);
@@ -88,6 +88,18 @@ test('selecting a body in the Scene selects its card in the Model', async ({ pag
   await page.getByRole('button', { name: 'Split Details', exact: true }).click();
   const scene = page.getByRole('tabpanel', { name: 'Scene', exact: true });
   const upper = scene.getByRole('button', { name: 'Select upper', exact: true }).filter({ has: page.locator('polyline') });
+  const drawn = { Bodies: upper, Joints: scene.getByRole('button', { name: 'Select shoulder', exact: true }),
+    Muscles: scene.getByRole('button', { name: 'Select cross_chain', exact: true }) };
+  for (const [layer, hidden] of Object.entries(drawn)) {
+    const entry = page.getByRole('menuitemcheckbox', { name: layer, exact: true });
+    await scene.getByRole('button', { name: 'Layers', exact: true }).click();
+    await entry.click();
+    await expect(hidden).toHaveCount(0);
+    for (const other of Object.values(drawn)) if (other !== hidden) await expect(other).toBeVisible();
+    await entry.click();
+    await expect(hidden).toBeVisible();
+    await page.keyboard.press('Escape');
+  }
   await upper.press('Enter');
   await expect(upper).toHaveAttribute('aria-pressed', 'true');
   await expect(model.locator('.react-flow__node[data-id="upper"] article')).toHaveAttribute('data-selected');
