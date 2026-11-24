@@ -20,7 +20,7 @@ from feedbax.contracts.acausal_interface import is_acausal_type
 from feedbax.contracts.domain import DomainDiagnostic
 from feedbax.contracts.model_address import ComponentElement, FieldElement, FieldPath, ModelAddress
 from feedbax.contracts.model_document import (
-    MODEL_DOCUMENT_SCHEMA_ID, GraphInterior, LeafComponent, ModelDocument,
+    MODEL_DOCUMENT_SCHEMA_ID, CompositeComponent, GraphInterior, LeafComponent, ModelDocument,
 )
 from feedbax.contracts.model_values import StateValue
 from feedbax.contracts.project import Project
@@ -253,8 +253,8 @@ def _portable_geometry(
             else attrgetter(".".join(position.fields))(owner.state_view(state))
         )
         return ScenePointGeometry(
-            kind="point", address=address, point=_geometry_address(path, ("point",)),
-            position=_point(value),
+            kind="point", address=address, name=component.name,
+            point=_geometry_address(path, ("point",)), position=_point(value),
         )
 
     if not isinstance(owner, Mechanics) or not configurations:
@@ -276,11 +276,13 @@ def _portable_geometry(
     endpoints = owner.plant.skeleton.forward_kinematics(skeleton).pos
     posed_points = [(0.0, 0.0), *map(_point, endpoints)]
     return ScenePlanarGeometry(
-        kind="planar", address=address, muscles=[],
+        kind="planar", address=address, name=component.name, muscles=[],
         links=[
             SceneLinkGeometry(
                 body=_geometry_address(path, ("body", index)),
+                body_name=f"{component.name} link {index + 1}",
                 joint=_geometry_address(path, ("joint", index)),
+                joint_name=f"{component.name} joint {index + 1}",
                 start=start, end=end, pivot=start,
             )
             for index, (start, end) in enumerate(pairwise(posed_points))
@@ -292,10 +294,12 @@ def _native_geometry(
     graph: AcausalGraphSpec,
     compiled: CompiledPhysicalModel,
     path: tuple[str, ...],
+    component: CompositeComponent,
 ) -> tuple[ScenePlanarGeometry, list[DomainDiagnostic]]:
     import mujoco
 
     layout, diagnostics = _compiled_geometry(graph, compiled)
+    children = component.interior.components
     native = compiled.model
     data = mujoco.MjData(native)
     mujoco.mj_kinematics(native, data)
@@ -306,7 +310,9 @@ def _native_geometry(
         end = start + data.xmat[body].reshape(3, 3)[:2, 0] * link.length
         links.append(SceneLinkGeometry(
             body=_component_address((*path, link.body_id)),
+            body_name=children[link.body_id].name,
             joint=_component_address((*path, link.joint_id)),
+            joint_name=children[link.joint_id].name,
             start=_point(start),
             end=_point(end),
             pivot=_point(data.xanchor[compiled.joint_ids[link.joint_id], :2]),
@@ -314,13 +320,14 @@ def _native_geometry(
     muscles = [
         SceneMuscleGeometry(
             address=_component_address((*path, binding.name)),
+            name=children[binding.name].name,
             points=[_point(data.site_xpos[compiled.site_ids[site], :2]) for site in binding.sites],
         )
         for binding, muscle in zip(compiled.paths, layout.muscles, strict=True)
         if muscle.points is not None
     ]
     return ScenePlanarGeometry(
-        kind="planar", address=_component_address(path), links=links, muscles=muscles,
+        kind="planar", address=_component_address(path), name=component.name, links=links, muscles=muscles,
     ), diagnostics
 
 
@@ -355,7 +362,7 @@ def prepare_scene_geometry(
                 compiled, problems = _compile_planar(model, path, registry)
                 diagnostics.extend(problems)
                 if compiled is not None:
-                    geometry, problems = _native_geometry(*compiled, path)
+                    geometry, problems = _native_geometry(*compiled, path, component)
                     mechanisms.append(geometry)
                     diagnostics.extend(problems)
 
