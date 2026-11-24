@@ -64,6 +64,7 @@ from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic,
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_target
 from feedbax.contracts.result_address import ANALYSIS_SCHEMA, payload_elements
 from feedbax.persistence.project_subject import terminal_train_reader
+from feedbax.persistence.reachability import DEFAULT_SUPERSEDED_DAYS
 from feedbax.project_members import (
     change_member_key, detach_refusals, duplicate_step, fresh_element_keys, generated_name, label_member, merge_cards,
     references_member, regroup_refused, split_card,
@@ -976,6 +977,7 @@ class ProjectFolder:
                 data=b64encode(text.files[text.declaration]).decode("ascii"),
             ),
             settings=text.configuration.settings,
+            default_keep_superseded_days=DEFAULT_SUPERSEDED_DAYS,
         )
 
     def _document(self, location: ProjectFolderLocation, text: TextProject) -> StudioProjectDocument:
