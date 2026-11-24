@@ -91,6 +91,8 @@ test('wires from a card back to itself nest with the lowest ports innermost', as
   page.on('pageerror', (error) => errors.push(`${error.message}\n${error.stack}`));
   const model = await newModel(page);
   const gru = await add(page, model, 'GRU');
+  // The header names the type and its headline value, GRU's hidden size, which defaults to 4.
+  await expect(gru.locator('header')).toHaveText('GRUGRU · 4');
   const handle = (id: string) => gru.locator(`[data-handleid="${id}"]`);
   await wire(page, handle('output:output'), handle('input:input'));
   await wire(page, handle('output:hidden'), handle('input:hidden'));

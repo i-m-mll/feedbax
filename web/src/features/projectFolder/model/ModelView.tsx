@@ -182,6 +182,11 @@ function signalFits(source: Port, target: Port) {
     typeof axis !== 'number' || typeof shape[index] !== 'number' || axis === shape[index]));
 }
 
+/** The Library group a definition is listed under: a template's is Templates, whatever its category. */
+function libraryGroup(definition: ComponentDefinition) {
+  return definition.template_kind ? studioName('templates') : definition.category;
+}
+
 function LeafChoices({ definitions, query, choose, disabled }: {
   definitions: readonly ComponentDefinition[]; query: string; choose(definition: ComponentDefinition): void; disabled: boolean;
 }) {
@@ -189,8 +194,9 @@ function LeafChoices({ definitions, query, choose, disabled }: {
   const groups = new Map<string, ComponentDefinition[]>();
   for (const definition of definitions) {
     if (!searchable(definition, query)) continue;
-    const group = groups.get(definition.category) ?? [];
-    if (!groups.has(definition.category)) groups.set(definition.category, group);
+    const category = libraryGroup(definition);
+    const group = groups.get(category) ?? [];
+    if (!groups.has(category)) groups.set(category, group);
     group.push(definition);
   }
   return <>{[...groups].map(([category, items], index) => <section key={category} aria-labelledby={`${categoryId}-${index}`} className="space-y-0.5">
@@ -478,7 +484,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   }, [owner, drawnInterior, registry, graph, projectedPorts, markedPorts, currentPath.length, projection.data]);
   const definitions = useMemo(() => (registryQuery.data ?? []).filter((definition) => accepts(definition, physical)), [registryQuery.data, physical]);
   const libraryItems = useMemo(() => definitions.map((definition): LibraryItem => ({
-    id: definition.name, name: shortName(definition.name), group: definition.category, glyph: <Box />,
+    id: definition.name, name: shortName(definition.name), group: libraryGroup(definition), glyph: <Box />,
     about: {
       description: definition.description, inputs: definition.input_ports ?? [], outputs: definition.output_ports ?? [],
       parameters: (definition.param_schema ?? []).map(({ name }) => name),
@@ -734,8 +740,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     }
     const position = point ?? available;
     const source = from && wireEnd(from);
-    const component = leaf(definition);
-    void place(component, position, false, (id) => apply(studioName('addComponent'), {
+    const component = definition.template_kind ? { kind: 'definition', definition: definition.name } as const : leaf(definition);
+    void place(drawn(definition), position, false, (id) => apply(studioName('addComponent'), {
       op: 'add_component', graph, position, id,
       ...(source && to && (source.owner === 'inputs' || source.owner === 'component')
         ? { connect_from: source, connect_to_port: to } : {}),
@@ -752,6 +758,15 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     } finally {
       setPlacing((prior) => prior.filter((other) => other !== item));
     }
+  }
+  /** The card drawn for `definition` while its add is pending: a template is drawn as a composite with its ports. */
+  function drawn(definition: ComponentDefinition): Component {
+    if (!definition.template_kind) return leaf(definition);
+    const ports = (names: readonly string[] | undefined) => (names ?? []).map((name) => ({ id: name, name, type: {} }));
+    return {
+      kind: 'composite', name: shortName(definition.name), interior: { components: {}, wires: {} },
+      ports: { inputs: ports(definition.input_ports), outputs: ports(definition.output_ports) },
+    };
   }
   function leaf(definition: ComponentDefinition) {
     return {
@@ -771,6 +786,10 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   function insert(definition: ComponentDefinition, point: ModelPosition, edge: ModelEdge, flipped: boolean) {
     const address = edge.data?.address;
     if (!model || address?.element.kind !== 'wire') return;
+    if (definition.template_kind) {
+      add(definition, point);
+      return;
+    }
     const source = portAt(edge.source, edge.sourceHandle ?? null);
     const target = portAt(edge.target, edge.targetHandle ?? null);
     const candidate = componentPorts('new', leaf(definition), registry).filter((port) => !port.growing && !port.taskSignal);
@@ -958,15 +977,21 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     };
   }
 
+  /** The type's short name and the value of its headline field, as the card's header shows them. */
+  function leafHeadline(component: Extract<Component, { kind: 'leaf' }>) {
+    const type = registry.get(component.type);
+    if (!type) return shortName(component.type);
+    const { name, field } = type.headline;
+    const value = field ? component.fields?.[field] ?? type.default_params?.[field] : undefined;
+    return typeof value === 'number' || typeof value === 'string' ? `${name} · ${value}` : name;
+  }
+
   function makeCard(id: string, index: number, definition?: typeof objects[number][1], ghost = false): ModelCard {
     const address = at(graph, definition ? { kind: 'component', id } : { kind: id === inputCard ? 'inputs' : 'outputs' });
     const key = addressKey(address);
     const wasAt = (marked.get(key)?.difference as ModelRemovedElement | undefined)?.position;
-    const type = definition?.kind === 'leaf' ? registry.get(definition.type) : undefined;
-    const value = definition?.kind === 'leaf' ? definition.fields?.hidden_size ?? definition.fields?.output_size : undefined;
     const name = definition?.name ?? studioName(id === inputCard ? 'inputs' : 'outputs');
-    const description = definition?.kind === 'leaf'
-      ? [shortName(type?.name ?? definition.type), typeof value === 'number' ? value : undefined].filter((item) => item !== undefined).join(' · ')
+    const headline = definition?.kind === 'leaf' ? leafHeadline(definition)
       : definition?.kind === 'composite' ? graphKind(definition) : undefined;
     const ports = portMap.get(id) ?? emptyPorts;
     const problem = ghost ? undefined : addressedProblems.get(definition ? key : addressKey(graph));
@@ -974,7 +999,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     return {
       id, type: 'modelCard', ariaLabel: name,
       domAttributes: {
-        'aria-description': [description, problem].filter(Boolean).join(' · ') || undefined,
+        'aria-description': problem,
         ...(enter && { onKeyDownCapture: (event: KeyboardEvent<HTMLElement>) => {
           if (event.target !== event.currentTarget || event.key !== 'Enter') return;
           event.preventDefault();
@@ -988,7 +1013,7 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       draggable: !ghost && editTopology && !locked && !pick,
       selectable: !!definition && !pick,
       data: {
-        address, name, ports, collapsed: !!definition && !!collapsed?.[graphId], flipped: flipped?.[key],
+        address, name, headline, ports, collapsed: !!definition && !!collapsed?.[graphId], flipped: flipped?.[key],
         locked: ghost || locked || !editTopology, physicalConnections: !!physical, stacked: definition?.kind === 'composite',
         ghost, change: definition && changeMark(address), portChanges: portChanges.get(id),
         selected: !!definition && selectedIds.has(key),
