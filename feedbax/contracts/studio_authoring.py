@@ -10,7 +10,9 @@ from feedbax.contracts.base import StrictModel
 from feedbax.contracts.component import ComponentDefinition
 from feedbax.contracts.expression_registry import FunctionInfo
 from feedbax.contracts.operation import OperationDefinition
-from feedbax.contracts.project import Sha256, StepKind
+from feedbax.contracts.expression_values import ValueType
+from feedbax.contracts.project import RootDocument, Sha256, StepKind
+from feedbax.contracts.task_document import TaskDocument
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName, StepReference
 from feedbax.contracts.request_refs import Name
 from feedbax.contracts.jobs import StudioSavedTrainKey
@@ -69,6 +71,29 @@ class StudioAuthoringRegistry(StrictModel):
     origins: dict[str, StudioAuthoringOrigin]
 
 
+class StudioNamedValueType(StrictModel):
+    name: str
+    type: ValueType
+
+
+class StudioLibraryDocument(StrictModel):
+    """A document of the library ``library`` that ``distribution`` ships, taken into a project whole."""
+
+    distribution: str
+    library: str
+    name: ProjectName
+    document: RootDocument
+
+
+class StudioTaskCatalog(StrictModel):
+    """What New offers for a task (Blank, every library's task documents; the installed Python task types are the
+    ``python_tasks`` registry's), and the types a variable or a signal can have."""
+
+    blank: TaskDocument
+    documents: list[StudioLibraryDocument]
+    value_types: list[StudioNamedValueType]
+
+
 class StudioAuthoringCatalog(StrictModel):
     """Authored schemas and the registry declarations those schemas can name."""
 
@@ -81,6 +106,7 @@ class StudioAuthoringCatalog(StrictModel):
     """Each step kind's inputs by name."""
     analyze_inputs: dict[str, InputRole]
     """The input an Analyze document's declaration of each kind gives its step."""
+    tasks: StudioTaskCatalog
 
 
 class StudioAuthoringOption(StrictModel):
