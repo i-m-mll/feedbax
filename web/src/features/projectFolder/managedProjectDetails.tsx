@@ -27,10 +27,11 @@ import type { ProjectEditController } from './projectEditController';
 import { useStoredModelView } from './model/ModelView';
 import type { DrawerSections } from '@/features/projectWindow/DrawerForms';
 import type { ConfirmRunRemoval } from './runRemoval';
+import type { AskStore } from './storeChoice';
 import { modelSchema } from './model/modelGraph';
 import { elementKey, isModelAddress, selectedElement, type ElementAddress, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import { useStore } from 'zustand';
-import { usePlayhead, type PlayheadStore } from '@/components/timeline/trialClock';
+import { usePlayhead, type PlayheadStore, type TrialShowing } from '@/components/timeline/trialClock';
 
 type DetailName = 'model' | 'scene';
 export type StoredModel = { id: string; value: ModelDocument };
@@ -70,6 +71,7 @@ interface DetailInputs {
   readonly namedRun?: StudioSavedTrainKey;
   readonly selectedSweepValues: ReadonlyMap<string, ReadonlySet<string>>;
   readonly confirmRunRemoval: ConfirmRunRemoval;
+  readonly askStore: AskStore;
   readonly fieldRows?: readonly string[];
   /** Whether one value of a named axis or a set's entry is selected, which a Model edit is then stored on. */
   readonly valueEditing?: boolean;
@@ -102,37 +104,46 @@ export function recordedTrials(evaluation: StudioSavedEvaluationRow | undefined)
   return { ids: evaluation.trials, labels: evaluation.trials.map((id) => labels.get(id) ?? id) };
 }
 
-/** A recorded trial as the Scene's clock reads it: its record and its state times, or why it is not read. */
+/**
+ * The recorded trials the clock reads, as the Scene draws them: every trial read (the one shown, or all of them under
+ * All), the picked one among them, and their state times; or why they are not read.
+ */
 export type RecordedTrialRead =
-  | { readonly kind: 'read'; readonly record: TrialRecord; readonly stateTime: readonly number[] }
+  | { readonly kind: 'read'; readonly records: readonly TrialRecord[]; readonly picked: TrialRecord; readonly stateTime: readonly number[] }
   | { readonly kind: 'loading' }
   | { readonly kind: 'empty' }
   | { readonly kind: 'failed'; readonly issue: StudioRegionIssue; readonly retry: () => void };
 
-/** The `recorded`-th trial the saved evaluation recorded, and its time on the window's playhead. */
+/**
+ * The trials the saved evaluation recorded as `showing` shows them (the picked one, or all of them with their
+ * aggregate), and their time on the window's playhead.
+ */
 export function useSavedEvaluationScene(projectId: string, revision: string, evaluation: StudioSavedEvaluationRow | undefined,
-  recorded: number | undefined, playhead: PlayheadStore) {
+  showing: TrialShowing | undefined, playhead: PlayheadStore) {
   const result = evaluation?.result;
   const jobId = result?.job_id;
   const coordinates = result?.checkpoint_sources?.map(({ completed_updates }) => completed_updates);
   const [chosenCheckpoint, setCheckpoint] = useState<{ jobId: string; coordinate: number }>();
   const chosen = chosenCheckpoint?.jobId === jobId ? chosenCheckpoint?.coordinate : undefined;
   const checkpoint = chosen !== undefined && coordinates?.includes(chosen) ? chosen : coordinates?.[0];
-  const trial = jobId && recorded !== undefined ? evaluation?.trials[recorded] : undefined;
-  const replay = useQuery({
-    queryKey: ['saved-evaluation-replay', projectId, revision, evaluation?.key, jobId, trial, checkpoint],
-    queryFn: ({ signal }) => {
-      if (!evaluation || !jobId || !trial) throw new Error('Select a saved Evaluate trial.');
-      return fetchSavedEvaluationReplay(projectId, { revision, key: evaluation.key, job_id: jobId, trial, checkpoint }, signal);
-    },
-    enabled: !!trial && (!evaluation?.checkpoint_series || checkpoint !== undefined),
-  });
-  const record = replay.data?.drawn.kind === 'trials' ? replay.data.drawn.trials[0] : undefined;
-  const read: RecordedTrialRead = replay.error
+  const all = showing?.kind === 'all';
+  const trial = jobId && showing ? all ? null : evaluation?.trials[showing.index] : undefined;
+  const readable = trial !== undefined && (!evaluation?.checkpoint_series || checkpoint !== undefined);
+  const read = (aggregate: boolean) => ({ signal }: { signal: AbortSignal }) => {
+    if (!evaluation || !jobId || trial === undefined) throw new Error('Select a saved Evaluate trial.');
+    return fetchSavedEvaluationReplay(projectId, { revision, key: evaluation.key, job_id: jobId, trial, checkpoint, aggregate }, signal);
+  };
+  const key = ['saved-evaluation-replay', projectId, revision, evaluation?.key, jobId, trial, checkpoint];
+  const replay = useQuery({ queryKey: key, queryFn: read(false), enabled: readable });
+  const aggregate = useQuery({ queryKey: [...key, 'aggregate'], queryFn: read(true), enabled: readable && all });
+  const records = replay.data?.drawn.kind === 'trials' ? replay.data.drawn.trials : undefined;
+  const picked = records?.[all ? showing.index : 0];
+  const state: RecordedTrialRead = replay.error
     ? { kind: 'failed', issue: studioRegionIssue('scene', replay.error), retry: () => { void replay.refetch(); } }
-    : replay.data && record
-      ? { kind: 'read', record, stateTime: replay.data.state_time }
+    : replay.data && records && picked
+      ? { kind: 'read', records, picked, stateTime: replay.data.state_time }
       : { kind: replay.isFetching ? 'loading' : 'empty' };
+  const batch = aggregate.data?.drawn.kind === 'aggregate' ? aggregate.data.drawn : undefined;
   const timeScope = JSON.stringify(['recorded', jobId, trial, checkpoint]);
   const [time, setTime] = usePlayhead(playhead, timeScope);
   const chooseCheckpoint = (coordinate: number) => {
@@ -143,7 +154,23 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
     selected: checkpoint,
     onSelect: chooseCheckpoint,
   } : undefined;
-  return { read, time, setTime, checkpoints, chooseCheckpoint };
+  return { read: state, aggregate: { data: batch, error: aggregate.error, refetch: aggregate.refetch }, time, setTime, checkpoints, chooseCheckpoint, checkpoint };
+}
+
+/**
+ * The Objective terms over every trial the saved evaluation recorded at `checkpoint`: each term's mean value over the
+ * trials it covers and the share it covers, when `enabled` and the evaluation has a result.
+ */
+export function useRecordedTerms(projectId: string, revision: string, evaluation: StudioSavedEvaluationRow | undefined,
+  checkpoint: number | undefined, enabled: boolean) {
+  const jobId = evaluation?.result?.job_id;
+  const query = useQuery({
+    queryKey: ['saved-evaluation-replay', projectId, revision, evaluation?.key, jobId, null, checkpoint, 'aggregate'],
+    queryFn: ({ signal }) => fetchSavedEvaluationReplay(projectId,
+      { revision, key: evaluation!.key, job_id: jobId!, trial: null, aggregate: true, checkpoint }, signal),
+    enabled: enabled && !!jobId && (!evaluation?.checkpoint_series || checkpoint !== undefined),
+  });
+  return query.data?.drawn.kind === 'aggregate' ? query.data.drawn.terms ?? {} : undefined;
 }
 
 /** The Scene's part of the window's selection: the key of the selected element the Scene draws, a field as its element. */
@@ -161,11 +188,10 @@ function useSceneDetail({ editor, activeView, sceneTrial, checkpoints, elements,
   model: StoredModel | undefined, scope: string, projectId: string, revision: string): ManagedProjectDetail {
   const visible = activeView === 'scene';
   const source = model && visible ? { document_id: model.id, revision } : null;
-  const { shown, possible, frame, task, failure } = sceneTrial;
-  const record = shown?.kind === 'one' ? shown.record : undefined;
-  const recorded = record && recordedState(record, frame);
-  const posed = useSceneGeometry(projectId, source, recorded ?? record?.inits ?? noStateValues);
-  const rest = useSceneGeometry(projectId, source, recorded && record.inits);
+  const { picked, possible, frame, task, trails, failure } = sceneTrial;
+  const recorded = picked && recordedState(picked, frame);
+  const posed = useSceneGeometry(projectId, source, recorded ?? picked?.inits ?? noStateValues);
+  const rest = useSceneGeometry(projectId, source, recorded && picked.inits);
   const sceneScope = JSON.stringify([scope, model?.id]);
   const [cameraState, setCamera] = useState<{ scope: string; value: SceneCamera }>();
   const [layerState, setLayers] = useState<{ scope: string; value: ReadonlySet<SceneLayer> }>();
@@ -173,8 +199,8 @@ function useSceneDetail({ editor, activeView, sceneTrial, checkpoints, elements,
   const onCameraChange = (value: SceneCamera) => setCamera({ scope: sceneScope, value });
   const hiddenLayers = layerState?.scope === sceneScope ? layerState.value : shownLayers;
   const scene = useMemo(() => posed?.kind === 'ready' ? trialScene({
-    posed: posed.geometry, rest: rest?.kind === 'ready' ? rest.geometry : undefined, task, shown, possible, frame,
-  }) : null, [posed, rest, task, shown, possible, frame]);
+    posed: posed.geometry, rest: rest?.kind === 'ready' ? rest.geometry : undefined, task, picked, possible, frame, trails,
+  }) : null, [posed, rest, task, picked, possible, frame, trails]);
   const view: SceneView = failure ?? (!posed ? { kind: 'empty' }
     : posed.kind === 'failed' ? {
       kind: 'failed', issue: studioRegionIssue('scene', posed.error),
@@ -214,7 +240,7 @@ export function useStoredModel(editor: ProjectEditController, step: PlanStepView
   const trial = base?.trial_documents;
   const managedModel = trial && typeof trial === 'object' && !Array.isArray(trial) ? trial.model : undefined;
   const direct = DocumentReferenceSchema.safeParse(managedModel);
-  const storedId = modelDocumentId(step?.documentIds) ?? modelSource ?? (direct.success ? direct.data.document : undefined);
+  const storedId = modelDocumentId(step?.documentIds) ?? modelSource ?? (direct.success && !direct.data.unresolved ? direct.data.document : undefined);
   const storedDocument = storedId ? saved.project.documents?.[storedId] : undefined;
   const storedPayload = storedId ? documentPayload(saved.project.documents, saved.composed, storedId) : undefined;
   return useMemo((): StoredModel | undefined => {
@@ -243,6 +269,7 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     active: activeView === 'model',
     selectedSweepValues: input.selectedSweepValues,
     confirmRunRemoval: input.confirmRunRemoval,
+    askStore: input.askStore,
     fieldChosenSteps: graphScope?.lit,
     planCurrent: input.planCurrent,
     fieldRows: input.fieldRows,

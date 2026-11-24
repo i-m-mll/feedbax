@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { sampleTaskTrials } from '@/api/studioAuthoring';
+import { studioAccessibleName } from '@/components/activity/studioVocabulary';
 import type { ModelDocument, StudioTrialAuthoring, TaskDocument, TaskTrialSampleRequest, TaskTrialSampleResponse } from '@/generated/studioContracts';
 import { epochInstances } from './repeats';
 import type { EpochBounds } from './taskModel';
@@ -10,8 +11,11 @@ import type { TrialsUnavailable } from './trialSample';
 export const taskDocumentOf = (view: StudioTrialAuthoring): TaskDocument | undefined =>
   'epochs' in view.task ? view.task : undefined;
 
-/** A step's task document as the shelf draws it, once the task is paired with the model and so has steps. */
-export function shelfTask(view: StudioTrialAuthoring, document: string): ShelfTask | undefined {
+/**
+ * A step's task document as the shelf draws it, once the task is paired with the model and so has steps, with the
+ * terms of its Objective, held in `objectiveDocument`, that are on.
+ */
+export function shelfTask(view: StudioTrialAuthoring, document: string, objectiveDocument: string | undefined): ShelfTask | undefined {
   const task = taskDocumentOf(view);
   const period = view.period_seconds;
   if (!task || view.n_steps === null || period === null) return undefined;
@@ -27,9 +31,12 @@ export function shelfTask(view: StudioTrialAuthoring, document: string): ShelfTa
     });
   }
   const order = task.epochs.map(({ id }) => id);
+  const terms = (view.objective?.terms ?? []).flatMap(({ id, name, enabled }, index) =>
+    enabled === false ? [] : [{ id, name: name ?? studioAccessibleName('term', index + 1) }]);
   return {
     document, duration: view.n_steps * period,
     epochs: epochInstances(epochs, task.repeats ?? [], task.variables).map(({ epoch }) => epoch),
+    ...objectiveDocument && { objective: { document: objectiveDocument, terms } },
     signals: task.signals.map(({ id, name, cells }) => ({
       id, name, covers: cells.flatMap(({ first_epoch, last_epoch }) => order.slice(order.indexOf(first_epoch), order.indexOf(last_epoch) + 1)),
     })),

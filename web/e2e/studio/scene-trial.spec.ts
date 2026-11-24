@@ -60,11 +60,9 @@ test('a Point signal appears in the Scene once the playhead passes its start', a
   await expect(target.locator('[data-scene-solid]')).toHaveCount(1);
 });
 
-// Catches a recorded trial drawn at its initial pose rather than at the playhead's recorded state, and a recorded
-// pose drawn without the rest pose beneath it.
-test('with a Done evaluation the mechanism at the last step is at its path\'s end', { tag: '@round' }, async ({ page, request, studio }) => {
-  test.setTimeout(80_000);
-  const projectId = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'seed', studio.home, 'scene-trial'));
+/** Runs the evaluation fixture's Train and its baseline Evaluate, and opens the Scene of the baseline's Done run. */
+async function doneEvaluationScene(page: Page, home: string, seed: string, scenario: string) {
+  const projectId = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', seed, home, scenario));
   const runs = `/api/projects/${projectId}/train-runs`;
   const plans = page.getByRole('table', { name: 'Runs', exact: true });
   const run = async (step: string) => {
@@ -82,6 +80,13 @@ test('with a Done evaluation the mechanism at the last step is at its path\'s en
   await run('baseline');
   await plans.getByRole('button', { name: /^\d+ baseline$/ }).click();
   await tab(page, 'Scene').click();
+}
+
+// Catches a recorded trial drawn at its initial pose rather than at the playhead's recorded state, and a recorded
+// pose drawn without the rest pose beneath it.
+test('with a Done evaluation the mechanism at the last step is at its path\'s end', { tag: '@round' }, async ({ page, studio }) => {
+  test.setTimeout(80_000);
+  await doneEvaluationScene(page, studio.home, 'seed', 'scene-trial');
   await expect(trialPicker(page)).toHaveText(/^trial 1 of \d+$/);
   const track = scene(page).locator('[data-scene-track]');
   await expect(track).toHaveCount(1);
@@ -96,4 +101,23 @@ test('with a Done evaluation the mechanism at the last step is at its path\'s en
     return Math.hypot(x - end[0], y - end[1]);
   }).toBeLessThan(0.5);
   await expect(scene(page).locator('[data-scene-rest] > *')).not.toHaveCount(0);
+});
+
+// Catches All that does not reach recorded trials, a Scene that draws only the picked trial's path under All or draws
+// every path alike, and Trails that leave a path drawn past the playhead.
+test('All on a Done evaluation draws every trial\'s path, the picked one heavier, and Trails end them at the playhead', { tag: '@round' }, async ({ page, studio }) => {
+  test.setTimeout(80_000);
+  await doneEvaluationScene(page, studio.home, 'seed-eight-trials', 'scene-trials');
+  await expect(trialPicker(page)).toHaveText('trial 1 of 8');
+  await footer(page).getByRole('button', { name: 'Shelf', exact: true }).click();
+  const shelf = page.getByRole('region', { name: 'Shelf', exact: true });
+  await shelf.getByRole('group', { name: 'Trials', exact: true }).getByRole('button', { name: 'All', exact: true }).click();
+  await expect(trialPicker(page)).toHaveText('8 trials');
+  const tracks = scene(page).locator('[data-scene-track]');
+  await expect(tracks).toHaveCount(8);
+  const widths = await tracks.evaluateAll((lines) => lines.map((line) => Number(line.getAttribute('stroke-width'))));
+  expect(widths.filter((width) => width === Math.max(...widths))).toHaveLength(1);
+  await shelf.getByRole('button', { name: 'Trails', exact: true }).click();
+  await expect.poll(() => tracks.evaluateAll((lines) => (lines as SVGPolylineElement[]).map((line) => line.points.numberOfItems)))
+    .toEqual(Array(8).fill(1));
 });

@@ -994,9 +994,13 @@ export interface ModelUndoRequest {
 
 export interface ModelConnectionReviewRequest {
   revision: string;
+  run?: StudioSavedTrainKey | null;
   document: string;
+  rows?: string[];
+  axes?: Record<string, string[]>;
   graph: ModelAddress;
   source: ComponentPortEnd | InputBoundaryEnd | TaskSignalSource;
+  evaluate_scope?: StepRuns | AxisValueRuns | ListedRuns | VariantRuns | null;
 }
 
 export interface TaskSignalSource {
@@ -7218,9 +7222,13 @@ export const ModelConnectionReviewRequestSchema: z.ZodType<ModelConnectionReview
   z
     .object({
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+      "run": StudioSavedTrainKeySchema.nullable().optional(),
       "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).optional(),
+      "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1))).optional(),
       "graph": ModelAddressSchema,
       "source": z.union([z.union([ComponentPortEndSchema, InputBoundaryEndSchema]), TaskSignalSourceSchema]),
+      "evaluate_scope": z.union([StepRunsSchema, AxisValueRunsSchema, ListedRunsSchema, VariantRunsSchema]).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelConnectionReviewRequest>;

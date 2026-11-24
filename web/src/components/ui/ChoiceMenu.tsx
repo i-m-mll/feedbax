@@ -1,5 +1,5 @@
 import { appTip } from '@window-shell/browser/tooltip';
-import { createContext, useCallback, useContext, useState, type ReactNode } from 'react';
+import { useCallback, useState, type ReactNode } from 'react';
 import { Menu, MenuContent, MenuItem } from './Menu';
 
 /** An entry of a choice menu: a short label, and a tip saying what choosing it affects. */
@@ -12,31 +12,24 @@ export interface Choice {
 /** Asks for one of `choices` in a menu at `anchor`; Escape or a click outside answers `undefined`. */
 export type AskChoice = (anchor: Element, label: string, choices: readonly Choice[]) => Promise<string | undefined>;
 
-export const ChoiceMenuContext = createContext<AskChoice | null>(null);
-
-export function useAskChoice() {
-  const ask = useContext(ChoiceMenuContext);
-  if (!ask) throw new Error('useAskChoice needs a ChoiceMenuContext');
-  return ask;
-}
-
-const editedObject = 'td, th, [role="treeitem"], [role="row"], .field-row';
+const editedObject = 'td, th, [role="treeitem"], [role="row"], .field-row, .react-flow__node, .react-flow__edge';
 
 /**
- * The field, cell or row an edit was made on: that of the element focused when it was committed, or, for an edit
- * committed from a menu, that of the element focus returned to.
+ * The field, cell, row or canvas element an edit was made on: that of the element focused when it was committed, or, for an edit
+ * committed from a menu, that of the element focus returned to; else `otherwise`, such as a canvas's selected element.
  */
-export function editedElement(committedFrom: Element | null): Element {
+export function editedElement(committedFrom: Element | null, otherwise?: Element | null): Element {
   for (const element of [committedFrom, document.activeElement]) {
     const object = element?.isConnected ? element.closest(editedObject) : null;
     if (object) return object;
   }
-  throw new Error('The edit has no field, cell or row to ask at.');
+  if (otherwise?.isConnected) return otherwise;
+  throw new Error('The edit has no field, cell, row or canvas element to ask at.');
 }
 
 /**
  * The one menu that asks a pending command a question at the element it was made on. The window draws `menu` and
- * passes `ask` to its commands, through `ChoiceMenuContext` or directly.
+ * passes `ask` to its commands.
  */
 export function useChoiceMenu() {
   const [asking, setAsking] = useState<{

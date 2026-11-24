@@ -224,13 +224,6 @@ class TaskSignalSource(StrictModel):
     signal: str
 
 
-class ModelConnectionReviewRequest(StrictModel):
-    revision: Sha256
-    document: ProjectName
-    graph: ModelAddress
-    source: Annotated[SignalSource | TaskSignalSource, Field(discriminator="owner")]
-
-
 class ModelWireReplacement(StrictModel):
     address: ModelAddress
     attachments: tuple[ModelAddress, ...]
@@ -262,6 +255,12 @@ class ModelProjectionRequest(StrictModel):
     document: ProjectName
     rows: list[RowKey] = Field(default_factory=list)
     axes: dict[ProjectName, list[Name]] = Field(default_factory=dict)
+
+
+class ModelConnectionReviewRequest(ModelProjectionRequest):
+    graph: ModelAddress
+    source: Annotated[SignalSource | TaskSignalSource, Field(discriminator="owner")]
+    evaluate_scope: SelectedRuns | None = None
 
 
 class ModelPortProjection(StrictModel):

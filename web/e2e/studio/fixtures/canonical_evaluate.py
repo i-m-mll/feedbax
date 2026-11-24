@@ -86,6 +86,14 @@ def seed(home: str, project_id: str):
     return _seed(home, project_id, _evaluation_project())
 
 
+def seed_eight_trials(home: str, project_id: str):
+    """The evaluation project with a task of eight validation trials, which the baseline records every one of."""
+    raw = _evaluation_project()
+    task = raw["documents"]["task"]["payload"]
+    task["validation_trials"] = task["validation_trials"][:8]
+    return _seed(home, project_id, raw)
+
+
 def seed_step_rename(home: str, project_id: str):
     """Train, an Evaluate reading it, a Train-scoped project sweep target, a group and an arranged sweep order."""
     raw = _evaluation_project()
@@ -312,7 +320,7 @@ def observe(home: str, project: str, revision: str, trial_index: str):
 if __name__ == "__main__":
     action, *args = sys.argv[1:]
     print(json.dumps({
-        "seed": seed, "seed-step-rename": seed_step_rename, "observe": observe, "walkthrough-files": walkthrough_files,
+        "seed": seed, "seed-eight-trials": seed_eight_trials, "seed-step-rename": seed_step_rename, "observe": observe, "walkthrough-files": walkthrough_files,
         "series-files": series_files, "seed-series-variants": seed_series_variants,
         "scoped-series-files": scoped_series_files, "measured-subset-files": measured_subset_files,
         "grouped-subset-files": grouped_subset_files, "train-measures": train_measures,
