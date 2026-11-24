@@ -3,7 +3,7 @@ import { type Page } from '@playwright/test';
 import type {
   AnalysisDocument, StudioJobSnapshot, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
-import { enter, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
+import { appendManagedFiles, enter, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { rootPayload } from './fixtures/rootPayload';
@@ -11,6 +11,39 @@ import { rootPayload } from './fixtures/rootPayload';
 test.use({ viewport: { width: 1440, height: 900 } });
 
 const tab = (page: Page, name: string) => page.getByRole('tab', { name, exact: true });
+
+test('places the installed Speed by trial figure from the Analyze Library', async ({ page, request, studio }) => {
+  const project: string = JSON.parse(await runProjectFixture(
+    'web.e2e.studio.fixtures.canonical_evaluate', 'seed', studio.home, 'speed-library',
+  ));
+  const path = '/api/projects/' + project;
+  const opened = await request.get(path + '/open');
+  expect(opened.ok(), await opened.text()).toBe(true);
+  const { snapshot } = await opened.json() as StudioProjectDocument;
+  await appendManagedFiles(request, snapshot, [
+    { kind: 'document', id: 'analysis', document: {
+      schema: 'feedbax.analysis_document.v1', payload: { inputs: { states: { kind: 'dataset' } } },
+    } },
+    { kind: 'step', id: 'analyze', step: {
+      kind: 'analyze', base: { document: 'analysis' }, inputs: { states: { step: 'baseline' } },
+    } },
+  ]);
+
+  await page.goto('/?project=' + encodeURIComponent(project));
+  await mapStep(page, 'analyze').click();
+  await tab(page, 'Analysis').click();
+  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
+  await drawer.getByRole('textbox', { name: 'Search Library' }).fill('Speed by trial');
+  const stored = page.waitForResponse((response) => response.request().method() === 'PATCH'
+    && new URL(response.url()).pathname === path);
+  await drawer.getByRole('option', { name: 'Speed by trial', exact: true }).dblclick();
+  const saved = await stored;
+  expect(saved.ok(), await saved.text()).toBe(true);
+  const after = await saved.json() as StudioProjectSnapshot;
+  expect(rootPayload(after.project.documents?.analysis)).toMatchObject({
+    views: { 'speed-by-trial': { figure: { template: 'feedbax.SpeedByTrial' } } },
+  });
+});
 
 test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(70_000);

@@ -8,7 +8,7 @@ from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySe
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.figure_document import FigureDocument
 from feedbax.contracts.model_address import ModelAddress
-from feedbax.contracts.project import RootDocument, DocumentReference, Project, Step
+from feedbax.contracts.project import BasedDocument, RootDocument, DocumentReference, Project, Step
 from feedbax.contracts.project_io import (
     ProjectConfiguration,
     StudioProjectFile,
@@ -152,6 +152,44 @@ def test_text_and_studio_compile_the_same_saved_evaluate_element_plan(tmp_path):
         "velocity-analysis",
         "/operations/summarize/params/bounds_scale",
     )
+
+
+def test_speed_template_prints_unnamed_evaluate_condition_values():
+    project = _project()
+    project.documents["heavy-model"] = BasedDocument.model_validate({
+        "schema": project.documents["point-mass"].schema_id,
+        "base": {"document": "point-mass"},
+        "differences": {"/interior/components/plant/fields/mass": {"value": 2}},
+    })
+    evaluate = managed_evaluation_step("train")
+    evaluate["base"]["inline"]["trial_documents"] = {"model": {"document": "heavy-model"}}
+    project.steps["baseline"] = Step.model_validate(evaluate)
+    analysis = project.documents["velocity-analysis"].payload
+    velocity = analysis["operations"]["align"]["params"]["velocity"]
+    analysis["operations"] = {
+        "speed": {
+            "operation": "feedbax.trial_speed",
+            "params": {"velocity": velocity},
+            "inputs": {"states": {"input": "states"}},
+        },
+    }
+    analysis["views"] = {
+        "profile": {
+            "figure": {"template": "feedbax.SpeedByTrial"},
+            "inputs": {"speed": {"element": "speed", "product": "speed"}},
+        },
+    }
+    bundle = new_application_registry_bundle()
+    bundle.seal()
+    plan = compile_project(project, operations=bundle.operations, figure_templates=bundle.figure_templates)
+    assert not plan.diagnostics
+    rollout = next(run for run in plan.runs if run.kind == "evaluate")
+    assert not rollout.problems and rollout.label is None
+    spec = decode_request(plan.requests[rollout.request_id], plan.documents.__getitem__).spec
+    condition = RolloutParameters.model_validate(spec.params).condition_id()
+    figure = _decode(plan, "profile")
+    assert figure.spec.names["condition"] == {condition: "plant.mass=2"}
+    assert figure.inputs["speed"][0].reference == ProductRef(request_id=_decode(plan, "speed").id, role="speed")
 
 
 def test_managed_wire_review_uses_plan_ports_without_writing_a_draft():
