@@ -320,7 +320,7 @@ export interface StudioSavedEvaluationRow {
   subject_rank_key?: string | null;
   checkpoint_series?: StudioEvaluationCheckpointSeries | null;
   checkpoint_attempt?: StudioEvaluationCheckpointAttempt | null;
-  checkpoint_rule?: "last" | BestCheckpoint | BatchCheckpoint | BarrierCheckpoint | CheckpointBatches | CheckpointCadence | UpdateCadence | UpdateCheckpoint[] | null;
+  checkpoint_rule?: "last" | BestCheckpoint | BatchCheckpoint | BarrierCheckpoint | CheckpointBatches | CheckpointCadence | UpdateCadence | UpdateCheckpoint[] | UnresolvedValue | null;
   bound_subject?: StudioBoundBestSubject | null;
 }
 
@@ -2698,7 +2698,7 @@ export type CheckpointCadence = {
   "through": number;
 };
 
-export type CheckpointRule = "last" | BestCheckpoint | BatchCheckpoint | BarrierCheckpoint | CheckpointBatches | CheckpointCadence | UpdateRule;
+export type CheckpointRule = "last" | BestCheckpoint | BatchCheckpoint | BarrierCheckpoint | CheckpointBatches | CheckpointCadence | UpdateRule | UnresolvedValue;
 
 export type CheckpointRuleAxis = {
   "path"?: CheckpointRulePath;
@@ -3882,6 +3882,7 @@ export type StudioBoundBestSubject = {
 export type StudioCheckpointRuleEdit = {
   "revision": string;
   "files": Array<StudioProjectFilePatch>;
+  "problems"?: Array<StudioProjectWindowMapProblem>;
 };
 
 export type StudioCheckpointRuleRequest = {
@@ -3892,7 +3893,7 @@ export type StudioCheckpointRuleRequest = {
 
 export type StudioCheckpointRuleSet = {
   "kind": "set";
-  "rule": "last" | BatchCheckpoint | UpdateRule;
+  "rule": "last" | BatchCheckpoint | UpdateRule | UnresolvedValue;
   "scope": AxisValueRuns | ListedRuns;
 };
 
@@ -4165,6 +4166,7 @@ export type StudioProjectWindowMapInput = {
   "subset": StudioProjectWindowMapSubset | null;
   "checkpoint"?: CheckpointRule | null;
   "checkpoint_axis"?: string | null;
+  "can_sweep_checkpoint"?: boolean;
 };
 
 export type StudioProjectWindowMapInputAxis = {
@@ -4187,6 +4189,7 @@ export type StudioProjectWindowMapProblem = {
   "layer"?: string | null;
   "authored_path"?: string | null;
   "blocked_by"?: StudioSavedTrainKey | null;
+  "span"?: TextSpan | null;
 };
 
 export type StudioProjectWindowMapRequest = {
@@ -4293,6 +4296,7 @@ export type StudioRunRuleChosen = {
 export type StudioRunRuleRefused = {
   "kind"?: "refused";
   "reason": string;
+  "span"?: TextSpan | null;
 };
 
 export type StudioRunRuleRequest = {
@@ -5980,7 +5984,7 @@ export const StudioSavedEvaluationRowSchema: z.ZodType<StudioSavedEvaluationRow>
       "subject_rank_key": z.string().nullable().optional(),
       "checkpoint_series": StudioEvaluationCheckpointSeriesSchema.nullable().optional(),
       "checkpoint_attempt": StudioEvaluationCheckpointAttemptSchema.nullable().optional(),
-      "checkpoint_rule": z.union([z.literal("last"), BestCheckpointSchema, BatchCheckpointSchema, BarrierCheckpointSchema, CheckpointBatchesSchema, CheckpointCadenceSchema, z.union([UpdateCadenceSchema, z.array(UpdateCheckpointSchema).min(1).max(64)])]).nullable().optional(),
+      "checkpoint_rule": z.union([z.literal("last"), BestCheckpointSchema, BatchCheckpointSchema, BarrierCheckpointSchema, CheckpointBatchesSchema, CheckpointCadenceSchema, z.union([UpdateCadenceSchema, z.array(UpdateCheckpointSchema).min(1).max(64)]), UnresolvedValueSchema]).nullable().optional(),
       "bound_subject": StudioBoundBestSubjectSchema.nullable().optional(),
     })
     .strict()
@@ -10029,7 +10033,7 @@ export const CheckpointCadenceSchema: z.ZodType<CheckpointCadence> = z.lazy(() =
 ) as unknown as z.ZodType<CheckpointCadence>;
 
 export const CheckpointRuleSchema: z.ZodType<CheckpointRule> = z.lazy(() =>
-  z.union([z.literal("last"), BestCheckpointSchema, BatchCheckpointSchema, BarrierCheckpointSchema, CheckpointBatchesSchema, CheckpointCadenceSchema, UpdateRuleSchema])
+  z.union([z.literal("last"), BestCheckpointSchema, BatchCheckpointSchema, BarrierCheckpointSchema, CheckpointBatchesSchema, CheckpointCadenceSchema, UpdateRuleSchema, UnresolvedValueSchema])
 ) as unknown as z.ZodType<CheckpointRule>;
 
 export const CheckpointRuleAxisSchema: z.ZodType<CheckpointRuleAxis> = z.lazy(() =>
@@ -11629,6 +11633,7 @@ export const StudioCheckpointRuleEditSchema: z.ZodType<StudioCheckpointRuleEdit>
   z.object({
     "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
     "files": z.array(StudioProjectFilePatchSchema),
+    "problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioCheckpointRuleEdit>;
 
@@ -11643,7 +11648,7 @@ export const StudioCheckpointRuleRequestSchema: z.ZodType<StudioCheckpointRuleRe
 export const StudioCheckpointRuleSetSchema: z.ZodType<StudioCheckpointRuleSet> = z.lazy(() =>
   z.object({
     "kind": z.literal("set"),
-    "rule": z.union([z.literal("last"), BatchCheckpointSchema, UpdateRuleSchema]),
+    "rule": z.union([z.literal("last"), BatchCheckpointSchema, UpdateRuleSchema, UnresolvedValueSchema]),
     "scope": z.union([AxisValueRunsSchema, ListedRunsSchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioCheckpointRuleSet>;
@@ -11998,6 +12003,7 @@ export const StudioProjectWindowMapInputSchema: z.ZodType<StudioProjectWindowMap
     "subset": z.union([StudioProjectWindowMapSubsetSchema, z.null()]),
     "checkpoint": z.union([CheckpointRuleSchema, z.null()]).optional(),
     "checkpoint_axis": z.union([z.string(), z.null()]).optional(),
+    "can_sweep_checkpoint": z.boolean().optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapInput>;
 
@@ -12024,6 +12030,7 @@ export const StudioProjectWindowMapProblemSchema: z.ZodType<StudioProjectWindowM
     "layer": z.union([z.string(), z.null()]).optional(),
     "authored_path": z.union([z.string(), z.null()]).optional(),
     "blocked_by": z.union([StudioSavedTrainKeySchema, z.null()]).optional(),
+    "span": z.union([TextSpanSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapProblem>;
 
@@ -12156,6 +12163,7 @@ export const StudioRunRuleRefusedSchema: z.ZodType<StudioRunRuleRefused> = z.laz
   z.object({
     "kind": z.literal("refused").optional(),
     "reason": z.string(),
+    "span": z.union([TextSpanSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioRunRuleRefused>;
 
