@@ -1,10 +1,12 @@
-"""The window map's axes gather a step's runs by value, whatever key each producer stored the value under."""
+"""A step's axes gather its runs by value, whatever key each producer stored the value under, in the window map and in
+a selection of runs by their values."""
 
 from types import SimpleNamespace
 
 from feedbax.contracts.project_sweep import SweepCoordinate
 from feedbax.planner.project_plan import RunKey
-from feedbax.web.services.project_plan import gather_axes
+from feedbax.web.services.axis_values import gather_axes
+from feedbax.web.services.trial_scope import SweepValuesRuns, runs_scope
 
 
 def _row(step, row, **coordinates):
@@ -37,3 +39,16 @@ def test_set_entries_with_one_key_and_different_names_stay_apart():
     (axis,), values = gather_axes(rows)
     assert [value.label for value in axis.values] == ["small", "large"]
     assert values[RunKey("base", "evaluate", "a"), "size"] != values[RunKey("base", "evaluate", "b"), "size"]
+
+
+def test_a_seed_of_an_evaluate_reading_two_producers_is_selected_as_a_rule():
+    rows = [*_seeds("train", [0, 2, 3]), *_seeds("train-2", [0, 1, 2, 3])]
+    (axis,), _ = gather_axes(rows)
+    two = next(value.id for value in axis.values if value.label == "2")
+    project = SimpleNamespace(steps={"evaluate": SimpleNamespace(sweep=None)})
+    scope = runs_scope(
+        project, SimpleNamespace(rows=rows), RunKey("base", "evaluate", "train-2"), ("train-2", "train-2-2"),
+        {"seed": [two]},
+    )
+    assert isinstance(scope, SweepValuesRuns)
+    assert scope.rule == "seed=2"
