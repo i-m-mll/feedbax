@@ -1,8 +1,7 @@
-import type {
-  ResolvedScene, ResolvedSceneAnchor, ResolvedSceneElement, ResolvedSceneValidationMessage,
-} from '@/features/scenario/projections';
+import { elementKey, type ElementAddress } from '@/features/projectWindow/elementSelection';
 import type { ScenePlanarModel, StudioPlanarSceneResponse } from '@/generated/studioContracts';
 import type { ScenePoint } from './planarProjection';
+import type { Scene, SceneElement, SceneLayer, SceneShape, SceneValue } from './sceneView';
 
 export type PlanarScenePose =
   | { kind: 'reference' }
@@ -66,89 +65,51 @@ function posePlanarPreview(model: PlanarGeometry, pose: Exclude<PlanarScenePose,
   return poseGeometry(model, pose.kind === 'reference' ? model.reference_qpos : pose.qpos);
 }
 
-export function planarSceneEntityId(source: StudioPlanarSceneResponse, nodeId: string) {
-  return JSON.stringify([source.project_id, source.document_id, source.node_path, nodeId]);
-}
-
-export function resolveProjectPlanarScene(source: StudioPlanarSceneResponse, pose: PlanarScenePose): ResolvedScene {
-  const scene: ResolvedScene = {
-    scenario_id: null, frame: 'world.xy', units: 'm', entities: [], anchors: [], elements: [], required_selectors: [],
-    validation: source.diagnostics.map((diagnostic): ResolvedSceneValidationMessage => ({
-      type: diagnostic.code, severity: diagnostic.severity === 'warning' ? 'warning' : 'error', message: diagnostic.message,
-      entity_id: diagnostic.node_ids?.length ? planarSceneEntityId(source, diagnostic.node_ids[0]) : null,
-    })),
+/**
+ * The Scene of a planar interior in a pose: each body, joint and muscle under its Model address, and each diagnostic
+ * marked on the element it names, or else on the mechanism.
+ */
+export function resolveProjectPlanarScene(source: StudioPlanarSceneResponse, pose: PlanarScenePose): Scene {
+  const document = source.document_id;
+  const mechanismId = source.node_path[source.node_path.length - 1];
+  const address = (composites: readonly string[], id: string): ElementAddress =>
+    ({ document, address: { composites: [...composites], element: { kind: 'component', id } } });
+  const elements: SceneElement[] = [];
+  const problems: string[] = [];
+  const posed = source.model && (pose.kind !== 'recorded' ? posePlanarPreview(source.model, pose) : posePlanarModel(source.model, pose));
+  const add = (id: string, layer: SceneLayer, shape: SceneShape | undefined, values: SceneValue[], problem?: string) => {
+    const located = address(source.node_path, id);
+    const diagnosed = source.diagnostics.find((item) => item.node_ids?.[0] === id)?.message;
+    elements.push({ key: elementKey(located), address: located, name: id, layer, shape, values, problem: problem || diagnosed });
   };
-  if (!source.model) return scene;
-  const model = source.model;
-  const posed = pose.kind !== 'recorded' ? posePlanarPreview(model, pose) : posePlanarModel(source.model, pose);
-  if (!posed.ok) {
-    scene.validation.push({
-      type: posed.code, message: posed.message, severity: 'error',
-      entity_id: planarSceneEntityId(source, source.node_path[source.node_path.length - 1]),
-    });
-    return scene;
-  }
 
-  function addAnchor(entityId: string, id: string, label: string, role: string, position: ScenePoint, metadata: Record<string, unknown> = {}) {
-    const anchor: ResolvedSceneAnchor = {
-      id, entity_id: entityId, local_id: label, label, semantic_role: role, position, selectable: true, hoverable: true,
-      interaction_roles: ['selectable', 'hoverable'], objective_roles: [], frame: scene.frame, selector: null, metadata,
-    };
-    scene.anchors.push(anchor);
-    return anchor;
-  }
-
-  function addEntity(id: string, label: string, archetype: string, anchors: ResolvedSceneAnchor[], points: ScenePoint[] | null) {
-    const element: ResolvedSceneElement = {
-      id, entity_id: id, local_id: label, archetype, anchor_ids: anchors.map((anchor) => anchor.id), frame: scene.frame,
-      scale_invariant: false, style: {}, geometry: points ? { kind: 'polyline', points } : { kind: 'none' }, metadata: {},
-    };
-    scene.elements.push(element);
-    scene.entities.push({
-      id, label, kind: 'mechanics_object', summary: null, related_entity_ids: [],
-      anchor_ids: element.anchor_ids, element_ids: [element.id],
-    });
-  }
-
-  for (const link of model.links) {
-    const id = planarSceneEntityId(source, link.body_id);
-    const proximal = `${link.body_id}.proximal`;
-    const distal = `${link.body_id}.distal`;
-    const start = posed.frames.get(proximal)!;
-    const end = posed.frames.get(distal)!;
-    addEntity(id, link.body_id, 'planar_chain', [
-      addAnchor(id, `${id}/proximal`, proximal, 'body', start.position, { angle: start.angle }),
-      addAnchor(id, `${id}/distal`, distal, 'endpoint', end.position, { angle: end.angle }),
-      addAnchor(id, planarSceneEntityId(source, link.joint_id), link.joint_id, 'joint', posed.joints.get(link.joint_id)!, {
-        parent_frame: link.parent_frame, child_frame: link.child_frame, qpos_index: link.qpos_index,
-      }),
-    ], [start.position, end.position]);
-  }
-
-  for (const muscle of model.muscles) {
-    const id = planarSceneEntityId(source, muscle.node_id);
-    const anchors: ResolvedSceneAnchor[] = [];
-    const points: ScenePoint[] = [];
-    for (const point of muscle.points ?? []) {
-      const frame = posed.frames.get(point.frame);
-      if (!frame) {
-        scene.validation.push({
-          type: 'scene.invalid_frame', severity: 'error', entity_id: id,
-          message: `${muscle.node_id} refers to unknown frame ${point.frame}.`,
-        });
-        break;
-      }
-      points.push(pointInWorld(frame, point.position));
+  if (posed && !posed.ok) problems.push(posed.message);
+  if (posed?.ok) {
+    for (const link of source.model!.links) {
+      const start = posed.frames.get(`${link.body_id}.proximal`)!;
+      const end = posed.frames.get(`${link.body_id}.distal`)!;
+      add(link.body_id, 'bodies', { kind: 'segment', points: [start.position, end.position] }, [
+        { label: `${link.body_id}.proximal`, point: start.position },
+        { label: `${link.body_id}.distal`, point: end.position },
+      ]);
+      const pivot = posed.joints.get(link.joint_id)!;
+      add(link.joint_id, 'joints', { kind: 'point', point: pivot }, [{ label: link.joint_id, point: pivot }]);
     }
-    if (muscle.points && points.length === muscle.points.length) {
-      for (const [index, point] of muscle.points.entries()) {
-        const role = index === 0 ? 'origin' : index === muscle.points.length - 1 ? 'insertion' : 'guide';
-        anchors.push(addAnchor(id, `${id}/point/${index}`, `${point.frame} ${role}`, role, points[index], {
-          authored_frame: point.frame, offset: point.position, muscle: muscle.node_id, point_index: index,
-        }));
-      }
+    for (const muscle of source.model!.muscles) {
+      const authored = muscle.points ?? [];
+      const missing = authored.find((point) => !posed.frames.has(point.frame));
+      const values = authored.map((point, index) => ({
+        label: `${point.frame} ${index === 0 ? 'origin' : index === authored.length - 1 ? 'insertion' : 'guide'}`,
+        point: [point.position[0], point.position[1]] as ScenePoint,
+      }));
+      add(muscle.node_id, 'muscles', missing || !authored.length ? undefined : {
+        kind: 'path', points: authored.map((point) => pointInWorld(posed.frames.get(point.frame)!, point.position)),
+      }, values, missing && `${muscle.node_id} refers to unknown frame ${missing.frame}.`);
     }
-    addEntity(id, muscle.node_id, 'muscle_path', anchors, anchors.length ? points : null);
   }
-  return scene;
+
+  const named = new Set(elements.map((element) => element.name));
+  problems.push(...source.diagnostics.filter((item) => !item.node_ids?.[0] || !named.has(item.node_ids[0])).map((item) => item.message));
+  const mechanism = address(source.node_path.slice(0, -1), mechanismId);
+  return { groups: [{ key: elementKey(mechanism), address: mechanism, name: mechanismId, elements, problem: problems[0] }] };
 }

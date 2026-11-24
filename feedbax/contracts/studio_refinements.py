@@ -450,39 +450,18 @@ CROSS_FIELD_REFINEMENTS.update(
                 "(value.status === 'ok' && value.diagnostics.some((diagnostic) => diagnostic.severity === 'error' || diagnostic.severity === 'warning')) || (value.status === 'ok_with_warnings' && value.diagnostics.some((diagnostic) => diagnostic.severity === 'error')) || (value.status === 'error' && !value.diagnostics.some((diagnostic) => diagnostic.severity === 'error'))",
             ),
         ),
-        "WorkspaceReplayTrialIdentity": (
-            _typescript_refinement(
-                "workspace-replay.identity-source",
-                "trial identity source requires stable_id unless index_fallback",
-                "!value.stable_id && value.source !== 'index_fallback'",
-            ),
-        ),
-        "WorkspaceReplaySampleAxis": (
+        "StudioTrajectorySampleAxis": (
             _typescript_refinement(
                 "workspace-replay.axis-length",
                 "time axis values length must equal length",
                 "value.values != null && value.values.length !== value.length",
             ),
         ),
-        "WorkspaceReplayTrack": (
+        "StudioTrajectoryTrack": (
             _typescript_refinement(
                 "workspace-replay.track-dim",
                 "track samples must match dim",
                 "value.samples.some((sample) => sample.length !== value.dim)",
-            ),
-        ),
-        "WorkspaceReplayTrial": (
-            _typescript_refinement(
-                "workspace-replay.trial-length",
-                "track and overlay sample counts must match the time axis",
-                "value.tracks.some((track) => track.samples.length !== value.time.length) || value.overlays.some((overlay) => overlay.samples.length !== value.time.length)",
-            ),
-        ),
-        "WorkspaceReplayProduct": (
-            _typescript_refinement(
-                "workspace-replay.source-mode",
-                "workspace replay source mode must match imported artifact and warnings",
-                "(value.source_mode === 'resolved_scene' && value.imported_artifact != null) || (value.source_mode === 'imported_artifact' && (value.imported_artifact == null || value.warnings.length === 0))",
             ),
         ),
         "BatchScheduleOriginSpec": (
@@ -560,11 +539,8 @@ REGISTERED_CONSTRAINT_VALIDATORS: dict[str, frozenset[str]] = {
     "RepresentationSpec": frozenset({"canonicalize_and_validate"}),
     "DomainMeta": frozenset({"_validate_id", "_validate_nestable_domains"}),
     "DomainCompileReport": frozenset({"validate_status_matches_diagnostics"}),
-    "WorkspaceReplayTrialIdentity": frozenset({"validate_identity_source"}),
-    "WorkspaceReplaySampleAxis": frozenset({"validate_values_length"}),
-    "WorkspaceReplayTrack": frozenset({"validate_samples_shape"}),
-    "WorkspaceReplayTrial": frozenset({"validate_trial_lengths"}),
-    "WorkspaceReplayProduct": frozenset({"validate_source_mode"}),
+    "StudioTrajectorySampleAxis": frozenset({"validate_values_length"}),
+    "StudioTrajectoryTrack": frozenset({"validate_samples_shape"}),
     "BatchScheduleOriginSpec": frozenset({"_validate_origin"}),
     "SelectionSpec": frozenset({"_validate_selection_spec"}),
     "ModelEditRequest": frozenset({"_variant_has_step"}),

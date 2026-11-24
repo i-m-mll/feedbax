@@ -291,10 +291,10 @@ def test_committed_evaluate_damage_is_found_by_check_and_recomputed(host, tmp_pa
             np.testing.assert_array_equal(dataset.data(position, (0, 0, 1)), expected)
             assert reads == [(position, (0, 0, 1))]
         reads.clear()
-        replayed = original.replay_trial(trial, anchor_id="effector")
+        replayed = original.replay(trial)
         assert reads == [("checkpoint", ()), ("state_time", ()), (position, (0, 0, 1))]
-        assert replayed.time.values == expected_axis
-        assert replayed.tracks[0].samples == expected.tolist()
+        assert replayed.state_time == expected_axis
+        assert replayed.drawn.trials[0].states[replayed.position].samples == expected.tolist()
 
     path = store.object_path(states_binding.object_ref)
     raw = path.read_bytes()

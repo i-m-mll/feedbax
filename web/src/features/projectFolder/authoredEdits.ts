@@ -8,8 +8,12 @@ import type {
 } from '@/generated/studioContracts';
 
 export type AuthoredProject = StudioProjectSnapshot['project'];
-export type ProjectEditContent = AuthoredProject & { readonly presentation?: PresentationDocument | null };
+export type ProjectEditContent = AuthoredProject & {
+  readonly presentation?: PresentationDocument | null;
+  readonly settings?: StudioProjectSnapshot['settings'];
+};
 export const presentationAddress = { kind: 'presentation', id: 'presentation' } as const;
+export const declarationAddress = { kind: 'declaration', id: 'declaration' } as const;
 type JsonObject = { [key: string]: JsonValue };
 type Container = JsonObject | JsonValue[];
 
@@ -32,6 +36,7 @@ function files(project: JsonObject, kind: AuthoredFileAddress['kind']): JsonObje
     case 'step': return object(project.steps);
     case 'variant': return object(object(project.sweep).rows);
     case 'presentation': return { [presentationAddress.id]: project.presentation ?? {} };
+    case 'declaration': return { [declarationAddress.id]: { settings: project.settings ?? {} } };
   }
 }
 
@@ -240,7 +245,9 @@ export function applyAuthoredEdits(
   });
   if (!inverse.length) return { project, inverse: [], edits: [] };
   const nextFiles = { ...collection, [address.id]: changed };
-  const updated = address.kind === 'presentation'
+  const updated = address.kind === 'declaration'
+    ? { ...authored, settings: changed.settings }
+    : address.kind === 'presentation'
     ? { ...authored, presentation: changed }
     : address.kind === 'variant'
       ? { ...authored, sweep: { ...object(authored.sweep), rows: nextFiles } }

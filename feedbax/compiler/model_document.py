@@ -663,7 +663,7 @@ class _Lower:
                         pending.append(target)
 
     def root_inputs(self, binding: StudioTaskBindingSpec, graph: GraphSpec) -> StudioTaskBindingSpec:
-        signals = {item.id: item for item in binding.exposed_data if item.bindable}
+        signals = {item.label: item for item in binding.exposed_data if item.bindable}
         result = []
         for port in self.model.ports.inputs:
             if port.name not in graph.input_bindings:
@@ -754,6 +754,12 @@ class ResolvedModelInput(ScopedValue):
     required: bool
 
     @property
+    def root_id(self) -> str:
+        end = self.address.element
+        assert isinstance(end, PortElement)
+        return end.end.port
+
+    @property
     def address(self) -> ModelAddress:
         return ModelAddress.from_text(self.id)
 
@@ -816,7 +822,7 @@ def lower_model_document(
 ) -> LoweredModelDocument:
     """Project one authored model through the graph compiler's registered declarations."""
     lower = _Lower(model, components)
-    names = frozenset(item.id for item in task.exposed_data if item.bindable) if task else frozenset()
+    names = frozenset(item.label for item in task.exposed_data if item.bindable) if task else frozenset()
     graph = lower.graph(model.interior, model.ports, (), available=names | supplied_inputs)
     if (problem := next(ModelRegistryPorts(components).problems(model), None)) is not None:
         raise ModelCompilationProblem(problem.address, problem.reason)

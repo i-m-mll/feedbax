@@ -6,9 +6,10 @@ import type { PlanarScenePose } from '@/components/scene/planarModel';
 import { fittedCamera, type SceneView } from '@/components/scene/sceneView';
 import { useProjectPlanarScene } from '@/components/scene/useProjectPlanarScene';
 import type { DrawerSections } from '@/features/projectWindow/DrawerForms';
+import { elementKey, type ElementAddress } from '@/features/projectWindow/elementSelection';
 import type { StudioPlanarSceneRequest } from '@/generated/studioContracts';
 
-const hiddenOverlays = new Set<never>();
+const hiddenLayers = new Set<never>();
 const sections: DrawerSections = { isOpen: (_, initially = true) => initially, setOpen: () => {} };
 
 export function mountSceneProbe(container: HTMLElement, project: string) {
@@ -21,18 +22,19 @@ export function mountSceneProbe(container: HTMLElement, project: string) {
     source: StudioPlanarSceneRequest; pose: PlanarScenePose; requestVersion: number;
   }) {
     const view = useProjectPlanarScene(project, source, pose, () => {});
-    const [selectedId, onSelect] = useState<string | null>(null);
+    const [selected, select] = useState<string | null>(null);
+    const onSelect = (address: ElementAddress | null) => select(address && elementKey(address));
     const [camera, onCameraChange] = useState(fittedCamera);
     useLayoutEffect(() => { current = { version: requestVersion, view }; }, [requestVersion, view]);
     return (
       <>
         <div style={{ width: 860, height: 520 }}>
-          <SceneCanvas {...{ view, camera, onCameraChange, selectedId, onSelect, hiddenOverlays }} time={0} />
+          <SceneCanvas {...{ view, camera, onCameraChange, selected, onSelect, hiddenLayers }} time={0} />
         </div>
         {view.kind === 'geometry' && (
           <>
-            <SceneDrawer sections={sections} scene={view.scene} {...{ selectedId, onSelect }} />
-            <SceneElementInspector scene={view.scene} selectedId={selectedId} />
+            <SceneDrawer sections={sections} scene={view.scene} {...{ selected, onSelect }} />
+            <SceneElementInspector scene={view.scene} selected={selected} />
           </>
         )}
       </>

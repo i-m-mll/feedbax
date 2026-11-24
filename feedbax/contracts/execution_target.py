@@ -38,10 +38,16 @@ class CloseWhenIdle(TargetModel):
 SessionLifecycle = Annotated[KeepOpen | CloseWhenIdle, Field(discriminator="kind")]
 
 
+class HostRuntime(TargetModel):
+    backend: str
+    devices: tuple[str, ...]
+
+
 class LocalTargetProfile(TargetModel):
     kind: Literal["local"]
     id: Literal["local"]
     label: Literal["This Mac"]
+    runtime: HostRuntime | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class SessionTargetProfile(TargetModel):

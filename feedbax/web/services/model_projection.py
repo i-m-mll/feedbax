@@ -10,6 +10,7 @@ from feedbax.contracts.model_edit import ModelPortProjection, ModelProjection
 from feedbax.contracts.expression_check import references
 from feedbax.compiler.graph_schema import _enumerate_graph_ports
 from feedbax.contracts.project import BasedDocument
+from feedbax.contracts.trial_bindings import selected_signal_id
 from feedbax.planner.project_plan import RunKey
 from feedbax.project_folder import ProjectFolderInvalid, model_edit_source
 from feedbax.project_model_selection import selected_model as selected_model, selected_model_and_task, task_signal
@@ -62,14 +63,19 @@ def model_projection(folders, project_id, body, components):
             pass
     model, task, objective, overrides = selected or (authored, None, None, {})
     task_signals = tuple(task_signal(item) for item in task.exposed_data if item.bindable) if task is not None else ()
-    names = {signal.id for signal in task_signals}
-    supplied = {port.name for port in model.ports.inputs if overrides.get(port.name, port.name) in names}
+    names = {signal.label: signal.id for signal in task_signals}
+    ids = set(names.values())
+    bound = tuple(
+        port for port in model.ports.inputs
+        if selected_signal_id(port.id, port.name, names, overrides) in ids
+    )
+    supplied = {port.name for port in bound}
     problems = tuple(ModelRegistryPorts(components).problems(model))
     task_inputs = tuple(
         ModelAddress.model_validate({
             "composites": [],
             "element": {"kind": "port", "end": {"owner": "inputs", "port": port.id}},
-        }) for port in model.ports.inputs if port.name in supplied
+        }) for port in bound
     )
     known = dict(
         task_signals=task_signals, task_inputs=task_inputs, resolved_model=model,
