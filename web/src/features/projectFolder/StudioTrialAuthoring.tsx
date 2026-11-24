@@ -3,7 +3,9 @@ import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } fro
 import { useQuery } from '@tanstack/react-query';
 import { catalogEntries, readStudioTrialAuthoring, useAuthoringCatalog } from '@/api/studioAuthoring';
 import { shownError } from '@/api/shownErrors';
-import { studioAccessibleName, studioDefinitionStatus, studioEvaluateValueSource, studioName } from '@/components/activity/studioVocabulary';
+import {
+  studioAccessibleName, studioCountOf, studioDefinitionStatus, studioEvaluateValueSource, studioName,
+} from '@/components/activity/studioVocabulary';
 import { ChangeMark as ChangedMark } from '@/components/ui/ChangeMark';
 import { Combobox } from '@/components/ui/Combobox';
 import { InlineEdit } from '@/components/ui/InlineEdit';
@@ -15,7 +17,10 @@ import {
   evaluateChange, reasonOf, type ChangeMark, type ChangeSource, type FieldModel, type FieldRefusal,
 } from '@/components/values/fieldModel';
 import { Drawer, DrawerSection, type DrawerSections } from '@/features/projectWindow/DrawerForms';
-import { Table, TableFieldCell, TableHeaderCell, TableHeaderRow, TableRow, type TableColumn } from '@/components/ui/Table';
+import {
+  Table, TableCell, TableFieldCell, TableHeaderCell, TableHeaderRow, TableRow, TableRowHeader, type TableColumn,
+} from '@/components/ui/Table';
+import { formatMetric } from '@/components/activity/studioPlot';
 import { CatalogPicker } from '@/components/ui/CatalogPicker';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { SettingsForm } from '@/components/values/SettingsForm';
@@ -26,7 +31,7 @@ import { fromFieldView, type FieldViewOptions } from '@/components/values/adapte
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type {
   FieldKind, JsonValue, ObjectiveTerm, ProjectValueEdit, StudioSavedTrainKey, StudioTrialAuthoring, StudioTrialAuthoringRequest,
-  StudioTrialField,
+  StudioTrialField, TrialTermAggregate,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
 import { addressKey } from './model/modelGraph';
@@ -274,13 +279,38 @@ export function TrialTaskInspector({ view, commit, selected, shown }: {
 
 /** A term's fields that are values, by the column that shows them; its Window is a choice of epochs. */
 type TermField = 'name' | 'enabled' | 'measure' | 'weight' | 'reduction';
-type TermColumn = 'name' | 'measure' | 'window' | 'weight' | 'enabled';
-const columns = ['name', 'measure', 'window', 'weight', 'enabled'] as const satisfies readonly TermColumn[];
-const columnNames = { name: 'term', enabled: 'enabled', measure: 'measure', window: 'window', weight: 'weight' } as const;
+type TermColumn = 'name' | 'measure' | 'window' | 'weight' | 'value' | 'covered' | 'enabled';
+const authoredColumns = ['name', 'measure', 'window', 'weight', 'enabled'] as const satisfies readonly TermColumn[];
+const scoredColumns = ['name', 'measure', 'window', 'weight', 'value', 'covered', 'enabled'] as const satisfies readonly TermColumn[];
+const columnNames = {
+  name: 'term', enabled: 'enabled', measure: 'measure', window: 'window', weight: 'weight', value: 'value', covered: 'covered',
+} as const;
 const columnWidths: Record<TermColumn, TableColumn> = {
   name: { least: '6rem', greatest: '16rem' }, measure: { least: '10rem' }, window: { least: '8rem' }, weight: { least: '7rem' },
+  value: { least: '6rem', greatest: '9rem' }, covered: { least: '6rem', greatest: '8rem' },
   enabled: { least: '4.5rem', greatest: '4.5rem' },
 };
+
+/**
+ * What a finished evaluation reports for each term: `shown` is the trial or trials the clock shows, whose value a term's
+ * Value is; `run` is each term over every trial the run recorded, whose share of `trials` it covers is its Covered.
+ */
+export interface TermScores {
+  readonly shown: TrialShown | undefined;
+  readonly run: Readonly<Record<string, TrialTermAggregate>>;
+  readonly trials: number;
+}
+
+function scoreOf(scores: TermScores, term: string) {
+  const { shown } = scores;
+  const value = shown?.kind === 'one' ? shown.record.terms?.[term]?.value
+    : shown?.kind === 'all' ? shown.aggregate.terms?.[term]?.value : undefined;
+  const covered = scores.run[term]?.covered;
+  return {
+    value: value == null ? '' : formatMetric(value),
+    covered: covered === undefined ? '' : studioCountOf(Math.round(covered * scores.trials), scores.trials),
+  };
+}
 
 /** The anchor of a term's Weight, which Add Sweep puts the keyboard on. */
 export const weightAnchor = (term: string) => `objective:${term}:weight`;
@@ -381,9 +411,11 @@ function newTerm(chosen: ReturnType<typeof measured>[number]) {
  * Term column lists the quantities a term can measure, and the term added is selected with its Measure focused. A
  * term is renamed by clicking its name, moved by dragging its handle, and removed from its row's menu.
  */
-export function TrialObjectiveTable({ view, commit, selected, select, runs }: {
+export function TrialObjectiveTable({ view, commit, selected, select, runs, scores }: {
   view: TrialView; commit?: Commit; selected?: TermSelection; select(term: string, field?: string): void; runs?: TrialRuns;
+  scores?: TermScores;
 }) {
+  const columns = scores ? scoredColumns : authoredColumns;
   const terms = view.objective?.terms ?? [];
   const box = useRef<HTMLDivElement>(null);
   const [renaming, setRenaming] = useState<string>();
@@ -421,6 +453,7 @@ export function TrialObjectiveTable({ view, commit, selected, select, runs }: {
     <tbody>{terms.map((term, index) => {
       const fields = termFields(view, term, index, commit, runs);
       const name = term.name ?? studioAccessibleName('term', index + 1);
+      const score = scores && scoreOf(scores, term.id);
       const cell = (field: TermColumn) => {
         const chosen = selected?.term === term.id && selected.field === field;
         return { selected: chosen, onFocusCapture: () => { if (!chosen) select(term.id, field); },
@@ -437,7 +470,7 @@ export function TrialObjectiveTable({ view, commit, selected, select, runs }: {
             {studioName('remove')}
           </MenuItem>
         </> }}>
-        <TableFieldCell header {...cell('name')}>
+        {!commit ? <TableRowHeader {...cell('name')}>{name}</TableRowHeader> : <TableFieldCell header {...cell('name')}>
           <span className="flex h-full min-w-0 items-center">
             <InlineEdit form="cell" value={term.name ?? ''} editing={renaming === term.id} className="min-w-0 flex-1"
               aria-label={studioAccessibleName('rename', name)}
@@ -449,10 +482,14 @@ export function TrialObjectiveTable({ view, commit, selected, select, runs }: {
               }} />
             <FieldChange change={fields.name.change} id={`${term.id}-name-change`} />
           </span>
-        </TableFieldCell>
+        </TableFieldCell>}
         <TableFieldCell {...cell('measure')}><ValueField model={fields.measure} form="cell" /></TableFieldCell>
         <TableFieldCell {...cell('window')}><TermWindow view={view} term={term} index={index} commit={commit} /></TableFieldCell>
         <TableFieldCell {...cell('weight')}><ValueField model={fields.weight} form="cell" /></TableFieldCell>
+        {score && <>
+          <TableCell className="text-right tabular-nums" {...cell('value')}>{score.value}</TableCell>
+          <TableCell className="tabular-nums" {...cell('covered')}>{score.covered}</TableCell>
+        </>}
         <TableFieldCell className="text-center" {...cell('enabled')}><ValueField model={fields.enabled} form="cell" /></TableFieldCell>
       </TableRow>;
     })}</tbody>

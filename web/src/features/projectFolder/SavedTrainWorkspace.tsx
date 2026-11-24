@@ -60,7 +60,7 @@ import { useConnection } from '@/api/connection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { authoredPointer, declarationAddress, ownDefinition, modelDocumentId } from './authoredEdits';
 import { withBaseDescendants } from './baseDescendants';
-import { useManagedProjectDetails, useStoredModel, type NamedDocumentScope } from './managedProjectDetails';
+import { useManagedProjectDetails, useRecordedTerms, useStoredModel, type NamedDocumentScope } from './managedProjectDetails';
 import { useTrialClock } from './useTrialClock';
 import { drawnVariables } from './task/trialSample';
 import { usePlayheadStore } from '@/components/timeline/trialClock';
@@ -391,8 +391,12 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     id === step.inputs.find(({ id }) => id === 'subject')?.sourceStepId)?.documentIds) : undefined;
   const stored = useStoredModel(editor, step, modelSource);
   const restGeometry = useSceneGeometry(saved.project_id, stored ? { document_id: stored.id, revision: saved.revision } : null, restState);
+  const scoredBy = authored?.kind === 'evaluate' ? evaluateSubject(authored) : undefined;
+  /** An Evaluate is scored by the Objective of the Train that made its checkpoint, or by the one it names itself. */
+  const scored = authored?.kind !== 'evaluate' || scoredBy?.kind === 'steps' || scoredBy?.kind === 'document' && !!scoredBy.objective;
   const views = !step ? noViews : viewOffer({
-    step, trainingForm: !!trainingDocument && !!authoring, planRead: !!shown, run: !namedRow ? 'none' : namedRow.resolved === false ? 'unresolved' : 'resolved', model: stored?.value,
+    step, trainingForm: !!trainingDocument && !!authoring, planRead: !!shown, run: !namedRow ? 'none' : namedRow.resolved === false ? 'unresolved' : 'resolved',
+    objective: scored, model: stored?.value,
     scenePlaces: restGeometry?.kind === 'ready' ? restGeometry.geometry.mechanisms.length > 0 : undefined,
     runProblems: (namedRun && step.runs.find(({ id }) => id === savedRunId(namedRun))?.problems) ?? [],
     results: !!plans.error || !!shownResult.row || !!shownResult.evaluation?.checkpoint_series,
@@ -651,6 +655,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     shelfView: windowState.mode === 'map' ? undefined : primaryView ?? undefined,
   });
   const evaluationReplay = trialClock.replay;
+  const scoredEvaluation = step?.kind === 'evaluate' && selectedEvaluation?.status === 'succeeded' ? selectedEvaluation : undefined;
+  const recordedTerms = useRecordedTerms(saved.project_id, saved.revision, scoredEvaluation, evaluationReplay.checkpoint,
+    windowState.mode !== 'map' && [primaryView, secondaryView].includes('objective'));
   const documentBase = authored && 'document' in authored.base && !authored.base.pointer ? authored.base.document : undefined;
   const pickDocument = useProjectDocuments({
     editor, stepId: step?.id, run: namedRun, scope: trialEditScope,
@@ -1832,14 +1839,23 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             const document = value.objective_document ?? step?.id ?? '';
             const element = named(document);
             const selected = element && { term: element.id, field: element.field };
+            // An Evaluate of a checkpoint is scored by the Objective of the Train that made it, which it shows unedited.
+            const train = value.objective_source?.kind === 'train' ? plan.steps.find(({ id }) => id === value.objective_source!.step) : undefined;
+            const scoring = train ? undefined : commit;
+            const picker = train ? undefined : pickDocument('objective', value.objective_document ?? undefined, documentScopes.objective);
+            const scores = scoredEvaluation && recordedTerms
+              ? { shown: trialClock.trial, run: recordedTerms, trials: scoredEvaluation.trials.length } : undefined;
             return {
-              picker: pickDocument('objective', value.objective_document ?? undefined, documentScopes.objective),
+              picker: picker && step?.kind === 'evaluate'
+                ? { ...picker, choose: trialEditable ? (next) => chooseSubjectDocument('objective', next) : undefined } : picker,
+              header: train && <Button variant="bare" size="content" className="underline-offset-2 hover:underline"
+                onClick={() => selection.select(selectStep(state, train.id))}>{train.label}</Button>,
               body: withProblem(<FocusedFields className="contents" request={fieldFocus?.step === step?.id && fieldFocus?.target?.startsWith('objective:') ? fieldFocus : undefined}
                 onFocused={() => setFieldFocus(undefined)}>
-                <TrialObjectiveTable view={value} commit={commit} selected={selected} select={choose(document)} runs={runs} />
+                <TrialObjectiveTable view={value} commit={scoring} selected={selected} select={choose(document)} runs={runs} scores={scores} />
               </FocusedFields>),
-              drawer: <TrialObjectiveOutline sections={drawerSections} view={value} commit={commit} selected={selected?.term} select={choose(document)} />,
-              inspector: <TrialObjectiveInspector view={value} commit={commit} selected={selected} runs={runs} shown={trialClock.trial} />,
+              drawer: <TrialObjectiveOutline sections={drawerSections} view={value} commit={scoring} selected={selected?.term} select={choose(document)} />,
+              inspector: <TrialObjectiveInspector view={value} commit={scoring} selected={selected} runs={runs} shown={trialClock.trial} />,
             };
           }
           if (view === 'training') {
