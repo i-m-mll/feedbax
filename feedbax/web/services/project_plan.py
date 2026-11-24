@@ -70,7 +70,8 @@ from feedbax.contracts.studio_subset import (
 )
 from feedbax.contracts.project_io import project_declaration_name
 from feedbax.planner.project_plan import (
-    BlockedRow, ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedInput, PlannedRow, PlannedRun, RunKey, RunProblem,
+    BlockedRow, ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedInput, PlannedRow, PlannedRun, ProjectPlan, RunKey,
+    RunProblem,
     authored_request_change,
 )
 from feedbax.planner.project_plan_io import run_key
@@ -430,15 +431,7 @@ class ProjectPlanRead:
                     problem, declaration=project_declaration_name(self.settled.configuration.project),
                 )
                   for problem in plan.diagnostics if includes(problem.variant)),
-                *(StudioProjectWindowMapProblem(
-                    code="cannot_run", path=problem.path, detail=problem.detail,
-                    variant=row.key.variant, step=row.key.step, row=row.key.row,
-                    place=(place := definition_place(
-                        path_parts(problem.path), row.document_ids.get, member=problem.model_address,
-                        variation=lambda _name, target=problem.variation_target: target,
-                    )),
-                    document_path=document_path(path_parts(problem.path), place),
-                ) for row in plan.rows if includes(row.key.variant) for problem in row.problems),
+                *row_problems(plan, variants),
                 *(problem for problem in self.evaluation_problems if includes(problem.variant)),
             ],
             requests=[
@@ -480,6 +473,24 @@ class ProjectPlanRead:
             detach_refused=sorted(self.settled.detach_refused),
             regroup_refused=sorted(self.settled.regroup_refused),
         )
+
+def row_problems(plan: ProjectPlan, variants: tuple[str, ...] | None = None) -> Iterator[StudioProjectWindowMapProblem]:
+    """Each Problem that keeps a row of ``plan`` from running, once, at its own path."""
+    for row in plan.rows:
+        if variants is not None and row.key.variant not in variants:
+            continue
+        for problem in row.problems:
+            parts = path_parts(problem.path)
+            place = definition_place(
+                parts, row.document_ids.get, member=problem.model_address,
+                variation=lambda _name, target=problem.variation_target: target,
+            )
+            yield StudioProjectWindowMapProblem(
+                code="cannot_run", path=problem.path, detail=problem.detail,
+                variant=row.key.variant, step=row.key.step, row=row.key.row,
+                place=place, document_path=document_path(parts, place), address=f"steps/{row.key.step}.json",
+            )
+
 
 def _by_element(elements: Iterable[PlannedElement]) -> dict[tuple[RunKey, str], list[PlannedElement]]:
     grouped: dict[tuple[RunKey, str], list[PlannedElement]] = {}
