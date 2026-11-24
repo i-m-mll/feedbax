@@ -1987,6 +1987,32 @@ export interface StudioPlanarSceneResponse {
   diagnostics: DomainDiagnostic[];
 }
 
+export interface SceneLinkGeometry {
+  body: ModelAddress;
+  joint: ModelAddress;
+  start: [number, number];
+  end: [number, number];
+  pivot: [number, number];
+}
+
+export interface SceneMuscleGeometry {
+  address: ModelAddress;
+  points: [number, number][];
+}
+
+export interface ScenePlanarGeometry {
+  kind: "planar";
+  address: ModelAddress;
+  links: SceneLinkGeometry[];
+  muscles: SceneMuscleGeometry[];
+}
+
+export interface ScenePointGeometry {
+  kind: "point";
+  address: ModelAddress;
+  position: [number, number];
+}
+
 export interface StudioSceneGeometryRequest {
   revision: string;
   document_id: string;
@@ -8880,6 +8906,48 @@ export const StudioPlanarSceneResponseSchema: z.ZodType<StudioPlanarSceneRespons
     })
     .strict()
 ) as unknown as z.ZodType<StudioPlanarSceneResponse>;
+
+export const SceneLinkGeometrySchema: z.ZodType<SceneLinkGeometry> = z.lazy(() =>
+  z
+    .object({
+      "body": ModelAddressSchema,
+      "joint": ModelAddressSchema,
+      "start": z.tuple([z.number().finite(), z.number().finite()]),
+      "end": z.tuple([z.number().finite(), z.number().finite()]),
+      "pivot": z.tuple([z.number().finite(), z.number().finite()]),
+    })
+    .strict()
+) as unknown as z.ZodType<SceneLinkGeometry>;
+
+export const SceneMuscleGeometrySchema: z.ZodType<SceneMuscleGeometry> = z.lazy(() =>
+  z
+    .object({
+      "address": ModelAddressSchema,
+      "points": z.array(z.tuple([z.number().finite(), z.number().finite()])).min(2),
+    })
+    .strict()
+) as unknown as z.ZodType<SceneMuscleGeometry>;
+
+export const ScenePlanarGeometrySchema: z.ZodType<ScenePlanarGeometry> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("planar"),
+      "address": ModelAddressSchema,
+      "links": z.array(SceneLinkGeometrySchema).min(1),
+      "muscles": z.array(SceneMuscleGeometrySchema),
+    })
+    .strict()
+) as unknown as z.ZodType<ScenePlanarGeometry>;
+
+export const ScenePointGeometrySchema: z.ZodType<ScenePointGeometry> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("point"),
+      "address": ModelAddressSchema,
+      "position": z.tuple([z.number().finite(), z.number().finite()]),
+    })
+    .strict()
+) as unknown as z.ZodType<ScenePointGeometry>;
 
 export const StudioSceneGeometryRequestSchema: z.ZodType<StudioSceneGeometryRequest> = z.lazy(() =>
   z
