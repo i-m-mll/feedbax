@@ -13,7 +13,7 @@ import { HeaderActivity } from '@/components/layout/HeaderActivity';
 import {
   StudioPipelineMap, StudioPipelineMapDrawer, type MapStepRename, type PipelineMapStepSource,
 } from '@/components/pipeline/StudioPipelineMap';
-import { isMemberName } from './projectMemberName';
+import { keyUnavailable } from './projectMemberName';
 import { KeyField } from '@/components/ui/KeyField';
 import { stepElementName } from './analysisElements';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
@@ -60,6 +60,7 @@ import { useConnection } from '@/api/connection';
 import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { authoredPointer, declarationAddress, ownDefinition, modelDocumentId } from './authoredEdits';
 import { withBaseDescendants } from './baseDescendants';
+import { stepDocument } from './documentPayload';
 import { useManagedProjectDetails, useStoredModel, type NamedDocumentScope } from './managedProjectDetails';
 import { useTrialClock } from './useTrialClock';
 import { drawnVariables } from './task/trialSample';
@@ -652,11 +653,10 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     shelfView: windowState.mode === 'map' ? undefined : primaryView ?? undefined,
   });
   const evaluationReplay = trialClock.replay;
-  const documentBase = authored && 'document' in authored.base && !authored.base.pointer ? authored.base.document : undefined;
+  const documentBase = authored && stepDocument(authored.base);
   const pickDocument = useProjectDocuments({
     editor, stepId: step?.id, run: namedRun, scope: trialEditScope,
     editable: documentEditable,
-    detachRefused: shown?.window_map?.detach_refused,
     selectable: new Set<DocumentRole>([
       ...!trialEditable ? [] : step?.kind === 'train' ? ['model', 'task', 'objective', 'training'] as const : ['model', 'task'] as const,
       ...documentEditable && wholeStep ? ['analysis', 'report'] as const : [],
@@ -1529,7 +1529,6 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     focused: () => setStepFocus(null),
   } : undefined;
   const changeStepKey = documentEditable ? (from: string, key: string) => {
-    if (!isMemberName(key)) return false;
     void perform(async () => {
       await editor.memberCommand(studioAccessibleName('changeKey', from),
         { kind: 'change_key', family: 'steps', member: from, key }, editor.getSnapshot().saved);
@@ -1826,6 +1825,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                   ? <FocusedFields className="contents" request={fieldFocus?.step === step?.id && fieldFocus?.target?.startsWith('task:') ? fieldFocus : undefined}
                     onFocused={() => setFieldFocus(undefined)}>
                     <TrialTaskDocument view={value} commit={commit} runs={runs} selected={selected} select={choose(document)}
+                      toSweep={step && ((axis) => sets.toSweep(step.id, axis))}
                       drawn={drawnVariables(trialClock.trial)} />
                   </FocusedFields>
                   : <TrialTaskForm view={value} commit={commit} />),
@@ -1903,6 +1903,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                 stepKey={<KeyField value={step.id} name={step.label} editing={keyingStep === step.id}
                   onEditingChange={(editing) => setKeyingStep(editing ? step.id : undefined)}
                   onCommit={(key) => changeStepKey?.(step.id, key)}
+                  unavailable={(key) => keyUnavailable(key, (key) => key in (saved.project.steps ?? {}))}
                   refusal={refusal?.kind === 'key' && refusal.step === step.id ? refusal.reason : undefined} />}
                 onChooseStep={(stepId) => selection.select(selectStep(state, stepId))}
                 revealed={fieldReveal?.view === 'runs'

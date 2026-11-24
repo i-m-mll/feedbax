@@ -14,4 +14,9 @@ describe('withBaseDescendants', () => {
     expect(withBaseDescendants(project, ['train-2'])).toEqual(new Set(['train-2', 'train-3']));
     expect(withBaseDescendants(project, ['other'])).toEqual(new Set(['other', 'row']));
   });
+
+  it('leaves out a step whose base kept a spelling another step later took', () => {
+    const project = { steps: { train: step({ inline: {} }), dangling: step({ step: 'train', unresolved: true }) } };
+    expect(withBaseDescendants(project, ['train'])).toEqual(new Set(['train']));
+  });
 });
