@@ -28,14 +28,14 @@ const typeName = (type: ValueType, types: readonly StudioNamedValueType[]) =>
   types.find((named) => sameType(named.type, type))?.name ?? studioValueType(type);
 
 const startOf = (reset: StudioTrialReset): ModelStart =>
-  ({ id: addressKey(reset.address), name: reset.name, required: reset.required });
+  ({ id: addressKey(reset.address), name: reset.name });
 
 /** A linked Model field the paired Model does not have: its component's id and its path. */
 function missingStart(id: string): ModelStart {
   const { element } = ModelAddressSchema.parse(JSON.parse(id));
   const name = element.kind === 'field' && element.parent.kind === 'component'
     ? `${element.parent.id} · ${element.path.slice(1).join(' ')}` : id;
-  return { id, name, required: false };
+  return { id, name };
 }
 
 /** The Model values `variable` initializes, the choice of those its type fits, and its links' problem and change. */
@@ -65,11 +65,14 @@ function initializes(view: TrialView, task: TaskDocument, variable: TaskDocument
 
 /** The paired Model's values no variable of `task` initializes. */
 function uninitialized(view: TrialView, task: TaskDocument, types: readonly StudioNamedValueType[]): UninitializedStart[] {
-  const linked = new Set((task.links ?? []).map(({ model_field }) => model_field));
+  const variables = new Set(task.variables.map(({ id }) => id));
+  const linked = new Set((task.links ?? []).flatMap(({ model_field, variable }) => variables.has(variable) ? [model_field] : []));
   return view.resets.filter((reset) => !linked.has(addressKey(reset.address)))
-    .map((reset) => ({
-      ...startOf(reset), anchor: startAnchor(addressKey(reset.address)), type: typeName(reset.type, types), valueType: reset.type,
-    }));
+    .map((reset) => {
+      const id = addressKey(reset.address);
+      const reason = view.problems.find(({ path = [] }) => path[0] === 'links' && path[1] === id)?.reason;
+      return { ...startOf(reset), anchor: startAnchor(id), reason, type: typeName(reset.type, types), valueType: reset.type };
+    });
 }
 
 /** The variables of the task document the step reads, each with its Type and Value fields. */

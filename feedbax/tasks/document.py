@@ -608,7 +608,10 @@ def compile_task(
                 link.variable if variable is not None else None,
             )
         elif variable is None:
-            problem(ProblemCode.UNKNOWN_NAME, f"{link.variable} is not a variable of the Task.", path)
+            problem(
+                ProblemCode.UNKNOWN_NAME, f"{link.variable} is not a variable of the Task.", path,
+                model_address=target.address,
+            )
         elif link.variable in broken:
             problem(ProblemCode.UNKNOWN_NAME, f"{variable.name!r} has problems.", path, link.variable)
         elif variable.level > target.finest or not target.type.accepts(variable.type):

@@ -662,6 +662,14 @@ def test_a_start_the_model_requires_is_a_problem_until_a_variable_initializes_it
     assert [problem.path for problem in unset] == [("links", position)]
     # Catches a missing start not tied to its Model value, which Studio could then name only by the Task's links.
     assert unset[0].model_address == reset_position(interface)
+    # Catches a link to a variable that does not exist placed nowhere, though it leaves its Model value unstarted.
+    dangling = compile_task(
+        doc.model_copy(update={"links": (Link(model_field=position, variable="ghost"),)}),
+        functions, model=required, input_overrides=overrides,
+    )
+    assert [(problem.path, problem.model_address) for problem in dangling] == [
+        (("links", position), reset_position(interface)),
+    ]
     assert not isinstance(compile_task(doc, functions, model=required, input_overrides=overrides), tuple)
 
 
