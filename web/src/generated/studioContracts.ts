@@ -3666,6 +3666,7 @@ export type StudioAuthoringCatalog = {
   "registries": Record<string, StudioAuthoringRegistry>;
   "step_inputs": Record<string, Record<string, InputRole>>;
   "analyze_inputs": Record<string, InputRole>;
+  "tasks": StudioTaskCatalog;
 };
 
 export type StudioAuthoringChange = {
@@ -3858,6 +3859,13 @@ export type StudioInputPlace = {
   "role": string;
 };
 
+export type StudioLibraryDocument = {
+  "distribution": string;
+  "library": string;
+  "name": string;
+  "document": RootDocument;
+};
+
 export type StudioMemberCommand = {
   "revision": Sha256;
   "presentation_revision": Sha256;
@@ -3879,6 +3887,11 @@ export type StudioModelPlace = {
   "part": "model";
   "document": string | null;
   "member"?: ModelAddress | null;
+};
+
+export type StudioNamedValueType = {
+  "name": string;
+  "type": ValueType;
 };
 
 export type StudioObjectivePlace = {
@@ -4216,6 +4229,12 @@ export type StudioSubsetToRowsRequest = {
 export type StudioSweptParameterMissing = {
   "class_label": string;
   "parameter_label": string;
+};
+
+export type StudioTaskCatalog = {
+  "blank": TaskDocument;
+  "documents": Array<StudioLibraryDocument>;
+  "value_types": Array<StudioNamedValueType>;
 };
 
 export type StudioTaskChoice = {
@@ -10629,6 +10648,7 @@ export const StudioAuthoringCatalogSchema: z.ZodType<StudioAuthoringCatalog> = z
     "registries": z.record(z.string(), StudioAuthoringRegistrySchema),
     "step_inputs": z.record(z.string(), z.record(z.string(), InputRoleSchema)),
     "analyze_inputs": z.record(z.string(), InputRoleSchema),
+    "tasks": StudioTaskCatalogSchema,
   }).strict()
 ) as unknown as z.ZodType<StudioAuthoringCatalog>;
 
@@ -10882,6 +10902,15 @@ export const StudioInputPlaceSchema: z.ZodType<StudioInputPlace> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<StudioInputPlace>;
 
+export const StudioLibraryDocumentSchema: z.ZodType<StudioLibraryDocument> = z.lazy(() =>
+  z.object({
+    "distribution": z.string(),
+    "library": z.string(),
+    "name": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "document": RootDocumentSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioLibraryDocument>;
+
 export const StudioMemberCommandSchema: z.ZodType<StudioMemberCommand> = z.lazy(() =>
   z.object({
     "revision": Sha256Schema,
@@ -10912,6 +10941,13 @@ export const StudioModelPlaceSchema: z.ZodType<StudioModelPlace> = z.lazy(() =>
     "member": z.union([ModelAddressSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioModelPlace>;
+
+export const StudioNamedValueTypeSchema: z.ZodType<StudioNamedValueType> = z.lazy(() =>
+  z.object({
+    "name": z.string(),
+    "type": ValueTypeSchema,
+  }).strict()
+) as unknown as z.ZodType<StudioNamedValueType>;
 
 export const StudioObjectivePlaceSchema: z.ZodType<StudioObjectivePlace> = z.lazy(() =>
   z.object({
@@ -11343,6 +11379,14 @@ export const StudioSweptParameterMissingSchema: z.ZodType<StudioSweptParameterMi
     "parameter_label": z.string().min(1),
   }).strict()
 ) as unknown as z.ZodType<StudioSweptParameterMissing>;
+
+export const StudioTaskCatalogSchema: z.ZodType<StudioTaskCatalog> = z.lazy(() =>
+  z.object({
+    "blank": TaskDocumentSchema,
+    "documents": z.array(StudioLibraryDocumentSchema),
+    "value_types": z.array(StudioNamedValueTypeSchema),
+  }).strict()
+) as unknown as z.ZodType<StudioTaskCatalog>;
 
 export const StudioTaskChoiceSchema: z.ZodType<StudioTaskChoice> = z.lazy(() =>
   z.object({

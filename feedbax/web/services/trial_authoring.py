@@ -495,11 +495,14 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
     expression = change if isinstance(change, StudioTrialExpressionEdit) else None
     if expression is not None:
         path = json_pointer_parts(expression.path)
-        site = projected.fields.get(path)
-        swept = _field_sweep(project, plan, key, definition, path, site, _field_label(path)) if (
+        holder = next((path[:end] for end in range(len(path), 0, -1) if path[:end] in projected.fields), path)
+        site = projected.fields.get(holder)
+        swept = _field_sweep(project, plan, key, definition, path, site, _field_label(holder)) if (
             site is not None and projected.pair is not None
         ) else None
-        if swept is not None and routes_to_sweep(expression.edit, swept, site, bundle.expression_functions):
+        if holder != path and swept is None:
+            raise ProjectFolderInvalid("The selected field is unavailable.")
+        if swept is not None and (holder != path or routes_to_sweep(expression.edit, swept, site, bundle.expression_functions)):
             if scope is not None and not isinstance(scope, StudioTrialStepScope):
                 raise ProjectFolderInvalid("A field has one sweep for every run of the step.")
             readers = lambda name: plan.document_users(key.variant, name)  # noqa: E731

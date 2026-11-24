@@ -15,7 +15,8 @@ from pydantic.fields import FieldInfo
 
 from feedbax.contracts.migrations import default_spec_registry
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
-from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID, TaskDocument
+from feedbax.contracts.task_document import BLANK_TASK, TASK_DOCUMENT_SCHEMA_ID, VALUE_TYPES, TaskDocument
+from feedbax.studio.library import installed_library_sources
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument
 from feedbax.contracts.training_document import TRAINING_DOCUMENT_KEYS, TRAINING_DOCUMENT_SCHEMA_ID, TrainingDocument
 from feedbax.contracts.analysis_document import AnalysisDocument
@@ -40,6 +41,9 @@ from feedbax.contracts.request_specs import DocumentTrainingConfig, DocumentTrai
 from feedbax.contracts.request_refs import LastMember, ProductRef
 from feedbax.contracts.studio_authoring import (
     StudioAuthoredDocumentFamily,
+    StudioLibraryDocument,
+    StudioNamedValueType,
+    StudioTaskCatalog,
     StudioAuthoringCatalog,
     StudioAuthoringChange,
     StudioAuthoringChoice,
@@ -176,6 +180,7 @@ def authoring_surface(
         document_families=documents,
         step_inputs=step_input_roles(),
         analyze_inputs=analyze_input_roles(),
+        tasks=_task_catalog(),
         registries={
             COMPONENTS.family: StudioAuthoringRegistry(
                 entries=sorted(bundle.components.list_all(), key=lambda definition: definition.name),
@@ -226,6 +231,22 @@ def authoring_surface(
                 origins=_origins(figure_records),
             ),
         },
+    )
+
+
+def _task_catalog() -> StudioTaskCatalog:
+    documents = []
+    for source in installed_library_sources():
+        for name, document in source.documents().items():
+            if isinstance(document, ProjectDiagnostic):
+                raise ValueError(f"{source.distribution} ships {source.name}/{name}, which does not compose: {document.detail}")
+            if document.schema_id == TASK_DOCUMENT_SCHEMA_ID:
+                documents.append(StudioLibraryDocument(
+                    distribution=source.distribution, library=source.name, name=name, document=document,
+                ))
+    return StudioTaskCatalog(
+        blank=BLANK_TASK, documents=documents,
+        value_types=[StudioNamedValueType(name=name, type=value_type) for name, value_type in VALUE_TYPES],
     )
 
 

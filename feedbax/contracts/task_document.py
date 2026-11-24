@@ -5,7 +5,9 @@ from typing import Annotated, Literal
 from pydantic import Field, JsonValue
 
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.expression_values import Expression, LiteralValue, Scalar, ValueRecord, ValueType
+from feedbax.contracts.expression_values import (
+    LENGTH, TIME, Expression, LiteralValue, Scalar, ValueBase, ValueRecord, ValueType,
+)
 
 
 TASK_DOCUMENT_SCHEMA_ID = "feedbax.spec.task_document"
@@ -102,6 +104,19 @@ BLANK_TASK = TaskDocument(
     epochs=(Epoch(id="epoch", name="epoch", end=Length(length=LiteralValue(value=1, unit="s"))),),
 )
 """What New makes of a task: one epoch, and nothing else."""
+
+
+VALUE_TYPES: tuple[tuple[str, ValueType], ...] = (
+    ("Number", ValueType(base=ValueBase.REAL)),
+    ("Integer", ValueType(base=ValueBase.INTEGER)),
+    ("Boolean", ValueType(base=ValueBase.BOOLEAN)),
+    ("Duration", ValueType(base=ValueBase.REAL, dimensions=TIME)),
+    ("Distance", ValueType(base=ValueBase.REAL, dimensions=LENGTH)),
+    ("Point", ValueType(base=ValueBase.REAL, shape=(2,), dimensions=LENGTH)),
+    ("Velocity", ValueType(base=ValueBase.REAL, shape=(2,), dimensions=LENGTH.combine(TIME, -1))),
+    ("Vector", ValueType(base=ValueBase.REAL, shape=(2,))),
+)
+"""The types a variable or a signal can have, each by its name."""
 
 
 PYTHON_TASK_SCHEMA_ID = "feedbax.spec.python_task"
