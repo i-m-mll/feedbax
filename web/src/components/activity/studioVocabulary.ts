@@ -4,7 +4,7 @@ import type {
   ValueType,
   ComputationChange, DriverChanged, EnvironmentDifference, ProgramsChanged, StepCountChanged, EnvironmentNotice, RegistryBinding, StudioActivityJob, StudioEvaluateValueSource,
   StudioDefinitionChange, StudioPlanReviewSource, StudioProjectWindowMapProblem, StudioSavedEvaluationResult,
-  StudioSavedTrainChange, StudioSweptParameterMissing, ValidityReason,
+  StudioSavedTrainChange, ValidityReason,
 } from '@/generated/studioContracts';
 import { humanizeLabel } from '@/components/values/humanizeLabel';
 import type { ValueKind } from '@/components/values/fieldModel';
@@ -48,11 +48,6 @@ export function studioFieldLabel(id: StudioNameId, label: string) {
 /** The accessible name of a chosen class's only parameter, drawn in its field's box under the field's label. */
 export function studioParameterLabel(field: string, parameter: string) {
   return studioFormat('fieldLabel', { label: field, name: parameter });
-}
-
-/** Why a class cannot be chosen: the step sweeps a parameter it lacks. */
-export function studioSweptParameterMissing({ class_label, parameter_label }: StudioSweptParameterMissing) {
-  return studioFormat('sweptParameterMissing', { class: class_label, parameter: parameter_label });
 }
 
 export function studioFieldKindLabel(label: string, kind: ValueKind) {

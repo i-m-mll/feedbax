@@ -15,8 +15,9 @@ from feedbax.contracts.project import RootDocument, Sha256, StepKind
 from feedbax.contracts.task_document import TaskDocument
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName, StepReference
 from feedbax.contracts.request_refs import Name
-from feedbax.contracts.jobs import StudioSavedTrainKey
+from feedbax.contracts.jobs import StudioProjectWindowMapProblem, StudioSavedTrainKey
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
+from feedbax.contracts.studio_scope import StudioStoreChoice
 
 
 class InputProducer(StrictModel):
@@ -234,6 +235,7 @@ class StudioClassSweepChange(StrictModel):
 
 class StudioTrainAuthoringRequest(StudioRunSelection):
     revision: Sha256
+    store_choice: Sha256 | None = None
     change: StudioAuthoringChange | None = None
     class_sweep: StudioClassSweepChange | None = None
     reset: str | None = None
@@ -249,13 +251,7 @@ class StudioTrainStartRequest(StrictModel):
 class StudioTrainStartEdit(StrictModel):
     revision: Sha256
     files: list[StudioProjectFilePatch]
-
-
-class StudioSweptParameterMissing(StrictModel):
-    """A class that lacks a parameter the step sweeps, so the step cannot take it; both named by their titles."""
-
-    class_label: NonemptyText
-    parameter_label: NonemptyText
+    problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
 
 
 class StudioClassMember(StrictModel):
@@ -300,7 +296,8 @@ class StudioTrainAuthoring(StrictModel):
     created: list[CreateNamedDocument] = Field(default_factory=list)
     """Documents the edit creates, written before ``files``, which may name them."""
     documents: list[ProjectName]
-    refusal: StudioSweptParameterMissing | None = None
+    store_choices: list[StudioStoreChoice] | None = None
+    sweep_problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
     classes: list[StudioClassField] = Field(default_factory=list)
     removed_values: dict[str, list[str]] = Field(default_factory=dict)
     """Per sweep, the values whose runs the edit removes from the project."""

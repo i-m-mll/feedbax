@@ -247,6 +247,13 @@ def lower_evaluate_attachments(
     """
     before = lower_model_document(trained, components, binding)
     resolved = resolve_effective_model(evaluated, components, differences, functions=functions)
+    trained_names = {port.id: port.name for port in trained.ports.inputs}
+    inputs = tuple(
+        port.model_copy(update={"name": trained_names[port.id]}) if port.id in trained_names else port
+        for port in resolved.ports.inputs
+    )
+    # A checkpoint keeps the runtime names it trained with. The authored IDs still identify these inputs.
+    resolved = resolved.model_copy(update={"ports": resolved.ports.model_copy(update={"inputs": inputs})})
     after = lower_model_document(resolved, components, binding)
     try:
         derived = tuple(sorted(_graph_edits(before.graph, after.graph), key=lambda edit: edit.path))

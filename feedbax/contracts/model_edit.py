@@ -13,9 +13,10 @@ from feedbax.contracts.model_document import (
     CompositeComponent, LeafComponent, ModelName, ModelPhysicalConnection,
     ModelDocument, ModelWire, PhysicalPort, SignalInput, SignalOutput, SignalType, WireAttachment,
 )
-from feedbax.contracts.jobs import StudioSavedTrainKey
+from feedbax.contracts.jobs import StudioProjectWindowMapProblem, StudioSavedTrainKey
 from feedbax.contracts.project import Sha256
 from feedbax.contracts.project_inputs import AxisValueId, ProjectName, RowKey
+from feedbax.contracts.studio_scope import StudioStoreChoice
 from feedbax.contracts.request_refs import Name
 from feedbax.contracts.studio_project import StudioProjectSnapshot
 from feedbax.contracts.studio_project import StudioProjectFilePatch
@@ -257,7 +258,7 @@ class ModelProjectionRequest(StrictModel):
     entry, the projection gives that value's differences from the step's Model."""
 
     revision: Sha256
-    run: StudioSavedTrainKey
+    run: StudioSavedTrainKey | None = None
     document: ProjectName
     rows: list[RowKey] = Field(default_factory=list)
     axes: dict[ProjectName, list[Name]] = Field(default_factory=dict)
@@ -330,8 +331,10 @@ class ModelEditState(ModelLayout):
 
 class ModelEditResult(StrictModel):
     state: ModelEditState
+    relocations: dict[str, ModelAddress] = Field(default_factory=dict)
     changed: tuple[ModelAddress, ...] = ()
     clipboard: ModelClipboard | None = None
+    problems: tuple[ModelGraphProblem, ...] = ()
 
 
 class ModelEditRequest(StrictModel):
@@ -357,6 +360,7 @@ class ModelEditRequest(StrictModel):
     rows: list[RowKey] = Field(default_factory=list)
     axes: dict[ProjectName, list[Name]] = Field(default_factory=dict)
     files: list[StudioProjectFilePatch] = Field(default_factory=list)
+    store_choice: Sha256 | None = None
 
     @model_validator(mode="after")
     def _variant_has_step(self) -> ModelEditRequest:
@@ -425,6 +429,7 @@ class EvaluateModelState(StrictModel):
     changed_from: ProjectName | None = None
     """The nearest document the read Model document shares with the subject's, when they differ: what the
     evaluation changes is the read document's differences from it."""
+    problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
 
 
 class ModelEditApplied(StrictModel):
@@ -438,6 +443,7 @@ class ModelEditApplied(StrictModel):
     undo_token: ModelUndoToken | None = None
     created: tuple[ProjectName, ...] = ()
     problems: tuple[ModelGraphProblem, ...] = ()
+    sweep_problems: tuple[StudioProjectWindowMapProblem, ...] = ()
 
 
 class ModelEditRefused(StrictModel):
@@ -445,5 +451,10 @@ class ModelEditRefused(StrictModel):
     problem: ModelEditProblem
 
 
+class ModelEditAsked(StrictModel):
+    status: Literal["asked"]
+    store_choices: list[StudioStoreChoice] = Field(min_length=1)
+
+
 class ModelEditResponse(StrictModel):
-    result: Annotated[ModelEditApplied | ModelEditRefused, Field(discriminator="status")]
+    result: Annotated[ModelEditApplied | ModelEditRefused | ModelEditAsked, Field(discriminator="status")]
