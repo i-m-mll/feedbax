@@ -207,11 +207,11 @@ def _point(value: Iterable[float]) -> ScenePoint:
     return float(x), float(y)
 
 
-def _pose_value(value: JsonValue, shape: tuple[int, ...]) -> jax.Array:
+def _pose_value(value: JsonValue, target: jax.Array) -> jax.Array:
     pose = np.asarray(value)
-    if pose.shape != shape or pose.dtype.kind not in "iuf" or not np.isfinite(pose).all():
-        raise ValueError(f"Scene pose requires a finite numeric value of shape {shape}.")
-    return jnp.asarray(pose)
+    if pose.dtype.kind not in "iuf" or not np.isfinite(pose).all():
+        raise ValueError("Scene pose requires a finite numeric value.")
+    return jnp.broadcast_to(jnp.asarray(pose, dtype=target.dtype), target.shape)
 
 
 def _portable_geometry(
@@ -229,9 +229,12 @@ def _portable_geometry(
         return None
 
     points = [state for state in facts.states if state.space == "point" and state.frame == "world"]
-    writable_points = [state for state in points if state.reset is not None]
-    preferred_points = writable_points if len(points) > 1 else points
-    position = preferred_points[0] if len(preferred_points) == 1 else None
+    position = next(
+        (point for point in points if all(
+            other is point or other.fields in point.aliases for other in points
+        )),
+        None,
+    )
     configurations = [state for state in facts.states if state.configuration]
     representation = declaration.representation
     planar = representation is not None and any(
@@ -245,13 +248,18 @@ def _portable_geometry(
     )
     owner = resolved.meta.owner_class(**resolved.params)
     state = init_state_from_component(owner)
+    rest = owner.state_view(state)
     address = _component_address(path)
     supplied_position = _state_value(path, position, request) if position is not None else None
     if not planar and position is not None:
-        value = (
-            _pose_value(supplied_position, (2,)) if supplied_position is not None
-            else attrgetter(".".join(position.fields))(owner.state_view(state))
-        )
+        if supplied_position is None:
+            supplied_position = next(
+                (value for companion in points if position.fields in companion.aliases
+                 and (value := _state_value(path, companion, request)) is not None),
+                None,
+            )
+        reference = attrgetter(".".join(position.fields))(rest)
+        value = _pose_value(supplied_position, reference) if supplied_position is not None else reference
         return ScenePointGeometry(
             kind="point", address=address, name=component.name,
             point=_geometry_address(path, ("point",)), position=_point(value),
@@ -264,13 +272,12 @@ def _portable_geometry(
         if (value := _state_value(path, leaf, request)) is not None
     ]
     if supplied_configuration:
-        rest = owner.state_view(state)
         for leaf, value in supplied_configuration:
-            original = attrgetter(".".join(leaf.fields))(rest)
-            sample = _pose_value(value, original.shape)
-            state = owner.replace_state_value(state, leaf.fields, sample.astype(original.dtype))
+            reference = attrgetter(".".join(leaf.fields))(rest)
+            state = owner.replace_state_value(state, leaf.fields, _pose_value(value, reference))
     elif position is not None and supplied_position is not None:
-        state = owner.replace_state_value(state, position.fields, _pose_value(supplied_position, (2,)))
+        reference = attrgetter(".".join(position.fields))(rest)
+        state = owner.replace_state_value(state, position.fields, _pose_value(supplied_position, reference))
 
     skeleton = owner.state_view(state).plant.skeleton
     endpoints = owner.plant.skeleton.forward_kinematics(skeleton).pos
