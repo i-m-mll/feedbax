@@ -15,6 +15,7 @@ from pydantic_core import to_json, to_jsonable_python
 
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.figure_document import FIGURE_DOCUMENT_SCHEMA, is_figure_document_pin
+from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.matrix_core import apply_override_patch_copy, resolve_segment
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, SetField
@@ -385,6 +386,20 @@ def subject_task_write(payload: Any, patch: OverridePatch) -> tuple[OverridePatc
     while name in variation:
         name += "-field"
     return OverridePatch(op="add", path=f"params.variation.{name}", value=edit), False
+
+
+def subject_model_read(project: Project, payload: Any, document: str) -> Any | None:
+    """An Evaluate's payload reading ``document`` as its own Model, when a row writes into that Model document and
+    the step names no Model of its own; the step then runs the subject's Model with the row's writes as its
+    differences. ``None`` when the step already reads a Model, or ``document`` is not one."""
+    entry = project.documents.get(document)
+    if entry is None or entry.schema_id != MODEL_DOCUMENT_SCHEMA_ID or not isinstance(payload, dict):
+        return None
+    slots = payload.get("trial_documents")
+    if isinstance(slots, dict) and "model" in slots:
+        return None
+    reference = DocumentReference(document=document)
+    return payload | {"trial_documents": {**(slots if isinstance(slots, dict) else {}), "model": reference}}
 
 
 def _figure_slot(path: str) -> str | None:
@@ -1077,6 +1092,17 @@ class _Resolver:
                     patch, reordered = lowered
                 elif (target := document_write_target(payload, patch.path)) is not None:
                     document, document_path = target
+                    if self.project.steps[name].kind == "evaluate" and (
+                        read := subject_model_read(self.project, payload, document)
+                    ) is not None:
+                        if origins is not None:
+                            held = isinstance(source_at(origins, ("trial_documents",)), SourceObject)
+                            slot = "trial_documents.model" if held else "trial_documents"
+                            value = read["trial_documents"]["model"] if held else read["trial_documents"]
+                            origins = patch_source(
+                                origins, OverridePatch(op="add", path=slot, value=None), source_shape(value, None),
+                            )
+                        payload = read
                     source, override = (None, None) if origins is None else self.row_source(
                         row.patch_authors.get(patch.path, name), row, patch.path,
                     )

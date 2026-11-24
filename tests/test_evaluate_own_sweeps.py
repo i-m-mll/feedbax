@@ -134,3 +134,21 @@ def test_a_task_document_field_edit_on_some_evaluate_runs_reaches_their_requests
             variations[run.key] = list(variation.values()) if isinstance(variation, dict) else variation
     assert variations.pop(far) == [{"op": "replace", "path": "task.variables.target.value", "value": target}]
     assert list(variations.values()) == [[]]
+
+
+def test_a_set_applies_to_an_evaluate_that_runs_its_subjects_model():
+    """Catches a Set an Evaluate cannot sweep unless it names a Model of its own, or whose entries plan alike."""
+    from feedbax.contracts.set_document import sets_offered
+    from tests.test_set_document_plan import _plan, _project as _set_project
+
+    raw = _set_project()
+    del raw["steps"]["baseline"]["base"]["inline"]["trial_documents"]
+    del raw["steps"]["train"]["sweep"]
+    assert sets_offered(Project.model_validate(raw), "baseline") == ("alterations",)
+    swept = _plan(raw)
+    assert swept.diagnostics == ()
+    runs = {run.label: run.request_id for run in swept.runs if run.key.step == "baseline"}
+    assert runs.keys() == {f"alteration={label}" for label in ("Gain", "Scaled force", "Heavy")}
+    del raw["steps"]["baseline"]["sweep"]
+    (plain,) = (run.request_id for run in _plan(raw).runs if run.key.step == "baseline")
+    assert len({plain, *runs.values()}) == 4
