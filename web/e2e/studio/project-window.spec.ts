@@ -95,7 +95,7 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', { ta
   const runButton = page.getByRole('button', { name: 'Run', exact: true });
   await expect(status).toBeEmpty();
   await expect(status).toHaveAttribute('aria-live', 'polite');
-  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   const activity = page.getByRole('region', { name: 'Activity', exact: true });
   const activityRow = activity.getByRole('region', { name: configuration.project, exact: true }).getByRole('listitem').filter({
     has: page.getByRole('button', { name: 'Train train', exact: true }),

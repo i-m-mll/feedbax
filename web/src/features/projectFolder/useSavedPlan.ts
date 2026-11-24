@@ -27,6 +27,8 @@ export interface SavedPlan {
    * made. A gesture runs then against the state of that render, so it reads it through refs, not its closure.
    */
   whenCurrent(gesture: () => void): void;
+  /** Runs `change` now unless gestures wait for the plan, else after them, so they act on what they were made on. */
+  inTurn(change: () => void): void;
   refetch(): Promise<unknown>;
 }
 
@@ -63,6 +65,10 @@ export function useSavedPlan(editor: ProjectEditController, version: string): Sa
     if (isCurrent.current && !held.current.length) gesture();
     else held.current.push(gesture);
   }, []);
+  const inTurn = useCallback((change: () => void) => {
+    if (held.current.length) held.current.push(change);
+    else change();
+  }, []);
   useEffect(() => {
     if (!current) return;
     const gestures = held.current;
@@ -71,7 +77,7 @@ export function useSavedPlan(editor: ProjectEditController, version: string): Sa
   });
   const { refetch } = query;
   return {
-    ...pair, current, error: query.error, read: readCurrent, whenCurrent, refetch,
+    ...pair, current, error: query.error, read: readCurrent, whenCurrent, inTurn, refetch,
     waiting: !current && (!!read || query.isPending),
   };
 }

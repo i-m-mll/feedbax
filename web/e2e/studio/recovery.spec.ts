@@ -143,7 +143,7 @@ test('a mounted Model render failure reports to the service and retries only its
   await expect(mapStep(page, 'train')).toBeVisible();
   await expect(table).toBeVisible();
   const activity = page.getByRole('region', { name: 'Activity', exact: true });
-  await page.getByRole('button', { name: 'Activity', exact: true }).click();
+  await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   await expect(activity.getByRole('list', { name: 'Runs', exact: true })).toBeVisible();
   await activity.getByRole('button', { name: 'Close', exact: true }).click();
 
