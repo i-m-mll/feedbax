@@ -11,14 +11,16 @@ from itertools import product
 from feedbax.contracts.expression_values import (
     TIME, CallValue, DrawValue, Expression, LiteralValue, NameValue, ValueBase, ValueType,
 )
-from feedbax.contracts.model_address import ComponentPortEnd, InputBoundaryEnd
+from feedbax.contracts.model_address import (
+    ComponentElement, ComponentPortEnd, FieldElement, InputBoundaryEnd, ModelAddress, SignalSource,
+)
 from feedbax.contracts.model_document import (
     InterventionAttachment, InterventionWindow, LeafComponent, ModelDocument, ModelWire, SignalInput, SignalType,
 )
 from feedbax.contracts.project import Document, apply_differences
 from feedbax.contracts.project_sweep import CooccurringSetTrials, ListedSetTrials, SetEntryParts, TrialSetField
 from feedbax.contracts.set_document import read_set
-from feedbax.contracts.task_document import Cell, SetVariableChoices, Signal, TaskDocument, ValidationTrial, Variable
+from feedbax.contracts.task_document import Cell, Link, SetVariableChoices, Signal, TaskDocument, ValidationTrial, Variable
 
 
 class SetFieldProblem(ValueError):
@@ -70,6 +72,8 @@ class _Union:
         self.wires = dict(model.interior.wires)
         self.alternatives: dict[str, list[_Alternative]] = defaultdict(list)
         self.conditions: list[tuple[dict[str, int], ...]] = []
+        self.curl_activation: dict[str, tuple[bool, list[Expression]]] = {}
+        self.window_offsets: dict[str, NameValue] = {}
 
     def variable(
         self, id: str, value_type: ValueType, value: Expression, *, choices: SetVariableChoices | None = None,
@@ -79,20 +83,26 @@ class _Union:
         self.variables.append(Variable(id=id, name=id, type=value_type, value=value, set_choices=choices))
         return NameValue(reference=id)
 
-    def gate(self, alt: _Alternative, gate_id: str, window: InterventionWindow | None):
+    def gate(
+        self, alt: _Alternative, gate_id: str, window: InterventionWindow | None, window_key: str | None,
+    ) -> InputBoundaryEnd:
         selector = alt.predicate
         first, last = self.task.epochs[0].id, self.task.epochs[-1].id
         if window is not None:
             if window.epoch not in {epoch.id for epoch in self.task.epochs}:
                 raise alt.problem(f"Intervention names missing epoch {window.epoch!r}.")
             first = window.epoch
-            offset = self.variable(_id(gate_id, "offset"), _DURATION, DrawValue(
-                family="choice", args=tuple(LiteralValue(value=float(x), unit="st") for x in window.offsets),
-            ))
+            assert window_key is not None
+            period = self.model.step_seconds
+            if window_key not in self.window_offsets:
+                self.window_offsets[window_key] = self.variable(window_key, _DURATION, DrawValue(
+                    family="choice", args=tuple(LiteralValue(value=x * period, unit="s") for x in window.offsets),
+                ))
+            offset = self.window_offsets[window_key]
             time = NameValue(reference="t")
             # A half-step boundary avoids rounding a sample off its exact edge.
-            start = _call("sub", offset, LiteralValue(value=0.5, unit="st"))
-            stop = _call("add", start, LiteralValue(value=float(window.duration), unit="st"))
+            start = _call("sub", offset, LiteralValue(value=0.5 * period, unit="s"))
+            stop = _call("add", start, LiteralValue(value=window.duration * period, unit="s"))
             selector = _call("and", selector, _call("and", _call("ge", time, start), _call("lt", time, stop)))
         self.signals.append(Signal(
             id=gate_id, name=gate_id, type=_BOOL, absent=LiteralValue(value=False),
@@ -130,12 +140,12 @@ class _Union:
         changes = {id: wire for id, wire in after.wires.items() if id in before.wires and before.wires[id] != wire}
         added = after.wires.keys() - before.wires.keys()
         stable = after.model_copy(update={"wires": before.wires, "components": before.components})
-        if (
-            variant.model_copy(update={"interior": stable}) != self.model
-            or not before.wires.keys() <= after.wires.keys()
-            or any(after.components.get(id) != node for id, node in before.components.items())
-        ):
-            raise SetFieldProblem(axis, set_name, entry, "The entry changes a Model value with no qualified trial switch.")
+        if variant.model_copy(update={"interior": stable}) != self.model or not before.wires.keys() <= after.wires.keys():
+            raise SetFieldProblem(axis, set_name, entry, "The entry has no qualified trial switch for its Model changes.")
+        for id, node in before.components.items():
+            other = after.components.get(id)
+            if other != node and not self.switch_curl(id, node, other, predicate):
+                raise SetFieldProblem(axis, set_name, entry, f"Component {id!r} has no qualified trial switch for the change.")
         if after.components.keys() != before.components.keys() or added:
             if not changes:
                 raise SetFieldProblem(axis, set_name, entry, "The added branch has no existing wire it can switch.")
@@ -146,6 +156,30 @@ class _Union:
             if before.wires[id].target != wire.target:
                 raise alt.problem(f"Wire {id!r} changes its target, which has no qualified trial switch.")
             self.alternatives[id].append(alt)
+
+    def switch_curl(self, id, node, other, predicate: Expression) -> bool:
+        if not isinstance(node, LeafComponent) or not isinstance(other, LeafComponent) or node.type != "feedbax.CurlField":
+            return False
+        base = node.fields.get("active", False)
+        active = other.fields.get("active", False)
+        if type(base) is not bool or type(active) is not bool:
+            return False
+        fields = {key: value for key, value in other.fields.items() if key != "active"}
+        if "active" in node.fields:
+            fields["active"] = base
+        if other.model_copy(update={"fields": fields}) != node:
+            return False
+        if base == active:
+            return True
+        param = _component_port(id, "params_override")
+        address = _curl_address(id)
+        if any(link.model_field == address for link in self.task.links) or any(
+            wire.target == param for wire in self.model.interior.wires.values()
+        ):
+            return False
+        _, selectors = self.curl_activation.setdefault(id, (base, []))
+        selectors.append(predicate)
+        return True
 
     def placement(self, axis: str, placement: TrialSetField, read: Callable[[str], Document | None]):
         try:
@@ -189,9 +223,9 @@ class _Union:
             self.entry(axis, placement, entry, gate, entries[entry].differences)
 
     def route(
-        self, id: str, source, chain, active_source, active_chain,
-        alt: _Alternative, window: InterventionWindow | None = None,
-    ):
+        self, id: str, source: SignalSource, chain, active_source: SignalSource, active_chain,
+        alt: _Alternative, window: InterventionWindow | None = None, window_key: str | None = None,
+    ) -> ComponentPortEnd:
         switch_id = _id(id, alt.axis, alt.entry)
         gate_id = _id(switch_id, "gate")
         self.components[switch_id] = LeafComponent(kind="leaf", name=switch_id, type="feedbax.Switch")
@@ -202,7 +236,7 @@ class _Union:
             source=active_source, target=_component_port(switch_id, "true_input"), attachments=active_chain,
         )
         self.wires[_id(switch_id, "control")] = ModelWire(
-            source=self.gate(alt, gate_id, window), target=_component_port(switch_id, "condition"),
+            source=self.gate(alt, gate_id, window, window_key), target=_component_port(switch_id, "condition"),
         )
         return _component_port(switch_id, "output")
 
@@ -213,8 +247,10 @@ class _Union:
             self.components[stem] = LeafComponent(kind="leaf", name=stem, type="feedbax.Input")
             self.wires[stem] = ModelWire(source=source, target=_component_port(stem, "input"), attachments=chain)
             source = _component_port(stem, "output")
+        window = attachment.window
+        window_key = _id(id, attachment.id, window.model_dump_json()) if window is not None else None
         segment = attachment.model_copy(update={"window": None})
-        return self.route(context, source, (), source, (segment,), alt, attachment.window)
+        return self.route(context, source, (), source, (segment,), alt, window, window_key)
 
     def finish(self) -> tuple[ModelDocument, TaskDocument]:
         for id in sorted(self.alternatives.keys() | {
@@ -263,10 +299,25 @@ class _Union:
                 ValidationTrial(variables=row.variables | _combine_conditions(selected), epoch_steps=row.epoch_steps)
                 for row in cohort for selected in product(*self.conditions)
             )
+        links = list(self.task.links)
+        for node, (base, selectors) in self.curl_activation.items():
+            enabled = selectors[0]
+            for selector in selectors[1:]:
+                enabled = _call("or", enabled, selector)
+            active = _call("not", enabled) if base else enabled
+            variable = self.variable(_id(node, "active"), _BOOL, active)
+            links.append(Link(model_field=_curl_address(node), variable=variable.reference))
         task = self.task.model_copy(update={
-            "variables": tuple(self.variables), "signals": tuple(self.signals), "validation_trials": cohort,
+            "variables": tuple(self.variables), "signals": tuple(self.signals),
+            "validation_trials": cohort, "links": tuple(links),
         })
         return model, task
+
+
+def _curl_address(component: str) -> str:
+    return ModelAddress(composites=(), element=FieldElement(
+        kind="field", parent=ComponentElement(kind="component", id=component), path=("fields", "active"),
+    )).to_text()
 
 
 def _combine_conditions(selected):

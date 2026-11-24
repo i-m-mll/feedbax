@@ -10,7 +10,9 @@ from feedbax.application.composition import application_python_tasks
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.project import Project
 from feedbax.contracts.request_identity import decode_request
-from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution
+from feedbax.execution.trial_resolution import (
+    PreparedTrialExecution, PreviewTrialSource, compile_trial_execution, preview_trial_source,
+)
 from feedbax.planner.project_plan import compile_project
 from feedbax.runtime._graph_key_schedule import model_initialization_key
 from feedbax.tasks.document import TaskParameters
@@ -57,6 +59,12 @@ def test_weighted_set_switches_real_training_trials_at_the_window_boundaries():
     compiled = prepare(document.model, document.task)
     nominal = prepare(model, task)
     parameters = TaskParameters()
+    representative = preview_trial_source(
+        document.model, document.task, registry, functions, python_tasks=application_python_tasks(),
+        input_bindings=document.input_bindings, nominal=True,
+    )
+    assert isinstance(representative, PreviewTrialSource), representative
+    assert int(representative.task.ahead(parameters, jr.key(0), jr.key(0)).variables["bank"]) == 3
     sampled, _ = compiled.execution.sample_trials(parameters, run_key=jr.key(0), update_key=jr.key(1), count=2000)
     variable = next(variable for variable in document.task.variables if variable.id == "bank")
     assert variable.set_choices.set == "bank"
