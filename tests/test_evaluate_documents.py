@@ -139,6 +139,49 @@ def test_an_evaluation_keeps_its_subjects_swept_value_under_its_documents_change
         assert all("mass" not in edit["path"] for edit in spec.params["variation"])
 
 
+def test_evaluate_ungroup_eligibility_reads_the_selected_axis_model(tmp_path):
+    """Catch a selected Model value inheriting the trained Model's Ungroup verdict."""
+    from fastapi.testclient import TestClient
+
+    from feedbax.web.app import create_app
+    from feedbax.web.services.project_folder import ProjectFolderService
+    from tests.test_canonical_evaluate_admission import _save_project
+
+    data = _data()
+    wrapper = "idle-wrapper"
+    data["documents"]["model"]["payload"]["interior"]["components"][wrapper] = {
+        "kind": "composite", "name": "Idle wrapper",
+        "ports": {"inputs": [{"id": "in", "name": "In", "type": {}}]}, "interior": {},
+    }
+    _reads(data, "check", "model", "model")
+    default = f"trial_documents.model.interior.components.{wrapper}.ports.inputs.in.default"
+    data["steps"]["check"]["sweep"] = {"axes": {"model-choice": {"values": {
+        "open": {},
+        "blocked": {"patches": {default: {"op": "add", "value": {"value": 1.0}}}},
+    }}}}
+    folders = ProjectFolderService(tmp_path)
+    project = "ungroup-axis-value"
+    _save_project(folders, project, Project.model_validate(data))
+    snapshot = folders.read(project)
+    address = {"composites": [], "element": {"kind": "component", "id": wrapper}}
+
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        def reason(value):
+            response = client.post(f"/api/projects/{project}/model/evaluate-model", json={
+                "revision": snapshot.revision,
+                "run": {"variant": "default", "step": "check", "row": f"model-choice={value}"},
+                "scope": {"kind": "axis_value", "axis": "model-choice", "value": value},
+            })
+            assert response.status_code == 200, response.text
+            state = response.json()
+            assert state["resolved_model"] is not None, state["problems"]
+            assert wrapper in state["resolved_model"]["interior"]["components"]
+            return next(item["reason"] for item in state["ungroup"] if item["address"] == address)
+
+        assert reason("open") is None
+        assert reason("blocked") == "Ungroup would remove an unconnected defaulted input"
+
+
 def test_a_model_document_that_shares_none_with_the_subjects_is_the_evaluations_problem():
     data = _data()
     data["documents"]["model"]["label"] = "Point mass"

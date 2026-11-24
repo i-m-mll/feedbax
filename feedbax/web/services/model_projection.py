@@ -1,6 +1,7 @@
 """Project the selected run's compiler and task facts onto stored Model addresses."""
 
 from feedbax.compiler.model_document import lower_model_document
+from feedbax.compiler.model_edit import model_ungroup_eligibility
 from feedbax.compiler.model_ports import ModelRegistryPorts
 from feedbax.compiler.resolution import resolve_graph_parameters
 from feedbax.contracts.model_address import ComponentPortAddress, ModelAddress, PortElement
@@ -107,7 +108,7 @@ def model_projection(folders, project_id, body, components):
     )
     known = dict(
         task_signals=task_signals, task_inputs=task_inputs, resolved_model=model,
-        ungroup=tuple(authority.ungroup_eligibility(model)), **differences,
+        ungroup=model_ungroup_eligibility(model), **differences,
     )
     try:
         lowered = lower_model_document(
