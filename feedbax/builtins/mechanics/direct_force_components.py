@@ -57,8 +57,6 @@ class TwoLinkArm(Mechanics, Component):
             ),
             StateValue("effector/force", ("effector", "force"), "N", "xy", "world"),
         ),
-        scene_effector_port="effector",
-        scene_position="effector/position",
     )
     config_bindings = (ConfigBinding(path="plant.skeleton.l", name="link_lengths"),)
 
@@ -85,21 +83,19 @@ class PointMass(Mechanics, Component):
             ModelValue("dt", "dt", "source"),
         ),
         states=(
-            StateValue("skeleton/position", ("plant", "skeleton", "pos"), "m", "xy", "world", space="point"),
             StateValue("skeleton/velocity", ("plant", "skeleton", "vel"), "m/s", "xy", "world"),
             StateValue("skeleton/force", ("plant", "skeleton", "force"), "N", "xy", "world"),
             StateValue(
                 "effector/position", ("effector", "pos"), "m", "xy", "world",
                 reset=StateReset("effector", ("pos",)), space="point",
             ),
+            StateValue("skeleton/position", ("plant", "skeleton", "pos"), "m", "xy", "world", space="point"),
             StateValue(
                 "effector/velocity", ("effector", "vel"), "m/s", "xy", "world",
                 reset=StateReset("effector", ("vel",)),
             ),
             StateValue("effector/force", ("effector", "force"), "N", "xy", "world"),
         ),
-        scene_effector_port="effector",
-        scene_position="effector/position",
     )
 
     ports = _MECHANICS_PORTS

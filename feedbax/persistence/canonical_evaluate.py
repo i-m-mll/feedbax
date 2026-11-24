@@ -43,7 +43,8 @@ from feedbax.contracts.rollout import (
     rollout_objective_sha256,
 )
 from feedbax.contracts.semantic_values import model_state_address, semantic_key
-from feedbax.contracts.trial_record import StudioTrialReplayResponse, TrialRecord, TrialRecords, TrialStateTrack
+from feedbax.contracts.trial_record import StudioTrialReplayResponse, TrialAggregate, TrialRecord, TrialRecords
+from feedbax.persistence.evaluation_trial_records import RecordedTrialLayout, read_position_track, read_trial_record
 from feedbax.persistence.checkpoint_selection import selected_coordinates
 from feedbax.persistence.best_selection import completion_score
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -490,34 +491,38 @@ class EvaluationResult:
             if trial is not None and trial not in trials:
                 raise CannotRun("/trial", "the selected trial is absent from the retained result")
             indices = range(len(trials)) if trial is None else (trials.index(trial),)
-            name = descriptor.attrs.get("scene_position")
-            if not isinstance(name, str) or name not in descriptor.variables:
-                raise CannotRun("/states/scene_position", "the result has no declared Scene position")
-            position = model_state_address(name).to_text()
-            field = descriptor.variables[name]
-            if (
-                field.dims != (
-                    *((update_axis,) if update_axis is not None else ()), "condition", "trial", "state_time", "xy",
-                )
-                or descriptor.dimensions["condition"] != 1 or descriptor.dimensions["xy"] != 2
-            ):
-                raise ValueError("The retained Scene position has an incompatible layout.")
-
-            def record(index: int) -> TrialRecord:
-                track = TrialStateTrack(
-                    samples=dataset.data(name, (*selected, 0, index)).tolist(),
-                    units=field.units,
-                    frame=field.frame or "world",
-                )
-                return TrialRecord(
-                    id=trials[index], inits={}, inputs={}, present={}, variables={}, variable_defined={},
-                    timeline=[], states={position: track},
-                )
-
+            if descriptor.dimensions["condition"] != 1:
+                raise ValueError("The retained trial has more than one condition.")
             state_time = dataset.data("state_time").tolist()
+            n_steps = len(state_time) - 1
+            selection = (*selected, 0)
+            raw_layout = descriptor.attrs.get("trial_record")
+            if raw_layout is not None:
+                layout = RecordedTrialLayout.model_validate(raw_layout)
+                position_key = next(iter(layout.positions), None)
+                records = [
+                    read_trial_record(dataset, trials[index], (*selection, index), layout)
+                    for index in indices
+                ]
+            else:
+                legacy_position = descriptor.attrs.get("scene_position")
+                position_key = legacy_position if isinstance(legacy_position, str) else None
+                records = [
+                    _legacy_trial_record(dataset, trials[index], (*selection, index), position_key)
+                    for index in indices
+                ]
+
+            drawn: TrialRecords | TrialAggregate = TrialRecords(kind="trials", trials=records)
+            if aggregate and raw_layout is not None:
+                from feedbax.execution.trial_record import aggregate_trials
+
+                drawn = aggregate_trials(records, n_steps)
             return StudioTrialReplayResponse(
-                n_steps=len(state_time) - 1, state_time=state_time, position=position, receipt=self.receipt,
-                drawn=TrialRecords(kind="trials", trials=[record(index) for index in indices]),
+                n_steps=n_steps,
+                state_time=state_time,
+                position=model_state_address(position_key).to_text() if position_key is not None else None,
+                receipt=self.receipt,
+                drawn=drawn,
             )
 
     def objective_series(self, requested: list[int], *, objective: ObjectiveDocument) -> StudioEvaluationObjectiveSeries:
@@ -568,6 +573,19 @@ class EvaluationResult:
             lineage=lineage, condition=condition, trials=list(params.trials), seed=params.seed,
             objective=objective_hash, requested=requested, points=points, gaps=gaps,
         )
+
+
+def _legacy_trial_record(
+    dataset: Dataset, trial: str, selection: tuple[int, ...], position: str | None,
+) -> TrialRecord:
+    """Old results still expose the one position path they recorded for playback."""
+    states = (
+        {model_state_address(position).to_text(): read_position_track(dataset, position, selection)}
+        if position is not None else {}
+    )
+    return TrialRecord(
+        id=trial, inits={}, inputs={}, present={}, variables={}, variable_defined={}, timeline=[], states=states,
+    )
 
 
 def _objective_checkpoint(parent: ParentRef) -> StudioEvaluationCheckpoint:

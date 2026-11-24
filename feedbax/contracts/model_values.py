@@ -57,8 +57,6 @@ class ModelFacts:
     states: tuple[StateValue, ...] | None = ()
     checkpointable: bool = True
     physical_checkpoint: Callable[[ComponentSpec, AcausalGraphSpec], bool] | None = None
-    scene_effector_port: str | None = None
-    scene_position: str | None = None
     configuration_slots: tuple[str, ...] = ()
     fixed_configuration_flag: str | None = None
     optional_state_flag: str | None = None

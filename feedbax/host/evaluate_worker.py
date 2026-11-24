@@ -29,7 +29,6 @@ from feedbax.contracts.manifest import (
 )
 from feedbax.contracts.model_checkpoint import SemanticModelEncoding
 from feedbax.contracts.model_input import CheckpointModelSource, InitialModelSource, read_document_input
-from feedbax.contracts.expression_values import LENGTH, ScopedValue, ValueBase, ValueType
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.project_sources import pointer as json_pointer
@@ -38,7 +37,6 @@ from feedbax.contracts.request_refs import ContentRef, LastMember, ProductRef, U
 from feedbax.contracts.rollout import (
     ResolvedInitialRollout, ResolvedRolloutBinding, ResolvedRolloutMember, rollout_objective_sha256, rollout_semantics,
 )
-from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.strict_json import strict_model_validate_json
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.persistence.completion import CompletionFileError
@@ -306,15 +304,6 @@ def _prepare_stored_rollout(
     return _prepare_model_rollout(documents, params, slot, coordinate, seed=seed, registry=registry)
 
 
-_WORLD_TARGETS = {"simple-reaches": "target_pos", "delayed-reaches": "target_pos", "stabilization": "target_pos"}
-_POINT = ValueType(base=ValueBase.REAL, shape=(2,), dimensions=LENGTH)
-
-
-def is_world_target(task: TaskDocument | PythonTaskSelection, signal: ScopedValue) -> bool:
-    """Identify the reaching target of the shipped Task documents."""
-    return isinstance(task, TaskDocument) and signal.id == _WORLD_TARGETS.get(task.id) and signal.type == _POINT
-
-
 def rollout_dataset(
     prepared: PreparedRollout, evaluated: TrialEvaluation, params: RolloutParameters,
     *, update_axis: str | None = "checkpoint",
@@ -324,7 +313,8 @@ def rollout_dataset(
 
     from feedbax.contracts.authored_canonical import canonical_sha256
     from feedbax.dataset import Dataset, Variable
-    from feedbax.runtime.raw_state import scene_position_key
+    from feedbax.persistence.evaluation_trial_records import trial_dataset_fields
+    from feedbax.contracts.task_document import TaskDocument
 
     paired, variant, graph = prepared.paired, prepared.variant, prepared.graph
     effective_graph = paired.executable.resolved.graph
@@ -350,21 +340,19 @@ def rollout_dataset(
             variables["objective/terms" + path] = Variable(expand(term.value), leading)
             variables["objective/coverage" + path] = Variable(expand(term.covered), leading)
         variables["objective/total"] = Variable(expand(evaluated.objective.loss), leading)
-    for signal in paired.execution.task.interface.signals:
-        samples = evaluated.trials.inputs[signal.name]
-        base_axes = (*leading, "trial", "transition")
-        if is_world_target(variant.task, signal):
-            state_coordinates.setdefault("xy", Variable(np.asarray(["x", "y"]), ("xy",)))
-            variable = Variable(expand(samples), (*base_axes, "xy"), units="m", frame="world")
-        else:
-            axes = (*base_axes, *(f"{signal.name}_component_{i}" for i in range(samples.ndim - 2)))
-            variable = Variable(expand(samples), axes)
-        variables[semantic_key("task", "output", (), signal.name)] = variable
+    labels = {epoch.id: epoch.name for epoch in variant.task.epochs} if isinstance(variant.task, TaskDocument) else {}
+    trial_fields, trial_coordinates, record_layout = trial_dataset_fields(
+        paired.execution.task, evaluated, layout, leading=leading, labels=labels,
+    )
+    variables.update(trial_fields)
+    state_coordinates.update(trial_coordinates)
     time = np.arange(paired.execution.task.n_steps + 1, dtype=np.float64) * graph.period_seconds
     variation = params.condition_id()
-    attrs = {"state_sampling": "reset_and_post_transition", "state_lifetime": "trial"}
-    if (position := scene_position_key(effective_graph, graph)) is not None and position in variables:
-        attrs["scene_position"] = position
+    attrs = {
+        "state_sampling": "reset_and_post_transition",
+        "state_lifetime": "trial",
+        "trial_record": record_layout.model_dump(mode="json"),
+    }
     if params.retention == "raw_states":
         attrs["source_graph_sha256"] = sha256(
             canonical_json_v2_bytes((slot.graph if slot is not None else effective_graph).model_dump(mode="json"))
