@@ -134,6 +134,11 @@ class StudioTaskChoice(StrictModel):
     problems: list[Problem]
 
 
+class StudioTrialObjectiveSource(StrictModel):
+    kind: Literal["train", "own"]
+    step: ProjectName
+
+
 class StudioTrialAuthoring(StrictModel):
     revision: Sha256
     run: StudioSavedTrainKey
@@ -148,6 +153,8 @@ class StudioTrialAuthoring(StrictModel):
     objective_changed: list[Pointer] = Field(default_factory=list)
     """The same, in the Objective document."""
     objective: ObjectiveDocument | None
+    objective_source: StudioTrialObjectiveSource | None = None
+    input_overrides: dict[str, str] = Field(default_factory=dict)
     task_types: list[StudioTaskType]
     tasks: list[StudioTaskChoice]
     variables: list[ScopedValue]

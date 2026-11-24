@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal
-
 import jax
 import numpy as np
 from fastapi import APIRouter, HTTPException, Request
@@ -12,8 +10,13 @@ from pydantic import BaseModel, Field, model_validator
 from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.model_document import ModelDocument
+from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.studio_refinements import validate_cross_field_refinements
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
+from feedbax.contracts.trial_record import (
+    TaskEpochShare, TaskSignalAggregate, TaskTimelineCue, TaskVariableRange,
+    TrialAggregate, TrialDisplay, TrialRecord, TrialRecords,
+)
 from feedbax.runtime._graph_key_schedule import sample_training_trials
 from feedbax.tasks.document import TaskParameters
 
@@ -25,6 +28,9 @@ class TaskTrialSampleRequest(StrictModel):
     task: TaskDocument | None = None
     python_task: PythonTaskSelection | None = None
     input_bindings: dict[str, str | None] = Field(default_factory=dict)
+    objective: ObjectiveDocument | None = None
+    evaluation_trials: list[str] | None = Field(default=None, min_length=1)
+    """Evaluate trial IDs to preview with the same seed schedule as the run."""
     seed: int = 0
     count: int = Field(default=8, ge=1)
     """How many trials to draw; Studio offers up to the step's batch size."""
@@ -37,72 +43,19 @@ class TaskTrialSampleRequest(StrictModel):
         return self
 
 
-class TaskTimelineCue(BaseModel):
-    epoch: str
-    label: str
-    start: int
-    end: int
-    outcome: int
-
-
-class SampledTaskTrial(BaseModel):
-    id: str
-    inits: dict[str, Any]
-    inputs: dict[str, Any]
-    present: dict[str, Any]
-    variables: dict[str, Any]
-    variable_defined: dict[str, Any]
-    timeline: list[TaskTimelineCue]
-
-
-class SampledTaskTrials(BaseModel):
-    kind: Literal["trials"]
-    trials: list[SampledTaskTrial]
-
-
-class TaskEpochShare(BaseModel):
-    """Per step, the share of trials that are in the epoch."""
-
-    epoch: str
-    label: str
-    share: list[float]
-
-
-class TaskSignalAggregate(BaseModel):
-    presence: list[float]
-    """Per step, the share of trials in which the signal is present."""
-    percentiles: list[list[list[float]] | None] | None
-    """For a numeric signal, per step and component, the 5th, 25th, 50th, 75th and 95th percentiles over the trials
-    where it is present; null at a step where no trial has it."""
-
-
-class TaskVariableRange(BaseModel):
-    """The least and greatest drawn value of each component, in the value's own shape."""
-
-    least: Any
-    greatest: Any
-
-
-class TaskTrialAggregate(BaseModel):
-    kind: Literal["aggregate"]
-    epochs: list[TaskEpochShare]
-    signals: dict[str, TaskSignalAggregate]
-    variables: dict[str, TaskVariableRange]
-
-
 class TaskTrialSampleResponse(BaseModel):
-    schema_version: str = "feedbax.execution.sampled_task_trials.v3"
+    schema_version: str = "feedbax.execution.sampled_task_trials.v4"
     task: str
     seed: int
     count: int
-    n_steps: int
-    drawn: Annotated[SampledTaskTrials | TaskTrialAggregate, Field(discriminator="kind")]
+    n_steps: int | None
+    drawn: TrialDisplay
 
 
 PERCENTILES = (5, 25, 50, 75, 95)
 
 
-def aggregate_trials(epochs: list[str], labels: dict[str, str], samples, n_steps: int) -> TaskTrialAggregate:
+def aggregate_trials(epochs: list[str], labels: dict[str, str], samples, n_steps: int) -> TrialAggregate:
     """The batch `samples` as shares of trials per epoch and step, and its signals' presence and percentiles."""
     starts, ends, _ = (np.asarray(values) for values in samples.epochs)
     steps = np.arange(n_steps)
@@ -124,7 +77,7 @@ def aggregate_trials(epochs: list[str], labels: dict[str, str], samples, n_steps
             at = iter(np.moveaxis(quantiles, 0, -1).tolist() if quantiles is not None else ())
             percentiles = [next(at) if here else None for here in any_present]
         signals[name] = TaskSignalAggregate(presence=present.mean(axis=0).tolist(), percentiles=percentiles)
-    return TaskTrialAggregate(
+    return TrialAggregate(
         kind="aggregate",
         epochs=[TaskEpochShare(epoch=epoch, label=labels.get(epoch, epoch), share=covered.mean(axis=0).tolist())
                 for epoch, covered in inside.items()],
@@ -193,7 +146,7 @@ async def sample_task_trials(
             )
         ]
         trials.append(
-            SampledTaskTrial(
+            TrialRecord(
                 id=f"trial:{index}",
                 inits={key: value.tolist() for key, value in trial.inits.items()},
                 inputs={key: value.tolist() for key, value in trial.inputs.items()},
@@ -205,4 +158,4 @@ async def sample_task_trials(
                 timeline=timeline,
             )
         )
-    return TaskTrialSampleResponse(**head, drawn=SampledTaskTrials(kind="trials", trials=trials))
+    return TaskTrialSampleResponse(**head, drawn=TrialRecords(kind="trials", trials=trials))
