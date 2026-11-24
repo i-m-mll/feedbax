@@ -9,7 +9,7 @@ from pydantic import Field, model_validator
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.project import (
     DifferenceNotApplied, Differences, Document, Payload, Project, RemoveDocumentValue,
-    SetDocumentValue, apply_differences, check_disjoint, json_pointer_parts,
+    SetDocumentValue, apply_differences, check_disjoint, json_pointer_parts, member_display_name,
 )
 from feedbax.contracts.project_inputs import ProjectName, StepReference
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document, compose_step
@@ -122,10 +122,12 @@ def set_from_axis(axis: NamedAxis, model: str) -> SetDocument:
 def read_set(read_document: Callable[[str], Document | None], name: str) -> SetDocument:
     """The composed Set document ``name``; raises ValueError when it is missing or not a Set."""
     composed = compose_document(read_document, name)
-    if isinstance(composed, ProjectDiagnostic):
-        raise ValueError(f"set {name!r}: {composed.detail}")
-    if composed.schema_id != SET_DOCUMENT_SCHEMA_ID:
-        raise ValueError(f"{name!r} is not a Set document")
+    if isinstance(composed, ProjectDiagnostic) or composed.schema_id != SET_DOCUMENT_SCHEMA_ID:
+        document = read_document(name)
+        label = member_display_name(name, document.label if document is not None else None)
+        if isinstance(composed, ProjectDiagnostic):
+            raise ValueError(f"Set {label}: {composed.detail}")
+        raise ValueError(f"{label} is not a Set document")
     return SetDocument.model_validate(composed.payload)
 
 
