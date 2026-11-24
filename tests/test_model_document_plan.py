@@ -980,7 +980,8 @@ def test_nested_model_plans_with_stable_identity_and_compiles():
     raw["documents"]["reach-model"]["payload"]["ports"]["inputs"][0]["name"] = "unknown"
     refused = compile_project(Project.model_validate(raw))
     (problem,) = [problem for row in refused.rows if row.key.step == "train" for problem in row.problems]
-    assert problem.path.startswith("/trial_documents/model/") and "reads signal 'unknown'" in problem.detail
+    assert problem.path.startswith("/trial_documents/model/")
+    assert problem.detail == "Model input 'unknown' needs a Task signal."
     assert problem.model_address == ModelAddress.model_validate({
         "composites": [],
         "element": {"kind": "port", "end": {"owner": "inputs", "port": "task-input"}},
@@ -1310,8 +1311,9 @@ def test_an_evaluate_attachment_for_selected_runs_changes_only_their_request(tmp
 
 
 # The ids the variant's evaluation had at a9b3bb7d, where the change was stored in the step's payload.
-_VARIANT_WIRE = "evaluate:b62012d6a1978258070b4f523fab4cbbe813a1c2a37eb2591bac40a740e33554"
-_VARIANT_FIELD = "evaluate:e37d427b989acfd00a42a8936770f688bcf57ba3a9df5e5f9d39c316827b4e17"
+# The fixture pins requests that bind Task signals by stable Model input ID (8a0009c3).
+_VARIANT_WIRE = "evaluate:f284d8251b66faaddb83eff6ef1b61e0e24c51a1bfbcad769c64433013d0e190"
+_VARIANT_FIELD = "evaluate:3277dacdfdaa2b47fa4da1e6875e362941f9ae9fdb57d832cd659d4540332c85"
 
 
 @pytest.mark.parametrize(("operation", "expected"), [
@@ -1333,10 +1335,16 @@ def test_a_variant_edit_of_an_evaluation_is_a_document_the_variant_points_it_at(
     before = folders.read_plan("nested", revision=None)
     snapshot = folders.read("nested")
     with TestClient(create_app(projects_dir=tmp_path)) as client:
-        reply = client.post("/api/projects/nested/model/edit", json={
+        request = {
             "revision": snapshot.revision, "presentation_revision": snapshot.presentation_revision,
             "document": "reach-model", "command": {"operation": operation}, "step": "baseline", "variant": "treated",
-        })
+        }
+        reply = client.post("/api/projects/nested/model/edit", json=request)
+        assert reply.status_code == 200, reply.text
+        decision = reply.json()["result"]
+        assert decision["status"] == "asked", decision
+        store = next(option for option in decision["store_choices"] if option["kind"] == "selected_readers")
+        reply = client.post("/api/projects/nested/model/edit", json=request | {"store_choice": store["id"]})
         assert reply.status_code == 200, reply.text
         result = reply.json()["result"]
     assert result["status"] == "applied", result
