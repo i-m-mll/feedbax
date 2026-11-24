@@ -108,11 +108,13 @@ class LocalVenueProvider:
             expires_at=launch.ends_at_ms / 1000, adoption_token=adoption_token, controller_token=controller_token,
         )
         host_token = secrets.token_hex(24)
+        # A venue runs what its lock installs, as a provisioned machine does: the controller's search path stays here.
+        environment = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
         with (directory / "host.log").open("ab") as log:
             process = subprocess.Popen(
                 [sys.executable, "-m", "feedbax.host", "--root", str(directory / "host")],
                 stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True,
-                env=os.environ | {TOKEN_ENV: host_token},
+                env=environment | {TOKEN_ENV: host_token},
             )
         threading.Thread(target=process.wait, daemon=True).start()
         write_json(directory / "host-process.json", {"pid": process.pid, "token": host_token})
