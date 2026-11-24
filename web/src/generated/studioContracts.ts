@@ -37,10 +37,16 @@ export interface CloseWhenIdle {
   seconds: number;
 }
 
+export interface HostRuntime {
+  backend: string;
+  devices: string[];
+}
+
 export interface LocalTargetProfile {
   kind: "local";
   id: "local";
   label: "This Mac";
+  runtime?: HostRuntime | null;
 }
 
 export interface SessionTargetProfile {
@@ -2640,7 +2646,7 @@ export type AttemptProvenance = {
 };
 
 export type AuthoredFileAddress = {
-  "kind": "document" | "step" | "variant" | "presentation";
+  "kind": "document" | "step" | "variant" | "presentation" | "declaration";
   "id": string;
 };
 
@@ -4106,6 +4112,7 @@ export type StudioProjectSnapshot = {
   "presentation_error"?: "unreadable_presentation" | null;
   "file_revisions": Array<StudioAuthoredFileRevision>;
   "declaration"?: StudioAuthoredDeclaration | null;
+  "settings"?: Record<string, JsonValue>;
   "composed"?: Record<string, JsonValue>;
 };
 
@@ -5502,12 +5509,22 @@ export const CloseWhenIdleSchema: z.ZodType<CloseWhenIdle> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<CloseWhenIdle>;
 
+export const HostRuntimeSchema: z.ZodType<HostRuntime> = z.lazy(() =>
+  z
+    .object({
+      "backend": z.string(),
+      "devices": z.array(z.string()),
+    })
+    .strict()
+) as unknown as z.ZodType<HostRuntime>;
+
 export const LocalTargetProfileSchema: z.ZodType<LocalTargetProfile> = z.lazy(() =>
   z
     .object({
       "kind": z.literal("local"),
       "id": z.literal("local"),
       "label": z.literal("This Mac"),
+      "runtime": HostRuntimeSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<LocalTargetProfile>;
@@ -9949,7 +9966,7 @@ export const AttemptProvenanceSchema: z.ZodType<AttemptProvenance> = z.lazy(() =
 
 export const AuthoredFileAddressSchema: z.ZodType<AuthoredFileAddress> = z.lazy(() =>
   z.object({
-    "kind": z.union([z.literal("document"), z.literal("step"), z.literal("variant"), z.literal("presentation")]),
+    "kind": z.union([z.literal("document"), z.literal("step"), z.literal("variant"), z.literal("presentation"), z.literal("declaration")]),
     "id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
   }).strict()
 ) as unknown as z.ZodType<AuthoredFileAddress>;
@@ -11923,6 +11940,7 @@ export const StudioProjectSnapshotSchema: z.ZodType<StudioProjectSnapshot> = z.l
     "presentation_error": z.union([z.literal("unreadable_presentation"), z.null()]).optional(),
     "file_revisions": z.array(StudioAuthoredFileRevisionSchema),
     "declaration": z.union([StudioAuthoredDeclarationSchema, z.null()]).optional(),
+    "settings": z.record(z.string(), jsonValueSchema).optional(),
     "composed": z.record(z.string(), jsonValueSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectSnapshot>;
@@ -12781,6 +12799,7 @@ export const feedbax__contracts__task_structure__RenameMemberSchema: z.ZodType<f
 export const contractSchemas = {
   KeepOpen: KeepOpenSchema,
   CloseWhenIdle: CloseWhenIdleSchema,
+  HostRuntime: HostRuntimeSchema,
   LocalTargetProfile: LocalTargetProfileSchema,
   SessionTargetProfile: SessionTargetProfileSchema,
   LocalTarget: LocalTargetSchema,
@@ -12946,6 +12965,7 @@ export type ContractName = keyof typeof contractSchemas;
 export interface ContractTypeMap {
   KeepOpen: KeepOpen;
   CloseWhenIdle: CloseWhenIdle;
+  HostRuntime: HostRuntime;
   LocalTargetProfile: LocalTargetProfile;
   SessionTargetProfile: SessionTargetProfile;
   LocalTarget: LocalTarget;

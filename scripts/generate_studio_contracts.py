@@ -52,7 +52,7 @@ from feedbax.contracts.acausal import (
 )
 from feedbax.contracts.artifact_custody import ContentObjectRef, StoreTransferProgress
 from feedbax.contracts.execution_target import (
-    CloseWhenIdle, ExecutionTargets, KeepOpen, LocalTarget, LocalTargetProfile, OffTarget, OpeningObservation, ReadyTarget,
+    CloseWhenIdle, ExecutionTargets, HostRuntime, KeepOpen, LocalTarget, LocalTargetProfile, OffTarget, OpeningObservation, ReadyTarget,
     SessionTarget, SessionTargetProfile, TargetOption, TargetRealization, UnreachableTarget,
 )
 from feedbax.contracts.analysis_document import AnalysisDocument
@@ -422,7 +422,7 @@ NONE_TYPE = type(None)
 
 
 JOB_MODELS = (
-    KeepOpen, CloseWhenIdle, LocalTargetProfile, SessionTargetProfile, LocalTarget, TargetRealization, SessionTarget,
+    KeepOpen, CloseWhenIdle, HostRuntime, LocalTargetProfile, SessionTargetProfile, LocalTarget, TargetRealization, SessionTarget,
     ReadyTarget, OffTarget, UnreachableTarget, TargetOption, ExecutionTargets, OpeningObservation,
     JobError,
     JobOutcome,
