@@ -26,7 +26,7 @@ type _Rename = Callable[[str], str]
 
 
 def generated_name(base: str, taken: Callable[[str], bool], separator: str = "-") -> str:
-    """The name Studio gives a member it creates: ``base`` while it is free, then the first free ``base-2``, ``base-3``.
+    """The name Studio gives a member it creates: ``base`` while it is free, then the first free numbered name.
 
     The rule of the interface's ``generatedName`` (``web/src/features/projectFolder/generatedName.ts``).
     """

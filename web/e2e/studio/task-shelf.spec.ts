@@ -63,10 +63,14 @@ test('the clock picks the nominal trial or a sample of a task document, and the 
   await expect(primary.getByRole('table', { name: 'Variables', exact: true })).toBeVisible();
   await expect(primary.getByRole('group', { name: 'Timeline' })).toHaveCount(0);
   const slot = async () => (await primary.boundingBox())!.height;
-  const tall = await slot();
-  await clock.getByRole('button', { name: 'Shelf', exact: true }).click();
+  const shelfSwitch = clock.getByRole('button', { name: 'Shelf', exact: true });
   await expect(hold).toBeVisible();
-  expect(await slot()).toBeLessThan(tall);
+  const short = await slot();
+  await shelfSwitch.click();
+  await expect(hold).toBeHidden();
+  expect(await slot()).toBeGreaterThan(short);
+  await shelfSwitch.click();
+  await expect(hold).toBeVisible();
   const whisker = epochs.getByRole('img', { name: /^hold / });
   await expect(whisker).toBeVisible();
   expect(Number(await whisker.getAttribute('data-least'))).toBeCloseTo(5 * period, 9);

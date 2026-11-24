@@ -22,7 +22,7 @@ from feedbax.contracts._request_codec import same_typed_value
 from feedbax.contracts.analysis_document import AnalyzeDatasetInput, AnalyzeInput, AnalyzeModelInput, AnalyzeTaskInput
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.expression_values import Problem, UnresolvedValue, ValueBase
+from feedbax.contracts.expression_values import Problem, TextSpan, UnresolvedValue, ValueBase
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, FigureDocument, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.graph import GraphSpec
@@ -101,6 +101,7 @@ from feedbax.contracts.project_sweep import (
     SweepInputMember,
     axis_coordinates,
     checkpoint_rule_write,
+    checkpoint_sweep_refusal,
     coordinate_text,
     expand_sweep,
     model_field_target,
@@ -108,7 +109,7 @@ from feedbax.contracts.project_sweep import (
 )
 from feedbax.contracts.project_sources import ValueSource, changed_sources, patch_source, place_source, pointer, source_shape
 from feedbax.contracts.report_document import ReportDocument
-from feedbax.contracts.set_document import model_slot, resolve_set_axes
+from feedbax.contracts.set_document import SetProblem, model_slot, resolve_set_axes
 from feedbax.contracts.request_identity import EncodedRequest, RequestDocumentMemo
 from feedbax.contracts.request_refs import (
     BarrierMember,
@@ -513,6 +514,7 @@ class PlannedStep:
     inputs: Mapping[str, InputBinding] | None = None
     sweep: Sweep | None = field(default=None, compare=False)
     label: str | None = None
+    can_sweep_checkpoint: bool = False
 
 
 @dataclass(frozen=True)
@@ -592,6 +594,10 @@ class PlanSourceIndex:
             return template.source_leaf(row, parts[1:])
         except (KeyError, ValueError) as error:
             raise ValueError(f"Invalid saved source for {run.variant}/{run.step}/{run.row}: {error}") from error
+
+    def expanded_step(self, variant: str, step: str) -> tuple[StepTemplate, Mapping[str, ExpandedRow]]:
+        """The authored template and expanded rows used to resolve the step's sources."""
+        return self._templates(variant, step)
 
     def _model_field_source(
         self, template: StepTemplate, run: RunKey, row: ExpandedRow, parts: tuple[str, ...],
@@ -951,6 +957,7 @@ class _ModelSource:
     trained: _TrainedSource | None = None
     unpaired: bool = False
     """The Train's Model, Task and Objective do not pair, so nothing evaluates what it would train."""
+    authored_model: ModelDocument | None = None
 
 
 @dataclass(frozen=True)
@@ -1034,6 +1041,8 @@ def _with_train_model(
 
 
 def _train_model_definition(definition: SelectedRunDefinition, model: _ModelSource) -> SelectedRunDefinition:
+    if model.authored_model is not None:
+        model = replace(model, model=model.authored_model)
     payload = _with_train_model(definition.payload, model, definition.document_ids, definition.document_pointers)
     prefix = ("trial_documents", "model")
     sources = dict(definition.sources)
@@ -1094,6 +1103,13 @@ def _sweep_problem(
     error: SweepExpansionError, *, step: str | None = None, variant: str | None = None,
     document: str | None = None,
 ) -> ProjectDiagnostic:
+    if isinstance(error, SetProblem):
+        path = pointer(error.location)
+        return ProjectDiagnostic(
+            ResolutionCode.INVALID_SWEEP, error.path, error.detail, step=step, variant=variant,
+            document=error.document, document_path=path,
+            authored_file=f"documents/{error.document}.json", authored_path="/payload" + path,
+        )
     address = None
     if error.target is not None:
         try:
@@ -1106,7 +1122,9 @@ def _sweep_problem(
             pass  # The sweep diagnostic already reports the malformed target.
     return ProjectDiagnostic(
         ResolutionCode.INVALID_SWEEP, error.path, error.detail, step=step, variant=variant,
-        document=document if address is not None else None, model_address=address,
+        document=document if address is not None else None, model_address=address, span=error.span,
+        authored_file=f"steps/{step}.json" if step else None,
+        authored_path=pointer(error.path.split(".")),
     )
 
 
@@ -2166,6 +2184,31 @@ class _Compiler:
                 if (subset := self.subsets.get((key.variant, key.step, input_id))) is not None:
                     yield at, subset
 
+    def locate_sweep_problem(
+        self, problem: ProjectDiagnostic, composition: StepComposition, key: RunKey, row: ExpandedRow,
+    ) -> ProjectDiagnostic:
+        if problem.authored_path is not None or not row.patch_origins:
+            return problem
+        paths = []
+        if problem.model_address is not None:
+            paths = [
+                path for path in row.patch_origins
+                if (target := model_field_target(path)) is not None and target.address == problem.model_address
+            ]
+        elif key.step and (setting := problem.path.removeprefix("payload.")).startswith("settings."):
+            parts = setting.split(".")
+            # A union validation path includes its selected class between the field and its parameter.
+            paths = [
+                path for path in row.patch_origins if path.startswith("settings.")
+                and path.split(".")[-1] == parts[-1]
+                and all(part in set(parts) for part in path.split("."))
+            ]
+        if len(paths) != 1:
+            return problem
+        template = composition.bind(self.variants[key.variant], variant_sources=self.variant_sources.get(key.variant))
+        origin = template.sweep_source(row, paths[0])
+        return replace(self.locate_authored_problem(problem, origin), code=ResolutionCode.INVALID_SWEEP)
+
     def lower_row(
         self,
         composition: StepComposition,
@@ -2177,6 +2220,7 @@ class _Compiler:
         definition: SelectedRunDefinition | None,
         train_rows: _TrainRows | None = None,
     ) -> _LoweredRow:
+        fields = self.variants[key.variant].steps[key.step].set_fields
         member = to_json(tuple(
             (role, binding.member.model_dump(mode="json")) for role, binding in sorted(inputs.items())
         ))
@@ -2230,6 +2274,8 @@ class _Compiler:
                 document_ids = definition.document_ids
                 document_uses = definition.document_uses
                 document_pointers = definition.document_pointers
+            if fields:
+                document_uses = document_uses | frozenset(field.axis.set for field in fields.values())
             authored_model = None
             prepared_train = None
             remember_train = None
@@ -2249,9 +2295,9 @@ class _Compiler:
                     payload, tuple(sorted(document_ids.items())), tuple(sorted(document_pointers.items())),
                     source_stamp, model_lineage,
                 ))), member)
-                if basis is not None else None
+                if basis is not None and not fields else None
             )
-            if previous is not None and previous.lowering_stamp == lowering_stamp:
+            if previous is not None and lowering_stamp is not None and previous.lowering_stamp == lowering_stamp:
                 return replace(
                     previous, document_ids=document_ids, document_uses=document_uses,
                 )
@@ -2274,7 +2320,7 @@ class _Compiler:
                 trial = payload.get("trial_documents")
                 if (
                     train_rows is not None and isinstance(trial, dict)
-                    and train_rows.resolution.contains(trial) and not has_differences
+                    and train_rows.resolution.contains(trial) and not has_differences and not fields
                 ):
                     if (entry := train_rows.prepared) is not None and entry[0] is trial:
                         prepared_train = entry[1]
@@ -2283,6 +2329,38 @@ class _Compiler:
                             train_rows.prepared = trial, prepared
                 if prepared_train is None:
                     payload, authored_model = self.lower_train_model(key, payload, document_ids, document_pointers)
+                from feedbax.compiler.set_fields import SetFieldProblem, has_trial_windows, lower_trial_sets
+
+                if isinstance(payload, dict) and authored_model is not None and (
+                    fields or has_trial_windows(authored_model.model)
+                ):
+                    trial = payload["trial_documents"]
+                    try:
+                        authored_task = TaskDocument.model_validate(trial.get("task"))
+                        model, task = lower_trial_sets(
+                            authored_model.model, authored_task, fields,
+                            reader or self.variants[key.variant].documents.get,
+                        )
+                    except (SetFieldProblem, ValidationError) as error:
+                        if isinstance(error, SetFieldProblem):
+                            place = ("set_fields", error.axis)
+                            if error.entry is not None:
+                                place = (*place, "entries", error.entry)
+                            problem = RunProblem(pointer(place), str(error))
+                        else:
+                            problem = RunProblem("/trial_documents/task", "A Set field needs a Task document.")
+                        return _LoweredRow(
+                            None, (), lowering_stamp, problems=(problem,), document_ids=document_ids,
+                            document_uses=document_uses, train=train,
+                        )
+                    authored_model = replace(
+                        authored_model, model=model, authored_model=authored_model.model,
+                        stamp=sha256_bytes(to_json((authored_model.document, model.model_dump(mode="json")))),
+                    )
+                    payload = _with_train_model(payload, authored_model, document_ids, document_pointers)
+                    trial = payload["trial_documents"]
+                    trial["task"] = task.model_dump(mode="json")
+                    train = _train_facts(payload, self.python_tasks)
             elif kind == "evaluate":
                 reference = subject.member.reference if subject is not None else None
                 read = reader or self.variants[key.variant].documents.get
@@ -2296,6 +2374,7 @@ class _Compiler:
                         key, payload, model_source, reference, has_differences, document_ids, read,
                     )
             if isinstance(payload, ProjectDiagnostic):
+                payload = self.locate_sweep_problem(payload, composition, key, row)
                 return _LoweredRow(
                     None, (payload,), lowering_stamp, document_ids=document_ids, document_uses=document_uses,
                     train=train,
@@ -2322,6 +2401,8 @@ class _Compiler:
             )
             return replace(
                 lowered,
+                diagnostics=tuple(self.locate_sweep_problem(problem, composition, key, row)
+                                  for problem in lowered.diagnostics),
                 document_ids=document_ids,
                 document_uses=document_uses,
                 model_source=lowered.model_source or authored_model,
@@ -2335,7 +2416,8 @@ class _Compiler:
             self.previous.rows,
             self.work.rows,
             key,
-            (kind, basis, to_json(tuple(row.patches.items())), tuple(sorted(inputs.items())), source_stamp),
+            (kind, basis, to_json(tuple(row.patches.items())), tuple(sorted(inputs.items())), source_stamp,
+             to_json({name: value.model_dump(mode="json") for name, value in fields.items()})),
             self.authored_inputs[key.variant],
             lower,
         )
@@ -2872,6 +2954,9 @@ class _Compiler:
             return ()
         self.steps[variant, name] = replace(
             step, inputs=MappingProxyType(deepcopy(dict(template.inputs))), sweep=template.sweep,
+            can_sweep_checkpoint=kind == "evaluate" and checkpoint_sweep_refusal(
+                authored.inputs.get("subject"), template.sweep, project_swept=self.project.sweep is not None,
+            ) is None,
         )
         sweep = template.sweep
         if sweep is not None:
@@ -3041,6 +3126,26 @@ class _Compiler:
     ) -> ProductSelector | None | ProjectDiagnostic:
         """The selector an Evaluate row's checkpoint rule makes, or why the rule does not parse or asks for an update
         outside its producer's run. Both need only the rule and the producer's extent, so a blocked row has them too."""
+        path = f"{_selection_path(subject, 'subject', chosen.selection)}.checkpoint"
+        origin = row.patch_origins.get(CHECKPOINT_RULE_TARGET)
+        authored_path = None
+        if origin is not None:
+            match origin:
+                case ("sweep_value", axis, value):
+                    authored_path = pointer(("sweep", "axes", axis, "values", value, "patches", CHECKPOINT_RULE_TARGET, "value"))
+                case ("exception", exception):
+                    authored_path = pointer(("sweep", "exceptions", exception, "patches", CHECKPOINT_RULE_TARGET, "value"))
+                case ("row", row_id):
+                    authored_path = pointer(("sweep", "rows", row_id, "patches", CHECKPOINT_RULE_TARGET, "value"))
+        author = row.patch_authors.get(CHECKPOINT_RULE_TARGET, name)
+
+        def problem(detail: str, span: TextSpan | None = None) -> ProjectDiagnostic:
+            return ProjectDiagnostic(
+                ResolutionCode.BAD_REFERENCE, path, detail, name, row=row.id, variant=variant, span=span,
+                authored_file=f"steps/{author}.json",
+                authored_path=authored_path or pointer(tuple(path.split("."))),
+            )
+
         try:
             write = row.patches.get(CHECKPOINT_RULE_TARGET)
             chosen_subject = chosen.selection if chosen.selection is not None else subject
@@ -3051,27 +3156,23 @@ class _Compiler:
             )
             if rule is None and has_checkpoint_axis:
                 raise ValueError("The selected row has no checkpoint rule")
+            if isinstance(rule, UnresolvedValue):
+                return problem("Expected a checkpoint rule.", TextSpan(start=0, end=len(rule.text)))
             horizon = None
             if isinstance(rule, UpdateCadence) and chosen.producer is not None:
                 facts = self.rows[chosen.producer].train
                 horizon = facts.target_total if facts is not None else None
             selector = _checkpoint(rule, horizon=horizon)
         except (OSError, ValueError) as error:
-            return ProjectDiagnostic(
-                ResolutionCode.BAD_REFERENCE, "inputs.subject.checkpoint", str(error),
-                name, row=row.id, variant=variant,
-            )
+            return problem(str(error))
         facts = self.rows[chosen.producer].train if chosen.producer is not None else None
         if facts is not None and facts.origin is not None and facts.target_total is not None and (
             outside := _update_outside_run(rule, facts.origin, facts.target_total)
         ) is not None:
             assert chosen.producer is not None
-            return ProjectDiagnostic(
-                ResolutionCode.BAD_REFERENCE,
-                f"{_selection_path(subject, 'subject', chosen.selection)}.checkpoint",
+            return problem(
                 f"Update {outside} is outside {chosen.producer.step!r}, "
                 f"which runs updates {facts.origin + 1} to {facts.target_total}.",
-                name, row=row.id, variant=variant,
             )
         return selector
 
@@ -3431,7 +3532,7 @@ class _Compiler:
             if members else None
 
         def refusal(detail: str, field: str = path) -> ProjectDiagnostic:
-            return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, field, detail, name)
+            return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, field, detail, name, span=best.span)
 
         axes = tuple(sorted(best.per))
         if len(set(axes)) != len(axes):
@@ -3829,7 +3930,13 @@ class _Compiler:
             )
         except RuleRefusal as error:
             return ProjectDiagnostic(
-                ResolutionCode.BAD_REFERENCE, f"{path}.where.{error.path}", error.detail, name
+                ResolutionCode.BAD_REFERENCE, f"{path}.where.{error.path}", error.detail, name, span=error.span,
+                document=subset_document,
+                document_path=f"/{error.path}" if subset_document is not None else None,
+                authored_file=f"documents/{subset_document}.json" if subset_document is not None else None,
+                authored_path=f"/payload/{error.path}" if subset_document is not None else pointer(
+                    (*path.split("."), "where", error.path),
+                ),
             )
         expands_input = template.sweep is not None and any(
             isinstance(axis, InputAxis) and axis.input == role.name

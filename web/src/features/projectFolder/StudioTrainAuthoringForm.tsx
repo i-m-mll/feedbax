@@ -6,7 +6,7 @@ import { StudioRegion, studioReadState } from '@/components/activity/StudioRegio
 import {
   catalogEntries, projectTrainFields, readStudioTrainAuthoring, useAuthoringCatalog,
 } from '@/api/studioAuthoring';
-import { studioName, studioSweptParameterMissing } from '@/components/activity/studioVocabulary';
+import { studioName } from '@/components/activity/studioVocabulary';
 import { CatalogPicker } from '@/components/ui/CatalogPicker';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { MenuItem, MenuSubmenu } from '@/components/ui/Menu';
@@ -261,7 +261,6 @@ function useTrainForm(props: Props) {
       if (lifetime.signal.aborted) return undefined;
       const { revision } = saved;
       const recipe = await readStudioTrainAuthoring(saved.project_id, stepId, { revision, ...scope, ...change }, editor.signal);
-      if (recipe.refusal) return studioSweptParameterMissing(recipe.refusal);
       if (!recipe.files.length && !recipe.created?.length ||
           !await confirmRemoval(sweepValueRuns(recipe.removed_values))) return undefined;
       const latest = editor.getSnapshot();

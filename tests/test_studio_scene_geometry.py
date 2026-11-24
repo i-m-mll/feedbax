@@ -102,6 +102,7 @@ def test_project_geometry_matches_the_recorded_arm_tip_and_poses_every_mechanism
     pytest.importorskip("mujoco")
     files = scene_files()
     components = files[0]["document"]["payload"]["interior"]["components"]
+    components["mechanics"]["interior"]["components"]["upper"]["name"] = "Upper arm"
     components["plants"] = {
         "kind": "composite", "name": "Plants", "ports": {},
         "interior": {
@@ -126,12 +127,13 @@ def test_project_geometry_matches_the_recorded_arm_tip_and_poses_every_mechanism
     arm_angles = ModelAddress.at_state(("plants",), "arm", "skeleton/angle").to_text()
     arm_position = ModelAddress.at_state(("plants",), "arm", "effector/position").to_text()
     mass_position = ModelAddress.at_state(("plants",), "mass", "effector/position").to_text()
+    mass_skeleton = ModelAddress.at_state(("plants",), "mass", "skeleton/position").to_text()
 
     with TestClient(create_app(projects_dir=tmp_path)) as client:
         source = {"revision": client.get(_PROJECT).json()["revision"], "document_id": "single"}
         route = f"{_PROJECT}/scene/geometry"
         response = client.post(route, json={
-            **source, "state_values": {arm_angles: angles, arm_position: effector, mass_position: [0.2, -0.1]},
+            **source, "state_values": {arm_angles: angles, mass_position: [0.2, -0.1]},
         })
         assert response.is_success, response.text
         assert response.headers["Cache-Control"] == "no-store"
@@ -141,13 +143,16 @@ def test_project_geometry_matches_the_recorded_arm_tip_and_poses_every_mechanism
         assert geometries.keys() == {"mechanics", "arm", "mass"}
         assert geometries["arm"]["links"][-1]["end"] == pytest.approx(effector)
         assert geometries["arm"]["links"][-1]["joint"]["element"]["path"] == ["geometry", "joint", 1]
+        assert geometries["mass"]["name"] == "Mass"
         assert geometries["mass"]["position"] == pytest.approx([0.2, -0.1])
         assert geometries["mass"]["point"]["element"]["path"] == ["geometry", "point"]
         assert geometries["mechanics"]["links"][0]["body"]["composites"] == ["mechanics"]
+        assert geometries["mechanics"]["links"][0]["body_name"] == "Upper arm"
 
-        preview = client.post(route, json={**source, "state_values": {arm_position: [0.3, 0.2]}})
+        preview = client.post(route, json={
+            **source, "state_values": {arm_position: [0.3, 0.2], mass_skeleton: 0.25},
+        })
         assert preview.is_success, preview.text
-        arm_preview = next(
-            item for item in preview.json()["mechanisms"] if item["address"]["element"]["id"] == "arm"
-        )
-        assert arm_preview["links"][-1]["end"] == pytest.approx([0.3, 0.2])
+        sampled = {item["address"]["element"]["id"]: item for item in preview.json()["mechanisms"]}
+        assert sampled["arm"]["links"][-1]["end"] == pytest.approx([0.3, 0.2])
+        assert sampled["mass"]["position"] == pytest.approx([0.25, 0.25])

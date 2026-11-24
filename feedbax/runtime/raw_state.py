@@ -14,7 +14,6 @@ from pydantic import ValidationError
 
 from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.model_delay import ModelDelayCarry
-from feedbax.contracts.model_occurrence import graph_leaf_specs, graph_output_sources
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.dataset import Variable
@@ -28,28 +27,6 @@ class StateLayoutError(ValueError):
         super().__init__(reason)
 
 
-def scene_position_key(graph: GraphSpec, runtime: Graph) -> str | None:
-    """Resolve the declared Scene effector from the effective model."""
-    candidates = {}
-    for scope, _ in graph_leaf_specs(graph):
-        parent = runtime.get_node(scope[:-1])
-        binding = parent.component_bindings[scope[-1]]
-        if (facts := binding.model_facts) is not None and facts.scene_position is not None:
-            candidates[scope] = facts
-    if len(candidates) == 1:
-        (scope, owner), = candidates.items()
-        return semantic_key("model", "state", scope, owner.scene_position)
-    positions = {
-        (scope, owner.scene_position)
-        for scope, port in graph_output_sources(graph)
-        if (owner := candidates.get(scope)) is not None and owner.scene_effector_port == port
-    }
-    if len(positions) != 1:
-        return None
-    (scope, symbol), = positions
-    return semantic_key("model", "state", scope, symbol)
-
-
 @dataclass(frozen=True)
 class BoundStateValue:
     key: str
@@ -57,6 +34,8 @@ class BoundStateValue:
     units: str | None
     frame: str | None
     read: Callable[[State, dict | None], jax.Array]
+    position: bool = False
+    configuration: bool = False
 
 
 @dataclass(frozen=True)
@@ -150,7 +129,11 @@ def _bind_owner(
             dimension = None
         elif len(shape) != 1:
             raise StateLayoutError(path, f"{leaf.symbol} requires a one-dimensional owner axis")
-        values.append(BoundStateValue(key, dimension, leaf.units, leaf.frame, read))
+        values.append(BoundStateValue(
+            key, dimension, leaf.units, leaf.frame, read,
+            position=leaf.space == "point" and leaf.frame == "world",
+            configuration=leaf.configuration,
+        ))
     return tuple(values)
 
 
@@ -217,7 +200,7 @@ def _bind_carries(graph: Graph, authored: GraphSpec, scope: tuple[str, ...]) -> 
         state = next((
             state for state in facts.states or ()
             if state.reset is not None and state.symbol == initializer.get("state_slot")
-            and state.reset.output_port == wire.source_port
+            and state.prototype[0] == wire.source_port
             and state.reset.override_port == wire.target_port
         ), None) if facts is not None else None
         if (

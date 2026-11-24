@@ -9,7 +9,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from feedbax.objectives.document import ObjectiveExecutor, ObjectiveResult
+from feedbax.objectives.document import ObjectiveExecutor, ObjectiveResult, TermTrace
 from feedbax.runtime._graph_key_schedule import (
     derive_key,
     map_trial_samples,
@@ -26,6 +26,7 @@ class TrialEvaluation(NamedTuple):
     trials: Trial
     retained: Mapping[str, jax.Array]
     history: Mapping[str, jax.Array] | None
+    term_traces: Mapping[str, TermTrace] | None
 
 
 def sample_evaluation_trials(
@@ -110,12 +111,15 @@ class TrialExecution:
         retained, history = self.rollout_batch(
             graph, trials, trial_keys, capture_state=capture_state,
         )
-        return TrialEvaluation(
-            None if objective is None else objective.evaluate(retained, trials, run_key=run_key, trial_keys=trial_keys),
-            trials,
-            retained,
-            history,
-        )
+        score, traces = None, None
+        if objective is not None:
+            if capture_state is None:
+                score = objective.evaluate(retained, trials, run_key=run_key, trial_keys=trial_keys)
+            else:
+                score, traces = objective.evaluate_with_traces(
+                    retained, trials, run_key=run_key, trial_keys=trial_keys,
+                )
+        return TrialEvaluation(score, trials, retained, history, traces)
 
     def training_batch(
         self,

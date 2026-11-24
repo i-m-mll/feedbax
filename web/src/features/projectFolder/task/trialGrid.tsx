@@ -8,7 +8,7 @@ import { changedAt, expressionKind, trialField, type Commit, type TrialRuns, typ
 import { TaskGrid, type GridEdits } from './TaskGrid';
 import { TaskInspector } from './TaskInspector';
 import type { TrialShown } from './trialSample';
-import { selectionKey, selectionOf, type TaskCell, type TaskDocumentView, type TaskEpoch, type TaskSignal } from './taskModel';
+import { selectionKey, selectionOf, type TaskCell, type TaskDocumentView, type TaskEpoch, type TaskRepeat, type TaskSignal } from './taskModel';
 
 type Structure = Extract<Parameters<Commit>[1], { kind: 'structure' }>['changes'][number];
 
@@ -58,7 +58,9 @@ function grid(view: TrialView, task: TaskDocument, types: readonly StudioNamedVa
       id: epoch.id, name: epoch.name, end: endField(view, task, index, commit),
       bounds: {
         id: epoch.id, name: epoch.name, ends: !('length' in epoch.end) ? 'rest' : steps && steps.least !== steps.greatest ? 'drawn' : 'length',
-        least: (steps?.least ?? 0) * period, nominal: (steps?.nominal ?? 0) * period, greatest: (steps?.greatest ?? 0) * period,
+        least: steps && period != null ? steps.least * period : 0,
+        nominal: steps && period != null ? steps.nominal * period : 0,
+        greatest: steps && period != null ? steps.greatest * period : 0,
       },
     };
   });
@@ -87,7 +89,13 @@ function grid(view: TrialView, task: TaskDocument, types: readonly StudioNamedVa
         { id: `absent:${signal.id}`, label: studioName('absent'), value: signal.absent ?? undefined, commit, name: signal.name }),
     };
   });
-  return { epochs, signals };
+  const repeats = (task.repeats ?? []).map((repeat): TaskRepeat => ({
+    id: repeat.id, first: repeat.first_epoch, last: repeat.last_epoch,
+    count: projected(view, ['repeats', repeat.id, 'count'], `/repeats/${task.repeats!.indexOf(repeat)}/count`,
+      { id: `repeat:${repeat.id}`, label: studioName('count'), value: repeat.count, commit, name: studioName('repeat') }),
+    reason: view.problems.find(({ path = [] }) => path[0] === 'repeats' && path[1] === repeat.id && path.length === 2)?.reason,
+  }));
+  return { epochs, repeats, signals };
 }
 
 function gridEdits(task: TaskDocument, commit?: Commit): GridEdits {
@@ -115,6 +123,8 @@ function gridEdits(task: TaskDocument, commit?: Commit): GridEdits {
       cells.map((cell) => ({ op: 'absent', signal: id, cell }))),
     present: (id, epochs, text) => make(studioAccessibleName('set', signal(id)),
       epochs.map((at) => ({ op: 'present', signal: id, epoch: at, ...text === undefined ? {} : { text } }))),
+    repeat: (first, last) => make(studioName('repeat'), [{ op: 'repeat', first_epoch: first, last_epoch: last }]),
+    removeRepeat: (id) => make(studioAccessibleName('remove', studioName('repeat')), [{ op: 'remove_repeat', id }]),
   };
 }
 
@@ -130,14 +140,14 @@ export function TrialTaskGrid({ view, commit, runs, selected, select }: {
 }) {
   const shown = useGrid(view, commit, runs);
   if (!shown) return null;
-  return <TaskGrid epochs={shown.epochs} repeats={[]} signals={shown.signals} selected={selectionOf(selected)}
+  return <TaskGrid epochs={shown.epochs} repeats={shown.repeats} signals={shown.signals} selected={selectionOf(selected)}
     select={(selection) => select(selectionKey(selection))} edits={gridEdits(shown.task, commit)} />;
 }
 
-/** Whether the window's selection of a task element names an epoch, an End, a signal or a cell. */
+/** Whether the window's selection of a task element names an epoch, an End, a repeat, a signal or a cell. */
 export const inGrid = (selected: string | undefined) => {
   const kind = selectionOf(selected)?.kind;
-  return kind === 'epoch' || kind === 'end' || kind === 'signal' || kind === 'cell';
+  return kind === 'epoch' || kind === 'end' || kind === 'repeat' || kind === 'signal' || kind === 'cell';
 };
 
 /** The Inspector of what is selected in the grid: an epoch with its End, or a signal with its absent value and cell. */
@@ -147,9 +157,10 @@ export function TrialGridInspector({ view, commit, runs, selected, shown: drawn 
   const shown = useGrid(view, commit, runs);
   if (!shown) return null;
   const document: TaskDocumentView = {
-    kind: 'document', variables: [], epochs: shown.epochs, repeats: [], signals: shown.signals,
-    duration: (view.n_steps ?? 0) * view.period_seconds, stepSeconds: view.period_seconds,
+    kind: 'document', variables: [], epochs: shown.epochs, repeats: shown.repeats, signals: shown.signals,
+    duration: view.n_steps != null && view.period_seconds != null ? view.n_steps * view.period_seconds : 0,
+    stepSeconds: view.period_seconds ?? undefined,
   };
   return <TaskInspector view={document} selected={selectionOf(selected)}
-    shown={drawn ?? { kind: 'definition' }} />;
+    shown={drawn} />;
 }

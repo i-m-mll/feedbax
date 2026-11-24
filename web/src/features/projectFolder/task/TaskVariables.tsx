@@ -3,15 +3,16 @@ import { Activity } from 'lucide-react';
 import { useState } from 'react';
 import { studioAccessibleName, studioName, studioValueType } from '@/components/activity/studioVocabulary';
 import { ChangeMark } from '@/components/ui/ChangeMark';
-import { Combobox } from '@/components/ui/Combobox';
 import { FieldProblem } from '@/components/ui/FieldProblem';
 import { InlineEdit } from '@/components/ui/InlineEdit';
-import { MenuItem } from '@/components/ui/Menu';
+import { MenuCheckboxItem, MenuItem } from '@/components/ui/Menu';
 import {
-  Table, TableCell, TableFieldCell, TableHeaderCell, TableHeaderRow, TableRow, type TableColumn,
+  Table, TableCell, TableFieldCell, TableHeaderCell, TableHeaderRow, TableRow, TableRowHeader, type TableColumn,
 } from '@/components/ui/Table';
+import { TreeChoice } from '@/components/ui/TreeChoice';
 import { changeTip, ValueField } from '@/components/values/ValueField';
-import type { TaskSelection, TaskVariable, UninitializedStart, VariableInitializes } from './taskModel';
+import type { StudioCommand } from '@/features/projectWindow/studioCommands';
+import type { TaskSelection, TaskSetVariable, TaskVariable, UninitializedStart, VariableInitializes } from './taskModel';
 
 /** A refusal of a variable's edit, or nothing once it is made. */
 type Made = Promise<string | undefined> | void;
@@ -23,11 +24,13 @@ export interface VariableEdits {
   remove?(id: string): Made;
   /** Moves the variable to `index` among the variables. */
   move?(id: string, index: number): Made;
+  /** Makes the variable a list, or a single value again. */
+  list?(id: string, list: boolean): Made;
 }
 
 /** A variable's type, with a list's count beside it. */
 export function variableType({ type, count }: Pick<TaskVariable, 'type' | 'count'>) {
-  return count === undefined ? type : `${type} × ${count}`;
+  return count === undefined ? type : `${type} × ${count.text ?? ''}`;
 }
 
 /** The mark of a variable read every step, because it reads `time` or the model. */
@@ -41,15 +44,15 @@ const columns: readonly TableColumn[] = [{ least: '5rem', greatest: '16rem' }, {
 const drawnColumn: TableColumn = { least: '5rem' };
 const initializesColumn: TableColumn = { least: '8rem' };
 
-/** The Model values a variable initializes, as a choice with type-ahead of those its type fits. */
+/** The Model values a variable initializes, as a choice over the Model's tree of those its type fits. */
 function Initializes({ variable, initializes }: { variable: string; initializes?: VariableInitializes }) {
   const [refusal, setRefusal] = useState<string>();
   if (!initializes) return null;
   const { anchor, chosen, options, reason, changed, toggle } = initializes;
   const items = [...options, ...chosen.filter(({ id }) => !options.some((option) => option.id === id))];
   const shown = refusal ?? reason;
-  return <div data-field={anchor} className="contents"><Combobox className="w-full" aria-label={studioAccessibleName('initializes', variable)}
-    items={items.map(({ id, name }) => ({ value: id, label: name }))}
+  return <div data-field={anchor} className="contents"><TreeChoice className="w-full" aria-label={studioAccessibleName('initializes', variable)}
+    options={items.map(({ id, path }) => ({ value: id, path }))}
     checked={chosen.map(({ id }) => id)} text={chosen.map(({ name }) => name).join(', ')}
     disabled={!toggle} invalid={!!shown}
     trailing={(shown || changed) && <>
@@ -65,8 +68,10 @@ function Initializes({ variable, initializes }: { variable: string; initializes?
  * Variables as a table of Name, Type and Value. A name is edited by clicking into it; a variable is added at the foot
  * of the Name column once it has a name, removed by its row's menu, and moved by dragging its handle.
  */
-export function TaskVariables({ variables, starts = [], selected, select, edits, drawn }: {
+export function TaskVariables({ variables, sets = [], starts = [], selected, select, edits, drawn }: {
   variables: readonly TaskVariable[];
+  /** The Sets the step's trials apply, each a row after the variables with To Sweep in its menu. */
+  sets?: readonly (TaskSetVariable & { readonly toSweep?: StudioCommand })[];
   /** The paired Model's values no variable initializes, each a row with its name empty. */
   starts?: readonly UninitializedStart[];
   selected?: TaskSelection;
@@ -107,6 +112,8 @@ export function TaskVariables({ variables, starts = [], selected, select, edits,
           <MenuItem disabled={index === 0 || !move} onClick={() => move?.(variable.id, index - 1)}>{studioName('moveEarlier')}</MenuItem>
           <MenuItem disabled={index === variables.length - 1 || !move}
             onClick={() => move?.(variable.id, index + 1)}>{studioName('moveLater')}</MenuItem>
+          <MenuCheckboxItem checked={!!variable.count} disabled={!edits.list} closes
+            onCheckedChange={(list) => settle(variable.id, edits.list?.(variable.id, list))}>{studioName('list')}</MenuCheckboxItem>
           <MenuItem onClick={() => settle(variable.id, edits.remove?.(variable.id))}>{studioName('remove')}</MenuItem>
         </> }}>
         <TableFieldCell header>
@@ -120,17 +127,42 @@ export function TaskVariables({ variables, starts = [], selected, select, edits,
           </span>
         </TableFieldCell>
         <TableFieldCell {...appTip(studioValueType(variable.valueType))}>
-          <ValueField form="cell" model={variable.typeChoice} />
+          {variable.count ? <span className="flex min-w-0 items-center gap-1">
+            <span className="min-w-0 flex-1"><ValueField form="cell" model={variable.typeChoice} /></span>
+            <span aria-hidden="true" className="text-shell-muted">×</span>
+            <span className="w-12 shrink-0"><ValueField form="cell" model={variable.count} /></span>
+          </span> : <ValueField form="cell" model={variable.typeChoice} />}
         </TableFieldCell>
         <TableFieldCell><ValueField form="cell" model={variable.value} /></TableFieldCell>
         {drawn && <TableCell className="font-mono tabular-nums text-shell-muted">{drawn[variable.id]}</TableCell>}
         <TableFieldCell><Initializes variable={variable.name} initializes={variable.initializes} /></TableFieldCell>
       </TableRow>;
     })}
+    {sets.map((set) => <SetRow key={set.axis} set={set} drawn={!!drawn} />)}
     {starts.map((start) => <StartRow key={start.id} start={start} add={edits.add} drawn={!!drawn} />)}
     {adding && edits.add && <NewVariable add={edits.add} done={() => setAdding(false)} drawn={!!drawn} />}
     </tbody>
   </Table>;
+}
+
+/** A Set the trials apply, named as its sweep's label names it, with its entries and their weights in parts. */
+function SetRow({ set, drawn }: { set: TaskSetVariable & { readonly toSweep?: StudioCommand }; drawn: boolean }) {
+  const { toSweep } = set;
+  return <TableRow menu={toSweep && { label: studioAccessibleName('variable', set.set), items:
+    <MenuItem disabled={!toSweep.enabled} onClick={() => toSweep.invoke()}>{toSweep.title}</MenuItem> }}>
+    <TableRowHeader className="font-mono">{set.set}</TableRowHeader>
+    <TableCell className="text-shell-muted">{studioName('set')}</TableCell>
+    <TableCell>
+      <ul aria-label={studioAccessibleName('values', set.set)} className="flex min-w-0 flex-wrap gap-x-3">
+        {set.entries.map(({ id, label, parts }) => <li key={id ?? ''} className="flex items-baseline gap-1">
+          <span>{label}</span>
+          {parts && <span className="font-mono tabular-nums text-shell-muted">{parts}</span>}
+        </li>)}
+      </ul>
+    </TableCell>
+    {drawn && <TableCell />}
+    <TableCell />
+  </TableRow>;
 }
 
 /** A variable being added: its name, which writes the variable when it is given. */
