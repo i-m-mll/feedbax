@@ -52,7 +52,7 @@ from feedbax.contracts.acausal import (
 )
 from feedbax.contracts.artifact_custody import ContentObjectRef, StoreTransferProgress
 from feedbax.contracts.execution_target import (
-    CloseWhenIdle, ExecutionTargets, KeepOpen, LocalTarget, LocalTargetProfile, OffTarget, OpeningObservation, ReadyTarget,
+    CloseWhenIdle, ExecutionTargets, HostRuntime, KeepOpen, LocalTarget, LocalTargetProfile, OffTarget, OpeningObservation, ReadyTarget,
     SessionTarget, SessionTargetProfile, TargetOption, TargetRealization, UnreachableTarget,
 )
 from feedbax.contracts.analysis_document import AnalysisDocument
@@ -64,6 +64,12 @@ from feedbax.contracts.studio_scene import (
     ScenePlanarMuscle,
     StudioPlanarSceneRequest,
     StudioPlanarSceneResponse,
+    SceneLinkGeometry,
+    SceneMuscleGeometry,
+    ScenePlanarGeometry,
+    ScenePointGeometry,
+    StudioSceneGeometryRequest,
+    StudioSceneGeometryResponse,
 )
 from feedbax.contracts.representation import (
     RepresentationAnchorSpec,
@@ -276,6 +282,8 @@ from feedbax.contracts.model_edit import (
     ModelConnectionReview,
     ModelConnectionReviewRequest,
     ModelConnectionVerdict,
+    ModelWireReplacement,
+    ModelGraphProblem,
     ModelLibraryConnection,
     ModelAddedElement,
     ModelPortProjection,
@@ -406,7 +414,7 @@ NONE_TYPE = type(None)
 
 
 JOB_MODELS = (
-    KeepOpen, CloseWhenIdle, LocalTargetProfile, SessionTargetProfile, LocalTarget, TargetRealization, SessionTarget,
+    KeepOpen, CloseWhenIdle, HostRuntime, LocalTargetProfile, SessionTargetProfile, LocalTarget, TargetRealization, SessionTarget,
     ReadyTarget, OffTarget, UnreachableTarget, TargetOption, ExecutionTargets, OpeningObservation,
     JobError,
     JobOutcome,
@@ -600,6 +608,8 @@ MODEL_TYPES: list[type[BaseModel]] = [
     ModelConnectionReviewRequest,
     TaskSignalSource,
     ModelConnectionVerdict,
+    ModelWireReplacement,
+    ModelGraphProblem,
     ModelLibraryConnection,
     ModelConnectionReview,
     ModelPortProjection,
@@ -717,6 +727,12 @@ MODEL_TYPES: list[type[BaseModel]] = [
     ScenePlanarModel,
     StudioPlanarSceneRequest,
     StudioPlanarSceneResponse,
+    SceneLinkGeometry,
+    SceneMuscleGeometry,
+    ScenePlanarGeometry,
+    ScenePointGeometry,
+    StudioSceneGeometryRequest,
+    StudioSceneGeometryResponse,
     DomainRegistryPayload,
     StudioErrorReport,
     DomainCompileReport,
@@ -880,6 +896,8 @@ CONTRACT_MODEL_NAMES = [
     "DomainCompileReport",
     "StudioPlanarSceneRequest",
     "StudioPlanarSceneResponse",
+    "StudioSceneGeometryRequest",
+    "StudioSceneGeometryResponse",
     "StudioErrorReport",
     "StudioTrialReplayResponse",
     "PenzaiBuilderListResponse",

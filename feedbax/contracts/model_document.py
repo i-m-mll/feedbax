@@ -9,6 +9,7 @@ from pydantic import ConfigDict, Field, JsonValue, StringConstraints, model_vali
 
 from feedbax.contracts.acausal import AcausalPhysicalDomain
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.expression_values import UnresolvedValue
 from feedbax.contracts.model_address import ModelElementId, PhysicalEnd, SignalSource, SignalTarget
 from feedbax.contracts.studio_refinements import validate_cross_field_refinements
 
@@ -33,8 +34,16 @@ class ModelTime(StrictModel):
 class DelayAttachment(StrictModel):
     kind: Literal["delay"]
     id: ModelElementId
-    delay: ModelTime
+    delay: ModelTime | UnresolvedValue
     initial: JsonValue = 0
+
+
+class InterventionWindow(StrictModel):
+    """A pulse starting a whole number of steps after the named Task epoch begins."""
+
+    epoch: str
+    offsets: tuple[Annotated[int, Field(ge=0)], ...] = Field(min_length=1)
+    duration: Annotated[int, Field(gt=0)]
 
 
 class InterventionAttachment(StrictModel):
@@ -42,7 +51,7 @@ class InterventionAttachment(StrictModel):
     id: ModelElementId
     operation: str
     fields: dict[str, JsonValue] = Field(default_factory=dict)
-    window: JsonValue = None
+    window: InterventionWindow | None = None
 
 
 class ProbeAttachment(StrictModel):
@@ -124,7 +133,7 @@ class CompositeComponent(StrictModel):
     name: ModelName
     ports: ModelPorts
     interior: GraphInterior | PhysicalInterior
-    substeps: Annotated[int, Field(ge=1)] = 1
+    substeps: Annotated[int, Field(ge=1)] | UnresolvedValue = 1
     attachments: ModelPortAttachments = Field(default_factory=ModelPortAttachments)
 
     @model_validator(mode="after")
@@ -179,7 +188,7 @@ class ModelDocument(StrictModel):
     model_config = ConfigDict(allow_inf_nan=False)
 
     schema_version: Literal[MODEL_DOCUMENT_SCHEMA_VERSION] = MODEL_DOCUMENT_SCHEMA_VERSION
-    step_seconds: PositivePeriod
+    step_seconds: PositivePeriod | UnresolvedValue
     ports: ModelPorts
     interior: GraphInterior
     world: ModelWorld | None = None

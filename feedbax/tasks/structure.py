@@ -6,7 +6,7 @@ variable stays referenced where it was read: the document still compiles to Prob
 
 from typing import assert_never
 
-from feedbax.contracts.expression_values import LiteralValue, Problem, ProblemCode, ValueBase, ValueType
+from feedbax.contracts.expression_values import LiteralValue, Problem, ProblemCode, UnresolvedValue, ValueBase, ValueType
 from feedbax.contracts.task_document import Cell, Epoch, Length, Link, Signal, TaskDocument, Variable
 from feedbax.contracts.task_structure import (
     AddMember, MakeAbsent, MakePresent, MoveMember, RemoveMember, RenameMember, SetLink, SetSpan, SetType,
@@ -169,7 +169,10 @@ def _cells(document: TaskDocument, signal: Signal, change: SetSpan | MakeAbsent 
                 return Problem(code=ProblemCode.STRUCTURE, reason=f"A cell already spans {change.epoch!r}.")
             cell = Cell(
                 id=_fresh(change.epoch, {item.id for item in signal.cells}), first_epoch=change.epoch,
-                last_epoch=change.epoch, value=signal.absent or zero(signal.type.base, signal.type.shape),
+                last_epoch=change.epoch, value=(
+                    UnresolvedValue(text=change.text) if change.text is not None
+                    else signal.absent or zero(signal.type.base, signal.type.shape)
+                ),
             )
             return tuple(sorted((*signal.cells, cell), key=lambda item: order.index(item.first_epoch)))
         case SetSpan():

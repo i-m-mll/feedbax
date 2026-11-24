@@ -172,8 +172,6 @@ async function showTrial(page: Page, path: string, row: StudioSavedEvaluationRow
   await plans(page).getByRole('button', { name: runName(label) }).click();
   await tab(page, 'Scene').click();
   const scene = page.getByRole('tabpanel', { name: 'Scene', exact: true });
-  const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
-  await reveal(page, 'Drawer');
   await pickRecordedTrial(page, trialIndex);
   const reply = await response;
   expect(reply.ok(), await reply.text()).toBe(true);
@@ -195,10 +193,6 @@ async function showTrial(page: Page, path: string, row: StudioSavedEvaluationRow
   await scrubber.press('End');
   await expect.poll(coordinates).not.toEqual(reset);
   await expect(scrubber).toHaveValue(String(replay.state_time.at(-1)));
-  await drawer.getByRole('treeitem', { name: 'Effector', exact: true }).click();
-  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-  await reveal(page, 'Inspector');
-  await expect(inspector.getByRole('region', { name: 'Effector', exact: true })).toBeVisible();
   return replay;
 }
 

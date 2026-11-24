@@ -30,6 +30,7 @@ from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import GraphInterior, ModelDocument
 from feedbax.contracts.project import json_pointer_parts
 from feedbax.contracts.task_document import PythonTaskSelection
+from feedbax.contracts.trial_bindings import selected_signal_id
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.objectives.document import ObjectiveDocument, ObjectiveExecutor, ObjectiveUse, compile_objective
 from feedbax.runtime.graph import GraphTraceRequest
@@ -129,14 +130,15 @@ def pair_trial_source(
     functions: FunctionRegistry,
     *,
     python_tasks: PythonTaskRegistry,
-    input_overrides: Mapping[str, str] | None = None,
+    input_bindings: Mapping[str, str | None] | None = None,
     graph_override: GraphSpec | None = None,
     task_sites: dict[tuple[str | int, ...], Site] | None = None,
     reset_fields: list[ModelResetField] | None = None,
+    nominal: bool = False,
 ) -> TrialPair | tuple[Problem, ...]:
     """The Model and Task paired for execution, or the Problems that refuse them. ``task_sites`` receives the Task's
     field sites, and ``reset_fields`` the Model fields a trial starts from, once the Model resolves."""
-    overrides = input_overrides or {}
+    authored = input_bindings or {}
     if isinstance(task, PythonTaskSelection):
         resolved = resolve_python_task_instance(task, python_tasks)
         if isinstance(resolved, tuple):
@@ -144,20 +146,24 @@ def pair_trial_source(
         template = resolved.template()
         task = resolved.selection()
         signal_types = template.signals
+        signal_ids = {name: name for name in signal_types}
     else:
         template = None
-        signal_types = {signal.name: signal.type for signal in task.signals}
-    supplied = frozenset(
-        port.name for port in model.ports.inputs
-        if overrides.get(port.name, port.name) in signal_types
-    )
+        signal_types = {signal.id: signal.type for signal in task.signals}
+        signal_ids = {signal.name: signal.id for signal in task.signals}
+    supplied_types = {}
+    for port in model.ports.inputs:
+        signal_id = selected_signal_id(port.id, port.name, signal_ids, authored)
+        if signal_id is not None and signal_id in signal_types:
+            supplied_types[port.name] = signal_types[signal_id]
+    supplied = frozenset(supplied_types)
     declared_prototypes = declared_model_input_prototypes(model)
     try:
         lowered = lower_model_document(model, components, supplied_inputs=supplied)
         prototypes = {
             target: (
                 jax.ShapeDtypeStruct(value.shape, _DTYPES[value.base])
-                if (value := signal_types.get(overrides.get(port, port))) is not None
+                if (value := supplied_types.get(port)) is not None
                 else declared_prototypes[port]
             )
             for port, target in lowered.graph.input_bindings.items()
@@ -184,6 +190,7 @@ def pair_trial_source(
     if isinstance(task, TaskDocument):
         compiled = compile_task(
             task, functions, model=replace(interface, inputs=()), sites=task_sites, link_problems=links,
+            nominal=nominal,
         )
     else:
         assert template is not None
@@ -195,7 +202,7 @@ def pair_trial_source(
             code=ProblemCode.STRUCTURE, path=("python_task", "type"),
             reason="The prepared Task's conditions differ from its registry declaration.",
         ),)
-    bindings, problems = bind_task_inputs(interface, compiled.interface.signals, overrides)
+    bindings, problems = bind_task_inputs(interface, compiled.interface.signals, authored)
     return TrialPair(interface, compiled, lowered, prototypes, bindings, (*links, *problems), task)
 
 
@@ -235,28 +242,31 @@ def preview_trial_source(
     functions: FunctionRegistry,
     *,
     python_tasks: PythonTaskRegistry,
-    input_overrides: Mapping[str, str],
+    input_bindings: Mapping[str, str | None],
+    nominal: bool = False,
 ) -> PreviewTrialSource | tuple[Problem, ...]:
     """Compile the Task's trial, including each Model link that can be resolved."""
     paired = pair_trial_source(
-        model, task, components, functions, python_tasks=python_tasks, input_overrides=input_overrides,
+        model, task, components, functions, python_tasks=python_tasks, input_bindings=input_bindings,
+        nominal=nominal,
     )
     if isinstance(paired, TrialPair):
         return PreviewTrialSource(paired.task, paired.model.outputs)
     if any(problem.path[:1] != ("model",) for problem in paired):
         return tuple(problem for problem in paired if problem.path[:1] != ("links",))
-    return compile_unpaired_task(model, task, functions, python_tasks=python_tasks)
+    return compile_unpaired_task(model, task, functions, python_tasks=python_tasks, nominal=nominal)
 
 
 def compile_unpaired_task(
     model: ModelDocument, task: TaskDocument | PythonTaskSelection, functions: FunctionRegistry,
     *, python_tasks: PythonTaskRegistry, sites: dict[tuple[str | int, ...], Site] | None = None,
+    nominal: bool = False,
 ) -> PreviewTrialSource | tuple[Problem, ...]:
     """Compile values that need only the authored Model period and output declarations."""
     outputs = declared_model_outputs(model)
     interface = ResolvedModelInterface(model.step_seconds, (), outputs, (), ())
     if isinstance(task, TaskDocument):
-        compiled = compile_task(task, functions, model=interface, sites=sites, link_problems=[])
+        compiled = compile_task(task, functions, model=interface, sites=sites, link_problems=[], nominal=nominal)
     else:
         template = resolve_python_task(task, python_tasks)
         if isinstance(template, tuple):
@@ -306,7 +316,7 @@ def compile_trial_execution(
     python_tasks: PythonTaskRegistry,
     objective: ObjectiveDocument | None = None,
     objective_use: ObjectiveUse = ObjectiveUse.TRAIN,
-    input_overrides: Mapping[str, str] | None = None,
+    input_bindings: Mapping[str, str | None] | None = None,
     initialization_key: jax.Array | None = None,
     artifact_provider: ArtifactBlobProvider | None = None,
     graph_override: GraphSpec | None = None,
@@ -314,7 +324,7 @@ def compile_trial_execution(
     """Bind a trial source and compile the paired model and optional objective."""
     trial = resolve_trial_execution(
         model, task, components, functions, python_tasks=python_tasks,
-        objective=objective, objective_use=objective_use, input_overrides=input_overrides,
+        objective=objective, objective_use=objective_use, input_bindings=input_bindings,
         graph_override=graph_override,
     )
     if isinstance(trial, tuple):
@@ -331,14 +341,14 @@ def resolve_trial_execution(
     python_tasks: PythonTaskRegistry,
     objective: ObjectiveDocument | None = None,
     objective_use: ObjectiveUse = ObjectiveUse.TRAIN,
-    input_overrides: Mapping[str, str] | None = None,
+    input_bindings: Mapping[str, str | None] | None = None,
     graph_override: GraphSpec | None = None,
 ) -> ResolvedTrialExecution | tuple[Problem, ...]:
     """Validate the paired Model, Task and Objective before runtime construction."""
     try:
         pairing = pair_trial_source(
             model, task, components, functions, python_tasks=python_tasks,
-            input_overrides=input_overrides, graph_override=graph_override,
+            input_bindings=input_bindings, graph_override=graph_override,
         )
         if isinstance(pairing, tuple):
             return pairing

@@ -50,9 +50,7 @@ def trial_dataset_fields(
     trial_axes = (*leading, "trial")
     transition_axes = (*trial_axes, "transition")
     variable_levels = {value.id: value.level for value in task.interface.variables}
-    variable_levels.update({value.name: value.level for value in task.interface.variables})
     signal_types = {value.id: value.type for value in task.interface.signals}
-    signal_types.update({value.name: value.type for value in task.interface.signals})
 
     def put(path, value, axes, *, point=False):
         array = np.asarray(value)

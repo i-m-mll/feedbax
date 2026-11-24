@@ -212,7 +212,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
             documents.model, documents.task_source,
             registry.components, registry.expression_functions, python_tasks=registry.python_tasks,
             objective=documents.objective,
-            input_overrides=documents.input_overrides,
+            input_bindings=documents.input_bindings,
             initialization_key=model_initialization_key(initialization_seed),
             artifact_provider=slot.provider,
         )
@@ -498,7 +498,7 @@ def test_saved_raw_state_refuses_undeclared_registered_owner(host, tmp_path, mon
     prepared = compile_trial_execution(
         documents.model, documents.task_source,
         registry.components, registry.expression_functions, python_tasks=registry.python_tasks,
-        input_overrides=documents.input_overrides,
+        input_bindings=documents.input_bindings,
     )
     assert isinstance(prepared, PreparedTrialExecution), prepared
     graph = prepared.executable.resolved.graph

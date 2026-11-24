@@ -243,7 +243,7 @@ def example(kind, functions, *, zero=False, interface=PORTLESS, reference_valida
         doc,
         functions,
         model=interface,
-        input_overrides={"reach_target": "target_pos"} if interface.inputs else None,
+        input_bindings={"task-input": "target_pos"} if interface.inputs else None,
     )
     assert isinstance(task, DocumentTask), task
     return doc, task
@@ -657,20 +657,20 @@ def test_a_start_the_model_requires_is_a_problem_until_a_variable_initializes_it
         for binding in interface.reset._bindings
     )))
     doc, _ = example("simple", functions, interface=interface)
-    overrides = {"reach_target": "target_pos"}
-    unset = compile_task(doc.model_copy(update={"links": ()}), functions, model=required, input_overrides=overrides)
+    overrides = {"task-input": "target_pos"}
+    unset = compile_task(doc.model_copy(update={"links": ()}), functions, model=required, input_bindings=overrides)
     assert [problem.path for problem in unset] == [("links", position)]
     # Catches a missing start not tied to its Model value, which Studio could then name only by the Task's links.
     assert unset[0].model_address == reset_position(interface)
     # Catches a link to a variable that does not exist placed nowhere, though it leaves its Model value unstarted.
     dangling = compile_task(
         doc.model_copy(update={"links": (Link(model_field=position, variable="ghost"),)}),
-        functions, model=required, input_overrides=overrides,
+        functions, model=required, input_bindings=overrides,
     )
     assert [(problem.path, problem.model_address) for problem in dangling] == [
         (("links", position), reset_position(interface)),
     ]
-    assert not isinstance(compile_task(doc, functions, model=required, input_overrides=overrides), tuple)
+    assert not isinstance(compile_task(doc, functions, model=required, input_bindings=overrides), tuple)
 
 
 @pytest.mark.parametrize("kind", ["simple", "delayed", "stabilization"])
@@ -688,7 +688,7 @@ def test_document_pair_drives_signed_model_graph_with_real_reset(kind, functions
         doc,
         functions,
         model=interface,
-        input_overrides={"reach_target": "target_vel"},
+        input_bindings={"task-input": "target_vel"},
     )
     assert bad[0].code.value == "type_mismatch"
     read_only = reset_position(interface)
@@ -697,7 +697,7 @@ def test_document_pair_drives_signed_model_graph_with_real_reset(kind, functions
     })})
     bad = compile_task(
         doc.model_copy(update={"links": (Link(model_field=read_only.to_text(), variable="start"),)}),
-        functions, model=interface, input_overrides={"reach_target": "target_pos"},
+        functions, model=interface, input_bindings={"task-input": "target_pos"},
     )
     assert bad[0].path == ("links", read_only.to_text())
     assert bad[0].code.value == "unknown_name"

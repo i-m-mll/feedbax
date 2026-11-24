@@ -33,7 +33,7 @@ def authored_preview(kind, expression_functions):
     return {
         "model": _model_payload(),
         "task": document.model_dump(mode="json"),
-        "input_overrides": {"reach_target": "target_pos"},
+        "input_bindings": {"task-input": "target_pos"},
         "seed": 17,
         "count": 4,
     }
@@ -80,7 +80,7 @@ def test_aggregate_of_delayed_reaches_shares_the_drawn_epoch(client, expression_
 
 def test_a_binding_problem_does_not_hide_the_trial(client, expression_functions):
     payload = authored_preview("simple", expression_functions)
-    payload["input_overrides"] = {"reach_target": "target_vel"}
+    payload["input_bindings"] = {"task-input": "target_vel"}
     response = client.post("/api/execution/task-trials/sample", json=payload)
     assert response.status_code == 200, response.text
     trial = response.json()["drawn"]["trials"][0]
@@ -130,3 +130,20 @@ def test_delayed_reaches_term_applies_where_move_and_target_overlap(client, expr
     assert trial["terms"]["target"]["covered"]
     assert not any(trial["terms"]["absent"]["steps"])
     assert not trial["terms"]["absent"]["covered"]
+
+
+def test_nominal_trial_uses_representative_values_and_the_same_task_timeline(client, expression_functions):
+    """The nominal trial must keep its values and bars when the sampler controls change."""
+    payload = authored_preview("delayed", expression_functions) | {"nominal": True}
+    response = client.post("/api/execution/task-trials/sample", json=payload)
+    changed_controls = client.post("/api/execution/task-trials/sample", json=payload | {"seed": 2, "count": 10})
+    assert response.status_code == changed_controls.status_code == 200, response.text
+    assert response.json() == changed_controls.json()
+    (trial,) = response.json()["drawn"]["trials"]
+    assert trial["id"] == "nominal"
+    assert trial["variables"]["start"] == pytest.approx([0.05, 0.075])
+    assert trial["variables"]["catch"] is False
+    assert [(cue["epoch"], cue["start"], cue["end"]) for cue in trial["timeline"]] == [
+        ("hold", 0, 10), ("cue", 10, 24), ("move", 24, 80),
+    ]
+    assert trial["present"]["target_pos"] == [False] * 10 + [True] * 70

@@ -148,7 +148,7 @@ def resolve_rollout(
     initial: InitialModelSource, task: TaskDocument | PythonTaskSelection,
     objective: ObjectiveDocument | None, source_graph: GraphSpec | None, params: RolloutParameters,
     *, registry: ApplicationRegistryBundle, model_assets: ImmutableArtifactBlobProvider,
-    input_overrides: dict[str, str],
+    input_bindings: dict[str, str | None],
 ) -> ResolvedRollout:
     import jax
 
@@ -160,7 +160,7 @@ def resolve_rollout(
         raise CannotRun("/numerical_settings", "requires CPU execution with JAX x64 disabled")
     base = prepare_model_task(
         initial, task, objective=objective, registry=registry, artifacts=model_assets,
-        input_overrides=input_overrides,
+        input_bindings=input_bindings,
     )
     if isinstance(base, tuple):
         problem = base[0]
@@ -171,10 +171,11 @@ def resolve_rollout(
     validate_evaluation_source(source_graph, registry.components)
     variant = resolve_evaluation_variant(source_graph, task, params.variation, components=registry.components)
     paired = source_pair
-    if variant.graph != source_graph or variant.task != task:
+    varied_bindings = input_bindings | params.input_bindings
+    if variant.graph != source_graph or variant.task != task or varied_bindings != input_bindings:
         varied = prepare_model_task(
             initial, variant.task, objective=objective, objective_use=ObjectiveUse.INHERITED,
-            input_overrides=input_overrides, registry=registry, artifacts=model_assets, graph_override=variant.graph,
+            input_bindings=varied_bindings, registry=registry, artifacts=model_assets, graph_override=variant.graph,
         )
         if isinstance(varied, tuple):
             raise variant.task_refusal(varied[0])
@@ -217,7 +218,7 @@ def _prepare_model_rollout(
     initial = InitialModelSource(document=documents.model, seed=seed)
     resolved = resolve_rollout(
         initial, documents.task_source, documents.objective, slot.graph, params, registry=registry,
-        model_assets=slot.provider, input_overrides=documents.input_overrides,
+        model_assets=slot.provider, input_bindings=documents.input_bindings,
     )
     paired, variant, source_pair = resolved.paired, resolved.variant, resolved.source_pair
     source = CheckpointModelSource(tree=slot.tree, encoding=slot.encoding, initial=initial)
@@ -256,7 +257,7 @@ def _prepare_initial_rollout(
     assert objective is None or isinstance(objective, ObjectiveDocument)
     resolved = resolve_rollout(
         source, task, objective, None, params, registry=registry, model_assets=store,
-        input_overrides=params.input_overrides,
+        input_bindings=params.input_bindings,
     )
     paired, variant = resolved.paired, resolved.variant
     executable = paired.executable

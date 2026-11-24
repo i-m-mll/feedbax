@@ -78,6 +78,7 @@ class ScopedValue(ValueRecord):
     name: Annotated[str, Field(min_length=1)]
     type: ValueType
     level: Level
+    list_count: Annotated[StrictInt, Field(gt=0)] | None = None
 
 
 class Site(ValueRecord):
@@ -85,6 +86,8 @@ class Site(ValueRecord):
     finest: Level
     names: tuple[ScopedValue, ...] = ()
     structural: bool = False
+    list_count: Annotated[StrictInt, Field(gt=0)] | None = None
+    repeat_count: Annotated[StrictInt, Field(gt=0)] | None = None
 
 
 class TextSpan(ValueRecord):
@@ -144,11 +147,15 @@ class CallValue(ValueRecord):
     kwargs: dict[str, Expression] = Field(default_factory=dict)
 
 
+type WeightPart = Annotated[FiniteFloat, Field(ge=0)]
+
+
 class DrawValue(ValueRecord):
     kind: Literal["draw"] = "draw"
     family: str
     args: tuple[Expression, ...]
     per: Literal["run", "trial"] = "trial"
+    weights: tuple[WeightPart, ...] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class UnresolvedValue(ValueRecord):

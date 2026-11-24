@@ -146,8 +146,6 @@ def decode_rollout_request(
         first = error.errors()[0]
         path = pointer(("params", *map(str, first["loc"])))
         raise CannotRun(path, first["msg"]) from error
-    if not isinstance(subject, ContentRef) and params.input_overrides:
-        raise CannotRun("/params/input_overrides", "a checkpoint rollout inherits its task bindings")
     for path, patch in authored_variation(params.variation):
         if "op" not in patch.model_fields_set:
             raise CannotRun(f"{path}/op", "declare the override operation explicitly")

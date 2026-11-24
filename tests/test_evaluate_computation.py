@@ -78,14 +78,13 @@ def initial_rollout(tmp_path):
         store.store_object(raw)
     params = RolloutParameters(
         trials=task.condition_ids[:2], seed=29, trial_policy="paired", variation=(),
-        input_overrides={"reach_target": "target_pos"},
+        input_bindings={"task-input": "target_pos"},
     )
 
     def prepare():
         return _prepare_initial_rollout(refs, params, registry=load_application().bundle, store=store)
 
     return store, params, prepare
-
 
 
 def test_recorded_trial_matches_preview_and_its_weighted_steps_reduce(initial_rollout, tmp_path):
@@ -112,7 +111,7 @@ def test_recorded_trial_matches_preview_and_its_weighted_steps_reduce(initial_ro
             "model": model.model_dump(mode="json"),
             "task": task.model_dump(mode="json"),
             "objective": objective.model_dump(mode="json"),
-            "input_overrides": params.input_overrides,
+            "input_bindings": params.input_bindings,
             "seed": params.seed,
             "evaluation_trials": list(params.trials),
         })
@@ -224,7 +223,7 @@ def test_equal_rollout_check_preserves_protected_wrapper_staleness(tmp_path, ini
     execution = EvaluationComputation(store)
     with SourceRoster(3, "test Evaluate source") as roster:
         roster.enable()
-        recorder = WorkerRecorder(roster.names, boot_ns=time_ns())
+        recorder = WorkerRecorder(roster, boot_ns=time_ns())
         with recorder.monitor():
             recorder.bind_project(project)
             monkeypatch.setattr(TrialExecution, "evaluate", load(score, original_score))
