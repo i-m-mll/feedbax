@@ -58,7 +58,7 @@ from feedbax.contracts.jobs import (
     StudioSavedTrainRuns,
 )
 from feedbax.contracts.project_inputs import (
-    BatchCheckpoint, InputBinding, SelectedRow, StepReference, producer_member_key, subset_to_rows,
+    BatchCheckpoint, InputBinding, SelectedRow, StepReference, SubsetTerms, producer_member_key, subset_to_rows,
 )
 from feedbax.contracts.studio_place import (
     StudioStepPlace, definition_place, document_path, path_parts, variation_targets,
@@ -334,6 +334,7 @@ class ProjectPlanRead:
                             else reference.checkpoint
                         ),
                         checkpoint_axis=axis[0] if axis is not None else None,
+                        can_sweep_checkpoint=input_id == "subject" and step.can_sweep_checkpoint,
                         subset=StudioProjectWindowMapSubset(
                             terms=subset.terms, count=len(subset.ranks or subset.members), total=subset.candidates,
                             ranks=list(subset.ranks),
@@ -345,8 +346,22 @@ class ProjectPlanRead:
                             members=[
                                 StudioSavedTrainKey.model_validate(member, from_attributes=True) for member in subset.members
                             ] if evaluation_tasks is not None and step.kind == "evaluate" and role == "subject" else None,
-                        ) if subset is not None else None,
+                        ) if subset is not None else StudioProjectWindowMapSubset(
+                            terms=reference.where, count=0,
+                            total=len(step_rows.get((variant, reference.step), ())), document=None,
+                        ) if isinstance(reference.where, SubsetTerms) else None,
                     )
+
+        def exceptions(variant: str, step_id: str) -> Iterator[StudioProjectWindowMapException]:
+            at = variant, step_id
+            sweep = plan.steps[at].sweep
+            if sweep is None and (project := plan.variant_projects.get(variant)) is not None:
+                sweep = project.steps[step_id].sweep
+            if sweep is not None:
+                matches = plan.exception_matches.get(at, {})
+                for name, rule in sweep.exceptions.items():
+                    if rule is not None:
+                        yield StudioProjectWindowMapException(id=name, count=len(matches.get(name, ())), rule=rule)
 
         def includes(variant: str | None) -> bool:
             return variants is None or variant is None or variant in variants
@@ -371,12 +386,7 @@ class ProjectPlanRead:
                     inputs=list(inputs(variant, step_id)),
                     document_ids=document_ids.get((variant, step_id), {}),
                     document_uses=sorted(document_uses[variant, step_id]),
-                    exceptions=[
-                        StudioProjectWindowMapException(
-                            id=name, count=len(rows), rule=plan.steps[variant, step_id].sweep.exceptions[name],
-                        )
-                        for name, rows in plan.exception_matches.get((variant, step_id), {}).items()
-                    ],
+                    exceptions=list(exceptions(variant, step_id)),
                     status_counts=dict(counts[variant, step_id]),
                     axes=gathered[variant, step_id][0] if (variant, step_id) in gathered else [],
                     rule_metrics=sorted(rule_metrics[variant, step_id]),
@@ -633,7 +643,9 @@ class ProjectPlanService:
                 ranked=body.ranked,
             )
         except RuleRefusal as refusal:
-            return StudioRunRuleCheck(total=len(rows), result=StudioRunRuleRefused(reason=refusal.detail))
+            return StudioRunRuleCheck(
+                total=len(rows), result=StudioRunRuleRefused(reason=refusal.detail, span=refusal.span),
+            )
         best = chosen.best
         groups = {tuple(coordinates[id(row)][axis].value_id for axis in best.per) for row in chosen.rows} if best else ()
         return StudioRunRuleCheck(total=len(rows), result=StudioRunRuleChosen(
