@@ -160,6 +160,7 @@ def test_deleting_a_component_for_one_reader_makes_a_document_without_it(tmp_pat
         assert project.snapshot()["revision"] == before["revision"]
         choices = {option["kind"]: option for option in ask.json()["result"]["store_choices"]}
         assert {"fee", "other"} <= set(choices["all_readers"]["steps"])
+        assert choices["all_readers"]["label"] == f"All {len(choices['all_readers']['steps'])} Steps"
         assert choices["selected_readers"]["steps"] == ["check", "fee"]
         choice = choices["selected_readers"]["id"]
         stale = project.model_edit(operation, step="fee", chosen=["other"], choice=choice)

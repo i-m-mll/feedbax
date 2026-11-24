@@ -35,7 +35,7 @@ from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.project import (
-    BasedDocument, Document, Project, RootDocument, Sha256, diff, json_pointer_parts, same_json,
+    BasedDocument, Document, Project, RootDocument, Sha256, diff, json_pointer_parts, member_name, same_json,
 )
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_io import (
@@ -1270,7 +1270,7 @@ class ProjectFolder:
                 """The document ``name`` as a root document holding its composed payload, under its own label."""
                 document = compose_document(text.project.documents.get, name)
                 if isinstance(document, ProjectDiagnostic):
-                    raise ProjectFolderInvalid(f"{name} cannot be composed: {document.detail}")
+                    raise ProjectFolderInvalid(f"{member_name(text.project.documents, name)} cannot be composed: {document.detail}")
                 label = text.project.documents[name].label
                 return document.model_dump(mode="json", by_alias=True) | ({"label": label} if label else {})
 
@@ -1316,7 +1316,7 @@ class ProjectFolder:
             elif command.kind == "detach":
                 name = member
                 if not isinstance(text.project.documents[member], BasedDocument):
-                    raise ProjectFolderInvalid(f"{member} has no base.")
+                    raise ProjectFolderInvalid(f"{member_name(text.project.documents, member)} has no base.")
                 project = {**source, "documents": {**source["documents"], member: composed(member)}}
             elif command.kind == "rename":
                 name = member

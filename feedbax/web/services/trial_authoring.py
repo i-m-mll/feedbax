@@ -21,7 +21,7 @@ from feedbax.contracts.model_edit import AxisValueRuns, ListedRuns, VariantRuns
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES
 from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.contracts.project import (
-    RemoveProjectValue, SetProjectValue, apply_document_edits, json_pointer_parts,
+    RemoveProjectValue, SetProjectValue, apply_document_edits, json_pointer_parts, member_name,
 )
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
 from feedbax.planner.project_plan import EVALUATION_TASK, RunKey, compile_project, own_task_variation
@@ -56,7 +56,7 @@ from feedbax.application.bundle import ApplicationRegistryBundle
 from feedbax.web.services.evaluate_sources import evaluate_subject, evaluate_value_source
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
 from feedbax.web.services.set_authoring import trial_set_fields
-from feedbax.web.services.store_choice import EditStore, choose_store
+from feedbax.web.services.store_choice import EditStore, all_readers_store, choose_store
 from feedbax.studio.selection import StoredEdit
 from feedbax.studio.numeric_fields import project_numeric_field
 from feedbax.web.services.trial_fields import (
@@ -453,13 +453,15 @@ _DOCUMENT_SCHEMAS = {"model": MODEL_DOCUMENT_SCHEMA_ID, "objective": OBJECTIVE_D
 def _chosen_document(project, document, role):
     entry = project.documents.get(document)
     if entry is None or entry.schema_id != _DOCUMENT_SCHEMAS[role]:
-        raise ProjectFolderInvalid(f"{document} is not a{'n' if role == 'objective' else ''} {role.title()} document.")
+        raise ProjectFolderInvalid(
+            f"{member_name(project.documents, document)} is not a{'n' if role == 'objective' else ''} {role.title()} document."
+        )
 
 
 def _chosen_task(project, document):
     task = _selected_task(project, document)
     if task is None:
-        raise ProjectFolderInvalid(f"{document} is not a Task document.")
+        raise ProjectFolderInvalid(f"{member_name(project.documents, document)} is not a Task document.")
     return task
 
 
@@ -966,12 +968,12 @@ def _validate_files(
         authored = preview_stored(project, stored)
         after = compile_sources(authored, possible)
         runs = _changed_runs(before, after, key, stored)
-        steps = {run.step for run in runs}
+        value = stored, authored, after
         if kind == "all_readers":
-            label = f"All {len(steps)} Steps" if len(steps) > 1 else "Whole Step"
-        elif kind == "selected_readers" and len(steps) > 1:
+            return all_readers_store(source, runs, value)
+        if kind == "selected_readers" and len({run.step for run in runs}) > 1:
             label = "Selected Steps"
-        return EditStore(kind, label, source, runs, (stored, authored, after))
+        return EditStore(kind, label, source, runs, value)
 
     preferred, *alternatives = [preview(*candidate) for candidate in candidates]
     missed = selected - preferred.runs

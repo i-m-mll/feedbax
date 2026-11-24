@@ -37,6 +37,8 @@ from feedbax.contracts.project import (
     StepBase,
     StepKind,
     json_pointer_parts,
+    member_display_name,
+    member_name,
 )
 from feedbax.contracts.project_inputs import InitialModelReference, InputBinding, ObjectiveDocumentReference, TaskDocumentReference
 from feedbax.contracts.project_sources import (
@@ -438,7 +440,7 @@ def compose_document(read_document: Callable[[str], Document | None], name: str)
     """The document ``name`` as a root document holding its composed payload."""
     document = read_document(name)
     if document is None:
-        return ProjectDiagnostic(ResolutionCode.MISSING_DOCUMENT, "document", name, document=name)
+        return ProjectDiagnostic(ResolutionCode.MISSING_DOCUMENT, "document", member_display_name(name), document=name)
     if isinstance(document, RootDocument):
         return document
     try:
@@ -475,6 +477,10 @@ class _Documents:
         self.chains: dict[str, tuple[str, ...]] = {}
         self.shapes: dict[str, Any] = {}
 
+    def display_name(self, name: str) -> str:
+        document = self.read_document(name)
+        return member_display_name(name, document.label if document is not None else None)
+
     def payload(self, name: str, document: Document, path: str, active: tuple[str, ...] = ()) -> JsonValue:
         """The document's payload composed with its base chain."""
         if isinstance(document, RootDocument):
@@ -488,20 +494,22 @@ class _Documents:
 
         base_name = document.base.document
         if document.base.unresolved:
-            raise problem(ResolutionCode.MISSING_DOCUMENT, "base.document", base_name)
+            raise problem(ResolutionCode.MISSING_DOCUMENT, "base.document", member_display_name(base_name))
         if base_name in (*active, name):
-            raise problem(ResolutionCode.DOCUMENT_CYCLE, "base.document", " -> ".join((*active, name, base_name)))
+            chain = " -> ".join(self.display_name(item) for item in (*active, name, base_name))
+            raise problem(ResolutionCode.DOCUMENT_CYCLE, "base.document", chain)
         base = self.read_document(base_name)
         if base is None:
-            raise problem(ResolutionCode.MISSING_DOCUMENT, "base.document", base_name)
+            raise problem(ResolutionCode.MISSING_DOCUMENT, "base.document", member_display_name(base_name))
+        label = member_display_name(base_name, base.label)
         if base.schema_id != document.schema_id:
             raise problem(
                 ResolutionCode.INVALID_DOCUMENT, "schema",
-                f"{document.schema_id} differs from the schema {base.schema_id} of its base {base_name}",
+                f"{document.schema_id} differs from the schema {base.schema_id} of its base {label}",
             )
         content = self.payload(base_name, base, path, (*active, name))
         if not isinstance(content, dict):
-            raise problem(ResolutionCode.INVALID_DOCUMENT, "base.document", f"{base_name} is not an object")
+            raise problem(ResolutionCode.INVALID_DOCUMENT, "base.document", f"{label} is not an object")
         try:
             payload = apply_differences(content, document.differences)
         except DifferenceNotApplied as error:
@@ -542,7 +550,7 @@ class _Documents:
             raise _Problem(
                 ResolutionCode.MISSING_DOCUMENT,
                 path,
-                reference.document,
+                member_display_name(reference.document),
                 step=self.step,
                 document=reference.document,
             )
@@ -606,7 +614,7 @@ class _Documents:
     ) -> tuple[Any, tuple[tuple[str, str], ...]]:
         key = reference.document, reference.pointer or ""
         if key in active:
-            chain = " -> ".join(f"{name}#{pointer}" for name, pointer in (*active, key))
+            chain = " -> ".join(f"{self.display_name(name)}#{pointer}" for name, pointer in (*active, key))
             raise _Problem(
                 ResolutionCode.DOCUMENT_CYCLE,
                 path,
@@ -852,18 +860,18 @@ class _Resolver:
             raise _Problem(
                 ResolutionCode.STEP_CYCLE,
                 "base.step",
-                " -> ".join((*active, name)),
+                " -> ".join(member_name(self.project.steps, item) for item in (*active, name)),
                 step=active[-1],
             )
         step = self.project.steps.get(name)
         if step is None:
             raise _Problem(
-                ResolutionCode.MISSING_STEP, "base.step", name, step=active[-1] if active else name
+                ResolutionCode.MISSING_STEP, "base.step", member_display_name(name), step=active[-1] if active else name
             )
         base = step.base
         if isinstance(base, StepBase):
             if base.unresolved:
-                raise _Problem(ResolutionCode.MISSING_STEP, "base.step", base.step, step=name)
+                raise _Problem(ResolutionCode.MISSING_STEP, "base.step", member_display_name(base.step), step=name)
             parent = self.state(base.step, (*active, name))
             if base.row is not None:
                 parent = self.select_row(name, base, parent)

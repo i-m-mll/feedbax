@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
-from typing import Annotated, Any, Literal
+import re
+from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import Field, JsonValue, StringConstraints, TypeAdapter, model_validator
 
@@ -28,6 +29,20 @@ type Payload = dict[str, JsonValue]
 type DifferencePointer = Annotated[Pointer, StringConstraints(min_length=1)]
 type Sha256 = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
 type StepKind = Literal["train", "evaluate", "analyze", "report"]
+
+
+class _LabelledMember(Protocol):
+    @property
+    def label(self) -> str | None: ...
+
+
+def member_display_name(key: str, label: str | None = None) -> str:
+    return label or re.sub(r"[-_]+", " ", key).capitalize()
+
+
+def member_name(members: Mapping[str, _LabelledMember], key: str) -> str:
+    member = members.get(key)
+    return member_display_name(key, member.label if member is not None else None)
 
 
 def json_pointer_parts(pointer: str | None) -> tuple[str, ...]:
