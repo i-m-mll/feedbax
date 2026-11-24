@@ -1,10 +1,15 @@
-"""The real folder boundary serves compiler-derived geometry for one revision."""
+"""The project route serves Model-addressed geometry for one revision."""
 
 from fastapi.testclient import TestClient
+import jax
+import jax.numpy as jnp
 import pytest
 
+from feedbax.builtins.mechanics.direct_force_components import TwoLinkArm
+from feedbax.contracts.model_address import ModelAddress
+from feedbax.runtime.graph import init_state_from_component
 from feedbax.web.app import create_app
-from tests.fixtures.scene_geometry import native_scene_samples, seed_scene_project
+from tests.fixtures.scene_geometry import native_scene_samples, scene_files, seed_scene_project
 
 
 _PROJECT = "/api/projects/scene"
@@ -91,3 +96,58 @@ def test_scene_reports_missing_frames_and_unresolved_occurrences(project):
         ("mechanics.muscle_path_missing_frame", ["cross_chain"]),
     ]
     assert "missing.distal" in invalid["diagnostics"][0]["message"]
+
+
+def test_project_geometry_matches_the_recorded_arm_tip_and_poses_every_mechanism(tmp_path):
+    pytest.importorskip("mujoco")
+    files = scene_files()
+    components = files[0]["document"]["payload"]["interior"]["components"]
+    components["plants"] = {
+        "kind": "composite", "name": "Plants", "ports": {},
+        "interior": {
+            "components": {
+                "arm": {
+                    "kind": "leaf", "name": "Arm", "type": "feedbax.TwoLinkArm",
+                    "fields": {"link_lengths": [0.4, 0.5]},
+                },
+                "mass": {"kind": "leaf", "name": "Mass", "type": "feedbax.PointMass"},
+            },
+        },
+    }
+    seed_scene_project(tmp_path / "scene", files)
+
+    arm = TwoLinkArm(link_lengths=[0.4, 0.5])
+    state = init_state_from_component(arm)
+    state = arm.replace_state_value(state, ("effector", "pos"), jnp.array([0.3, 0.2]))
+    outputs, state = arm({"force": jnp.array([1.0, -1.0])}, state, key=jax.random.PRNGKey(0))
+    recorded = arm.state_view(state)
+    angles = recorded.plant.skeleton.angle.tolist()
+    effector = outputs["effector"].pos.tolist()
+    arm_angles = ModelAddress.at_state(("plants",), "arm", "skeleton/angle").to_text()
+    arm_position = ModelAddress.at_state(("plants",), "arm", "effector/position").to_text()
+    mass_position = ModelAddress.at_state(("plants",), "mass", "effector/position").to_text()
+
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        source = {"revision": client.get(_PROJECT).json()["revision"], "document_id": "single"}
+        route = f"{_PROJECT}/scene/geometry"
+        response = client.post(route, json={
+            **source, "state_values": {arm_angles: angles, arm_position: effector, mass_position: [0.2, -0.1]},
+        })
+        assert response.is_success, response.text
+        assert response.headers["Cache-Control"] == "no-store"
+        result = response.json()
+        assert result["diagnostics"] == []
+        geometries = {item["address"]["element"]["id"]: item for item in result["mechanisms"]}
+        assert geometries.keys() == {"mechanics", "arm", "mass"}
+        assert geometries["arm"]["links"][-1]["end"] == pytest.approx(effector)
+        assert geometries["arm"]["links"][-1]["joint"]["element"]["path"] == ["geometry", "joint", 1]
+        assert geometries["mass"]["position"] == pytest.approx([0.2, -0.1])
+        assert geometries["mass"]["point"]["element"]["path"] == ["geometry", "point"]
+        assert geometries["mechanics"]["links"][0]["body"]["composites"] == ["mechanics"]
+
+        preview = client.post(route, json={**source, "state_values": {arm_position: [0.3, 0.2]}})
+        assert preview.is_success, preview.text
+        arm_preview = next(
+            item for item in preview.json()["mechanisms"] if item["address"]["element"]["id"] == "arm"
+        )
+        assert arm_preview["links"][-1]["end"] == pytest.approx([0.3, 0.2])

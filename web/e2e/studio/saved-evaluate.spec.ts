@@ -2,7 +2,7 @@ import { expect, test } from './fixtures/studio';
 import { type APIRequestContext, type Page, type TestInfo } from '@playwright/test';
 import type {
   StudioEvaluationObjectiveSeries, StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot, StudioSavedEvaluationRow,
-  StudioSavedTrainRuns, WorkspaceReplayTrial,
+  StudioSavedTrainRuns, StudioTrialReplayResponse,
 } from '../../src/generated/studioContracts';
 import { savedRunId } from '../../src/features/projectFolder/projectWindowPlan';
 import { authorEvaluateConditions } from './fixtures/authorEvaluateConditions';
@@ -152,6 +152,13 @@ function expectPositionSamples(samples: number[][]) {
   expect(samples.every((sample) => sample.length === 2 && sample.every(Number.isFinite))).toBe(true);
 }
 
+function replayPosition(replay: StudioTrialReplayResponse) {
+  if (replay.drawn.kind !== 'trials' || replay.position === null) throw new Error('Expected recorded position');
+  const track = replay.drawn.trials[0]?.states?.[replay.position];
+  if (!track) throw new Error('Expected recorded position samples');
+  return track;
+}
+
 async function showTrial(page: Page, path: string, row: StudioSavedEvaluationRow, label: string, checkpoint?: number) {
   const trialId = row.trials[trialIndex];
   // The picked trial is the window's: once picked for one run, the Scene opens the next run on the same trial, so its
@@ -171,14 +178,11 @@ async function showTrial(page: Page, path: string, row: StudioSavedEvaluationRow
   expect(reply.request().postDataJSON()).toMatchObject({
     key: row.key, job_id: row.result!.job_id, trial: trialId, ...(checkpoint === undefined ? {} : { checkpoint }),
   });
-  const replay = await reply.json() as WorkspaceReplayTrial;
-  expect(replay.identity).toMatchObject({ index: 1, stable_id: trialId, source: 'stable_id' });
-  expect(replay.manifest_refs!.producer_manifest).toMatchObject({
-    kind: 'EvaluationRunManifest', id: row.result!.receipt.manifest_id,
-    metadata: { manifest_sha256: row.result!.receipt.manifest_sha256 },
-  });
-  expect(replay.time.length).toBe(81);
-  expect(replay.time.values?.[0]).toBe(0);
+  const replay = await reply.json() as StudioTrialReplayResponse;
+  expect(replay.drawn).toMatchObject({ kind: 'trials', trials: [{ id: trialId }] });
+  expect(replay.receipt).toEqual(row.result!.receipt);
+  expect(replay.state_time.length).toBe(81);
+  expect(replay.state_time[0]).toBe(0);
   const cursor = scene.locator('[data-scene-cursor]');
   const clock = footer(page).getByRole('group', { name: 'Clock', exact: true });
   const scrubber = clock.getByRole('slider', { name: 'Playback Position' });
@@ -188,7 +192,7 @@ async function showTrial(page: Page, path: string, row: StudioSavedEvaluationRow
   const reset = await coordinates();
   await scrubber.press('End');
   await expect.poll(coordinates).not.toEqual(reset);
-  await expect(scrubber).toHaveValue(String(replay.time.values!.at(-1)));
+  await expect(scrubber).toHaveValue(String(replay.state_time.at(-1)));
   return replay;
 }
 
@@ -873,9 +877,9 @@ test('authors and replays Evaluate from the selected stopped Train checkpoint', 
 
   const plannedLabel = drawnRunLabel((await projection(saved.revision)).window_map!.rows, evaluation.key);
   const replay = await showTrial(page, projectPath + '/evaluate-replay', evaluation, plannedLabel, at);
-  expectPositionSamples(replay.tracks![0].samples);
+  expectPositionSamples(replayPosition(replay).samples);
   await info.attach('stopped-checkpoint-evaluation', {
-    body: JSON.stringify({ revision: saved.revision, source: train, evaluation, replay: replay.manifest_refs }),
+    body: JSON.stringify({ revision: saved.revision, source: train, evaluation, receipt: replay.receipt }),
     contentType: 'application/json',
   });
 });
@@ -948,22 +952,19 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
   expect(opened.request().postDataJSON()).toMatchObject({
     key: activityRun.key, job_id: activityRun.result!.job_id, revision,
   });
-  expect((await opened.json() as WorkspaceReplayTrial).manifest_refs!.producer_manifest).toMatchObject({
-    id: activityRun.result!.receipt.manifest_id,
-    metadata: { manifest_sha256: activityRun.result!.receipt.manifest_sha256 },
-  });
+  expect((await opened.json() as StudioTrialReplayResponse).receipt).toEqual(activityRun.result!.receipt);
   await expect(activity).toBeHidden();
   await expect(page.getByRole('tabpanel', { name: 'Scene', exact: true })).toBeFocused();
   await expect(footer(page).getByRole('slider', { name: 'Playback Position' })).toBeVisible();
   await scanStudio(page, info, 'evaluate-scene');
   const replayRow = (row: StudioSavedEvaluationRow) => showTrial(page, replayPath, row, drawn(row.key));
-  const replays = new Map<string, WorkspaceReplayTrial>();
+  const replays = new Map<string, StudioTrialReplayResponse>();
   for (const row of single) {
     const replay = await replayRow(row);
-    const [track] = replay.tracks!;
+    const track = replayPosition(replay);
     const observed = analysis[row.result!.job_id];
     expect(track.samples).toEqual(observed.samples);
-    expect(observed.tensor_reads).toContain(track.selector.compact);
+    expect(replay.position).toBe(observed.position_address);
     replays.set(row.result!.job_id, replay);
   }
   await page.reload();
@@ -977,10 +978,10 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
   for (const { coordinate, samples } of fromCheckpoint.checkpoints) {
     const response = await request.post(replayPath, { data: { ...finiteReplay, checkpoint: coordinate } });
     expect(response.ok(), await response.text()).toBe(true);
-    const replay = await response.json() as WorkspaceReplayTrial;
-    expect(replay.tracks![0].samples).toEqual(samples);
-    expect(fromCheckpoint.tensor_reads).toContain(replay.tracks![0].selector.compact);
-    expect(replay.time.length).toBe(81);
+    const replay = await response.json() as StudioTrialReplayResponse;
+    expect(replayPosition(replay).samples).toEqual(samples);
+    expect(replay.position).toBe(fromCheckpoint.position_address);
+    expect(replay.state_time.length).toBe(81);
   }
   await chooseStep(page, 'finite');
   await plans(page).getByRole('button', { name: runName(drawn(finiteRow.key)) }).click();
@@ -992,13 +993,13 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
   let selected = await selectedReplay;
   expect(selected.ok(), await selected.text()).toBe(true);
   expect(selected.request().postDataJSON()).toMatchObject({ checkpoint: 2 });
-  expect((await selected.json() as WorkspaceReplayTrial).tracks![0].samples).toEqual(fromCheckpoint.checkpoints[0].samples);
+  expect(replayPosition(await selected.json() as StudioTrialReplayResponse).samples).toEqual(fromCheckpoint.checkpoints[0].samples);
   selectedReplay = posted(page, replayPath, trialId);
   await pick(checkpoints, '1');
   selected = await selectedReplay;
   expect(selected.ok(), await selected.text()).toBe(true);
   expect(selected.request().postDataJSON()).toMatchObject({ checkpoint: 1 });
-  expect((await selected.json() as WorkspaceReplayTrial).tracks![0].samples).toEqual(fromCheckpoint.checkpoints[1].samples);
+  expect(replayPosition(await selected.json() as StudioTrialReplayResponse).samples).toEqual(fromCheckpoint.checkpoints[1].samples);
   await expect(page.getByRole('slider', { name: 'Playback Position' })).toHaveValue('0');
   await page.getByRole('slider', { name: 'Playback Position' }).press('End');
 

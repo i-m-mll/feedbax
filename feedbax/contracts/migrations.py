@@ -129,11 +129,6 @@ from feedbax.contracts.studio_api import (
     STUDIO_API_TRANSPORT_SCHEMA_ID,
     STUDIO_API_TRANSPORT_SCHEMA_VERSION,
 )
-from feedbax.contracts.workspace_replay import (
-    WORKSPACE_REPLAY_SCHEMA_ID,
-    WORKSPACE_REPLAY_SCHEMA_VERSION,
-    WORKSPACE_REPLAY_SCHEMA_VERSION_V0,
-)
 from feedbax.contracts.scientific_compiler_schema import (
     COMPILATION_FAILURE_SCHEMA_ID,
     COMPILATION_FAILURE_SCHEMA_VERSION,
@@ -1753,26 +1748,6 @@ def _register_default_spec_families(registry: SpecSchemaRegistry) -> None:
             )
         )
 
-    families.append(
-        _family(
-            "WorkspaceReplayProduct",
-            WORKSPACE_REPLAY_SCHEMA_ID,
-            WORKSPACE_REPLAY_SCHEMA_VERSION,
-            owner_module="feedbax.contracts.workspace_replay",
-            emitted_by=("eval/validation replay materialization"),
-            consumed_by=(
-                "Studio project playback",
-                "Mandible provider integration",
-                "analysis materialization",
-            ),
-            description="Manifest-linked replay product for authored Studio geometry.",
-            rejected_old_versions=(WORKSPACE_REPLAY_SCHEMA_VERSION_V0,),
-            required_tests=(
-                "tests/test_workspace_replay_contract.py",
-                "tests/test_structured_spec_migrations.py",
-            ),
-        )
-    )
 
 
     for family in families:
