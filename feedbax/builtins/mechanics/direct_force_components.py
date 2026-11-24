@@ -37,6 +37,29 @@ class TwoLinkArm(Mechanics, Component):
     component_presentation = PresentationOverride(representation=_two_link_arm_representation())
     component_sources = _PRESENTATION_SOURCES
     ports = _MECHANICS_PORTS
+    model_facts = ModelFacts(
+        values=(
+            ModelValue("link_lengths", "plant.skeleton.l", "source"),
+            ModelValue("dt", "dt", "source"),
+        ),
+        states=(
+            StateValue("skeleton/angle", ("plant", "skeleton", "angle"), "rad", "joint", configuration=True),
+            StateValue("skeleton/angular_velocity", ("plant", "skeleton", "d_angle"), "rad/s", "joint"),
+            StateValue("skeleton/torque", ("plant", "skeleton", "torque"), "N*m", "joint"),
+            StateValue("skeleton/effector_force", ("plant", "skeleton", "effector_force"), "N", "xy", "world"),
+            StateValue(
+                "effector/position", ("effector", "pos"), "m", "xy", "world",
+                reset=StateReset("effector", ("pos",)), space="point",
+            ),
+            StateValue(
+                "effector/velocity", ("effector", "vel"), "m/s", "xy", "world",
+                reset=StateReset("effector", ("vel",)),
+            ),
+            StateValue("effector/force", ("effector", "force"), "N", "xy", "world"),
+        ),
+        scene_effector_port="effector",
+        scene_position="effector/position",
+    )
     config_bindings = (ConfigBinding(path="plant.skeleton.l", name="link_lengths"),)
 
     def __init__(
@@ -62,12 +85,12 @@ class PointMass(Mechanics, Component):
             ModelValue("dt", "dt", "source"),
         ),
         states=(
-            StateValue("skeleton/position", ("plant", "skeleton", "pos"), "m", "xy", "world"),
+            StateValue("skeleton/position", ("plant", "skeleton", "pos"), "m", "xy", "world", space="point"),
             StateValue("skeleton/velocity", ("plant", "skeleton", "vel"), "m/s", "xy", "world"),
             StateValue("skeleton/force", ("plant", "skeleton", "force"), "N", "xy", "world"),
             StateValue(
                 "effector/position", ("effector", "pos"), "m", "xy", "world",
-                reset=StateReset("effector", ("pos",)),
+                reset=StateReset("effector", ("pos",)), space="point",
             ),
             StateValue(
                 "effector/velocity", ("effector", "vel"), "m/s", "xy", "world",

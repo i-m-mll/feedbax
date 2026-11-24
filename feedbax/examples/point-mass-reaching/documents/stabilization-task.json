@@ -1,5 +1,6 @@
 {
   "schema": "feedbax.spec.task_document",
+  "label": "Stabilization",
   "payload": {
     "id": "stabilization",
     "variables": [

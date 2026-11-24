@@ -17,7 +17,7 @@ class TrialDocuments(StrictModel):
     model: ModelDocument
     task: TaskDocument | None
     objective: ObjectiveDocument
-    input_overrides: dict[str, str] = Field(default_factory=dict)
+    input_bindings: dict[str, str | None] = Field(default_factory=dict)
     python_task: PythonTaskSelection | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="before")

@@ -25,9 +25,11 @@ class StateValue:
     symbol: str
     fields: tuple[str, ...]
     units: str
-    axis: Literal["xy", "unit", "muscle"]
+    axis: Literal["xy", "unit", "muscle", "joint"]
     frame: str | None = None
     reset: StateReset | None = None
+    configuration: bool = False
+    space: Literal["point"] | None = None
 
 
 @dataclass(frozen=True)

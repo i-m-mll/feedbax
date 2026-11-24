@@ -15,7 +15,7 @@ from feedbax.contracts.project import RootDocument, Sha256, StepKind
 from feedbax.contracts.task_document import TaskDocument
 from feedbax.contracts.project_inputs import NonemptyText, ProjectName, StepReference
 from feedbax.contracts.request_refs import Name
-from feedbax.contracts.jobs import StudioSavedTrainKey
+from feedbax.contracts.jobs import StudioProjectWindowMapProblem, StudioSavedTrainKey
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
 
 
@@ -249,6 +249,7 @@ class StudioTrainStartRequest(StrictModel):
 class StudioTrainStartEdit(StrictModel):
     revision: Sha256
     files: list[StudioProjectFilePatch]
+    problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
 
 
 class StudioSweptParameterMissing(StrictModel):
@@ -301,6 +302,7 @@ class StudioTrainAuthoring(StrictModel):
     """Documents the edit creates, written before ``files``, which may name them."""
     documents: list[ProjectName]
     refusal: StudioSweptParameterMissing | None = None
+    sweep_problems: list[StudioProjectWindowMapProblem] = Field(default_factory=list)
     classes: list[StudioClassField] = Field(default_factory=list)
     removed_values: dict[str, list[str]] = Field(default_factory=dict)
     """Per sweep, the values whose runs the edit removes from the project."""

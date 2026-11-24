@@ -1112,9 +1112,9 @@ def apply_model_edit(
                     raise _Refusal(primary, "A task signal connects at the Model root")
                 item = task_signal(operation)
                 owner, _ = edit.graph(primary)
-                if any(port["name"] == item.id for port in owner["ports"]["inputs"]):
+                if any(port["name"] == item.label for port in owner["ports"]["inputs"]):
                     raise _Refusal(primary, "The task signal already has a Model input")
-                port = {"id": uuid4().hex, "name": item.id, "type": item.type.model_dump(mode="json")}
+                port = {"id": uuid4().hex, "name": item.label, "type": item.type.model_dump(mode="json")}
                 owner["ports"]["inputs"].append(port)
                 edit.connect(primary, _card("inputs", port["id"]), target.model_dump(mode="json"))
             case edits.ConnectPhysical(graph=primary, connection=connection):

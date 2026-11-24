@@ -10,13 +10,13 @@ from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.expression_values import (
     CallValue, DrawValue, Expression, Level, LiteralValue, NameValue, Problem, Site, SweepList, SweepRange,
-    SweepSample, ValueBase, ValueType,
+    SweepSample, UnresolvedValue, ValueBase, ValueType,
 )
 from feedbax.contracts.expression_site import read_field
 from feedbax.contracts.expression_text import ParsedField
-from feedbax.contracts.project import Project, SetProjectValue
+from feedbax.contracts.project import BasedDocument, Project, RootDocument, SetProjectValue, json_pointer_parts
 from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
-from feedbax.contracts.project_sources import pointer
+from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTextEdit
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
 from feedbax.studio.authoring_sweeps import FieldSweeps, SweepTarget
@@ -27,7 +27,7 @@ from feedbax.web.services.project_folder import ProjectFolderInvalid
 type FieldPath = tuple[str, ...]
 """A path into a document's payload that names a member of a list of identified items by its id."""
 
-_EXPRESSIONS = (LiteralValue, NameValue, CallValue, DrawValue)
+_EXPRESSIONS = (LiteralValue, NameValue, CallValue, DrawValue, UnresolvedValue)
 
 
 def member(value: object, part: str) -> object:
@@ -60,6 +60,62 @@ def site_expression(document: BaseModel, path: FieldPath) -> Expression | None:
     """The expression a document holds at ``path``, if it holds one."""
     value = at(document, path)
     return value if isinstance(value, _EXPRESSIONS) else None
+
+
+def held_expression_file(
+    project: Project, origin: ValueSource, held: UnresolvedValue,
+) -> tuple[AuthoredFileAddress, str] | None:
+    """Locate the whole held value in the file that contributed its text."""
+    parts = json_pointer_parts(origin.path)
+    if parts[-1:] != ("text",):
+        return None
+    parts = parts[:-1]
+    if origin.kind == "document":
+        document = project.documents.get(origin.name)
+        if isinstance(document, RootDocument):
+            location = ("payload", *parts)
+        elif isinstance(document, BasedDocument):
+            ancestor = next((
+                (path, parent) for path in document.differences
+                if parts[:len(parent := json_pointer_parts(path))] == parent
+            ), None)
+            if ancestor is None:
+                return None
+            path, parent = ancestor
+            location = ("differences", path, "value", *parts[len(parent):])
+        else:
+            return None
+        address = AuthoredFileAddress(kind="document", id=origin.name)
+        raw = document.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    elif origin.kind == "variant":
+        variant = project.sweep.rows.get(origin.name) if project.sweep else None
+        if variant is None:
+            return None
+        patch = next((
+            (path, parent) for path in variant.patches
+            if parts[:len(parent := tuple(path.split(".")))] == parent
+        ), None)
+        if patch is None:
+            return None
+        path, parent = patch
+        location = ("patches", path, "value", *parts[len(parent):])
+        address = AuthoredFileAddress(kind="variant", id=origin.name)
+        raw = variant.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    elif origin.step in project.steps and origin.kind != "upstream":
+        location = parts
+        address = AuthoredFileAddress(kind="step", id=origin.step)
+        raw = project.steps[origin.step].model_dump(mode="json", by_alias=True, exclude_unset=True)
+    else:
+        return None
+    current = raw
+    for part in location:
+        if isinstance(current, list) and part.isdigit() and int(part) < len(current):
+            current = current[int(part)]
+        elif isinstance(current, dict):
+            current = current.get(part)
+        else:
+            return None
+    return (address, pointer(location)) if current == held.model_dump(mode="json") else None
 
 
 def index_pointer(raw: object, path: FieldPath) -> str | None:
