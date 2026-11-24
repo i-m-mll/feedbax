@@ -118,11 +118,18 @@ export function startDrag(table: HTMLTableElement, axis: DragAxis, id: string, p
   return { axis, pointer, members, columns, from, origin, target: from };
 }
 
-/** Where the dragged member lands with the pointer at `at`: past every other member whose middle it has passed. */
+/**
+ * Where the dragged member lands with the pointer at `at`: its leading edge before every earlier member whose middle
+ * it has passed, or its trailing edge after every later one.
+ */
 export function dragTarget(drag: Drag, at: number) {
   const active = drag.members[drag.from];
-  const middle = active.start + active.size / 2 + at - drag.origin;
-  return drag.members.filter((member, index) => index !== drag.from && member.start + member.size / 2 < middle).length;
+  const start = active.start + at - drag.origin;
+  const end = start + active.size;
+  const middle = (member: Member) => member.start + member.size / 2;
+  const earlier = drag.members.slice(0, drag.from).filter((member) => start < middle(member)).length;
+  const later = drag.members.slice(drag.from + 1).filter((member) => end > middle(member)).length;
+  return drag.from - earlier + later;
 }
 
 /** Each member's offset along the axis: the dragged one's `own`, and those it passes moved by its size. */

@@ -196,11 +196,15 @@ export function Table({ columns, held = 0, addRow, addColumn, moveRow, moveColum
       drawDrag(element, current, at, true);
       const token = Date.now();
       holding.current = { axis, order: memberOrder(element, axis).join('\n'), token };
-      void Promise.resolve(move(current.members[current.from].id, current.target)).finally(() => {
+      const release = () => {
         if (holding.current?.token !== token) return;
         holding.current = undefined;
         clearDrag(element, true);
-      });
+      };
+      // A move that is written commits its new order soon after it settles; one that is not leaves the order as it
+      // was, and its members slide back. Two frames let the commit land first.
+      void Promise.resolve(move(current.members[current.from].id, current.target))
+        .finally(() => requestAnimationFrame(() => requestAnimationFrame(release)));
     };
     const onCancel = (cancelled: PointerEvent) => {
       if (cancelled.pointerId !== pointer) return;
@@ -280,7 +284,7 @@ export function TableHeaderRow({ children, ...props }: HTMLAttributes<HTMLTableR
   const { columns, margin, addColumn } = useContext(Shape);
   const offset = margin ? 1 : 0;
   return <>
-    {columns.some(({ sortable }) => sortable) && <tr className="studio-table-handles" aria-hidden="true">
+    {columns.some(({ sortable }) => sortable) && <tr className="studio-table-handles">
       {margin && <td className="studio-table-margin" />}
       {columns.map(({ sortable }, index) => sortable
         ? <td key={sortable.id} data-handle-column={sortable.id} data-column-index={index + offset}>
