@@ -243,7 +243,7 @@ def compile_objective(
 ) -> ObjectiveExecutor | tuple[Problem, ...]:
     """Compile an authored objective or rebind the validated Train terms to Evaluate."""
     period = task.period
-    indexes = {epoch: index for index, epoch in enumerate(task.epochs)}
+    epoch_ids = set(task.epochs)
     problems = []
     terms = []
     seen = set()
@@ -288,7 +288,7 @@ def compile_objective(
             continue
         measure_refs = references(term.measure)
         weight_refs = references(term.weight)
-        absent = set(term.epochs) - indexes.keys()
+        absent = set(term.epochs) - epoch_ids
         if use is ObjectiveUse.INHERITED and (
             absent or measure_refs - measure_ids or weight_refs - weight_ids
         ):
@@ -335,7 +335,7 @@ def compile_objective(
                 measure,
                 weight,
                 term.reduction,
-                tuple(indexes[epoch] for epoch in term.epochs),
+                tuple(index for index, epoch in enumerate(task.epochs) if epoch in term.epochs),
                 used,
             )
         )

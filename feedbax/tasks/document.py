@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import IntEnum
+from itertools import groupby
 from math import isfinite
 from typing import Any, NamedTuple, Protocol
 
@@ -42,7 +43,7 @@ from feedbax.contracts.task_document import (
     ValidationValue,
     Variable as Variable,
 )
-from feedbax.contracts.expression_check import dependency_order
+from feedbax.contracts.expression_check import Checked, check, dependency_order, references
 from feedbax.expression_compile import Compiled, Inputs, compile_expression
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.contracts.rollout import trial_indices
@@ -116,25 +117,43 @@ class _Prepared(NamedTuple):
 class _Field:
     address: tuple[str, ...]
     code: Compiled
+    list_count: int | None = None
 
-    def inputs(self, parameters, prepared, values, k=0, *, epoch_entry=False):
+    def inputs(self, parameters, prepared, values, k=0, *, epoch_entry=False, repeat=None):
         args = (
             parameters.fields.get(self.address, self.code.parameters)
             if parameters.fields
             else self.code.parameters
         )
         return Inputs(
-            args, values, prepared.run_key, prepared.trial_key, step=k, epoch_entry=epoch_entry
+            args, values, prepared.run_key, prepared.trial_key, repeat=repeat, step=k, epoch_entry=epoch_entry
         )
 
-    def prepare(self, parameters, prepared, values):
-        inputs = self.inputs(parameters, prepared, values)
-        return self.code.with_trial(inputs, self.code.evaluate_run(inputs))
+    def prepare(self, parameters, prepared, values, *, repeat=None):
+        def prepare(index):
+            inputs = self.inputs(parameters, prepared, values, repeat=index)
+            return self.code.with_trial(inputs, self.code.evaluate_run(inputs))
 
-    def evaluate(self, parameters, prepared, values):
-        inputs = self.inputs(parameters, prepared, values)
-        state = self.code.with_trial(inputs, self.code.evaluate_run(inputs))
-        return self.code.evaluate_step(inputs, state)[0].value
+        if self.list_count is None:
+            return prepare(repeat)
+        return jax.vmap(prepare)(jnp.arange(self.list_count))
+
+    def evaluate(self, parameters, prepared, values, *, repeat=None):
+        def evaluate(index):
+            inputs = self.inputs(parameters, prepared, values, repeat=index)
+            state = self.code.with_trial(inputs, self.code.evaluate_run(inputs))
+            return self.code.evaluate_step(inputs, state)[0].value
+
+        if self.list_count is None:
+            return evaluate(repeat)
+        return jax.vmap(evaluate)(jnp.arange(self.list_count))
+
+    def step(self, inputs, state):
+        if self.list_count is None:
+            return self.code.evaluate_step(inputs, state)
+        return jax.vmap(
+            lambda index, item_state: self.code.evaluate_step(inputs._replace(repeat=index), item_state)
+        )(jnp.arange(self.list_count), state)
 
 
 @dataclass(frozen=True)
@@ -142,6 +161,7 @@ class _Cell:
     first: int
     last: int
     field: _Field
+    repeat: int | None
 
 
 @dataclass(frozen=True)
@@ -165,6 +185,7 @@ class DocumentTask:
     condition_ids: tuple[str, ...]
     input_bindings: tuple[tuple[str, str], ...]
     step_counts: tuple[EpochSteps, ...]
+    epoch_repeats: tuple[int | None, ...]
     reads_model: bool = False
 
     def init(self, parameters, run_key, trial_key):
@@ -179,7 +200,9 @@ class DocumentTask:
                     else field.evaluate(parameters, prepared, values)
                 )
         lengths = []
-        for epoch, field, bound in zip(self.epochs, self.length_fields, self.bounds, strict=True):
+        for epoch, field, bound, repeat in zip(
+            self.epochs, self.length_fields, self.bounds, self.epoch_repeats, strict=True,
+        ):
             given = parameters.epoch_steps
             if given and epoch in given:
                 length = given[epoch]
@@ -187,7 +210,7 @@ class DocumentTask:
                 length = 0
             else:
                 length = jnp.rint(
-                    field.evaluate(parameters, prepared, values) / self.period
+                    field.evaluate(parameters, prepared, values | {"i": repeat}, repeat=repeat) / self.period
                 ).astype(int)
             lengths.append(jnp.clip(length, 0, bound))
         if None in self.length_fields:
@@ -212,7 +235,10 @@ class DocumentTask:
             if variable.level == Level.STEP
         }
         cell_state = tuple(
-            tuple(cell.field.prepare(parameters, prepared, values) for cell in signal.cells)
+            tuple(
+                cell.field.prepare(parameters, prepared, values | {"i": cell.repeat}, repeat=cell.repeat)
+                for cell in signal.cells
+            )
             for signal in self.signals
         )
         return prepared, (variable_state, cell_state)
@@ -229,7 +255,7 @@ class DocumentTask:
         for variable, field in self.variable_fields:
             if variable.level == Level.STEP:
                 inputs = field.inputs(parameters, variables, values, k)._replace(defined=defined)
-                result, next_variables[variable.id] = field.code.evaluate_step(
+                result, next_variables[variable.id] = field.step(
                     inputs, previous_variables[variable.id]
                 )
                 values[variable.id] = result.value
@@ -254,9 +280,10 @@ class DocumentTask:
                     "t": t,
                     "T": duration,
                     "u": t / jnp.where(duration > 0, duration, 1),
+                    "i": cell.repeat,
                 }
                 inputs = cell.field.inputs(
-                    parameters, variables, environment, k, epoch_entry=k == start
+                    parameters, variables, environment, k, epoch_entry=k == start, repeat=cell.repeat
                 )._replace(defined=defined)
                 result, next_state = cell.field.code.evaluate_step(inputs, previous)
                 next_signal.append(next_state)
@@ -411,8 +438,12 @@ def compile_task(
     broken: set[str] = set()
     """The variables with problems of their own or read from another that has them."""
 
-    def lower(tree, expected, finest, scope, address, *, epoch=False, discrete=False):
-        site = Site(expected=expected, finest=finest, names=tuple(scope))
+    def lower(tree, expected, finest, scope, address, *, epoch=False, discrete=False,
+              list_count=None, repeat_count=None):
+        site = Site(
+            expected=expected, finest=finest, names=tuple(scope),
+            list_count=list_count, repeat_count=repeat_count,
+        )
         if sites is not None:
             sites[address] = site
         code = compile_expression(
@@ -435,11 +466,25 @@ def compile_task(
             if isinstance(node, NameValue) and node.reference in broken
         ]
         problems.extend(marks if isinstance(code, Compiled) else (*code, *marks))
-        return _Field(address, code) if isinstance(code, Compiled) and not marks else None
+        return _Field(address, code, list_count) if isinstance(code, Compiled) and not marks else None
 
     time_type = ValueType(base=ValueBase.REAL, dimensions=TIME)
     time = ScopedValue(id="time", name="time", type=time_type, level=Level.STEP)
-    order, cycles = dependency_order({key: item.value for key, item in variables.items()})
+    integer = ValueType(base=ValueBase.INTEGER)
+    repeat_index = ScopedValue(id="i", name="i", type=integer, level=Level.TRIAL)
+    count_expressions = {key: item.count for key, item in variables.items() if item.count is not None}
+    count_references = set().union(*(
+        references(item) for item in (*count_expressions.values(), *(repeat.count for repeat in document.repeats))
+    ))
+    pending = list(count_references)
+    for key in pending:
+        if key in variables:
+            for dependency in references(variables[key].value) - count_references:
+                count_references.add(dependency)
+                pending.append(dependency)
+    order, cycles = dependency_order(
+        {key: item.value for key, item in variables.items()}, counts=count_expressions,
+    )
     problems.extend(cycles)
     scope = {}
     for cycle in cycles:
@@ -447,21 +492,82 @@ def compile_task(
         broken.add(key)
         scope[key] = ScopedValue(id=key, name=variables[key].name, type=variables[key].type, level=Level.RUN)
     fields = []
+    fixed_values = {}
+    fixed_key = jax.random.key(0) if count_references else None
+    fixed = _Prepared(fixed_values, None, None, fixed_key, fixed_key)
+    variable_overrides = set().union(*(row.variables for row in document.validation_trials))
+    count_scope = tuple(
+        ScopedValue(id=key, name=item.name, type=item.type, level=Level.RUN)
+        for key, item in variables.items()
+        if item.type == integer and item.count is None
+    )
+
+    def resolve_count(tree, path):
+        if sites is not None:
+            sites[path] = Site(expected=integer, finest=Level.RUN, names=count_scope, structural=True)
+        if isinstance(tree, LiteralValue) and type(tree.value) is int and tree.unit is None:
+            count = tree.value
+        elif isinstance(tree, NameValue) and tree.reference in fixed_values and any(
+            item.id == tree.reference for item in count_scope
+        ):
+            count = int(fixed_values[tree.reference])
+        else:
+            problem(ProblemCode.LIST_COUNT, "Count needs an integer or a fixed Integer variable.", path)
+            return None
+        if not 0 < count < 2**31:
+            problem(ProblemCode.LIST_COUNT, "Count must be a positive integer.", path)
+            return None
+        return count
+
     for key in order:
         variable = variables[key]
+        count = (
+            resolve_count(variable.count, ("variables", key, "count")) if variable.count is not None else None
+        )
         field = lower(
             variable.value,
             variable.type,
             Level.STEP,
             (*scope.values(), time),
             ("variables", key, "value"),
+            list_count=count,
         )
         level = Level.RUN if field is None else field.code.checked.root.level
-        scope[key] = ScopedValue(id=key, name=variable.name, type=variable.type, level=level)
-        if field is None:
+        scope[key] = ScopedValue(id=key, name=variable.name, type=variable.type, level=level, list_count=count)
+        if field is None or variable.count is not None and count is None:
             broken.add(key)
         else:
             fields.append((scope[key], field))
+            if (
+                key in count_references and key not in variable_overrides and level == Level.RUN
+                and references(variable.value) <= fixed_values.keys()
+                and all(
+                    not isinstance(node, DrawValue)
+                    and not (
+                        isinstance(node, CallValue) and (function := functions.resolve(node.function))
+                        and function.info.random
+                    )
+                    for _, node in walk(variable.value)
+                )
+            ):
+                fixed_values[key] = field.evaluate(TaskParameters(), fixed, fixed_values)
+
+    indexes = {key: index for index, key in enumerate(epochs)}
+    repeat_spans = {}
+    repeat_ids = set()
+    for repeat in document.repeats:
+        path = ("repeats", repeat.id)
+        count = resolve_count(repeat.count, (*path, "count"))
+        first, last = indexes.get(repeat.first_epoch), indexes.get(repeat.last_epoch)
+        if repeat.id in repeat_ids or first is None or last is None or first > last:
+            problem(ProblemCode.STRUCTURE, "A repeat needs a unique id and an ordered epoch span.", path)
+            continue
+        repeat_ids.add(repeat.id)
+        span = set(range(first, last + 1))
+        if span & repeat_spans.keys():
+            problem(ProblemCode.STRUCTURE, "Repeats cannot overlap.", path)
+            continue
+        repeat_spans.update({index: (first, last, count) for index in span})
 
     lengths = []
     unread = set()
@@ -482,7 +588,12 @@ def compile_task(
             counts.append(None)
             continue
         discrete = isinstance(end.length, DrawValue) and end.length.family == "uniform"
-        field = lower(end.length, time_type, Level.TRIAL, scope.values(), path, discrete=discrete)
+        repeat = repeat_spans.get(indexes.get(epoch.id))
+        length_scope = (*scope.values(), repeat_index) if repeat is not None else tuple(scope.values())
+        field = lower(
+            end.length, time_type, Level.TRIAL, length_scope, path, discrete=discrete,
+            repeat_count=repeat[2] if repeat is not None else None,
+        )
         bound = end.max_steps
         if field is None:
             unread.add(epoch.id)
@@ -526,12 +637,14 @@ def compile_task(
         lengths.append(field)
         bounds.append(bound)
         counts.append(count or EpochSteps(least=0, nominal=bound or 0, greatest=bound or 0))
+    if any((repeat_spans.get(indexes[epoch], (0, 0, 1))[2] or 1) > 1 for epoch in rest):
+        problem(ProblemCode.STRUCTURE, "A rest epoch cannot repeat.", ("epochs",))
     if len(rest) > 1 or rest and document.fixed_steps is None:
         problem(ProblemCode.STRUCTURE, "One rest epoch requires a fixed trial length.", ("epochs",))
-    if (
-        document.fixed_steps is not None
-        and sum(bound or 0 for bound in bounds) > document.fixed_steps
-    ):
+    max_steps = sum(
+        (bound or 0) * (repeat_spans.get(index, (0, 0, 1))[2] or 1) for index, bound in enumerate(bounds)
+    )
+    if document.fixed_steps is not None and max_steps > document.fixed_steps:
         problem(
             ProblemCode.LENGTH_BUDGET,
             "The length bounds exceed the fixed trial length.",
@@ -546,7 +659,6 @@ def compile_task(
             ("u", ValueType(base=ValueBase.REAL)),
         )
     )
-    indexes = {key: index for index, key in enumerate(epochs)}
     signals = []
     declared_signals = []
     for signal in document.signals:
@@ -575,16 +687,26 @@ def compile_task(
                 problem(ProblemCode.STRUCTURE, "Cells for one signal overlap.", cell_path)
                 continue
             occupied.update(span)
+            brackets = {repeat_spans.get(index) for index in span}
+            repeated = {bracket[2] for bracket in brackets if bracket is not None and bracket[2] is not None}
+            inside = None not in brackets
+            repeat_count = min(repeated) if inside and repeated else None
+            cell_names = (*scope.values(), time, *axes, *((repeat_index,) if inside else ()))
+            value_path = (*cell_path, "value")
             code = lower(
-                cell.value,
-                signal.type,
-                Level.STEP,
-                (*scope.values(), time, *axes),
-                (*cell_path, "value"),
-                epoch=True,
+                cell.value, signal.type, Level.STEP, cell_names, value_path,
+                epoch=True, repeat_count=repeat_count,
             )
             if code is not None:
-                cells.append(_Cell(first, last, code))
+                cells.append(_Cell(first, last, code, None))
+                if inside and len(repeated) > 1:
+                    other = check(
+                        cell.value, Site(expected=signal.type, finest=Level.STEP, names=cell_names,
+                                         repeat_count=max(repeated)),
+                        functions, path=value_path,
+                    )
+                    if not isinstance(other, Checked):
+                        problems.extend(other)
         if absent is not None:
             signals.append(_Signal(signal.name, absent, tuple(cells)))
         if kept_signals.get(signal.id) is signal:
@@ -614,7 +736,7 @@ def compile_task(
             )
         elif link.variable in broken:
             problem(ProblemCode.UNKNOWN_NAME, f"{variable.name!r} has problems.", path, link.variable)
-        elif variable.level > target.finest or not target.type.accepts(variable.type):
+        elif variable.list_count is not None or variable.level > target.finest or not target.type.accepts(variable.type):
             problem(ProblemCode.TYPE_MISMATCH, f"{variable.name} does not fit its Model field.", path, link.variable)
         elif link.model_field in links:
             problem(
@@ -652,7 +774,9 @@ def compile_task(
                 continue
             code = lower(
                 _validation_expression(value),
-                variable.type,
+                variable.type if variable.list_count is None else variable.type.model_copy(
+                    update={"shape": (variable.list_count, *variable.type.shape)}
+                ),
                 Level.RUN,
                 (),
                 (*path, "variables", key),
@@ -685,26 +809,52 @@ def compile_task(
         )
     if problems:
         return tuple(problems)
-    n_steps = sum(bounds) if document.fixed_steps is None else document.fixed_steps
+    groups = []
+    for span, members in groupby(range(len(epochs)), key=repeat_spans.get):
+        members = tuple(members)
+        if span is None:
+            groups.append((members, None))
+        else:
+            assert span[2] is not None
+            groups.extend((members, index) for index in range(span[2]))
+    instances = tuple(index for members, _ in groups for index in members)
+    repeat_indices = tuple(repeat for members, repeat in groups for _ in members)
+    n_steps = max_steps if document.fixed_steps is None else document.fixed_steps
     if rest:
-        others = [count for count in counts if count is not None]
+        others = [counts[index] for index in instances if counts[index] is not None]
         index = counts.index(None)
         counts[index] = EpochSteps(
             least=max(0, n_steps - sum(count.greatest for count in others)),
             nominal=max(0, n_steps - sum(count.nominal for count in others)),
             greatest=max(0, n_steps - sum(count.least for count in others)),
         )
+    if document.repeats:
+        def instantiate(signal):
+            cells = []
+            offset = 0
+            for members, repeat in groups:
+                for cell in signal.cells:
+                    first = max(members[0], cell.first)
+                    last = min(members[-1], cell.last)
+                    if first <= last:
+                        cells.append(_Cell(offset + first - members[0], offset + last - members[0], cell.field, repeat))
+                offset += len(members)
+            return _Signal(signal.name, signal.absent, tuple(cells))
+
+        signals = [instantiate(signal) for signal in signals]
+    epoch_ids = tuple(epochs)
     return DocumentTask(
         TaskInterface(tuple(scope.values()), tuple(declared_signals), tuple(links.items())),
         n_steps,
         period,
-        tuple(epochs),
+        tuple(epoch_ids[index] for index in instances),
         tuple(fields),
-        tuple(lengths),
-        tuple(bounds),
+        tuple(lengths[index] for index in instances),
+        tuple(bounds[index] for index in instances),
         tuple(signals),
         tuple(rows),
         document.condition_ids,
         tuple(bindings),
-        tuple(counts),
+        tuple(counts[index] for index in instances),
+        repeat_indices,
     )
