@@ -1,4 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
+import type { RuleChoice } from "@/features/projectWindow/elementSelection";
 import { StudioRegion, StudioRegionBoundary, useRegionPending, type StudioRegionState } from "@/components/activity/StudioRegion";
 import { StudioRunStatus } from "@/components/activity/StudioRunStatus";
 import {
@@ -37,6 +38,8 @@ interface StudioRunsProps extends RunSelectionProps {
   pivotActive?: boolean;
   runMenu?: RunMenu;
   axisMenu?: AxisMenu;
+  /** The runs a rule field chooses, and while they are picked, the toggle a press on a row of their step takes. */
+  choosing?: RuleChoice | null;
 }
 
 const noRuns: RunSetsByStep = new Map();
@@ -347,14 +350,15 @@ export function StudioRunControls({ commands = [], machine, combination, pivotCo
     })} />;
 }
 
-function RunsContent({ plan, step, state, onSelectionChange, pivotActive, runMenu, axisMenu }: StudioRunsProps) {
+function RunsContent({ plan, step, state, onSelectionChange, pivotActive, runMenu, axisMenu, choosing }: StudioRunsProps) {
   const lineage = useMemo(() => indexPlanLineage(plan.edges), [plan.edges]);
   const related = useMemo(() => lineage.related(state.focus), [lineage, state.focus]);
   const selection = { step, state, onSelectionChange };
   return <ScrollFade axis="both" className="h-full min-h-0">
     {pivotActive
       ? <StudioRunPivot {...selection} rows={step.runs} related={related} runMenu={runMenu} />
-      : <StudioRunTable {...selection} rows={step.runs} related={related} runMenu={runMenu} axisMenu={axisMenu} fillSlot />}
+      : <StudioRunTable {...selection} rows={step.runs} related={related} runMenu={runMenu} axisMenu={axisMenu} fillSlot
+        picking={choosing?.step === step.id && choosing.toggle ? { runs: choosing.runs, toggle: choosing.toggle } : undefined} />}
   </ScrollFade>;
 }
 

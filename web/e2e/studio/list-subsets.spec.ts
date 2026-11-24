@@ -81,6 +81,7 @@ test('freezes one measured selection of a listed Evaluate subject and leaves the
     ['train', ['rule', 'rows']], ['train_b', ['rule']], ['train', ['subset']],
   ]);
   await expect(await menu(0)).toHaveCount(0);
+  await close();
   await expect(await menu(1)).toBeEnabled();
 
   // The frozen selection's rows keep their IDs; the other selections' rows keep their requests.

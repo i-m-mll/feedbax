@@ -22,7 +22,7 @@ import { bindStudioCommand } from '@/features/projectWindow/studioCommands';
 import {
   AnalysisDocumentSchema, type AnalysisDocument, type InputBinding, type JsonPrimitive, type JsonValue, type OperationElement,
   type ParamSchema, type PresentationPosition, type StudioAnalyzeChange, type StudioProjectSnapshot,
-  type StudioSavedTrainKey, type StudioSavedTrainRuns,
+  type StudioSavedTrainKey, type StudioSavedTrainRuns, type SubsetTerms,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
 import { ManagedDocumentCanvas, type CanvasNode } from './ManagedDocumentCanvas';
@@ -40,7 +40,7 @@ import { useAuthoringCatalog } from '@/api/studioAuthoring';
 import { selectionProblems } from './selectionEdits';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import type { ChangeMark } from '@/components/values/fieldModel';
-import { savedRunId } from './projectWindowPlan';
+import { savedRunId, stepSourceRows } from './projectWindowPlan';
 import { placeElement, type Reveal } from './projectWindowProblems';
 import { MentionRow, ProblemRow } from '@/features/projectWindow/StudioProblems';
 import { SavedFigureResult } from './SavedLightProducts';
@@ -384,16 +384,20 @@ export function useManagedAnalyze({
         const source = steps.find(({ id }) => id === reference.step);
         const where = reference.where ?? {};
         const problems = selectionProblems(projection?.window_map?.problems ?? [], key.step, key.variant, selected, index, listed);
+        const write = (terms: SubsetTerms) => {
+          const next = { ...reference, where: terms };
+          bind(selected, listed ? changedSelections(stepSelections(binding)!, { kind: 'replace', index, reference: next }) : next);
+        };
         return {
           problems,
           runs: source && projection && !('subset' in where) && <SelectionRule
             scope={{ project: saved.project_id, revision: projection.revision, variant: key.variant }} source={source}
             rule={where.rule ?? ''} pinned={where.rows?.map(({ key: row }) => row)} planned={subset} picking={selection}
             disabled={!canBind} problem={problems.rule}
+            pick={{ rows: stepSourceRows(projection, source.id, key.variant), onCommit: write }}
             onCommit={(rule) => {
               const { rule: _written, ...rest } = where;
-              const next = { ...reference, where: rule ? { ...rest, rule } : rest };
-              bind(selected, listed ? changedSelections(stepSelections(binding)!, { kind: 'replace', index, reference: next }) : next);
+              write(rule ? { ...rest, rule } : rest);
             }} />,
         };
       }}

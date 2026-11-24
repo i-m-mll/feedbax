@@ -1,7 +1,7 @@
 import { expect, test } from './fixtures/studio';
-import type { Page } from '@playwright/test';
-import type { StepReference, StudioProjectSnapshot } from '../../src/generated/studioContracts';
-import { mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import type { APIRequestContext, Page } from '@playwright/test';
+import type { StepReference, StudioProjectSnapshot, SubsetTerms } from '../../src/generated/studioContracts';
+import { chooseSweepValue, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { hold } from './fixtures/heldRequest';
 
@@ -129,4 +129,66 @@ test('a stored rule that asks for a run that does not exist keeps its text and i
   await expect(mark).toHaveAttribute('data-app-tip', /seed=7/);
   await expect(rule).toHaveAccessibleDescription(/seed=7/);
   await expect(inspector.getByRole('alert')).toHaveCount(0);
+});
+
+/** A Train swept over `axes`, with a new Evaluate reading it selected and its Runs field shown. */
+async function pickingProject(page: Page, request: APIRequestContext, axes: Record<string, { path: string; values: number[] }>) {
+  const files = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'walkthrough-files'));
+  const train = files.at(-1).step;
+  train.base.inline.seed = 0;
+  train.sweep = { axes };
+  const { snapshot, projectPath } = await seedManagedProject(request, files);
+  const rule = page.getByRole('complementary', { name: 'Inspector', exact: true }).getByRole('combobox', { name: 'Runs', exact: true });
+  const card = page.getByRole('article', { name: 'Train train', exact: true });
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await select(page, 'train');
+  await card.getByRole('button', { name: 'New Step train', exact: true }).click();
+  await chooseStepKind(page, 'Evaluate');
+  await expect(mapStep(page, 'evaluate')).toHaveAttribute('aria-pressed', 'true');
+  await rule.click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Pick Runs', exact: true }).click();
+  const subject = async () => ((await (await request.get(projectPath)).json() as StudioProjectSnapshot)
+    .project.steps!.evaluate.inputs!.subject as StepReference).where;
+  return { rule, card, subject };
+}
+
+// Catches a press on the card that selects the producer's runs instead of picking them, a rule that is not the picked
+// runs' own, and picks that are not saved on Enter.
+test('values picked on the producer\'s card write their rule, saved on Enter', async ({ page, request }) => {
+  const { rule, card, subject } = await pickingProject(page, request, { seed: { path: 'seed', values: [0, 1, 2, 3] } });
+  await chooseSweepValue(card, 'seed', '0');
+  await chooseSweepValue(card, 'seed', '2');
+  await expect(rule).toHaveValue('seed=0,2');
+  await expect(rule.locator('..')).toContainText('2/4');
+  await expect(card.locator('.studio-map-run-mark[data-boxed]')).toHaveCount(2);
+  await expect(mapStep(page, 'evaluate')).toHaveAttribute('aria-pressed', 'true');
+  await expect(rule).toBeFocused();
+  await rule.press('Enter');
+  await expect.poll(subject).toEqual({ rule: 'seed=0,2' });
+  await expect(runRows(page)).toHaveCount(2);
+});
+
+// Catches picked runs that no rule chooses written as a rule that chooses others too, and Escape saving the picks.
+test('runs picked that no rule chooses are pinned as rows, and Escape keeps the saved rule', async ({ page, request }) => {
+  const { rule, card, subject } = await pickingProject(page, request, {
+    seed: { path: 'seed', values: [0, 1] }, batches: { path: 'training_config.n_batches', values: [2, 3] },
+  });
+  const mark = (seed: number, batches: number) => card.getByRole('button', { name: new RegExp(`seed ${seed} · batches ${batches}\\b`) });
+  await mark(0, 2).click();
+  await expect(rule).toHaveValue('batches=2 seed=0');
+  await page.keyboard.press('Escape');
+  await expect(rule).toHaveValue('');
+  expect(await subject()).toBeUndefined();
+
+  await rule.click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Pick Runs', exact: true }).click();
+  await mark(0, 2).click();
+  await mark(1, 3).click();
+  await expect(rule).toHaveValue('');
+  await expect(rule.locator('..')).toContainText('Rows');
+  await expect(rule.locator('..')).toContainText('2/4');
+  await rule.press('Enter');
+  await expect.poll(async () => (await subject() as SubsetTerms | undefined)?.rows?.length).toBe(2);
+  expect((await subject() as SubsetTerms).rule).toBeUndefined();
+  await expect(runRows(page)).toHaveCount(2);
 });
