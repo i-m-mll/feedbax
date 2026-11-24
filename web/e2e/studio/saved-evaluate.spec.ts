@@ -926,7 +926,7 @@ test('saved document Evaluate replays authenticated trials and checkpoints in th
   await tab(page, 'Task').click();
   // The Evaluate reads its Task from the Train it evaluates, so a variable's value names that source.
   await page.getByRole('tabpanel', { name: 'Task', exact: true }).getByRole('table', { name: 'Variables', exact: true })
-    .getByRole('img', { name: /^Move / }).first().click();
+    .getByRole('rowheader').first().click();
   await expect(page.getByRole('complementary', { name: 'Inspector', exact: true }).getByText('Trained by train', { exact: true })).toBeVisible();
   await scanStudio(page, info, 'evaluate-task');
   await chooseStep(page, 'finite');

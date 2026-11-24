@@ -1,14 +1,13 @@
 import { useAuthoringCatalog } from '@/api/studioAuthoring';
 import { studioAccessibleName, studioFormat, studioName, studioValueType } from '@/components/activity/studioVocabulary';
 import { reasonOf, type FieldModel } from '@/components/values/fieldModel';
-import { fromFieldView } from '@/components/values/adapters/fieldView';
 import { rawField } from '@/components/values/adapters/raw';
 import { ModelAddressSchema, type StudioNamedValueType, type StudioTrialReset, type TaskDocument, type ValueType } from '@/generated/studioContracts';
 import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
 import { authoredPointer } from '../authoredEdits';
 import { addressKey } from '../model/modelGraph';
 import {
-  changedAt, expressionKind, initializesAnchor, startAnchor, variableAnchor, type Commit, type TrialRuns, type TrialView,
+  changedAt, expressionKind, initializesAnchor, startAnchor, trialField, variableAnchor, type Commit, type TrialRuns, type TrialView,
 } from '../StudioTrialAuthoring';
 import { VariableInspector } from './TaskInspector';
 import { TrialTaskGrid } from './trialGrid';
@@ -104,16 +103,15 @@ function variables(view: TrialView, task: TaskDocument, types: readonly StudioNa
     const path = authoredPointer(['task', 'variables', variable.id, 'value']);
     const projection = view.fields.find((field) => field.path === path);
     const sweep = projection?.sweep?.id;
-    const [problem] = projection?.problems ?? [];
     const value: FieldModel = projection ? {
-      ...fromFieldView({ ...projection, label: studioName('value'), effective: runs?.selected ? projection.effective : null }, {
+      ...trialField(projection, studioName('value'), runs, {
         id: `value:${variable.id}`, kind: expressionKind(variable.value),
         changed: changedAt(view, 'task', `/variables/${index}/value`, commit), source: view.task_source ?? undefined,
         commit: commit && ((edit) => commit(studioAccessibleName('set', variable.name), { kind: 'expression', path, edit })),
         selectedMembers: sweep ? runs?.values(sweep) : undefined,
         chooseMember: sweep && runs?.choose ? (member, extend) => runs.choose!(sweep, member, extend) : undefined,
       }),
-      anchor: variableAnchor(variable.id), reason: problem?.reason, span: problem?.span ?? undefined,
+      anchor: variableAnchor(variable.id),
     } : rawField({ id: `value:${variable.id}`, label: studioName('value'), value: '', type: { kind: 'readOnly' } });
     return {
       id: variable.id, name: variable.name, type: name, valueType: variable.type, typeChoice, value,

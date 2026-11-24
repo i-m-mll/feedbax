@@ -62,11 +62,15 @@ def test_renaming_keeps_each_delayed_reaches_pairing(tmp_path, rename):
     model = raw["documents"]["reach-model"]["payload"]
     root = model["ports"]["inputs"][0]
     root["name"] = "target"
-    model["ports"]["inputs"].append(root | {
+    raw["documents"]["idle-model"] = deepcopy(raw["documents"]["reach-model"])
+    raw["documents"]["idle-model"]["payload"]["ports"]["inputs"].append(root | {
         "id": "idle-input", "name": "idle", "default": {"value": [0.0, 0.0]},
     })
-    signals = raw["documents"]["task"]["payload"]["signals"]
-    for signal in signals:
+    raw["steps"]["optional"] = deepcopy(raw["steps"]["train"])
+    raw["steps"]["optional"]["base"]["inline"]["trial_documents"]["model"] = {"document": "idle-model"}
+    task = raw["documents"]["task"]["payload"]
+    next(variable for variable in task["variables"] if variable["id"] == "target")["name"] = "requested"
+    for signal in task["signals"]:
         if signal["id"] == "target_pos":
             signal["name"] = "target"
         elif signal["id"] == "goal":
@@ -84,6 +88,7 @@ def test_renaming_keeps_each_delayed_reaches_pairing(tmp_path, rename):
         url = "/api/projects/rename"
         train = {"variant": "default", "step": "train", "row": "default"}
         baseline = train | {"step": "baseline"}
+        optional = train | {"step": "optional"}
 
         def pairing(run):
             snapshot = folders.read("rename")
@@ -91,7 +96,7 @@ def test_renaming_keeps_each_delayed_reaches_pairing(tmp_path, rename):
             assert response.status_code == 200, response.text
             view = StudioTrialAuthoring.model_validate(response.json())
             assert not view.problems, view.problems
-            model = snapshot.project.documents["reach-model"].payload
+            model = snapshot.project.documents[view.model].payload
             paired = pair_trial_source(
                 type(authored[1]).model_validate(model), view.task, bundle.components,
                 functions, python_tasks=bundle.python_tasks, input_bindings=view.input_bindings,
@@ -118,6 +123,7 @@ def test_renaming_keeps_each_delayed_reaches_pairing(tmp_path, rename):
 
         _, original_train = pairing(train)
         _, original_baseline = pairing(baseline)
+        _, original_optional = pairing(optional)
         assert not np.array_equal(original_train, original_baseline)
 
         if rename == "signal":
@@ -142,11 +148,68 @@ def test_renaming_keeps_each_delayed_reaches_pairing(tmp_path, rename):
         np.testing.assert_array_equal(evaluated, original_baseline)
 
         signal_name("goal", "idle")
-        shown_train, trained = pairing(train)
-        assert shown_train.input_bindings["idle-input"] is None
-        assert next(row for row in shown_train.inputs if row.id == "idle-input").signal_id is None
-        np.testing.assert_array_equal(trained, original_train)
-        assert not folders.read_plan("rename", revision=None).plan.diagnostics
+        shown_optional, optional_inputs = pairing(optional)
+        assert shown_optional.input_bindings["idle-input"] is None
+        assert next(row for row in shown_optional.inputs if row.id == "idle-input").signal_id is None
+        np.testing.assert_array_equal(optional_inputs, original_optional)
+        diagnostics = folders.read_plan("rename", revision=None).plan.diagnostics
+        assert not diagnostics, [(problem.path, problem.detail) for problem in diagnostics]
+
+
+def test_root_rename_keeps_different_bindings_in_the_same_variant(tmp_path):
+    """Catches a variant-wide repair that replaces distinct signals selected by individual rows."""
+    raw = document_project(authored_documents())
+    train = raw["steps"]["train"]
+    del train["base"]["inline"]["trial_documents"]["input_bindings"]
+    train["sweep"] = {"axes": {"context": {"values": {
+        "left": {},
+        "right": {"patches": {
+            "documents.task.payload.signals.target_pos.name": {"value": "spare"},
+            "documents.task.payload.signals.goal.name": {"value": "reach_target"},
+        }},
+    }}}}
+    signals = raw["documents"]["task"]["payload"]["signals"]
+    next(signal for signal in signals if signal["id"] == "target_pos")["name"] = "reach_target"
+    next(signal for signal in signals if signal["id"] == "goal")["name"] = "spare"
+    raw["sweep"] = {"rows": {"control": {}, "treated": {"patches": {
+        "documents.reach-model.payload.ports.inputs.task-input.name": {"value": "spare"},
+    }}}}
+
+    app = create_app(projects_dir=tmp_path)
+    with TestClient(app) as client:
+        folders = app.state.project_folders
+        _save_project(folders, "rename-variant", Project.model_validate(raw))
+        url = "/api/projects/rename-variant"
+        snapshot = folders.read("rename-variant")
+
+        def selections(revision):
+            result = {}
+            for variant in ("control", "treated"):
+                for row in ("context=left", "context=right"):
+                    shown = client.post(url + "/authoring/trials", json={
+                        "revision": revision, "run": {"variant": variant, "step": "train", "row": row},
+                    })
+                    assert shown.status_code == 200, shown.text
+                    view = StudioTrialAuthoring.model_validate(shown.json())
+                    assert not view.problems, view.problems
+                    result[variant, row] = view.inputs[0].signal_id
+            return result
+
+        before = selections(snapshot.revision)
+        assert before == {
+            ("control", "context=left"): "target_pos", ("control", "context=right"): "goal",
+            ("treated", "context=left"): "goal", ("treated", "context=right"): "target_pos",
+        }
+        response = client.post(url + "/model/edit", json={
+            "revision": snapshot.revision, "presentation_revision": snapshot.presentation_revision,
+            "document": "reach-model", "command": {"operation": {
+                "op": "rename", "name": "destination", "address": {"composites": [], "element": {
+                    "kind": "port", "end": {"owner": "inputs", "port": "task-input"},
+                }},
+            }},
+        })
+        assert response.status_code == 200 and response.json()["result"]["status"] == "applied", response.text
+        assert selections(folders.read("rename-variant").revision) == before
 
 
 def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_path, monkeypatch):

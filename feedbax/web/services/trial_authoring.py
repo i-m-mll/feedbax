@@ -527,6 +527,7 @@ def _evaluate_documents(plan, key, definition, bundle):
                         components=bundle.components,
                     )
                     graph, task = lowered.graph, lowered.task
+                params = effective_params
     except ValueError as error:
         return documents, _Projection(
             projection.pair, projection.variables, projection.signals, projection.epochs,
