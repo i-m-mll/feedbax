@@ -26,14 +26,24 @@ class StudioTaskStart(StrictModel):
     name: str
 
 
-def task_start(model: ModelDocument, address: ModelAddress) -> StudioTaskStart:
-    """A Model value a trial starts, named by its components' names and its path below the reset or field slot."""
+def task_start_path(model: ModelDocument, address: ModelAddress) -> tuple[str, ...]:
+    """The names of enclosing Model components followed by the state or parameter path."""
     names, interior = [], model.interior
     for id in (*address.composites, address.element.parent.id):
         component = interior.components.get(id)
         names.append(component.name if component is not None else id)
         interior = getattr(component, "interior", interior)
-    return StudioTaskStart(address=address, name=" · ".join((*names, " ".join(map(str, address.element.path[1:])))))
+    kind, *members = address.element.path
+    if kind == "state":
+        (symbol,) = members
+        return (*names, *str(symbol).split("/"))
+    return (*names, *map(str, members))
+
+
+def task_start(model: ModelDocument, address: ModelAddress) -> StudioTaskStart:
+    path = task_start_path(model, address)
+    components = len(address.composites) + 1
+    return StudioTaskStart(address=address, name=" · ".join((*path[:components], " ".join(path[components:]))))
 
 
 class StudioTaskPlace(StrictModel):

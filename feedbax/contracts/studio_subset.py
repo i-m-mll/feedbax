@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 from pydantic import Field, StringConstraints
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.expression_values import TextSpan
 from feedbax.contracts.project_inputs import ProjectName, RowKey
 from feedbax.contracts.request_refs import Sha256
 from feedbax.contracts.studio_project import StudioProjectFilePatch
@@ -47,6 +48,7 @@ class StudioRunRuleChosen(StrictModel):
 class StudioRunRuleRefused(StrictModel):
     kind: Literal["refused"] = "refused"
     reason: str
+    span: TextSpan | None = Field(default=None, exclude_if=lambda span: span is None)
 
 
 class StudioRunRuleCheck(StrictModel):
