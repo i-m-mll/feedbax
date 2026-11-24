@@ -5,7 +5,7 @@ import {
   type TaskDocument,
 } from '../../src/generated/studioContracts';
 import { enter, mapStep } from './fixtures/canonicalTrain';
-import { post, readSaved } from './fixtures/studioKeyboard';
+import { post, readSaved, startProject } from './fixtures/studioKeyboard';
 import { rootPayload } from './fixtures/rootPayload';
 
 test.use({ viewport: { width: 1440, height: 900 } });
@@ -45,7 +45,7 @@ async function drag(page: Page, from: Locator, to: Locator | { x: number; y: num
 test('authors a Model with the pointer and trains it @round', async ({ page, request }) => {
   test.setTimeout(58_000);
   const creation = post(page, '/api/projects');
-  await page.goto('/');
+  await startProject(page);
   const created = await creation;
   expect(created.status()).toBe(201);
   const { snapshot } = await created.json() as StudioProjectDocument;
