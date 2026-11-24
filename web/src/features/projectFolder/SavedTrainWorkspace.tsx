@@ -1854,6 +1854,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
                     onFocused={() => setFieldFocus(undefined)}>
                     <TrialTaskDocument view={value} commit={commit} runs={runs} selected={selected} select={choose(document)}
                       toSweep={step && ((axis) => sets.toSweep(step.id, axis))}
+                      weigh={step && ((axis) => sets.fieldWeight(step.id, axis))}
                       drawn={drawnVariables(trialClock.trial)} />
                   </FocusedFields>
                   : <TrialTaskForm view={value} commit={commit} />),

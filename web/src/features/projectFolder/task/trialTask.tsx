@@ -15,7 +15,7 @@ import { TaskVariables, type VariableEdits } from './TaskVariables';
 import { TaskDocumentBody } from './TaskView';
 import type { StudioCommand } from '@/features/projectWindow/studioCommands';
 import type { WeightPart } from '@/generated/studioContracts';
-import type { ModelStart, TaskSelection, TaskSetVariable, TaskVariable, UninitializedStart, VariableInitializes } from './taskModel';
+import type { ModelStart, SetEntryWeight, TaskSelection, TaskSetVariable, TaskVariable, UninitializedStart, VariableInitializes } from './taskModel';
 
 const sameType = (a: ValueType, b: ValueType) => studioValueType(a) === studioValueType(b);
 
@@ -156,16 +156,16 @@ function useVariables(view: TrialView, commit?: Commit, runs?: TrialRuns) {
   return task && { task, variables: variables(view, task, types, commit, runs), starts: uninitialized(view, task, types) };
 }
 
-const partsText = (weight: WeightPart | { on?: WeightPart; off?: WeightPart } | null | undefined) =>
-  weight == null ? undefined : typeof weight === 'number' ? String(weight) : `${weight.on ?? 1}:${weight.off ?? 1}`;
+const entryWeight = (weight: WeightPart | { on?: WeightPart; off?: WeightPart } | null | undefined): SetEntryWeight | undefined =>
+  weight == null || typeof weight === 'number' ? weight ?? undefined : { on: weight.on ?? 1, off: weight.off ?? 1 };
 
-/** The Sets the step's trials apply, as the service lists them. */
-function setVariables(view: TrialView): TaskSetVariable[] {
+/** The Sets the step's trials apply, as the service lists them, each weighed by `weigh` with its axis. */
+function setVariables(view: TrialView, weigh?: (axis: string) => TaskSetVariable['weigh']): TaskSetVariable[] {
   return (view.set_fields ?? []).map(({ axis, set, entries }) => ({
-    axis, set,
+    axis, set, weigh: weigh?.(axis),
     entries: [...entries.filter(({ entry }) => entry !== null), ...entries.filter(({ entry }) => entry === null)]
       .map(({ entry, label, weight }) => ({
-        id: entry, label: entry === null ? studioName('none') : label || entry, parts: partsText(weight),
+        id: entry, label: entry === null ? studioName('none') : label || entry, weight: entryWeight(weight),
       })),
   }));
 }
@@ -175,17 +175,19 @@ export const selectedVariable = (selected: string | undefined): TaskSelection | 
   selected?.startsWith('variable:') ? { kind: 'variable', id: selected.slice('variable:'.length) } : undefined;
 
 /** The Task view of a task document: Variables, and the grid of epochs and signals. */
-export function TrialTaskDocument({ view, commit, runs, selected, select, drawn, toSweep }: {
+export function TrialTaskDocument({ view, commit, runs, selected, select, drawn, toSweep, weigh }: {
   view: TrialView; commit?: Commit; runs?: TrialRuns; selected?: string; select(id: string): void;
   /** To Sweep on a Set the trials apply, by its axis. */
   toSweep?(axis: string): StudioCommand;
+  /** The edit of a weight of a Set the trials apply, by its axis. */
+  weigh?(axis: string): TaskSetVariable['weigh'];
   /** Each variable's value in the trial the clock shows, by variable id, when that trial was drawn. */
   drawn?: Readonly<Record<string, string>>;
 }) {
   const shown = useVariables(view, commit, runs);
   if (!shown) return null;
   return <TaskDocumentBody variables={<TaskVariables variables={shown.variables}
-    sets={setVariables(view).map((set) => ({ ...set, toSweep: toSweep?.(set.axis) }))} starts={shown.starts} selected={selectedVariable(selected)}
+    sets={setVariables(view, weigh).map((set) => ({ ...set, toSweep: toSweep?.(set.axis) }))} starts={shown.starts} selected={selectedVariable(selected)}
     select={(selection) => select(`${selection.kind}:${selection.id}`)} edits={variableEdits(shown.task, commit)}
     drawn={drawn} />}
     grid={<TrialTaskGrid view={view} commit={commit} runs={runs} selected={selected} select={select} />} />;
