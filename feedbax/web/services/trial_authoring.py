@@ -776,7 +776,11 @@ def _validate_files(
             parent = index_pointer(shown.model_dump(mode="json"), tuple(rest[:-1])) if shown is not None else None
             if parent is None or not change.edits[0].path.startswith(parent + "/"):
                 raise ProjectFolderInvalid("The selected runs order this field's members differently.")
-        introduced = tuple(problem for problem in after.problems if problem not in before.problems)
+        # Compiling stops at a document's first problems, so once it has some, mending one lets compiling reach
+        # problems that were there before the edit; an edit is refused for what it breaks in a document without any.
+        introduced = () if before.problems else tuple(
+            problem for problem in after.problems if problem not in before.problems
+        )
         if introduced and not evaluate_field and not keeps_problems:
             return StoredEdit([]), introduced
         if evaluate_field and introduced and key in current:

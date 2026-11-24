@@ -1,6 +1,7 @@
 """A task document's structure is changed by the service, and the document it leaves compiles."""
 
 from feedbax.contracts.studio_trials import StudioTrialAuthoring
+from feedbax.contracts.task_document import BLANK_TASK
 from tests.support.managed_train_fixture import managed_train_project
 from tests.test_model_document_edits import _URL, _Project
 from tests.test_task_document_fields import _save
@@ -13,18 +14,22 @@ LINKED = (
 DURATION = {"base": "real", "dimensions": {"time": 1}}
 
 
-def _project(tmp_path):
-    return _Project(tmp_path, managed_train_project(scenario="delayed-reaches").model_dump(
-        mode="json", by_alias=True, exclude_unset=True,
-    ))
+POINT = {"base": "real", "shape": [2], "dimensions": {"length": 1}}
 
 
-def _change(project, change) -> StudioTrialAuthoring:
+def _project(tmp_path, task=None):
+    raw = managed_train_project(scenario="delayed-reaches").model_dump(mode="json", by_alias=True, exclude_unset=True)
+    if task is not None:
+        raw["documents"][TASK]["payload"] = task.model_dump(mode="json")
+    return _Project(tmp_path, raw)
+
+
+def _change(project, change, *, body=None) -> StudioTrialAuthoring:
     row = next(row for row in project.plan().rows if row.kind == "train")
     response = project.client.post(f"{_URL}/authoring/trials", json={
         "revision": project.snapshot()["revision"],
         "run": {"variant": row.key.variant, "step": row.key.step, "row": row.key.row},
-        "change": None if change is None else {"kind": "structure", "change": change},
+        "change": body if change is None else {"kind": "structure", "change": change},
     })
     assert response.status_code == 200, response.text
     return StudioTrialAuthoring.model_validate(response.json())
@@ -66,6 +71,22 @@ def test_each_structural_change_leaves_a_document_that_compiles(tmp_path):
         assert [item["id"] for item in task["variables"]] == ["start", "target", "catch"]
         assert [item["id"] for item in task["epochs"]] == ["hold", "cue", "move"]
         assert task["links"] == [{"model_field": LINKED, "variable": "target"}]
+
+
+def test_a_value_is_stored_in_a_task_that_already_has_problems(tmp_path):
+    """Catches a value refused for the problems compiling reaches once it is mended: a new task's first variables are
+    typed before their values, and its signals do not yet feed the model."""
+    project = _project(tmp_path, BLANK_TASK)
+    with project.client:
+        for change in ({"op": "add", "member": "variable", "name": "start"},
+                       {"op": "set_type", "member": "variable", "id": "start", "type": POINT}):
+            _save(project, _change(project, change))
+        view = _change(project, None, body={
+            "kind": "expression", "path": "/task/variables/start/value", "edit": {"kind": "text", "text": "[0 m, 0 m]"},
+        })
+        assert view.files, view.problems
+        _save(project, view)
+        assert project.composed(TASK)["variables"][0]["value"]["function"] == "vector"
 
 
 def test_removing_an_epoch_shortens_the_cells_that_span_it(tmp_path):

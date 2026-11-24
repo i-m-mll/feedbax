@@ -362,8 +362,15 @@ function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, cl
     setDraft(next);
     setCaret(position);
     setHighlight(0);
-    requestAnimationFrame(() => input.current?.setSelectionRange(position, position));
+    placed.current = position;
   }
+  /** The caret an accepted completion leaves, placed as the field draws its new text, before the next key is read. */
+  const placed = useRef<number>();
+  useLayoutEffect(() => {
+    if (placed.current === undefined) return;
+    input.current?.setSelectionRange(placed.current, placed.current);
+    placed.current = undefined;
+  });
 
   function onKeyDown(event: KeyboardEvent<HTMLInputElement>) {
     if (open && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
