@@ -75,6 +75,7 @@ class MakePresent(StrictModel):
     op: Literal["present"]
     signal: str
     epoch: str
+    text: str | None = None
 
 
 class SetLink(StrictModel):
