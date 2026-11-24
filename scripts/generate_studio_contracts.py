@@ -912,6 +912,7 @@ MIGRATION_OR_NORMALIZATION_VALIDATORS = {
     ("PortType", "migrate_legacy_signal_port"),
     ("ComponentDefinition", "migrate_legacy_definition"),
     ("SelectionSpec", "_normalize_mode_fields"),
+    ("TaskTrialSampleRequest", "_normalize_model_without_period"),
 }
 
 
