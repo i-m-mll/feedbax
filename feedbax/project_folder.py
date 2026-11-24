@@ -1449,8 +1449,9 @@ class ProjectFolder:
             before = snapshot
             if files or stored.created:
                 snapshot = self._patch(snapshot.project_id, StudioProjectPatchBatch(
-                    revision=snapshot.revision, presentation_revision=snapshot.presentation_revision, files=files,
-                ), model_operation=True, created=stored.created)
+                    revision=snapshot.revision, presentation_revision=snapshot.presentation_revision,
+                    files=files, created=list(stored.created),
+                ), model_operation=True)
             if alone:
                 change = ModelEditChange(before, (payload, layout), model_edit_source(snapshot, body.document))
         return AppliedModelEdit(snapshot, result.changed, result.clipboard, change, created, result.problems)
@@ -1479,14 +1480,13 @@ class ProjectFolder:
 
     def _patch(
         self, project_id: str, body: StudioProjectPatch | StudioProjectPatchBatch, *, model_operation: bool,
-        created: Sequence[CreateNamedDocument] = (),
     ) -> StudioProjectSnapshot:
         """Apply ``body``'s file patches, after creating the ``created`` documents, in one write."""
         with self._locked_folder(project_id) as folder:
             root = folder.path
             text = self._load(root)
             check_revision("project", body.revision, text.revision)
-            files = body.files if isinstance(body, StudioProjectPatchBatch) else [body]
+            files, created = (body.files, body.created) if isinstance(body, StudioProjectPatchBatch) else ([body], [])
             original = dump_text_project(text.project, text.configuration)
             payload = text.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
             configuration = text.configuration.model_dump(mode="json")

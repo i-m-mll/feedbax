@@ -98,6 +98,8 @@ class StudioProjectPatchBatch(StrictModel):
     revision: Sha256
     presentation_revision: Sha256 | None = None
     files: list[StudioProjectFilePatch] = Field(min_length=1)
+    created: list[CreateNamedDocument] = Field(default_factory=list)
+    """Documents created in the same transaction as the file patches."""
 
 
 class ReplayFileAddress(StrictModel):
