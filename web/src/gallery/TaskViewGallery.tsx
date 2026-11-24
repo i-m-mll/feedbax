@@ -1,12 +1,13 @@
 import { useMemo, useState, type ReactNode } from 'react';
-import { EpochTimeline } from '@/components/timeline/EpochTimeline';
+import { EpochTimeline, type TimelineContent } from '@/components/timeline/EpochTimeline';
 import { ProjectWindow, ProjectWindowPalette } from '@/features/projectWindow/ProjectWindow';
 import { useDrawerSections } from '@/features/projectWindow/DrawerForms';
 import { defaultProjectWindowState, type ProjectWindowState } from '@/features/projectWindow/projectWindowState';
 import { TaskInspector } from '@/features/projectFolder/task/TaskInspector';
 import { TaskOutline } from '@/features/projectFolder/task/TaskOutline';
-import { TaskDocumentBody, TaskPythonBody, timelineContent } from '@/features/projectFolder/task/TaskView';
-import type { TrialChoice } from '@/features/projectFolder/task/TrialStepper';
+import { TaskGrid } from '@/features/projectFolder/task/TaskGrid';
+import { TaskDocumentBody, TaskPythonBody } from '@/features/projectFolder/task/TaskView';
+import { TaskVariables } from '@/features/projectFolder/task/TaskVariables';
 import type { TaskDocumentView, TaskSelection } from '@/features/projectFolder/task/taskModel';
 import type { TrialShown } from '@/features/projectFolder/task/trialSample';
 import { aggregate, documentView, fixtures, pythonView, templates, type DocumentSpec, type PythonSpec } from './taskFixtures';
@@ -45,17 +46,30 @@ function useSample(key: string, spec: DocumentSpec | PythonSpec, seed: number) {
   }, [key, spec, seed]);
 }
 
+/** Which sampled trial is shown: none (the definition), the batch as one aggregate, or one trial by its index. */
+type TrialChoice = 'definition' | 'all' | number;
+
+/** What the strip draws: the definition, the shown trial's boundaries, or the batch's shares. */
+function timelineContent(view: TaskDocumentView, shown: TrialShown): TimelineContent {
+  if (shown.kind === 'trial') return { kind: 'trial', intervals: shown.trial.intervals };
+  if (shown.kind === 'batch') return { kind: 'batch', epochs: shown.batch.epochs };
+  return {
+    kind: 'definition',
+    epochs: view.epochs.map(({ bounds }) => bounds),
+    repeats: view.repeats.map(({ first, last, count }) => ({ first, last, count: Number(count.text) || 1 })),
+  };
+}
+
 function shownOf(choice: TrialChoice, sample: ReturnType<typeof useSample>): TrialShown {
   if (!sample || choice === 'definition') return { kind: 'definition' };
   if (choice === 'all') return { kind: 'batch', batch: sample.batch };
   return { kind: 'trial', index: choice, count: stepped, trial: sample.trials[choice] };
 }
 
-function moved<T extends { id: string }>(items: readonly T[], id: string, offset: number) {
-  const index = items.findIndex((item) => item.id === id);
+function moved<T extends { id: string }>(items: readonly T[], id: string, to: number) {
   const next = [...items];
-  const [item] = next.splice(index, 1);
-  next.splice(index + offset, 0, item);
+  const [item] = next.splice(items.findIndex((candidate) => candidate.id === id), 1);
+  next.splice(to, 0, item);
   return next;
 }
 
@@ -80,16 +94,11 @@ function TaskWindow() {
   const [state, setState] = useState<ProjectWindowState>({ ...defaultProjectWindowState, mode: 'details', primaryView: 'task' });
   const sections = useDrawerSections(state, setState);
   const [selected, setSelected] = useState<TaskSelection | undefined>({ kind: 'end', id: 'cue' });
-  const [choice, setChoice] = useState<TrialChoice>('definition');
-  const [seed, setSeed] = useState(1);
-  const spec = tasks.specs[key];
-  const sample = useSample(key, spec, seed);
-  const shown = shownOf(choice, sample);
   const view = tasks.view(key);
+  const shown: TrialShown = { kind: 'definition' };
   const fixture = fixtures.find((candidate) => candidate.key === key)!;
   const choose = (next: string) => {
     setKey(next);
-    setChoice('definition');
     setSelected(undefined);
   };
   const edit = (change: (spec: DocumentSpec) => DocumentSpec) => tasks.edit(key, change);
@@ -113,15 +122,14 @@ function TaskWindow() {
           padded: true,
           picker,
           body: view.kind === 'document'
-            ? <TaskDocumentBody view={view} shown={shown} choice={choice} sampleCount={stepped} onChoose={setChoice}
-              onResample={() => setSeed((current) => current + 1)} selected={selected} select={setSelected}
-              variableEdits={{
-                add: () => edit((current) => ({ ...current, variables: [...current.variables, { id: fresh('v'), name: '', type: 'Scalar', text: '' }] })),
+            ? <TaskDocumentBody
+              variables={<TaskVariables variables={view.variables} selected={selected} select={setSelected} edits={{
+                add: (name) => edit((current) => ({ ...current, variables: [...current.variables, { id: fresh('v'), name, type: 'Number', text: '0' }] })),
                 rename: (id, name) => edit((current) => ({ ...current, variables: current.variables.map((item) => item.id === id ? { ...item, name } : item) })),
                 remove: (id) => edit((current) => ({ ...current, variables: current.variables.filter((item) => item.id !== id) })),
-                move: (id, offset) => edit((current) => ({ ...current, variables: moved(current.variables, id, offset) })),
-              }}
-              gridEdits={{
+                move: (id, to) => edit((current) => ({ ...current, variables: moved(current.variables, id, to) })),
+              }} />}
+              grid={<TaskGrid epochs={view.epochs} repeats={view.repeats} signals={view.signals} selected={selected} select={setSelected} edits={{
                 addEpoch: (before) => edit((current) => {
                   const epoch = { id: fresh('e'), name: 'epoch', end: '0.1 s' };
                   const at = before ? current.epochs.findIndex(({ id }) => id === before) : current.epochs.length;
@@ -134,10 +142,10 @@ function TaskWindow() {
                 renameEpoch: (id, name) => edit((current) => ({ ...current, epochs: current.epochs.map((item) => item.id === id ? { ...item, name } : item) })),
                 removeEpoch: (id) => edit((current) => withoutEpoch(current, id)),
                 addSignal: () => edit((current) => ({ ...current, signals: [...current.signals, {
-                  id: fresh('s'), name: 'signal', type: 'Scalar', cells: [{ first: current.epochs[0].id, last: current.epochs.at(-1)!.id, text: null }],
+                  id: fresh('s'), name: 'signal', type: 'Number', cells: [{ first: current.epochs[0].id, last: current.epochs.at(-1)!.id, text: null }],
                 }] })),
-              }} />
-            : <TaskPythonBody view={view} selected={selected} select={setSelected} />,
+              }} />} />
+            : <TaskPythonBody view={view} />,
           drawer: view.kind === 'document' ? <TaskOutline sections={sections} view={view} selected={selected} select={setSelected} /> : undefined,
           inspector: view.kind === 'document' ? <TaskInspector view={view} selected={selected} shown={shown} /> : undefined,
         }} />

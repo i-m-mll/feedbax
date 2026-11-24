@@ -25,6 +25,8 @@ class StudioTrialField(StudioFieldView):
     """A field of the pairing at ``path``; a number the step can sweep carries the step's sweep of it."""
 
     path: str
+    problems: list[Problem] = Field(default_factory=list)
+    """The stored value's problems; one about a term of the text carries the term's ``span`` in ``text``."""
 
 
 class StudioTaskType(StrictModel):

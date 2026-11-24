@@ -12,17 +12,17 @@ import { Button, IconButton } from '@/components/ui/Button';
 import { ChangeMark } from '@/components/ui/ChangeMark';
 import { Checkbox } from '@/components/ui/Checkbox';
 import { Combobox } from '@/components/ui/Combobox';
-import { FieldProblem } from '@/components/ui/FieldProblem';
+import { FieldProblem, FieldProblemReason } from '@/components/ui/FieldProblem';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '@/components/ui/Menu';
 import { usePopupLayer } from '@/components/ui/popupLayer';
 import { Select } from '@/components/ui/Select';
 import { Section } from '@/components/ui/Section';
 import { popupItem, popupSurface, primaryText, secondaryText } from '@/components/ui/styles';
-import { TextField } from '@/components/ui/TextField';
+import { TextField, type TextTerm } from '@/components/ui/TextField';
 import {
   completions, hasMark, kindEdit, kindOffers, type ChangeMark as FieldChangeMark, type ChangeSource, type Completion,
-  type FieldEdit, type FieldModel, type FieldOption, type ValueKind,
+  type FieldEdit, type FieldModel, type FieldOption, type FieldRefusal, type ValueKind,
 } from './fieldModel';
 import { clearDraw, DrawParts, startDraw, useDrawDraft, useShownDraw } from './DrawParts';
 import { FieldIntent } from './fieldIntent';
@@ -81,16 +81,18 @@ const kindGlyphs: Record<ValueKind, ReactNode> = {
  * dropped, and the field stays editable meanwhile.
  */
 function useSubmit(model: FieldModel) {
-  const [reason, setReason] = useState<string>();
+  const [refusal, setRefusal] = useState<Refused>();
   const tail = useRef<Promise<unknown>>(Promise.resolve());
   const waiting = useRef<{ edit: FieldEdit; resolve(done: boolean): void }>();
   const latest = useRef(model);
   latest.current = model;
   async function send(commit: NonNullable<FieldModel['commit']>, edit: FieldEdit) {
     const failure = await commit(edit);
-    setReason(failure);
-    return !failure;
+    setRefusal(failure === undefined ? undefined : refused(failure, edit));
+    return failure === undefined;
   }
+  const setReason = (reason: FieldRefusal | undefined) =>
+    setRefusal(reason === undefined ? undefined : { reason: typeof reason === 'string' ? reason : reason.reason });
   function submit(edit: FieldEdit) {
     const result = tail.current.then(() => {
       const { commit } = latest.current;
@@ -106,7 +108,25 @@ function useSubmit(model: FieldModel) {
     waiting.current = undefined;
     void send(model.commit, next.edit).then(next.resolve);
   });
-  return { reason, setReason, submit };
+  return { reason: refusal?.reason, refusal, setReason, submit };
+}
+
+/** A refusal, with the term it is about in the text it is about. */
+interface Refused {
+  readonly reason: string;
+  readonly term?: { readonly text: string; readonly start: number; readonly end: number };
+}
+
+function refused(failure: FieldRefusal, edit: FieldEdit): Refused {
+  if (typeof failure === 'string') return { reason: failure };
+  const { reason, span } = failure;
+  return span && edit.kind === 'text' ? { reason, term: { text: edit.text, ...span } } : { reason };
+}
+
+/** The term the field's problem is about, in the text it is about: the refused draft's, or the stored value's. */
+function problemTerm(model: FieldModel, refusal: Refused | undefined) {
+  if (refusal) return refusal.term;
+  return model.reason && model.span && model.text !== null ? { text: model.text, ...model.span } : undefined;
 }
 
 /**
@@ -126,12 +146,15 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
   const reasonId = useId();
   const originId = useId();
   const changeId = useId();
-  const { reason, setReason, submit } = useSubmit(model);
+  const { reason, refusal, setReason, submit } = useSubmit(model);
   const readOnly = !model.commit;
   const shownReason = reason ?? model.reason;
+  const term = shownReason ? problemTerm(model, refusal) : undefined;
   const describedBy = [model.change && changeId, model.origin && originId, shownReason && reasonId]
     .filter(Boolean).join(' ') || undefined;
-  const problem = shownReason && <FieldProblem reason={shownReason} id={reasonId} />;
+  // A problem about one term is drawn on the term; its reason still describes the control.
+  const problem = shownReason && (term ? <FieldProblemReason reason={shownReason} id={reasonId} />
+    : <FieldProblem reason={shownReason} id={reasonId} />);
   const change = model.change && <FieldChange change={model.change} id={changeId}
     onReset={readOnly ? undefined : () => void submit({ kind: 'reset' })} />;
   /** The field's marks at its box's trailing end: its problem, then its change. */
@@ -171,6 +194,7 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
         return null;
       default:
         return <ValueText model={model} id={id} readOnly={readOnly} describedBy={describedBy} invalid={!!shownReason}
+          term={term && shownReason ? { ...term, reason: shownReason } : undefined}
           submit={submit} clearReason={() => setReason(undefined)} chooseKind={chooseKind} changeMark={marks} />;
     }
   })();
@@ -283,8 +307,10 @@ function ClassValue({ model, parameter, labelId, picker, pickReason }: {
   </section>;
 }
 
-function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearReason, chooseKind, changeMark, end, parameterOf }: {
+function ValueText({ model, id, readOnly, describedBy, invalid, term, submit, clearReason, chooseKind, changeMark, end, parameterOf }: {
   model: FieldModel; id: string; readOnly: boolean; describedBy?: string; invalid: boolean;
+  /** The term of a text the problem is about; drawn while the field shows that text. */
+  term?: TextTerm & { readonly text: string };
   submit(edit: FieldEdit): Promise<boolean>; clearReason(): void;
   chooseKind(kind: ValueKind): void;
   /** The field's problem and changed marks, at the box's trailing end. */
@@ -336,8 +362,15 @@ function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearRea
     setDraft(next);
     setCaret(position);
     setHighlight(0);
-    requestAnimationFrame(() => input.current?.setSelectionRange(position, position));
+    placed.current = position;
   }
+  /** The caret an accepted completion leaves, placed as the field draws its new text, before the next key is read. */
+  const placed = useRef<number>();
+  useLayoutEffect(() => {
+    if (placed.current === undefined) return;
+    input.current?.setSelectionRange(placed.current, placed.current);
+    placed.current = undefined;
+  });
 
   function onKeyDown(event: KeyboardEvent<HTMLInputElement>) {
     if (open && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
@@ -380,6 +413,7 @@ function ValueText({ model, id, readOnly, describedBy, invalid, submit, clearRea
     onOpenChange={setMenu} finalFocus={input} onChoose={choose} /> : undefined;
   return <>
     <TextField ref={input} id={id} type="text" value={text} leading={markMenu} trailing={changeMark} end={end} className="min-w-0"
+      term={term && term.text === text ? term : undefined}
       aria-label={parameterOf ? studioParameterLabel(...parameterOf) : undefined} size={end ? Math.max(6, text.length + 1) : undefined}
       placeholder={model.text === null && draft === undefined ? studioName('mixed') : undefined}
       readOnly={readOnly || model.type.kind === 'readOnly'} invalid={invalid}

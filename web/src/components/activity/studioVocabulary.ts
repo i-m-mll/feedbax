@@ -1,6 +1,7 @@
 import { BarChart3, FileText, FlaskConical, PlayCircle } from 'lucide-react';
 import type { ResultStatus } from '@/components/ui/StatusMark';
 import type {
+  ValueType,
   ComputationChange, DriverChanged, EnvironmentDifference, ProgramsChanged, StepCountChanged, EnvironmentNotice, RegistryBinding, StudioActivityJob, StudioEvaluateValueSource,
   StudioDefinitionChange, StudioPlanReviewSource, StudioProjectWindowMapProblem, StudioSavedEvaluationResult,
   StudioSavedTrainChange, StudioSweptParameterMissing, ValidityReason,
@@ -310,4 +311,11 @@ export function studioStep(kind: keyof typeof vocabulary.step | StudioActivityJo
     tint: `var(--studio-kind-${step})`,
     name: studioName(kind === 'render' ? 'figures' : kind),
   };
+}
+
+/** A type as its parts: its base, its shape, and its unit's dimensions, as in `Real · 2 · length`. */
+export function studioValueType({ base, shape = [], dimensions = {} }: ValueType) {
+  const unit = Object.entries(dimensions).filter(([, exponent]) => exponent).map(([name, exponent]) =>
+    exponent === 1 ? name : `${name}^${exponent}`).join('·');
+  return [studioName(base), shape.length ? shape.join('×') : undefined, unit || undefined].filter(Boolean).join(' · ');
 }

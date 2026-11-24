@@ -226,17 +226,18 @@ def _expression_edit(change, documents, projection, bundle):
     document = _field_document(documents, role)
     if site is None or document is None or index_pointer(document.model_dump(mode="json"), tuple(rest[:-1])) is None:
         raise ProjectFolderInvalid("The selected field is unavailable.")
+    one = (Problem(code=ProblemCode.STRUCTURE, reason="This field takes one expression.", path=(role, *rest)),)
     if change.edit.kind != "text" or change.edit.value_id is not None:
-        return (Problem(code=ProblemCode.STRUCTURE, reason="This field takes one expression."),)
+        return one
     text = change.edit.text
     parsed = (
         read_field(text, site, bundle.expression_functions) if projection.pair is not None
         else parse(text, site, bundle.expression_functions)
     )
     if not isinstance(parsed, ParsedField):
-        return parsed
+        return tuple(problem.model_copy(update={"path": (role, *rest)}) for problem in parsed)
     if isinstance(parsed.value, SweepList | SweepRange | SweepSample):
-        return (Problem(code=ProblemCode.STRUCTURE, reason="This field takes one expression."),)
+        return one
     raw = document.model_dump(mode="json", exclude_unset=True)
     stored = index_pointer(raw, tuple(rest))
     path = stored or index_pointer(raw, tuple(rest[:-1])) + pointer(tuple(rest[-1:]))
@@ -520,12 +521,12 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, doc
             return (StoredEdit([]), made) if isinstance(made, tuple) else (made, ())
         change = _expression_edit(expression, documents, projected, bundle)
         if not isinstance(change, StudioTrialDocumentEdit):
-            return [], change
+            return StoredEdit([]), change
     structural = isinstance(change, StudioTrialStructureEdit)
     if structural:
         change = _structure_edit(change, documents, definition)
         if not isinstance(change, StudioTrialDocumentEdit):
-            return [], change
+            return StoredEdit([]), change
     document = None
     if step.kind == "train" and isinstance(change, StudioTrialDocumentEdit | StudioTrialDocumentReset):
         field, _ = _changed_value(
@@ -775,7 +776,11 @@ def _validate_files(
             parent = index_pointer(shown.model_dump(mode="json"), tuple(rest[:-1])) if shown is not None else None
             if parent is None or not change.edits[0].path.startswith(parent + "/"):
                 raise ProjectFolderInvalid("The selected runs order this field's members differently.")
-        introduced = tuple(problem for problem in after.problems if problem not in before.problems)
+        # Compiling stops at a document's first problems, so once it has some, mending one lets compiling reach
+        # problems that were there before the edit; an edit is refused for what it breaks in a document without any.
+        introduced = () if before.problems else tuple(
+            problem for problem in after.problems if problem not in before.problems
+        )
         if introduced and not evaluate_field and not keeps_problems:
             return StoredEdit([]), introduced
         if evaluate_field and introduced and key in current:
@@ -830,13 +835,31 @@ def _objective_names(plan, key):
     objective = pairing.get("objective") if isinstance(pairing, dict) else None
     terms = objective.get("terms", []) if isinstance(objective, dict) else []
     return {term.get("id"): term.get("name") for term in terms if isinstance(term, dict) and term.get("name")}
-def _trial_fields(path, site: Site, expression, functions, sweep, row) -> list[StudioTrialField]:
-    """The field at ``path`` with its text and structure, where its value names only what is in scope, and each number
-    in it the step can sweep: ``sweep`` gives the sweep of the number at a path, if the step can sweep it.
+def _held_problems(path, problems) -> list[Problem]:
+    """The problems about the field at ``path``: a task's are addressed within the task, an Objective's with its role."""
+    own = (path, path[1:]) if path[0] == "task" else (path,)
+    return [problem for problem in problems if any(problem.path[:len(at)] == at for at in own)]
 
-    A field that is a number carries its sweep; each number given to a draw in it is a field of its own.
+
+def _field_problems(path, site: Site, text: str, functions, problems) -> list[Problem]:
+    """The field's problems, each at the field's path; one about a term of its text carries the term's place there."""
+    held = _held_problems(path, problems)
+    if not held or not text:
+        return [problem.model_copy(update={"path": path}) for problem in held]
+    read = read_field(text, site, functions)
+    termed = read if isinstance(read, tuple) and any(problem.span for problem in read) else held
+    return [problem.model_copy(update={"path": path}) for problem in termed]
+
+
+def _trial_fields(path, site: Site, expression, functions, sweep, row, problems) -> list[StudioTrialField]:
+    """The field at ``path`` with its text, its structure where its value names only what is in scope, its problems,
+    and each number in it the step can sweep: ``sweep`` gives the sweep of the number at a path, if the step can sweep it.
+
+    A name no longer in scope is printed as its reference. A field that is a number carries its sweep; each number given
+    to a draw in it is a field of its own.
     """
-    shown = expression is not None and references(expression) <= {item.id for item in site.names}
+    missing = references(expression) - {item.id for item in site.names} if expression is not None else set()
+    shown = expression is not None and not missing
     projection = project_site(site, functions)
     fields = []
     for inner, label in numeric_nodes(expression, functions) if shown else ():
@@ -850,12 +873,19 @@ def _trial_fields(path, site: Site, expression, functions, sweep, row) -> list[S
         if inner:
             fields.append(view)
         elif view.sweep is not None or view.can_sweep:
-            return [view.model_copy(update={"site": projection})]
+            return [view.model_copy(update={
+                "site": projection, "problems": _field_problems(path, site, view.text, functions, problems),
+            })]
     projection = projection.model_copy(update={"kinds": tuple(kind for kind in projection.kinds if kind != FieldKind.SWEEP)})
+    printed = site.model_copy(update={"names": (*site.names, *(
+        ScopedValue(id=reference, name=reference, type=ValueType(base=ValueBase.REAL), level=Level.RUN)
+        for reference in sorted(missing)
+    ))})
+    text = print_field(expression, printed) if expression is not None else ""
     return [StudioTrialField(
-        path=pointer(tuple(map(str, path))), label=_field_label(path), site=projection,
-        text=print_field(expression, site) if shown else "",
+        path=pointer(tuple(map(str, path))), label=_field_label(path), site=projection, text=text,
         structure=value_structure(expression, site, functions) if shown else None,
+        problems=_field_problems(path, site, text, functions, problems),
     ), *fields]
 
 
@@ -950,7 +980,9 @@ def trial_authoring(
                 for field in paired.model.reset.fields] if paired else [],
         fields=[
             field for path, site in projected.fields.items() if path[1:2] != ("validation_trials",)
-            for field in _trial_fields(path, site, expression(path), bundle.expression_functions, sweep, row)
+            for field in _trial_fields(
+                path, site, expression(path), bundle.expression_functions, sweep, row, projected.problems,
+            )
         ],
         problems=[*projected.problems, *refused], files=stored.files, created=list(stored.created), refusal=refusal,
     )
