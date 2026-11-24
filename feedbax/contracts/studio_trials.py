@@ -18,6 +18,7 @@ from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.studio_authoring import StudioSweptParameterMissing
 from feedbax.contracts.studio_field import FieldKindEdit, FieldNameEdit, FieldTextEdit, StudioFieldView
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
+from feedbax.contracts.studio_scope import StudioStoreChoice
 from feedbax.contracts.task_document import EpochSteps, PythonTaskSelection, TaskDocument
 from feedbax.contracts.task_structure import TaskStructureChange
 
@@ -116,6 +117,7 @@ class StudioTrialAuthoringRequest(StrictModel):
         | StudioTrialExpressionEdit | StudioTrialStructureEdit,
         Field(discriminator="kind"),
     ] | None = None
+    store_choice: Sha256 | None = Field(default=None, exclude_if=lambda value: value is None)
     scope: Annotated[
         StudioTrialStepScope | AxisValueRuns | ListedRuns,
         Field(discriminator="kind"),
@@ -190,5 +192,9 @@ class StudioTrialAuthoring(StrictModel):
     files: list[StudioProjectFilePatch]
     created: list[CreateNamedDocument] = Field(default_factory=list)
     """Documents the edit creates, written before ``files``, which may name them."""
+    store_choices: list[StudioStoreChoice] | None = Field(
+        default=None, min_length=1, exclude_if=lambda value: value is None,
+    )
+    """An unanswered edit. No files or documents are proposed until the caller chooses a store."""
     refusal: StudioSweptParameterMissing | None = None
     """Why the chosen document was not taken: it lacks a parameter the step sweeps."""
