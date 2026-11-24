@@ -41,10 +41,175 @@ def _python_project():
     }
     raw["documents"]["objective"]["payload"]["terms"] = []
     documents = raw["steps"]["train"]["base"]["inline"]["trial_documents"]
-    documents.pop("input_overrides")
+    documents.pop("input_bindings")
     documents.update(task=None, python_task={"document": "task"})
     raw["steps"]["baseline"]["base"]["inline"]["params"]["trial_set"] = {"kind": "sample", "count": 1}
     return raw
+
+
+@pytest.mark.parametrize("rename", ["signal", "root input"])
+def test_renaming_keeps_each_delayed_reaches_pairing(tmp_path, rename):
+    """Catches a rename that drops a signal, changes a varied rollout's signal, or feeds an idle input."""
+    import jax.random as jr
+
+    from feedbax.execution.trial_resolution import pair_trial_source
+    from feedbax.tasks.document import TaskParameters
+
+    functions, *_ = authored = authored_documents()
+    raw = document_project(authored, evaluation=True)
+    training = raw["steps"]["train"]["base"]["inline"]["trial_documents"]
+    del training["input_bindings"]
+    model = raw["documents"]["reach-model"]["payload"]
+    root = model["ports"]["inputs"][0]
+    root["name"] = "target"
+    raw["documents"]["idle-model"] = deepcopy(raw["documents"]["reach-model"])
+    raw["documents"]["idle-model"]["payload"]["ports"]["inputs"].append(root | {
+        "id": "idle-input", "name": "idle", "default": {"value": [0.0, 0.0]},
+    })
+    raw["steps"]["optional"] = deepcopy(raw["steps"]["train"])
+    raw["steps"]["optional"]["base"]["inline"]["trial_documents"]["model"] = {"document": "idle-model"}
+    task = raw["documents"]["task"]["payload"]
+    next(variable for variable in task["variables"] if variable["id"] == "target")["name"] = "requested"
+    for signal in task["signals"]:
+        if signal["id"] == "target_pos":
+            signal["name"] = "target"
+        elif signal["id"] == "goal":
+            signal["name"] = "spare"
+    params = raw["steps"]["baseline"]["base"]["inline"]["params"]
+    params["variation"] = [
+        {"op": "replace", "path": "task.signals.target_pos.name", "value": "legacy"},
+        {"op": "replace", "path": "task.signals.goal.name", "value": "target"},
+    ]
+    app = create_app(projects_dir=tmp_path)
+    with TestClient(app) as client:
+        folders = app.state.project_folders
+        bundle = app.state.bootstrap_state.bundle
+        _save_project(folders, "rename", Project.model_validate(raw))
+        url = "/api/projects/rename"
+        train = {"variant": "default", "step": "train", "row": "default"}
+        baseline = train | {"step": "baseline"}
+        optional = train | {"step": "optional"}
+
+        def pairing(run):
+            snapshot = folders.read("rename")
+            response = client.post(url + "/authoring/trials", json={"revision": snapshot.revision, "run": run})
+            assert response.status_code == 200, response.text
+            view = StudioTrialAuthoring.model_validate(response.json())
+            assert not view.problems, view.problems
+            model = snapshot.project.documents[view.model].payload
+            paired = pair_trial_source(
+                type(authored[1]).model_validate(model), view.task, bundle.components,
+                functions, python_tasks=bundle.python_tasks, input_bindings=view.input_bindings,
+            )
+            assert not isinstance(paired, tuple) and not paired.problems, paired
+            trial = paired.task.ahead(TaskParameters(), jr.key(1), jr.key(2))
+            fed, = [trial.inputs[signal] for _, signal in paired.input_bindings]
+            return view, fed
+
+        def signal_name(id_, name):
+            snapshot = folders.read("rename")
+            response = client.post(url + "/authoring/trials", json={
+                "revision": snapshot.revision, "run": train,
+                "change": {"kind": "structure", "changes": [
+                    {"op": "rename", "member": "signal", "id": id_, "name": name},
+                ]},
+            })
+            assert response.status_code == 200, response.text
+            saved = client.patch(url, json={
+                "revision": snapshot.revision,
+                "files": response.json()["files"],
+            })
+            assert saved.status_code == 200, saved.text
+
+        _, original_train = pairing(train)
+        _, original_baseline = pairing(baseline)
+        _, original_optional = pairing(optional)
+        assert not np.array_equal(original_train, original_baseline)
+
+        if rename == "signal":
+            signal_name("target_pos", "goal")
+        else:
+            snapshot = folders.read("rename")
+            response = client.post(url + "/model/edit", json={
+                "revision": snapshot.revision, "presentation_revision": snapshot.presentation_revision,
+                "document": "reach-model", "command": {"operation": {
+                    "op": "rename", "name": "goal", "address": {"composites": [], "element": {
+                        "kind": "port", "end": {"owner": "inputs", "port": "task-input"},
+                    }},
+                }},
+            })
+            assert response.status_code == 200 and response.json()["result"]["status"] == "applied", response.text
+
+        shown_train, trained = pairing(train)
+        shown_baseline, evaluated = pairing(baseline)
+        assert shown_train.input_bindings["task-input"] == "target_pos"
+        assert shown_baseline.input_bindings["task-input"] == "goal"
+        np.testing.assert_array_equal(trained, original_train)
+        np.testing.assert_array_equal(evaluated, original_baseline)
+
+        signal_name("goal", "idle")
+        shown_optional, optional_inputs = pairing(optional)
+        assert shown_optional.input_bindings["idle-input"] is None
+        assert next(row for row in shown_optional.inputs if row.id == "idle-input").signal_id is None
+        np.testing.assert_array_equal(optional_inputs, original_optional)
+        diagnostics = folders.read_plan("rename", revision=None).plan.diagnostics
+        assert not diagnostics, [(problem.path, problem.detail) for problem in diagnostics]
+
+
+def test_root_rename_keeps_different_bindings_in_the_same_variant(tmp_path):
+    """Catches a variant-wide repair that replaces distinct signals selected by individual rows."""
+    raw = document_project(authored_documents())
+    train = raw["steps"]["train"]
+    del train["base"]["inline"]["trial_documents"]["input_bindings"]
+    train["sweep"] = {"axes": {"context": {"values": {
+        "left": {},
+        "right": {"patches": {
+            "documents.task.payload.signals.target_pos.name": {"value": "spare"},
+            "documents.task.payload.signals.goal.name": {"value": "reach_target"},
+        }},
+    }}}}
+    signals = raw["documents"]["task"]["payload"]["signals"]
+    next(signal for signal in signals if signal["id"] == "target_pos")["name"] = "reach_target"
+    next(signal for signal in signals if signal["id"] == "goal")["name"] = "spare"
+    raw["sweep"] = {"rows": {"control": {}, "treated": {"patches": {
+        "documents.reach-model.payload.ports.inputs.task-input.name": {"value": "spare"},
+    }}}}
+
+    app = create_app(projects_dir=tmp_path)
+    with TestClient(app) as client:
+        folders = app.state.project_folders
+        _save_project(folders, "rename-variant", Project.model_validate(raw))
+        url = "/api/projects/rename-variant"
+        snapshot = folders.read("rename-variant")
+
+        def selections(revision):
+            result = {}
+            for variant in ("control", "treated"):
+                for row in ("context=left", "context=right"):
+                    shown = client.post(url + "/authoring/trials", json={
+                        "revision": revision, "run": {"variant": variant, "step": "train", "row": row},
+                    })
+                    assert shown.status_code == 200, shown.text
+                    view = StudioTrialAuthoring.model_validate(shown.json())
+                    assert not view.problems, view.problems
+                    result[variant, row] = view.inputs[0].signal_id
+            return result
+
+        before = selections(snapshot.revision)
+        assert before == {
+            ("control", "context=left"): "target_pos", ("control", "context=right"): "goal",
+            ("treated", "context=left"): "goal", ("treated", "context=right"): "target_pos",
+        }
+        response = client.post(url + "/model/edit", json={
+            "revision": snapshot.revision, "presentation_revision": snapshot.presentation_revision,
+            "document": "reach-model", "command": {"operation": {
+                "op": "rename", "name": "destination", "address": {"composites": [], "element": {
+                    "kind": "port", "end": {"owner": "inputs", "port": "task-input"},
+                }},
+            }},
+        })
+        assert response.status_code == 200 and response.json()["result"]["status"] == "applied", response.text
+        assert selections(folders.read("rename-variant").revision) == before
 
 
 def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_path, monkeypatch):
@@ -121,14 +286,14 @@ def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_p
         revision = folders.read(project).revision
         view = author(revision)
         (port,) = view.inputs
-        assert port.signal is None and port.required
+        assert port.signal_id is None and port.required
         assert any("reach_input" in problem.reason for problem in view.problems)
         assert view.outputs and view.resets
         revision = save(author(revision, {
-            "kind": "binding", "input": port.address.model_dump(mode="json"), "signal": "reach_target",
+            "kind": "binding", "input_id": port.id, "signal_id": "reach_target",
         }))
         view = author(revision)
-        assert view.inputs[0].explicit and view.inputs[0].signal == "reach_target"
+        assert view.inputs[0].explicit and view.inputs[0].signal_id == "reach_target"
         assert not view.problems
         (output,) = view.outputs
         assert isinstance(output.address, ModelAddress)
@@ -168,7 +333,10 @@ def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_p
         test_run = {**run, "step": "baseline", "row": "seed=test"}
         control_run = {**test_run, "row": "seed=control"}
         evaluated_task = author(revision, selected=control_run)
-        assert evaluated_task.objective is None
+        assert [term.id for term in evaluated_task.objective.terms] == [
+            "effort", "move-effort", "target-variable", "target-signal",
+        ]
+        assert evaluated_task.objective_source.model_dump() == {"kind": "train", "step": "train"}
         assert evaluated_task.task.params == {"x": 0.22, "y": 0.0, "n_steps": 12}
         assert [epoch.id for epoch in evaluated_task.epochs] == ["move"]
         scope = {"kind": "rows", "rows": ["seed=test"]}
@@ -191,7 +359,8 @@ def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_p
         revision = save(author(revision, {"kind": "select_document", "role": "task", "document": "probe-task"},
                                selected=test_run, scope=scope))
         probe = author(revision, selected=test_run)
-        assert not probe.problems and probe.objective is None
+        assert not probe.problems
+        assert probe.objective_source.model_dump() == {"kind": "train", "step": "train"}
         assert [epoch.id for epoch in probe.epochs] == ["probe"]
         after = ids()
         assert {key for key in before if before[key] != after[key]} == {RunKey("default", "baseline", "seed=test")}
@@ -201,7 +370,7 @@ def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_p
         sample = client.post("/api/execution/task-trials/sample", json={
             "model": model,
             "python_task": view.task.model_dump(mode="json"),
-            "input_overrides": {"reach_input": "reach_target"}, "count": 1,
+            "input_bindings": {"task-input": "reach_target"}, "count": 1,
         })
         assert sample.status_code == 200, sample.text
         np.testing.assert_allclose(sample.json()["drawn"]["trials"][0]["inputs"]["reach_target"], [[0.22, 0]] * 12)
@@ -264,6 +433,8 @@ def test_task_saves_unresolved_text_and_binds_it_when_a_variable_appears(tmp_pat
     raw = document_project(authored_documents())
     task_file = raw["documents"]["task"]["payload"]
     target = next(variable for variable in task_file["variables"] if variable["id"] == "target")
+    terms = raw["documents"]["objective"]["payload"]["terms"]
+    terms.append(terms[0] | {"id": "disabled", "enabled": False})
     project = "held-expression"
     folders = app.state.project_folders
     _save_project(folders, project, Project.model_validate(raw))
@@ -291,6 +462,14 @@ def test_task_saves_unresolved_text_and_binds_it_when_a_variable_appears(tmp_pat
             return next(field for field in view.fields if field.path == path)
 
         assert not author().problems
+        disabled_path = "/objective/terms/disabled/weight"
+        disabled = author({"kind": "expression", "path": disabled_path, "edit": {
+            "kind": "text", "text": "(",
+        }})
+        disabled_field = next(field for field in disabled.fields if field.path == disabled_path)
+        assert disabled.files and disabled_field.text == "("
+        (disabled_problem,) = disabled_field.problems
+        assert disabled_problem.code == "parse" and disabled_problem in disabled.problems
         edit = author({"kind": "expression", "path": path, "edit": {
             "kind": "text", "text": "start + offset",
         }})
@@ -697,3 +876,57 @@ def test_a_whole_step_task_edit_of_a_plain_evaluate_is_its_own_document(tmp_path
     }
     if variant != "default":
         assert folders.read("check").project.steps == Project.model_validate(raw).steps
+
+
+def test_initial_model_evaluate_uses_and_edits_its_own_objective(tmp_path):
+    """The baseline must score its own Objective, and an edit must reach that document."""
+    from feedbax.contracts.rollout import ROLLOUT_TYPE
+
+    app = create_app(projects_dir=tmp_path / "projects")
+    raw = document_project(authored_documents())
+    raw["steps"] = {
+        "evaluate": {
+            "kind": "evaluate",
+            "base": {"inline": {"evaluation_type": ROLLOUT_TYPE, "params": {
+                "seed": 0, "trial_policy": "paired", "variation": [],
+                "trial_set": {"kind": "every_condition"},
+                "input_bindings": {"task-input": "target_pos"},
+            }}},
+            "inputs": {
+                "subject": {"kind": "initial_model", "source": {"document": "reach-model"}},
+                "task": {"kind": "task", "source": {"document": "task"}},
+                "objective": {"kind": "objective", "source": {"document": "objective"}},
+            },
+        },
+    }
+    raw["steps"]["unscored"] = deepcopy(raw["steps"]["evaluate"])
+    del raw["steps"]["unscored"]["inputs"]["objective"]
+
+    with TestClient(app) as client:
+        folders = app.state.project_folders
+        project = "initial-evaluate"
+        _save_project(folders, project, Project.model_validate(raw))
+        revision = folders.read(project).revision
+
+        def author(step, change=None):
+            response = client.post(f"/api/projects/{project}/authoring/trials", json={
+                "revision": revision, "run": {"variant": "default", "step": step, "row": "default"},
+                "change": change,
+            })
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        view = author("evaluate")
+        assert view["objective_document"] == "objective"
+        assert view["objective_source"] == {"kind": "own", "step": "evaluate"}
+        assert view["objective"]["terms"][0]["id"] == "effort"
+        assert any(field["path"] == "/objective/terms/effort/measure" for field in view["fields"])
+        assert author("unscored")["objective"] is None
+        assert author("unscored")["objective_source"] is None
+        changed = author("evaluate", {"kind": "objective", "edits": [
+            {"op": "add", "path": "/terms/0/name", "value": "Command effort"},
+        ]})
+        response = client.patch(f"/api/projects/{project}", json={"revision": revision, "files": changed["files"]})
+        assert response.status_code == 200, response.text
+        revision = response.json()["revision"]
+        assert author("evaluate")["objective"]["terms"][0]["name"] == "Command effort"

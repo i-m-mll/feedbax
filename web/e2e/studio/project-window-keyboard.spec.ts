@@ -343,7 +343,7 @@ test('Model edits follow the lit users of a saved shared document', async ({ pag
     expect(response.ok(), await response.text()).toBe(true);
     const { result } = await response.json() as ModelEditResponse;
     expect(result.status).toBe('applied');
-    if (result.status !== 'applied') throw new Error(result.problem.detail);
+    if (result.status !== 'applied') throw new Error(JSON.stringify(result));
     return result.snapshot;
   }
 

@@ -13,7 +13,7 @@ from feedbax.contracts.direct_force_presentation import (
     _two_link_arm_representation,
 )
 from feedbax.contracts.component import PortType
-from feedbax.contracts.model_values import ModelFacts, ModelValue, StateReset, StateValue
+from feedbax.contracts.model_values import ModelFacts, ModelValue, StateValue
 from feedbax.contracts.portable import Ports, ConfigBinding, ComponentOptions
 from feedbax.runtime.graph import Component
 from feedbax.mechanics.mechanics import Mechanics
@@ -42,23 +42,21 @@ class TwoLinkArm(Mechanics, Component):
             ModelValue("link_lengths", "plant.skeleton.l", "source"),
             ModelValue("dt", "dt", "source"),
         ),
-        states=(
-            StateValue("skeleton/angle", ("plant", "skeleton", "angle"), "rad", "joint", configuration=True),
-            StateValue("skeleton/angular_velocity", ("plant", "skeleton", "d_angle"), "rad/s", "joint"),
-            StateValue("skeleton/torque", ("plant", "skeleton", "torque"), "N*m", "joint"),
-            StateValue("skeleton/effector_force", ("plant", "skeleton", "effector_force"), "N", "xy", "world"),
+        states=tuple(
             StateValue(
-                "effector/position", ("effector", "pos"), "m", "xy", "world",
-                reset=StateReset("effector", ("pos",)), space="point",
-            ),
-            StateValue(
-                "effector/velocity", ("effector", "vel"), "m/s", "xy", "world",
-                reset=StateReset("effector", ("vel",)),
-            ),
-            StateValue("effector/force", ("effector", "force"), "N", "xy", "world"),
+                symbol, storage, unit, axis, ("state", *storage), frame,
+                configuration=symbol == "skeleton/angle", space=space,
+            )
+            for symbol, storage, unit, axis, frame, space in (
+                ("skeleton/angle", ("plant", "skeleton", "angle"), "rad", "joint", None, None),
+                ("skeleton/angular_velocity", ("plant", "skeleton", "d_angle"), "rad/s", "joint", None, None),
+                ("skeleton/torque", ("plant", "skeleton", "torque"), "N*m", "joint", None, None),
+                ("skeleton/effector_force", ("plant", "skeleton", "effector_force"), "N", "xy", "world", None),
+                ("effector/position", ("effector", "pos"), "m", "xy", "world", "point"),
+                ("effector/velocity", ("effector", "vel"), "m/s", "xy", "world", None),
+                ("effector/force", ("effector", "force"), "N", "xy", "world", None),
+            )
         ),
-        scene_effector_port="effector",
-        scene_position="effector/position",
     )
     config_bindings = (ConfigBinding(path="plant.skeleton.l", name="link_lengths"),)
 
@@ -84,22 +82,21 @@ class PointMass(Mechanics, Component):
             ModelValue("damping", "plant.skeleton.damping", "source"),
             ModelValue("dt", "dt", "source"),
         ),
-        states=(
-            StateValue("skeleton/position", ("plant", "skeleton", "pos"), "m", "xy", "world", space="point"),
-            StateValue("skeleton/velocity", ("plant", "skeleton", "vel"), "m/s", "xy", "world"),
-            StateValue("skeleton/force", ("plant", "skeleton", "force"), "N", "xy", "world"),
+        states=tuple(
             StateValue(
-                "effector/position", ("effector", "pos"), "m", "xy", "world",
-                reset=StateReset("effector", ("pos",)), space="point",
-            ),
-            StateValue(
-                "effector/velocity", ("effector", "vel"), "m/s", "xy", "world",
-                reset=StateReset("effector", ("vel",)),
-            ),
-            StateValue("effector/force", ("effector", "force"), "N", "xy", "world"),
+                f"{part}/{quantity}", (*storage, attribute), unit, "xy",
+                ("state", *storage, attribute), "world",
+                aliases=((*companion, attribute),) if quantity != "force" else (),
+                space="point" if quantity == "position" else None,
+            )
+            for part, storage, companion in (
+                ("effector", ("effector",), ("plant", "skeleton")),
+                ("skeleton", ("plant", "skeleton"), ("effector",)),
+            )
+            for quantity, attribute, unit in (
+                ("position", "pos", "m"), ("velocity", "vel", "m/s"), ("force", "force", "N"),
+            )
         ),
-        scene_effector_port="effector",
-        scene_position="effector/position",
     )
 
     ports = _MECHANICS_PORTS

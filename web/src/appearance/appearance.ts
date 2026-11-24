@@ -1,4 +1,6 @@
-export const settingChoices = {
+import { followOtherWindows, readSettings, subscribeSettings, writeSetting } from './appSettings';
+
+export const appearanceChoices = {
   theme: { initial: 'system', commands: { system: 'themeSystem', light: 'themeLight', dark: 'themeDark' } },
   face: {
     initial: 'work-sans',
@@ -12,44 +14,22 @@ export const settingChoices = {
   },
 } as const;
 
-/** Design comparisons for the owner, switched from the command palette and overridable per window by query parameter. */
-export const comparisonChoices = {
-  unchecked: { initial: 'hollow', commands: { hollow: 'uncheckedHollow', badge: 'uncheckedBadge' } },
-  'section-chevron': {
-    initial: 'after-name', commands: { 'after-name': 'sectionChevronAfterName', edge: 'sectionChevronEdge' },
-  },
-} as const;
-
-export const appearanceChoices = { ...settingChoices, ...comparisonChoices } as const;
-
 type Choices = typeof appearanceChoices;
 export type AppearanceChoice = keyof Choices;
-export type SettingChoice = keyof typeof settingChoices;
 export type AppearanceValue<Choice extends AppearanceChoice> = keyof Choices[Choice]['commands'] & string;
 export type AppearanceCommandId = {
   [Choice in AppearanceChoice]: Choices[Choice]['commands'][keyof Choices[Choice]['commands']]
 }[AppearanceChoice];
 
 const choiceNames = Object.keys(appearanceChoices) as AppearanceChoice[];
-const storageKey = (choice: AppearanceChoice) => `feedbax.appearance.${choice}`;
 const darkScheme = '(prefers-color-scheme: dark)';
 
-function valid<Choice extends AppearanceChoice>(choice: Choice, value: string | null): value is AppearanceValue<Choice> {
-  return value !== null && Object.prototype.hasOwnProperty.call(appearanceChoices[choice].commands, value);
+function valid<Choice extends AppearanceChoice>(choice: Choice, value: unknown): value is AppearanceValue<Choice> {
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(appearanceChoices[choice].commands, value);
 }
 
-const changeEvent = 'feedbax-appearance';
-
-function compared(choice: AppearanceChoice) {
-  return Object.prototype.hasOwnProperty.call(comparisonChoices, choice);
-}
-
-export function resolveAppearance<Choice extends AppearanceChoice>(
-  choice: Choice, view: Pick<Window, 'localStorage' | 'location'>,
-): AppearanceValue<Choice> {
-  const query = compared(choice) ? new URLSearchParams(view.location.search).get(choice) : null;
-  if (valid(choice, query)) return query;
-  const stored = view.localStorage.getItem(storageKey(choice));
+export function resolveAppearance<Choice extends AppearanceChoice>(choice: Choice, view: Window): AppearanceValue<Choice> {
+  const stored = readSettings(view)[choice];
   return valid(choice, stored) ? stored : appearanceChoices[choice].initial as AppearanceValue<Choice>;
 }
 
@@ -70,28 +50,16 @@ export function applyAppearance(view: Window) {
 export function installAppearance(view: Window) {
   applyAppearance(view);
   view.matchMedia(darkScheme).addEventListener('change', () => applyAppearance(view));
-  view.addEventListener('storage', () => applyAppearance(view));
+  subscribeSettings(view, () => applyAppearance(view));
+  followOtherWindows(view);
 }
 
 export function setAppearance<Choice extends AppearanceChoice>(view: Window, choice: Choice, value: AppearanceValue<Choice>) {
-  const url = new URL(view.location.href);
-  if (compared(choice) && url.searchParams.has(choice)) {
-    url.searchParams.set(choice, value);
-    view.history.replaceState(view.history.state, '', url);
-  } else {
-    view.localStorage.setItem(storageKey(choice), value);
-  }
-  applyAppearance(view);
-  view.dispatchEvent(new Event(changeEvent));
+  void writeSetting(view, choice, value);
 }
 
 export function subscribeAppearance(view: Window, listener: () => void) {
-  view.addEventListener(changeEvent, listener);
-  view.addEventListener('storage', listener);
-  return () => {
-    view.removeEventListener(changeEvent, listener);
-    view.removeEventListener('storage', listener);
-  };
+  return subscribeSettings(view, listener);
 }
 
 export function appearanceSettings() {

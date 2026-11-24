@@ -112,7 +112,7 @@ function revealEdits(node: HTMLElement) {
       const shown = record.type === 'childList' ? [...record.addedNodes]
         : record.target instanceof Element && !record.target.hasAttribute('hidden') ? [record.target] : [];
       for (const item of shown.flatMap(boxed)) {
-        if (item.closest(unasked)) continue;
+        if (!item.isConnected || item.closest(unasked)) continue;
         const extent = document.createRange();
         if (item.contains(last)) extent.setStartAfter(last);
         else if (last.compareDocumentPosition(item) & Node.DOCUMENT_POSITION_FOLLOWING) extent.setStartBefore(item);

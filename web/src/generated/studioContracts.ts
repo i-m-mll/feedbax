@@ -830,6 +830,7 @@ export interface EvaluateModelState {
   source?: StudioEvaluateValueSource | null;
   field_sources?: Record<string, StudioEvaluateValueSource>;
   changed_from?: string | null;
+  problems?: StudioProjectWindowMapProblem[];
 }
 
 export interface StudioEvaluateValueSource {
@@ -957,6 +958,7 @@ export interface ModelEditRequest {
   rows?: string[];
   axes?: Record<string, string[]>;
   files?: StudioProjectFilePatch[];
+  store_choice?: string | null;
 }
 
 export interface ModelEditApplied {
@@ -969,13 +971,18 @@ export interface ModelEditApplied {
   problems?: ModelGraphProblem[];
 }
 
+export interface ModelEditAsked {
+  status: "asked";
+  store_choices: StudioStoreChoice[];
+}
+
 export interface ModelEditRefused {
   status: "refused";
   problem: ModelEditProblem;
 }
 
 export interface ModelEditResponse {
-  result: ModelEditApplied | ModelEditRefused;
+  result: ModelEditApplied | ModelEditRefused | ModelEditAsked;
 }
 
 export interface ModelUndoRequest {
@@ -1062,7 +1069,7 @@ export interface ModelProjection {
 
 export interface ModelProjectionRequest {
   revision: string;
-  run: StudioSavedTrainKey;
+  run?: StudioSavedTrainKey | null;
   document: string;
   rows?: string[];
   axes?: Record<string, string[]>;
@@ -1080,6 +1087,7 @@ export interface ModelFieldRequest {
   axes?: Record<string, string[]>;
   chosen_steps?: string[];
   revision: string;
+  store_choice?: string | null;
   document: string;
   owner: ModelAddress;
   evaluate_scope?: StepRuns | AxisValueRuns | ListedRuns | VariantRuns | null;
@@ -1091,6 +1099,7 @@ export interface ModelFieldResponse {
   fields?: ModelFieldView[];
   files?: StudioProjectFilePatch[];
   problems?: Problem[];
+  store_choices?: StudioStoreChoice[] | null;
   removed_values?: Record<string, string[]>;
   command?: ModelEditCommand | null;
 }
@@ -1205,6 +1214,7 @@ export interface TrainFieldRequest {
   axes?: Record<string, string[]>;
   chosen_steps?: string[];
   revision: string;
+  store_choice?: string | null;
   field?: string | null;
   edit?: FieldTextEdit | FieldKindEdit | FieldNameEdit | FieldResetEdit | null;
 }
@@ -1215,6 +1225,7 @@ export interface TrainFieldResponse {
   created?: CreateNamedDocument[];
   dependencies?: string[];
   problems?: Problem[];
+  store_choices?: StudioStoreChoice[] | null;
   removed_values?: Record<string, string[]>;
 }
 
@@ -2175,13 +2186,17 @@ export interface TrialRecords {
 
 export interface TrialTerm {
   steps: boolean[];
+  weights?: Array<number | null> | null;
   covered: boolean;
   values?: number[] | null;
+  value?: number | null;
 }
 
 export interface TrialTermAggregate {
   steps: number[];
   covered: number;
+  value?: number | null;
+  percentiles?: Array<number[] | null> | null;
 }
 
 export interface TrialUnavailable {
@@ -2214,12 +2229,13 @@ export interface TrialAggregate {
 }
 
 export interface TaskTrialSampleRequest {
-  model: ModelDocument;
+  model?: ModelDocument | null;
   task?: TaskDocument | null;
   python_task?: PythonTaskSelection | null;
   input_bindings?: Record<string, string | null>;
   objective?: ObjectiveDocument | null;
   evaluation_trials?: string[] | null;
+  nominal?: boolean;
   seed?: number;
   count?: number;
   aggregate?: boolean;
@@ -2807,6 +2823,7 @@ export type Document = RootDocument | BasedDocument;
 
 export type DocumentBase = {
   "document": string;
+  "unresolved"?: true | null;
 };
 
 export type DocumentEdit = SetProjectValue | RemoveProjectValue | EnsureDocumentCollection;
@@ -2824,6 +2841,7 @@ export type DocumentPresentation = {
 export type DocumentReference = {
   "document": string;
   "pointer"?: Pointer | null;
+  "unresolved"?: true | null;
 };
 
 export type DrawValue = {
@@ -3214,6 +3232,7 @@ export type NamedFileCreation = CreateNamedDocument | CreateNamedStep;
 
 export type NamedSubset = {
   "subset": string;
+  "unresolved"?: true | null;
 };
 
 export type NodePath = Array<string | number>;
@@ -3246,6 +3265,7 @@ export type OmittedReference = {
 export type OperationDataset = {
   "element": string;
   "product": string;
+  "unresolved"?: true | null;
 };
 
 export type OperationDefinition = {
@@ -3667,6 +3687,7 @@ export type Step = {
 export type StepBase = {
   "step": string;
   "row"?: string | null;
+  "unresolved"?: true | null;
 };
 
 export type StepCountChanged = {
@@ -3700,6 +3721,7 @@ export type StepReference = {
   "checkpoint"?: CheckpointRule | null;
   "element"?: string | null;
   "product"?: string | null;
+  "unresolved"?: true | null;
 };
 
 export type StoreKind = "all_readers" | "selected_readers" | "sweep_value" | "set_entry" | "row_exception" | "variant" | "other_runs" | "whole_step";
@@ -3730,6 +3752,7 @@ export type StudioAnalyzeAuthoring = {
   "changed"?: Array<Pointer>;
   "files"?: Array<StudioProjectFilePatch>;
   "created"?: Array<CreateNamedDocument>;
+  "problems"?: Array<StudioProjectWindowMapProblem>;
 };
 
 export type StudioAnalyzeChange = StudioAnalyzeWire | StudioAnalyzeEdit | StudioAnalyzeRemove | StudioAnalyzeReset;
@@ -3890,18 +3913,20 @@ export type StudioCheckpointRuleEdit = {
   "revision": string;
   "files": Array<StudioProjectFilePatch>;
   "problems"?: Array<StudioProjectWindowMapProblem>;
+  "store_choices"?: Array<StudioStoreChoice> | null;
 };
 
 export type StudioCheckpointRuleRequest = {
   "revision": string;
   "run": StudioSavedTrainKey;
   "edit": StudioCheckpointRuleSet | StudioCheckpointRuleToSweep;
+  "store_choice"?: string | null;
 };
 
 export type StudioCheckpointRuleSet = {
   "kind": "set";
   "rule": "last" | BatchCheckpoint | UpdateRule | UnresolvedValue;
-  "scope": AxisValueRuns | ListedRuns;
+  "scope": StepRuns | AxisValueRuns | ListedRuns;
 };
 
 export type StudioCheckpointRuleToSweep = {
@@ -4012,6 +4037,7 @@ export type StudioMemberCommand = {
 export type StudioMemberCommandResult = {
   "member": string;
   "snapshot": StudioProjectSnapshot;
+  "problems"?: Array<StudioProjectWindowMapProblem>;
 };
 
 export type StudioMethodPlace = {
@@ -4105,6 +4131,7 @@ export type StudioProjectSnapshot = {
   "declaration"?: StudioAuthoredDeclaration | null;
   "settings"?: Record<string, JsonValue>;
   "composed"?: Record<string, JsonValue>;
+  "problems"?: Array<StudioProjectWindowMapProblem>;
 };
 
 export type StudioProjectWindowMap = {
@@ -4314,6 +4341,13 @@ export type StudioRunRuleRequest = {
   "ranked"?: boolean;
 };
 
+export type StudioRunSelection = {
+  "run"?: StudioSavedTrainKey | null;
+  "rows"?: Array<string>;
+  "axes"?: Record<string, Array<string>>;
+  "chosen_steps"?: Array<string>;
+};
+
 export type StudioSavedLightHistory = {
   "result"?: StudioSavedLightResult | null;
   "previous"?: StudioSavedLightResult | null;
@@ -4335,10 +4369,13 @@ export type StudioSetEdit = {
   "created"?: Array<CreateNamedDocument>;
   "selected"?: StudioAxisValue | null;
   "problems"?: Array<StudioProjectWindowMapProblem>;
+  "store_choices"?: Array<StudioStoreChoice> | null;
 };
 
 export type StudioSetEditRequest = {
   "revision": string;
+  "selection"?: StudioRunSelection | null;
+  "store_choice"?: string | null;
   "command": DuplicateRun | SaveSet | InlineSet | ApplySet | SetToField | SetToSweep | RemoveAxisValue | AddSetEntry;
 };
 
@@ -4435,6 +4472,7 @@ export type StudioTrainAuthoring = {
   "files": Array<StudioProjectFilePatch>;
   "created"?: Array<CreateNamedDocument>;
   "documents": Array<string>;
+  "store_choices"?: Array<StudioStoreChoice> | null;
   "refusal"?: StudioSweptParameterMissing | null;
   "sweep_problems"?: Array<StudioProjectWindowMapProblem>;
   "classes"?: Array<StudioClassField>;
@@ -4448,6 +4486,7 @@ export type StudioTrainAuthoringRequest = {
   "axes"?: Record<string, Array<string>>;
   "chosen_steps"?: Array<string>;
   "revision": Sha256;
+  "store_choice"?: Sha256 | null;
   "change"?: StudioAuthoringChange | null;
   "class_sweep"?: StudioClassSweepChange | null;
   "reset"?: string | null;
@@ -4456,6 +4495,7 @@ export type StudioTrainAuthoringRequest = {
 export type StudioTrainStartEdit = {
   "revision": Sha256;
   "files": Array<StudioProjectFilePatch>;
+  "problems"?: Array<StudioProjectWindowMapProblem>;
 };
 
 export type StudioTrainStartRequest = {
@@ -4907,6 +4947,7 @@ export const blankTask = {
 
 export const firstTrainTask: Document = {
   "schema": "feedbax.spec.task_document",
+  "label": "Simple reaches",
   "payload": {
     "id": "simple-reaches",
     "variables": [
@@ -5106,7 +5147,7 @@ export const firstTrainTask: Document = {
     ],
     "links": [
       {
-        "model_field": "{\"composites\":[],\"element\":{\"kind\":\"field\",\"parent\":{\"id\":\"plant\",\"kind\":\"component\"},\"path\":[\"reset\",\"effector\",\"position\"]}}",
+        "model_field": "{\"composites\":[],\"element\":{\"kind\":\"field\",\"parent\":{\"id\":\"plant\",\"kind\":\"component\"},\"path\":[\"state\",\"effector/position\"]}}",
         "variable": "start"
       }
     ],
@@ -6511,12 +6552,6 @@ export const ModelPortsSchema: z.ZodType<ModelPorts> = z.lazy(() =>
           message: "port IDs must be unique within a port list",
         });
       }
-      if ([value.inputs ?? [], value.outputs ?? [], value.physical ?? []].some((ports) => new Set(ports.map((port) => port.name)).size !== ports.length)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "port names must be unique in each direction",
-        });
-      }
     })
 ) as unknown as z.ZodType<ModelPorts>;
 
@@ -6869,6 +6904,7 @@ export const EvaluateModelStateSchema: z.ZodType<EvaluateModelState> = z.lazy(()
       "source": StudioEvaluateValueSourceSchema.nullable().optional(),
       "field_sources": z.record(z.string(), StudioEvaluateValueSourceSchema).optional(),
       "changed_from": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")).nullable().optional(),
+      "problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<EvaluateModelState>;
@@ -7110,6 +7146,7 @@ export const ModelEditRequestSchema: z.ZodType<ModelEditRequest> = z.lazy(() =>
       "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).optional(),
       "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1))).optional(),
       "files": z.array(StudioProjectFilePatchSchema).optional(),
+      "store_choice": z.string().regex(new RegExp("^[a-f0-9]{64}$")).nullable().optional(),
     })
     .strict()
     .superRefine((input, ctx) => {
@@ -7137,6 +7174,15 @@ export const ModelEditAppliedSchema: z.ZodType<ModelEditApplied> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<ModelEditApplied>;
 
+export const ModelEditAskedSchema: z.ZodType<ModelEditAsked> = z.lazy(() =>
+  z
+    .object({
+      "status": z.literal("asked"),
+      "store_choices": z.array(StudioStoreChoiceSchema).min(1),
+    })
+    .strict()
+) as unknown as z.ZodType<ModelEditAsked>;
+
 export const ModelEditRefusedSchema: z.ZodType<ModelEditRefused> = z.lazy(() =>
   z
     .object({
@@ -7149,7 +7195,7 @@ export const ModelEditRefusedSchema: z.ZodType<ModelEditRefused> = z.lazy(() =>
 export const ModelEditResponseSchema: z.ZodType<ModelEditResponse> = z.lazy(() =>
   z
     .object({
-      "result": z.union([ModelEditAppliedSchema, ModelEditRefusedSchema]),
+      "result": z.union([ModelEditAppliedSchema, ModelEditRefusedSchema, ModelEditAskedSchema]),
     })
     .strict()
 ) as unknown as z.ZodType<ModelEditResponse>;
@@ -7292,7 +7338,7 @@ export const ModelProjectionRequestSchema: z.ZodType<ModelProjectionRequest> = z
   z
     .object({
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
-      "run": StudioSavedTrainKeySchema,
+      "run": StudioSavedTrainKeySchema.nullable().optional(),
       "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
       "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).optional(),
       "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1))).optional(),
@@ -7318,6 +7364,7 @@ export const ModelFieldRequestSchema: z.ZodType<ModelFieldRequest> = z.lazy(() =
       "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1)).min(1)).optional(),
       "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+      "store_choice": z.string().regex(new RegExp("^[a-f0-9]{64}$")).nullable().optional(),
       "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
       "owner": ModelAddressSchema,
       "evaluate_scope": z.union([StepRunsSchema, AxisValueRunsSchema, ListedRunsSchema, VariantRunsSchema]).nullable().optional(),
@@ -7333,6 +7380,7 @@ export const ModelFieldResponseSchema: z.ZodType<ModelFieldResponse> = z.lazy(()
       "fields": z.array(ModelFieldViewSchema).optional(),
       "files": z.array(StudioProjectFilePatchSchema).optional(),
       "problems": z.array(ProblemSchema).optional(),
+      "store_choices": z.array(StudioStoreChoiceSchema).nullable().optional(),
       "removed_values": z.record(z.string(), z.array(z.string())).optional(),
       "command": ModelEditCommandSchema.nullable().optional(),
     })
@@ -7495,6 +7543,7 @@ export const TrainFieldRequestSchema: z.ZodType<TrainFieldRequest> = z.lazy(() =
       "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1)).min(1)).optional(),
       "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+      "store_choice": z.string().regex(new RegExp("^[a-f0-9]{64}$")).nullable().optional(),
       "field": z.string().nullable().optional(),
       "edit": z.union([FieldTextEditSchema, FieldKindEditSchema, FieldNameEditSchema, FieldResetEditSchema]).nullable().optional(),
     })
@@ -7509,6 +7558,7 @@ export const TrainFieldResponseSchema: z.ZodType<TrainFieldResponse> = z.lazy(()
       "created": z.array(CreateNamedDocumentSchema).optional(),
       "dependencies": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
       "problems": z.array(ProblemSchema).optional(),
+      "store_choices": z.array(StudioStoreChoiceSchema).nullable().optional(),
       "removed_values": z.record(z.string(), z.array(z.string())).optional(),
     })
     .strict()
@@ -9228,8 +9278,10 @@ export const TrialTermSchema: z.ZodType<TrialTerm> = z.lazy(() =>
   z
     .object({
       "steps": z.array(z.boolean()),
+      "weights": z.array(z.number().finite().nullable()).nullable().optional(),
       "covered": z.boolean(),
       "values": z.array(z.number().finite()).nullable().optional(),
+      "value": z.number().finite().nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TrialTerm>;
@@ -9239,6 +9291,8 @@ export const TrialTermAggregateSchema: z.ZodType<TrialTermAggregate> = z.lazy(()
     .object({
       "steps": z.array(z.number().finite()),
       "covered": z.number().finite(),
+      "value": z.number().finite().nullable().optional(),
+      "percentiles": z.array(z.array(z.number().finite()).nullable()).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TrialTermAggregate>;
@@ -9295,19 +9349,20 @@ export const TrialAggregateSchema: z.ZodType<TrialAggregate> = z.lazy(() =>
 export const TaskTrialSampleRequestSchema: z.ZodType<TaskTrialSampleRequest> = z.lazy(() =>
   z
     .object({
-      "model": ModelDocumentSchema,
+      "model": ModelDocumentSchema.nullable().optional(),
       "task": TaskDocumentSchema.nullable().optional(),
       "python_task": PythonTaskSelectionSchema.nullable().optional(),
       "input_bindings": z.record(z.string(), z.string().nullable()).optional(),
       "objective": ObjectiveDocumentSchema.nullable().optional(),
       "evaluation_trials": z.array(z.string()).min(1).nullable().optional(),
+      "nominal": z.boolean().optional(),
       "seed": z.number().int().safe().optional(),
       "count": z.number().int().safe().gte(1).optional(),
       "aggregate": z.boolean().optional(),
     })
     .strict()
     .superRefine((input, ctx) => {
-      const value = { ...{"input_bindings": {}, "seed": 0, "count": 8, "aggregate": false}, ...input };
+      const value = { ...{"input_bindings": {}, "nominal": false, "seed": 0, "count": 8, "aggregate": false}, ...input };
       if ((value.task == null) === (value.python_task == null)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -10193,6 +10248,7 @@ export const DocumentSchema: z.ZodType<Document> = z.lazy(() =>
 export const DocumentBaseSchema: z.ZodType<DocumentBase> = z.lazy(() =>
   z.object({
     "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "unresolved": z.union([z.literal(true), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<DocumentBase>;
 
@@ -10218,6 +10274,7 @@ export const DocumentReferenceSchema: z.ZodType<DocumentReference> = z.lazy(() =
   z.object({
     "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "pointer": z.union([PointerSchema, z.null()]).optional(),
+    "unresolved": z.union([z.literal(true), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<DocumentReference>;
 
@@ -10744,6 +10801,7 @@ export const NamedFileCreationSchema: z.ZodType<NamedFileCreation> = z.lazy(() =
 export const NamedSubsetSchema: z.ZodType<NamedSubset> = z.lazy(() =>
   z.object({
     "subset": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "unresolved": z.union([z.literal(true), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<NamedSubset>;
 
@@ -10788,6 +10846,7 @@ export const OperationDatasetSchema: z.ZodType<OperationDataset> = z.lazy(() =>
   z.object({
     "element": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "product": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "unresolved": z.union([z.literal(true), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<OperationDataset>;
 
@@ -11357,6 +11416,7 @@ export const StepBaseSchema: z.ZodType<StepBase> = z.lazy(() =>
   z.object({
     "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "row": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$")), z.null()]).optional(),
+    "unresolved": z.union([z.literal(true), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StepBase>;
 
@@ -11402,6 +11462,7 @@ export const StepReferenceSchema: z.ZodType<StepReference> = z.lazy(() =>
     "checkpoint": z.union([CheckpointRuleSchema, z.null()]).optional(),
     "element": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
     "product": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]).optional(),
+    "unresolved": z.union([z.literal(true), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StepReference>;
 
@@ -11442,6 +11503,7 @@ export const StudioAnalyzeAuthoringSchema: z.ZodType<StudioAnalyzeAuthoring> = z
     "changed": z.array(PointerSchema).optional(),
     "files": z.array(StudioProjectFilePatchSchema).optional(),
     "created": z.array(CreateNamedDocumentSchema).optional(),
+    "problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioAnalyzeAuthoring>;
 
@@ -11652,6 +11714,7 @@ export const StudioCheckpointRuleEditSchema: z.ZodType<StudioCheckpointRuleEdit>
     "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
     "files": z.array(StudioProjectFilePatchSchema),
     "problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
+    "store_choices": z.union([z.array(StudioStoreChoiceSchema), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioCheckpointRuleEdit>;
 
@@ -11660,6 +11723,7 @@ export const StudioCheckpointRuleRequestSchema: z.ZodType<StudioCheckpointRuleRe
     "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
     "run": StudioSavedTrainKeySchema,
     "edit": z.union([StudioCheckpointRuleSetSchema, StudioCheckpointRuleToSweepSchema]),
+    "store_choice": z.union([z.string().regex(new RegExp("^[0-9a-f]{64}$")), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioCheckpointRuleRequest>;
 
@@ -11667,7 +11731,7 @@ export const StudioCheckpointRuleSetSchema: z.ZodType<StudioCheckpointRuleSet> =
   z.object({
     "kind": z.literal("set"),
     "rule": z.union([z.literal("last"), BatchCheckpointSchema, UpdateRuleSchema, UnresolvedValueSchema]),
-    "scope": z.union([AxisValueRunsSchema, ListedRunsSchema]),
+    "scope": z.union([StepRunsSchema, AxisValueRunsSchema, ListedRunsSchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioCheckpointRuleSet>;
 
@@ -11812,6 +11876,7 @@ export const StudioMemberCommandResultSchema: z.ZodType<StudioMemberCommandResul
   z.object({
     "member": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "snapshot": StudioProjectSnapshotSchema,
+    "problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioMemberCommandResult>;
 
@@ -11935,6 +12000,7 @@ export const StudioProjectSnapshotSchema: z.ZodType<StudioProjectSnapshot> = z.l
     "declaration": z.union([StudioAuthoredDeclarationSchema, z.null()]).optional(),
     "settings": z.record(z.string(), jsonValueSchema).optional(),
     "composed": z.record(z.string(), jsonValueSchema).optional(),
+    "problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectSnapshot>;
 
@@ -12195,6 +12261,15 @@ export const StudioRunRuleRequestSchema: z.ZodType<StudioRunRuleRequest> = z.laz
   }).strict()
 ) as unknown as z.ZodType<StudioRunRuleRequest>;
 
+export const StudioRunSelectionSchema: z.ZodType<StudioRunSelection> = z.lazy(() =>
+  z.object({
+    "run": z.union([StudioSavedTrainKeySchema, z.null()]).optional(),
+    "rows": z.array(z.string()).optional(),
+    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1)).min(1)).optional(),
+    "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioRunSelection>;
+
 export const StudioSavedLightHistorySchema: z.ZodType<StudioSavedLightHistory> = z.lazy(() =>
   z.object({
     "result": z.union([StudioSavedLightResultSchema, z.null()]).optional(),
@@ -12221,12 +12296,15 @@ export const StudioSetEditSchema: z.ZodType<StudioSetEdit> = z.lazy(() =>
     "created": z.array(CreateNamedDocumentSchema).optional(),
     "selected": z.union([StudioAxisValueSchema, z.null()]).optional(),
     "problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
+    "store_choices": z.union([z.array(StudioStoreChoiceSchema), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioSetEdit>;
 
 export const StudioSetEditRequestSchema: z.ZodType<StudioSetEditRequest> = z.lazy(() =>
   z.object({
     "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+    "selection": z.union([StudioRunSelectionSchema, z.null()]).optional(),
+    "store_choice": z.union([z.string().regex(new RegExp("^[0-9a-f]{64}$")), z.null()]).optional(),
     "command": z.union([DuplicateRunSchema, SaveSetSchema, InlineSetSchema, ApplySetSchema, SetToFieldSchema, SetToSweepSchema, RemoveAxisValueSchema, AddSetEntrySchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioSetEditRequest>;
@@ -12353,6 +12431,7 @@ export const StudioTrainAuthoringSchema: z.ZodType<StudioTrainAuthoring> = z.laz
     "files": z.array(StudioProjectFilePatchSchema),
     "created": z.array(CreateNamedDocumentSchema).optional(),
     "documents": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))),
+    "store_choices": z.union([z.array(StudioStoreChoiceSchema), z.null()]).optional(),
     "refusal": z.union([StudioSweptParameterMissingSchema, z.null()]).optional(),
     "sweep_problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
     "classes": z.array(StudioClassFieldSchema).optional(),
@@ -12368,6 +12447,7 @@ export const StudioTrainAuthoringRequestSchema: z.ZodType<StudioTrainAuthoringRe
     "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1)).min(1)).optional(),
     "chosen_steps": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$"))).optional(),
     "revision": Sha256Schema,
+    "store_choice": z.union([Sha256Schema, z.null()]).optional(),
     "change": z.union([StudioAuthoringChangeSchema, z.null()]).optional(),
     "class_sweep": z.union([StudioClassSweepChangeSchema, z.null()]).optional(),
     "reset": z.union([z.string(), z.null()]).optional(),
@@ -12378,6 +12458,7 @@ export const StudioTrainStartEditSchema: z.ZodType<StudioTrainStartEdit> = z.laz
   z.object({
     "revision": Sha256Schema,
     "files": z.array(StudioProjectFilePatchSchema),
+    "problems": z.array(StudioProjectWindowMapProblemSchema).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioTrainStartEdit>;
 

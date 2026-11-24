@@ -67,7 +67,7 @@ def test_shipped_trial_examples_plan_train_and_score_validation(tmp_path):
         paired = compile_trial_execution(
             documents.model, documents.task_source,
             registries.components, registries.expression_functions, python_tasks=registries.python_tasks,
-            objective=documents.objective, input_overrides=documents.input_overrides,
+            objective=documents.objective, input_bindings=documents.input_bindings,
             initialization_key=model_initialization_key(seed),
         )
         assert isinstance(paired, PreparedTrialExecution), paired
