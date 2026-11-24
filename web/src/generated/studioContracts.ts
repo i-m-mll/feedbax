@@ -598,7 +598,7 @@ export interface InterventionAttachment {
   id: string;
   operation: string;
   fields?: Record<string, JsonValue>;
-  window?: JsonValue;
+  window?: InterventionWindow | null;
 }
 
 export interface ProbeAttachment {
@@ -2738,6 +2738,11 @@ export type ContentRef = {
   "tree"?: boolean;
 };
 
+export type CooccurringSetTrials = {
+  "kind": "cooccurring";
+  "weights"?: Record<string, SetEntryParts>;
+};
+
 export type CreateNamedDocument = {
   "kind": "document";
   "id": string;
@@ -2829,6 +2834,7 @@ export type DrawValue = {
   "family": string;
   "args": Array<Expression>;
   "per"?: "run" | "trial";
+  "weights"?: Array<WeightPart> | null;
 };
 
 export type DriverChanged = {
@@ -3075,6 +3081,12 @@ export type InputRole = {
   "checkpoint_sets": boolean;
 };
 
+export type InterventionWindow = {
+  "epoch": string;
+  "offsets": Array<number>;
+  "duration": number;
+};
+
 export type JaxOperation = {
   "backend": "cpu" | "gpu";
   "floating_point_bits": 32 | 64;
@@ -3125,6 +3137,10 @@ export type ListedAxis = {
   "path": SweepTarget;
   "where"?: AxisCondition | null;
   "values": Array<JsonValue>;
+};
+
+export type ListedSetTrials = {
+  "kind": "listed";
 };
 
 export type LiteralValue = {
@@ -3520,6 +3536,11 @@ export type SetDocumentValue = {
   "value": JsonValue;
 };
 
+export type SetEntryParts = {
+  "on"?: WeightPart;
+  "off"?: WeightPart;
+};
+
 export type SetLink = {
   "op": "link";
   "model_field": string;
@@ -3545,6 +3566,20 @@ export type SetSpan = {
   "first_epoch": string;
   "last_epoch": string;
 };
+
+export type SetToField = {
+  "kind": "set_to_field";
+  "step": string;
+  "axis": string;
+};
+
+export type SetToSweep = {
+  "kind": "set_to_sweep";
+  "step": string;
+  "axis": string;
+};
+
+export type SetTrialSampling = ListedSetTrials | WeightedSetTrials | CooccurringSetTrials;
 
 export type SetType = {
   "op": "set_type";
@@ -3625,6 +3660,7 @@ export type Step = {
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "sweep"?: Sweep | null;
+  "set_fields"?: Record<string, TrialSetField>;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
   "note"?: StepNote | null;
@@ -3727,6 +3763,7 @@ export type StudioAnalyzeStep = {
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "sweep"?: Sweep | null;
+  "set_fields"?: Record<string, TrialSetField>;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
   "note"?: StepNote | null;
@@ -3923,6 +3960,7 @@ export type StudioEvaluateStep = {
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "sweep"?: Sweep | null;
+  "set_fields"?: Record<string, TrialSetField>;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
   "note"?: StepNote | null;
@@ -4241,6 +4279,7 @@ export type StudioReportStep = {
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "sweep"?: Sweep | null;
+  "set_fields"?: Record<string, TrialSetField>;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
   "note"?: StepNote | null;
@@ -4295,7 +4334,20 @@ export type StudioSetEdit = {
 
 export type StudioSetEditRequest = {
   "revision": string;
-  "command": DuplicateRun | SaveSet | InlineSet | ApplySet | RemoveAxisValue;
+  "command": DuplicateRun | SaveSet | InlineSet | ApplySet | SetToField | SetToSweep | RemoveAxisValue;
+};
+
+export type StudioSetField = {
+  "axis": string;
+  "set": string;
+  "sampling": SetTrialSampling;
+  "entries": Array<StudioSetFieldEntry>;
+};
+
+export type StudioSetFieldEntry = {
+  "entry": string | null;
+  "label"?: string | null;
+  "weight"?: WeightPart | SetEntryParts | null;
 };
 
 export type StudioSetsOffered = {
@@ -4403,6 +4455,7 @@ export type StudioTrainStep = {
   "base": Base;
   "deltas"?: Array<MatrixCompositionDelta>;
   "sweep"?: Sweep | null;
+  "set_fields"?: Record<string, TrialSetField>;
   "inputs"?: Record<string, InputBinding | null>;
   "requires"?: Array<PatchPath>;
   "note"?: StepNote | null;
@@ -4429,6 +4482,7 @@ export type StudioTrialAuthoring = {
   "objective": ObjectiveDocument | null;
   "objective_source"?: StudioTrialObjectiveSource | null;
   "input_overrides"?: Record<string, string>;
+  "set_fields"?: Array<StudioSetField>;
   "task_types": Array<StudioTaskType>;
   "tasks": Array<StudioTaskChoice>;
   "variables": Array<ScopedValue>;
@@ -4641,6 +4695,11 @@ export type TrialDocuments = {
   "python_task"?: PythonTaskSelection | null;
 };
 
+export type TrialSetField = {
+  "axis": SetAxis;
+  "sampling": SetTrialSampling;
+};
+
 export type UnresolvedValue = {
   "kind"?: "unresolved";
   "text": string;
@@ -4707,6 +4766,14 @@ export type Variable = {
 export type VariableBinding = {
   "variable": Name;
   "select"?: Record<string, string | number | boolean | IndexSelection | null>;
+};
+
+export type WeightPart = number;
+
+export type WeightedSetTrials = {
+  "kind": "weighted";
+  "weights"?: Record<string, WeightPart>;
+  "none"?: WeightPart;
 };
 
 export type WholeDimensions = {
@@ -6351,7 +6418,7 @@ export const InterventionAttachmentSchema: z.ZodType<InterventionAttachment> = z
       "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
       "operation": z.string(),
       "fields": z.record(z.string(), jsonValueSchema).optional(),
-      "window": jsonValueSchema.optional(),
+      "window": InterventionWindowSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<InterventionAttachment>;
@@ -10036,6 +10103,13 @@ export const ContentRefSchema: z.ZodType<ContentRef> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<ContentRef>;
 
+export const CooccurringSetTrialsSchema: z.ZodType<CooccurringSetTrials> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("cooccurring"),
+    "weights": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), SetEntryPartsSchema).optional(),
+  }).strict()
+) as unknown as z.ZodType<CooccurringSetTrials>;
+
 export const CreateNamedDocumentSchema: z.ZodType<CreateNamedDocument> = z.lazy(() =>
   z.object({
     "kind": z.literal("document"),
@@ -10160,6 +10234,7 @@ export const DrawValueSchema: z.ZodType<DrawValue> = z.lazy(() =>
     "family": z.string(),
     "args": z.array(ExpressionSchema),
     "per": z.union([z.literal("run"), z.literal("trial")]).optional(),
+    "weights": z.union([z.array(WeightPartSchema), z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<DrawValue>;
 
@@ -10485,6 +10560,14 @@ export const InputRoleSchema: z.ZodType<InputRole> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<InputRole>;
 
+export const InterventionWindowSchema: z.ZodType<InterventionWindow> = z.lazy(() =>
+  z.object({
+    "epoch": z.string(),
+    "offsets": z.array(z.number().int().safe().min(0)).min(1),
+    "duration": z.number().int().safe().gt(0),
+  }).strict()
+) as unknown as z.ZodType<InterventionWindow>;
+
 export const JaxOperationSchema: z.ZodType<JaxOperation> = z.lazy(() =>
   z.object({
     "backend": z.union([z.literal("cpu"), z.literal("gpu")]),
@@ -10556,6 +10639,12 @@ export const ListedAxisSchema: z.ZodType<ListedAxis> = z.lazy(() =>
     "values": z.array(jsonValueSchema).min(1),
   }).strict()
 ) as unknown as z.ZodType<ListedAxis>;
+
+export const ListedSetTrialsSchema: z.ZodType<ListedSetTrials> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("listed"),
+  }).strict()
+) as unknown as z.ZodType<ListedSetTrials>;
 
 export const LiteralValueSchema: z.ZodType<LiteralValue> = z.lazy(() =>
   z.object({
@@ -11098,6 +11187,13 @@ export const SetDocumentValueSchema: z.ZodType<SetDocumentValue> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<SetDocumentValue>;
 
+export const SetEntryPartsSchema: z.ZodType<SetEntryParts> = z.lazy(() =>
+  z.object({
+    "on": WeightPartSchema.optional(),
+    "off": WeightPartSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<SetEntryParts>;
+
 export const SetLinkSchema: z.ZodType<SetLink> = z.lazy(() =>
   z.object({
     "op": z.literal("link"),
@@ -11131,6 +11227,26 @@ export const SetSpanSchema: z.ZodType<SetSpan> = z.lazy(() =>
     "last_epoch": z.string(),
   }).strict()
 ) as unknown as z.ZodType<SetSpan>;
+
+export const SetToFieldSchema: z.ZodType<SetToField> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("set_to_field"),
+    "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<SetToField>;
+
+export const SetToSweepSchema: z.ZodType<SetToSweep> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("set_to_sweep"),
+    "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<SetToSweep>;
+
+export const SetTrialSamplingSchema: z.ZodType<SetTrialSampling> = z.lazy(() =>
+  z.union([ListedSetTrialsSchema, WeightedSetTrialsSchema, CooccurringSetTrialsSchema])
+) as unknown as z.ZodType<SetTrialSampling>;
 
 export const SetTypeSchema: z.ZodType<SetType> = z.lazy(() =>
   z.object({
@@ -11236,6 +11352,7 @@ export const StepSchema: z.ZodType<Step> = z.lazy(() =>
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
+    "set_fields": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), TrialSetFieldSchema).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
     "note": z.union([StepNoteSchema, z.null()]).optional(),
@@ -11372,6 +11489,7 @@ export const StudioAnalyzeStepSchema: z.ZodType<StudioAnalyzeStep> = z.lazy(() =
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
+    "set_fields": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), TrialSetFieldSchema).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
     "note": z.union([StepNoteSchema, z.null()]).optional(),
@@ -11630,6 +11748,7 @@ export const StudioEvaluateStepSchema: z.ZodType<StudioEvaluateStep> = z.lazy(()
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
+    "set_fields": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), TrialSetFieldSchema).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
     "note": z.union([StepNoteSchema, z.null()]).optional(),
@@ -12034,6 +12153,7 @@ export const StudioReportStepSchema: z.ZodType<StudioReportStep> = z.lazy(() =>
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
+    "set_fields": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), TrialSetFieldSchema).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
     "note": z.union([StepNoteSchema, z.null()]).optional(),
@@ -12104,9 +12224,26 @@ export const StudioSetEditSchema: z.ZodType<StudioSetEdit> = z.lazy(() =>
 export const StudioSetEditRequestSchema: z.ZodType<StudioSetEditRequest> = z.lazy(() =>
   z.object({
     "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
-    "command": z.union([DuplicateRunSchema, SaveSetSchema, InlineSetSchema, ApplySetSchema, RemoveAxisValueSchema]),
+    "command": z.union([DuplicateRunSchema, SaveSetSchema, InlineSetSchema, ApplySetSchema, SetToFieldSchema, SetToSweepSchema, RemoveAxisValueSchema]),
   }).strict()
 ) as unknown as z.ZodType<StudioSetEditRequest>;
+
+export const StudioSetFieldSchema: z.ZodType<StudioSetField> = z.lazy(() =>
+  z.object({
+    "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "set": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "sampling": SetTrialSamplingSchema,
+    "entries": z.array(StudioSetFieldEntrySchema),
+  }).strict()
+) as unknown as z.ZodType<StudioSetField>;
+
+export const StudioSetFieldEntrySchema: z.ZodType<StudioSetFieldEntry> = z.lazy(() =>
+  z.object({
+    "entry": z.union([z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.null()]),
+    "label": z.union([z.string(), z.null()]).optional(),
+    "weight": z.union([WeightPartSchema, SetEntryPartsSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<StudioSetFieldEntry>;
 
 export const StudioSetsOfferedSchema: z.ZodType<StudioSetsOffered> = z.lazy(() =>
   z.object({
@@ -12244,6 +12381,7 @@ export const StudioTrainStepSchema: z.ZodType<StudioTrainStep> = z.lazy(() =>
     "base": BaseSchema,
     "deltas": z.array(MatrixCompositionDeltaSchema).optional(),
     "sweep": z.union([SweepSchema, z.null()]).optional(),
+    "set_fields": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), TrialSetFieldSchema).optional(),
     "inputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.union([InputBindingSchema, z.null()])).optional(),
     "requires": z.array(PatchPathSchema).optional(),
     "note": z.union([StepNoteSchema, z.null()]).optional(),
@@ -12274,6 +12412,7 @@ export const StudioTrialAuthoringSchema: z.ZodType<StudioTrialAuthoring> = z.laz
     "objective": z.union([ObjectiveDocumentSchema, z.null()]),
     "objective_source": z.union([StudioTrialObjectiveSourceSchema, z.null()]).optional(),
     "input_overrides": z.record(z.string(), z.string()).optional(),
+    "set_fields": z.array(StudioSetFieldSchema).optional(),
     "task_types": z.array(StudioTaskTypeSchema),
     "tasks": z.array(StudioTaskChoiceSchema),
     "variables": z.array(ScopedValueSchema),
@@ -12549,6 +12688,13 @@ export const TrialDocumentsSchema: z.ZodType<TrialDocuments> = z.lazy(() =>
   }).strict().superRefine((value, ctx) => { if ((value.task == null) === (value.python_task == null)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Select one Task document or registered Python task." }); })
 ) as unknown as z.ZodType<TrialDocuments>;
 
+export const TrialSetFieldSchema: z.ZodType<TrialSetField> = z.lazy(() =>
+  z.object({
+    "axis": SetAxisSchema,
+    "sampling": SetTrialSamplingSchema,
+  }).strict()
+) as unknown as z.ZodType<TrialSetField>;
+
 export const UnresolvedValueSchema: z.ZodType<UnresolvedValue> = z.lazy(() =>
   z.object({
     "kind": z.literal("unresolved").optional(),
@@ -12644,6 +12790,18 @@ export const VariableBindingSchema: z.ZodType<VariableBinding> = z.lazy(() =>
     "select": z.record(NameSchema, z.union([z.string(), z.number().int().safe(), z.number().finite(), z.boolean(), IndexSelectionSchema, z.null()])).optional(),
   }).strict()
 ) as unknown as z.ZodType<VariableBinding>;
+
+export const WeightPartSchema: z.ZodType<WeightPart> = z.lazy(() =>
+  z.number().finite().min(0)
+) as unknown as z.ZodType<WeightPart>;
+
+export const WeightedSetTrialsSchema: z.ZodType<WeightedSetTrials> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("weighted"),
+    "weights": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), WeightPartSchema).optional(),
+    "none": WeightPartSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<WeightedSetTrials>;
 
 export const WholeDimensionsSchema: z.ZodType<WholeDimensions> = z.lazy(() =>
   z.object({

@@ -147,11 +147,15 @@ class CallValue(ValueRecord):
     kwargs: dict[str, Expression] = Field(default_factory=dict)
 
 
+type WeightPart = Annotated[FiniteFloat, Field(ge=0)]
+
+
 class DrawValue(ValueRecord):
     kind: Literal["draw"] = "draw"
     family: str
     args: tuple[Expression, ...]
     per: Literal["run", "trial"] = "trial"
+    weights: tuple[WeightPart, ...] | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class UnresolvedValue(ValueRecord):

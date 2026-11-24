@@ -4,8 +4,9 @@ from typing import Annotated, Literal
 
 from pydantic import Field, JsonValue
 
+from feedbax.contracts.project_sweep import SetEntryParts, SetTrialSampling
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.expression_values import Level, Problem, ScopedValue, ValueType
+from feedbax.contracts.expression_values import Level, Problem, ScopedValue, ValueType, WeightPart
 from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import (
@@ -138,6 +139,19 @@ class StudioTrialObjectiveSource(StrictModel):
     step: ProjectName
 
 
+class StudioSetFieldEntry(StrictModel):
+    entry: ProjectName | None
+    label: str | None = None
+    weight: WeightPart | SetEntryParts | None = None
+
+
+class StudioSetField(StrictModel):
+    axis: ProjectName
+    set: ProjectName
+    sampling: SetTrialSampling
+    entries: list[StudioSetFieldEntry]
+
+
 class StudioTrialAuthoring(StrictModel):
     revision: Sha256
     run: StudioSavedTrainKey
@@ -154,6 +168,7 @@ class StudioTrialAuthoring(StrictModel):
     objective: ObjectiveDocument | None
     objective_source: StudioTrialObjectiveSource | None = None
     input_overrides: dict[str, str] = Field(default_factory=dict)
+    set_fields: list[StudioSetField] = Field(default_factory=list)
     task_types: list[StudioTaskType]
     tasks: list[StudioTaskChoice]
     variables: list[ScopedValue]
