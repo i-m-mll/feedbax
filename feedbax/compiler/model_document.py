@@ -26,6 +26,7 @@ from feedbax.contracts.model_address import (
     ComponentPortEnd, FieldElement, ModelAddress, PhysicalEnd, PortElement, SignalSource,
 )
 from feedbax.contracts.model_delay import ModelDelayCarry
+from feedbax.contracts.model_edit import ModelGraphProblem
 from feedbax.contracts.model_document import (
     DelayAttachment, GraphInterior, InterventionAttachment, ModelDocument, ModelPorts,
     PhysicalInterior, ProbeAttachment, SignalInput,
@@ -38,9 +39,12 @@ from feedbax.contracts.graph import task_binding_id
 
 
 class ModelCompilationProblem(ValueError):
-    def __init__(self, address: ModelAddress, detail: str):
+    def __init__(
+        self, address: ModelAddress, detail: str, *, related: tuple[ModelGraphProblem, ...] = (),
+    ):
         super().__init__(detail)
         self.address = address
+        self.problems = (ModelGraphProblem(address=address, reason=detail), *related)
 
 
 def model_tau_seconds(tau: object, period: float) -> float:
@@ -847,11 +851,13 @@ def lower_model_document(
     *, supplied_inputs: frozenset[str] = frozenset(),
 ) -> LoweredModelDocument:
     """Project one authored model through the graph compiler's registered declarations."""
+    problems = tuple(model_graph_problems(model, ports=ModelRegistryPorts(components).port))
+    if problems:
+        first, *related = problems
+        raise ModelCompilationProblem(first.address, first.reason, related=tuple(related))
     lower = _Lower(model, components)
     names = frozenset(item.label for item in task.exposed_data if item.bindable) if task else frozenset()
     graph = lower.graph(model.interior, model.ports, (), available=names | supplied_inputs)
-    if (problem := next(model_graph_problems(model, ports=ModelRegistryPorts(components).port), None)) is not None:
-        raise ModelCompilationProblem(problem.address, problem.reason)
     lower.reject_within_step_paths(graph)
     binding = lower.root_inputs(task, graph) if task is not None else None
     return LoweredModelDocument(graph, binding, lower.origins, tuple(lower.links), tuple(sorted(lower.plugins)))
