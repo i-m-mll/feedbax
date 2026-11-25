@@ -12,6 +12,7 @@ from pydantic import JsonValue, ValidationError
 
 from feedbax.contracts.analysis_document import (
     AnalysisDocument,
+    AnalyzeDatasetInput,
     AnalyzeInput,
     DatasetSource,
     FigureElement,
@@ -231,6 +232,27 @@ class _Lowerer:
     @property
     def planned(self) -> dict[ElementKey, PlannedElement]:
         return {element.key: element for requests in self.elements.values() for element in requests}
+
+    def dataset_ports(self) -> tuple[dict[str, DatasetPort], dict[str, dict[str, DatasetPort]]]:
+        """Resolve the sources an author can bind to, with the same stack fields as a figure wire."""
+        inputs = {}
+        for name, declaration in self.declarations.items():
+            if isinstance(declaration, AnalyzeDatasetInput):
+                try:
+                    _, inputs[name], _ = self._input(StepInput(input=name), f"inputs.{name}")
+                except _ElementIssue:
+                    # The step input's own diagnostics explain a binding which does not resolve.
+                    continue
+        outputs: dict[str, dict[str, DatasetPort]] = {}
+        for name, requests in self.elements.items():
+            for product in requests[0].datasets:
+                try:
+                    _, port, _ = self._input(OperationDataset(element=name, product=product), f"{name}.{product}")
+                except _ElementIssue:
+                    # An operation may run even when its datasets cannot be read as one stack.
+                    continue
+                outputs.setdefault(name, {})[product] = port
+        return inputs, outputs
 
     def problem(
         self,
@@ -702,7 +724,8 @@ def lower_analyze(
     *,
     figure_templates: FigureTemplateRegistry | None = None,
 ) -> tuple[
-    dict[ElementKey, PlannedElement], list[EncodedRequest], list[ProjectDiagnostic], dict[str, FigureDocument]
+    dict[ElementKey, PlannedElement], list[EncodedRequest], list[ProjectDiagnostic], dict[str, FigureDocument],
+    dict[str, DatasetPort], dict[str, dict[str, DatasetPort]],
 ]:
     lower = _Lowerer(
         key, document_ids, document_pointers, documents, step_inputs, evaluations, upstream, operations,
@@ -721,7 +744,7 @@ def lower_analyze(
                 else None
             )
             lower.problem(".".join(map(str, ("payload", *location))), item["msg"], element)
-        return lower.planned, lower.encoded, lower.problems, lower.figures
+        return lower.planned, lower.encoded, lower.problems, lower.figures, {}, {}
 
     lower.declarations = document.inputs
     lower.element_names = {
@@ -769,4 +792,5 @@ def lower_analyze(
     for name, element in sorted(document.views.items()):
         if name not in refused:
             lower.view(name, element)
-    return lower.planned, lower.encoded, lower.problems, lower.figures
+    inputs, outputs = lower.dataset_ports()
+    return lower.planned, lower.encoded, lower.problems, lower.figures, inputs, outputs
