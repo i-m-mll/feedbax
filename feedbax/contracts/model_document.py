@@ -36,11 +36,29 @@ class ModelTime(TimeValue):
     value: PositivePeriod
 
 
+class DelayInitialValue(StrictModel):
+    kind: Literal["value"]
+    value: Annotated[FiniteNumber | UnresolvedValue, IdentityAuthoredAlternative(UnresolvedValue)]
+
+
+class DelayInitialTask(StrictModel):
+    kind: Literal["task"]
+    variable: ModelName
+
+
+class DelayInitialWire(StrictModel):
+    kind: Literal["wire"]
+    source: SignalSource | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+DelayInitial = Annotated[DelayInitialValue | DelayInitialTask | DelayInitialWire, Field(discriminator="kind")]
+
+
 class DelayAttachment(StrictModel):
     kind: Literal["delay"]
     id: ModelElementId
     delay: Annotated[ModelTime | UnresolvedValue, IdentityAuthoredAlternative(UnresolvedValue)]
-    initial: JsonValue = 0
+    initial_source: DelayInitial = Field(default_factory=lambda: DelayInitialValue(kind="value", value=0.0))
 
 
 class HoldAttachment(StrictModel):
