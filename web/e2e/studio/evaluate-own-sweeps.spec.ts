@@ -15,7 +15,7 @@ test("typing a list in an Evaluate's Trials sweeps them across its subject's see
   await enter(trials.getByRole('textbox', { name: 'Count', exact: true }), '1, 4');
   await expect(table).toHaveAttribute('aria-rowcount', '5');
   await expect(trials.getByRole('button', { name: 'Count kind: Sweep', exact: true })).toBeVisible();
-  await sweepLabel(card, 'trials').click();
+  await sweepLabel(card, 'Trials').click();
   for (const name of ['1', '4']) await expect(page.getByRole('menuitem', { name, exact: true })).toBeVisible();
 });
 

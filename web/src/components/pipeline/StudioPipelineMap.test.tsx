@@ -34,20 +34,20 @@ const rate = {
   id: 'rate',
   label: 'rate',
   values: [
-    { id: 'low', label: 'rate 0.001' },
-    { id: 'mid', label: 'rate 0.003' },
-    { id: 'high', label: 'rate 0.009' },
+    { id: 'low', label: 'rate 0.001', valueLabel: '0.001' },
+    { id: 'mid', label: 'rate 0.003', valueLabel: '0.003' },
+    { id: 'high', label: 'rate 0.009', valueLabel: '0.009' },
   ],
 };
 const seed = {
   id: 'seed',
   label: 'seed',
-  values: [{ id: 'first', label: 'seed 1' }, { id: 'second', label: 'seed 2' }],
+  values: [{ id: 'first', label: 'seed 1', valueLabel: '1' }, { id: 'second', label: 'seed 2', valueLabel: '2' }],
 };
 const curl = {
   id: 'curl',
   label: 'curl',
-  values: [{ id: 'plain', label: 'curl 0' }, { id: 'perturbed', label: 'curl 1' }],
+  values: [{ id: 'plain', label: 'curl 0', valueLabel: '0' }, { id: 'perturbed', label: 'curl 1', valueLabel: '1' }],
 };
 
 const train: PlanStepView = {
@@ -115,13 +115,13 @@ it('keeps the step, sweep-value, and individual-run handles distinct', () => {
   expect(header.getAttribute('aria-pressed')).toBe('true');
   expect(first.getAttribute('aria-pressed')).toBe('true');
 
-  chooseValue(card, 'rate', 'rate 0.003');
+  chooseValue(card, 'rate', '0.003');
   expect(header.getAttribute('aria-pressed')).toBe('false');
   expect(card.queryByText(studioCountOf(2, 6))).toBeNull();
   expect(first.getAttribute('aria-pressed')).toBe('true');
   expect(second.getAttribute('aria-pressed')).toBe('true');
 
-  chooseValue(card, 'seed', 'seed 1', true);
+  chooseValue(card, 'seed', '1', true);
   expect(first.getAttribute('aria-pressed')).toBe('true');
   expect(second.getAttribute('aria-pressed')).toBe('false');
   expect(first.closest('[role="gridcell"]')?.hasAttribute('data-map-group-cell')).toBe(true);
@@ -166,7 +166,7 @@ it('folds the sweeps after the first two into one mark per cell, named after the
   const labels = card.getAllByRole('button', { name: /^Sweep / });
   expect(labels.map((label) => label.textContent)).toEqual(['↓\u00a0seed', '→\u00a0rate', '(curl\u00a0×2)']);
   expect(card.getAllByRole('gridcell')).toHaveLength(6);
-  chooseValue(card, 'curl', 'curl 1');
+  chooseValue(card, 'curl', '1');
   const aggregate = (coordinates: string) => select(
     `${coordinates} · 2 ${studioName('runs')} · 2 ${studioRunStatus('not_run')} · ${studioCountOf(1, 2)}`,
   );
@@ -335,7 +335,7 @@ it('marks a drawer row with its worst state, and choosing the mark selects those
 });
 
 it('lights the lineage of every selected run, not only the last one clicked', () => {
-  const probe = { id: 'probe', label: 'probe', values: [{ id: 'x', label: 'probe x' }, { id: 'y', label: 'probe y' }] };
+  const probe = { id: 'probe', label: 'probe', values: [{ id: 'x', label: 'probe x', valueLabel: 'x' }, { id: 'y', label: 'probe y', valueLabel: 'y' }] };
   const evaluate: PlanStepView = {
     id: 'probes', label: 'probes', kind: 'evaluate', sweeps: [probe],
     runs: probe.values.map((value): PlanRunView => ({

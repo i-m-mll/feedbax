@@ -13,8 +13,8 @@ const train: PlanStepView = {
   label: "Train arm",
   inputs: [],
   sweeps: [
-    { id: "rate", label: "Rate", values: [{ id: "low", label: "Rate 0.001" }, { id: "high", label: "Rate 0.003" }] },
-    { id: "seed", label: "Seed", values: [{ id: "one", label: "Seed 1" }, { id: "two", label: "Seed 2" }] },
+    { id: "rate", label: "Rate", values: [{ id: "low", label: "Rate 0.001", valueLabel: "0.001" }, { id: "high", label: "Rate 0.003", valueLabel: "0.003" }] },
+    { id: "seed", label: "Seed", values: [{ id: "one", label: "Seed 1", valueLabel: "1" }, { id: "two", label: "Seed 2", valueLabel: "2" }] },
   ],
   runs: [
     { id: "a", label: "Rate 0.001 · Seed 1", values: { rate: "low", seed: "one" }, status: "succeeded", state: "succeeded", results: [] },

@@ -233,7 +233,7 @@ test('an Evaluate attachment for the step is stored in a document based on the s
   await model.getByRole('button', { name: 'Attachment Scale', exact: true }).click();
   await expect(inspector.getByRole('textbox', { name: 'Factor', exact: true })).toHaveValue('0.5');
   const evaluation = mapCard(page, 'baseline');
-  await chooseSweepValue(evaluation, 'seed', 'control');
+  await chooseSweepValue(evaluation, 'Seed', 'Control');
   await outlineRow(page, 'Cell.output → Readout.input').click();
   await addIntervention(page, projectPath, { rows: ['seed=control'], axes: { seed: ['control'] } });
   await mapStep(page, 'baseline').click();

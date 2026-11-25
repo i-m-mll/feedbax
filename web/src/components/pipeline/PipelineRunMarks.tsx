@@ -139,7 +139,7 @@ function MapAxisLabel({
                 if (pickRuns) pickRuns(step.runs.filter(({ values }) => values[sweep.id] === value.id).map(({ id }) => id));
                 else applySelection((state) => selectSweepValue(state, step.id, sweep.id, value.id, extend));
               }}>
-              {value.label}
+              {value.valueLabel}
             </MenuItem>
           ))}
         </ScrollFade>
@@ -157,7 +157,7 @@ function MapAxisLabel({
         {(!!authored?.commands.length || !!removals.length) && <MenuSeparator />}
         {!!removals.length && <MenuSubmenu label={studioName(removals[0].command.name)}>
           {removals.map(({ value, command }) => <MenuItem key={value.id} disabled={!command.enabled} onClick={command.invoke}>
-            {value.label}
+            {value.valueLabel}
           </MenuItem>)}
         </MenuSubmenu>}
         {!!authored?.commands.length && <CommandMenuItems commands={() => authored.commands} />}

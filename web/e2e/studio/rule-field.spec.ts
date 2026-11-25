@@ -41,7 +41,7 @@ test('a run rule narrows an Evaluate subject and a Train Start, and a rule namin
 
   await page.goto(`/?project=${snapshot.project_id}`);
   await select(page, 'train');
-  await card.getByRole('button', { name: 'New Step train', exact: true }).click();
+  await card.getByRole('button', { name: 'New Step Train', exact: true }).click();
   await chooseStepKind(page, 'Evaluate');
   await expect(rule).toHaveValue('');
   await expect(ruleRow).toContainText('4/4');
@@ -115,7 +115,7 @@ test('a run rule narrows an Evaluate subject and a Train Start, and a rule namin
   await expect(runRows(page)).toHaveCount(4);
 
   await select(page, 'train');
-  await card.getByRole('button', { name: 'New Step train', exact: true }).click();
+  await card.getByRole('button', { name: 'New Step Train', exact: true }).click();
   await chooseStepKind(page, 'Train');
   await expect(mapStep(page, 'train-2')).toHaveAttribute('aria-pressed', 'true');
   await expect(runRows(page)).toHaveCount(4);
@@ -151,7 +151,7 @@ test('a rule written before the new step\'s form lands keeps the keyboard and sa
   await page.goto(`/?project=${snapshot.project_id}`);
   await select(page, 'train');
   const held = await hold(page, form, (_, sent) => sent.method() === 'POST');
-  await card.getByRole('button', { name: 'New Step train', exact: true }).click();
+  await card.getByRole('button', { name: 'New Step Train', exact: true }).click();
   await chooseStepKind(page, 'Train');
   await held.sent;
   await rule.fill('seed=3');
@@ -198,7 +198,7 @@ async function pickingProject(page: Page, request: APIRequestContext, axes: Reco
   const card = mapCard(page, 'train');
   await page.goto(`/?project=${snapshot.project_id}`);
   await select(page, 'train');
-  await card.getByRole('button', { name: 'New Step train', exact: true }).click();
+  await card.getByRole('button', { name: 'New Step Train', exact: true }).click();
   await chooseStepKind(page, 'Evaluate');
   await expect(mapStep(page, 'evaluate')).toHaveAttribute('aria-pressed', 'true');
   await rule.click({ button: 'right' });
@@ -212,8 +212,8 @@ async function pickingProject(page: Page, request: APIRequestContext, axes: Reco
 // runs' own, and picks that are not saved on Enter.
 test('values picked on the producer\'s card pin their IDs on Enter', async ({ page, request }) => {
   const { rule, card, subject } = await pickingProject(page, request, { seed: { path: 'seed', values: [0, 1, 2, 3] } });
-  await chooseSweepValue(card, 'seed', '0');
-  await chooseSweepValue(card, 'seed', '2');
+  await chooseSweepValue(card, 'Seed', '0');
+  await chooseSweepValue(card, 'Seed', '2');
   await expect(rule).toHaveValue('');
   await expect(rule.locator('..')).toContainText('Rows');
   await expect(rule.locator('..')).toContainText('2/4');

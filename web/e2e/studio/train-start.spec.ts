@@ -28,7 +28,7 @@ test('a continuation started from its Model keeps its definition and continues a
   await page.goto(`/?project=${snapshot.project_id}`);
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Runs', exact: true }).click();
-  await page.getByRole('button', { name: 'New Step train', exact: true }).click();
+  await page.getByRole('button', { name: 'New Step Train', exact: true }).click();
   await chooseStepKind(page, 'Train');
   await expect(mapStep(page, 'train-2')).toHaveAttribute('aria-pressed', 'true');
   const continuation = (await saved()).project.steps!['train-2'];
@@ -77,7 +77,7 @@ test('a Train step started at update 500 of another plans a continuation from th
   await page.goto(`/?project=${snapshot.project_id}`);
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Runs', exact: true }).click();
-  await page.getByRole('button', { name: 'New Step train', exact: true }).click();
+  await page.getByRole('button', { name: 'New Step Train', exact: true }).click();
   await chooseStepKind(page, 'Train');
   await expect(mapStep(page, 'train-2')).toHaveAttribute('aria-pressed', 'true');
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });

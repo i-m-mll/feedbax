@@ -380,7 +380,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await page.goto(mounted);
   await select(page, 'train');
   await authorLearningRateSweep(inspector.getByRole('region', { name: 'Learning Rate field', exact: true }));
-  await expect(train.getByRole('button', { name: 'Sweep learning-rate 3', exact: true })).toBeVisible();
+  await expect(train.getByRole('button', { name: 'Sweep Learning rate 3', exact: true })).toBeVisible();
   const definition = await readPlan();
   const sourceRows = definition.window_map!.rows.filter(({ key }) => key.step === 'train');
   expect(sourceRows.map(({ coordinates }) => coordinates['learning-rate'].value)).toEqual([0.001, 0.002, 0.003]);
@@ -393,8 +393,8 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await launchRows(page, projectPath, sourceRows.map(({ key }) => key));
   await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(3, { timeout: 22_000 });
 
-  await chooseSweepValue(train, 'learning-rate', '0.001');
-  await chooseSweepValue(train, 'learning-rate', '0.002', true);
+  await chooseSweepValue(train, 'Learning rate', '0.001');
+  await chooseSweepValue(train, 'Learning rate', '0.002', true);
   const created = responseFor(page, projectPath + '/files');
   await train.getByRole('button', { name: 'New Step Train', exact: true }).click();
   await chooseStepKind(page, 'Evaluate');
@@ -450,7 +450,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await select(page, 'evaluate');
   await rule.click({ button: 'right' });
   await page.getByRole('menuitem', { name: 'Pick Runs', exact: true }).click();
-  for (const rate of rates) await chooseSweepValue(train, 'learning-rate', rate.label);
+  for (const rate of rates) await chooseSweepValue(train, 'Learning rate', rate.label);
   const subsetEdit = edited('/inputs/subject/where');
   await rule.press('Enter');
   const savedSubset = await subsetEdit;
@@ -533,14 +533,14 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
 
   const pivot = primary(page).getByRole('table', { name: 'Pivot', exact: true });
   // The subject is told apart by the learning-rate its runs carry, and the one seed they share tells nothing apart.
-  await expect(pivot.getByRole('columnheader')).toHaveText(['learning-rate', 'Short Task', 'Long Task']);
-  await expect(primary(page).getByRole('combobox', { name: 'Columns', exact: true })).toHaveText('task');
-  await pick(primary(page).getByRole('combobox', { name: 'Rows', exact: true }), 'learning-rate');
-  await pick(primary(page).getByRole('combobox', { name: 'Columns', exact: true }), 'task');
+  await expect(pivot.getByRole('columnheader')).toHaveText(['Learning rate', 'Short Task', 'Long Task']);
+  await expect(primary(page).getByRole('combobox', { name: 'Columns', exact: true })).toHaveText('Task');
+  await pick(primary(page).getByRole('combobox', { name: 'Rows', exact: true }), 'Learning rate');
+  await pick(primary(page).getByRole('combobox', { name: 'Columns', exact: true }), 'Task');
   const cell = (model: string, task: string, status: string) => pivot.getByRole('button', {
     name: `Select ${model} · ${task} · ${status}`, exact: true,
   });
-  await expect(pivot.getByRole('columnheader')).toHaveText(['learning-rate', 'Short Task', 'Long Task']);
+  await expect(pivot.getByRole('columnheader')).toHaveText(['Learning rate', 'Short Task', 'Long Task']);
   await expect(pivot.getByRole('rowheader')).toHaveText(['Slow', 'Fast']);
   await expect(pivot.getByRole('button', { name: /Waiting$/ })).toHaveCount(4);
 
@@ -549,7 +549,7 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
   await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(6, { timeout: 26_000 });
   const trainDone = (await read()).rows;
   await select(page, 'evaluate');
-  await pick(primary(page).getByRole('combobox', { name: 'Columns', exact: true }), 'task');
+  await pick(primary(page).getByRole('combobox', { name: 'Columns', exact: true }), 'Task');
   const sampled = cell('Fast', 'Long Task', 'Not run');
   const target = rows[3].key;
   await sampled.click();
@@ -581,7 +581,7 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
   const mass = page.getByRole('textbox', { name: 'Mass', exact: true });
   // The value comes from the inspected document itself, so the field names no source.
   await expect(mass).toHaveAccessibleDescription('');
-  await chooseSweepValue(mapCard(page, 'train'), 'learning-rate', 'Fast');
+  await chooseSweepValue(mapCard(page, 'train'), 'Learning rate', 'Fast');
   await model.focus();
   await expect(mass).toBeEditable();
   await enter(mass, '2');

@@ -15,7 +15,10 @@ export interface PlanRunEdge {
 
 export interface PlanSweepValueView {
   readonly id: string;
+  /** The value's full name, which names its axis. */
   readonly label: string;
+  /** The value's name where its axis is already named, as under a sweep's title. */
+  readonly valueLabel: string;
 }
 
 export interface PlanSweepView {

@@ -636,7 +636,7 @@ test('a run whose own exception is refused dims its definition views with the pr
   await page.goto('/?project=' + snapshot.project_id);
   const card = page.locator('[data-map-step="train"]');
   await mapStep(page, 'train').click();
-  await chooseSweepValue(card, 'rate', '0.001');
+  await chooseSweepValue(card, 'Rate', '0.001');
   for (const name of ['Task', 'Objective', 'Training']) {
     const tab = page.getByRole('tab', { name, exact: true });
     await expect(tab).toHaveAttribute('aria-disabled', 'true');
@@ -646,7 +646,7 @@ test('a run whose own exception is refused dims its definition views with the pr
   await expect(page.getByRole('button', { name: 'Retry', exact: true })).toHaveCount(0);
   expect(reads).not.toContain('rate=rate-0');
 
-  await chooseSweepValue(card, 'rate', '0.01');
+  await chooseSweepValue(card, 'Rate', '0.01');
   for (const name of ['Model', 'Objective']) {
     await expect(page.getByRole('tab', { name, exact: true })).not.toHaveAttribute('aria-disabled', 'true');
   }

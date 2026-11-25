@@ -400,7 +400,7 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   await expect(source).toHaveAttribute('data-selected');
   await authorLearningRateSweep(stepInspector.getByRole('region', { name: 'Learning Rate field', exact: true }));
 
-  await expect(source.getByRole('button', { name: 'Sweep learning-rate 3', exact: true })).toBeVisible();
+  await expect(source.getByRole('button', { name: 'Sweep Learning rate 3', exact: true })).toBeVisible();
   const saved = await request.get(projectPath);
   expect(saved.ok(), await saved.text()).toBe(true);
   snapshot = await saved.json() as StudioProjectSnapshot;
@@ -425,8 +425,8 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
     return result.items;
   };
 
-  await chooseSweepValue(source, 'learning-rate', '0.001');
-  await chooseSweepValue(source, 'learning-rate', '0.003', true);
+  await chooseSweepValue(source, 'Learning rate', '0.001');
+  await chooseSweepValue(source, 'Learning rate', '0.003', true);
   await expect(source.locator('.studio-map-group-box')).toHaveCount(2);
   const mark = source.locator('.studio-map-run-mark').first();
   await mark.focus();
@@ -519,8 +519,8 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   expect(unselected.attempts).toEqual([]);
 
   await mapStep(page, 'train').click();
-  await chooseSweepValue(source, 'learning-rate', '0.001');
-  await chooseSweepValue(source, 'learning-rate', '0.003', true);
+  await chooseSweepValue(source, 'Learning rate', '0.001');
+  await chooseSweepValue(source, 'Learning rate', '0.003', true);
   await expect(source.locator('.studio-map-group-box')).toHaveCount(2);
   await expect(source.locator('.studio-map-run-mark[data-boxed]')).toHaveCount(0);
   await captureStudioWindow(page, info, 'visual-map-group');

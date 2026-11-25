@@ -144,7 +144,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   expect(sourceRows.map(({ coordinates }) => coordinates['learning-rate'].value)).toEqual([0.001, 0.002, 0.003]);
   const [selected] = sourceRows;
   await page.keyboard.press('Control+Meta+2');
-  await activate(page, sweepLabel(train, 'learning-rate'));
+  await activate(page, sweepLabel(train, 'Learning rate'));
   const slow = page.getByRole('menuitem', { name: '0.001', exact: true });
   await activateMenuItem(page, slow);
   await expect(train.locator('.studio-map-run-mark[aria-pressed="true"]')).toHaveCount(1);
@@ -222,7 +222,7 @@ test('authors, checkpoint-resumes and evaluates a subset from one fresh managed 
   await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   await page.keyboard.press('Control+Meta+2');
   await activate(page, mapStep(page, 'train'));
-  await activate(page, sweepLabel(train, 'learning-rate'));
+  await activate(page, sweepLabel(train, 'Learning rate'));
   await activateMenuItem(page, slow);
   await expect(train.locator('.studio-map-run-mark[aria-pressed="true"]')).toHaveCount(1);
   const creating = post(page, projectPath + '/files');
@@ -569,9 +569,9 @@ test('the keyboard authors, runs and stops a strict checkpoint continuation and 
   await expect(mapStep(page, 'train')).toBeVisible();
   await page.keyboard.press('Control+Meta+2');
   const value = (name: string) => page.getByRole('menuitem', { name, exact: true });
-  await activate(page, sweepLabel(card, 'learning-rate'));
+  await activate(page, sweepLabel(card, 'Learning rate'));
   await activateMenuItem(page, value('0.001'));
-  await activate(page, sweepLabel(card, 'learning-rate'));
+  await activate(page, sweepLabel(card, 'Learning rate'));
   await activateMenuItem(page, value('0.003'), 'Shift+Enter');
   await expect(card.locator('.studio-map-run-mark[aria-pressed="true"]')).toHaveCount(2);
   const marks = card.getByRole('grid', { name: 'Runs' });
