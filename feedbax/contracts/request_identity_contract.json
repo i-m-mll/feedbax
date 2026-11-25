@@ -920,13 +920,18 @@
       "value": {}
     },
     "feedbax.contracts.model_document.InterventionAttachment": {
-      "fields": {
-        "absent": {}
-      },
       "id": {},
       "kind": {
         "values": [
           "intervention"
+        ]
+      },
+      "operands": {
+        "absent": {},
+        "families": [
+          "feedbax.contracts.model_document.DelayInitialTask",
+          "feedbax.contracts.model_document.DelayInitialValue",
+          "feedbax.contracts.model_document.DelayInitialWire"
         ]
       },
       "operation": {},
@@ -1819,6 +1824,11 @@
   },
   "retired": {
     "fields": [
+      {
+        "field": "fields",
+        "migration": "typed-intervention-operands",
+        "model": "feedbax.contracts.model_document.InterventionAttachment"
+      },
       {
         "field": "a",
         "migration": "m2-train-v1-retirement",

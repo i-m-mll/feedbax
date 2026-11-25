@@ -123,6 +123,8 @@ def encode_document_input(value: DocumentInput) -> tuple[ContentRef, bytes]:
         raw = canonical_json_v2_bytes(value.model_dump(mode="json"))
     else:
         media_type = OBJECTIVE_INPUT_MEDIA_TYPE if isinstance(value, ObjectiveDocument) else TASK_INPUT_MEDIA_TYPE
+        if isinstance(value, TaskDocument):
+            value = value.without_markers()
         raw = canonical_json_v2_bytes(value.model_dump(mode="json"))
     return ContentRef(sha256=sha256(raw).hexdigest(), size=len(raw), media_type=media_type), raw
 
