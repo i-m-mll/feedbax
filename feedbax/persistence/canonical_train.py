@@ -13,14 +13,17 @@ from feedbax.checkpoint_coordinates import finite_coordinates
 from feedbax.contracts.artifact_custody import ArtifactBlobCustodyError, ContentObjectRef
 from feedbax.contracts.base import StrictModel, canonical_json_bytes
 from feedbax.contracts.effective_success import RequestObject
+from feedbax.contracts.loaded_model import IMPORTED_MODEL_MEDIA_TYPE, ImportedModelSource
+from feedbax.contracts.model_input import document_input_object, read_document_input
 from feedbax.contracts.model_values import model_owner_problem
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.request_identity import decode_request
-from feedbax.contracts.request_refs import LastMember, ProductRef
+from feedbax.contracts.request_refs import ContentRef, LastMember, ProductRef
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.contracts.train_settings import normalize_train_method
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.project_subject import read_imported_model
 
 if TYPE_CHECKING:
     from feedbax.execution.trial_resolution import ResolvedTrialExecution
@@ -34,6 +37,7 @@ class CanonicalTrainRequestBinding(StrictModel):
     request: ContentObjectRef
     documents: tuple[ContentObjectRef, ...]
     checkpoint: ProductRef | None = None
+    imported_model: ContentRef | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class PinnedTrainCheckpoint(StrictModel):
@@ -85,29 +89,33 @@ def read_collected_train_job(launch: BoundStudioTrainingJobInput) -> TrainJobEnt
 
 def _decode_train(
     request_id: str, data: bytes, read_document: Callable[[str], bytes]
-) -> tuple[DocumentTrainingRequestSpec, ProductRef | None]:
+) -> tuple[DocumentTrainingRequestSpec, ProductRef | None, ContentRef | None]:
     decoded = decode_request(data, read_document)
     if decoded.id != request_id or not isinstance(
         decoded.spec, DocumentTrainingRequestSpec
     ):
         raise ValueError("Training launch does not match its canonical Train request.")
     checkpoint = None
+    imported_model = None
     if decoded.inputs:
         members = decoded.inputs.get("checkpoint", ())
         if decoded.inputs.keys() != {"checkpoint"} or len(members) != 1:
             raise ValueError("/inputs/checkpoint: expected one predecessor checkpoint")
         reference = members[0].reference
-        if (
-            not isinstance(reference, ProductRef)
-            or reference.role != "checkpoint"
-            or not reference.request_id.startswith("train:")
-            or not isinstance(reference.select, LastMember)
+        if isinstance(reference, ContentRef) and not reference.tree and reference.media_type == IMPORTED_MODEL_MEDIA_TYPE:
+            if decoded.spec.checkpoint_initialization != "initialize_from":
+                raise ValueError("/inputs/checkpoint: a Loaded Model supports only initialize_from.")
+            imported_model = reference
+        elif (
+            isinstance(reference, ProductRef) and reference.role == "checkpoint"
+            and reference.request_id.startswith("train:") and isinstance(reference.select, LastMember)
         ):
+            checkpoint = reference
+        else:
             raise ValueError("/inputs/checkpoint: expected the last checkpoint of a Train request")
-        checkpoint = reference
-    if (checkpoint is None) != (decoded.spec.checkpoint_initialization is None):
+    if (checkpoint is None and imported_model is None) != (decoded.spec.checkpoint_initialization is None):
         raise ValueError("/inputs/checkpoint: a predecessor and a checkpoint initialization policy must be declared together")
-    return decoded.spec, checkpoint
+    return decoded.spec, checkpoint, imported_model
 
 
 def _resolve_trial(
@@ -147,11 +155,21 @@ def bind_canonical_train(
         closure[digest] = raw
         return raw
 
-    request, checkpoint = _decode_train(request_id, data, read_document)
+    request, checkpoint, imported_model = _decode_train(request_id, data, read_document)
     spec, _, _ = normalize_train_method(request, registries.training_methods)
     if spec != request:
         raise ValueError("Train request must carry the resolved method key and normalized settings.")
     _resolve_trial(spec, registries)
+    if imported_model is not None:
+        ref = document_input_object(imported_model)
+        if ref.sha256 in documents:
+            from feedbax.persistence.effective_success import store_document_inputs
+
+            decoded = decode_request(data, read_document)
+            store_document_inputs(store, decoded.inputs, documents.__getitem__)
+        source = read_document_input(imported_model, store)
+        assert isinstance(source, ImportedModelSource)
+        read_imported_model(store, source, verify_bytes=True)
     refs = tuple(
         store.store_rooted_object(raw, namespace="studio-train-document")
         for _, raw in sorted(closure.items())
@@ -160,6 +178,7 @@ def bind_canonical_train(
         request=store.store_rooted_object(data, namespace="studio-train-request"),
         documents=refs,
         checkpoint=checkpoint,
+        imported_model=imported_model,
     )
 
 
@@ -196,16 +215,22 @@ def verify_training_request_binding(
         used.add(digest)
         return read_object(documents[digest])
 
-    request, checkpoint = _decode_train(
+    request, checkpoint, imported_model = _decode_train(
         launch.request_id, read_object(binding.request), read_document
     )
-    if checkpoint != binding.checkpoint:
+    if (checkpoint, imported_model) != (binding.checkpoint, binding.imported_model):
         raise ValueError("Canonical Train binding does not match its checkpoint input.")
     if used != documents.keys():
         raise ValueError("Canonical Train binding does not name its exact document closure.")
     if request != launch.spec:
         raise ValueError("Canonical Train request does not match its admitted execution settings.")
-    return tuple((store.object_path(ref), ref) for ref in (binding.request, *binding.documents))
+    inputs = () if imported_model is None else (document_input_object(imported_model),)
+    if imported_model is not None:
+        source = read_document_input(imported_model, store)
+        assert isinstance(source, ImportedModelSource)
+        _, tree = read_imported_model(store, source, verify_bytes=True)
+        inputs = (*inputs, source.model, source.weights.descriptor, *tree.members.values())
+    return tuple((store.object_path(ref), ref) for ref in (binding.request, *binding.documents, *inputs))
 
 
 def resolve_training_request_binding(

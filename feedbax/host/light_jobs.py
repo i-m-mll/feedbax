@@ -29,6 +29,7 @@ from feedbax.contracts.effective_success import (
 from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, PlotlyFigureProduct
 from feedbax.contracts.model_input import INITIAL_MODEL_MEDIA_TYPE, TASK_INPUT_MEDIA_TYPE, DocumentInput, read_document_input
+from feedbax.contracts.loaded_model import IMPORTED_MODEL_MEDIA_TYPE
 from feedbax.contracts.operation import DatasetPort, ModelPort, OperationDefinition, TaskPort
 from feedbax.contracts.request_identity import DecodedRequest
 from feedbax.contracts.request_refs import BatchMember, ContentRef, LastMember, ProductRef, RequestId
@@ -105,7 +106,9 @@ def _typed_operation_input(port, members) -> bool:
         return (
             isinstance(reference, ProductRef) and reference.request_id.startswith("train:")
             and reference.role == "checkpoint" and isinstance(reference.select, (LastMember, BatchMember))
-        ) or (isinstance(reference, ContentRef) and not reference.tree and reference.media_type == INITIAL_MODEL_MEDIA_TYPE)
+        ) or (isinstance(reference, ContentRef) and not reference.tree and reference.media_type in {
+            INITIAL_MODEL_MEDIA_TYPE, IMPORTED_MODEL_MEDIA_TYPE,
+        })
     if isinstance(port, TaskPort):
         if len(members) != 1:
             return False

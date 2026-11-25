@@ -9,10 +9,11 @@ from pydantic import Field, TypeAdapter
 
 from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ArtifactBlobProvider, ContentObjectRef, ContentTreeRef
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.loaded_model import IMPORTED_MODEL_MEDIA_TYPE, LOADED_MODEL_SCHEMA_ID, ImportedModelSource
 from feedbax.contracts.model_checkpoint import SemanticModelEncoding
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument, restore_model_display_names
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument
-from feedbax.contracts.project_inputs import DocumentInputReference, InitialModelReference, ObjectiveDocumentReference
+from feedbax.contracts.project_inputs import DocumentInputReference, InitialModelReference, LoadedModelReference, ObjectiveDocumentReference
 from feedbax.contracts.request_refs import ContentRef, ReferenceValue
 from feedbax.contracts.strict_json import strict_json_loads, strict_model_validate_json, strict_validate_json
 from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, TaskDocument
@@ -63,10 +64,12 @@ class CheckpointModelSource(ReferenceValue):
 
 type ModelSource = Annotated[InitialModelSource | CheckpointModelSource, Field(discriminator="kind")]
 type TaskInputSource = TaskDocument | PythonTaskSelection
-type DocumentInput = InitialModelSource | TaskInputSource | ObjectiveDocument
+type DocumentInput = InitialModelSource | TaskInputSource | ObjectiveDocument | ImportedModelSource
 
 _TASK_INPUT = TypeAdapter(TaskInputSource)
-DOCUMENT_INPUT_MEDIA_TYPES = frozenset((INITIAL_MODEL_MEDIA_TYPE, TASK_INPUT_MEDIA_TYPE, OBJECTIVE_INPUT_MEDIA_TYPE))
+DOCUMENT_INPUT_MEDIA_TYPES = frozenset((
+    INITIAL_MODEL_MEDIA_TYPE, TASK_INPUT_MEDIA_TYPE, OBJECTIVE_INPUT_MEDIA_TYPE, IMPORTED_MODEL_MEDIA_TYPE,
+))
 
 
 def authored_document_input(
@@ -78,6 +81,12 @@ def authored_document_input(
         return InitialModelSource(
             document=ModelDocument.model_validate(document.payload), seed=reference.seed,
         )
+    if isinstance(reference, LoadedModelReference):
+        from feedbax.contracts.project import LoadedModelDocument
+
+        if document.schema_id != LOADED_MODEL_SCHEMA_ID:
+            raise ValueError("Loaded model input requires a Loaded Model document")
+        return LoadedModelDocument.model_validate(document.payload).source
     if isinstance(reference, ObjectiveDocumentReference):
         if document.schema_id != OBJECTIVE_DOCUMENT_SCHEMA_ID:
             raise ValueError("Objective input requires an Objective document")
@@ -100,6 +109,9 @@ def authored_document_input(
 def encode_document_input(value: DocumentInput) -> tuple[ContentRef, bytes]:
     if isinstance(value, InitialModelSource):
         media_type, raw = INITIAL_MODEL_MEDIA_TYPE, value.encode()
+    elif isinstance(value, ImportedModelSource):
+        media_type = IMPORTED_MODEL_MEDIA_TYPE
+        raw = canonical_json_v2_bytes(value.model_dump(mode="json"))
     else:
         media_type = OBJECTIVE_INPUT_MEDIA_TYPE if isinstance(value, ObjectiveDocument) else TASK_INPUT_MEDIA_TYPE
         raw = canonical_json_v2_bytes(value.model_dump(mode="json"))
@@ -122,6 +134,8 @@ def decode_document_input(content: ContentRef, raw: bytes) -> DocumentInput:
     document_input_object(content)
     if content.media_type == INITIAL_MODEL_MEDIA_TYPE:
         value = InitialModelSource.decode(raw)
+    elif content.media_type == IMPORTED_MODEL_MEDIA_TYPE:
+        value = strict_model_validate_json(ImportedModelSource, raw)
     elif content.media_type == TASK_INPUT_MEDIA_TYPE:
         value = strict_validate_json(_TASK_INPUT, raw)
     else:

@@ -15,7 +15,9 @@ from feedbax.contracts.model_edit import (
     AxisValueRuns, EvaluateModelRequest, ListedRuns, EvaluateModelState,
     VariantRuns, StudioEvaluateValueSource,
 )
-from feedbax.contracts.project import DifferenceNotApplied, Differences, Project, apply_differences, diff, nearest_shared_base
+from feedbax.contracts.project import (
+    DifferenceNotApplied, Differences, LoadedModelDocument, Project, apply_differences, diff, nearest_shared_base,
+)
 from feedbax.planner.project_plan import EVALUATION_MODEL, ProjectPlan, RunKey, SelectedRunDefinition
 from feedbax.contracts.project_io import project_declaration_name
 from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode, compose_document
@@ -78,7 +80,13 @@ def read_evaluate_model(
     def located(problem: ProjectDiagnostic) -> ProjectDiagnostic:
         return replace(problem, step=key.step, row=key.row, variant=key.variant)
 
-    if upstream := evaluate_subject(definition):
+    if definition is not None and definition.pinned_model is not None:
+        loaded = LoadedModelDocument.model_validate(definition.input_documents["subject"].payload)
+        if model_document is not None and loaded.model.document != model_document:
+            raise ProjectFolderInvalid("The selected run does not use this Model.")
+        resolved = definition.pinned_model
+        editable = False
+    elif upstream := evaluate_subject(definition):
         producer, provenance = upstream
         source = evaluate_value_source(provenance)
         train_plan = folders.read_plan(project_id, revision=body.revision, source_runs=(producer,)).plan

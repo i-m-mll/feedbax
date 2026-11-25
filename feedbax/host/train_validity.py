@@ -226,14 +226,14 @@ def _reprepare(
 
     request = replay.request
     documents = {ref.sha256: ref for ref in request.documents}
-    spec, checkpoint = _decode_train(
+    spec, checkpoint, imported_model = _decode_train(
         request.id, store.get_object(request.object), lambda digest: store.get_object(documents[digest]),
     )
     spec, _, _ = normalize_train_method(spec, registries.training_methods)
     launch = BoundStudioTrainingJobInput(
         spec=spec, project_id="validity-check", request_id=request.id, manifest_root=store.root,
         canonical_request=CanonicalTrainRequestBinding(
-            request=request.object, documents=request.documents, checkpoint=checkpoint,
+            request=request.object, documents=request.documents, checkpoint=checkpoint, imported_model=imported_model,
         ), checkpoint_catalog=replay.checkpoint_catalog,
     )
     binding = resolve_training_request_binding(launch, registries=registries)

@@ -26,6 +26,7 @@ from feedbax.contracts.expression_values import Problem, TextSpan, UnresolvedVal
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, FigureDocument, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.graph import GraphSpec
+from feedbax.contracts.loaded_model import IMPORTED_MODEL_MEDIA_TYPE, ImportedModelSource
 from feedbax.contracts.model_address import ComponentElement, FieldElement, ModelAddress
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES, ModelDifference, SetField
 from feedbax.contracts.matrix_core import apply_override_patch_in_place, apply_value_patch_in_place
@@ -53,6 +54,7 @@ from feedbax.contracts.project_inputs import (
     DocumentInputReference,
     InitialModelReference,
     InputBinding,
+    LoadedModelReference,
     NamedSubset,
     OmittedReference,
     ObjectiveDocumentReference,
@@ -119,6 +121,7 @@ from feedbax.contracts.request_refs import (
     BestMember,
     BestCandidate,
     BestRank,
+    ContentRef,
     InputMember,
     LastMember,
     MemberLabel,
@@ -528,6 +531,7 @@ class SelectedRunDefinition:
     document_pointers: Mapping[str, str] = field(default_factory=dict)
     document_problems: tuple[ProjectDiagnostic, ...] = ()
     input_documents: Mapping[str, RootDocument] = field(default_factory=dict)
+    pinned_model: ModelDocument | None = None
 
 
 @dataclass(frozen=True)
@@ -708,7 +712,7 @@ class _Role:
     """Whether the role takes a list of selections."""
     operation_outputs: bool = False
     """Whether a selection may instead name an Analyze operation's dataset product, read from the card that holds it."""
-    documents: tuple[Literal["model", "task"], ...] = ()
+    documents: tuple[Literal["model", "task", "loaded_model"], ...] = ()
     """The documents the role may read instead of a step's rows."""
     checkpoint_sets: bool = False
     """Whether a selection's checkpoint may name a finite set of updates, each a row of the reading step."""
@@ -725,8 +729,10 @@ class _Role:
 
 
 _ROLES = {
-    "train": _Role("checkpoint", False, "train", "checkpoint"),
-    "evaluate": _Role("subject", True, "train", "checkpoint", gathers=True, documents=("model",), checkpoint_sets=True),
+    "train": _Role("checkpoint", False, "train", "checkpoint", documents=("loaded_model",)),
+    "evaluate": _Role(
+        "subject", True, "train", "checkpoint", gathers=True, documents=("model", "loaded_model"), checkpoint_sets=True,
+    ),
 }
 _ANALYZE_TASK_ROLE = InputRole(required=True, gathers=False, producer=None, documents=["task"], checkpoint_sets=False)
 
@@ -735,7 +741,7 @@ def _analyze_role(name: str, declaration: AnalyzeInput) -> _Role | None:
     """The role an Analyze document's input declares; a Task input reads only a Task document and has none."""
     match declaration:
         case AnalyzeModelInput():
-            return _Role(name, True, "train", "checkpoint", documents=("model",))
+            return _Role(name, True, "train", "checkpoint", documents=("model", "loaded_model"))
         case AnalyzeDatasetInput():
             return _Role(name, True, "evaluate", "states", gathers=True, operation_outputs=True)
         case AnalyzeTaskInput():
@@ -1218,6 +1224,7 @@ class _LoweredRow:
     train: TrainFacts | None = None
     encoded_spec: RequestSpec | None = None
     resolved: bool = True
+    pinned_model: ModelDocument | None = None
 
 
 @dataclass(frozen=True)
@@ -1430,6 +1437,13 @@ def _encode_row(
         if isinstance(spec, DocumentTrainingRequestSpec):
             if (spec.checkpoint_initialization is None) != ("checkpoint" not in inputs):
                 raise ValueError("/inputs/checkpoint: a predecessor and initialization policy must be declared together")
+            if (
+                (start := inputs.get("checkpoint")) is not None
+                and isinstance(reference := start.member.reference, ContentRef)
+                and reference.media_type == IMPORTED_MODEL_MEDIA_TYPE
+                and spec.checkpoint_initialization != "initialize_from"
+            ):
+                raise ValueError("/inputs/checkpoint: a Loaded Model supports only initialize_from.")
             if training_methods is None:
                 raise ValueError("Train requires the installed method catalog.")
             try:
@@ -2656,9 +2670,18 @@ class _Compiler:
             if resolved.payload.get("evaluation_type") != ROLLOUT_TYPE:
                 raise ValueError("An initial Model subject requires a rollout Evaluate")
             subject_ref = template.inputs["subject"]
-            assert isinstance(subject_ref, InitialModelReference)
             payload, differences = _model_differences(resolved.payload)
-            source = self.initial_model_source(subject_ref, resolved.input_documents["subject"], differences)
+            subject_document = resolved.input_documents["subject"]
+            if isinstance(subject_ref, LoadedModelReference):
+                source = authored_document_input(subject_ref, subject_document)
+                assert isinstance(source, ImportedModelSource)
+                if differences:
+                    raise ValueError("A Loaded Model uses its pinned Model revision.")
+                model = self.read_imported_model(source)
+            else:
+                assert isinstance(subject_ref, InitialModelReference)
+                source = self.initial_model_source(subject_ref, subject_document, differences)
+                model = source.document
             components = self.components or _builtin_model_registry()
             functions = self.functions or _builtin_expression_registry()
             tasks = self.python_tasks
@@ -2693,11 +2716,11 @@ class _Compiler:
             if problem := _authored_graph_variation_problem(key, payload):
                 return _LoweredRow(None, (problem,)), {}
             paired = pair_trial_source(
-                source.document, task, components, functions,
+                model, task, components, functions,
                 python_tasks=tasks, input_bindings=settings.input_bindings,
             )
             unpaired = paired if isinstance(paired, tuple) else paired.problems
-            refusals = _trial_problems(unpaired, source.document, initial=True)
+            refusals = _trial_problems(unpaired, model, initial=True)
             conditions = evaluation_conditions(task, tasks)
             if not unpaired:
                 assert not isinstance(paired, tuple)
@@ -2706,7 +2729,7 @@ class _Compiler:
                 )
                 if variant.task != task:
                     paired = pair_trial_source(
-                        source.document, variant.task, components, functions,
+                        model, variant.task, components, functions,
                         python_tasks=tasks, input_bindings=settings.input_bindings, graph_override=variant.graph,
                     )
                     conditions = evaluation_conditions(variant.task, tasks)
@@ -2730,6 +2753,7 @@ class _Compiler:
             return replace(
                 narrowed, document_ids=resolved.document_ids, document_uses=resolved.document_uses,
                 problems=self.locate_sweep_run_problems(problems, template, key, row),
+                pinned_model=model if isinstance(subject_ref, LoadedModelReference) else None,
             ), inputs
         except ModelCompilationProblem as error:
             problems = _trial_problems(model_compilation_problems(error), None, initial=True)
@@ -2737,13 +2761,18 @@ class _Compiler:
                 None, (), problems=self.locate_sweep_run_problems(problems, template, key, row),
                 document_ids=resolved.document_ids, document_uses=resolved.document_uses,
             ), {}
-        except (KeyError, ValueError) as error:
+        except (KeyError, OSError, ValueError) as error:
             return _LoweredRow(None, (ProjectDiagnostic(
                 ResolutionCode.INVALID_PAYLOAD,
                 error.path if isinstance(error, CannotRun) else path,
                 error.reason if isinstance(error, CannotRun) else str(error),
                 key.step, row=key.row, variant=key.variant, document=resolved.document_ids.get(path),
             ),), document_ids=resolved.document_ids, document_uses=resolved.document_uses), {}
+
+    def read_imported_model(self, source: ImportedModelSource) -> ModelDocument:
+        if self.readers.imported_model is None:
+            raise ValueError("A Loaded Model must resolve from the project Store.")
+        return self.readers.imported_model(source.model_dump_json())
 
     def lower_best_evaluate(
         self, key: RunKey, payload: Payload, subject: PlannedInput, rank: BestRank, has_differences: bool,
@@ -2997,7 +3026,9 @@ class _Compiler:
         if kind == "analyze":
             return self.compile_analyze_step(variant, name, template, active)
         assert role is not None
-        initial = "model" in role.documents and isinstance(template.inputs.get(role.name), InitialModelReference)
+        initial = "model" in role.documents and isinstance(
+            template.inputs.get(role.name), (InitialModelReference, LoadedModelReference),
+        )
         roles = {"subject", "task", "objective"} if initial else {role.name}
         extra_roles = sorted(template.inputs.keys() - roles)
         if extra_roles:
@@ -3065,9 +3096,11 @@ class _Compiler:
                     ))
                     break
                 lowered, inputs = self.lower_initial_evaluate(template, run_key, row)
-                self.select_definition(template, run_key, row, {
+                definition = self.select_definition(template, run_key, row, {
                     name: (binding,) for name, binding in inputs.items()
                 })
+                if definition is not None and lowered.pinned_model is not None:
+                    self.selected_definitions[run_key] = replace(definition, pinned_model=lowered.pinned_model)
                 if (run := self.record_run(run_key, lowered, inputs, {}, template.requires)) is not None:
                     result.append(run)
                 continue
@@ -3405,8 +3438,8 @@ class _Compiler:
             if reference is None or isinstance(reference, OmittedReference):
                 continue
             path = f"inputs.{name_of_role}"
-            if isinstance(reference, (InitialModelReference, TaskDocumentReference)):
-                expected = AnalyzeModelInput if isinstance(reference, InitialModelReference) else AnalyzeTaskInput
+            if isinstance(reference, (InitialModelReference, LoadedModelReference, TaskDocumentReference)):
+                expected = AnalyzeTaskInput if isinstance(reference, TaskDocumentReference) else AnalyzeModelInput
                 if not isinstance(declaration, expected):
                     problem(path, f"A document reference cannot supply a {declaration.kind} role of this kind.")
                     continue
@@ -3476,10 +3509,13 @@ class _Compiler:
                 if role not in resolved.input_documents:
                     continue
                 try:
-                    binding = plan_document_input(
-                        reference, resolved.input_documents[role], self.documents, python_tasks=self.python_tasks,
+                    source = authored_document_input(
+                        reference, resolved.input_documents[role], python_tasks=self.python_tasks,
                     )
-                except ValueError as error:
+                    if isinstance(source, ImportedModelSource):
+                        self.read_imported_model(source)
+                    binding = _plan_document_content(source, self.documents)
+                except (OSError, ValueError) as error:
                     problem(f"inputs.{role}", str(error), row.id)
                     continue
                 inputs[role] = (binding,)
@@ -3678,6 +3714,12 @@ class _Compiler:
             return None, subject.named["source"]
         if subject is not None and isinstance(trained := subject.member.reference, ProductRef):
             return None, LabelName(trained.request_id, kind="run")
+        if (
+            subject is not None and isinstance(reference := subject.member.reference, ContentRef)
+            and reference.media_type == IMPORTED_MODEL_MEDIA_TYPE
+            and (document := run.document_ids.get("inputs.subject")) is not None
+        ):
+            return None, LabelName(document, kind="document")
         if (document := run.document_ids.get(EVALUATION_MODEL)) is not None:
             return None, LabelName(document, kind="document")
         return None
@@ -3845,6 +3887,19 @@ class _Compiler:
             except (OSError, ValueError) as error:
                 return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, str(error), name)
             return ((PlannedInput(None, member, terminal=terminal.subject), None),), {}, None
+        if isinstance(reference, LoadedModelReference) and role.name == "checkpoint" and role.producer_kind == "train":
+            if reference.source.unresolved or reference.source.pointer:
+                return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, "Choose a Loaded Model document.", name)
+            document = compose_document(self.variants[variant].documents.get, reference.source.document)
+            if isinstance(document, ProjectDiagnostic):
+                return replace(document, path=path, step=name)
+            try:
+                source = authored_document_input(reference, document)
+                assert isinstance(source, ImportedModelSource)
+                self.read_imported_model(source)
+            except (OSError, ValueError) as error:
+                return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, str(error), name)
+            return ((_plan_document_content(source, self.documents), None),), {}, None
         if not isinstance(reference, StepReference):
             return ProjectDiagnostic(
                 ResolutionCode.UNSUPPORTED_PLAN,
@@ -4114,6 +4169,7 @@ def compile_project(
         external=cache(readers.external) if readers.external is not None else None,
         figure_external=cache(readers.figure_external) if readers.figure_external is not None else None,
         terminal_train=cache(readers.terminal_train) if readers.terminal_train is not None else None,
+        imported_model=cache(readers.imported_model) if readers.imported_model is not None else None,
     )
     if capture_sources or memo is None or any(
         reader is not None for reader in (readers.run, readers.external, readers.row, readers.figure_external)
