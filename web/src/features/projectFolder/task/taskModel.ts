@@ -92,6 +92,8 @@ export interface TaskSetVariable {
   readonly entries: readonly { readonly id: string | null; readonly label: string; readonly weight?: SetEntryWeight }[];
   /** Sets one part of an entry's weight (`side` where entries co-occur). */
   readonly weigh?: (entry: string | null, side: WeightSide | undefined, weight: number) => Promise<WeightEdit>;
+  /** The condition on Task variables a trial meets to receive an entry; a trial that fails it receives None. */
+  readonly condition?: FieldModel;
 }
 
 /**

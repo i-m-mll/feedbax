@@ -1,4 +1,4 @@
-"""Assemble the Cartesian panels of a dataset figure."""
+"""Assemble Cartesian and spatial panels of a dataset figure."""
 
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -15,6 +15,10 @@ from feedbax.contracts.figure_document import FigureDocumentView, FigurePanel
 from feedbax.contracts.figure_layout import DataDerivedAxisRange, FigureView, PanelAxis
 from feedbax.contracts.studio_figure import FigureLayoutMeta, FigurePanelMeta, FigureRun
 from feedbax.plot.ranges import calculate_array_minmax
+
+
+type FigureTrace = go.Scatter | go.Scatter3d
+type AxisDimension = Literal["x", "y", "z"]
 
 
 @dataclass(frozen=True)
@@ -48,12 +52,15 @@ class AxisReference:
 @dataclass(frozen=True)
 class _Axis:
     panel: FigurePanel
-    dimension: Literal["x", "y"]
-    layout: go.layout.XAxis | go.layout.YAxis
+    dimension: AxisDimension
+    layout: go.layout.XAxis | go.layout.YAxis | go.layout.scene.XAxis | go.layout.scene.YAxis | go.layout.scene.ZAxis
     settings: PanelAxis | None
+    scene: str | None = None
 
     @property
     def reference(self) -> str:
+        if self.scene is not None:
+            return f"{self.scene}.{self.dimension}axis"
         return self.layout.plotly_name.replace("axis", "", 1)
 
     @property
@@ -65,7 +72,7 @@ def _check_matched_ranges(axes: Sequence[_Axis]) -> None:
     by_ref = {axis.reference: axis for axis in axes}
     matches: dict[str, set[str]] = {ref: set() for ref in by_ref}
     for ref, axis in by_ref.items():
-        target = axis.layout.matches
+        target = getattr(axis.layout, "matches", None)
         if target in matches:
             matches[ref].add(target)
             matches[target].add(ref)
@@ -97,7 +104,7 @@ def _check_matched_ranges(axes: Sequence[_Axis]) -> None:
 
 
 def _extents(
-    dimension: Literal["x", "y"], traces: Sequence[go.Scatter], references: Sequence[AxisReference],
+    dimension: AxisDimension, traces: Sequence[FigureTrace], references: Sequence[AxisReference],
 ) -> Iterator[Sequence[float]]:
     """The values each trace and reference reaches on one axis, error bars included."""
     for trace in traces:
@@ -114,7 +121,7 @@ def _extents(
 
 
 def _set_derived_ranges(
-    axes: Sequence[_Axis], traces: Mapping[str, Sequence[go.Scatter]], references: Mapping[str, Sequence[AxisReference]],
+    axes: Sequence[_Axis], traces: Mapping[str, Sequence[FigureTrace]], references: Mapping[str, Sequence[AxisReference]],
 ) -> None:
     groups: dict[str, list[tuple[_Axis, DataDerivedAxisRange]]] = {}
     for axis in axes:
@@ -129,7 +136,7 @@ def _set_derived_ranges(
             raise ValueError(f"Data-derived range group {group!r} requires at least two panel axes.")
         dimensions = {axis.dimension for axis, _ in members}
         if len(dimensions) != 1:
-            raise ValueError(f"Data-derived range group {group!r} mixes x and y axes.")
+            raise ValueError(f"Data-derived range group {group!r} mixes different axes.")
         paddings = {declaration.padding_fraction for _, declaration in members}
         if len(paddings) != 1:
             raise ValueError(f"Data-derived range group {group!r} has conflicting padding fractions.")
@@ -172,7 +179,7 @@ def assemble_figure_grid(
     figure: go.Figure,
     panels: Sequence[FigurePanel],
     view: FigureDocumentView,
-    traces: Mapping[str, Sequence[go.Scatter]],
+    traces: Mapping[str, Sequence[FigureTrace]],
     inferred_labels: Mapping[str, Mapping[str, str]],
     *,
     references: Mapping[str, Sequence[AxisReference]] = MappingProxyType({}),
@@ -184,8 +191,14 @@ def assemble_figure_grid(
     titles = [""] * (rows * cols)
     for panel in panels:
         titles[(panel.row - 1) * cols + panel.col - 1] = panel.title or panel.name
+    spatial = {(panel.row - 1, panel.col - 1) for panel in panels
+               if any(isinstance(trace, go.Scatter3d) for trace in traces[panel.name])}
+    specs = [
+        [{"type": "scene"} if (row, col) in spatial else {"type": "xy"} for col in range(cols)]
+        for row in range(rows)
+    ] if spatial else None
     figure = make_subplots(
-        rows=rows, cols=cols, subplot_titles=titles, figure=figure,
+        rows=rows, cols=cols, subplot_titles=titles, figure=figure, specs=specs,
         shared_xaxes=view.shared_xaxes, shared_yaxes=view.shared_yaxes,
         horizontal_spacing=view.horizontal_spacing, vertical_spacing=view.vertical_spacing,
     )
@@ -196,21 +209,23 @@ def assemble_figure_grid(
         for trace in traces[panel.name]:
             figure.add_trace(trace, row=panel.row, col=panel.col)
         subplot = figure.get_subplot(panel.row, panel.col)
-        refs = {"x": subplot.xaxis.plotly_name.replace("axis", "", 1), "y": subplot.yaxis.plotly_name.replace("axis", "", 1)}
+        scene = subplot.plotly_name if isinstance(subplot, go.layout.Scene) else None
+        x = _Axis(panel, "x", subplot.xaxis, panel.x_axis, scene)
+        y = _Axis(panel, "y", subplot.yaxis, panel.y_axis, scene)
+        z = _Axis(panel, "z", subplot.zaxis, panel.z_axis, scene) if scene is not None else None
         for reference in references.get(panel.name, ()):
-            figure.add_shape(reference.shape(refs, first=reference.label not in legends))
+            figure.add_shape(reference.shape({"x": x.reference, "y": y.reference}, first=reference.label not in legends))
             legends.add(reference.label)
         labels = inferred_labels.get(panel.name, {})
-        x = _Axis(panel, "x", subplot.xaxis, panel.x_axis)
-        y = _Axis(panel, "y", subplot.yaxis, panel.y_axis)
-        for axis in (x, y):
+        for axis in (x, y, z) if z is not None else (x, y):
             label = getattr(panel.axes_labels, axis.dimension, None)
             axis.layout.title.text = label if label is not None else labels.get(axis.dimension)
             if axis.settings is not None:
                 axis.layout.update(**axis.settings.model_dump(include={"type", "range"}, exclude_none=True))
             axes.append(axis)
         panel_meta[panel.name] = FigurePanelMeta(
-            x_axis=x.reference, y_axis=y.reference, time=panel_times.get(panel.name),
+            x_axis=x.reference, y_axis=y.reference, z_axis=z.reference if z is not None else None,
+            time=panel_times.get(panel.name),
         )
     _set_derived_ranges(axes, traces, references)
     _set_view(figure, view)

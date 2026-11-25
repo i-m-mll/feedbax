@@ -16,8 +16,8 @@ export interface RuleScope {
   readonly variant: string;
 }
 
-const check = (scope: RuleScope, step: string, rule: string, ranked: boolean) => ({
-  queryKey: ['run-rule', scope.project, scope.revision, scope.variant, step, rule, ranked] as const,
+const check = (scope: RuleScope, step: string, rule: string, ranked: boolean, results: readonly string[]) => ({
+  queryKey: ['run-rule', scope.project, scope.revision, scope.variant, step, rule, ranked, results] as const,
   queryFn: ({ signal }: { signal: AbortSignal }) => checkRunRule(scope.project, {
     revision: scope.revision, variant: scope.variant, step, rule, ranked,
   } satisfies StudioRunRuleRequest, signal),
@@ -36,7 +36,7 @@ export function SelectionRule({ scope, source, terms, planned, ranked = true, la
   source: PlanStepView;
   /** The saved selection: its rule, and the rows or axis values pinned beside it. */
   terms: SubsetTerms;
-  /** The plan's count of the saved rule, of its candidates; an empty rule counts every run of `source`. */
+  /** The plan's count of the saved rule; an empty rule counts every run of `source`. */
   planned?: { readonly count: number; readonly total: number };
   ranked?: boolean;
   label?: string;
@@ -53,8 +53,12 @@ export function SelectionRule({ scope, source, terms, planned, ranked = true, la
   const rule = terms.rule ?? '';
   const pinned = pinnedSelectionLabels(terms);
   const [draft, setDraft] = useState<string | null>(null);
+  const results = ranked ? source.runs.flatMap((run) => run.status === 'succeeded'
+    ? [run.id, ...run.results.map(({ jobId }) => jobId)]
+    : []) : [];
   const checked = useQuery({
-    ...check(scope, source.id, draft?.trim() ?? '', ranked), enabled: draft !== null, placeholderData: keepPreviousData,
+    ...check(scope, source.id, draft?.trim() ?? '', ranked, results),
+    enabled: draft !== null, placeholderData: keepPreviousData,
   });
   const result = checked.data?.result;
   const runs = useMemo(() => result?.kind === 'chosen'

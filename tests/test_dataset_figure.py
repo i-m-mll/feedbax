@@ -19,7 +19,7 @@ from feedbax.contracts.figure_document import (
     PlotlyFigureProduct,
     validate_figure_bindings,
 )
-from feedbax.contracts.project_sweep import SweepInputMember
+from feedbax.contracts.project_sweep import SweepCoordinate, SweepInputMember
 from feedbax.contracts.report_document import ReportDocument
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.request_refs import ContentRef, InputMember, ProductRef
@@ -384,3 +384,75 @@ def test_error_bounds_that_exclude_their_point_are_refused():
     })
     with pytest.raises(ValueError, match="enclose their point"):
         render(document, {"summary": values})
+
+
+def test_trajectory_scales_preserve_spatial_samples_and_group_values():
+    hand = np.array([[[0, 0], [1, 2], [2, 5]], [[0, 0], [2, 2], [3, 6]]])
+    pca = np.array([[[0, 1, 2], [3, 4, 5], [6, 7, 8]], [[10, 20, 30], [9, 8, 7], [5, 3, 1]]])
+    data = stack_dataset_members([
+        (
+            SweepInputMember(name, {"mass": SweepCoordinate(name, value=mass)}),
+            Dataset.from_arrays(
+                {
+                    "hand": Variable(hand[index], ("sample", "xy"), units="m"),
+                    "embedding": Variable(pca[index], ("sample", "pc")),
+                },
+                coords={
+                    "xy": Variable(np.array(["x", "y"]), ("xy",)),
+                    "pc": Variable(np.array(["PC 1", "PC 2", "PC 3"]), ("pc",)),
+                    "time": Variable(np.array([0, 0.01, 0.02]), ("sample",), trial_time=TrialFigureTime()),
+                },
+            ),
+        )
+        for index, (name, mass) in enumerate((("nominal", 0.5), ("loaded", 2.0)))
+    ])
+    document = FigureDocument.model_validate({
+        "data": ["trials"],
+        "layout": [
+            {"name": "hand", "row": 1, "col": 1},
+            {"name": "pca", "row": 1, "col": 2, "z_axis": {"range": [-1, 31]},
+             "axes_labels": {"x": "PC 1", "y": "PC 2", "z": "PC 3"}},
+        ],
+        "color_scales": {
+            "mass": {"kind": "continuous", "palette": "cividis", "title": "Arm mass (kg)"},
+            "condition": {"kind": "ordinal", "palette": "category10", "domain": ["loaded", "nominal"]},
+        },
+        "layers": [
+            {"name": "reach", "role": "trials", "panel": "hand", "group": ["member"], "mark": "trajectory",
+             "encode": {
+                 "x": {"variable": "hand", "select": {"xy": "x"}},
+                 "y": {"variable": "hand", "select": {"xy": "y"}},
+                 "color": {"field": "mass.value", "scale": "mass"},
+             }},
+            {"name": "hidden", "role": "trials", "panel": "pca", "group": ["member"], "mark": "trajectory",
+             "encode": {
+                 **{axis: {"variable": "embedding", "select": {"pc": name}}
+                    for axis, name in zip("xyz", ("PC 1", "PC 2", "PC 3"), strict=True)},
+                 "color": {"field": "member", "scale": "condition"},
+             }},
+        ],
+    })
+    result = render(document, {"trials": data}, names={"member": {"nominal": "Nominal", "loaded": "Loaded"}})
+    hand_traces, pca_traces, guides = result.data[:2], result.data[2:4], result.data[4:]
+    assert [trace.type for trace in (*hand_traces, *pca_traces)] == ["scatter", "scatter", "scatter3d", "scatter3d"]
+    for index, (reach, hidden) in enumerate(zip(hand_traces, pca_traces, strict=True)):
+        np.testing.assert_array_equal(reach.x, hand[index, :, 0])
+        np.testing.assert_array_equal(reach.y, hand[index, :, 1])
+        for component, axis in enumerate("xyz"):
+            np.testing.assert_array_equal(getattr(hidden, axis), pca[index, :, component])
+    assert hand_traces[0].line.color != hand_traces[1].line.color
+    assert pca_traces[0].line.color != pca_traces[1].line.color
+    assert result.layout.coloraxis.colorbar.title.text == "Arm mass (kg)"
+    assert (result.layout.coloraxis.cmin, result.layout.coloraxis.cmax) == (0.5, 2.0)
+    assert result.layout.coloraxis2.colorbar.ticktext == ("Loaded", "Nominal")
+    assert [trace.marker.coloraxis for trace in guides] == ["coloraxis", "coloraxis2"]
+    assert result.layout.scene.zaxis.range == (-1.0, 31.0)
+    assert result.layout.scene.zaxis.title.text == "PC 3"
+    product = FigureProduct.model_validate_json(result.to_json())
+    assert product.layout.meta.panels["pca"].z_axis == "scene.zaxis"
+    assert product.layout.meta.panels["hand"].time is None
+
+    wrong = document.model_dump(mode="json")
+    wrong["layers"][0]["encode"]["color"]["field"] = "time"
+    with pytest.raises(ValueError, match="one scalar value per plotted group"):
+        render(FigureDocument.model_validate(wrong), {"trials": data})

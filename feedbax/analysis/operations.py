@@ -58,6 +58,7 @@ class RegisteredOperation:
     parameter_model: type[BaseModel]
     definition: OperationDefinition
     task_parameters: type[BaseModel] | None
+    prepared_task_role: str | None = None
 
 
 def _port_annotation(annotation: object) -> tuple[object, object]:
@@ -66,8 +67,7 @@ def _port_annotation(annotation: object) -> tuple[object, object]:
     raise TypeError("expected a type annotation with operation port metadata")
 
 
-def _input_port(annotation: object) -> tuple[OperationInputPort, type[BaseModel] | None]:
-    value_type, metadata = _port_annotation(annotation)
+def _input_port(value_type: object, metadata: object) -> tuple[OperationInputPort, type[BaseModel] | None]:
     if value_type is Dataset and isinstance(metadata, DatasetPort):
         return DatasetInputPort(**metadata.model_dump(exclude={"kind"})), None
     if isinstance(metadata, ModelPort):
@@ -77,7 +77,9 @@ def _input_port(annotation: object) -> tuple[OperationInputPort, type[BaseModel]
             return metadata, None
         raise TypeError("a model input must take a Feedbax Graph")
     if isinstance(metadata, TaskPort):
-        if metadata.task_key is None and value_type is TaskDocument:
+        from feedbax.execution.trial_execution import TrialExecution
+
+        if metadata.task_key is None and value_type in (TaskDocument, TrialExecution):
             return metadata, None
         if metadata.task_key is not None and get_origin(value_type) is PythonTaskInstance:
             validate_declaration_key(metadata.task_key)
@@ -106,6 +108,7 @@ class OperationRegistry:
             raise TypeError("operation params annotation must match its declared settings model")
         inputs = {}
         task_parameters = None
+        prepared_task_role = None
         for name, parameter in parameters.items():
             if (
                 parameter.kind not in (Parameter.POSITIONAL_OR_KEYWORD, Parameter.KEYWORD_ONLY)
@@ -113,16 +116,24 @@ class OperationRegistry:
             ):
                 raise TypeError("operation arguments must be required and callable by name")
             if name != "params":
-                port, settings = _input_port(annotations.get(name))
+                value_type, metadata = _port_annotation(annotations.get(name))
+                port, settings = _input_port(value_type, metadata)
                 inputs[name] = port
                 if settings is not None:
                     task_parameters = settings
+                if isinstance(port, TaskPort):
+                    from feedbax.execution.trial_execution import TrialExecution
+
+                    if value_type is TrialExecution:
+                        prepared_task_role = name
         if not inputs:
             raise TypeError("operation requires a named input")
         if sum(isinstance(port, ModelPort) for port in inputs.values()) > 1:
             raise TypeError("operation accepts at most one model input")
         if sum(isinstance(port, TaskPort) for port in inputs.values()) > 1:
             raise TypeError("operation accepts at most one task input")
+        if prepared_task_role is not None and not any(isinstance(port, ModelPort) for port in inputs.values()):
+            raise TypeError("a prepared Task input requires a model input")
         if declaration.numerical is None and any(isinstance(port, ModelPort) for port in inputs.values()):
             raise TypeError("a model-consuming operation requires a numerical worker declaration")
         value_type, output = _port_annotation(annotations.get("return"))
@@ -152,7 +163,7 @@ class OperationRegistry:
             numerical=declaration.numerical,
         )
         self._entries.add(
-            key, source, function, RegisteredOperation(model, definition, task_parameters),
+            key, source, function, RegisteredOperation(model, definition, task_parameters, prepared_task_role),
             renamed_from=declaration.renamed_from,
         )
 
