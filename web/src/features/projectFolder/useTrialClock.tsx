@@ -4,17 +4,16 @@ import { Shelf, type ShelfRow } from '@/components/timeline/Shelf';
 import { ClockGroup, type ClockTimeline } from '@/components/timeline/ClockGroup';
 import { useTimeAxisStore } from '@/components/timeline/timeAxis';
 import {
-  defaultTrialClock, meanSelection, sampleCount, shelfOpen, shownPick, usePlayhead, type MeanChoice,
+  defaultTrialClock, meanSelection, sampleCount, shelfOpen, shownPick, usePlayhead,
   type PlayheadStore, type TrialClock, type TrialOffer, type TrialPick,
 } from '@/components/timeline/trialClock';
 import { studioName } from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
-import { Select } from '@/components/ui/Select';
 import { studioRegionIssue, StudioRegion } from '@/components/activity/StudioRegion';
 import type { SceneTrial } from '@/components/scene/trialScene';
 import { frameAt } from '@/components/timeline/trialClock';
 import type {
-  Problem, StudioSavedEvaluationRow, TaskDocument, TrialMean, TrialMeanOptions, TrialRecord,
+  Problem, StudioSavedEvaluationRow, TaskDocument, TrialMean, TrialRecord,
 } from '@/generated/studioContracts';
 import { selectElement, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import { showProjectWindowView, type ProjectWindowState, type ProjectWindowView } from '@/features/projectWindow/projectWindowState';
@@ -146,21 +145,6 @@ function meanTimeline(mean: TrialMean, stateTime: readonly number[]): Omit<Clock
   return { start, duration: end - start, frameTimes: [...times].sort((a, b) => a - b) };
 }
 
-/** Align's entry for the trial's start, which no epoch's stable ID can be. */
-const trialStart = '#trial-start';
-
-/** Mean's Align: the epoch whose start is zero, the trial's start unless chosen. */
-function MeanAlign({ options, choice, onChange }: {
-  options: TrialMeanOptions; choice: MeanChoice; onChange(choice: MeanChoice): void;
-}) {
-  return <div className="flex min-w-0 items-center gap-1">
-    <span aria-hidden="true" className="text-shell-muted">{studioName('meanAlign')}</span>
-    <Select aria-label={studioName('meanAlign')} value={choice.align ?? trialStart} className="min-w-0 max-w-32"
-      items={[{ value: trialStart, label: studioName('trialStart') }, ...options.align.map(({ id, label }) => ({ value: id, label }))]}
-      onValueChange={(align) => onChange({ ...choice, align: align === trialStart ? null : align })} />
-  </div>;
-}
-
 const frames = (steps: number, stepSeconds: number) => Array.from({ length: steps + 1 }, (_, step) => step * stepSeconds);
 
 /**
@@ -222,8 +206,6 @@ export function useTrialClock({
     ? <Button key={at} variant="bare" size="content" align="start" className="block underline-offset-2 hover:underline"
       onClick={() => choose(problem)}>{problem.reason}</Button>
     : <span key={at} className="block">{problem.reason}</span>);
-  const align = averaging && replay.meanOptions && <MeanAlign options={replay.meanOptions} choice={clock.mean}
-    onChange={(next) => change({ ...clock, mean: next })} />;
   const trails = pick?.trials === 'recorded' && <Button variant="ghost" pressed={clock.trails}
     onClick={() => change({ ...clock, trails: !clock.trails })}>{studioName('trails')}</Button>;
   const scene: SceneTrial = {
@@ -259,7 +241,7 @@ export function useTrialClock({
     trial: shown?.kind === 'problems' ? undefined : shown,
     /** The Mean every figure draws, while Mean is picked. */
     mean: meanSelection(clock),
-    clock: pick && <ClockGroup offer={offer} clock={clock} shown={pick} recordedLabels={recorded.labels} recordedOutOfDate={recorded.outOfDate} meanOptions={replay.meanOptions} onChange={change} showing={align || undefined}
+    clock: pick && <ClockGroup offer={offer} clock={clock} shown={pick} recordedLabels={recorded.labels} recordedOutOfDate={recorded.outOfDate} meanOptions={replay.meanOptions} onChange={change}
       timeline={timeline} time={time} onTimeChange={setTime} axis={axis} shelfOpen={open}
       onShelfChange={(next) => shelfView && change({ ...clock, shelf: { ...clock.shelf, [shelfView]: next } })} />,
     shelf: pick && open && timeline.duration > 0 && (rows
