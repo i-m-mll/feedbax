@@ -397,7 +397,7 @@ class ProjectPlanRead:
             if len(candidates) != 1:
                 return None
             return StepReference(
-                step=key.step, where=SubsetTerms(axes=axes) if axes else None,
+                step=key.step, where=SubsetTerms(clauses=[axes]) if axes else None,
                 element=element, product=PLOTLY_FIGURE_ROLE,
             )
 

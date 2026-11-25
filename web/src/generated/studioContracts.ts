@@ -2623,6 +2623,8 @@ export type AxisLabels = {
   "z"?: string | null;
 };
 
+export type AxisSelectionClause = Record<string, Array<SelectedAxisValue>>;
+
 export type AxisValue = {
   "patches"?: Record<string, PatchValue | null>;
   "label"?: string | null;
@@ -3543,6 +3545,7 @@ export type SelectedAxisValue = {
 };
 
 export type SelectedAxisValueProblem = {
+  "clause_index": number;
   "axis": string;
   "missing": SelectedAxisValue;
   "remaining": Array<SelectedAxisValue>;
@@ -3747,7 +3750,7 @@ export type StoreKind = "all_readers" | "selected_readers" | "sweep_value" | "se
 export type StoreSubset = {
   "rule"?: string;
   "bound_ranks"?: Array<BoundRank> | null;
-  "axes"?: Record<string, Array<SelectedAxisValue>>;
+  "clauses"?: Array<AxisSelectionClause>;
   "query": ManifestPredicate;
 };
 
@@ -4703,7 +4706,7 @@ export type StudioValueStructure = {
 export type SubsetTerms = {
   "rule"?: string;
   "bound_ranks"?: Array<BoundRank> | null;
-  "axes"?: Record<string, Array<SelectedAxisValue>>;
+  "clauses"?: Array<AxisSelectionClause>;
 };
 
 export type Sweep = {
@@ -10008,6 +10011,10 @@ export const AxisLabelsSchema: z.ZodType<AxisLabels> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<AxisLabels>;
 
+export const AxisSelectionClauseSchema: z.ZodType<AxisSelectionClause> = z.lazy(() =>
+  z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(SelectedAxisValueSchema).min(1))
+) as unknown as z.ZodType<AxisSelectionClause>;
+
 export const AxisValueSchema: z.ZodType<AxisValue> = z.lazy(() =>
   z.object({
     "patches": z.record(SweepTargetSchema, z.union([PatchValueSchema, z.null()])).optional(),
@@ -11261,6 +11268,7 @@ export const SelectedAxisValueSchema: z.ZodType<SelectedAxisValue> = z.lazy(() =
 
 export const SelectedAxisValueProblemSchema: z.ZodType<SelectedAxisValueProblem> = z.lazy(() =>
   z.object({
+    "clause_index": z.number().int().safe().min(0),
     "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "missing": SelectedAxisValueSchema,
     "remaining": z.array(SelectedAxisValueSchema),
@@ -11533,7 +11541,7 @@ export const StoreSubsetSchema: z.ZodType<StoreSubset> = z.lazy(() =>
   z.object({
     "rule": z.string().optional(),
     "bound_ranks": z.union([z.array(BoundRankSchema), z.null()]).optional(),
-    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(SelectedAxisValueSchema).min(1)).optional(),
+    "clauses": z.array(AxisSelectionClauseSchema).min(1).optional(),
     "query": ManifestPredicateSchema,
   }).strict()
 ) as unknown as z.ZodType<StoreSubset>;
@@ -12753,7 +12761,7 @@ export const SubsetTermsSchema: z.ZodType<SubsetTerms> = z.lazy(() =>
   z.object({
     "rule": z.string().optional(),
     "bound_ranks": z.union([z.array(BoundRankSchema), z.null()]).optional(),
-    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(SelectedAxisValueSchema).min(1)).optional(),
+    "clauses": z.array(AxisSelectionClauseSchema).min(1).optional(),
   }).strict()
 ) as unknown as z.ZodType<SubsetTerms>;
 
