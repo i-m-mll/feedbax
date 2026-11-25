@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from itertools import cycle
 from types import MappingProxyType
@@ -132,19 +132,19 @@ def _groups(
 
 def _layer_groups(
     source: _Source, layer: FigureLayer,
-) -> Iterator[tuple[dict[str, Label], Positions, dict[str, int], int | None]]:
+) -> Iterator[tuple[dict[str, Label], Positions, dict[str, int]]]:
     member = source.descriptor.coords.get(MEMBER)
     coordinates = tuple(name for name in layer.group if name != MEMBER)
     if MEMBER not in layer.group or member is None or not member.dims:
         for group, positions in _groups(source, coordinates, _selected(source, layer.select, {}, {}), {}):
-            yield group, positions, {}, None
+            yield group, positions, {}
         return
 
-    for number, (indices, value) in enumerate(np.ndenumerate(source.read(MEMBER)), start=1):
+    for indices, value in np.ndenumerate(source.read(MEMBER)):
         fixed = dict(zip(member.dims, indices, strict=True))
         positions = _selected(source, layer.select, {dim: (index,) for dim, index in fixed.items()}, fixed)
         for group, positions in _groups(source, coordinates, positions, fixed):
-            yield {MEMBER: str(value)} | group, positions, fixed, number
+            yield {MEMBER: str(value)} | group, positions, fixed
 
 
 @dataclass(frozen=True)
@@ -300,13 +300,33 @@ def _by_value_label(value: JsonValue) -> str:
     return value if isinstance(value, str) else canonical_json_v2_bytes(value).decode()
 
 
+def _member_labels(entries: Iterable[tuple[str, Label]]) -> dict[tuple[str, Label], str]:
+    """Number members only where they would otherwise have the same legend label."""
+    by_label: dict[str, dict[Label, int]] = defaultdict(dict)
+    for label, member in entries:
+        if member is not None:
+            members = by_label[label]
+            members.setdefault(member, len(members) + 1)
+    return {
+        (label, member): f"{label} · Run {index}"
+        for label, members in by_label.items() if len(members) > 1
+        for member, index in members.items()
+    }
+
+
 def _label_means(legends: list[_MeanLegend]) -> None:
     values: dict[str, set[bytes]] = defaultdict(set)
     for legend in legends:
         for name, value in legend.group.items():
             values[name].add(canonical_json_v2_bytes(value))
-    for legend in legends:
-        label = " · ".join(text for name, text in legend.parts.items() if len(values[name]) > 1) or legend.layer
+    names = [
+        " · ".join(text for name, text in legend.parts.items() if name != MEMBER and len(values[name]) > 1)
+        or legend.layer
+        for legend in legends
+    ]
+    labels = _member_labels((name, legend.group.get(MEMBER)) for name, legend in zip(names, legends, strict=True))
+    for name, legend in zip(names, legends, strict=True):
+        label = labels.get((name, legend.group.get(MEMBER)), name)
         # Distinct groups may round to the same label. Keep their legend controls independent.
         legend_group = canonical_json_v2_bytes([label, legend.group]).decode()
         for trace in legend.traces:
@@ -421,11 +441,12 @@ def render(
         try:
             clock = None
             trial_rows: list[_TrialTrace] = []
+            layer_legends: list[tuple[str, Label, tuple[go.Scatter, ...]]] = []
             if "trial" in layer.group and mean is not None:
                 if recorded_trials is None or layer.role not in recorded_trials:
                     raise ValueError(f"No retained trial clock for data role {layer.role!r}.")
                 clock = FigureTrialSource(source.dataset, recorded_trials[layer.role], source.read)
-            for group, positions, member, number in _layer_groups(source, layer):
+            for group, positions, member in _layer_groups(source, layer):
                 channels = {}
                 for channel, encoding in layer_encodings(layer):
                     try:
@@ -437,8 +458,6 @@ def render(
                 if "trial" in group:
                     dimension, _ = source.coordinate("trial", member)
                     printed["trial"] = positions[dimension][0] + 1
-                if number is not None:
-                    printed[MEMBER] = f"Run {number}"
                 color = layer.style.color or next(colors)
                 if clock is not None:
                     record, options = clock.project(positions)
@@ -447,15 +466,22 @@ def render(
                     ))
                 else:
                     label = (layer.style.label or layer.name).format_map(printed)
-                    if number is not None and "{member" not in (layer.style.label or ""):
-                        label = f"{label} · {printed[MEMBER]}"
-                    traces[layer.panel].extend(_draw(layer, channels, label, color, group=group))
+                    drawn = _draw(layer, channels, label, color, group=group)
+                    layer_legends.append((label, group.get(MEMBER), drawn))
+                    traces[layer.panel].extend(drawn)
                 time = channels["x"].field.trial_time
                 if panel_times.setdefault(layer.panel, time) != time:
                     panel_times[layer.panel] = None
                 inferred_labels.setdefault(
                     layer.panel, {axis: channels[axis].label for axis in ("x", "y")}
                 )
+            member_labels = _member_labels((label, member) for label, member, _ in layer_legends)
+            for label, member, drawn in layer_legends:
+                display = member_labels.get((label, member), label)
+                if display != label:
+                    drawn[0].update(name=display)
+                    for trace in drawn:
+                        trace.update(legendgroup=display)
             if mean is not None and trial_rows:
                 traces[layer.panel].extend(_trial_traces(layer, trial_rows, mean, mean_legends))
                 if trial_rows[0].channels["x"].field.trial_time is not None:

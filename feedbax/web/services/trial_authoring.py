@@ -580,11 +580,13 @@ def _definition(plan, key):
     """The run's definition; a run whose own definition is refused is refused with its problem."""
     definition = plan.selected_definitions.get(key)
     if definition is None:
-        problem = next(
+        problem = next((
             item for item in plan.diagnostics
             if item.step == key.step and item.row == key.row and item.variant in (None, key.variant)
-        )
-        raise ProjectFolderInvalid(problem.detail)
+        ), None)
+        if problem is not None:
+            raise ProjectFolderInvalid(problem.detail)
+        raise ProjectFolderInvalid("The selected run no longer belongs to this step.")
     return definition
 
 
