@@ -148,6 +148,8 @@ export interface StudioActivityJob {
   label: string;
   coordinates: Record<string, JsonValue>;
   status: "not_run" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "waiting" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
+  submitted_at_ms: number;
+  ended_at_ms: number | null;
   phase?: string | null;
   reason?: string | null;
   can_resume?: boolean;
@@ -6139,6 +6141,8 @@ export const StudioActivityJobSchema: z.ZodType<StudioActivityJob> = z.lazy(() =
       "label": z.string(),
       "coordinates": z.record(z.string(), jsonValueSchema),
       "status": z.union([z.literal("not_run"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("waiting"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
+      "submitted_at_ms": z.number().int().safe().gte(0),
+      "ended_at_ms": z.number().int().safe().gte(0).nullable(),
       "phase": z.string().nullable().optional(),
       "reason": z.string().nullable().optional(),
       "can_resume": z.boolean().optional(),
