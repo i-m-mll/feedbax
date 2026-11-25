@@ -84,10 +84,13 @@ const kindGlyphs: Record<ValueKind, ReactNode> = {
 /**
  * Sends edits to the model's source, one at a time in the order they are made. An edit made while the source is briefly
  * unavailable (a projection being replaced) or while the field's last edit saves waits for it rather than being
- * dropped, and the field stays editable meanwhile.
+ * dropped, and the field stays editable meanwhile. `sent` is the value of the latest set edit still being saved, which
+ * a control shows until its source answers.
  */
 function useSubmit(model: FieldModel) {
   const [refusal, setRefusal] = useState<Refused>();
+  const [sent, setSent] = useState<{ value: FieldModel['value'] }>();
+  const latestSet = useRef<FieldEdit>();
   const tail = useRef<Promise<unknown>>(Promise.resolve());
   const waiting = useRef<{ edit: FieldEdit; resolve(done: boolean): void }>();
   const latest = useRef(model);
@@ -100,12 +103,21 @@ function useSubmit(model: FieldModel) {
   const setReason = (reason: FieldRefusal | undefined) =>
     setRefusal(reason === undefined ? undefined : { reason: typeof reason === 'string' ? reason : reason.reason });
   function submit(edit: FieldEdit) {
+    if (edit.kind === 'set') {
+      latestSet.current = edit;
+      setSent({ value: edit.value });
+    }
     const result = tail.current.then(() => {
       const { commit } = latest.current;
       if (commit) return send(commit, edit);
       return new Promise<boolean>((resolve) => { waiting.current = { edit, resolve }; });
     });
     tail.current = result.catch(() => undefined);
+    if (edit.kind === 'set') {
+      void tail.current.then(() => {
+        if (latestSet.current === edit) setSent(undefined);
+      });
+    }
     return result;
   }
   useEffect(() => {
@@ -114,7 +126,7 @@ function useSubmit(model: FieldModel) {
     waiting.current = undefined;
     void send(model.commit, next.edit).then(next.resolve);
   });
-  return { reason: refusal?.reason, refusal, setReason, submit };
+  return { reason: refusal?.reason, refusal, setReason, submit, sent };
 }
 
 /** A refusal, with the term it is about in the text it is about. */
@@ -152,7 +164,8 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
   const reasonId = useId();
   const originId = useId();
   const changeId = useId();
-  const { reason, refusal, setReason, submit } = useSubmit(model);
+  const { reason, refusal, setReason, submit, sent } = useSubmit(model);
+  const value = sent ? sent.value : model.value;
   const readOnly = !model.commit;
   const shownReason = reason ?? model.reason;
   const term = shownReason ? problemTerm(model, refusal) : undefined;
@@ -178,12 +191,12 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
     switch (type.kind) {
       case 'boolean':
         return <span className="value-field-check">
-          <Checkbox aria-labelledby={labelId} checked={model.value === true} disabled={readOnly}
+          <Checkbox aria-labelledby={labelId} checked={value === true} disabled={readOnly}
             aria-describedby={describedBy} onCheckedChange={(checked) => void submit({ kind: 'set', value: checked })} />
           {marks}
         </span>;
       case 'choice': {
-        const index = optionIndex(type.options, model.value);
+        const index = optionIndex(type.options, value);
         return <Select aria-labelledby={labelId} aria-describedby={describedBy} className="w-full" disabled={readOnly}
           value={index < 0 ? null : String(index)} placeholder={studioName('mixed')} trailing={problem || change}
           items={type.options.map((option, position) => ({ value: String(position), label: option.label }))}
