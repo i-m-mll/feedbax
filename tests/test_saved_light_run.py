@@ -634,9 +634,31 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
         "inputs": {"states": {"input": "states"}},
     }
     analysis["views"]["profile"]["figure"] = {"template": "feedbax.VelocitySummary"}
+    speed_figure = SpeedByTrial(SpeedByTrialSettings()).model_dump(mode="json", exclude_unset=True)
+    color = {"field": "mass.value", "scale": "load"}
+    scales = {"load": {"kind": "continuous", "legend": False}}
+    speed_figure["color_scales"] = scales
+    speed_figure["layers"][0]["encode"]["color"] = color
     analysis["views"]["by_trial"] = {
-        "figure": SpeedByTrial(SpeedByTrialSettings()).model_dump(mode="json", exclude_unset=True),
+        "figure": speed_figure,
         "inputs": {"speed": {"element": "speed", "product": "speed"}},
+    }
+    analysis["views"]["motion"] = {
+        "figure": {
+            "data": ["states"], "layout": [{"name": "motion", "row": 1, "col": 1}],
+            "color_scales": scales,
+            "layers": [{
+                "name": "motion", "mark": "trajectory", "role": "states", "panel": "motion",
+                "group": ["member", "condition", "trial"], "select": {"checkpoint": {"index": 0}},
+                "encode": {
+                    axis: {
+                        "variable": analysis["operations"]["align"]["params"]["target"],
+                        "select": {"xy": {"index": index}},
+                    } for index, axis in enumerate(("x", "y"))
+                } | {"color": color},
+            }],
+        },
+        "inputs": {"states": {"input": "states"}},
     }
     steps = definition["steps"]
     mass_values = steps["conditions"]["sweep"]["axes"]["mass"]["values"]
@@ -667,7 +689,7 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
     assert not plan.diagnostics
     analyze = RunKey("default", "analyze", "default")
     assert {element.name for element in plan.elements if element.run == analyze} == {
-        "align", "summarize", "profile", "speed", "by_trial",
+        "align", "summarize", "profile", "speed", "by_trial", "motion",
     }
     align = plan.elements[ElementKey(analyze, "align")]
     decoded = decode_request(plan.requests[align.request_id], plan.documents.__getitem__)
@@ -689,11 +711,11 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
             ],
         })
         assert response.status_code == 202, response.text
-        assert [item["disposition"] for item in response.json()["items"]] == ["admitted"] * 9, response.text
+        assert [item["disposition"] for item in response.json()["items"]] == ["admitted"] * 10, response.text
 
         def terminal():
             jobs = host.jobs(project=review.project_id)
-            return jobs if len(jobs) == 9 and all(job["outcome"] is not None for job in jobs) else None
+            return jobs if len(jobs) == 10 and all(job["outcome"] is not None for job in jobs) else None
 
         jobs = wait_until(terminal)
         assert all(job["state"] == "succeeded" for job in jobs), [
@@ -767,6 +789,21 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
         assert [edge["from_key"] for edge in window["edges"] if edge["to_key"] == address("analyze")] == [
             address("conditions", rows[key]) for key in order
         ]
+        response = reopened.post(f"{path}/authoring/analyze", json={"revision": revision, "key": address("analyze")})
+        assert response.status_code == 200, response.text
+        catalog = response.json()
+        for port in (catalog["states"], catalog["operation_outputs"]["speed"]["speed"]):
+            assert {field: port["coordinates"][field]["dims"] for field in ("member", "mass", "mass.value")} == {
+                "member": ["mass"], "mass": ["mass"], "mass.value": ["mass"],
+            }
+        assert {"input": "states"} in catalog["sources"]["motion"]["states"]
+        assert {"element": "speed", "product": "speed"} in catalog["sources"]["by_trial"]["speed"]
+        motion, = (element["requests"][0] for element in window["analysis_elements"] if element["name"] == "motion")
+        motion_figure = reopened.get(motion["result"]["products"]["figure"])
+        assert motion_figure.status_code == 200, motion_figure.text
+        motion_traces = motion_figure.json()["data"]
+        assert {trace["meta"]["group"]["member"] for trace in motion_traces} == set(members)
+        assert len({trace["line"]["color"] for trace in motion_traces}) == 2
         (profile,) = (element["requests"][0] for element in window["analysis_elements"] if element["name"] == "profile")
         figure_ref, rendered_figure = proof(profile["request_id"])
         assert rendered_figure.inputs["summary"][0].selection.receipt == summary_ref
@@ -784,6 +821,7 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
         speed = reopened.get(by_trial["result"]["products"]["figure"])
         assert speed.status_code == 200, speed.text
         product = FigureProduct.model_validate_json(speed.content)
+        assert len({trace["line"]["color"] for trace in speed.json()["data"]}) == 2
         assert product.layout.meta.panels["speed"].model_dump(exclude_none=True) == {
             "time": {}, "x_axis": "x", "y_axis": "y",
         }

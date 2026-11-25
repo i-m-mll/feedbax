@@ -4233,6 +4233,7 @@ export type StudioAnalyzeAuthoring = {
   "document": string;
   "operations": Array<OperationDefinition>;
   "states": DatasetPort | null;
+  "operation_outputs"?: Record<string, Record<string, DatasetPort>>;
   "sources": Record<string, Record<string, Array<StepInput | OperationDataset>>>;
   "variables": Record<string, Record<string, Array<string>>>;
   "variable_names"?: Record<string, string>;
@@ -12935,6 +12936,7 @@ export const StudioAnalyzeAuthoringSchema: z.ZodType<StudioAnalyzeAuthoring> = z
     "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "operations": z.array(OperationDefinitionSchema),
     "states": z.union([DatasetPortSchema, z.null()]),
+    "operation_outputs": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), DatasetPortSchema)).optional(),
     "sources": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.union([StepInputSchema, OperationDatasetSchema])))),
     "variables": z.record(z.string(), z.record(z.string(), z.array(z.string()))),
     "variable_names": z.record(z.string(), z.string()).optional(),

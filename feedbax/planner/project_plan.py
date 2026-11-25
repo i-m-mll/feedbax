@@ -515,6 +515,10 @@ class PlannedAnalyzeRun(PlannedRow):
     requires: tuple[str, ...]
     inputs: Mapping[str, tuple[PlannedInput, ...]]
     figures: Mapping[str, FigureDocument]
+    dataset_inputs: Mapping[str, DatasetPort]
+    """The resolved ports of this row's dataset inputs, including stack coordinates."""
+    dataset_outputs: Mapping[str, Mapping[str, DatasetPort]]
+    """Each operation's readable dataset products, with the labels of their stacked members."""
 
     def requests(self, name: str) -> tuple[PlannedElement, ...]:
         """The requests of the element ``name``, in plan order."""
@@ -3723,7 +3727,7 @@ class _Compiler:
             and isinstance(producer := source.member.reference, ProductRef)
             and producer.request_id.startswith("evaluate:")
         }
-        elements, encoded, problems, figures = lower_analyze(
+        elements, encoded, problems, figures, dataset_inputs, dataset_outputs = lower_analyze(
             key,
             resolved.payload,
             resolved.document_ids,
@@ -3748,6 +3752,8 @@ class _Compiler:
         run = PlannedAnalyzeRun(
             key, original.kind, original.label, original.coordinates,
             MappingProxyType(elements), template.requires, MappingProxyType(dict(inputs)), MappingProxyType(figures),
+            MappingProxyType(dataset_inputs),
+            MappingProxyType({name: MappingProxyType(ports) for name, ports in dataset_outputs.items()}),
             axis_keys=original.axis_keys,
             input_axes=original.input_axes,
             document_ids=MappingProxyType(dict(resolved.document_ids)),
