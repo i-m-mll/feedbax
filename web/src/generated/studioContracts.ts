@@ -300,6 +300,7 @@ export interface StudioSavedEvaluationResult {
   job_id: string;
   request_id?: string | null;
   revision?: string | null;
+  trials?: string[] | null;
   receipt: JobReceipt;
   checkpoint_source: StudioTrainCheckpointSource | null;
   size_bytes: number;
@@ -6073,6 +6074,7 @@ export const StudioSavedEvaluationResultSchema: z.ZodType<StudioSavedEvaluationR
       "job_id": z.string(),
       "request_id": z.string().nullable().optional(),
       "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")).nullable().optional(),
+      "trials": z.array(z.string()).nullable().optional(),
       "receipt": JobReceiptSchema,
       "checkpoint_source": StudioTrainCheckpointSourceSchema.nullable(),
       "size_bytes": z.number().int().safe().gte(0),
