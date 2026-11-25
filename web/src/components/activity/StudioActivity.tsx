@@ -14,7 +14,8 @@ import {
 
 /** The state a finished job's result is in, where the window knows its validity. */
 export type ActivityResultState = (job: StudioActivityJob) => StudioResultState | undefined;
-import { Button } from '@/components/ui/Button';
+import { Button, IconButton } from '@/components/ui/Button';
+import { X } from 'lucide-react';
 import { Section } from '@/components/ui/Section';
 
 const liveStatuses = new Set<StudioRunStatusId>([
@@ -55,7 +56,10 @@ function ActivityRun({
   const { Icon, tint, name } = studioStep(job.kind);
   const live = isLive(job);
   const coordinates = Object.entries(job.coordinates);
-  const actor = job.actor;
+  /** Who submitted the run, when it was not this Studio: a run from the command line says so. */
+  const client = job.actor?.client === 'studio' ? undefined : job.actor ?? undefined;
+  /** When the run ended, or while it is live, when it was submitted. */
+  const time = job.ended_at_ms ?? job.submitted_at_ms;
 
   /** Runs a row's request; a command made on the row meanwhile is held until it is done. */
   const execute = (command: () => Promise<void>) => holdWhile(async () => {
@@ -108,9 +112,15 @@ function ActivityRun({
           </span>
           <span className="block break-words font-medium">{job.label}</span>
         </Button>
-        <StudioRunStatus status={resultState ?? job.status} />
+        <div className="flex items-center gap-1">
+          <StudioRunStatus status={resultState ?? job.status} />
+          {!live && !job.seen && <ActivityDismiss job={job.job_id} onClick={() => void execute(acknowledge)} />}
+        </div>
       </div>
-      {(coordinates.length > 0 || actor || machine) && (
+      <time className="block text-xs tabular-nums text-shell-muted" dateTime={new Date(time).toISOString()}>
+        {studioDateTime(time)}
+      </time>
+      {(coordinates.length > 0 || client || machine) && (
         <dl className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-shell-muted">
           {machine && <div className="flex gap-1"><dt>{studioName('machine')}</dt><dd>{machine}</dd></div>}
           {coordinates.map(([axis, value]) => (
@@ -119,13 +129,13 @@ function ActivityRun({
               <dd className="tabular-nums">{coordinateValue(value)}</dd>
             </div>
           ))}
-          {actor && <div className="flex gap-1">
+          {client && <div className="flex gap-1">
             <dt>{studioName('client')}</dt>
-            <dd>{studioName(actor.client)}</dd>
+            <dd>{studioName(client.client)}</dd>
           </div>}
-          {actor?.label && <div className="flex min-w-0 gap-1">
+          {client?.label && <div className="flex min-w-0 gap-1">
             <dt>{studioName('label')}</dt>
-            <dd className="min-w-0 break-words">{actor.label}</dd>
+            <dd className="min-w-0 break-words">{client.label}</dd>
           </div>}
         </dl>
       )}
@@ -145,9 +155,6 @@ function ActivityRun({
         )}
         {jobAllowsCommand(job, 'resume') && (
           <ActivityCommand name="resume" job={job.job_id} onClick={() => void resume()} />
-        )}
-        {!live && !job.seen && (
-          <ActivityCommand name="dismiss" job={job.job_id} onClick={() => void execute(acknowledge)} />
         )}
       </div>
     </li>
@@ -213,7 +220,7 @@ function ActivityCommand({
   job,
   onClick,
 }: {
-  name: 'stop' | 'forceStop' | 'resume' | 'dismiss';
+  name: 'stop' | 'forceStop' | 'resume';
   /** The job the command acts on, which tells apart the commands of each row. */
   job: string;
   onClick: () => void;
@@ -224,6 +231,13 @@ function ActivityCommand({
       {studioName(name)}
     </Button>
   );
+}
+
+/** Dismiss: marks a settled run seen, which takes it off the list of runs to look at. */
+function ActivityDismiss({ job, onClick }: { job: string; onClick: () => void }) {
+  const command = bindStudioCommand('dismiss', onClick, { keyboard: false, instance: job });
+  return <IconButton size="mark" label={command.label} icon={<X aria-hidden="true" />} {...commandAttributes(command)}
+    disabled={!command.enabled} onClick={command.invoke} />;
 }
 
 interface StudioActivityPaneProps {

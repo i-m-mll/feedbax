@@ -384,7 +384,9 @@ pub fn attach(app: &AppHandle, label: &str, url: &Url, route: Route) -> tauri::R
         Route::Project(_) => "Object.defineProperty(window, '__FEEDBAX_STUDIO_MENU__', {\
              value: Object.freeze({publish: snapshot =>\
                window.__TAURI_INTERNALS__.invoke('publish_studio_menu', {snapshot}),\
-               windowAction: action => window.__TAURI_INTERNALS__.invoke('studio_window_action', {action})})\
+               windowAction: action => window.__TAURI_INTERNALS__.invoke('studio_window_action', {action}),\
+               saveFile: (name, bytes) => window.__TAURI_INTERNALS__.invoke('save_studio_file', bytes,\
+                 {headers: {'Studio-File-Name': encodeURIComponent(name)}})})\
            });",
         Route::Start => "Object.defineProperty(window, '__FEEDBAX_STUDIO_START__', {\
              value: Object.freeze({openFolder: () =>\
@@ -416,7 +418,8 @@ fn capability(label: &str, origin: &str, route: &Route) -> CapabilityBuilder {
     match route {
         Route::Project(_) => capability
             .permission("allow-publish-studio-menu")
-            .permission("allow-studio-window-action"),
+            .permission("allow-studio-window-action")
+            .permission("allow-save-studio-file"),
         Route::Start => capability.permission("allow-open-project-folder"),
     }
 }
@@ -489,6 +492,19 @@ pub fn clear(app: &AppHandle, label: &str, destroyed: bool) {
     }
     drop(routing);
     refresh_on_main_thread(app);
+}
+
+/** Refuses a webview that is not a registered Studio project window at its service origin. */
+pub fn require_project_window(window: &WebviewWindow) -> Result<(), String> {
+    let url = window.url().map_err(|error| error.to_string())?;
+    let state = window.state::<StudioMenu>();
+    let routing = state.routing.lock().unwrap();
+    routing
+        .windows
+        .get(window.label())
+        .filter(|target| target.project_id().is_some() && target.permits(&url))
+        .map(|_| ())
+        .ok_or_else(|| "Saving a file requires a registered Studio project window".into())
 }
 
 #[tauri::command]

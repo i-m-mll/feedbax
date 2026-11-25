@@ -83,7 +83,7 @@ def test_split_and_merge_are_refused_for_a_shared_document(studio):
 
 def test_split_and_merge_keep_a_broken_analyze_input_and_the_readable_operations(studio, monkeypatch):
     client, folders = studio
-    monkeypatch.setattr(client.app.state.project_plan, "read", lambda project, *, revision: (
+    monkeypatch.setattr(client.app.state.project_plan, "read", lambda project, *, revision, **_: (
         ProjectPlanRead.without_history(folders.read_plan(project, revision=revision))
     ))
     project = _report_project()
@@ -103,12 +103,16 @@ def test_split_and_merge_keep_a_broken_analyze_input_and_the_readable_operations
     assert merged["snapshot"]["project"]["steps"]["analyze"]["inputs"]["missing_role"] == [
         {"step": "missing_evaluate"},
     ]
+    revision = merged["snapshot"]["revision"]
     response = client.post(f"{URL}/authoring/analyze", json={
-        "revision": merged["snapshot"]["revision"],
+        "revision": revision,
         "key": {"variant": "default", "step": "analyze", "row": "default"},
     })
     assert response.status_code == 200, response.text
     assert response.json()["operations"]
-    assert any(item["path"] == "inputs.missing_role" for item in response.json()["problems"])
+    assert all(item["path"] != "inputs.missing_role" for item in response.json()["problems"])
+    plan = client.get(f"{URL}/train-runs", params={"revision": revision, "window_map": True})
+    assert plan.status_code == 200, plan.text
+    assert any(item["path"] == "inputs.missing_role" for item in plan.json()["window_map"]["problems"])
     plan = folders.read_plan(PROJECT, revision=None).plan
     assert {key.name for key in plan.elements} == {"align", "summarize"}

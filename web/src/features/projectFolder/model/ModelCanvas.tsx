@@ -1,6 +1,6 @@
 import {
   Background, BaseEdge, ConnectionMode, EdgeLabelRenderer, Handle, Position, ReactFlowProvider,
-  getBezierPath, getSmoothStepPath, useConnection, useReactFlow, useStore, useUpdateNodeInternals,
+  getBezierPath, getSmoothStepPath, useConnection, useReactFlow, useStore, useStoreApi, useUpdateNodeInternals,
   type Edge, type EdgeProps, type Node, type NodeProps, type OnConnectStart, type OnSelectionChangeParams,
 } from '@xyflow/react';
 import {
@@ -258,6 +258,31 @@ function rounded(points: readonly ModelPosition[]) {
   return `${path} L ${last.x},${last.y}`;
 }
 
+/** The clearance a wire's label keeps from a card's edge: about half the label's height. */
+const LABEL_CLEARANCE = 12;
+
+/**
+ * Where a wire's label sits so no card hides it: `mid` when no card covers it, else the point along the wire nearest its
+ * middle that no card covers, or `mid` when cards cover the whole wire.
+ */
+function uncoveredPoint(path: SVGPathElement, mid: ModelPosition,
+  cards: readonly { x: number; y: number; width: number; height: number }[]): ModelPosition | undefined {
+  const covered = ({ x, y }: ModelPosition) => cards.some((card) =>
+    x > card.x - LABEL_CLEARANCE && x < card.x + card.width + LABEL_CLEARANCE &&
+    y > card.y - LABEL_CLEARANCE && y < card.y + card.height + LABEL_CLEARANCE);
+  if (!covered(mid)) return undefined;
+  const length = path.getTotalLength();
+  const samples = Math.max(2, Math.ceil(length / 4));
+  let best: { point: ModelPosition; distance: number } | undefined;
+  for (let index = 0; index <= samples; index += 1) {
+    const along = (length * index) / samples;
+    const { x, y } = path.getPointAtLength(along);
+    const distance = Math.abs(along - length / 2);
+    if (!covered({ x, y }) && (!best || distance < best.distance)) best = { point: { x, y }, distance };
+  }
+  return best?.point;
+}
+
 const Wire = memo(function Wire({ id, data, type, source, target, sourceX, sourceY, targetX, targetY,
   sourcePosition, targetPosition, markerEnd }: EdgeProps<ModelEdge>) {
   const { screenToFlowPosition } = useReactFlow();
@@ -291,8 +316,8 @@ const Wire = memo(function Wire({ id, data, type, source, target, sourceX, sourc
   const [path, labelX, labelY] = physical ? getBezierPath(geometry)
     : !under && !waypoints?.length ? getSmoothStepPath({ ...geometry, borderRadius: 6, offset: 16 })
       : [rounded(turns), (a.x + b.x) / 2, bend];
-  const mid = { x: labelX, y: labelY };
   const delayed = data?.attachments?.some((item) => item.delay);
+  const labelled = !!(data?.attachments?.length || data?.bundleCount || data?.problem || data?.change);
   const pathRef = useRef<SVGPathElement>(null);
   const [dash, setDash] = useState<string>();
   useEffect(() => {
@@ -301,8 +326,18 @@ const Wire = memo(function Wire({ id, data, type, source, target, sourceX, sourc
     const half = length / 2;
     setDash(`${half} 0 ${'5 3 '.repeat(Math.min(1000, Math.ceil(half / 8)))}0 ${length}`);
   }, [delayed, path]);
+  const cards = useStoreApi<ModelCard, ModelEdge>();
+  const [clear, setClear] = useState<ModelPosition>();
+  useLayoutEffect(() => {
+    const measured = pathRef.current;
+    if (!labelled || !measured) return setClear(undefined);
+    setClear(uncoveredPoint(measured, { x: labelX, y: labelY }, [...cards.getState().nodeLookup.values()].map((node) => ({
+      ...node.internals.positionAbsolute, width: node.measured.width ?? 0, height: node.measured.height ?? 0,
+    }))));
+  }, [labelled, path, labelX, labelY, cards]);
+  const mid = clear ?? { x: labelX, y: labelY };
   return <>
-    {delayed && <path d={path} ref={pathRef} visibility="hidden" aria-hidden="true" />}
+    {(delayed || labelled) && <path d={path} ref={pathRef} visibility="hidden" aria-hidden="true" />}
     <BaseEdge id={id} path={path} markerEnd={markerEnd} className="studio-model-wire"
       style={{ strokeWidth: data?.selected || data?.bundleCount ? 3 : physical ? 2.4 : 1.3,
         strokeDasharray: data?.ghost ? '4 3' : delayed ? dash : undefined }} />

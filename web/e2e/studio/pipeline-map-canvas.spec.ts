@@ -189,3 +189,20 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', { 
     await vision.detach();
   }
 });
+
+// Catches: a window narrowed after the map was fitted leaves the rightmost step cut off.
+test('a narrowed window fits the map again so every step stays in view', async ({ page, request }) => {
+  const [model, task, objective, train, successor] = await fixture('managed-files');
+  const { snapshot } = await seedManagedProject(request, [model, task, objective, train, successor]);
+  const canvas = page.locator('[data-map-canvas]');
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await expect(canvas.locator('[data-map-edge]')).toHaveCount(1);
+  await page.setViewportSize({ width: 700, height: 800 });
+  await expect.poll(() => canvas.evaluate((node) => {
+    const region = node.getBoundingClientRect();
+    return [...node.querySelectorAll('[data-map-card]')].every((card) => {
+      const box = card.getBoundingClientRect();
+      return box.left >= region.left && box.right <= region.right && box.top >= region.top && box.bottom <= region.bottom;
+    });
+  }), { message: 'Every map card lies inside the map' }).toBe(true);
+});

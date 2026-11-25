@@ -26,6 +26,7 @@ export function bindProjectEditor(initial: StudioProjectDocument, signal?: Abort
     unwatch = watchProjectFolder(projectId, {
       revision: (notice) => editor.observe(notice),
       connected: () => editor.connected(),
+      planChanged: () => editor.planChanged(),
     });
   } catch (error) {
     editor.dispose();

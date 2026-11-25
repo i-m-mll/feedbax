@@ -712,11 +712,9 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, def
                 adapt=(lambda target: _objective_edits(raw, target, change)) if change.kind == "objective" else None,
             )
 
-        preferred = write_for(users)
-        candidates = [
-            ("all_readers", "All Steps", document, preferred),
-            ("selected_readers", "Only This Step", document, write_for(chosen)),
-        ]
+        candidates = [("all_readers", "All Steps", document, write_for(users))]
+        if chosen != users:
+            candidates.append(("selected_readers", "Only This Step", document, write_for(chosen)))
     else:
         stored = store_for(stored_scope, chosen)
         kind, label = (
@@ -975,7 +973,9 @@ def _validate_files(
             figure_templates=bundle.figure_templates, training_methods=bundle.training_methods,
         )
 
-    before = settled.plan if possible <= settled.plan.selected_definitions.keys() else compile_sources(project, possible)
+    before = settled.plan
+    if not possible <= before.selected_definitions.keys():
+        before = folders.read_plan(settled.project_id, revision=body.revision, source_runs=possible).plan
 
     def preview(kind, label, source, stored):
         if not stored.files and not stored.created:
