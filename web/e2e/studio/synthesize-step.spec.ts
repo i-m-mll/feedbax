@@ -36,9 +36,10 @@ test('New makes a Synthesize step whose Method and settings are edited in its in
   await expect.poll(async () => (await saved())?.base).toMatchObject({ inline: { settings: { value: 2 } } });
 });
 
-// Catches: a synthesized model an Evaluate cannot read, or reads as a Train checkpoint, so its result names no origin.
-test('a Synthesize step on the shipped Model is run and read by an Evaluate made from it', { tag: '@round' }, async ({ page, request, studio }) => {
-  test.setTimeout(60_000);
+// Catches: a synthesized model an Evaluate or a Train start cannot read, or one read as a Train checkpoint, so the
+// Evaluate's result names no origin.
+test('a Synthesize step on the shipped Model is run, read by an Evaluate made from it, and starts a Train', { tag: '@round' }, async ({ page, request, studio }) => {
+  test.setTimeout(90_000);
   const project: string = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.synthesis', 'seed', studio.home, 'synthesis'));
   const projectPath = `/api/projects/${project}`;
   const runsPath = `${projectPath}/train-runs`;
@@ -103,4 +104,11 @@ test('a Synthesize step on the shipped Model is run and read by an Evaluate made
   await expect(results.getByText('Synthesized', { exact: true })).toBeVisible();
   await expect(results.getByRole('button', { name: 'synthesize', exact: true })).toBeVisible();
   await expect(tab(page, 'Scene')).toBeEnabled();
+
+  await mapStep(page, 'simple-reaches').click();
+  await tab(page, 'Runs').click();
+  await pick(page.getByRole('complementary', { name: 'Inspector', exact: true })
+    .getByRole('combobox', { name: 'Start', exact: true }), 'synthesize');
+  await expect.poll(async () => JSON.stringify(await step('simple-reaches'))).toContain('"step":"synthesize"');
+  await run('simple-reaches');
 });
