@@ -213,6 +213,7 @@ class _Lowerer:
         self.upstream = upstream
         self.operations = operations
         self.declarations: Mapping[str, AnalyzeInput] = {}
+        self.element_names: dict[str, str] = {}
         self.figure_templates = figure_templates
         self.elements: dict[str, list[PlannedElement]] = {}
         self.figures: dict[str, FigureDocument] = {}
@@ -255,6 +256,7 @@ class _Lowerer:
                 row=self.key.row,
                 variant=self.key.variant,
                 element=element,
+                element_name=self.element_names.get(element) if element is not None else None,
                 document_path=document_path,
             )
         )
@@ -713,6 +715,10 @@ def lower_analyze(
         return lower.planned, lower.encoded, lower.problems, lower.figures
 
     lower.declarations = document.inputs
+    lower.element_names = {
+        name: item.label or name
+        for items in (document.operations, document.views) for name, item in items.items()
+    }
     graph = TopologicalSorter()
     for name, element in sorted(document.operations.items()):
         graph.add(

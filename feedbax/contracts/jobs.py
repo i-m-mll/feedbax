@@ -414,7 +414,7 @@ class StudioProjectWindowMapProblem(StrictModel):
             variant=diagnostic.variant, step=diagnostic.step, row=diagnostic.row,
             place=definition_place(
                 path_parts(diagnostic.path), lambda _slot: diagnostic.document,
-                element=diagnostic.element, member=diagnostic.model_address,
+                element=diagnostic.element, element_name=diagnostic.element_name, member=diagnostic.model_address,
                 variation=lambda _name: diagnostic.variation_target,
             ) if diagnostic.step else None,
             document_path=diagnostic.document_path, address=diagnostic.authored_file or source,

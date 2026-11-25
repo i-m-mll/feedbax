@@ -3996,6 +3996,7 @@ export type StudioAddClassMember = {
 export type StudioAnalysisPlace = {
   "part": "analysis";
   "element": string;
+  "name": string;
 };
 
 export type StudioAnalyzeAuthoring = {
@@ -12229,6 +12230,7 @@ export const StudioAnalysisPlaceSchema: z.ZodType<StudioAnalysisPlace> = z.lazy(
   z.object({
     "part": z.literal("analysis"),
     "element": z.string(),
+    "name": z.string(),
   }).strict()
 ) as unknown as z.ZodType<StudioAnalysisPlace>;
 
