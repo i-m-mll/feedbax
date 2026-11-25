@@ -27,11 +27,12 @@ from feedbax.contracts.request_specs import (
 )
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.studio_figure import FigureRun
-from feedbax.contracts.trial_clock import TrialMeanSelection
+from feedbax.contracts.trial_clock import TrialMeanOptions, TrialMeanSelection
 from feedbax.dataset import Dataset
 from feedbax.contracts.member_stack import labelled_members
 from feedbax.dataset_sweep import dataset_entries, stack_dataset_members
 from feedbax.persistence.completion import read_completion_bindings
+from feedbax.execution.trial_clock import TrialClockRecord
 from feedbax.host.io import append
 from feedbax.host.model_checkpoint_input import bind_managed_inputs
 from feedbax.host.light_jobs import (
@@ -47,6 +48,7 @@ from feedbax.host.light_jobs import (
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset, publish_dataset
 from feedbax.persistence.effective_success import SuccessView
+from feedbax.persistence.evaluation_trial_records import RecordedTrialLayout, read_trial_clock
 from feedbax.plot.dataset_figure import render as render_figure
 from feedbax.plot.figure_trial_clock import FigureRecordedDataset
 
@@ -108,6 +110,16 @@ def _dataset_inputs(
     return datasets
 
 
+def _figure_recorded_dataset(dataset: Dataset, member_keys: frozenset[str]) -> FigureRecordedDataset:
+    descriptor = dataset.descriptor
+
+    def read_trial(trial: str, indices: tuple[int, ...]) -> tuple[TrialClockRecord, TrialMeanOptions]:
+        layout = RecordedTrialLayout.model_validate(descriptor.attrs["trial_record"])
+        return read_trial_clock(dataset, trial, indices, layout), layout.mean_options()
+
+    return FigureRecordedDataset(dataset, member_keys, descriptor.variables["epoch_start"].dims[:-1], read_trial)
+
+
 def _recorded_figure_trials(
     success: SuccessView, roles: set[str], bindings: Bindings, stack: ExitStack,
 ) -> dict[str, list[FigureRecordedDataset]]:
@@ -138,7 +150,7 @@ def _recorded_figure_trials(
         for member in bindings[role]:
             for digest, keys in recorded(member, frozenset()):
                 by_digest[digest] = by_digest.get(digest, frozenset()) | keys
-        sources[role] = [FigureRecordedDataset(opened[digest], keys) for digest, keys in by_digest.items()]
+        sources[role] = [_figure_recorded_dataset(opened[digest], keys) for digest, keys in by_digest.items()]
     return sources
 
 

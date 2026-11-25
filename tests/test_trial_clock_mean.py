@@ -169,7 +169,8 @@ def test_saved_figure_mean_uses_the_same_aligned_sample_reference(unequal_epochs
 def test_stacked_figure_matches_the_bound_member_with_repeated_trial_ids(unequal_epochs):
     from feedbax.contracts.project_sweep import SweepCoordinate, SweepInputMember
     from feedbax.dataset_sweep import stack_dataset_members
-    from feedbax.plot.figure_trial_clock import FigureRecordedDataset, FigureTrialSource
+    from feedbax.host.light_worker import _figure_recorded_dataset
+    from feedbax.plot.figure_trial_clock import FigureTrialSource
 
     descriptor = unequal_epochs.descriptor
     start = unequal_epochs.data("epoch_start").copy()
@@ -184,8 +185,8 @@ def test_stacked_figure_matches_the_bound_member_with_repeated_trial_ids(unequal
         (SweepInputMember("second-run", {"mass": SweepCoordinate("heavy", value=2)}), other),
     ])
     source = FigureTrialSource(plotted, [
-        FigureRecordedDataset(unequal_epochs, frozenset({"first-run"})),
-        FigureRecordedDataset(other, frozenset({"second-run"})),
+        _figure_recorded_dataset(unequal_epochs, frozenset({"first-run"})),
+        _figure_recorded_dataset(other, frozenset({"second-run"})),
     ], plotted.data)
 
     trial, _ = source.project({"mass": (1,), "trial": (1,)})
