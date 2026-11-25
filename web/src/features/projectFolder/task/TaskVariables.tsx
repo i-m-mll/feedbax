@@ -149,17 +149,17 @@ export function TaskVariables({ variables, sets = [], unstarted = [], selected, 
 }
 
 /**
- * A Set the trials apply, named as its sweep's label names it, with its entries and their weights in parts, and the
- * condition a trial meets to receive one.
+ * A Set the trials apply, named as its sweep's label names it, with its entries and their weights in parts, and on the
+ * row beneath it the condition a trial meets to receive one.
  */
 function SetRow({ set, drawn }: { set: TaskSetVariable & { readonly toSweep?: StudioCommand }; drawn: boolean }) {
   const { toSweep, weigh } = set;
-  return <TableRow menu={toSweep && { label: studioAccessibleName('variable', set.set), items:
+  return <>
+  <TableRow menu={toSweep && { label: studioAccessibleName('variable', set.set), items:
     <MenuItem disabled={!toSweep.enabled} onClick={() => toSweep.invoke()}>{toSweep.title}</MenuItem> }}>
     <TableRowHeader className="font-mono">{set.set}</TableRowHeader>
     <TableCell className="text-shell-muted">{studioName('set')}</TableCell>
     <TableCell>
-      <span className="flex h-full min-w-0 items-center gap-x-3">
       <ul aria-label={studioAccessibleName('values', set.set)} className="flex h-full min-w-0 flex-wrap items-center gap-x-3">
         {set.entries.map(({ id, label, weight }) => {
           const part = (side?: WeightSide) => weigh && ((value: number) => weigh(id, side, value));
@@ -174,15 +174,18 @@ function SetRow({ set, drawn }: { set: TaskSetVariable & { readonly toSweep?: St
           </li>;
         })}
       </ul>
-      {set.condition && <span className="flex h-full min-w-[8rem] flex-1 items-center gap-1">
-        <span className="shrink-0 text-shell-muted">{studioName('condition')}</span>
-        <span className="min-w-0 flex-1"><ValueField form="cell" model={set.condition} /></span>
-      </span>}
-      </span>
     </TableCell>
     {drawn && <TableCell />}
     <TableCell />
-  </TableRow>;
+  </TableRow>
+  {set.condition && <TableRow>
+    <TableRowHeader><span className="sr-only">{set.set}</span></TableRowHeader>
+    <TableCell className="text-shell-muted">{studioName('condition')}</TableCell>
+    <TableFieldCell><ValueField form="cell" model={set.condition} /></TableFieldCell>
+    {drawn && <TableCell />}
+    <TableCell />
+  </TableRow>}
+  </>;
 }
 
 /** An entry's weight in parts, or its `side` where entries co-occur, edited where it is drawn; its refusal is marked beside it. */
