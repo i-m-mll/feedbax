@@ -152,6 +152,8 @@ def model_measure_scope(model: ModelDocument, signals: ModelSignalTable) -> Mode
         owner = owner_at(scope)
         prefix = labels[scope]
         if isinstance(end, ComponentPortAddress):
+            if end.component not in owner.interior.components:
+                continue
             prefix = (*prefix, owner.interior.components[end.component].name)
         elif scope:
             prefix = (*prefix, "Outputs")

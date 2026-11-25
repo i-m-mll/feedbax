@@ -838,6 +838,24 @@ class Saturation(Component):
         return {"output": output}, state
 
 
+class Clamp(Component):
+    """Clamp a numeric signal between two other signals."""
+
+    model_facts = ModelFacts()
+    ports: ClassVar[Ports] = Ports(
+        inputs={port: PortType(dtype="any") for port in ("input", "low", "high")},
+        outputs={"output": PortType(dtype="any")},
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        instantaneous=True,
+        output_prototype_fn=input_passthrough_output_prototype,
+    )
+
+    def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
+        output = jnp.clip(inputs["input"], inputs["low"], inputs["high"])
+        return {"output": output}, state
+
+
 class Constant(Component):
     """Constant value output."""
 
