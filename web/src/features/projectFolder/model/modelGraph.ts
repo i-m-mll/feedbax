@@ -15,7 +15,7 @@ export type Port = {
   readonly direction: Direction;
   readonly name: string;
   readonly type: SignalType | string;
-  readonly mark?: 'task' | 'objective';
+  readonly mark?: 'task' | 'objective' | 'intervention';
   readonly taskSignal?: string;
   readonly growing?: boolean;
 };

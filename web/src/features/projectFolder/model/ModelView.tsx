@@ -11,7 +11,7 @@ import { studioAccessibleName, studioFormat, studioName, studioReason } from '@/
 import { baseChain, baseOf, documentPayload } from '../documentPayload';
 import { shownName } from '@/features/pipeline/planView';
 import { canonicalJsonV2 } from '@/utils/canonicalJsonV2';
-import { Box, Crosshair, House, Search, TriangleAlert, X } from 'lucide-react';
+import { Box, House, Search, TriangleAlert } from 'lucide-react';
 import clsx from 'clsx';
 import { Button, IconButton } from '@/components/ui/Button';
 import { carryKind } from '@/components/ui/carry';
@@ -216,6 +216,9 @@ function LeafChoices({ entries, query, choose, disabled }: {
 
 export function useStoredModelView({ model, saved, editor, elements: state, active, topologyApplies, fieldEditable, fieldChosenSteps, planCurrent, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, askStore, evaluate, problem, problems, projectionRun, relate, path, setPath, sections, openProblems, exceptions, trial }: Props) {
   const selected = useModelSelection(state, model?.id);
+  const variables = trial?.variables ?? noVariables;
+  const epochs = useMemo(() => trial ? windowEpochs(trial) : [], [trial]);
+  const variableName = (id: string) => variables.find((variable) => variable.id === id)?.name ?? id;
   const pick = useStore(state, (current) => current.pick);
   const reveal = useStore(state, (current) => current.reveal);
   const viewport = useRef<CanvasViewport>(null);
@@ -536,10 +539,17 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     for (const [id, component] of Object.entries(drawnInterior?.components ?? {})) {
       map.set(id, componentPorts(id, component, registry));
     }
+    /** Whether an intervention acts where the port's signal leaves it. */
+    const intervened = ({ end, direction }: Port) => {
+      if (direction !== 'output' || (end.owner !== 'component' && end.owner !== 'inputs')) return false;
+      const store = end.owner === 'component' ? drawnInterior?.components?.[end.component]?.attachments : drawnInterior?.attachments;
+      return !!store?.sources?.[end.port]?.some(({ kind }) => kind === 'intervention');
+    };
     for (const [id, items] of map) map.set(id, items.map((port) => {
       const key = addressKey(at(graph, { kind: 'port', end: port.end }));
       const type = projectedPorts.get(key);
-      return type || markedPorts.has(key) ? { ...port, type: type ?? port.type, mark: markedPorts.get(key) } : port;
+      const mark = markedPorts.get(key) ?? (intervened(port) ? 'intervention' : undefined);
+      return type || mark ? { ...port, type: type ?? port.type, mark } : port;
     }));
     return map;
   }, [owner, drawnInterior, registry, graph, projectedPorts, markedPorts, readSignals, currentPath.length, projection.data]);
@@ -1228,8 +1238,11 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     const displacedAttachments = displaced.get(key);
     const attached = (list: readonly Attachment[], removedHere: boolean) => list.map((item) => ({
       id: item.id, label: attachmentName(item), mark: stepCount(item, model?.value.step_seconds),
-      description: item.kind === 'delay' ? `${delayText(item.delay)} · ${wireLabel}` : wireLabel,
+      description: item.kind === 'delay' ? `${delayText(item.delay)} · ${wireLabel}`
+        : item.kind === 'intervention' ? `${windowDescription(item, epochs, variableName)} · ${wireLabel}` : wireLabel,
       delay: item.kind === 'delay', select: () => select(attachmentAddress(address, item.id)),
+      initial: item.kind === 'delay' && item.initial_source?.kind === 'wire' && item.initial_source.source
+        ? { card: idFor(item.initial_source.source), handle: `output:${item.initial_source.source.port}` } : undefined,
       drag: !removedHere && !ghost && model && editTopology && !locked ? { document: model.id, address: attachmentAddress(address, item.id) } : undefined,
       ghost: removedHere || ghost || !!displacedAttachments?.has(addressKey(attachmentAddress(address, item.id))),
       change: changeMark(attachmentAddress(address, item.id)),
@@ -1326,9 +1339,6 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
       choose: (target) => { if (target.kind === 'port') void set({ kind: 'wire', port: target.address }); },
     } });
   }
-  const variables = trial?.variables ?? noVariables;
-  const epochs = useMemo(() => trial ? windowEpochs(trial) : [], [trial]);
-  const variableName = (id: string) => variables.find((variable) => variable.id === id)?.name ?? id;
   function labelOfPort(address: ModelAddress) {
     if (address.element.kind !== 'port') return '';
     const end = address.element.end;
