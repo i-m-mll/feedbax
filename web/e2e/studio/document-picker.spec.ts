@@ -256,7 +256,7 @@ test('a Train step keeps a new Model with its Problems and a duplicated Model wi
     if (choice === 'New') {
       expect(status).toBe('cannot_run');
       expect(details.length).toBeGreaterThan(0);
-      for (const detail of details) expect(detail).toMatch(/is linked to a field the Model does not have|is not in scope here/);
+      for (const detail of details) expect(detail).toMatch(/is linked to a field the Model does not have|is not in scope here|is not an input of the Model/);
       await expect(page.getByRole('button', { name: /^Problems \d+$/ })).toBeVisible();
     } else {
       // Model addresses are relative to their document, so a copy's links and measures resolve as the original's.

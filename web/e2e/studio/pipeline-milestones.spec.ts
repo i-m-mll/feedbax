@@ -643,7 +643,7 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const exception = inspector.getByRole('list', { name: 'Exceptions', exact: true })
     .getByRole('listitem').filter({ hasText: 'Mass' });
-  await expect(exception).toContainText('Learning rate 0.001 · Seed 1, 2 · 2 runs');
+  await expect(exception).toContainText('Learning rate Slow · Seed one, two · 2 runs');
   await exception.getByRole('button', { name: 'Remove Exception', exact: true }).click();
   await expect(runs(page).getByText('Out of date', { exact: true })).toHaveCount(2);
   await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(4);
