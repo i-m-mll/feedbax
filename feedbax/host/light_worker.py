@@ -14,7 +14,7 @@ import numpy as np
 from feedbax.host.operation_runtime import run_operation
 from feedbax.contracts.artifact_custody import ContentRootRecord
 from feedbax.contracts.dataset import DATASET_MEDIA_TYPE, DatasetProductRef
-from feedbax.contracts.effective_success import Bindings, Product, Products, success_content_ref
+from feedbax.contracts.effective_success import Bindings, BoundMember, Product, Products, success_content_ref
 from feedbax.contracts.figure_document import PLOTLY_MEDIA_TYPE
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.request_identity import DecodedRequest
@@ -25,6 +25,7 @@ from feedbax.contracts.request_specs import (
     ReportRequestSpec,
 )
 from feedbax.contracts.strict_json import strict_json_loads
+from feedbax.contracts.studio_figure import FigureRun
 from feedbax.dataset import Dataset
 from feedbax.contracts.member_stack import labelled_members
 from feedbax.dataset_sweep import dataset_entries, stack_dataset_members
@@ -116,6 +117,35 @@ def _retain_staged_object(
     )
 
 
+def figure_source_runs(
+    store: ImmutableArtifactBlobProvider, spec: RenderRequestSpec, bindings: Bindings,
+) -> dict[str, tuple[FigureRun, ...]]:
+    """Verify the planned role origins against the actual saved input receipts."""
+    if not spec.source_runs:
+        return {}
+    if spec.source_runs.keys() != bindings.keys():
+        raise ValueError("Figure source runs must cover each bound dataset role.")
+    view = SuccessView(store)
+    producers: dict[str, frozenset[str]] = {}
+
+    def lineage(member: BoundMember) -> frozenset[str]:
+        if member.selection is None or member.content.media_type != DATASET_MEDIA_TYPE:
+            return frozenset()
+        ref = member.selection.receipt
+        if ref.sha256 not in producers:
+            receipt = view.read_receipt(ref)
+            producers[ref.sha256] = frozenset((receipt.request.id,)).union(
+                *(lineage(parent) for group in receipt.inputs.values() for parent in group),
+            )
+        return producers[ref.sha256]
+
+    for role, sources in spec.source_runs.items():
+        actual = frozenset().union(*(lineage(member) for member in bindings[role]))
+        if any(run.request_id not in actual for run in sources):
+            raise ValueError(f"Figure role {role!r} differs from its saved run lineage.")
+    return spec.source_runs
+
+
 def _compute(
     store: ImmutableArtifactBlobProvider,
     request: DecodedRequest,
@@ -152,6 +182,7 @@ def _compute(
         with ExitStack() as stack:
             figure = render_figure(
                 spec.document, _dataset_inputs(store, request, bindings, stack), names=spec.names,
+                runs=figure_source_runs(store, spec, bindings),
             )
             document = figure.to_json()
             assert document is not None
