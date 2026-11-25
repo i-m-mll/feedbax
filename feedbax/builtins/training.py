@@ -42,7 +42,10 @@ def _init_supervised(settings: StandardTrainingSettings, model: Graph, _key: Arr
     return TrainingState(model, state)
 
 
-@training_method(settings=StandardTrainingSettings, init=_init_supervised, label="Supervised gradient")
+@training_method(
+    settings=StandardTrainingSettings, init=_init_supervised, label="Supervised gradient",
+    metrics=("train_loss", "grad_norm"),
+)
 def supervised_gradient(
     state: TrainingState, ctx: TrainingContext[StandardTrainingSettings],
 ) -> tuple[TrainingState, TrainingMetrics]:

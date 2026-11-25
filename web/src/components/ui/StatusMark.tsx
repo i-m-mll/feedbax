@@ -19,6 +19,7 @@ type Fill = 'solid' | 'hollow';
 
 const marks = {
   not_run: ['text-shell-status-idle', 'solid', 'M3 6h6'],
+  not_chosen: ['text-shell-status-idle', 'hollow', 'M3 6h6'],
   cannot_run: ['text-shell-status-failure', 'solid', 'M6 2v5m0 2v1'],
   stale: ['text-shell-status-warning', 'solid', 'M3 7a3 3 0 1 0 1-3m-1-2v3h3'],
   queued: ['text-shell-status-neutral', 'solid', 'M2 4h8M2 8h8'],
