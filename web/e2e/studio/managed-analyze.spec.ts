@@ -138,6 +138,8 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   await expect(search).toHaveValue('velocity');
   await expect(item('Aligned velocity')).toBeFocused();
   await page.keyboard.press('ArrowDown');
+  await expect(item('Peak velocity summary')).toBeFocused();
+  await page.keyboard.press('ArrowDown');
   await expect(item('Trial summary')).toBeFocused();
   await edit(() => page.keyboard.press('Enter'));
   await expect(item('Trial summary')).toBeFocused();
@@ -224,9 +226,10 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   await addMark('Points');
   await edit(() => pick(role('Data'), 'data-2'));
   await edit(() => pick(role('X'), 'peak_time'));
-  await edit(() => pick(role('Y'), 'mean'));
-  await edit(() => pick(role('Lower'), 'lower'));
-  await edit(() => pick(role('Upper'), 'upper'));
+  // A new points layer reads what the figure's band reads; the peak summary names its fields the same.
+  for (const [field, value] of [['Y', 'mean'], ['Lower', 'lower'], ['Upper', 'upper']] as const) {
+    await expect(role(field)).toHaveText(value);
+  }
   await addMark('Rule');
   await edit(() => enter(inspector.getByRole('textbox', { name: 'At', exact: true }), '0.05'));
   await addMark('Span');
@@ -250,6 +253,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   const restored = await snapshot();
   expect(graph(restored)).toEqual(graph(marked));
   expect(restored.revision).toBe(marked.revision);
+  await figures.getByRole('button', { name: 'Velocity Summary', exact: true }).click();
   await expect(inspector.getByRole('tree', { name: 'Layers', exact: true }).getByRole('treeitem')).toHaveCount(4);
   expect(await attempts()).toEqual(admittedJobs);
 });
