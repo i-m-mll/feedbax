@@ -49,8 +49,14 @@ export function bestRankGroups(subset: StudioProjectWindowMapSubset | null | und
   return subset?.ranks?.length ? [{ coordinates: {}, ranks: subset.ranks }] : [];
 }
 
+export function pinnedSelectionLabels(terms: SubsetTerms): string[] | undefined {
+  const axes = Object.entries(terms.axes ?? {}).map(([axis, values]) =>
+    `${axis}=${values.map(({ label }) => label).join(', ')}`);
+  return axes.length ? axes : terms.rows?.map(({ key }) => key);
+}
+
 function subsetTerms(terms: SubsetTerms): string[] {
-  return [...terms.rule ? [terms.rule] : [], ...(terms.rows ?? []).map(({ key }) => key)];
+  return [...terms.rule ? [terms.rule] : [], ...(pinnedSelectionLabels(terms) ?? [])];
 }
 
 function savedResult(result: { request_id: string; job_id: string; validity?: PlanResultView['validity'] | null } | null | undefined) {

@@ -15,7 +15,7 @@ from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET, LOCA
 from feedbax.contracts.expression_values import TextSpan
 from feedbax.contracts.receipt_validity import ReceiptValidity
 from feedbax.contracts.project import StepKind
-from feedbax.contracts.project_inputs import StepReference, SubsetTerms
+from feedbax.contracts.project_inputs import SelectedAxisValueProblem, StepReference, SubsetTerms
 from feedbax.contracts.project_inputs import CheckpointRule
 from feedbax.contracts.project_sources import SourceKind
 from feedbax.contracts.project_sweep import SweepException
@@ -40,6 +40,7 @@ class JobStatus(StrEnum):
     QUEUED = "queued"
     AWAITING_AUTHORIZATION = "awaiting_authorization"
     BLOCKED = "blocked"
+    WAITING = "waiting"
     STARTING = "starting"
     RUNNING = "running"
     STOPPING = "stopping"
@@ -135,6 +136,8 @@ class StudioBoundBestSubject(StrictModel):
 
 class StudioSavedEvaluationResult(StrictModel):
     job_id: str
+    request_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    revision: str | None = Field(default=None, pattern=_DigestPattern, exclude_if=lambda value: value is None)
     receipt: JobReceipt
     checkpoint_source: StudioTrainCheckpointSource | None
     size_bytes: int = Field(ge=0)
@@ -158,6 +161,7 @@ class StudioSavedEvaluationRow(StrictModel):
     can_run: bool
     trials: list[str]
     result: StudioSavedEvaluationResult | None
+    previous: StudioSavedEvaluationResult | None = Field(default=None, exclude_if=lambda value: value is None)
     subject_rank_key: str | None = Field(default=None, exclude_if=lambda value: value is None)
     checkpoint_series: StudioEvaluationCheckpointSeries | None = Field(
         default=None, exclude_if=lambda value: value is None,
@@ -219,6 +223,7 @@ class StudioEvaluationObjectiveSeries(StrictModel):
 class StudioSavedTrainResult(StrictModel):
     request_id: str
     job_id: str
+    revision: str | None = Field(default=None, pattern=_DigestPattern, exclude_if=lambda value: value is None)
     receipt: JobReceipt
     progress: JobProgress | None
     validity: ReceiptValidity | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -273,6 +278,7 @@ class StudioProjectWindowMapInputAxis(StrictModel):
 class StudioSavedLightResult(StrictModel):
     job_id: str
     request_id: str
+    revision: str | None = Field(default=None, pattern=_DigestPattern, exclude_if=lambda value: value is None)
     receipt: JobReceipt
     products: dict[str, str]
     validity: ReceiptValidity | None = Field(default=None, exclude_if=lambda value: value is None)
@@ -393,6 +399,7 @@ class StudioProjectWindowMapProblem(StrictModel):
     blocked_by: StudioSavedTrainKey | None = Field(default=None, exclude_if=lambda value: value is None)
     """The producer row a ``blocked_input`` row waits on."""
     span: TextSpan | None = Field(default=None, exclude_if=lambda value: value is None)
+    selection_value: SelectedAxisValueProblem | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @classmethod
     def from_diagnostic(cls, diagnostic: ProjectDiagnostic, *, declaration: str) -> StudioProjectWindowMapProblem:
@@ -407,7 +414,7 @@ class StudioProjectWindowMapProblem(StrictModel):
             ) if diagnostic.step else None,
             document_path=diagnostic.document_path, address=diagnostic.authored_file or source,
             layer=diagnostic.layer, authored_path=diagnostic.authored_path,
-            span=diagnostic.span,
+            span=diagnostic.span, selection_value=diagnostic.selection_value,
             blocked_by=StudioSavedTrainKey.model_validate(diagnostic.blocked_by, from_attributes=True)
             if diagnostic.blocked_by is not None else None,
         )

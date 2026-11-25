@@ -76,7 +76,6 @@ _NONE_VALUES: dict[tuple[str, str], Any] = {
     ("feedbax.PIDDiscrete", "output_limit"): 2.0,
     ("feedbax.LinearStateSpace", "initial_state"): [0.1, 0.2, 0.3, 0.4],
     ("feedbax.StructuralLinearStateSpace", "initial_state"): [0.1, 0.2, 0.3, 0.4],
-    ("feedbax.AssembleFeedback", "layout"): {"list": [None]},
     ("feedbax.AffineFeedbackController", "bias"): [0.25],
     ("feedbax.AffineFeedbackController", "feedforward"): [0.5],
     ("feedbax.Channel", "noise_role"): "motor_command",
@@ -194,8 +193,6 @@ def _contextualize_params(
             params["noise_model"] = "signal_dependent_plus_additive"
         if param_name == "include_zero_noise_terms":
             params["noise_std"] = 0.0
-    elif component_type == "feedbax.AssembleFeedback" and param_name == "n_inputs":
-        params["layout"] = {"tuple": [None] * params["n_inputs"]}
     elif component_type == "feedbax.AffineValueComposer" and param_name == "output_block_size":
         size = int(params["output_block_size"])
         params["gain_init"] = [[0.0] for _ in range(size)]
@@ -255,7 +252,7 @@ def _single_node_spec(
         point_mass = registry.get("feedbax.PointMass")
         assert point_mass is not None and point_mass.builder is not None
         prototypes[("node", "state")] = point_mass.builder({"dt": 0.01}).state_index.init
-    elif component_type == "feedbax.Demux":
+    elif component_type == "feedbax.Split":
         prototypes[("node", "input")] = jnp.zeros(sum(params["sizes"]))
     elif component_type == "feedbax.AffineValueComposer":
         block_size = int(params["output_block_size"])

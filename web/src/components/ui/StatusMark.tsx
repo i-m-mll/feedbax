@@ -24,6 +24,7 @@ const marks = {
   queued: ['text-shell-status-neutral', 'solid', 'M2 4h8M2 8h8'],
   awaiting_authorization: ['text-shell-status-warning', 'solid', 'M4 5V4a2 2 0 0 1 4 0v1M3 5h6v5H3z'],
   blocked: ['text-shell-status-failure', 'solid', 'M4 2v8M8 2v8'],
+  waiting: ['text-shell-status-neutral', 'hollow', 'M6 2a4 4 0 1 1-4 4m4-2v2l2 1'],
   starting: ['text-shell-status-running', 'solid', 'M3 8l3-4 3 4'],
   running: ['text-shell-status-running', 'solid', 'M4 3l5 3-5 3z'],
   stopping: ['text-shell-status-warning', 'solid', 'M3 3h6v6H3z'],
@@ -90,7 +91,7 @@ export function StatusMark({ status, label, tip, className, ...props }: StatusMa
 /** Statuses from the one that most needs attention to the one that needs none. */
 const severity: readonly ResultStatus[] = [
   'failed', 'corrupt', 'cannot_run', 'blocked', 'interrupted', 'awaiting_authorization', 'stale', 'environment',
-  'stopping', 'running', 'collecting', 'starting', 'checking', 'queued', 'unchecked', 'stopped', 'not_run', 'succeeded',
+  'stopping', 'running', 'collecting', 'starting', 'checking', 'queued', 'waiting', 'unchecked', 'stopped', 'not_run', 'succeeded',
 ];
 
 /** The status of a set that most needs attention, with how many members have it. */
