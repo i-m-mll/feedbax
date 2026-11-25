@@ -10,6 +10,7 @@ from feedbax.builtins.operations import (
     aligned_velocity,
     summarize_velocity,
 )
+from feedbax.contracts.dataset import TrialFigureTime
 from feedbax.dataset import Dataset, Variable
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_dataset, publish_dataset
@@ -119,7 +120,9 @@ def test_peak_velocity_summary_discards_time_and_trial_but_keeps_member_groups()
                 for name, field in descriptor.coords.items()
                 if name != "state_time"
             },
-            "state_time": Variable(clocks, ("member", "state_time"), units="s"),
+            "state_time": Variable(
+                clocks, ("member", "state_time"), units="s", trial_time=TrialFigureTime(zero_epoch="go"),
+            ),
             "member": Variable(np.asarray(["base", "double"]), ("member",)),
         },
         schema_id=descriptor.schema_id,
@@ -131,6 +134,7 @@ def test_peak_velocity_summary_discards_time_and_trial_but_keeps_member_groups()
     port = operation.value.definition.outputs["summary"]
     assert port.variables["mean"].dims == ("checkpoint", "condition")
     assert (port.variables["peak_time"].dims, port.variables["peak_time"].units) == (("checkpoint", "condition"), "s")
+    assert port.variables["peak_time"].trial_time == TrialFigureTime()
     peaks = stacked_parallel.max(axis=-1)
     mean = peaks.mean(axis=-1)
     spread = 1.5 * peaks.std(axis=-1, ddof=1)
@@ -143,6 +147,7 @@ def test_peak_velocity_summary_discards_time_and_trial_but_keeps_member_groups()
         np.testing.assert_allclose(summary.data(name), expected)
     peak_time = summary.descriptor.variables["peak_time"]
     assert (peak_time.dims, peak_time.units) == (("member", "checkpoint", "condition"), "s")
+    assert peak_time.trial_time == stacked.descriptor.coords["state_time"].trial_time
     expected_time = (2 * clocks[:, 0] + clocks[:, 1]) / 3
     np.testing.assert_allclose(summary.data("peak_time"), np.broadcast_to(expected_time[:, None, None], mean.shape))
 

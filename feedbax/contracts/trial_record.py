@@ -82,6 +82,8 @@ class TrialRecord(BaseModel):
     variable_defined: dict[str, JsonValue]
     timeline: list[TaskTimelineCue]
     terms: dict[str, TrialTerm] = Field(default_factory=dict)
+    intervention_windows: dict[str, list[bool]] = Field(default_factory=dict, exclude_if=lambda value: not value)
+    """Active samples for each intervention, keyed by its Model address."""
     states: dict[str, TrialStateTrack] = Field(default_factory=dict)
     """Recorded world-frame state tracks, keyed by state Model address."""
     configurations: dict[str, JsonValue] = Field(default_factory=dict)

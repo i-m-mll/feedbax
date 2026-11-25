@@ -28,6 +28,8 @@ from feedbax.contracts.acausal_interface import (
 )
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
 from feedbax.contracts.graph import ComponentSpec, GraphSpec
+from feedbax.contracts.model_delay import ModelDelayCarry
+from feedbax.runtime.delay import DelayLayout
 from feedbax.compiler.prototypes import (
     DerivedDimensionConflict,
     DerivedDimensionError,
@@ -67,6 +69,7 @@ class GraphParameterResolution:
     errors: tuple[ParameterResolutionError, ...]
     subgraphs: dict[str, GraphParameterResolution]
     node_configs: dict[str, BaseModel]
+    delay_layouts: dict[tuple[str, str], DelayLayout]
 
     @property
     def graph_outputs(self) -> dict[str, Any]:
@@ -602,11 +605,31 @@ class _Completion:
                     f"Connect a completed source or provide {parameter}."
                 )
             errors.append(ParameterResolutionError(f"{self.path}/nodes/{_token(name)}", cause))
+        delay_layouts = {}
+        for index, wire in enumerate(self.graph.wires):
+            initializer = wire.recurrent_initializer or {}
+            if "model_delay_id" not in initializer:
+                continue
+            try:
+                delay = ModelDelayCarry.model_validate(initializer)
+                source = self.outputs.get((wire.source_node, wire.source_port))
+                layout = DelayLayout.from_prototype(source, delay.steps)
+                if delay.reset_output is None:
+                    layout.validate_initial(delay.initial)
+                else:
+                    end = delay.reset_output
+                    reset = self.outputs.get((end.component, end.port))
+                    if _prototype_signature(reset) != _prototype_signature(source):
+                        raise ValueError("Delay Initial does not fit the resolved signal layout.")
+            except (TypeError, ValueError) as error:
+                errors.append(ParameterResolutionError(f"{self.path}/wires/{index}/recurrent_initializer", error))
+            else:
+                delay_layouts[wire.target_node, wire.target_port] = layout
         graph = self.graph.model_copy(
             update={"nodes": {**self.nodes, **self.completed}, "subgraphs": subgraphs or None}
         )
         return GraphParameterResolution(
-            graph, self.inputs, self.outputs, tuple(errors), children, self.configs
+            graph, self.inputs, self.outputs, tuple(errors), children, self.configs, delay_layouts,
         )
 
 

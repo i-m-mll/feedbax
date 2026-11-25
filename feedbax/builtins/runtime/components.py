@@ -358,7 +358,8 @@ def split_output_prototype(
     if width != total:
         raise ValueError(f"Split input final dimension {width} does not match sum(sizes) {total}")
     prefix = shape[:-1]
-    return {f"out_{index}": jnp.zeros((*prefix, size)) for index, size in enumerate(sizes)}
+    (array,) = jt.leaves(proto)
+    return {f"out_{index}": jnp.zeros((*prefix, size), dtype=array.dtype) for index, size in enumerate(sizes)}
 
 
 def switch_output_prototype(
@@ -534,6 +535,8 @@ class Subtract(Component):
 
 class Multiply(Component):
     """Element-wise product of two inputs."""
+
+    model_facts = ModelFacts()
 
     ports: ClassVar[Ports] = Ports(
         inputs={"a": PortType(dtype="any"), "b": PortType(dtype="any")},
@@ -832,6 +835,24 @@ class Saturation(Component):
 
     def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
         output = jt.map(lambda x: jnp.clip(x, self.min_val, self.max_val), inputs["input"])
+        return {"output": output}, state
+
+
+class Clamp(Component):
+    """Clamp a numeric signal between two other signals."""
+
+    model_facts = ModelFacts()
+    ports: ClassVar[Ports] = Ports(
+        inputs={port: PortType(dtype="any") for port in ("input", "low", "high")},
+        outputs={"output": PortType(dtype="any")},
+    )
+    component_options: ClassVar[ComponentOptions] = ComponentOptions(
+        instantaneous=True,
+        output_prototype_fn=input_passthrough_output_prototype,
+    )
+
+    def __call__(self, inputs: dict[str, PyTree], state: State, *, key: PRNGKeyArray):
+        output = jnp.clip(inputs["input"], inputs["low"], inputs["high"])
         return {"output": output}, state
 
 

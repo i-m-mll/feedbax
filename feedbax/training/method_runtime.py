@@ -13,10 +13,11 @@ import jax.numpy as jnp
 import jax.random as jr
 import optax
 
+from feedbax.contracts.expression_values import ValueBase
 from feedbax.runtime._graph_key_schedule import derive_key
 from feedbax.runtime.graph import Graph
 from feedbax.runtime.parameter_constraints import apply_parameter_constraints
-from feedbax.tasks.document import TaskParameters
+from feedbax.tasks.document import PendingTrial, TaskParameters
 from feedbax.training.methods import TrainingState
 
 if TYPE_CHECKING:
@@ -121,12 +122,26 @@ class TrainingContext[S: BaseModel]:
     _parameters: TaskParameters
     _batch_size: int
 
+    @property
+    def n_steps(self) -> int:
+        """Maximum number of transitions in each trial of this Train."""
+        return self._execution.task.n_steps
+
     def sample_trials(
-        self, count: int | None = None, *, key: jax.Array | None = None,
-    ) -> tuple[Trial, jax.Array]:
-        """Sample a batch whose trials and keys can be reused in several rollouts."""
+        self, count: int | None = None, *, key: jax.Array | None = None, set_fields: bool = True,
+    ) -> tuple[Trial | PendingTrial, jax.Array]:
+        """Sample a batch, optionally setting every Set field to its None entry."""
+        parameters = self._parameters
+        interface = self._execution.task.interface
+        if not set_fields and interface.set_choices:
+            set_ids = {identifier for identifier, _ in interface.set_choices}
+            pins = {
+                field.id: jnp.asarray(False if field.type.base == ValueBase.BOOLEAN else 0)
+                for field in interface.variables if field.id in set_ids
+            }
+            parameters = parameters._replace(variables={**(parameters.variables or {}), **pins})
         return self._execution.sample_trials(
-            self._parameters, run_key=self.run_key,
+            parameters, run_key=self.run_key,
             update_key=derive_key(self.key, "task-trials") if key is None else key,
             count=self._batch_size if count is None else count,
         )
@@ -144,7 +159,21 @@ class TrainingContext[S: BaseModel]:
     def objective(
         self, outputs: Mapping[str, jax.Array], trials: Trial, trial_keys: jax.Array,
     ) -> ObjectiveResult:
+        if isinstance(trials, PendingTrial):
+            raise ValueError("Score this Task with the trial record returned by rollout_trials.")
         return self._objective.evaluate(outputs, trials, run_key=self.run_key, trial_keys=trial_keys)
+
+    def rollout_trials(
+        self, model: Graph, trials: Trial | PendingTrial, trial_keys: jax.Array, *,
+        input_overrides: Mapping[str, jax.Array] | None = None,
+    ) -> tuple[Mapping[str, jax.Array], Trial]:
+        """Return retained outputs with the actual Task records from those rollouts."""
+        outputs, _, executed = self._execution.execute_batch(model, trials, trial_keys, input_overrides=input_overrides)
+        return outputs, executed
+
+    def score(self, model: Graph, trials: Trial | PendingTrial, trial_keys: jax.Array) -> ObjectiveResult:
+        outputs, executed = self.rollout_trials(model, trials, trial_keys)
+        return self.objective(outputs, executed, trial_keys)
 
     @staticmethod
     def optimizer(

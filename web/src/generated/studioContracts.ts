@@ -607,7 +607,22 @@ export interface DelayAttachment {
   kind: "delay";
   id: string;
   delay: ModelTime | UnresolvedValue;
-  initial?: JsonValue;
+  initial_source?: DelayInitialValue | DelayInitialTask | DelayInitialWire;
+}
+
+export interface DelayInitialTask {
+  kind: "task";
+  variable: string;
+}
+
+export interface DelayInitialValue {
+  kind: "value";
+  value: number | UnresolvedValue;
+}
+
+export interface DelayInitialWire {
+  kind: "wire";
+  source?: ComponentPortEnd | InputBoundaryEnd | null;
 }
 
 export interface HoldAttachment {
@@ -1111,6 +1126,7 @@ export interface ModelRewiredElement {
 export interface ModelProjection {
   ports?: ModelPortProjection[];
   physical_ports?: ModelPhysicalPortProjection[];
+  delay_steps?: Record<string, number | null>;
   task_signals?: ModelTaskSignal[];
   task_inputs?: ModelTaskInput[];
   problems?: ModelGraphProblem[];
@@ -2215,6 +2231,7 @@ export interface TrialClockSpan {
 export interface TrialMean {
   selection: TrialMeanSelection;
   conditions: TrialMeanCondition[];
+  shelf: TrialMeanShelf;
 }
 
 export interface TrialMeanCondition {
@@ -2232,6 +2249,18 @@ export interface TrialMeanEpoch {
   occurrence: number;
   start: TrialBoundarySummary;
   end: TrialBoundarySummary;
+}
+
+export interface TrialMeanShelf {
+  times: number[];
+  epochs: TrialMeanEpoch[];
+  signals: Record<string, number[]>;
+  terms: Record<string, TrialMeanTermShare>;
+}
+
+export interface TrialMeanTermShare {
+  steps: number[];
+  problems: Problem[];
 }
 
 export interface TrialMeanOptions {
@@ -2341,6 +2370,7 @@ export interface TrialRecord {
   variable_defined: Record<string, JsonValue>;
   timeline: TaskTimelineCue[];
   terms?: Record<string, TrialTerm>;
+  intervention_windows?: Record<string, boolean[]>;
   states?: Record<string, TrialStateTrack>;
   configurations?: Record<string, JsonValue>;
   observations?: Record<string, JsonValue>;
@@ -2814,6 +2844,8 @@ export type AxisLabels = {
 export type AxisSelectionClause = Record<string, Array<SelectedAxisValue>>;
 
 export type AxisValue = {
+  "task_variables"?: Array<Variable>;
+  "task_links"?: Array<Link>;
   "patches"?: Record<string, PatchValue | null>;
   "label"?: string | null;
   "value"?: JsonValue;
@@ -2972,6 +3004,15 @@ export type DataDerivedAxisRange = {
   "padding_fraction": number;
 };
 
+export type DatasetDescriptor = {
+  "schema_version"?: "feedbax.dataset.v1";
+  "dimensions": Record<string, DimensionSize>;
+  "variables": Record<string, FieldDescriptor>;
+  "coords"?: Record<string, FieldDescriptor>;
+  "attrs"?: Record<string, JsonValue>;
+  "schema_id"?: Name | null;
+};
+
 export type DatasetInputPort = {
   "schema_ids": Array<string>;
   "variables"?: Record<string, FieldDescriptor>;
@@ -3007,6 +3048,8 @@ export type DetachMember = {
 export type DifferencePointer = string;
 
 export type Differences = Record<string, SetDocumentValue | RemoveDocumentValue>;
+
+export type DimensionSize = number;
 
 export type Dimensions = {
   "length"?: number;
@@ -3765,6 +3808,8 @@ export type RootDocument = {
 };
 
 export type Row = {
+  "task_variables"?: Array<Variable>;
+  "task_links"?: Array<Link>;
   "patches"?: Record<string, PatchValue | null>;
   "label"?: string | null;
   "value"?: JsonValue;
@@ -3848,8 +3893,19 @@ export type SetAxis = {
   "optional"?: boolean;
 };
 
+export type SetDocument = {
+  "entries": Record<string, SetEntry>;
+};
+
 export type SetDocumentValue = {
   "value": JsonValue;
+};
+
+export type SetEntry = {
+  "task_variables"?: Array<Variable>;
+  "task_links"?: Array<Link>;
+  "label"?: string | null;
+  "differences"?: Differences;
 };
 
 export type SetEntryParts = {
@@ -4438,6 +4494,13 @@ export type StudioNamedValueType = {
 export type StudioObjectivePlace = {
   "part": "objective";
   "document": string | null;
+};
+
+export type StudioOperationDatasetPage = {
+  "field": Name;
+  "offset": DimensionSize;
+  "total": DimensionSize;
+  "values": Array<JsonValue>;
 };
 
 export type StudioPlanRequest = {
@@ -6994,10 +7057,37 @@ export const DelayAttachmentSchema: z.ZodType<DelayAttachment> = z.lazy(() =>
       "kind": z.literal("delay"),
       "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
       "delay": z.union([ModelTimeSchema, UnresolvedValueSchema]),
-      "initial": jsonValueSchema.optional(),
+      "initial_source": z.union([DelayInitialValueSchema, DelayInitialTaskSchema, DelayInitialWireSchema]).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<DelayAttachment>;
+
+export const DelayInitialTaskSchema: z.ZodType<DelayInitialTask> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("task"),
+      "variable": z.string().min(1),
+    })
+    .strict()
+) as unknown as z.ZodType<DelayInitialTask>;
+
+export const DelayInitialValueSchema: z.ZodType<DelayInitialValue> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("value"),
+      "value": z.union([z.number().finite(), UnresolvedValueSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<DelayInitialValue>;
+
+export const DelayInitialWireSchema: z.ZodType<DelayInitialWire> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("wire"),
+      "source": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<DelayInitialWire>;
 
 export const HoldAttachmentSchema: z.ZodType<HoldAttachment> = z.lazy(() =>
   z
@@ -7911,6 +8001,7 @@ export const ModelProjectionSchema: z.ZodType<ModelProjection> = z.lazy(() =>
     .object({
       "ports": z.array(ModelPortProjectionSchema).optional(),
       "physical_ports": z.array(ModelPhysicalPortProjectionSchema).optional(),
+      "delay_steps": z.record(z.string(), z.number().int().safe().nullable()).optional(),
       "task_signals": z.array(ModelTaskSignalSchema).optional(),
       "task_inputs": z.array(ModelTaskInputSchema).optional(),
       "problems": z.array(ModelGraphProblemSchema).optional(),
@@ -9838,6 +9929,7 @@ export const TrialMeanSchema: z.ZodType<TrialMean> = z.lazy(() =>
     .object({
       "selection": TrialMeanSelectionSchema,
       "conditions": z.array(TrialMeanConditionSchema),
+      "shelf": TrialMeanShelfSchema,
     })
     .strict()
 ) as unknown as z.ZodType<TrialMean>;
@@ -9866,6 +9958,26 @@ export const TrialMeanEpochSchema: z.ZodType<TrialMeanEpoch> = z.lazy(() =>
     })
     .strict()
 ) as unknown as z.ZodType<TrialMeanEpoch>;
+
+export const TrialMeanShelfSchema: z.ZodType<TrialMeanShelf> = z.lazy(() =>
+  z
+    .object({
+      "times": z.array(z.number().finite()),
+      "epochs": z.array(TrialMeanEpochSchema),
+      "signals": z.record(z.string(), z.array(z.number().finite())),
+      "terms": z.record(z.string(), TrialMeanTermShareSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialMeanShelf>;
+
+export const TrialMeanTermShareSchema: z.ZodType<TrialMeanTermShare> = z.lazy(() =>
+  z
+    .object({
+      "steps": z.array(z.number().finite()),
+      "problems": z.array(ProblemSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialMeanTermShare>;
 
 export const TrialMeanOptionsSchema: z.ZodType<TrialMeanOptions> = z.lazy(() =>
   z
@@ -10046,6 +10158,7 @@ export const TrialRecordSchema: z.ZodType<TrialRecord> = z.lazy(() =>
       "variable_defined": z.record(z.string(), jsonValueSchema),
       "timeline": z.array(TaskTimelineCueSchema),
       "terms": z.record(z.string(), TrialTermSchema).optional(),
+      "intervention_windows": z.record(z.string(), z.array(z.boolean())).optional(),
       "states": z.record(z.string(), TrialStateTrackSchema).optional(),
       "configurations": z.record(z.string(), jsonValueSchema).optional(),
       "observations": z.record(z.string(), jsonValueSchema).optional(),
@@ -10796,6 +10909,8 @@ export const AxisSelectionClauseSchema: z.ZodType<AxisSelectionClause> = z.lazy(
 
 export const AxisValueSchema: z.ZodType<AxisValue> = z.lazy(() =>
   z.object({
+    "task_variables": z.array(VariableSchema).optional(),
+    "task_links": z.array(LinkSchema).optional(),
     "patches": z.record(SweepTargetSchema, z.union([PatchValueSchema, z.null()])).optional(),
     "label": z.union([z.string(), z.null()]).optional(),
     "value": jsonValueSchema.optional(),
@@ -11013,6 +11128,17 @@ export const DataDerivedAxisRangeSchema: z.ZodType<DataDerivedAxisRange> = z.laz
   }).strict()
 ) as unknown as z.ZodType<DataDerivedAxisRange>;
 
+export const DatasetDescriptorSchema: z.ZodType<DatasetDescriptor> = z.lazy(() =>
+  z.object({
+    "schema_version": z.literal("feedbax.dataset.v1").optional(),
+    "dimensions": z.record(NameSchema, DimensionSizeSchema),
+    "variables": z.record(NameSchema, FieldDescriptorSchema),
+    "coords": z.record(NameSchema, FieldDescriptorSchema).optional(),
+    "attrs": z.record(z.string(), jsonValueSchema).optional(),
+    "schema_id": z.union([NameSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<DatasetDescriptor>;
+
 export const DatasetInputPortSchema: z.ZodType<DatasetInputPort> = z.lazy(() =>
   z.object({
     "schema_ids": z.array(z.string()).min(1),
@@ -11060,6 +11186,10 @@ export const DifferencePointerSchema: z.ZodType<DifferencePointer> = z.lazy(() =
 export const DifferencesSchema: z.ZodType<Differences> = z.lazy(() =>
   z.record(DifferencePointerSchema, z.union([SetDocumentValueSchema, RemoveDocumentValueSchema]))
 ) as unknown as z.ZodType<Differences>;
+
+export const DimensionSizeSchema: z.ZodType<DimensionSize> = z.lazy(() =>
+  z.number().int().safe().min(0)
+) as unknown as z.ZodType<DimensionSize>;
 
 export const DimensionsSchema: z.ZodType<Dimensions> = z.lazy(() =>
   z.object({
@@ -12085,6 +12215,8 @@ export const RootDocumentSchema: z.ZodType<RootDocument> = z.lazy(() =>
 
 export const RowSchema: z.ZodType<Row> = z.lazy(() =>
   z.object({
+    "task_variables": z.array(VariableSchema).optional(),
+    "task_links": z.array(LinkSchema).optional(),
     "patches": z.record(SweepTargetSchema, z.union([PatchValueSchema, z.null()])).optional(),
     "label": z.union([z.string(), z.null()]).optional(),
     "value": jsonValueSchema.optional(),
@@ -12197,11 +12329,26 @@ export const SetAxisSchema: z.ZodType<SetAxis> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<SetAxis>;
 
+export const SetDocumentSchema: z.ZodType<SetDocument> = z.lazy(() =>
+  z.object({
+    "entries": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), SetEntrySchema),
+  }).strict()
+) as unknown as z.ZodType<SetDocument>;
+
 export const SetDocumentValueSchema: z.ZodType<SetDocumentValue> = z.lazy(() =>
   z.object({
     "value": jsonValueSchema,
   }).strict()
 ) as unknown as z.ZodType<SetDocumentValue>;
+
+export const SetEntrySchema: z.ZodType<SetEntry> = z.lazy(() =>
+  z.object({
+    "task_variables": z.array(VariableSchema).optional(),
+    "task_links": z.array(LinkSchema).optional(),
+    "label": z.union([z.string(), z.null()]).optional(),
+    "differences": DifferencesSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<SetEntry>;
 
 export const SetEntryPartsSchema: z.ZodType<SetEntryParts> = z.lazy(() =>
   z.object({
@@ -12976,6 +13123,15 @@ export const StudioObjectivePlaceSchema: z.ZodType<StudioObjectivePlace> = z.laz
     "document": z.union([z.string(), z.null()]),
   }).strict()
 ) as unknown as z.ZodType<StudioObjectivePlace>;
+
+export const StudioOperationDatasetPageSchema: z.ZodType<StudioOperationDatasetPage> = z.lazy(() =>
+  z.object({
+    "field": NameSchema,
+    "offset": DimensionSizeSchema,
+    "total": DimensionSizeSchema,
+    "values": z.array(jsonValueSchema).max(256),
+  }).strict()
+) as unknown as z.ZodType<StudioOperationDatasetPage>;
 
 export const StudioPlanRequestSchema: z.ZodType<StudioPlanRequest> = z.lazy(() =>
   z.object({
@@ -14224,6 +14380,8 @@ export const contractSchemas = {
   ValidityAcceptance: ValidityAcceptanceSchema,
   AnalysisDocument: AnalysisDocumentSchema,
   TaskDocument: TaskDocumentSchema,
+  SetDocument: SetDocumentSchema,
+  SetEntry: SetEntrySchema,
   PythonTaskSelection: PythonTaskSelectionSchema,
   ObjectiveDocument: ObjectiveDocumentSchema,
   Window: WindowSchema,
@@ -14260,6 +14418,8 @@ export const contractSchemas = {
   SampleValues: SampleValuesSchema,
   SiteProjection: SiteProjectionSchema,
   StudioAnalyzeAuthoring: StudioAnalyzeAuthoringSchema,
+  DatasetDescriptor: DatasetDescriptorSchema,
+  StudioOperationDatasetPage: StudioOperationDatasetPageSchema,
   StudioAnalyzeRequest: StudioAnalyzeRequestSchema,
   StudioAuthoringCatalog: StudioAuthoringCatalogSchema,
   StudioAuthoringSurface: StudioAuthoringSurfaceSchema,
@@ -14406,6 +14566,8 @@ export interface ContractTypeMap {
   ValidityAcceptance: ValidityAcceptance;
   AnalysisDocument: AnalysisDocument;
   TaskDocument: TaskDocument;
+  SetDocument: SetDocument;
+  SetEntry: SetEntry;
   PythonTaskSelection: PythonTaskSelection;
   ObjectiveDocument: ObjectiveDocument;
   Window: Window;
@@ -14442,6 +14604,8 @@ export interface ContractTypeMap {
   SampleValues: SampleValues;
   SiteProjection: SiteProjection;
   StudioAnalyzeAuthoring: StudioAnalyzeAuthoring;
+  DatasetDescriptor: DatasetDescriptor;
+  StudioOperationDatasetPage: StudioOperationDatasetPage;
   StudioAnalyzeRequest: StudioAnalyzeRequest;
   StudioAuthoringCatalog: StudioAuthoringCatalog;
   StudioAuthoringSurface: StudioAuthoringSurface;
