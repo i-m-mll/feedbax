@@ -11,7 +11,7 @@ it('counts a step\'s chosen runs only, so a step whose chosen runs all succeeded
     revision: '0'.repeat(64), rows: [],
     window_map: {
       variants: ['base'],
-      steps: [{ variant: 'base', step_id: 'evaluate', kind: 'evaluate', group: null, document_ids: {}, inputs: [],
+      steps: [{ variant: 'base', step_id: 'evaluate', label: 'Evaluate', kind: 'evaluate', group: null, document_ids: {}, inputs: [],
         status_counts: { succeeded: 2, not_chosen: 1 } }],
       rows: [row('a', 'succeeded'), row('b', 'not_chosen'), row('c', 'succeeded')],
       edges: [],

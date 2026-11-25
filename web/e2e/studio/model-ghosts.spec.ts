@@ -38,7 +38,7 @@ test('a component a selected set entry removes is drawn in place as a ghost, and
   await expect(ghost).toHaveCount(0);
   const before = await boxes(model, placed);
 
-  await chooseSweepValue(card, 'arms', 'drop');
+  await chooseSweepValue(card, 'arms', 'Drop');
   await expect(removedMark).toBeVisible();
   await expect(ghost).toHaveCount(1);
   await expect(drive).toBeVisible();
@@ -49,7 +49,7 @@ test('a component a selected set entry removes is drawn in place as a ghost, and
   await expect(ghost).toHaveCount(0);
   expect(await boxes(model, placed)).toEqual(before);
 
-  await chooseSweepValue(card, 'arms', 'drop');
+  await chooseSweepValue(card, 'arms', 'Drop');
   await removedMark.click();
   const edited = await modelEdit(page, projectPath,
     () => page.getByRole('menuitem', { name: 'Reset', exact: true }).click(), 'Set Entry');
@@ -75,7 +75,7 @@ test('a set entry selected in another variant draws its removal as a ghost', asy
   await mapStep(page, 'train').click();
   await page.keyboard.press('Meta+2');
   await expect(plant).toBeVisible();
-  await chooseSweepValue(page.locator('[data-map-step="train"]'), 'arms', 'drop');
+  await chooseSweepValue(page.locator('[data-map-step="train"]'), 'arms', 'Drop');
   await expect(plant.locator('[data-ghost="true"]')).toHaveCount(1);
   await expect(plant.getByRole('img', { name: 'Removed', exact: true })).toBeVisible();
 });

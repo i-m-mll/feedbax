@@ -160,7 +160,7 @@ function StudioRunPivot({ step, state, onSelectionChange, rows, related, runMenu
                       {cell.length > 0 && (
                         <Button
                           variant="ghost"
-                          aria-label={studioAccessibleName("select", [`${y.label} ${row.label}`, `${x.label} ${column.label}`, ...labels].join(" · "))}
+                          aria-label={studioAccessibleName("select", [row.label, column.label, ...labels].join(" · "))}
                           aria-description={failure}
                           {...failure && appTip(studioRunReason(cell[0]))}
                           pressed={cell.every(({ id }) => selected.has(id))}
@@ -190,16 +190,6 @@ function StudioRunPivot({ step, state, onSelectionChange, rows, related, runMenu
       )}
     </div>
   );
-}
-
-/** What tells a run apart within its step: its sweep values, or its own name when it has none. */
-function runName(step: PlanStepView, run: PlanRunView) {
-  const values = step.sweeps.flatMap((sweep) => {
-    const value = run.values[sweep.id];
-    return value === undefined || sweep.values.length < 2 ? []
-      : [`${sweep.label} ${sweep.values.find(({ id }) => id === value)?.label ?? value}`];
-  });
-  return values.length ? values.join(" · ") : run.label;
 }
 
 /** A reason a run names, which its row reveals. */
@@ -266,7 +256,7 @@ export function StudioStepInspector({
       }
     }
   }
-  const title = chosen && single && step.runs.length > 1 ? `${step.label} · ${runName(step, selected[0])}` : step.label;
+  const title = chosen && single && step.runs.length > 1 ? `${step.label} · ${selected[0].label}` : step.label;
   const related = upstream.size > 0 || downstream.size > 0;
   return <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] content-start gap-2 text-sm [overflow-wrap:anywhere]">
     <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">

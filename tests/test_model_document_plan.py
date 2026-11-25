@@ -51,7 +51,7 @@ from feedbax.training.method_runtime import TrainingLoop, initialize_method, rep
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
 from feedbax.web.services.project_folder import ProjectFolderService
 from feedbax.contracts.model_edit import ModelEditRequest
-from feedbax.web.services.project_plan import ProjectPlanService
+from feedbax.web.services.project_plan import ProjectPlanRead, ProjectPlanService
 from feedbax.web.app import create_app
 from tests.support.managed_train_fixture import managed_train_project
 from tests.test_canonical_evaluate_admission import _save_project
@@ -325,10 +325,17 @@ def test_intervention_window_field_edits_and_sweeps_in_the_authored_unit(tmp_pat
         assert not prepared["problems"], prepared
         saved = client.patch(url, json={"revision": snapshot["revision"], "files": prepared["files"]})
         assert saved.status_code == 200, saved.text
-        plan = folders.read_plan("window", revision=None).plan
+        settled = folders.read_plan("window", revision=None)
+        plan = settled.plan
         assert len(plan.runs) == 2 and all(run.admission_problem is None for run in plan.runs), (
             plan.diagnostics, tuple(run.problems for run in plan.runs),
         )
+        assert {run.label for run in plan.runs} == {"Offset 0.1 s", "Offset 0.2 s"}
+        window = ProjectPlanRead.without_history(settled).response(include_window_map=True).window_map
+        assert window is not None
+        (axis,) = window.steps[0].axes
+        assert axis.label == "Offset"
+        assert [value.value_label for value in axis.values] == ["0.1 s", "0.2 s"]
         values = set()
         for run in plan.runs:
             documents = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec.trial_documents
@@ -354,6 +361,51 @@ def test_intervention_window_field_edits_and_sweeps_in_the_authored_unit(tmp_pat
             shares = batch.json()["drawn"]["interventions"][address]
             assert shares == [float(i in active) for i in range(draw["n_steps"])]
         assert values == {0.1, 0.2}
+
+
+def test_scale_operand_sweep_has_the_field_name_without_changing_the_axis_key(tmp_path):
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    wire = raw["documents"]["point-mass"]["payload"]["interior"]["wires"]["drive"]
+    wire["attachments"] = [{
+        "kind": "intervention", "id": "scale", "operation": "Scale",
+        "operands": {"factor": {"kind": "value", "value": 0.5}},
+    }]
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, "scale", Project.model_validate(raw))
+    url = "/api/projects/scale"
+    owner = {"composites": [], "element": {
+        "kind": "attachment", "parent": {"kind": "wire", "id": "drive"}, "id": "scale",
+    }}
+    revision = folders.read("scale").revision
+    body = {
+        "revision": revision, "document": "point-mass", "owner": owner,
+        "run": {"variant": "default", "step": "train", "row": "default"},
+    }
+    with TestClient(create_app(projects_dir=tmp_path, automatic_run="off")) as client:
+        fields = client.post(f"{url}/model/fields", json=body)
+        assert fields.status_code == 200, fields.text
+        (factor,) = fields.json()["fields"]
+        assert factor["label"] == "Factor"
+        assert factor["address"]["element"]["path"] == ["operands", "factor", "value"]
+        proposal = client.post(f"{url}/model/fields", json=body | {
+            "address": factor["address"], "edit": {"kind": "text", "text": "0.5, 1"},
+        })
+        assert proposal.status_code == 200 and not proposal.json()["problems"], proposal.text
+        saved = client.patch(url, json={"revision": revision, "files": proposal.json()["files"]})
+        assert saved.status_code == 200, saved.text
+
+    settled = folders.read_plan("scale", revision=None)
+    window = ProjectPlanRead.without_history(settled).response(include_window_map=True).window_map
+    assert window is not None
+    (axis,) = window.steps[0].axes
+    assert axis.id == "value"
+    assert axis.label == "Factor"
+    assert [(value.id, value.label, value.value_label) for value in axis.values] == [
+        ("value-1", "Factor 0.5", "0.5"), ("value-2", "Factor 1", "1"),
+    ]
+    assert [(row.key.row, row.label) for row in window.rows] == [
+        ("value=value-1", "Factor 0.5"), ("value=value-2", "Factor 1"),
+    ]
 
 
 def test_addressed_field_range_sample_and_row_provenance(tmp_path):

@@ -15,7 +15,10 @@ export interface PlanRunEdge {
 
 export interface PlanSweepValueView {
   readonly id: string;
+  /** The value's full name, which names its axis. */
   readonly label: string;
+  /** The value's name where its axis is already named, as under a sweep's title. */
+  readonly valueLabel: string;
 }
 
 export interface PlanSweepView {
@@ -104,6 +107,11 @@ export interface PlanView {
 /** What Studio calls a document, step, operation or figure: its label, or its key when it has none. */
 export function shownName(key: string, labelled?: { readonly label?: string | null } | null) {
   return labelled?.label ?? key;
+}
+
+/** An output's name: its card (when another card's), its operation's shown name, and its product. */
+export function outputName(...parts: readonly string[]) {
+  return parts.join(' · ');
 }
 
 const settled = new Set<StudioRunStatusId>(["succeeded", "stale"]);

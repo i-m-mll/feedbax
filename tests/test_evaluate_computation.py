@@ -245,7 +245,10 @@ def test_measures_share_post_step_velocity_and_record_its_origin_once(tmp_path):
     }.items():
         refs[role], blob = encode_document_input(document)
         store.store_object(blob)
-    params = RolloutParameters(trials=task.condition_ids[:2], seed=29, trial_policy="paired", variation=())
+    params = RolloutParameters(
+        trials=task.condition_ids[:2], seed=29, trial_policy="paired", variation=(),
+        input_bindings={"target_pos": "target_pos"},
+    )
     bundle = load_application().bundle
     prepared = _prepare_initial_rollout(refs, params, registry=bundle, store=store)
     scope = prepared.paired.signal_scope

@@ -1,7 +1,7 @@
 import { expect, test } from './fixtures/studio';
 import type { APIRequestContext, Page } from '@playwright/test';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
-import { appendManagedFiles, fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
+import { appendManagedFiles, fixture, mapStep, runProjectFixture, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { applyTo } from './fixtures/controls';
 
 test.use({ viewport: { width: 1440, height: 900 } });
@@ -46,7 +46,7 @@ function modelView(page: Page) {
   const menu = page.getByRole('menu', { name: 'Model Document', exact: true });
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const mass = inspector.getByRole('textbox', { name: 'Mass', exact: true });
-  const card = (kind: string, step: string) => page.getByRole('article', { name: `${kind} ${step}`, exact: true });
+  const card = (kind: string, step: string) => mapCard(page, step);
   async function open(step: string) {
     await mapStep(page, step).click();
     await page.getByRole('tab', { name: 'Model', exact: true }).click();

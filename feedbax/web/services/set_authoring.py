@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import re
+from itertools import count
 from typing import Any
 
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
-from feedbax.contracts.project import Project, RootDocument, RunBase, StepBase, member_name
+from feedbax.contracts.project import Project, RootDocument, RunBase, StepBase, member_display_name, member_name
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode
 from feedbax.planner.project_plan import RunKey, _sweep_problem
 from feedbax.contracts.project_sweep import (
     DEFAULT_SWEEP_ROW, CooccurringSetTrials, ListedSetTrials, ManualCombination, NamedAxis, SetAxis,
-    SetEntryParts, SweepExpansionError, TrialSetField, WeightedSetTrials,
+    SetEntryParts, SweepExpansionError, TrialSetField, WeightedSetTrials, numbered_run_name,
 )
 from feedbax.contracts.set_document import (
     SET_DOCUMENT_SCHEMA_ID, SetMisfit, SetEntry, axis_from_set, check_fit, entry_pointer,
@@ -200,6 +201,11 @@ def _copy_key(value: str, taken) -> str:
     return generated_name(base, lambda key: key == base or taken(key))
 
 
+def _next_run_name(values: dict[str, Any]) -> str:
+    used = {member_display_name(key, entry.get("label")) for key, entry in values.items() if entry is not None}
+    return next(name for number in count(2) if (name := numbered_run_name(number)) not in used)
+
+
 def _divided(row: str, axis: str, value: str) -> str:
     """The id of the row an optional axis adds beside ``row`` for ``value``."""
     parts = [] if row == DEFAULT_SWEEP_ROW else row.split("--")
@@ -286,7 +292,7 @@ def _duplicate_run(folders, project_id, revision, project: Project, command: Dup
         content = _composed(project, named.set)
         entries = content["entries"]
         copy = _copy_key(named.value, entries.__contains__)
-        entry = {name: item for name, item in entries[named.value].items() if name != "label"}
+        entry = entries[named.value] | {"label": _next_run_name(entries)}
         edits = content_edits(content, content | {"entries": entries | {copy: entry}})
         readers = set_readers(project, named.set)
         stored = set_document_write(project, named.set, edits, readers)
@@ -295,7 +301,7 @@ def _duplicate_run(folders, project_id, revision, project: Project, command: Dup
     if named is not None:
         values = axes[named.axis]["values"]
         copy = _copy_key(named.value, values.__contains__)
-        value = {name: item for name, item in values[named.value].items() if name != "label"}
+        value = values[named.value] | {"label": _next_run_name(values)}
         copies = {row: _recolumned(row, named.axis, named.value, copy) for row in selected}
         updated = sweep | {"axes": axes | {named.axis: axes[named.axis] | {"values": values | {copy: value}}}}
         return StoredEdit([_with_sweep(address, raw, updated, copies)]), StudioAxisValue(axis=named.axis, value=copy)
@@ -307,7 +313,7 @@ def _duplicate_run(folders, project_id, revision, project: Project, command: Dup
             return _optional_value_added(project, address, raw, name, axis, selected)
     name = generated_name("run", axes.__contains__)
     value = generated_name(name, name.__eq__)
-    axis: dict[str, Any] = {"values": {value: {}}, "optional": True}
+    axis: dict[str, Any] = {"values": {value: {"label": numbered_run_name(2)}}, "optional": True}
     if isinstance(scope, SweepValuesRuns):
         axis["where"] = {"rule": scope.rule}
         values = axis_values(rows)
@@ -334,7 +340,8 @@ def _optional_value_added(project: Project, address, raw, name: str, axis, kept:
         return _insert_set_entry(project, name, axis.set)
     values = sweep["axes"][name]["values"]
     value = generated_name(name, lambda key: key == name or key in values)
-    updated = sweep | {"axes": sweep["axes"] | {name: sweep["axes"][name] | {"values": values | {value: {}}}}}
+    added = values | {value: {"label": _next_run_name(values)}}
+    updated = sweep | {"axes": sweep["axes"] | {name: sweep["axes"][name] | {"values": added}}}
     copies = {row: _divided(row, name, value) for row in kept}
     return StoredEdit([_with_sweep(address, raw, updated, copies)]), StudioAxisValue(axis=name, value=value)
 

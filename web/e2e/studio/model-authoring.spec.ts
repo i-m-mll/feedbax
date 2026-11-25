@@ -129,7 +129,7 @@ test('authors a Model with the pointer and trains it @round', async ({ page, req
   joining = edit();
   await drag(page, inputs.locator('[data-handleid="output:@task:target_pos"]'), handle(cell, 'input:input'));
   stored = await applied(joining);
-  const target = stored.ports.inputs?.find(({ name }) => name === 'target_pos');
+  const target = stored.ports.inputs?.find(({ name }) => name === 'target position');
   expect(target).toBeDefined();
   await expect(inputs.getByRole('img', { name: 'Task', exact: true })).toHaveCount(1);
 

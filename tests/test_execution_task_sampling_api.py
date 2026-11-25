@@ -220,6 +220,7 @@ def test_shipped_nominal_reach_has_a_target_apart_from_the_hand(client, kind):
     response = client.post("/api/execution/task-trials/sample", json={
         "model": documents["point-mass"].payload,
         "task": documents[f"{kind}-task"].payload,
+        "input_bindings": {"target_pos": "target_pos"},
         "nominal": True, "seed": 0, "count": 1,
     })
     assert response.status_code == 200, response.text

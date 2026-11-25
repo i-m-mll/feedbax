@@ -37,7 +37,7 @@ test('each term that is on has a row on the shelf, barred where it applies, and 
   await expect(row('reach').locator('[data-start]')).toHaveCount(1);
 
   const move = Number(await row('Epochs').getByRole('button', { name: 'move', exact: true }).getAttribute('data-start'));
-  const [present] = await starts('target_pos');
+  const [present] = await starts('target position');
   const [reach] = await starts('reach');
   expect(reach).toBeCloseTo(Math.max(move, present), 6);
   await expect(row('held')).toBeVisible();

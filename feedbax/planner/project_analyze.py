@@ -33,7 +33,7 @@ from feedbax.contracts.figure_document import (
     validate_figure_bindings,
 )
 from feedbax.contracts.dataset import FieldDescriptor
-from feedbax.contracts.member_stack import labelled_members, stack_layout
+from feedbax.contracts.member_stack import MEMBER, labelled_members, stack_layout
 from feedbax.contracts.operation import (
     DatasetInputPort, DatasetOutputPort, DatasetPort, WholeDimensions, require_dataset_fields, require_dataset_port,
 )
@@ -49,7 +49,7 @@ from feedbax.planner.project_plan import (
 )
 from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode, compose_document
 from feedbax.contracts.request_identity import EncodedRequest, encode_request
-from feedbax.contracts.project_sweep import SweepInputMember
+from feedbax.contracts.project_sweep import SweepInputMember, sweep_value_name
 from feedbax.contracts.request_refs import InputMember, MemberLabel, ProductRef
 from feedbax.contracts.request_specs import (
     AnalysisRequestSpec,
@@ -115,8 +115,10 @@ def _printed_labels(figure: FigureDocument) -> set[str]:
     used = set()
     for layer in figure.layers:
         used.update(layer.group, layer.select)
-        for _, encoding in layer_encodings(layer):
+        for channel, encoding in layer_encodings(layer):
             used.update(getattr(encoding, "select", {}))
+            if channel == "color":
+                used.add(encoding if isinstance(encoding, str) else encoding.variable)
     return used
 
 
@@ -198,6 +200,7 @@ class EvaluateSource:
     spec: RequestSpec
     name: LabelName
     port: DatasetPort | None
+    step_label: str
 
 
 class _Lowerer:
@@ -443,14 +446,19 @@ class _Lowerer:
         ), _names(inputs))
         for bindings in inputs.values():
             for binding in bindings:
+                for axis, coord in binding.coordinates.items():
+                    names.setdefault(axis, {}).setdefault(
+                        coord.value_id, LabelName(coord.value_id, sweep_value_name(axis, coord), kind="row"),
+                    )
                 if binding.producer is None or (evaluation := self.evaluations.get(binding.producer)) is None:
                     continue
                 spec, name = evaluation.spec, evaluation.name
                 if isinstance(spec, EvaluationRequestSpec) and spec.evaluation_type == ROLLOUT_TYPE:
                     params = RolloutParameters.model_validate(spec.params)
                     if name.label is None:
-                        name = replace(name, label=_condition_label(params))
+                        name = replace(name, label=_condition_label(params) or evaluation.step_label)
                     names.setdefault("condition", {}).setdefault(params.condition_id(), name)
+                names.setdefault(MEMBER, {}).setdefault(binding.member.key, name)
         return names
 
     def _record(

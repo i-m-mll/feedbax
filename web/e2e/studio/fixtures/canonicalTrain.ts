@@ -57,11 +57,31 @@ export function runName(label: string) {
 
 type RowKey = { readonly variant: string; readonly step: string; readonly row: string };
 
-/** The label the Runs table draws for a saved row: a step's only run in its variant is named by its step. */
-export function drawnRunLabel(rows: readonly { key: RowKey; label: string }[], key: RowKey) {
-  const siblings = rows.filter((row) => row.key.variant === key.variant && row.key.step === key.step);
-  if (siblings.length === 1) return key.step;
-  return siblings.find((row) => row.key.row === key.row)!.label;
+/** The name the Runs table draws for a saved row of a swept step, which always has a label. */
+export function shownRunLabel(row: { readonly key: RowKey; readonly label: string | null }) {
+  if (row.label === null) throw new Error(`Run ${JSON.stringify(row.key)} has no label; read its step's name with drawnRunLabel.`);
+  return row.label;
+}
+
+type DrawnMap = {
+  readonly rows: readonly { readonly key: RowKey; readonly label: string | null }[];
+  readonly steps: readonly { readonly variant: string; readonly step_id: string; readonly label: string }[];
+};
+
+/** The name the Runs table draws for the saved row at `key`: its label, or for a step's only run its step's name. */
+export function drawnRunLabel(map: DrawnMap, key: RowKey) {
+  const row = map.rows.find((item) => item.key.variant === key.variant && item.key.step === key.step && item.key.row === key.row)!;
+  return row.label ?? drawnStepLabel(map, key);
+}
+
+/** The name the window map gives a run's step. */
+export function drawnStepLabel(map: Pick<DrawnMap, 'steps'>, key: Omit<RowKey, 'row'>) {
+  return map.steps.find((step) => step.variant === key.variant && step.step_id === key.step)!.label;
+}
+
+/** A step's card on the map, found by its id since the card reads the step's name. */
+export function mapCard(scope: Page | Locator, stepId: string) {
+  return scope.locator(`[data-map-card][data-map-step="${stepId}"]`);
 }
 
 export function mapStep(page: Page, stepId: string) {

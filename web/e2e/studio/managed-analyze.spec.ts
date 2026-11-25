@@ -3,7 +3,7 @@ import { type Page, type Request } from '@playwright/test';
 import type {
   AnalysisDocument, StudioJobSnapshot, StudioProjectDocument, StudioProjectSnapshot, StudioSavedTrainRuns,
 } from '../../src/generated/studioContracts';
-import { appendManagedFiles, enter, mapStep, runProjectFixture } from './fixtures/canonicalTrain';
+import { appendManagedFiles, enter, mapStep, runProjectFixture, mapCard } from './fixtures/canonicalTrain';
 import { pick, popupListbox } from './fixtures/controls';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { rootPayload } from './fixtures/rootPayload';
@@ -105,7 +105,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   const upstream = (await plan(initial.revision)).evaluations!.find(({ key }) => key.step === 'baseline')!;
   expect(upstream.result).toBeTruthy();
   const admittedJobs = await attempts();
-  await page.getByRole('article', { name: 'Evaluate baseline', exact: true }).locator('.studio-map-run-mark').click();
+  await mapCard(page, 'baseline').locator('.studio-map-run-mark').click();
   await page.keyboard.press('Meta+K');
   const palette = page.getByRole('dialog', { name: 'Command Palette', exact: true });
   await palette.getByRole('combobox').fill('New Step');
@@ -162,10 +162,10 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   await edit(() => enter(inspector.getByRole('textbox', { name: 'Ddof', exact: true }), '0'));
   // A role offers only the sources that fit it: the saved states are no velocity a summary reads.
   await role('Velocity').click();
-  await expect(popupListbox(page).getByRole('option', { name: 'Aligned velocity.velocity', exact: true })).toBeVisible();
+  await expect(popupListbox(page).getByRole('option', { name: 'Aligned velocity · velocity', exact: true })).toBeVisible();
   await expect(popupListbox(page).getByRole('option', { name: 'states', exact: true })).toHaveCount(0);
   await page.keyboard.press('Escape');
-  await edit(() => pick(role('Velocity'), 'Aligned velocity.velocity'));
+  await edit(() => pick(role('Velocity'), 'Aligned velocity · velocity'));
 
   const pane = analysis.locator('.react-flow__pane');
   await analysis.getByRole('button', { name: 'Zoom Out', exact: true }).click();
@@ -176,7 +176,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
     x: summaryBox!.x - paneBox!.x + summaryBox!.width + 100, y: summaryBox!.y - paneBox!.y,
   } }));
   await analysis.getByRole('group', { name: 'Select Velocity Summary', exact: true }).click();
-  const wired = await edit(() => pick(role('Summary'), 'Trial summary.summary'));
+  const wired = await edit(() => pick(role('Summary'), 'Trial summary · summary'));
   await expect(analysis.locator('.react-flow__edge')).toHaveCount(3);
   const original = await plan(wired.revision);
   const requests = (projection: typeof original) => Object.fromEntries(
@@ -214,7 +214,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
   await edit(() => page.keyboard.press('Enter'));
   await analysis.getByRole('group', { name: 'Select Peak velocity summary', exact: true }).click();
   await edit(() => enter(inspector.getByRole('textbox', { name: 'Ddof', exact: true }), '0'));
-  await edit(() => pick(role('Velocity'), 'Aligned velocity.velocity'));
+  await edit(() => pick(role('Velocity'), 'Aligned velocity · velocity'));
   await tab(page, 'Figures').click();
   await figures.getByRole('button', { name: 'Velocity Summary', exact: true }).click();
   const addMark = async (name: string) => {
@@ -222,7 +222,7 @@ test('authors a managed Analyze graph from one saved Evaluate run', { tag: '@rou
     await edit(() => page.getByRole('menuitem', { name, exact: true }).click());
   };
   await addMark('Data');
-  await edit(() => pick(role('Data 2'), 'Peak velocity summary.summary'));
+  await edit(() => pick(role('Data 2'), 'Peak velocity summary · summary'));
   await addMark('Points');
   await edit(() => pick(role('Data'), 'data-2'));
   await edit(() => pick(role('X'), 'peak_time'));

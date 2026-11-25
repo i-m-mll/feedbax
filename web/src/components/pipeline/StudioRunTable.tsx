@@ -50,7 +50,7 @@ function needsNames(rows: readonly PlanRunView[], sweeps: readonly PlanSweepView
 
 function useValueLabels(sweeps: readonly PlanSweepView[]) {
   return useMemo(() => new Map(sweeps.map((sweep) => [
-    sweep.id, new Map(sweep.values.map((value) => [value.id, value.label])),
+    sweep.id, new Map(sweep.values.map((value) => [value.id, value.valueLabel])),
   ])), [sweeps]);
 }
 

@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import type { StudioProjectSnapshot, StudioSavedTrainRuns } from '../../src/generated/studioContracts';
-import { enter, fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { enter, fixture, mapStep, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
 
 test.use({ viewport: { width: 1440, height: 900 } });
@@ -11,7 +11,7 @@ test('the inspector edits the saved values for the step and its selected runs, a
   // Train offers the settings a project authors, so the project authors Grad Clip to edit it.
   files.at(-1).step.base.inline.settings.grad_clip = 1;
   const { snapshot, projectPath } = await seedManagedProject(request, files);
-  const card = page.getByRole('article', { name: 'Train train', exact: true });
+  const card = mapCard(page, 'train');
   const rate = page.getByRole('region', { name: 'Learning Rate field', exact: true });
   const clip = page.getByRole('region', { name: 'Grad Clip field', exact: true });
   const batches = page.getByRole('region', { name: 'Batches field', exact: true });
@@ -52,9 +52,9 @@ test('the inspector edits the saved values for the step and its selected runs, a
     return base && 'inline' in base ? (base.inline as { settings: { optimizer: { type: string } } }).settings.optimizer.type : undefined;
   }).toBe('sgd');
   await enter(rateText, 'geomspace(1e-4, 1e-2, 5)');
-  await expect(card.getByRole('button', { name: 'Sweep learning-rate 5', exact: true })).toBeVisible();
+  await expect(card.getByRole('button', { name: 'Sweep Learning rate 5', exact: true })).toBeVisible();
   await enter(rateText, '1e-3, 2e-3, 3e-3');
-  await expect(card.getByRole('button', { name: 'Sweep learning-rate 3', exact: true })).toBeVisible();
+  await expect(card.getByRole('button', { name: 'Sweep Learning rate 3', exact: true })).toBeVisible();
   const before = (await plan())!.rows;
   const axes = (await saved()).project.steps?.train.sweep?.axes;
   const initial = axes?.['learning-rate'];
@@ -124,7 +124,7 @@ test('the inspector edits the saved values for the step and its selected runs, a
   await enter(clipText, '0.75');
   await expect.poll(async () => JSON.stringify((await saved()).project.steps?.train.base)).toContain('"grad_clip":0.75');
   await enter(clipText, 'geomspace(0.1, 1, 3)');
-  await expect(card.getByRole('button', { name: 'Sweep grad-clip 3', exact: true })).toBeVisible();
+  await expect(card.getByRole('button', { name: 'Sweep Grad clip 3', exact: true })).toBeVisible();
   await expect(clip.getByRole('combobox', { name: 'Spacing', exact: true })).toHaveText('Logarithmic');
   await page.reload();
   await expect(clipText).toHaveValue('geomspace(0.1, 1, 3)');

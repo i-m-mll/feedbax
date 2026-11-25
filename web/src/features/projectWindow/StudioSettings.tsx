@@ -59,14 +59,14 @@ function AppearanceRow<Choice extends AppearanceChoice>({ choice }: { choice: Ch
   );
 }
 
-const seeds = { id: 'seed', label: 'seed', values: [{ id: '0', label: '0' }, { id: '1', label: '1' }] };
-const rates = { id: 'rate', label: 'rate', values: [{ id: 'low', label: '0.001' }, { id: 'high', label: '0.01' }] };
+const seeds = { id: 'seed', label: 'Seed', values: [{ id: '0', label: 'Seed 0', valueLabel: '0' }, { id: '1', label: 'Seed 1', valueLabel: '1' }] };
+const rates = { id: 'rate', label: 'Rate', values: [{ id: 'low', label: 'Rate 0.001', valueLabel: '0.001' }, { id: 'high', label: 'Rate 0.01', valueLabel: '0.01' }] };
 const sampleStates = ['succeeded', 'succeeded', 'running', 'not_run'] as const;
 const sampleStep: PlanStepView = {
   id: 'reach', label: 'reach', kind: 'train', sweeps: [rates, seeds], inputs: [],
   runs: rates.values.flatMap((rate, r) => seeds.values.map((seed, s): PlanRunView => {
     const state = sampleStates[r * 2 + s];
-    return { id: `${rate.id}-${seed.id}`, label: `${rate.label}/${seed.label}`, values: { rate: rate.id, seed: seed.id }, status: state, state, results: [] };
+    return { id: `${rate.id}-${seed.id}`, label: `${rate.label} · ${seed.label}`, values: { rate: rate.id, seed: seed.id }, status: state, state, results: [] };
   })),
   statusCounts: { succeeded: 2, running: 1, not_run: 1 },
 };

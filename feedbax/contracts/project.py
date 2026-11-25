@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
-import re
 from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import Field, JsonValue, StringConstraints, TypeAdapter, model_validator
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.display_names import member_display_name as member_display_name
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID, LOADED_MODEL_SCHEMA_VERSION, ImportedModelSource
 from feedbax.contracts.matrix_core import apply_value_patch_in_place, ensure_value_collection
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS
@@ -35,10 +35,6 @@ type StepKind = Literal["train", "synthesize", "evaluate", "analyze", "report"]
 class _LabelledMember(Protocol):
     @property
     def label(self) -> str | None: ...
-
-
-def member_display_name(key: str, label: str | None = None) -> str:
-    return label or re.sub(r"[-_]+", " ", key).capitalize()
 
 
 def member_name(members: Mapping[str, _LabelledMember], key: str) -> str:

@@ -6,7 +6,7 @@ import { IconButton } from '@/components/ui/Button';
 import { ListRow } from '@/components/ui/ListRow';
 import { StatusMark } from '@/components/ui/StatusMark';
 
-/** An exception to a step's sweep: what it changes (`Batch Size 20`) and for which runs (`seed 2 · 2 runs`). */
+/** An exception to a step's sweep: what it changes (`Batch Size 20`) and for which runs (`Seed 2 · 2 runs`). */
 export interface SweepExceptionView {
   readonly id: string;
   readonly text: string;

@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import { type Page } from '@playwright/test';
-import { authorLearningRateSweep, captureStudioWindow, chooseSweepValue, chooseTrainSuccessor, fixture, mapStep, openResultsSlot, runName, seedManagedProject } from './fixtures/canonicalTrain';
+import { authorLearningRateSweep, captureStudioWindow, chooseSweepValue, chooseTrainSuccessor, fixture, mapStep, openResultsSlot, runName, shownRunLabel, seedManagedProject, mapCard } from './fixtures/canonicalTrain';
 import { scanStudio } from './fixtures/studioAccessibility';
 import { formatMetric } from '../../src/components/activity/studioPlot';
 import type {
@@ -386,7 +386,7 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
     return await response.json() as StudioSavedTrainRuns;
   };
   const map = page.getByRole('region', { name: 'Pipeline Map' });
-  const source = map.getByRole('article', { name: 'Train train', exact: true });
+  const source = mapCard(map, 'train');
   const runs = page.getByRole('tabpanel', { name: 'Runs', exact: true });
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
   const stepInspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
@@ -400,7 +400,7 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   await expect(source).toHaveAttribute('data-selected');
   await authorLearningRateSweep(stepInspector.getByRole('region', { name: 'Learning Rate field', exact: true }));
 
-  await expect(source.getByRole('button', { name: 'Sweep learning-rate 3', exact: true })).toBeVisible();
+  await expect(source.getByRole('button', { name: 'Sweep Learning rate 3', exact: true })).toBeVisible();
   const saved = await request.get(projectPath);
   expect(saved.ok(), await saved.text()).toBe(true);
   snapshot = await saved.json() as StudioProjectSnapshot;
@@ -425,8 +425,8 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
     return result.items;
   };
 
-  await chooseSweepValue(source, 'learning-rate', '0.001');
-  await chooseSweepValue(source, 'learning-rate', '0.003', true);
+  await chooseSweepValue(source, 'Learning rate', '0.001');
+  await chooseSweepValue(source, 'Learning rate', '0.003', true);
   await expect(source.locator('.studio-map-group-box')).toHaveCount(2);
   const mark = source.locator('.studio-map-run-mark').first();
   await mark.focus();
@@ -437,7 +437,7 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   const prefix = await run('train');
 
   const create = submitted(page, filesPath);
-  await source.getByRole('button', { name: 'New Step train', exact: true }).click();
+  await source.getByRole('button', { name: 'New Step Train', exact: true }).click();
   await chooseTrainSuccessor(page);
   const accepted = await create;
   expect(accepted.status(), await accepted.text()).toBe(201);
@@ -450,7 +450,7 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
     })).sort((left, right) => left.id.localeCompare(right.id)) }] } } },
     deltas: [{ patches: [{ value: 'initialize_from' }] }],
   });
-  const child = map.getByRole('article', { name: `Train ${childId}`, exact: true });
+  const child = mapCard(map, childId);
   await expect(mapStep(page, childId)).toHaveAttribute('aria-pressed', 'true');
   await expect(child).toContainText('2 of 3');
   await expect(stepInspector.getByRole('combobox', { name: 'Method', exact: true })).toBeFocused();
@@ -519,8 +519,8 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   expect(unselected.attempts).toEqual([]);
 
   await mapStep(page, 'train').click();
-  await chooseSweepValue(source, 'learning-rate', '0.001');
-  await chooseSweepValue(source, 'learning-rate', '0.003', true);
+  await chooseSweepValue(source, 'Learning rate', '0.001');
+  await chooseSweepValue(source, 'Learning rate', '0.003', true);
   await expect(source.locator('.studio-map-group-box')).toHaveCount(2);
   await expect(source.locator('.studio-map-run-mark[data-boxed]')).toHaveCount(0);
   await captureStudioWindow(page, info, 'visual-map-group');
@@ -536,7 +536,7 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
   await captureStudioWindow(page, info, '01-map-runs');
 
   await mapStep(page, 'train').click();
-  await table.getByRole('button', { name: runName(selected[0].label) }).click();
+  await table.getByRole('button', { name: runName(shownRunLabel(selected[0])) }).click();
   const explicit = submitted(page, filesPath);
   await palette(page, 'newStep', 'New Step');
   await chooseTrainSuccessor(page);
@@ -579,10 +579,10 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
       },
     });
     const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-    const selectedRow = table.getByRole('button', { name: runName(selected[index].label) });
+    const selectedRow = table.getByRole('button', { name: runName(shownRunLabel(selected[index])) });
     await selectedRow.click();
     await expect(selectedRow).toHaveAttribute('aria-pressed', 'true');
-    await expect(inspector.getByRole('button', { name: /^Select Made From train / })).toBeVisible();
+    await expect(inspector.getByRole('button', { name: /^Select Made From Train / })).toBeVisible();
     await expect(table.getByRole('progressbar')).toHaveCount(0);
     if (index === 0) {
       await openResultsSlot(page);

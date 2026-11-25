@@ -5,8 +5,8 @@ import { studioName } from '@/components/activity/studioVocabulary';
 import { RuleField, type RuleFieldCommand, type RuleFieldProblem } from '@/components/values/RuleField';
 import type { PlanStepView } from '@/features/pipeline/planView';
 import type { ElementSelectionStore } from '@/features/projectWindow/elementSelection';
-import type { StudioProjectWindowMapRow, StudioRunRuleRequest, SubsetTerms } from '@/generated/studioContracts';
-import { clauseRuns, clauseText, pinnedSelectionLabels, savedRunId, selectedRowTerms } from './projectWindowPlan';
+import type { StudioRunRuleRequest, SubsetTerms } from '@/generated/studioContracts';
+import { clauseRuns, clauseText, pinnedSelectionLabels, savedRunId, selectedRowTerms, type SourceRows } from './projectWindowPlan';
 import { replacedAxisValue, type RuleProblem } from './selectionEdits';
 
 /** Where a rule is checked: the saved revision and variant whose plan holds the producer's runs. */
@@ -46,7 +46,7 @@ export function SelectionRule({ scope, source, terms, planned, ranked = true, la
   problem?: RuleProblem;
   onToRows?: () => void;
   /** Where runs can be picked on `source`'s card for the selection: its rows. */
-  pick?: { readonly rows: readonly StudioProjectWindowMapRow[] };
+  pick?: SourceRows;
   /** Saves the selection: the rule as written, what was picked, or a value offered in place of a missing one. */
   onCommit(terms: SubsetTerms): void;
 }) {
@@ -71,7 +71,7 @@ export function SelectionRule({ scope, source, terms, planned, ranked = true, la
   // Keyed by the runs themselves: the rows and terms arrive as new objects on every render.
   const savedRuns = useMemo(() => savedKey === undefined ? undefined : new Set<string>(JSON.parse(savedKey)), [savedKey]);
   const boxed = constrained && (draft ?? '').trim() === rule.trim() ? savedRuns : runs;
-  const pickedWrites = useMemo(() => picked && pick && selectedRowTerms(pick.rows, picked), [picked, pick?.rows]);
+  const pickedWrites = useMemo(() => picked && pick && selectedRowTerms(pick, picked), [picked, pick]);
   useEffect(() => {
     if (!picking) return;
     picking.setState({ choosing: picked ? {

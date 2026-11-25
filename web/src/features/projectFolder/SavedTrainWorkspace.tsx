@@ -1258,7 +1258,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       scope={{ project: saved.project_id, revision: shown.revision, variant }} source={source} terms={where}
       planned={subset} picking={elements} disabled={!applies}
       problem={problem} onToRows={onToRows}
-      pick={{ rows: stepSourceRows(shown, source.id, variant) }} onCommit={onCommit} />;
+      pick={stepSourceRows(shown, source.id, variant)} onCommit={onCommit} />;
   }
   const trainStart = authoring && authored?.kind === 'train' && step && readRefusal?.step !== step.id
     && modelDocumentId(step.documentIds);
@@ -1414,7 +1414,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   }
 
   /**
-   * The runs an exception applies to: its rule, and its rows by axis and values (`seed 2`). Rows are read through their
+   * The runs an exception applies to: its rule, and its rows by axis and values (`Seed 2`). Rows are read through their
    * coordinates; an axis whose every value is included says nothing and is left out.
    */
   function exceptionTerms(target: PlanStepView, where: SweepExceptionTerms | null | undefined) {
@@ -1427,14 +1427,24 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     return [...where?.rule ? [where.rule] : [], ...[...chosen].filter(([axis, values]) => {
       const all = target.sweeps.find(({ id }) => id === axis)?.values;
       return !all || all.some(({ id }) => !values.has(id));
-    }).map(([axis, values]) => `${axis} ${[...values].map((value) => axisValueText(axis, value)).join(', ')}`)];
+    }).map(([axis, values]) => {
+      const sweep = target.sweeps.find(({ id }) => id === axis);
+      const names = [...values].map((value) => sweep?.values.find(({ id }) => id === value)?.valueLabel ?? axisValueText(axis, value));
+      return `${sweep?.label ?? axis} ${names.join(', ')}`;
+    })];
+  }
+
+  /** The name of the run a Report figure is read from, when its step has more than one run. */
+  function reportFigureRun(key: ReportFigureSource['key']) {
+    const runs = plan.steps.find(({ id }) => id === key.step)?.runs ?? [];
+    return runs.length > 1 ? runs.find(({ id }) => id === savedRunId(key))?.label : undefined;
   }
 
   function stepExceptions(stepId: string, scope: string | null = variant) {
     return authoredMap?.steps.find(({ step_id, variant: id }) => step_id === stepId && id === scope)?.exceptions ?? [];
   }
 
-  /** The runs an exception picks, as its row in Exceptions and a field's source read them (`seed 2 · 2 runs`). */
+  /** The runs an exception picks, as its row in Exceptions and a field's source read them (`Seed 2 · 2 runs`). */
   function exceptionRuns(target: PlanStepView, { count, rule }: StudioProjectWindowMapException) {
     return [
       ...exceptionTerms(target, rule.where),
@@ -1939,7 +1949,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
             {reportChoices.figures.map((figure) => <Button variant="ghost" align="start"
               key={JSON.stringify([figure.key, figure.name])}
               onClick={() => chooseReportFigure(reportChoices.revision, figure)}>
-              {stepElementName(saved.project, saved.composed, figure.key.step, figure.name)}{figure.key.row !== 'default' && ' · ' + figure.key.row}
+              {stepElementName(saved.project, saved.composed, figure.key.step, figure.name)}{reportFigureRun(figure.key) && ' · ' + reportFigureRun(figure.key)}
             </Button>)}
           </Dialog>}
           {insertMenu.menu}

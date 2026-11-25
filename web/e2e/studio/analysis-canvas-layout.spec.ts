@@ -111,7 +111,7 @@ test('keeps every Analysis card clear of the others and every wire clear of the 
 
   await summary.click();
   if (!await inspector.isVisible()) await page.getByRole('button', { name: 'Show Inspector', exact: true }).click();
-  await edit(() => pick(inspector.getByRole('combobox', { name: 'Velocity', exact: true }), /^align\.velocity$/i));
+  await edit(() => pick(inspector.getByRole('combobox', { name: 'Velocity', exact: true }), 'align · velocity'));
   await expect(analysis.locator('.react-flow__edge')).toHaveCount(3);
   await expectClearCanvas(analysis);
   await page.screenshot({ path: test.info().outputPath('canvas.png') });

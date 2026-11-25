@@ -61,7 +61,7 @@ test('the slot header switches, creates, duplicates, renames and re-keys a step\
   async function renameStep(step: string, label: string) {
     await mapStep(page, step).click();
     await mapStep(page, step).press('F2');
-    const name = page.locator(`[data-map-step="${step}"]`).getByRole('textbox', { name: `Rename ${step}`, exact: true });
+    const name = page.locator(`[data-map-step="${step}"]`).getByRole('textbox', { name: /^Rename / });
     await name.fill(label);
     const sent = submitted(page, `${projectPath}/members/command`);
     await name.press('Enter');
@@ -70,7 +70,7 @@ test('the slot header switches, creates, duplicates, renames and re-keys a step\
 
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await run('train');
-  await renameStep('sibling', 'Sibling');
+  await renameStep('sibling', 'Sibling reach');
   await run('sibling');
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
@@ -87,8 +87,8 @@ test('the slot header switches, creates, duplicates, renames and re-keys a step\
   await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   const activity = page.getByRole('region', { name: 'Activity', exact: true })
     .getByRole('region', { name: configuration.project, exact: true });
-  await expect(activity.getByRole('button', { name: 'Train train', exact: true })).toBeVisible();
-  await expect(activity.getByRole('button', { name: 'Train Sibling', exact: true })).toBeVisible();
+  await expect(activity.getByRole('button', { name: 'Train Train', exact: true })).toBeVisible();
+  await expect(activity.getByRole('button', { name: 'Train Sibling reach', exact: true })).toBeVisible();
   await expect(activity.getByRole('button', { name: 'Train Reach', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
 
@@ -256,7 +256,7 @@ test('a Train step keeps a new Model with its Problems and a duplicated Model wi
     if (choice === 'New') {
       expect(status).toBe('cannot_run');
       expect(details.length).toBeGreaterThan(0);
-      for (const detail of details) expect(detail).toMatch(/is linked to a field the Model does not have|is not in scope here/);
+      for (const detail of details) expect(detail).toMatch(/is linked to a field the Model does not have|is not in scope here|is not an input of the Model/);
       await expect(page.getByRole('button', { name: /^Problems \d+$/ })).toBeVisible();
     } else {
       // Model addresses are relative to their document, so a copy's links and measures resolve as the original's.

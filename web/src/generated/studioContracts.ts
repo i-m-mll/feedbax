@@ -369,7 +369,7 @@ export interface StudioSavedTrainResult {
 
 export interface StudioSavedTrainRow {
   key: StudioSavedTrainKey;
-  label: string;
+  label: string | null;
   request_id: string;
   attempts: StudioSavedTrainAttempt[];
   status: "not_run" | "not_chosen" | "cannot_run" | "stale" | "queued" | "awaiting_authorization" | "blocked" | "waiting" | "starting" | "running" | "stopping" | "collecting" | "succeeded" | "failed" | "stopped" | "interrupted" | "corrupt";
@@ -846,7 +846,7 @@ export interface DuplicateComponents {
 export interface AxisValueRuns {
   kind: "axis_value";
   axis: string;
-  value: string;
+  value: "" | string;
 }
 
 export interface EvaluateModelRequest {
@@ -3943,7 +3943,7 @@ export type ScopedValue = {
 };
 
 export type SelectedAxisValue = {
-  "id": string;
+  "id": "" | string;
   "label": string;
 };
 
@@ -4725,12 +4725,14 @@ export type StudioProjectWindowMap = {
 
 export type StudioProjectWindowMapAxis = {
   "id": string;
+  "label": string;
   "values": Array<StudioProjectWindowMapAxisValue>;
 };
 
 export type StudioProjectWindowMapAxisValue = {
   "id": string;
   "label": string;
+  "value_label": string;
   "rule": string;
 };
 
@@ -4815,7 +4817,7 @@ export type StudioProjectWindowMapRequest = {
 
 export type StudioProjectWindowMapRow = {
   "key": StudioSavedTrainKey;
-  "label": string;
+  "label": string | null;
   "coordinates": Record<string, StudioProjectWindowMapCoordinate>;
   "input_axes"?: Record<string, StudioProjectWindowMapInputAxis>;
   "member_key"?: string | null;
@@ -4833,6 +4835,7 @@ export type StudioProjectWindowMapRow = {
 export type StudioProjectWindowMapStep = {
   "variant": string;
   "step_id": string;
+  "label": string;
   "kind": StepKind;
   "group": string | null;
   "inputs": Array<StudioProjectWindowMapInput>;
@@ -5806,7 +5809,7 @@ export const firstTrainTask: Document = {
     "signals": [
       {
         "id": "target_pos",
-        "name": "target_pos",
+        "name": "target position",
         "type": {
           "base": "real",
           "shape": [
@@ -5831,7 +5834,7 @@ export const firstTrainTask: Document = {
       },
       {
         "id": "target_vel",
-        "name": "Target velocity",
+        "name": "target velocity",
         "type": {
           "base": "real",
           "shape": [
@@ -6849,7 +6852,7 @@ export const StudioSavedTrainRowSchema: z.ZodType<StudioSavedTrainRow> = z.lazy(
   z
     .object({
       "key": StudioSavedTrainKeySchema,
-      "label": z.string(),
+      "label": z.string().nullable(),
       "request_id": z.string(),
       "attempts": z.array(StudioSavedTrainAttemptSchema),
       "status": z.union([z.literal("not_run"), z.literal("not_chosen"), z.literal("cannot_run"), z.literal("stale"), z.literal("queued"), z.literal("awaiting_authorization"), z.literal("blocked"), z.literal("waiting"), z.literal("starting"), z.literal("running"), z.literal("stopping"), z.literal("collecting"), z.literal("succeeded"), z.literal("failed"), z.literal("stopped"), z.literal("interrupted"), z.literal("corrupt")]),
@@ -7674,7 +7677,7 @@ export const AxisValueRunsSchema: z.ZodType<AxisValueRuns> = z.lazy(() =>
     .object({
       "kind": z.literal("axis_value"),
       "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-      "value": z.string().min(1),
+      "value": z.union([z.literal(""), z.string().min(1)]),
     })
     .strict()
 ) as unknown as z.ZodType<AxisValueRuns>;
@@ -12570,7 +12573,7 @@ export const ScopedValueSchema: z.ZodType<ScopedValue> = z.lazy(() =>
 
 export const SelectedAxisValueSchema: z.ZodType<SelectedAxisValue> = z.lazy(() =>
   z.object({
-    "id": z.string().min(1),
+    "id": z.union([z.literal(""), z.string().min(1)]),
     "label": z.string(),
   }).strict()
 ) as unknown as z.ZodType<SelectedAxisValue>;
@@ -13598,6 +13601,7 @@ export const StudioProjectWindowMapSchema: z.ZodType<StudioProjectWindowMap> = z
 export const StudioProjectWindowMapAxisSchema: z.ZodType<StudioProjectWindowMapAxis> = z.lazy(() =>
   z.object({
     "id": z.string(),
+    "label": z.string(),
     "values": z.array(StudioProjectWindowMapAxisValueSchema),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapAxis>;
@@ -13606,6 +13610,7 @@ export const StudioProjectWindowMapAxisValueSchema: z.ZodType<StudioProjectWindo
   z.object({
     "id": z.string(),
     "label": z.string(),
+    "value_label": z.string(),
     "rule": z.string(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapAxisValue>;
@@ -13710,7 +13715,7 @@ export const StudioProjectWindowMapRequestSchema: z.ZodType<StudioProjectWindowM
 export const StudioProjectWindowMapRowSchema: z.ZodType<StudioProjectWindowMapRow> = z.lazy(() =>
   z.object({
     "key": StudioSavedTrainKeySchema,
-    "label": z.string(),
+    "label": z.union([z.string(), z.null()]),
     "coordinates": z.record(z.string(), StudioProjectWindowMapCoordinateSchema),
     "input_axes": z.record(z.string(), StudioProjectWindowMapInputAxisSchema).optional(),
     "member_key": z.union([z.string(), z.null()]).optional(),
@@ -13730,6 +13735,7 @@ export const StudioProjectWindowMapStepSchema: z.ZodType<StudioProjectWindowMapS
   z.object({
     "variant": z.string(),
     "step_id": z.string(),
+    "label": z.string(),
     "kind": StepKindSchema,
     "group": z.union([z.string(), z.null()]),
     "inputs": z.array(StudioProjectWindowMapInputSchema),

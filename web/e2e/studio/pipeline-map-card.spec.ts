@@ -29,8 +29,8 @@ test('the map card draws one sweep in a line, its head as glyph and name, and th
   const tops = await Promise.all((await marks.all()).map(async (mark) => Math.round((await box(mark)).y)));
   expect(new Set(tops).size).toBe(1);
 
-  await expect(card.locator('.studio-card__head')).toHaveText('train');
-  await chooseSweepValue(card, 'batch-size', '4');
+  await expect(card.locator('.studio-card__head')).toHaveText('Train');
+  await chooseSweepValue(card, 'Batch size', '4');
   await expect(card.locator('[id$="-status"]')).toHaveCount(0);
   await expect(card.getByText(/\d+ of \d+/)).toHaveCount(0);
 
@@ -81,7 +81,7 @@ test('the map drawer keeps New Step in view, aligned with its rows, while its li
   await list.evaluate((node) => { node.scrollTop = node.scrollHeight; });
   await expect.poll(() => list.evaluate((node) => node.scrollTop)).toBeGreaterThan(0);
   expect(await box(newStep)).toEqual(before);
-  const row = drawer.getByRole('treeitem', { name: /^train\b/ });
+  const row = drawer.getByRole('treeitem', { name: /^Train\b/ });
   await row.scrollIntoViewIfNeeded();
   const glyph = (rowFrame: Locator) => rowFrame.locator(':scope > span').nth(1);
   expect(Math.round((await box(glyph(row))).x)).toBe(Math.round((await box(glyph(newStep))).x));
@@ -114,7 +114,7 @@ test('choosing one value of a sweep selects and boxes only its row or column', a
       return [boxed, await mark.getAttribute('aria-pressed') === 'true'];
     }));
   };
-  for (const [sweep, middle] of [['n-batches', '20'], ['batch-size', '4']]) {
+  for (const [sweep, middle] of [['N batches', '20'], ['Batch size', '4']]) {
     await chooseSweepValue(card, sweep, middle);
     const cells = await boxedAndPressed();
     expect(cells.filter(([boxed]) => boxed)).toHaveLength(3);
