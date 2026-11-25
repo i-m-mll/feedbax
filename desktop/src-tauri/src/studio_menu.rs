@@ -59,25 +59,66 @@ struct Item {
     enabled: bool,
 }
 
+/// What a Studio window shows: one project, or the start page that opens one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Route {
+    Project(String),
+    Start,
+}
+
+impl Route {
+    pub fn of(url: &Url) -> Option<Self> {
+        if url.path() != "/" {
+            return None;
+        }
+        let mut pairs = url.query_pairs();
+        match (pairs.next(), pairs.next()) {
+            (None, _) => Some(Self::Start),
+            (Some((key, project)), None) if key == "project" => {
+                Some(Self::Project(project.into_owned()))
+            }
+            _ => None,
+        }
+    }
+}
+
 struct StudioWindow {
     origin: String,
-    project_id: String,
+    route: Route,
     snapshot: Option<Snapshot>,
 }
 
 impl StudioWindow {
     fn permits(&self, url: &Url) -> bool {
-        url.origin().ascii_serialization() == self.origin && is_project_route(url, &self.project_id)
+        url.origin().ascii_serialization() == self.origin
+            && Route::of(url).as_ref() == Some(&self.route)
+    }
+
+    fn project_id(&self) -> Option<&str> {
+        match &self.route {
+            Route::Project(id) => Some(id),
+            Route::Start => None,
+        }
     }
 }
 
 pub fn is_project_route(url: &Url, project: &str) -> bool {
-    url.path() == "/"
-        && url
-            .query_pairs()
-            .filter(|(key, _)| key == "project")
-            .map(|(_, value)| value)
-            .eq([project])
+    Route::of(url).is_some_and(|route| route == Route::Project(project.to_owned()))
+}
+
+/// Whether `window` is registered for `route` and currently shows it from its service origin.
+pub fn shows(window: &WebviewWindow, route: &Route) -> bool {
+    let Ok(url) = window.url() else {
+        return false;
+    };
+    window
+        .state::<StudioMenu>()
+        .routing
+        .lock()
+        .unwrap()
+        .windows
+        .get(window.label())
+        .is_some_and(|target| &target.route == route && target.permits(&url))
 }
 
 struct Presented {
@@ -336,9 +377,20 @@ pub fn recent_project(app: &AppHandle, command: &str) -> Option<RecentProject> {
         .cloned()
 }
 
-pub fn attach(app: &AppHandle, label: &str, url: &Url, project_id: &str) -> tauri::Result<String> {
+pub fn attach(app: &AppHandle, label: &str, url: &Url, route: Route) -> tauri::Result<String> {
     let origin = url.origin().ascii_serialization();
-    app.add_capability(capability(label, &origin))?;
+    app.add_capability(capability(label, &origin, &route))?;
+    let host = match route {
+        Route::Project(_) => "Object.defineProperty(window, '__FEEDBAX_STUDIO_MENU__', {\
+             value: Object.freeze({publish: snapshot =>\
+               window.__TAURI_INTERNALS__.invoke('publish_studio_menu', {snapshot}),\
+               windowAction: action => window.__TAURI_INTERNALS__.invoke('studio_window_action', {action})})\
+           });",
+        Route::Start => "Object.defineProperty(window, '__FEEDBAX_STUDIO_START__', {\
+             value: Object.freeze({openFolder: () =>\
+               window.__TAURI_INTERNALS__.invoke('open_project_folder')})\
+           });",
+    };
     app.state::<StudioMenu>()
         .routing
         .lock()
@@ -348,29 +400,25 @@ pub fn attach(app: &AppHandle, label: &str, url: &Url, project_id: &str) -> taur
             label.to_string(),
             StudioWindow {
                 origin: origin.clone(),
-                project_id: project_id.to_owned(),
+                route,
                 snapshot: None,
             },
         );
     let origin = serde_json::json!(origin);
-    Ok(format!(
-        "if (location.origin === {origin}) {{\
-           Object.defineProperty(window, '__FEEDBAX_STUDIO_MENU__', {{\
-             value: Object.freeze({{publish: snapshot =>\
-               window.__TAURI_INTERNALS__.invoke('publish_studio_menu', {{snapshot}}),\
-               windowAction: action => window.__TAURI_INTERNALS__.invoke('studio_window_action', {{action}})}})\
-           }});\
-         }}"
-    ))
+    Ok(format!("if (location.origin === {origin}) {{ {host} }}"))
 }
 
-fn capability(label: &str, origin: &str) -> CapabilityBuilder {
-    CapabilityBuilder::new(format!("studio-menu-{label}"))
+fn capability(label: &str, origin: &str, route: &Route) -> CapabilityBuilder {
+    let capability = CapabilityBuilder::new(format!("studio-menu-{label}"))
         .local(false)
         .remote(format!("{origin}/*"))
-        .webview(label)
-        .permission("allow-publish-studio-menu")
-        .permission("allow-studio-window-action")
+        .webview(label);
+    match route {
+        Route::Project(_) => capability
+            .permission("allow-publish-studio-menu")
+            .permission("allow-studio-window-action"),
+        Route::Start => capability.permission("allow-open-project-folder"),
+    }
 }
 
 pub fn focused_webview(app: &AppHandle) -> Option<WebviewWindow> {
@@ -454,7 +502,7 @@ pub fn publish_studio_menu(
     let target = routing
         .windows
         .get_mut(window.label())
-        .filter(|target| target.permits(&url))
+        .filter(|target| target.project_id().is_some() && target.permits(&url))
         .ok_or("Studio menu requires its registered service origin and project window")?;
     target.snapshot = snapshot;
     drop(routing);
@@ -496,7 +544,7 @@ fn apply_window_action(window: &WebviewWindow, action: WindowAction) -> Result<(
         routing
             .windows
             .get(window.label())
-            .filter(|target| target.permits(&url))
+            .filter(|target| target.project_id().is_some() && target.permits(&url))
             .ok_or(
                 "Studio window action requires its registered service origin and project window",
             )?;
@@ -550,12 +598,12 @@ pub fn dispatch(app: &AppHandle, menu_id: &str) -> tauri::Result<()> {
             return Ok(());
         };
         let target = &routing.windows[window.label()];
-        if !target.permits(&url) {
+        let Some(project) = target.project_id().filter(|_| target.permits(&url)) else {
             return Ok(());
-        }
+        };
         let origin = serde_json::json!(origin);
         let command = serde_json::json!(command);
-        let project = serde_json::json!(target.project_id);
+        let project = serde_json::json!(project);
         format!("if (location.origin === {origin} && location.pathname === '/' && new URLSearchParams(location.search).get('project') === {project}) dispatchEvent(new CustomEvent('studio-native-command', {{detail: {command}}}));")
     };
     window.eval(script)
@@ -572,7 +620,7 @@ mod tests {
     #[test]
     fn permission_is_limited_to_the_attached_webview_and_exact_service_origin() {
         let CapabilityFile::Capability(permission) =
-            capability("studio-one", "http://127.0.0.1:41000").build()
+            capability("studio-one", "http://127.0.0.1:41000", &Route::Project("one".into())).build()
         else {
             panic!("expected one capability")
         };
@@ -624,7 +672,7 @@ mod tests {
     fn managed_window_publishes_commands_only_at_its_own_project_route() {
         let window = StudioWindow {
             origin: "http://127.0.0.1:41000".into(),
-            project_id: "one".into(),
+            route: Route::Project("one".into()),
             snapshot: None,
         };
         assert!(window.permits(&"http://127.0.0.1:41000/?project=one".parse().unwrap()));
@@ -637,6 +685,40 @@ mod tests {
         ] {
             assert!(!window.permits(&url.parse().unwrap()));
         }
+    }
+
+    #[test]
+    fn the_start_window_shows_only_the_start_page_and_hands_off_a_chosen_project() {
+        let window = StudioWindow {
+            origin: "http://127.0.0.1:41000".into(),
+            route: Route::Start,
+            snapshot: None,
+        };
+        assert!(window.permits(&"http://127.0.0.1:41000/".parse().unwrap()));
+        assert!(!window.permits(&"http://127.0.0.1:41000/?project=one".parse().unwrap()));
+        assert!(!window.permits(&"http://127.0.0.1:41000/?activity=1".parse().unwrap()));
+        assert_eq!(
+            Route::of(&"http://127.0.0.1:41000/?project=Reach%20one".parse().unwrap()),
+            Some(Route::Project("Reach one".into()))
+        );
+        for other in [
+            "http://127.0.0.1:41000/?project=one&project=two",
+            "http://127.0.0.1:41000/?project=one&activity=1",
+            "http://127.0.0.1:41000/docs?project=one",
+        ] {
+            assert_eq!(Route::of(&other.parse().unwrap()), None, "{other}");
+        }
+        let CapabilityFile::Capability(permission) =
+            capability("start", "http://127.0.0.1:41000", &Route::Start).build()
+        else {
+            panic!("expected one capability")
+        };
+        let ids: Vec<_> = permission
+            .permissions
+            .iter()
+            .map(|p| p.identifier().get())
+            .collect();
+        assert_eq!(ids, ["allow-open-project-folder"]);
     }
 
     #[test]
@@ -697,7 +779,7 @@ mod tests {
                 label.into(),
                 StudioWindow {
                     origin: "http://127.0.0.1:41000".into(),
-                    project_id: scope.into(),
+                    route: Route::Project(scope.into()),
                     snapshot: Some(snapshot(scope)),
                 },
             );
