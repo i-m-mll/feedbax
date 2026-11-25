@@ -7,6 +7,7 @@ import { containsCreatedFile, ProjectEditConflictError, type ProjectEditControll
 import { blankDocuments, namedDocument } from './useProjectDocuments';
 import { generatedName, holds } from './generatedName';
 import { planVariants, selectedRowTerms, stepSourceRows } from './projectWindowPlan';
+import { withSubsetTerms } from './selectionEdits';
 
 type NamedStep = CreateNamedStep['step'];
 
@@ -44,7 +45,7 @@ export function analyzeInput(
   const variant = planVariants(projection)[0];
   if (!variant || !runs.length || runs.some((run) => run.variant !== variant)) return undefined;
   const where = selectedRowTerms(stepSourceRows(projection, step.id, variant), new Set(runs.map(({ id }) => id)));
-  return where ? { step: step.id, where } : undefined;
+  return where && withSubsetTerms({ step: step.id }, where);
 }
 
 export function createAnalyze(editor: ProjectEditController, revision: string, source: StepReference) {

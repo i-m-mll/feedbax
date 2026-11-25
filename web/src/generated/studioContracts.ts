@@ -10594,7 +10594,7 @@ export const AxisLabelsSchema: z.ZodType<AxisLabels> = z.lazy(() =>
 ) as unknown as z.ZodType<AxisLabels>;
 
 export const AxisSelectionClauseSchema: z.ZodType<AxisSelectionClause> = z.lazy(() =>
-  z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(SelectedAxisValueSchema).min(1))
+  z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(SelectedAxisValueSchema).min(1)).refine((entries) => Object.keys(entries).length >= 1, { message: 'expected at least 1 entries' })
 ) as unknown as z.ZodType<AxisSelectionClause>;
 
 export const AxisValueSchema: z.ZodType<AxisValue> = z.lazy(() =>

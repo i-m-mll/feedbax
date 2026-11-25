@@ -86,7 +86,9 @@ class SelectedAxisValue(StrictModel):
     """The value's display name at selection time, used if the ID subsequently disappears."""
 
 
-type AxisSelectionClause = dict[ProjectName, Annotated[list[SelectedAxisValue], Field(min_length=1)]]
+type AxisSelectionClause = Annotated[
+    dict[ProjectName, Annotated[list[SelectedAxisValue], Field(min_length=1)]], Field(min_length=1),
+]
 
 
 class SelectedAxisValueProblem(StrictModel):
@@ -110,8 +112,10 @@ class SubsetTerms(StrictModel):
 
     rule: str = ""
     bound_ranks: list[BoundRank] | None = Field(default=None, exclude_if=lambda ranks: ranks is None)
-    clauses: Annotated[list[AxisSelectionClause], Field(min_length=1)] = Field(default_factory=lambda: [{}])
-    """The union of these clauses. Each clause constrains only its named axes and matches any of their given IDs."""
+    clauses: Annotated[list[AxisSelectionClause], Field(min_length=1)] = Field(
+        default_factory=list, exclude_if=lambda clauses: not clauses,
+    )
+    """The union of these clauses. Each clause constrains only its named axes. Omit clauses to leave all axes free."""
 
     @field_validator("bound_ranks")
     @classmethod
@@ -125,8 +129,6 @@ class SubsetTerms(StrictModel):
     def _canonical_clauses(cls, clauses: list[AxisSelectionClause]) -> list[AxisSelectionClause]:
         canonical = {}
         for clause in clauses:
-            if not clause:
-                return [{}]
             ordered = {}
             for axis, values in sorted(clause.items()):
                 by_id = {}
@@ -178,7 +180,7 @@ def select_step_rows[Row, Coordinate: SweepCoordinate](
     if isinstance(terms, StoreSubset):
         raise RuleRefusal("query", "store queries cannot select static step rows")
     chosen_members = members
-    if terms.clauses != [{}]:
+    if terms.clauses:
         indexed: dict[str, dict[str, tuple[Coordinate, set[int]]]] = {}
         for position, row in enumerate(members):
             for axis, value in coordinates(row).items():

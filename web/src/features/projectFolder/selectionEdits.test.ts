@@ -1,13 +1,13 @@
 import { expect, it } from 'vitest';
-import type { Step } from '@/generated/studioContracts';
-import { changedSelections, connection } from './selectionEdits';
+import { SubsetTermsSchema, type Step } from '@/generated/studioContracts';
+import { changedSelections, connection, withSubsetTerms } from './selectionEdits';
 
 const train: Step = { kind: 'train', base: { inline: {} } } as unknown as Step;
 const evaluate = (subject: unknown): Step => ({ kind: 'evaluate', base: { inline: {} }, inputs: { subject } }) as unknown as Step;
 
 it('changes a selection without carrying the old step restriction, and writes a list of one as its reference', () => {
   const selections = [
-    { step: 'a', checkpoint: 'last' as const, where: { clauses: [{}] } },
+    { step: 'a', checkpoint: 'last' as const, where: { clauses: [{ seed: [{ id: 'one', label: 'One' }] }] } },
     { step: 'b', checkpoint: { at: 4 } },
   ];
   expect(changedSelections(selections, { kind: 'replace', index: 0, reference: { step: 'c' } }))
@@ -28,4 +28,13 @@ it('wires a Train card to an Evaluate subject of Train steps once, and to nothin
   expect(connection(steps, 'a', 'reads')).toBeUndefined();
   expect(connection(steps, 'b', 'model')).toBeUndefined();
   expect(connection(steps, 'reads', 'b')).toBeUndefined();
+});
+
+it('omits an unconstrained selection and rejects explicitly empty clauses', () => {
+  const source = { step: 'train', checkpoint: 'last' as const, where: { rule: 'seed=1' } };
+  expect(withSubsetTerms(source, {})).toEqual({ step: 'train', checkpoint: 'last' });
+  expect(withSubsetTerms(source, { bound_ranks: [] })).toEqual({ ...source, where: { bound_ranks: [] } });
+  expect(SubsetTermsSchema.safeParse({}).success).toBe(true);
+  expect(SubsetTermsSchema.safeParse({ clauses: [] }).success).toBe(false);
+  expect(SubsetTermsSchema.safeParse({ clauses: [{}] }).success).toBe(false);
 });

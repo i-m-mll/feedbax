@@ -35,10 +35,9 @@ import { heldElementKeys } from './analysisElements';
 import { keyUnavailable } from './projectMemberName';
 import { AnalyzeElementInputs } from './AnalyzeReferences';
 import { SelectionRule } from './SelectionRule';
-import { changedSelections, stepSelections } from './selectionEdits';
+import { changedSelections, selectionProblems, stepSelections, withSubsetTerms } from './selectionEdits';
 import { documentBinding, InputEditor } from './InputEditor';
 import { useAuthoringCatalog } from '@/api/studioAuthoring';
-import { selectionProblems } from './selectionEdits';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import type { ChangeMark } from '@/components/values/fieldModel';
 import { savedRunId, stepSourceRows } from './projectWindowPlan';
@@ -400,7 +399,7 @@ export function useManagedAnalyze({
         const where = reference.where ?? {};
         const problems = selectionProblems(cardProblems, key.step, key.variant, selected, index, listed);
         const write = (terms: SubsetTerms) => {
-          const next = { ...reference, where: terms };
+          const next = withSubsetTerms(reference, terms);
           bind(selected, listed ? changedSelections(stepSelections(binding)!, { kind: 'replace', index, reference: next }) : next);
         };
         return {
