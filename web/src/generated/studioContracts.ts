@@ -2257,6 +2257,7 @@ export interface TrialMeanShelf {
   epochs: TrialMeanEpoch[];
   signals: Record<string, number[]>;
   terms: Record<string, TrialMeanTermShare>;
+  interventions?: Record<string, number[]>;
 }
 
 export interface TrialMeanTermShare {
@@ -2435,19 +2436,31 @@ export interface TrialAggregate {
   signals: Record<string, TaskSignalAggregate>;
   variables: Record<string, TaskVariableRange>;
   terms?: Record<string, TrialTermAggregate>;
+  interventions?: Record<string, number[]>;
 }
 
-export interface TaskTrialSampleRequest {
-  model?: ModelDocument | null;
-  task?: TaskDocument | null;
-  python_task?: PythonTaskSelection | null;
-  input_bindings?: Record<string, string | null>;
-  objective?: ObjectiveDocument | null;
+export interface StudioRunTaskTrialSampleRequest {
   evaluation_trials?: string[] | null;
   nominal?: boolean;
   seed?: number;
   count?: number;
   aggregate?: boolean;
+  project_id: string;
+  revision: string;
+  run: StudioSavedTrainKey;
+}
+
+export interface TaskTrialSampleRequest {
+  evaluation_trials?: string[] | null;
+  nominal?: boolean;
+  seed?: number;
+  count?: number;
+  aggregate?: boolean;
+  model?: ModelDocument | null;
+  task?: TaskDocument | null;
+  python_task?: PythonTaskSelection | null;
+  input_bindings?: Record<string, string | null>;
+  objective?: ObjectiveDocument | null;
 }
 
 export interface TaskTrialSampleResponse {
@@ -3482,6 +3495,11 @@ export type ManualCombination = {
   "manual": Array<Record<string, string>>;
 };
 
+export type Marker = {
+  "shape": "circle" | "square" | "triangle";
+  "filled": boolean;
+};
+
 export type MatrixCompositionDelta = {
   "layer_id": string;
   "patches"?: Array<OverridePatch>;
@@ -4042,6 +4060,12 @@ export type SetVariableCount = {
   "op": "set_variable_count";
   "id": string;
   "count": Expression | null;
+};
+
+export type SetVariableMarker = {
+  "op": "set_variable_marker";
+  "id": string;
+  "marker": Marker | null;
 };
 
 export type Sha256 = string;
@@ -5333,7 +5357,7 @@ export type TaskPort = {
   "task_key"?: string | null;
 };
 
-export type TaskStructureChange = AddMember | RemoveMember | feedbax__contracts__task_structure__RenameMember | MoveMember | SetType | SetSpan | MakeAbsent | MakePresent | SetLink | RepeatEpochs | SetRepeatCount | RemoveRepeat | SetVariableCount;
+export type TaskStructureChange = AddMember | RemoveMember | feedbax__contracts__task_structure__RenameMember | MoveMember | SetType | SetSpan | MakeAbsent | MakePresent | SetLink | RepeatEpochs | SetRepeatCount | RemoveRepeat | SetVariableCount | SetVariableMarker;
 
 export type TextSpan = {
   "start": number;
@@ -5455,6 +5479,7 @@ export type Variable = {
   "value": Expression;
   "count"?: Expression | null;
   "set_choices"?: SetVariableChoices | null;
+  "marker"?: Marker | null;
 };
 
 export type VariableBinding = {
@@ -10095,6 +10120,7 @@ export const TrialMeanShelfSchema: z.ZodType<TrialMeanShelf> = z.lazy(() =>
       "epochs": z.array(TrialMeanEpochSchema),
       "signals": z.record(z.string(), z.array(z.number().finite())),
       "terms": z.record(z.string(), TrialMeanTermShareSchema),
+      "interventions": z.record(z.string(), z.array(z.number().finite())).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TrialMeanShelf>;
@@ -10387,27 +10413,43 @@ export const TrialAggregateSchema: z.ZodType<TrialAggregate> = z.lazy(() =>
       "signals": z.record(z.string(), TaskSignalAggregateSchema),
       "variables": z.record(z.string(), TaskVariableRangeSchema),
       "terms": z.record(z.string(), TrialTermAggregateSchema).optional(),
+      "interventions": z.record(z.string(), z.array(z.number().finite())).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<TrialAggregate>;
 
-export const TaskTrialSampleRequestSchema: z.ZodType<TaskTrialSampleRequest> = z.lazy(() =>
+export const StudioRunTaskTrialSampleRequestSchema: z.ZodType<StudioRunTaskTrialSampleRequest> = z.lazy(() =>
   z
     .object({
-      "model": ModelDocumentSchema.nullable().optional(),
-      "task": TaskDocumentSchema.nullable().optional(),
-      "python_task": PythonTaskSelectionSchema.nullable().optional(),
-      "input_bindings": z.record(z.string(), z.string().nullable()).optional(),
-      "objective": ObjectiveDocumentSchema.nullable().optional(),
       "evaluation_trials": z.array(z.string()).min(1).nullable().optional(),
       "nominal": z.boolean().optional(),
       "seed": z.number().int().safe().optional(),
       "count": z.number().int().safe().gte(1).optional(),
       "aggregate": z.boolean().optional(),
+      "project_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+      "revision": z.string().regex(new RegExp("^[0-9a-f]{64}$")),
+      "run": StudioSavedTrainKeySchema,
+    })
+    .strict()
+) as unknown as z.ZodType<StudioRunTaskTrialSampleRequest>;
+
+export const TaskTrialSampleRequestSchema: z.ZodType<TaskTrialSampleRequest> = z.lazy(() =>
+  z
+    .object({
+      "evaluation_trials": z.array(z.string()).min(1).nullable().optional(),
+      "nominal": z.boolean().optional(),
+      "seed": z.number().int().safe().optional(),
+      "count": z.number().int().safe().gte(1).optional(),
+      "aggregate": z.boolean().optional(),
+      "model": ModelDocumentSchema.nullable().optional(),
+      "task": TaskDocumentSchema.nullable().optional(),
+      "python_task": PythonTaskSelectionSchema.nullable().optional(),
+      "input_bindings": z.record(z.string(), z.string().nullable()).optional(),
+      "objective": ObjectiveDocumentSchema.nullable().optional(),
     })
     .strict()
     .superRefine((input, ctx) => {
-      const value = { ...{"input_bindings": {}, "nominal": false, "seed": 0, "count": 8, "aggregate": false}, ...input };
+      const value = { ...{"nominal": false, "seed": 0, "count": 8, "aggregate": false, "input_bindings": {}}, ...input };
       if ((value.task == null) === (value.python_task == null)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -11894,6 +11936,13 @@ export const ManualCombinationSchema: z.ZodType<ManualCombination> = z.lazy(() =
   }).strict()
 ) as unknown as z.ZodType<ManualCombination>;
 
+export const MarkerSchema: z.ZodType<Marker> = z.lazy(() =>
+  z.object({
+    "shape": z.union([z.literal("circle"), z.literal("square"), z.literal("triangle")]),
+    "filled": z.boolean(),
+  }).strict()
+) as unknown as z.ZodType<Marker>;
+
 export const MatrixCompositionDeltaSchema: z.ZodType<MatrixCompositionDelta> = z.lazy(() =>
   z.object({
     "layer_id": z.string(),
@@ -12657,6 +12706,14 @@ export const SetVariableCountSchema: z.ZodType<SetVariableCount> = z.lazy(() =>
     "count": z.union([ExpressionSchema, z.null()]),
   }).strict()
 ) as unknown as z.ZodType<SetVariableCount>;
+
+export const SetVariableMarkerSchema: z.ZodType<SetVariableMarker> = z.lazy(() =>
+  z.object({
+    "op": z.literal("set_variable_marker"),
+    "id": z.string(),
+    "marker": z.union([MarkerSchema, z.null()]),
+  }).strict()
+) as unknown as z.ZodType<SetVariableMarker>;
 
 export const Sha256Schema: z.ZodType<Sha256> = z.lazy(() =>
   z.string().regex(new RegExp("^[a-f0-9]{64}$"))
@@ -14316,7 +14373,7 @@ export const TaskPortSchema: z.ZodType<TaskPort> = z.lazy(() =>
 ) as unknown as z.ZodType<TaskPort>;
 
 export const TaskStructureChangeSchema: z.ZodType<TaskStructureChange> = z.lazy(() =>
-  z.union([AddMemberSchema, RemoveMemberSchema, feedbax__contracts__task_structure__RenameMemberSchema, MoveMemberSchema, SetTypeSchema, SetSpanSchema, MakeAbsentSchema, MakePresentSchema, SetLinkSchema, RepeatEpochsSchema, SetRepeatCountSchema, RemoveRepeatSchema, SetVariableCountSchema])
+  z.union([AddMemberSchema, RemoveMemberSchema, feedbax__contracts__task_structure__RenameMemberSchema, MoveMemberSchema, SetTypeSchema, SetSpanSchema, MakeAbsentSchema, MakePresentSchema, SetLinkSchema, RepeatEpochsSchema, SetRepeatCountSchema, RemoveRepeatSchema, SetVariableCountSchema, SetVariableMarkerSchema])
 ) as unknown as z.ZodType<TaskStructureChange>;
 
 export const TextSpanSchema: z.ZodType<TextSpan> = z.lazy(() =>
@@ -14480,6 +14537,7 @@ export const VariableSchema: z.ZodType<Variable> = z.lazy(() =>
     "value": ExpressionSchema,
     "count": z.union([ExpressionSchema, z.null()]).optional(),
     "set_choices": z.union([SetVariableChoicesSchema, z.null()]).optional(),
+    "marker": z.union([MarkerSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<Variable>;
 
@@ -14768,6 +14826,7 @@ export const contractSchemas = {
   InlineTreescopeRequest: InlineTreescopeRequestSchema,
   TreescopeResponse: TreescopeResponseSchema,
   InspectionStatusResponse: InspectionStatusResponseSchema,
+  StudioRunTaskTrialSampleRequest: StudioRunTaskTrialSampleRequestSchema,
   TaskTrialSampleRequest: TaskTrialSampleRequestSchema,
   TaskTrialSampleResponse: TaskTrialSampleResponseSchema,
 } as const;
@@ -14956,6 +15015,7 @@ export interface ContractTypeMap {
   InlineTreescopeRequest: InlineTreescopeRequest;
   TreescopeResponse: TreescopeResponse;
   InspectionStatusResponse: InspectionStatusResponse;
+  StudioRunTaskTrialSampleRequest: StudioRunTaskTrialSampleRequest;
   TaskTrialSampleRequest: TaskTrialSampleRequest;
   TaskTrialSampleResponse: TaskTrialSampleResponse;
 }

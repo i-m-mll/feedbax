@@ -372,7 +372,7 @@ from feedbax.contracts.trial_record import (
     TrialTermAggregate,
     TrialUnavailable,
 )
-from feedbax.web.api.execution import TaskTrialSampleRequest, TaskTrialSampleResponse
+from feedbax.web.api.execution import StudioRunTaskTrialSampleRequest, TaskTrialSampleRequest, TaskTrialSampleResponse
 from feedbax.web.models.inspection import (
     CycleAnnotationModel,
     InlineTreescopeRequest,
@@ -858,6 +858,7 @@ MODEL_TYPES: list[type[BaseModel]] = [
     TaskSignalAggregate,
     TaskVariableRange,
     TrialAggregate,
+    StudioRunTaskTrialSampleRequest,
     TaskTrialSampleRequest,
     TaskTrialSampleResponse,
     ParentRef,
@@ -1025,6 +1026,7 @@ CONTRACT_MODEL_NAMES = [
     "InlineTreescopeRequest",
     "TreescopeResponse",
     "InspectionStatusResponse",
+    "StudioRunTaskTrialSampleRequest",
     "TaskTrialSampleRequest",
     "TaskTrialSampleResponse",
 ]
