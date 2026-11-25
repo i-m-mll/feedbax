@@ -588,6 +588,7 @@ export interface SignalType {
   base?: string | null;
   shape?: Array<number | string | null> | null;
   unit?: string | null;
+  space?: "point" | "free" | null;
 }
 
 export interface ModelTime {
@@ -3736,6 +3737,8 @@ export type Signal = {
   "absent"?: Expression | null;
 };
 
+export type SignalSpace = "point" | "free";
+
 export type Site = {
   "expected": ValueType;
   "finest": Level;
@@ -4957,6 +4960,7 @@ export type ValueType = {
   "base": ValueBase;
   "shape"?: Array<number>;
   "dimensions"?: Dimensions;
+  "space"?: SignalSpace | null;
 };
 
 export type Variable = {
@@ -5109,7 +5113,8 @@ export const firstTrainTask: Document = {
           ],
           "dimensions": {
             "length": 1
-          }
+          },
+          "space": "point"
         },
         "value": {
           "kind": "call",
@@ -5156,7 +5161,8 @@ export const firstTrainTask: Document = {
           ],
           "dimensions": {
             "length": 1
-          }
+          },
+          "space": "point"
         },
         "value": {
           "kind": "call",
@@ -5219,7 +5225,8 @@ export const firstTrainTask: Document = {
           ],
           "dimensions": {
             "length": 1
-          }
+          },
+          "space": "point"
         },
         "cells": [
           {
@@ -5244,7 +5251,8 @@ export const firstTrainTask: Document = {
           "dimensions": {
             "length": 1,
             "time": -1
-          }
+          },
+          "space": "free"
         },
         "cells": [
           {
@@ -5278,7 +5286,8 @@ export const firstTrainTask: Document = {
           ],
           "dimensions": {
             "length": 1
-          }
+          },
+          "space": "point"
         },
         "cells": [
           {
@@ -6602,6 +6611,7 @@ export const SignalTypeSchema: z.ZodType<SignalType> = z.lazy(() =>
       "base": z.string().nullable().optional(),
       "shape": z.array(z.union([z.number().int().safe(), z.string(), z.null()])).nullable().optional(),
       "unit": z.string().nullable().optional(),
+      "space": z.union([z.literal("point"), z.literal("free")]).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<SignalType>;
@@ -11650,6 +11660,10 @@ export const SignalSchema: z.ZodType<Signal> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<Signal>;
 
+export const SignalSpaceSchema: z.ZodType<SignalSpace> = z.lazy(() =>
+  z.union([z.literal("point"), z.literal("free")])
+) as unknown as z.ZodType<SignalSpace>;
+
 export const SiteSchema: z.ZodType<Site> = z.lazy(() =>
   z.object({
     "expected": ValueTypeSchema,
@@ -13230,6 +13244,7 @@ export const ValueTypeSchema: z.ZodType<ValueType> = z.lazy(() =>
     "base": ValueBaseSchema,
     "shape": z.array(z.number().int().safe().gt(0)).optional(),
     "dimensions": DimensionsSchema.optional(),
+    "space": z.union([SignalSpaceSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<ValueType>;
 
