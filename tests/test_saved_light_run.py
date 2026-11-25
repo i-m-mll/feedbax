@@ -9,11 +9,13 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
+from feedbax.builtins.figure_templates import SpeedByTrial, SpeedByTrialSettings
 from feedbax.cli import main
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.project import Project
 from feedbax.planner.project_plan import ElementKey, RunKey, compile_project
 from feedbax.contracts.request_identity import decode_request
+from feedbax.contracts.studio_figure import FigureProduct
 from feedbax.examples import load_shipped_projects
 from feedbax.host.light_jobs import dataset_member
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -350,6 +352,16 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
     project = "paired"
     path = f"/api/projects/{project}"
     definition = _saved_light_definition(paired=True)
+    analysis = definition["documents"]["velocity-analysis"]["payload"]
+    analysis["operations"]["speed"] = {
+        "operation": "feedbax.trial_speed",
+        "params": {"velocity": analysis["operations"]["align"]["params"]["velocity"]},
+        "inputs": {"states": {"input": "states"}},
+    }
+    analysis["views"]["by_trial"] = {
+        "figure": SpeedByTrial(SpeedByTrialSettings()).model_dump(mode="json", exclude_unset=True),
+        "inputs": {"speed": {"element": "speed", "product": "speed"}},
+    }
     steps = definition["steps"]
     mass_values = steps["conditions"]["sweep"]["axes"]["mass"]["values"]
     mass_values["heavy"]["label"] = "Heavy load"
@@ -376,7 +388,7 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
     assert not plan.diagnostics
     analyze = RunKey("default", "analyze", "default")
     assert {element.name for element in plan.elements if element.run == analyze} == {
-        "align", "summarize", "profile",
+        "align", "summarize", "profile", "speed", "by_trial",
     }
     align = plan.elements[ElementKey(analyze, "align")]
     decoded = decode_request(plan.requests[align.request_id], plan.documents.__getitem__)
@@ -397,11 +409,11 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
             ],
         })
         assert response.status_code == 202, response.text
-        assert [item["disposition"] for item in response.json()["items"]] == ["admitted"] * 7, response.text
+        assert [item["disposition"] for item in response.json()["items"]] == ["admitted"] * 9, response.text
 
         def terminal():
             jobs = host.jobs(project=review.project_id)
-            return jobs if len(jobs) == 7 and all(job["outcome"] is not None for job in jobs) else None
+            return jobs if len(jobs) == 9 and all(job["outcome"] is not None for job in jobs) else None
 
         jobs = wait_until(terminal)
         assert all(job["state"] == "succeeded" for job in jobs), [
@@ -484,6 +496,23 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
         for index, trace in enumerate(traces):
             np.testing.assert_allclose(array(trace["x"]), times[0])
             np.testing.assert_allclose(array(trace["y"]), mean[index, 0, 0])
+        (by_trial,) = (
+            element["requests"][0] for element in window["analysis_elements"] if element["name"] == "by_trial"
+        )
+        speed = reopened.get(by_trial["result"]["products"]["figure"])
+        assert speed.status_code == 200, speed.text
+        product = FigureProduct.model_validate_json(speed.content)
+        assert product.layout.meta.panels["speed"].model_dump(exclude_none=True) == {
+            "time": {}, "x_axis": "x", "y_axis": "y",
+        }
+        assert [run.model_dump() for run in product.layout.meta.runs["speed"]] == [
+            {"key": address("conditions", rows[key]), "request_id": request}
+            for key, request in zip(order, evaluation_ids, strict=True)
+        ]
+        assert [trace.meta.model_dump() for trace in product.data] == [
+            {"layer": "trial-speed", "group": {"condition": condition, "trial": trial}}
+            for condition in conditions for trial in _TRIALS
+        ]
         (report,) = (row for row in window["rows"] if row["key"]["step"] == "report")
         _, published_report = proof(request_ids[RunKey("default", "report", "default")])
         assert published_report.inputs["velocity_summary"][0].selection.receipt == figure_ref

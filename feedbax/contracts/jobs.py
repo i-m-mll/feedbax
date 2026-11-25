@@ -17,6 +17,7 @@ from feedbax.contracts.receipt_validity import ReceiptValidity
 from feedbax.contracts.project import StepKind
 from feedbax.contracts.project_inputs import SelectedAxisValueProblem, StepReference, SubsetTerms
 from feedbax.contracts.project_inputs import CheckpointRule
+from feedbax.contracts.project_inputs import StudioSavedTrainKey as StudioSavedTrainKey
 from feedbax.contracts.project_sources import SourceKind
 from feedbax.contracts.project_sweep import SweepException
 from feedbax.contracts.studio_place import StudioPlace, definition_place, path_parts
@@ -85,12 +86,6 @@ class StudioSavedTrainAttempt(StrictModel):
     continues: str | None
     checkpoint_source: StudioTrainCheckpointSource | None
     stopped_checkpoint: int | None = Field(default=None, gt=0, exclude_if=lambda value: value is None)
-
-
-class StudioSavedTrainKey(StrictModel):
-    variant: str
-    step: str
-    row: str
 
 
 class StudioEvaluationCheckpointGap(StrictModel):
