@@ -5333,6 +5333,7 @@ export type SynthesisStepPayload = {
   "model": DocumentReference | ModelDocument;
   "task": DocumentReference | TaskDocument | PythonTaskSelection;
   "objective": DocumentReference | ObjectiveDocument;
+  "input_bindings"?: Record<string, string | null>;
   "method": string;
   "settings"?: Record<string, JsonValue>;
   "target"?: ModelAddress;
@@ -14352,6 +14353,7 @@ export const SynthesisStepPayloadSchema: z.ZodType<SynthesisStepPayload> = z.laz
     "model": z.union([DocumentReferenceSchema, ModelDocumentSchema]),
     "task": z.union([DocumentReferenceSchema, TaskDocumentSchema, PythonTaskSelectionSchema]),
     "objective": z.union([DocumentReferenceSchema, ObjectiveDocumentSchema]),
+    "input_bindings": z.record(z.string(), z.union([z.string(), z.null()])).optional(),
     "method": z.string(),
     "settings": z.record(z.string(), jsonValueSchema).optional(),
     "target": ModelAddressSchema.optional(),

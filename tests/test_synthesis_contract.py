@@ -20,6 +20,7 @@ def test_served_synthesis_catalog_keeps_existing_model_steps_runnable(tmp_path):
     catalog = response.json()
     assert set(catalog["step_payloads"]) == {"train", "synthesize", "evaluate", "analyze", "report"}
     assert set(catalog["step_payloads"]["synthesize"]["required"]) == {"model", "task", "objective", "method"}
+    assert catalog["step_payloads"]["synthesize"]["properties"]["input_bindings"]["type"] == "object"
     method, = catalog["registries"]["synthesis_methods"]["entries"]
     assert method["key"] == "feedbax.constant_parameters"
     assert method["settings_schema"]["properties"]["value"]["default"] == 0
