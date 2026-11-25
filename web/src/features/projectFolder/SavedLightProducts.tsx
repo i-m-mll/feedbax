@@ -6,7 +6,7 @@ import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/compo
 import { useRootAttribute } from '@/appearance/useRootAttribute';
 import { studioAccessibleName, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
 import { StatusMark } from '@/components/ui/StatusMark';
-import { FigureProductSchema, type FigureProduct, type StudioSavedLightHistory } from '@/generated/studioContracts';
+import { parseContract, type FigureProduct, type StudioSavedLightHistory } from '@/generated/studioContracts';
 import { axisAttribute, FigureClockContext, marksTrials, timePanels, traceTrial, trialRestyle, type TimePanel } from './figureClock';
 import { Button } from '@/components/ui/Button';
 import { Section } from '@/components/ui/Section';
@@ -86,7 +86,7 @@ function SavedPlot({ url, name }: { url: string; name: string }) {
   latest.current = clock;
   const figure = useQuery({
     queryKey: ['saved-plotly-figure', url],
-    queryFn: async ({ signal }) => FigureProductSchema.parse(await requestJson(url, { signal })),
+    queryFn: async ({ signal }) => parseContract('FigureProduct', await requestJson(url, { signal })),
   });
   const runs = figure.data?.layout.meta.runs;
   useEffect(() => {
@@ -110,7 +110,7 @@ function SavedPlot({ url, name }: { url: string; name: string }) {
         if (!active) return;
         purge = () => Plotly.purge(node);
         const plotted = await Plotly.newPlot(node, {
-          ...structuredClone({ data, layout: { ...themedLayout(layout), ...timed && { dragmode: false } }, frames }),
+          ...structuredClone({ data, layout: { ...themedLayout(layout), ...timed && { dragmode: false } }, frames: frames ?? undefined }),
           config: { responsive: true },
         }) as PlotElement;
         plotted.on('plotly_click', ({ points, event }) => {

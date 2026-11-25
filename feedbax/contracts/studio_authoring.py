@@ -13,7 +13,7 @@ from feedbax.contracts.operation import OperationDefinition
 from feedbax.contracts.expression_values import ValueType
 from feedbax.contracts.project import RootDocument, Sha256, StepKind
 from feedbax.contracts.task_document import TaskDocument
-from feedbax.contracts.project_inputs import NonemptyText, ProjectName, StepReference
+from feedbax.contracts.project_inputs import LoadedModelReference, NonemptyText, ProjectName, StepReference
 from feedbax.contracts.request_refs import Name
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem, StudioSavedTrainKey
 from feedbax.contracts.studio_project import CreateNamedDocument, StudioProjectFilePatch
@@ -36,7 +36,7 @@ class InputRole(StrictModel):
     required: bool
     gathers: bool
     producer: InputProducer | None
-    documents: list[Literal["model", "task"]]
+    documents: list[Literal["model", "loaded_model", "task"]]
     checkpoint_sets: bool
 
 
@@ -244,8 +244,8 @@ class StudioTrainAuthoringRequest(StudioRunSelection):
 
 class StudioTrainStartRequest(StrictModel):
     revision: Sha256
-    source: StepReference | None = None
-    """The Train step whose checkpoint the step starts from, which it then continues; none starts it from its Model."""
+    source: StepReference | LoadedModelReference | None = None
+    """The starting checkpoint or Loaded Model. With no source, initialize from the Train's Model."""
 
 
 class StudioTrainStartEdit(StrictModel):

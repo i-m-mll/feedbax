@@ -88,10 +88,10 @@ def stack_replicates(ids: tuple[str, ...], datasets: Sequence[Dataset], *, after
         ):
             raise ValueError(f"Replicate results have inconsistent metadata or dtype for {name!r}")
         if coordinate and all(np.array_equal(arrays[0], array) for array in arrays[1:]):
-            return Variable(arrays[0], field.dims, **metadata)
+            return Variable.from_field(arrays[0], field, field.dims)
         axis = field.dims.index(after) + 1 if after in field.dims else 0
         dims = (*field.dims[:axis], REPLICATE_DIM, *field.dims[axis:])
-        return Variable(np.stack(arrays, axis=axis), dims, **metadata)
+        return Variable.from_field(np.stack(arrays, axis=axis), field, dims)
 
     return Dataset.from_arrays(
         {name: collect(name, field) for name, field in first.variables.items()},

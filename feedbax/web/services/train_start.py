@@ -117,7 +117,10 @@ def prepare_train_start(
     if step is None or step.kind != "train":
         raise ProjectFolderInvalid("Choose a Train step.")
     if source is not None and (
-        (parent := project.steps.get(source.step)) is None or parent.kind != "train" or source.step == step_id
+        not isinstance(source, StepReference)
+        or (parent := project.steps.get(source.step)) is None
+        or parent.kind != "train"
+        or source.step == step_id
     ):
         raise ProjectFolderInvalid("A Train step starts from another Train step's checkpoint.")
 

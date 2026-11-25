@@ -148,13 +148,10 @@ export async function authorFirstTrain(
   await expect(nBatches).toBeEditable();
   await setNumber(batchSize, 4, (project) => config(project)?.batch_size);
 
-  // Simple reaches starts the effector where its `start` variable says, through a link to the shipped Model's
-  // `plant`. This Model's point mass has another id, so the link dangles and the Task says so; `start`'s Initializes
-  // re-points it.
+  // Simple reaches starts nothing until `start` is chosen to initialize this Model's point mass.
   const shipped = rootPayload(firstTrainTask) as unknown as TaskDocument;
-  const [{ model_field: shippedLink }] = shipped.links ?? [];
-  const plantLink = JSON.stringify({ ...JSON.parse(shippedLink), element: {
-    ...JSON.parse(shippedLink).element, parent: { id: plantId, kind: 'component' },
+  const plantLink = JSON.stringify({ composites: [], element: {
+    kind: 'field', parent: { id: plantId, kind: 'component' }, path: ['state', 'effector/position'],
   } });
   const problems = async () => {
     const { revision } = await savedProject();
@@ -165,7 +162,7 @@ export async function authorFirstTrain(
     return (await response.json() as StudioTrialAuthoring).problems;
   };
   const links = async () => (rootPayload((await savedProject()).project.documents?.[taskDocument]) as unknown as TaskDocument).links;
-  expect(await problems()).toEqual([expect.objectContaining({ path: ['links', shippedLink] })]);
+  expect(await links()).toEqual([]);
   await page.keyboard.press('Meta+3');
   const initializes = task.getByRole('combobox', { name: 'Initializes start', exact: true });
   const toggle = async (component: string) => {
@@ -175,8 +172,6 @@ export async function authorFirstTrain(
     await page.keyboard.press('Escape');
   };
   await toggle('PointMass');
-  await expect.poll(links).toEqual([{ model_field: shippedLink, variable: 'start' }, { model_field: plantLink, variable: 'start' }]);
-  await toggle('plant');
   await expect.poll(links).toEqual([{ model_field: plantLink, variable: 'start' }]);
   expect(await problems()).toEqual([]);
   await page.keyboard.press('Meta+1');

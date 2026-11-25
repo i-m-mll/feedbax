@@ -4,7 +4,7 @@ from pydantic import ConfigDict, Field, JsonValue, StrictBool, StrictFloat, Stri
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.dataset import TrialFigureTime
-from feedbax.contracts.jobs import StudioSavedTrainKey
+from feedbax.contracts.project_inputs import StudioSavedTrainKey
 
 
 type FigureGroupValue = StrictStr | StrictInt | StrictFloat | StrictBool | None

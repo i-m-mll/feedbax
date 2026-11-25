@@ -130,13 +130,13 @@ def _product(port: DatasetPort, source: Dataset, stacking: tuple[str, ...], arra
     dims = {*stacking, *(dim for field in port.variables.values() for dim in field.dims)}
     descriptor = source.descriptor
     coords = {
-        name: Variable(source.data(name), field.dims, units=field.units, quantity=field.quantity, frame=field.frame)
+        name: Variable.from_field(source.data(name), field, field.dims)
         for name, field in descriptor.coords.items()
         if set(field.dims) <= dims
     }
     return Dataset.from_arrays(
         {
-            name: Variable(arrays[name], (*stacking, *field.dims), units=field.units, frame=field.frame)
+            name: Variable.from_field(arrays[name], field, (*stacking, *field.dims))
             for name, field in port.variables.items()
         },
         coords=coords,

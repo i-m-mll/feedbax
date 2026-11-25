@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field, model_validator
 from feedbax.contracts.artifact_store import (
     _validate_retention_artifact_ref_metadata,
 )
+from feedbax.contracts.loaded_model import ImportedModelProvenance
 from feedbax.contracts.base import (
     AUTHENTICATED_MANIFEST_REF_SCHEMA_ID as AUTHENTICATED_MANIFEST_REF_SCHEMA_ID,
 )
@@ -381,6 +382,7 @@ class EvaluationRunManifest(BaseManifest):
     schema_version: Literal["feedbax.manifest.evaluation_run.v2"] = EVALUATION_RUN_MANIFEST_SCHEMA_VERSION
     evaluation_spec: SpecPayload
     input_training_runs: list[ParentRef] = Field(default_factory=list)
+    loaded_model: ImportedModelProvenance | None = Field(default=None, exclude_if=lambda value: value is None)
     summary_metrics: dict[str, Any] = Field(default_factory=dict)
     migration_records: list[ArtifactMigrationRecord] = Field(default_factory=list)
 

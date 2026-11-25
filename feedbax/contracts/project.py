@@ -10,6 +10,7 @@ from typing import Annotated, Any, Literal, Protocol
 from pydantic import Field, JsonValue, StringConstraints, TypeAdapter, model_validator
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID, LOADED_MODEL_SCHEMA_VERSION, ImportedModelSource
 from feedbax.contracts.matrix_core import apply_value_patch_in_place, ensure_value_collection
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS
 from feedbax.contracts.task_document import (
@@ -96,6 +97,14 @@ def apply_document_edits(root: dict[str, Any], edits: Sequence[DocumentEdit]) ->
         apply_document_edit(root, edit, document_edit_value(edit))
 
 
+class LoadedModelDocument(StrictModel):
+    schema_version: Literal[LOADED_MODEL_SCHEMA_VERSION]
+    model: DocumentReference
+    """The Model's project address for navigation. Its pinned revision is in ``source``."""
+
+    source: ImportedModelSource
+
+
 def check_typed_payload(schema_id: str, payload: JsonValue) -> None:
     if schema_id == MODEL_DOCUMENT_SCHEMA_ID:
         ModelDocument.model_validate(payload)
@@ -107,6 +116,8 @@ def check_typed_payload(schema_id: str, payload: JsonValue) -> None:
         ObjectiveDocument.model_validate(payload)
     elif schema_id == TRAINING_DOCUMENT_SCHEMA_ID:
         TrainingDocument.model_validate(payload)
+    elif schema_id == LOADED_MODEL_SCHEMA_ID:
+        LoadedModelDocument.model_validate(payload)
     else:
         # A Set holds Differences, so its module imports this one.
         from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID, SetDocument
