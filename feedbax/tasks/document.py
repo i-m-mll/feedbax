@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from enum import IntEnum
 from itertools import groupby
 from math import isfinite
 from typing import Any, NamedTuple, Protocol
@@ -35,6 +34,7 @@ from feedbax.contracts.expression_values import (
 from feedbax.contracts.task_document import (
     Cell as Cell,
     Epoch as Epoch,
+    EpochEnd as EpochEnd,
     EpochSteps,
     Length,
     Link as Link,
@@ -60,11 +60,6 @@ class TaskInterface:
     signals: tuple[ScopedValue, ...]
     links: tuple[tuple[str, str], ...]
     model_outputs: tuple[ScopedValue, ...] = ()
-
-
-class EpochEnd(IntEnum):
-    UNREACHED = 0
-    LENGTH = 1
 
 
 class Trial(NamedTuple):
