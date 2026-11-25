@@ -9,25 +9,23 @@ from feedbax.contracts.project_resolution import ResolutionCode
 from feedbax.contracts.request_identity import decode_request
 from tests.support.managed_train_fixture import managed_evaluation_step, managed_train_project
 
-# Read at 76a6c51d, where the same changes were stored on the Evaluate step itself, and a Task choice was a
-# `params.variation` entry with path `task`; the swept and nearest-shared ids at a9b3bb7d; all of them again when the
-# task document's epochs gained an End and its cells ids. These fixtures use the shipped point-mass
-# Task's outward reach sampler and named signals.
-FEE = "train:5b74957f3eed156e2859bc1fd1ee98e0ec5f57d67420fe8210273da9a8bb266f"
-DEFAULT = "evaluate:a61b03eda6619febd76ff769dc0c77e88fbf5588f658b318250ad913bfda6ce9"
-FIELD_CHANGED = "evaluate:4b1d5df1af877df6e4f1804a648fff4e3bd260410a05c894ab76b6c851bbddea"
-ATTACHMENT_ADDED = "evaluate:49469bd54ee91f982a5c5073b95a2bc6039c29df04007aa82227bb06a68cb01f"
-FEWER_CONDITIONS = "evaluate:0b085a0d0e5da064a09f97ad2566f3374f81fb215e680681026b27575665559e"
+# Request identities for the shipped point-mass Task, with its signal labels projected by ID.
+# These witnesses hold the same changes expressed on the Evaluate step or in its Model and Task documents.
+FEE = "train:8d8d2d1fa72a44162040459972acc90a0599ef5ff7d9fb08bc9ecf6c40594b23"
+DEFAULT = "evaluate:a26c3206ad32dd581a8c14d17219d8ba5a90fc92bb12dfb07ec3336196482119"
+FIELD_CHANGED = "evaluate:f4b1e53097d9f25fa2a42123f1eed48acd3927ef527d3f7726fd8653c30689ea"
+ATTACHMENT_ADDED = "evaluate:fc67dc6d375bc60d520ca089daf6140a11307c0c1c4bf4731b6c998d78efad05"
+FEWER_CONDITIONS = "evaluate:29a1c6c556faf512665101434ebb5f2688e1a7f7c99d6bceefd59c150f5c75ab"
 SWEPT_PUSHED = (
     ("trained==347a995705cde9b16ee3a665dede47e6594d0c1158f3809255731f622a8fbe30",
-     "evaluate:9cb534a1ec8620386fde130e987e628e80c3e5ea3d13f7d7ff7b40412b31f54c"),
+     "evaluate:c54b9af65e38f25d557021b9c449662649d941aead73abb9a85430e96954815c"),
     ("trained==abb0ffe5124ac74b8d431462660c668b987dd969c5bf76fc07a20894a2b46eea",
-     "evaluate:9ac9d8656bcf40b023d5dddac7d04d6b812c938e424e1af63281fb3e0a126abd"),
+     "evaluate:90916c97780df4345b6c20cc96b25def8a427c7b296d86d5c4024c920b2616dd"),
 )
 NEAREST_SHARED = {
-    "fee": "train:de177fa587010470de95d69bf3d377c7a918fedcfaef97d48599c8257ee748a5",
+    "fee": "train:3cd016c0ddf2f4077faef9904870609863ceaf1b139c361b7002796c1e9dc93e",
     "other": FEE,
-    "check": "evaluate:5d49721a21b823058a4e566f8d48157e513c7b4e02ba39a4eb5acf913cb9dba6",
+    "check": "evaluate:f5a49797212cddbeda9d826703af3584292e6d59b46dd67d406da994cb75683c",
 }
 UNPAIRED_TASK = "Model input 'target_pos' needs a Task signal."
 
