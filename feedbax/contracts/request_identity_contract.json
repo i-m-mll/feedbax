@@ -136,6 +136,9 @@
       }
     },
     "feedbax.contracts.figure_document.BandEncodings": {
+      "color": {
+        "absent": null
+      },
       "lower": {},
       "upper": {},
       "x": {},
@@ -189,6 +192,35 @@
         "absent": null
       }
     },
+    "feedbax.contracts.figure_document.ColorEncoding": {
+      "field": {},
+      "scale": {}
+    },
+    "feedbax.contracts.figure_document.ContinuousColorScale": {
+      "domain": {
+        "absent": null
+      },
+      "kind": {
+        "values": [
+          "continuous"
+        ]
+      },
+      "legend": {
+        "absent": true
+      },
+      "palette": {
+        "absent": "viridis",
+        "values": [
+          "cividis",
+          "plasma",
+          "turbo",
+          "viridis"
+        ]
+      },
+      "title": {
+        "absent": null
+      }
+    },
     "feedbax.contracts.figure_document.ErrorBounds": {
       "lower": {},
       "upper": {}
@@ -197,6 +229,13 @@
       "caption": {
         "absent": null
       },
+      "color_scales": {
+        "absent": {},
+        "families": [
+          "feedbax.contracts.figure_document.ContinuousColorScale",
+          "feedbax.contracts.figure_document.OrdinalColorScale"
+        ]
+      },
       "data": {},
       "layers": {
         "families": [
@@ -204,7 +243,8 @@
           "feedbax.contracts.figure_document.LineLayer",
           "feedbax.contracts.figure_document.PointsLayer",
           "feedbax.contracts.figure_document.RuleLayer",
-          "feedbax.contracts.figure_document.SpanLayer"
+          "feedbax.contracts.figure_document.SpanLayer",
+          "feedbax.contracts.figure_document.TrajectoryLayer"
         ]
       },
       "layout": {},
@@ -297,12 +337,18 @@
       },
       "y_axis": {
         "absent": null
+      },
+      "z_axis": {
+        "absent": null
       }
     },
     "feedbax.contracts.figure_document.IndexSelection": {
       "index": {}
     },
     "feedbax.contracts.figure_document.LineEncodings": {
+      "color": {
+        "absent": null
+      },
       "x": {},
       "y": {}
     },
@@ -351,7 +397,34 @@
         "absent": null
       }
     },
+    "feedbax.contracts.figure_document.OrdinalColorScale": {
+      "domain": {
+        "absent": null
+      },
+      "kind": {
+        "values": [
+          "ordinal"
+        ]
+      },
+      "legend": {
+        "absent": true
+      },
+      "palette": {
+        "absent": "category10",
+        "values": [
+          "category10",
+          "dark24",
+          "plotly"
+        ]
+      },
+      "title": {
+        "absent": null
+      }
+    },
     "feedbax.contracts.figure_document.PointsEncodings": {
+      "color": {
+        "absent": null
+      },
       "error_y": {
         "absent": null
       },
@@ -491,6 +564,36 @@
       },
       "showlegend": {
         "absent": null
+      }
+    },
+    "feedbax.contracts.figure_document.TrajectoryEncodings": {
+      "color": {
+        "absent": null
+      },
+      "x": {},
+      "y": {},
+      "z": {
+        "absent": null
+      }
+    },
+    "feedbax.contracts.figure_document.TrajectoryLayer": {
+      "encode": {},
+      "group": {
+        "absent": []
+      },
+      "mark": {
+        "values": [
+          "trajectory"
+        ]
+      },
+      "name": {},
+      "panel": {},
+      "role": {},
+      "select": {
+        "absent": {}
+      },
+      "style": {
+        "absent": {}
       }
     },
     "feedbax.contracts.figure_document.VariableBinding": {

@@ -2297,6 +2297,7 @@ export interface FigureTraceMeta {
 export interface FigurePanelMeta {
   x_axis: string;
   y_axis: string;
+  z_axis?: string | null;
   time?: TrialFigureTime | null;
 }
 
@@ -2854,6 +2855,7 @@ export type AxisValue = {
 export type BandEncodings = {
   "x": Name | VariableBinding;
   "y": Name | VariableBinding;
+  "color"?: ColorEncoding | null;
   "lower": Name | VariableBinding;
   "upper": Name | VariableBinding;
 };
@@ -2957,6 +2959,11 @@ export type CodeReason = {
   "detail"?: string | null;
 };
 
+export type ColorEncoding = {
+  "field": Name | VariableBinding;
+  "scale": Name;
+};
+
 export type Combination = "cross" | "zip" | ManualCombination | GroupCombination;
 
 export type ComponentHeadline = {
@@ -2978,6 +2985,14 @@ export type ContentTreeRef = {
   "schema_version"?: "feedbax.spec.content_tree_ref.v1";
   "tree_id": string;
   "descriptor": ContentObjectRef;
+};
+
+export type ContinuousColorScale = {
+  "kind": "continuous";
+  "palette"?: "viridis" | "cividis" | "plasma" | "turbo";
+  "domain"?: [number, number] | null;
+  "title"?: string | null;
+  "legend"?: boolean;
 };
 
 export type CooccurringSetTrials = {
@@ -3207,8 +3222,9 @@ export type FigureDocument = {
   "schema_version"?: "feedbax.figure_document.v1";
   "data": Array<Name>;
   "layout": Array<FigurePanel>;
-  "layers": Array<LineLayer | BandLayer | PointsLayer | RuleLayer | SpanLayer>;
+  "layers": Array<LineLayer | TrajectoryLayer | BandLayer | PointsLayer | RuleLayer | SpanLayer>;
   "theme"?: Name;
+  "color_scales"?: Record<string, ContinuousColorScale | OrdinalColorScale>;
   "view"?: FigureDocumentView;
   "caption"?: string | null;
 };
@@ -3254,6 +3270,7 @@ export type FigurePanel = {
   "axes_labels"?: AxisLabels | null;
   "x_axis"?: PanelAxis | null;
   "y_axis"?: PanelAxis | null;
+  "z_axis"?: PanelAxis | null;
 };
 
 export type FigureTemplateRef = {
@@ -3380,6 +3397,7 @@ export type Level = 0 | 1 | 2;
 export type LineEncodings = {
   "x": Name | VariableBinding;
   "y": Name | VariableBinding;
+  "color"?: ColorEncoding | null;
 };
 
 export type LineLayer = {
@@ -3578,6 +3596,14 @@ export type OperationElement = {
   "params"?: Record<string, JsonValue>;
 };
 
+export type OrdinalColorScale = {
+  "kind": "ordinal";
+  "palette"?: "category10" | "plotly" | "dark24";
+  "domain"?: Array<string | boolean | number> | null;
+  "title"?: string | null;
+  "legend"?: boolean;
+};
+
 export type OverridePatch = {
   "path": string;
   "value"?: JsonValue;
@@ -3604,6 +3630,7 @@ export type Pointer = string;
 export type PointsEncodings = {
   "x": Name | VariableBinding;
   "y": Name | VariableBinding;
+  "color"?: ColorEncoding | null;
   "error_y"?: ErrorBounds | null;
 };
 
@@ -5255,6 +5282,24 @@ export type TrainingDocument = {
   "method": string;
   "settings": Record<string, JsonValue>;
   "training_config": DocumentTrainingConfig;
+};
+
+export type TrajectoryEncodings = {
+  "x": Name | VariableBinding;
+  "y": Name | VariableBinding;
+  "color"?: ColorEncoding | null;
+  "z"?: Name | VariableBinding | null;
+};
+
+export type TrajectoryLayer = {
+  "name": Name;
+  "role": Name;
+  "panel": Name;
+  "select"?: Record<string, string | number | boolean | IndexSelection | null>;
+  "group"?: Array<Name>;
+  "mark": "trajectory";
+  "encode": TrajectoryEncodings;
+  "style"?: LineStyle;
 };
 
 export type TrialDocuments = {
@@ -10052,6 +10097,7 @@ export const FigurePanelMetaSchema: z.ZodType<FigurePanelMeta> = z.lazy(() =>
     .object({
       "x_axis": z.string(),
       "y_axis": z.string(),
+      "z_axis": z.string().nullable().optional(),
       "time": TrialFigureTimeSchema.nullable().optional(),
     })
     .strict()
@@ -10934,6 +10980,7 @@ export const BandEncodingsSchema: z.ZodType<BandEncodings> = z.lazy(() =>
   z.object({
     "x": z.union([NameSchema, VariableBindingSchema]),
     "y": z.union([NameSchema, VariableBindingSchema]),
+    "color": z.union([ColorEncodingSchema, z.null()]).optional(),
     "lower": z.union([NameSchema, VariableBindingSchema]),
     "upper": z.union([NameSchema, VariableBindingSchema]),
   }).strict()
@@ -11076,6 +11123,13 @@ export const CodeReasonSchema: z.ZodType<CodeReason> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<CodeReason>;
 
+export const ColorEncodingSchema: z.ZodType<ColorEncoding> = z.lazy(() =>
+  z.object({
+    "field": z.union([NameSchema, VariableBindingSchema]),
+    "scale": NameSchema,
+  }).strict()
+) as unknown as z.ZodType<ColorEncoding>;
+
 export const CombinationSchema: z.ZodType<Combination> = z.lazy(() =>
   z.union([z.union([z.literal("cross"), z.literal("zip")]), ManualCombinationSchema, GroupCombinationSchema])
 ) as unknown as z.ZodType<Combination>;
@@ -11108,6 +11162,16 @@ export const ContentTreeRefSchema: z.ZodType<ContentTreeRef> = z.lazy(() =>
     "descriptor": ContentObjectRefSchema,
   }).strict()
 ) as unknown as z.ZodType<ContentTreeRef>;
+
+export const ContinuousColorScaleSchema: z.ZodType<ContinuousColorScale> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("continuous"),
+    "palette": z.union([z.literal("viridis"), z.literal("cividis"), z.literal("plasma"), z.literal("turbo")]).optional(),
+    "domain": z.union([z.tuple([z.number().finite(), z.number().finite()]), z.null()]).optional(),
+    "title": z.union([z.string(), z.null()]).optional(),
+    "legend": z.boolean().optional(),
+  }).strict()
+) as unknown as z.ZodType<ContinuousColorScale>;
 
 export const CooccurringSetTrialsSchema: z.ZodType<CooccurringSetTrials> = z.lazy(() =>
   z.object({
@@ -11417,8 +11481,9 @@ export const FigureDocumentSchema: z.ZodType<FigureDocument> = z.lazy(() =>
     "schema_version": z.literal("feedbax.figure_document.v1").optional(),
     "data": z.array(NameSchema).min(1),
     "layout": z.array(FigurePanelSchema).min(1),
-    "layers": z.array(z.union([LineLayerSchema, BandLayerSchema, PointsLayerSchema, RuleLayerSchema, SpanLayerSchema])).min(1),
+    "layers": z.array(z.union([LineLayerSchema, TrajectoryLayerSchema, BandLayerSchema, PointsLayerSchema, RuleLayerSchema, SpanLayerSchema])).min(1),
     "theme": NameSchema.optional(),
+    "color_scales": z.record(NameSchema, z.union([ContinuousColorScaleSchema, OrdinalColorScaleSchema])).optional(),
     "view": FigureDocumentViewSchema.optional(),
     "caption": z.union([z.string(), z.null()]).optional(),
   }).strict()
@@ -11472,6 +11537,7 @@ export const FigurePanelSchema: z.ZodType<FigurePanel> = z.lazy(() =>
     "axes_labels": z.union([AxisLabelsSchema, z.null()]).optional(),
     "x_axis": z.union([PanelAxisSchema, z.null()]).optional(),
     "y_axis": z.union([PanelAxisSchema, z.null()]).optional(),
+    "z_axis": z.union([PanelAxisSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<FigurePanel>;
 
@@ -11644,6 +11710,7 @@ export const LineEncodingsSchema: z.ZodType<LineEncodings> = z.lazy(() =>
   z.object({
     "x": z.union([NameSchema, VariableBindingSchema]),
     "y": z.union([NameSchema, VariableBindingSchema]),
+    "color": z.union([ColorEncodingSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<LineEncodings>;
 
@@ -11913,6 +11980,16 @@ export const OperationElementSchema: z.ZodType<OperationElement> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<OperationElement>;
 
+export const OrdinalColorScaleSchema: z.ZodType<OrdinalColorScale> = z.lazy(() =>
+  z.object({
+    "kind": z.literal("ordinal"),
+    "palette": z.union([z.literal("category10"), z.literal("plotly"), z.literal("dark24")]).optional(),
+    "domain": z.union([z.array(z.union([z.string(), z.boolean(), z.number().int().safe(), z.number().finite()])).min(1), z.null()]).optional(),
+    "title": z.union([z.string(), z.null()]).optional(),
+    "legend": z.boolean().optional(),
+  }).strict()
+) as unknown as z.ZodType<OrdinalColorScale>;
+
 export const OverridePatchSchema: z.ZodType<OverridePatch> = z.lazy(() =>
   z.object({
     "path": z.string(),
@@ -11952,6 +12029,7 @@ export const PointsEncodingsSchema: z.ZodType<PointsEncodings> = z.lazy(() =>
   z.object({
     "x": z.union([NameSchema, VariableBindingSchema]),
     "y": z.union([NameSchema, VariableBindingSchema]),
+    "color": z.union([ColorEncodingSchema, z.null()]).optional(),
     "error_y": z.union([ErrorBoundsSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<PointsEncodings>;
@@ -14105,6 +14183,28 @@ export const TrainingDocumentSchema: z.ZodType<TrainingDocument> = z.lazy(() =>
     "training_config": DocumentTrainingConfigSchema,
   }).strict()
 ) as unknown as z.ZodType<TrainingDocument>;
+
+export const TrajectoryEncodingsSchema: z.ZodType<TrajectoryEncodings> = z.lazy(() =>
+  z.object({
+    "x": z.union([NameSchema, VariableBindingSchema]),
+    "y": z.union([NameSchema, VariableBindingSchema]),
+    "color": z.union([ColorEncodingSchema, z.null()]).optional(),
+    "z": z.union([NameSchema, VariableBindingSchema, z.null()]).optional(),
+  }).strict()
+) as unknown as z.ZodType<TrajectoryEncodings>;
+
+export const TrajectoryLayerSchema: z.ZodType<TrajectoryLayer> = z.lazy(() =>
+  z.object({
+    "name": NameSchema,
+    "role": NameSchema,
+    "panel": NameSchema,
+    "select": z.record(NameSchema, z.union([z.string(), z.number().int().safe(), z.number().finite(), z.boolean(), IndexSelectionSchema, z.null()])).optional(),
+    "group": z.array(NameSchema).optional(),
+    "mark": z.literal("trajectory"),
+    "encode": TrajectoryEncodingsSchema,
+    "style": LineStyleSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<TrajectoryLayer>;
 
 export const TrialDocumentsSchema: z.ZodType<TrialDocuments> = z.lazy(() =>
   z.object({
