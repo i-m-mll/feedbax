@@ -1,6 +1,7 @@
 import {
   StepReferenceSchema, type InputBinding, type JsonValue, type ProjectValueEdit, type StepReference,
-  type Step, type StepKind, type StudioProjectWindowMapProblem, type StudioSavedTrainKey, type TextSpan,
+  type SelectedAxisValue, type SelectedAxisValueProblem, type Step, type StepKind, type StudioProjectWindowMapProblem,
+  type StudioSavedTrainKey, type SubsetTerms, type TextSpan,
 } from '@/generated/studioContracts';
 import { authoredPointer } from './authoredEdits';
 import { savedRunId } from './projectWindowPlan';
@@ -45,10 +46,26 @@ export function bindingEdit(
 export interface RuleProblem {
   readonly reason: string;
   readonly span?: TextSpan;
+  /** The selected axis value the rule names that no longer exists, and the axis's values that do. */
+  readonly value?: SelectedAxisValueProblem;
 }
 
 const ruleProblem = (problem: StudioProjectWindowMapProblem): RuleProblem =>
-  ({ reason: problem.detail, ...problem.span && { span: problem.span } });
+  ({ reason: problem.detail, ...problem.span && { span: problem.span }, ...problem.selection_value && { value: problem.selection_value } });
+
+/**
+ * `terms` with the missing value of `value`'s clause and axis replaced by `chosen`, or dropped where that clause already
+ * wants `chosen`.
+ */
+export function replacedAxisValue(terms: SubsetTerms, value: SelectedAxisValueProblem, chosen: SelectedAxisValue): SubsetTerms {
+  const clauses = terms.clauses ?? [];
+  const clause = clauses[value.clause_index];
+  if (!clause?.[value.axis]) throw new Error(`Selection has no clause ${value.clause_index} naming ${value.axis}.`);
+  const values = clause[value.axis];
+  const kept = values.flatMap((selected) => selected.id !== value.missing.id ? [selected]
+    : values.some(({ id }) => id === chosen.id) ? [] : [chosen]);
+  return { ...terms, clauses: clauses.map((each, index) => index === value.clause_index ? { ...each, [value.axis]: kept } : each) };
+}
 
 /** A selection's problems, each on the field its path names. */
 export interface SelectionProblems {

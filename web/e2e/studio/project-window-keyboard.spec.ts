@@ -53,7 +53,7 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   });
   expect(saved.project.documents).toMatchObject({
     model: { schema: 'feedbax.spec.model', payload: { ports: {}, interior: {} } },
-    'simple-reaches': firstTrainTask,
+    'simple-reaches': { ...firstTrainTask, payload: { ...rootPayload(firstTrainTask) as object, links: [] } },
     objective: { schema: 'feedbax.spec.objective_document', payload: { terms: [] } },
   });
 
@@ -92,14 +92,14 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   expect(run).toMatchObject({ key: { step: 'train', row: 'default' }, status: 'cannot_run', attempts: [] });
   expect(plan.window_map?.rows.map(({ key }) => key)).toEqual([run.key]);
   expect(plan.window_map?.problems).toMatchObject([
-    { code: 'cannot_run', path: expect.stringMatching(/^\/trial_documents\/task\/links\//), place: { document: 'simple-reaches' } },
+    { code: 'cannot_run', path: '/trial_documents/model/interior/components', place: { document: 'model' } },
   ]);
   const refused = await request.post(`${projectPath}/train-runs`, {
     data: { revision: saved.revision, run_keys: [run.key], token: crypto.randomUUID() },
   });
   expect(refused.status(), await refused.text()).toBe(202);
   expect((await refused.json() as StudioJobSubmission).items).toMatchObject([
-    { disposition: 'rejected', reason: expect.stringMatching(/^cannot_run \/trial_documents\/task\/links\/.*: start is linked to a field the Model does not have\.$/) },
+    { disposition: 'rejected', reason: expect.stringMatching(/^cannot_run \/trial_documents\/model\/interior\/components: /) },
   ]);
 
   const tab = (name: string) => page.getByRole('tab', { name, exact: true });
@@ -120,7 +120,7 @@ test('an empty saved project starts its first Train by pointer', async ({ page, 
   const reopened = await readPlan(persisted.revision);
   expect(reopened.rows).toMatchObject([{ key: run.key, status: 'cannot_run', attempts: [] }]);
   expect(reopened.window_map?.problems).toMatchObject([
-    { code: 'cannot_run', path: expect.stringMatching(/^\/trial_documents\/task\/links\//), place: { document: 'simple-reaches' } },
+    { code: 'cannot_run', path: '/trial_documents/model/interior/components', place: { document: 'model' } },
   ]);
 });
 

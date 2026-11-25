@@ -3,7 +3,8 @@ import { useQuery } from '@tanstack/react-query';
 import { requestJson } from '@/api/request';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import { useRootAttribute } from '@/appearance/useRootAttribute';
-import { studioAccessibleName, studioName } from '@/components/activity/studioVocabulary';
+import { studioAccessibleName, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
+import { StatusMark } from '@/components/ui/StatusMark';
 import { parseContract, type StudioSavedLightHistory } from '@/generated/studioContracts';
 import { Button } from '@/components/ui/Button';
 import { Section } from '@/components/ui/Section';
@@ -87,9 +88,12 @@ export function SavedFigureResult({ history, name }: { history: StudioSavedLight
   const url = showPrevious ? previous : current;
   if (!url) return null;
   return <section aria-label={studioName(showPrevious ? 'previousResult' : 'currentResult')} className="space-y-2 p-2">
-    {current && previous && <div className="flex gap-2">
-      <Button pressed={!showPrevious} onClick={() => setPreviousSelected(false)}>{studioName('currentResult')}</Button>
-      <Button pressed={showPrevious} onClick={() => setPreviousSelected(true)}>{studioName('previousResult')}</Button>
+    {(showPrevious || current && previous) && <div className="flex items-center gap-2">
+      {showPrevious && <StatusMark status="stale" label={studioRunStatus('stale')} />}
+      {current && previous && <>
+        <Button pressed={!showPrevious} onClick={() => setPreviousSelected(false)}>{studioName('currentResult')}</Button>
+        <Button pressed={showPrevious} onClick={() => setPreviousSelected(true)}>{studioName('previousResult')}</Button>
+      </>}
     </div>}
     <SavedPlot key={url} url={url} name={name} />
   </section>;

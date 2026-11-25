@@ -5,7 +5,8 @@ import { studioName } from '@/components/activity/studioVocabulary';
 import { FieldProblem } from '@/components/ui/FieldProblem';
 import { FieldRow } from '@/components/ui/FieldRow';
 import { TermText } from '@/components/ui/TextField';
-import { ContextMenu, ContextMenuContent, ContextMenuTrigger, MenuItem } from '@/components/ui/Menu';
+import { ContextMenu, ContextMenuContent, ContextMenuTrigger, Menu, MenuContent, MenuItem, MenuTrigger } from '@/components/ui/Menu';
+import { Button } from '@/components/ui/Button';
 import { usePopupLayer } from '@/components/ui/popupLayer';
 import { fieldBox, fieldInput, popupItem, popupSurface, primaryText } from '@/components/ui/styles';
 import { contextMenuKey } from '@/components/pipeline/CommandContextMenu';
@@ -17,6 +18,8 @@ import { ruleCompletions, type RuleCompletion, type RuleVocabulary } from './run
 export interface RuleFieldProblem {
   readonly reason: string;
   readonly term?: { readonly text: string; readonly start: number; readonly end: number };
+  /** What the mark offers in place of what the rule names that no longer exists. */
+  readonly offers?: readonly RuleFieldCommand[];
 }
 
 /** A command on the field's menu. */
@@ -150,7 +153,14 @@ export function RuleField({
       ? <span className="shrink-0 pr-1 text-shell-muted" aria-description={shownPinned.join(', ')}>{studioName('rows')}</span> : null}
     {count ? <span className="shrink-0 pr-control-inline tabular-nums text-shell-muted">{count}</span> : null}
     {term && element && <TermText input={element} text={draft} term={term} />}
-    {problem && <FieldProblem reason={problem.reason} id={`${id}-problem`} className="mr-1" />}
+    {problem && (problem.offers?.length ? <Menu>
+      <MenuTrigger render={<Button variant="bare" size="content" aria-label={studioName('problem')} aria-describedby={`${id}-problem`} />}>
+        <FieldProblem reason={problem.reason} id={`${id}-problem`} className="mr-1" />
+      </MenuTrigger>
+      <MenuContent align="end">
+        {problem.offers.map((offer) => <MenuItem key={offer.label} disabled={offer.disabled} onClick={offer.invoke}>{offer.label}</MenuItem>)}
+      </MenuContent>
+    </Menu> : <FieldProblem reason={problem.reason} id={`${id}-problem`} className="mr-1" />)}
   </div>;
   return <FieldRow label={label} htmlFor={id}>
     <Autocomplete.Root items={completions} filter={null} value={draft} mode="list"

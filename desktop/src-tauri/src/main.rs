@@ -31,6 +31,7 @@ use window_shell_geometry::{appkit, Launch};
 static BUSY: AtomicBool = AtomicBool::new(false);
 const TITLE: &str = "Feedbax Studio";
 const PROJECT_PREFIX: &str = "project-";
+const START_LABEL: &str = "start";
 const CONNECT_PATH: &str = "/_desktop/connect";
 
 #[derive(Default)]
@@ -67,6 +68,12 @@ struct StudioTicket {
     declaration: PathBuf,
 }
 
+/// The service's answer to a ticket request that names no project: its page routes to the start page.
+#[derive(Deserialize)]
+struct StartTicket {
+    url: Url,
+}
+
 impl StudioTicket {
     fn label(&self) -> String {
         format!("{PROJECT_PREFIX}{}", self.project.id)
@@ -76,7 +83,8 @@ impl StudioTicket {
 #[derive(Clone, Debug, Default, PartialEq)]
 enum Entry {
     #[default]
-    NewProject,
+    Start,
+    Project(String),
     Folder(PathBuf),
     Document(PathBuf),
     Reconnect(String, SavedWindow),
@@ -126,7 +134,7 @@ impl Windows {
         let startup = std::mem::take(&mut self.starting);
         self.pending
             .pop_front()
-            .or_else(|| startup.then_some(Entry::NewProject))
+            .or_else(|| startup.then_some(Entry::Start))
     }
 
     fn saved_size(&self, id: &str, folder: &Folder) -> Option<Size> {
@@ -370,7 +378,12 @@ fn show_studio(
         #[cfg(target_os = "macos")]
         let frame = native_frame::StudioFrame::new(&ticket.url)?;
         let project_id = ticket.project.id.clone();
-        let menu_script = studio_menu::attach(app, &label, &ticket.url, &project_id)?;
+        let menu_script = studio_menu::attach(
+            app,
+            &label,
+            &ticket.url,
+            studio_menu::Route::Project(project_id.clone()),
+        )?;
         let origin_text = json!(origin.ascii_serialization());
         let generation = json!(ticket.generation);
         let script = format!("{menu_script}; if (location.origin === {origin_text}) window.__FEEDBAX_STUDIO_GENERATION__ = {generation};");
@@ -390,8 +403,12 @@ fn show_studio(
             .lock()
             .unwrap()
             .initial_size(&project_id, &project_folder, available);
-        let builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(ticket.url))
-            .title(title)
+        let builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(ticket.url));
+        let builder = match start_position(app) {
+            Some(position) => builder.position(position.x, position.y),
+            None => builder,
+        }
+        .title(title)
             .inner_size(size.width, size.height)
             .min_inner_size(Size::MIN.width, Size::MIN.height)
             .focused(false)
@@ -454,6 +471,100 @@ fn show_studio(
     }
     if state.opened(&ticket.project.id, &project_folder) || created.is_some() {
         state.save()?;
+    }
+    Ok(())
+}
+
+fn start_position(app: &AppHandle) -> Option<tauri::LogicalPosition<f64>> {
+    let window = app.get_webview_window(START_LABEL)?;
+    let scale = window.scale_factor().ok()?;
+    Some(window.outer_position().ok()?.to_logical(scale))
+}
+
+/// Shows the start page in its own window, which a project chosen there replaces.
+fn show_start(app: &AppHandle, ticket: StartTicket, storage_id: [u8; 16]) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window(START_LABEL) {
+        window.navigate(ticket.url)?;
+        return focus(&window);
+    }
+    let origin = ticket.url.origin();
+    let script = studio_menu::attach(app, START_LABEL, &ticket.url, studio_menu::Route::Start)?;
+    let handoff = app.clone();
+    let window = WebviewWindowBuilder::new(app, START_LABEL, WebviewUrl::External(ticket.url))
+        .title(TITLE)
+        .inner_size(Size::DEFAULT.width, Size::DEFAULT.height)
+        .min_inner_size(Size::MIN.width, Size::MIN.height)
+        .focused(false)
+        .devtools(false)
+        .data_store_identifier(storage_id)
+        .initialization_script(script)
+        .on_navigation(move |url| {
+            if url.origin() != origin {
+                return false;
+            }
+            match studio_menu::Route::of(url) {
+                Some(studio_menu::Route::Start) => true,
+                Some(studio_menu::Route::Project(id)) => {
+                    let app = handoff.clone();
+                    if let Err(error) = handoff
+                        .run_on_main_thread(move || queue_open(&app, Entry::Project(id)))
+                    {
+                        eprintln!("{error}");
+                    }
+                    false
+                }
+                None => url.path() == CONNECT_PATH,
+            }
+        })
+        .on_new_window(|_, _| NewWindowResponse::Deny)
+        .build()
+        .inspect_err(|_| studio_menu::clear(app, START_LABEL, true))?;
+    focus(&window)
+}
+
+fn open_start(app: &AppHandle) {
+    match app.get_webview_window(START_LABEL) {
+        Some(window) => {
+            if let Err(error) = focus(&window) {
+                eprintln!("{error}");
+            }
+        }
+        None => queue_open(app, Entry::Start),
+    }
+}
+
+fn close_start(app: &AppHandle) -> tauri::Result<()> {
+    match app.get_webview_window(START_LABEL) {
+        Some(window) => window.destroy(),
+        None => Ok(()),
+    }
+}
+
+fn dismiss_status(app: &AppHandle, restoring: bool) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window("status") {
+        let state = app.state::<Mutex<Windows>>();
+        let mut state = state.lock().unwrap();
+        let preserving_refusal = restoring && state.requested_window.as_deref() == Some("status");
+        if !preserving_refusal && state.restore_problems.is_empty() && state.status.take().is_some()
+        {
+            drop(state);
+            window.destroy()?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn open_project_folder(window: WebviewWindow) -> Result<(), String> {
+    if window.label() != START_LABEL || !studio_menu::shows(&window, &studio_menu::Route::Start) {
+        return Err("Open Folder requires the registered Studio start window".into());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let app = window.app_handle().clone();
+        let target = app.clone();
+        app.run_on_main_thread(move || open_project(&target))
+            .map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -605,7 +716,8 @@ fn connect_reserved(app: &AppHandle, entry: Entry) {
         move || {
             let release = service::Release::load()?;
             let args = match &request {
-                Entry::NewProject => Vec::new(),
+                Entry::Start => Vec::new(),
+                Entry::Project(id) => vec!["--project-id".into(), id.clone()],
                 Entry::Folder(folder) => vec!["--project-folder".into(), path_argument(folder)?],
                 Entry::Document(file) => vec!["--project-file".into(), path_argument(file)?],
                 Entry::Restore(_, saved) | Entry::Reconnect(_, saved) => {
@@ -621,6 +733,12 @@ fn connect_reserved(app: &AppHandle, entry: Entry) {
             Ok((answer, paths))
         },
         move |app, answer, paths| {
+            if answer["url"].is_string() && entry == Entry::Start {
+                let ticket: StartTicket =
+                    serde_json::from_value(answer).map_err(io::Error::other)?;
+                show_start(app, ticket, paths.storage_id)?;
+                return dismiss_status(app, false);
+            }
             if answer["url"].is_string() {
                 let ticket: StudioTicket =
                     serde_json::from_value(answer).map_err(io::Error::other)?;
@@ -655,26 +773,14 @@ fn connect_reserved(app: &AppHandle, entry: Entry) {
                 }
                 if matches!(
                     entry,
-                    Entry::NewProject | Entry::Folder(_) | Entry::Document(_) | Entry::Recent(_)
+                    Entry::Project(_) | Entry::Folder(_) | Entry::Document(_) | Entry::Recent(_)
                 ) {
+                    close_start(app)?;
                     record_recent(app, recent)?;
                 } else {
                     rebind_recent(app, &recent)?;
                 }
-                if let Some(window) = app.get_webview_window("status") {
-                    let state = app.state::<Mutex<Windows>>();
-                    let mut state = state.lock().unwrap();
-                    let preserving_refusal =
-                        restoring && state.requested_window.as_deref() == Some("status");
-                    if !preserving_refusal
-                        && state.restore_problems.is_empty()
-                        && state.status.take().is_some()
-                    {
-                        drop(state);
-                        window.destroy()?;
-                    }
-                }
-                return Ok(());
+                return dismiss_status(app, restoring);
             }
             if answer["status"] == "project_refused" {
                 let detail = answer["detail"]
@@ -1026,6 +1132,7 @@ fn reconnect(app: &AppHandle) {
         .as_ref()
         .map(|window| window.label())
     {
+        Some(START_LABEL) => None,
         Some(label) if label.starts_with(PROJECT_PREFIX) => {
             Some(label[PROJECT_PREFIX.len()..].to_owned())
         }
@@ -1147,7 +1254,8 @@ fn main() {
         .setup(|app| Ok(setup(app)?))
         .invoke_handler(tauri::generate_handler![
             studio_menu::publish_studio_menu,
-            studio_menu::studio_window_action
+            studio_menu::studio_window_action,
+            open_project_folder
         ])
         .on_window_event(|window, event| match event {
             #[cfg(target_os = "macos")]
@@ -1173,10 +1281,11 @@ fn main() {
             "reconnect" => reconnect(app),
             #[cfg(target_os = "macos")]
             studio_menu::OPEN_PROJECT_ID => open_project(app),
-            studio_menu::NEW_PROJECT_ID => queue_open(app, Entry::NewProject),
+            studio_menu::NEW_PROJECT_ID => open_start(app),
             studio_menu::CLOSE_PROJECT_ID => {
-                if let Some(window) = studio_menu::focused_webview(app)
-                    .filter(|window| window.label().starts_with(PROJECT_PREFIX))
+                if let Some(window) = studio_menu::focused_webview(app).filter(|window| {
+                    window.label().starts_with(PROJECT_PREFIX) || window.label() == START_LABEL
+                })
                 {
                     if let Err(error) = window.close() {
                         eprintln!("{error}");
@@ -1367,7 +1476,7 @@ mod tests {
         }
         assert!(state.next().is_none());
         state.restore("/settings/windows.json".into(), OpenWindows::new());
-        assert_eq!(state.next(), Some(Entry::NewProject));
+        assert_eq!(state.next(), Some(Entry::Start));
         assert!(state.next().is_none());
     }
 

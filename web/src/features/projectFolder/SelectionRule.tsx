@@ -7,7 +7,7 @@ import type { PlanStepView } from '@/features/pipeline/planView';
 import type { ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import type { StudioProjectWindowMapRow, StudioRunRuleRequest, SubsetTerms } from '@/generated/studioContracts';
 import { pinnedSelectionLabels, savedRunId, selectedRowTerms } from './projectWindowPlan';
-import type { RuleProblem } from './selectionEdits';
+import { replacedAxisValue, type RuleProblem } from './selectionEdits';
 
 /** Where a rule is checked: the saved revision and variant whose plan holds the producer's runs. */
 export interface RuleScope {
@@ -30,12 +30,12 @@ const check = (scope: RuleScope, step: string, rule: string, ranked: boolean) =>
  * `source`'s card. Enter saves the rule as written, whether or not it chooses runs, and the plan's problem with it is
  * shown on the saved rule. Pick Runs starts from none; each press on `source`'s card toggles runs, and the field shows the axes that distinguish the picked runs.
  */
-export function SelectionRule({ scope, source, rule, pinned, planned, ranked = true, label = studioName('runs'), picking,
+export function SelectionRule({ scope, source, terms, planned, ranked = true, label = studioName('runs'), picking,
   disabled, problem, onToRows, pick, onCommit }: {
   scope: RuleScope;
   source: PlanStepView;
-  rule: string;
-  pinned?: readonly string[];
+  /** The saved selection: its rule, and the rows or axis values pinned beside it. */
+  terms: SubsetTerms;
   /** The plan's count of the saved rule, of its candidates; an empty rule counts every run of `source`. */
   planned?: { readonly count: number; readonly total: number };
   ranked?: boolean;
@@ -45,10 +45,13 @@ export function SelectionRule({ scope, source, rule, pinned, planned, ranked = t
   /** The plan's problem on the saved rule, or why the last edit of it was refused. */
   problem?: RuleProblem;
   onToRows?: () => void;
-  /** Where runs can be picked on `source`'s card for the selection: its rows, and the save of what is picked. */
-  pick?: { readonly rows: readonly StudioProjectWindowMapRow[]; onCommit(terms: SubsetTerms): void };
-  onCommit(rule: string): void;
+  /** Where runs can be picked on `source`'s card for the selection: its rows. */
+  pick?: { readonly rows: readonly StudioProjectWindowMapRow[] };
+  /** Saves the selection: the rule as written, what was picked, or a value offered in place of a missing one. */
+  onCommit(terms: SubsetTerms): void;
 }) {
+  const rule = terms.rule ?? '';
+  const pinned = pinnedSelectionLabels(terms);
   const [draft, setDraft] = useState<string | null>(null);
   const checked = useQuery({
     ...check(scope, source.id, draft?.trim() ?? '', ranked), enabled: draft !== null, placeholderData: keepPreviousData,
@@ -85,11 +88,17 @@ export function SelectionRule({ scope, source, rule, pinned, planned, ranked = t
   function endPick(save: boolean) {
     setPicked(undefined);
     if (!save || !pick || !pickedWrites || !picked?.size) return;
-    pick.onCommit(pickedWrites);
+    onCommit(pickedWrites);
   }
+  const offered = problem?.value;
   const shownProblem: RuleFieldProblem | undefined = picked?.size && !pickedWrites
     ? { reason: 'The producer’s axes do not distinguish these runs.' }
-    : !writing && problem ? { reason: problem.reason, ...problem.span && { term: { text: rule, ...problem.span } } } : undefined;
+    : !writing && problem ? {
+      reason: problem.reason, ...problem.span && { term: { text: rule, ...problem.span } },
+      ...offered && { offers: offered.remaining.map((value) => ({
+        label: value.label, disabled, invoke: () => onCommit(replacedAxisValue(terms, offered, value)),
+      })) },
+    } : undefined;
   const commands: RuleFieldCommand[] = [
     ...pick ? [{ label: studioName('pickRuns'), disabled: disabled || !source.runs.length, invoke: () => setPicked(new Set()) }] : [],
     ...onToRows ? [{ label: studioName('toRows'), disabled: disabled || writing, invoke: onToRows }] : [],
@@ -98,5 +107,8 @@ export function SelectionRule({ scope, source, rule, pinned, planned, ranked = t
     vocabulary={{ axes: Object.fromEntries(Object.entries(source.ruleAxes ?? {}).map(([axis, values]) => [axis, Object.values(values)])),
       metrics: ranked ? source.ruleMetrics ?? [] : undefined }}
     problem={shownProblem} picked={shownPicks}
-    commands={commands} onPickEnd={endPick} onDraft={setDraft} onCommit={onCommit} />;
+    commands={commands} onPickEnd={endPick} onDraft={setDraft} onCommit={(written) => {
+      const { rule: _written, ...rest } = terms;
+      onCommit(written ? { ...rest, rule: written } : rest);
+    }} />;
 }
