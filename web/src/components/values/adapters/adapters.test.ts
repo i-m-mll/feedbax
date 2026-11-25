@@ -126,3 +126,19 @@ test('a class field the source shows with several classes draws only the paramet
   expect(adam.parts!.map(({ label }) => label)).toEqual(['Rate', 'B1']);
   expect(adam.value).toBe('adam');
 });
+
+// Catches a value the service projects (an Analyze operation's variable choice) losing the Changed mark of its path,
+// so a based document's changed choice reads as its base's and cannot be reset.
+test('a projected field keeps the Changed mark of its path and resets through it', async () => {
+  const reset: string[] = [];
+  const field = fromJsonSchema('velocity', { type: 'string' }, 'b', {
+    root: null,
+    projected: () => fromParamSchema({ name: 'velocity', type: 'str' }, 'b', () => undefined,
+      { options: [{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }] }),
+    changed: (path) => path.join('/') === 'velocity'
+      ? { from: { kind: 'base', document: 'base' }, reset: async () => { reset.push('velocity'); return undefined; } } : undefined,
+  });
+  expect(field.change?.from).toEqual({ kind: 'base', document: 'base' });
+  await field.commit!({ kind: 'reset' });
+  expect(reset).toEqual(['velocity']);
+});

@@ -1,6 +1,6 @@
 import type { JsonValue, ParamSchema } from '@/generated/studioContracts';
 import { humanizeLabel } from '../humanizeLabel';
-import type { FieldModel, FieldType } from '../fieldModel';
+import type { FieldModel, FieldOption, FieldType } from '../fieldModel';
 import { arrayParts, isRecord, objectWriter, rawField, type RawChange } from './raw';
 
 function primitiveType(value: JsonValue): FieldType {
@@ -21,13 +21,11 @@ function element(id: string, label: string, value: JsonValue, change: RawChange 
  * whose choices may be the operation's variables (`options`).
  */
 export function fromParamSchema(schema: ParamSchema, value: JsonValue | undefined, change?: RawChange,
-  { id = schema.name, options = schema.options ?? undefined }: { id?: string; options?: readonly string[] } = {}): FieldModel {
+  { id = schema.name, options = schema.options?.map((option) => ({ value: option, label: option })) }:
+  { id?: string; options?: readonly FieldOption[] } = {}): FieldModel {
   const label = humanizeLabel(schema.name);
   const current = value ?? (schema.default as JsonValue | undefined) ?? null;
-  if (options?.length) {
-    return rawField({ id, label, value: current, change,
-      type: { kind: 'choice', options: options.map((option) => ({ value: option, label: option })) } });
-  }
+  if (options?.length) return rawField({ id, label, value: current, change, type: { kind: 'choice', options } });
   switch (schema.type) {
     case 'bool': return rawField({ id, label, type: { kind: 'boolean' }, value: current, change });
     case 'int': return rawField({ id, label, type: { kind: 'integer' }, value: current, change });

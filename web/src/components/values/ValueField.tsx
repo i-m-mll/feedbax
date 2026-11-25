@@ -198,7 +198,8 @@ function Field({ model, form }: { model: FieldModel; form: ValueFieldForm }) {
       case 'choice': {
         const index = optionIndex(type.options, value);
         return <Select aria-labelledby={labelId} aria-describedby={describedBy} className="w-full" disabled={readOnly}
-          value={index < 0 ? null : String(index)} placeholder={studioName('mixed')} trailing={problem || change}
+          value={index < 0 ? null : String(index)} placeholder={model.text === null ? studioName('mixed') : undefined}
+          trailing={problem || change}
           items={type.options.map((option, position) => ({ value: String(position), label: option.label }))}
           onValueChange={(position) => void submit({ kind: 'set', value: type.options[Number(position)].value })} />;
       }
@@ -586,7 +587,8 @@ function ClassPicker({ model, labelId, inline, readOnly, submit, chooseKind, mar
       }} />;
   }
   const index = optionIndex(options, model.value);
-  return <Combobox {...common} value={index < 0 ? null : String(index)} placeholder={studioName('mixed')}
+  return <Combobox {...common} value={index < 0 ? null : String(index)}
+    placeholder={model.text === null ? studioName('mixed') : undefined}
     items={options.map((option, position) => ({ value: String(position), label: option.label }))}
     onValueChange={(position) => {
       if (position !== null && Number(position) !== index) void submit({ kind: 'set', value: options[Number(position)].value });
