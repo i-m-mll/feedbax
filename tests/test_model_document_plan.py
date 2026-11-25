@@ -270,7 +270,6 @@ def test_a_projected_delay_carries_its_conversion_to_the_other_time_unit(tmp_pat
 def test_intervention_window_field_edits_and_sweeps_in_the_authored_unit(tmp_path):
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     model = raw["documents"]["point-mass"]["payload"]
-    model["interior"]["components"]["cell"]["fields"].pop("input_size", None)
     pulse = {
         "kind": "intervention", "id": "pulse", "operation": "add", "fields": {"value": [0.5, 0.0]},
         "window": {"spans": [{
@@ -290,6 +289,15 @@ def test_intervention_window_field_edits_and_sweeps_in_the_authored_unit(tmp_pat
         snapshot = client.get(url).json()
         body = {"revision": snapshot["revision"], "document": "point-mass", "owner": owner,
                 "run": {"variant": "default", "step": "train", "row": "default"}}
+        projection = client.post(url + "/model/projection", json={
+            "revision": snapshot["revision"], "document": "point-mass", "run": body["run"],
+        })
+        assert projection.status_code == 200, projection.text
+        shown_model = projection.json()
+        assert not shown_model["problems"], shown_model["problems"]
+        shown = shown_model["resolved_model"]
+        assert shown["interior"]["wires"]["drive"]["attachments"][0]["id"] == "pulse"
+        assert set(shown["interior"]["components"]) == set(model["interior"]["components"])
         response = client.post(url + "/model/fields", json=body)
         assert response.status_code == 200, response.text
         fields = {tuple(field["address"]["element"]["path"]): field for field in response.json()["fields"]}

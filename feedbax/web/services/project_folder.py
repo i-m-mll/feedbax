@@ -128,6 +128,7 @@ class ProjectFolderService(ProjectFolder):
         from feedbax.compiler.model_document import inspect_model_signals
         from feedbax.contracts.model_document import ModelDocument
         from feedbax.contracts.model_edit import TaskSignalSource
+        from feedbax.contracts.task_document import TaskDocument
         from feedbax.compiler.model_edit import review_model_connections
         from feedbax.compiler.model_ports import ModelRegistryPorts
         from feedbax.project_model_selection import matched_task_inputs, selected_model_and_task, task_signal
@@ -137,7 +138,7 @@ class ProjectFolderService(ProjectFolder):
         snapshot = self.read(project_id, revision=body.revision)
         payload, _ = model_edit_source(snapshot, body.document)
         model = ModelDocument.model_validate(payload)
-        task, overrides = (), {}
+        task, overrides, source = (), {}, None
         components = bundle.components
         task_source = body.source if isinstance(body.source, TaskSignalSource) else None
         try:
@@ -148,7 +149,7 @@ class ProjectFolderService(ProjectFolder):
                 selection = body.model_copy(update={"run": run})
                 step = snapshot.project.steps.get(run.step)
                 if step is not None and step.kind == "evaluate":
-                    resolved, task, _, overrides = evaluate_projection(self, project_id, selection, bundle)
+                    resolved, task, _, overrides, source = evaluate_projection(self, project_id, selection, bundle)
                     if resolved is None:
                         raise ProjectFolderInvalid("The selected Evaluate has no readable Model.")
                     model = resolved
@@ -163,7 +164,7 @@ class ProjectFolderService(ProjectFolder):
                     if definition is not None:
                         paired = selected_model_and_task(self, project_id, selection, definition=definition)
                         if paired is not None:
-                            model, task, _, overrides = paired
+                            model, task, _, overrides, source = paired
             authority = ModelRegistryPorts(components)
             offered = None
             if task_source is not None:
@@ -181,7 +182,9 @@ class ProjectFolderService(ProjectFolder):
                 model, body, layout=authority.layout, next_input=authority.next_input,
                 library=library, task_signal=task_signal(offered) if offered is not None else None,
                 task_type=offered.type if offered is not None else None,
-                signals=inspect_model_signals(model, components, supplied),
+                signals=inspect_model_signals(
+                    model, components, supplied, task=source if isinstance(source, TaskDocument) else None,
+                ),
             )
         except ValueError as error:
             raise ProjectFolderInvalid(str(error)) from error
