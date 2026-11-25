@@ -14,7 +14,7 @@ from feedbax.contracts.effective_success import (
     success_content_ref,
 )
 from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE
-from feedbax.contracts.request_refs import ContentRef, ProductRef
+from feedbax.contracts.request_refs import ContentRef, ProductRef, is_synthesized_model_product
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.strict_json import strict_model_validate_json
 from feedbax.persistence.completion import completion_file
@@ -52,6 +52,7 @@ def publish_train_success(
         raise ValueError("Train result requires a semantic checkpoint/model tree")
 
     binding = launch["canonical_request"]
+    synthesized = ContentObjectRef.model_validate(binding["model_receipt"]) if "model_receipt" in binding else None
     request = RequestObject.model_validate({
         "id": request_id, "object": binding["request"], "documents": binding["documents"],
     })
@@ -82,7 +83,7 @@ def publish_train_success(
                 or committed.recovery != recovery
                 or (collected is not None and committed.inputs != collected.inputs)
                 or (collected is None and bool(committed.inputs) != (
-                    predecessor is not None or binding.get("imported_model") is not None
+                    predecessor is not None or binding.get("imported_model") is not None or synthesized is not None
                 ))
             ):
                 raise ValueError("Published Train attempt differs from the accepted result")
@@ -96,11 +97,15 @@ def publish_train_success(
                         and bound.selection.occurrence != _occurrence(completion["checkpoint"]["pointer"]))
                 ):
                     raise ValueError("Published Train inputs differ from the delivered checkpoint")
-            elif binding.get("imported_model") is not None and committed.inputs != bind_train_inputs(view, request, None):
-                raise ValueError("Published Train inputs differ from the delivered Loaded Model")
+            elif (binding.get("imported_model") is not None or synthesized is not None) and committed.inputs != bind_train_inputs(
+                view, request, None, synthesized=synthesized,
+            ):
+                raise ValueError("Published Train inputs differ from the delivered model source")
             view.ensure_published_run_ref(existing, committed)
             return existing.model_dump(mode="json")
-        bindings = collected.inputs if collected is not None else bind_train_inputs(view, request, predecessor)
+        bindings = collected.inputs if collected is not None else bind_train_inputs(
+            view, request, predecessor, synthesized=synthesized,
+        )
         source = ImmutableArtifactBlobProvider(model_root)
         files = {file["path"]: (file["sha256"], file["size_bytes"]) for file in completion["files"]}
         manifest_path = checkpoint_root / relative
@@ -163,7 +168,10 @@ def _check_model_slot(
     return manifest
 
 
-def bind_train_inputs(view: SuccessView, request: RequestObject, predecessor: tuple[dict, dict] | None) -> Bindings:
+def bind_train_inputs(
+    view: SuccessView, request: RequestObject, predecessor: tuple[dict, dict] | None,
+    *, synthesized: ContentObjectRef | None = None,
+) -> Bindings:
     decoded = view.read_request(request)
     if not decoded.inputs and predecessor is None:
         return {}
@@ -171,6 +179,8 @@ def bind_train_inputs(view: SuccessView, request: RequestObject, predecessor: tu
         raise ValueError("Train result lacks its exact predecessor binding")
     (member,) = decoded.inputs["checkpoint"]
     reference = member.reference
+    if predecessor is None and synthesized is not None and is_synthesized_model_product(reference):
+        return {"checkpoint": (view.resolve(decoded, member, synthesized),)}
     if isinstance(reference, ContentRef) and predecessor is None:
         from feedbax.contracts.loaded_model import IMPORTED_MODEL_MEDIA_TYPE
 
