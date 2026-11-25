@@ -123,21 +123,23 @@ export function useTrialAuthoring(
       const base = baseOf(authored.documents, document);
       return base === undefined ? undefined : { kind: 'base', document: base };
     };
-    /** Reads a menu of this view; once the service no longer holds it, reads the view again and asks that one. */
     const menuKey = (context: string, field: string) => [project, context, field];
+    /** Reads a menu of this view; once the service no longer holds it, reads the view again and asks that one. */
     const menus = (field: string): PartMenus => ({
       kind: 'served', key: menuKey(data.expression_context, field),
       read: async (part, signal) => {
-        const ask = (expression_context: string) =>
+        const ask = (expression_context: string, signal: AbortSignal) =>
           readTrialExpressionMenu(project, { revision: data.revision, run, expression_context, field, part }, signal);
         try {
-          return await ask(data.expression_context);
+          return await ask(data.expression_context, signal);
         } catch (error) {
           if (!isExpiredExpressionContext(error)) throw error;
           const fresh = await queryClient.fetchQuery({ ...trialAuthoringQuery(project, data.revision, run), staleTime: 0 });
-          const site = await ask(fresh.expression_context);
-          queryClient.setQueryData(partMenuKey(menuKey(fresh.expression_context, field), part), site);
-          return site;
+          // The reloaded view's own read of this menu, which its field may already have started, is this one.
+          return queryClient.fetchQuery({
+            queryKey: partMenuKey(menuKey(fresh.expression_context, field), part),
+            queryFn: ({ signal: own }) => ask(fresh.expression_context, own), staleTime: Infinity,
+          });
         }
       },
     });

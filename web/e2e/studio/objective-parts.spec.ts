@@ -65,6 +65,25 @@ test("a Measure's outer penalty is chosen in its parts, and a kind is left as it
   await expect(inspector.getByRole('img', { name: 'Weight curve', exact: true })).toBeVisible();
 });
 
+// Catches a menu whose view the service no longer holds left without its functions, instead of read again from a
+// reloaded view.
+test('a function menu of a view the service no longer holds is read again from the reloaded view', async ({ page, request }) => {
+  const { table, inspector } = await open(page, request);
+  const contexts: string[] = [];
+  let expired = false;
+  await page.route((url) => url.pathname.endsWith('/authoring/trials/expression-menu'), async (route) => {
+    contexts.push((route.request().postDataJSON() as { expression_context: string }).expression_context);
+    if (expired) return route.fallback();
+    expired = true;
+    await route.fulfill({ status: 409, json: { detail: { code: 'trial_expression_context_unavailable', message: 'Reload' } } });
+  });
+  await table.getByRole('textbox', { name: 'Measure', exact: true }).click();
+  await inspector.getByRole('combobox', { name: 'Function', exact: true }).click();
+  await expect(page.getByRole('option', { name: 'huber', exact: true })).toBeVisible();
+  expect(contexts).toHaveLength(2);
+  expect(contexts[1]).not.toBe(contexts[0]);
+});
+
 // Catches an Add Term that is not where the new row appears, a new row that is not selected, and a Measure the user
 // must find before typing it.
 test('Add Term at the foot of the Term column adds a row with its Measure focused', async ({ page, request }) => {
