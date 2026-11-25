@@ -1747,35 +1747,59 @@ def test_shipped_reaching_matches_the_original_plant_feedback():
         assert np.asarray(actual).tobytes() == np.asarray(expected).tobytes()
 
 
-def test_discrete_mechanics_feedback_reads_the_start_state():
-    inputs = {"target": jnp.ones((4, 1), dtype=jnp.float32)}
-    document = ModelDocument.model_validate({
+@pytest.mark.parametrize("kind", ["LinearStateSpace", "StructuralLinearStateSpace"])
+def test_discrete_mechanics_feedback_reads_start_state_with_exact_delay(kind):
+    initial = 3
+    steps = 10
+    fields = {
+        "A": [[1.0]], "B": [[1.0]], "initial_state": [float(initial)],
+        "pos_slice": [0, 1], "vel_slice": [0, 1],
+    }
+    if kind == "StructuralLinearStateSpace":
+        fields["delta_A"] = [[0.0]]
+    payload = {
         "step_seconds": 0.01,
-        "ports": {"inputs": [_port("target", "target", shape=[1])],
-                  "outputs": [_port("after", "after", shape=[1]), _port("before", "before", shape=[1])]},
+        "ports": {"outputs": [_port("after", "after", shape=[1]), _port("read", "read", shape=[1])]},
         "interior": {
             "components": {
-                "plant": {"kind": "leaf", "name": "Plant", "type": "feedbax.StructuralLinearStateSpace", "fields": {
-                    "A": [[1.0]], "B": [[1.0]], "delta_A": [[0.0]], "initial_state": [3.0],
-                    "pos_slice": [0, 1], "vel_slice": [0, 1],
-                }},
+                "plant": {"kind": "leaf", "name": "Plant", "type": f"feedbax.{kind}", "fields": fields},
                 "gain": {"kind": "leaf", "name": "Gain", "type": "feedbax.Gain", "fields": {"gain": 1.0}},
             },
             "wires": {
-                "drive": _wire({"owner": "inputs", "port": "target"}, _end("plant", "force")),
-                "sense": _wire(_end("plant", "state"), _end("gain", "input")),
-                "sample": _wire(_end("gain", "output"), {"owner": "outputs", "port": "before"}),
-                "observe": _wire(_end("plant", "state"), {"owner": "outputs", "port": "after"}),
+                "drive": _wire(_end("gain", "output"), _end("plant", "force")),
+                "feedback": _wire(_end("plant", "state"), _end("gain", "input")),
+                "observed-feedback": _wire(_end("gain", "output"), {"owner": "outputs", "port": "read"}),
+                "observed-state": _wire(_end("plant", "state"), {"owner": "outputs", "port": "after"}),
             },
         },
-    })
+    }
     registry = ComponentRegistry()
-    spec = lower_model_document(document, registry).graph
-    graph = compile_graph(GraphDocument(graph=spec), registry, model_input_prototypes(spec, document, {})).graph
     key = jax.random.key(4)
-    outputs, _ = graph(inputs, graph.init_state(key=key), key=key, n_steps=4)
-    np.testing.assert_array_equal(outputs["before"], [[3], [4], [5], [6]])
-    np.testing.assert_array_equal(outputs["after"], [[4], [5], [6], [7]])
+
+    def run():
+        document = ModelDocument.model_validate(payload)
+        spec = lower_model_document(document, registry).graph
+        graph = compile_graph(GraphDocument(graph=spec), registry).graph
+        return graph({}, graph.init_state(key=key), key=key, n_steps=steps)[0]
+
+    observed = run()
+    expected_pre_step = np.array([[initial * 2**index] for index in range(steps)])
+    np.testing.assert_array_equal(observed["read"], expected_pre_step)
+    np.testing.assert_array_equal(observed["after"], 2 * expected_pre_step)
+
+    payload["interior"]["wires"]["feedback"]["attachments"] = [{
+        "kind": "delay", "id": "lag", "delay": {"value": 5, "unit": "st"},
+        "initial_source": {"kind": "wire", "source": _end("plant", "state")},
+    }]
+    delayed = run()
+    state = [initial]
+    feedback = []
+    for index in range(steps):
+        sample = initial if index < 5 else state[index - 5]
+        feedback.append([sample])
+        state.append(state[-1] + sample)
+    np.testing.assert_array_equal(delayed["read"], feedback)
+    np.testing.assert_array_equal(delayed["after"], [[sample] for sample in state[1:]])
 
 
 def test_serial_mechanics_hold_samples_this_step_and_delay_adds_five_steps():
