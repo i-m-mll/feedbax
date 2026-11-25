@@ -80,16 +80,9 @@ test('a Synthesize step on the shipped Model is run, read by an Evaluate made fr
     await picker(label).click();
     await page.getByRole('menuitemradio', { name: /^Simple reaches/ }).click();
   }
-  await tab(page, 'Task').click();
-  await reveal(page, 'Drawer');
-  await page.getByRole('complementary', { name: 'Details Drawer', exact: true })
-    .getByRole('tree', { name: 'Model Inputs', exact: true }).getByRole('treeitem').filter({ hasText: 'target_pos' }).click();
-  await reveal(page, 'Inspector');
-  await pick(page.getByRole('complementary', { name: 'Inspector', exact: true })
-    .getByRole('combobox', { name: 'Signals', exact: true }), 'Target Position');
   await expect.poll(async () => (await step('synthesize'))?.base).toMatchObject({ inline: {
     model: { document: 'point-mass' }, task: { document: 'simple-reaches-task' },
-    objective: { document: 'simple-reaches-objective' }, input_bindings: { target_pos: 'target_pos' },
+    objective: { document: 'simple-reaches-objective' },
   } });
   await run('synthesize');
 

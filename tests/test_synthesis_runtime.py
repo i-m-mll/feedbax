@@ -47,7 +47,6 @@ def synthesis_project():
             "model": {"document": "point-mass"},
             "task": {"document": "simple-reaches-task"},
             "objective": {"document": "simple-reaches-objective"},
-            "input_bindings": {"target_pos": "target_pos"},
             "method": "feedbax.constant_parameters",
         }}},
         "baseline": evaluate,
@@ -74,7 +73,7 @@ def test_synthesize_and_evaluate_plan_from_authored_documents():
     before = {run.key: run.request_id for run in plan.runs}
     assert len(changed.runs) == len(before)
     assert all(run.request_id != before[run.key] for run in changed.runs)
-    del raw["steps"]["synthesize"]["base"]["inline"]["input_bindings"]
+    raw["steps"]["synthesize"]["base"]["inline"]["input_bindings"] = {"target_pos": None}
     refused = compile_project(Project.model_validate(raw)).row(synthesis.key)
     assert any("needs a Task signal" in problem.detail for problem in refused.problems)
 
@@ -120,6 +119,8 @@ def test_served_synthesis_documents_bind_in_trials_and_model_view(host, tmp_path
         view = response.json()
         assert view["model"] == "point-mass" and view["task_document"] == "simple-reaches-task"
         assert view["objective_document"] == "simple-reaches-objective" and not view["problems"]
+        target = next(port for port in view["inputs"] if port["id"] == "target_pos")
+        assert (target["signal_id"], target["explicit"]) == ("target_pos", False)
         assert view["epoch_instances"]
         response = client.post(f"{route}/model/projection", json=body | {"document": "point-mass"})
         assert response.status_code == 200, response.text
