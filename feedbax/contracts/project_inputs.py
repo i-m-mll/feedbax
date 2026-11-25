@@ -51,9 +51,14 @@ class ObjectiveDocumentReference[DocumentT](StrictModel):
     source: DocumentT
 
 
+class LoadedModelReference(StrictModel):
+    kind: Literal["loaded_model"]
+    source: DocumentReference
+
+
 type DocumentInputReference = Annotated[
     InitialModelReference[DocumentReference] | TaskDocumentReference[DocumentReference]
-    | ObjectiveDocumentReference[DocumentReference], Field(discriminator="kind"),
+    | ObjectiveDocumentReference[DocumentReference] | LoadedModelReference, Field(discriminator="kind"),
 ]
 
 
