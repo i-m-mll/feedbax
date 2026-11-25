@@ -156,14 +156,14 @@ for pin, source in json.loads(sys.argv[1]):
 def _package_copies(root: Path, packages: list[dict]) -> list[str]:
     if not packages:
         return []
-    _private(root / "incoming-packages")
-    _private(root / "project-packages")
+    directory = root / "project-packages"
+    _private(directory)
     missing = []
     for digest in sorted({pin["snapshot"]["content_sha256"] for pin in packages}):
         if not re.fullmatch(r"[a-f0-9]{64}", digest):
             raise ValueError("Project package has an invalid snapshot digest.")
-        if not (root / "project-packages" / digest).exists():
-            _private(root / "incoming-packages" / digest)
+        if not (directory / digest).exists():
+            _private(directory / (digest + ".incoming"))
             missing.append(digest)
     return missing
 
@@ -180,7 +180,7 @@ def _install_project_packages(root, settings, verify_tree, uv, python, env) -> N
             digest = snapshot["content_sha256"]
             sealed = root / "project-packages" / digest
             if not sealed.exists():
-                incoming = root / "incoming-packages" / digest
+                incoming = sealed.with_suffix(".incoming")
                 if verify_tree(incoming) != (digest, snapshot["file_count"]):
                     raise ValueError(f"Transferred project package differs from its approved snapshot: {pin['distribution']}")
                 os.rename(incoming, sealed)

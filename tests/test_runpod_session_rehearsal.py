@@ -353,8 +353,13 @@ def observe(state, ctx):
             approved = client.post(f"{route}/approve", json={"quote": quote.json()["id"]})
             assert approved.status_code == 202, approved.text
 
-            terminal = wait_until(lambda: _terminal_without_rpc(run.venue / "host" / "host.sqlite"))
-            assert [row[1] for row in terminal] == ["succeeded"], terminal
+            def terminal():
+                opening = remote.opening_rows(reviewed).get(TRAIN)
+                assert opening is None or opening.status != "failed", opening.reason if opening else None
+                return _terminal_without_rpc(run.venue / "host" / "host.sqlite")
+
+            settled = wait_until(terminal)
+            assert [row[1] for row in settled] == ["succeeded"], settled
             record = run.driver.record(request.id)
             assert record.realization.probe["project_packages"] == [pin.model_dump(mode="json")]
             assert snapshot_tree_identity(run.venue / "project-packages" / pin.snapshot.content_sha256) == (

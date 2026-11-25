@@ -313,7 +313,7 @@ class RunPodSessionProvider:
                 pin = by_content[digest]
                 local = repo_snapshot_path(self._project_package_cache, pin.distribution, digest)
                 verify_repo_snapshot(local, content_sha256=digest, file_count=pin.snapshot.file_count)
-                bounded().copy_tree(local, layout.root / "incoming-packages" / digest)
+                bounded().copy_tree(local, layout.root / "project-packages" / (digest + ".incoming"))
             opening("installing")
             install_seconds = remaining()
             probe = self._call(replace(connection, timeout_seconds=install_seconds), layout, "install", {
