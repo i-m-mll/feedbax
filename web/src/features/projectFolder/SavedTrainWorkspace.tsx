@@ -1257,7 +1257,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const inputEditorKey = JSON.stringify([variant, selection.pipeline]);
   const inputEditor = step && (trainStart && startRole ? <InputEditor key={inputEditorKey} label={studioName('start')} role={startRole}
     binding={authored?.inputs?.checkpoint} self={step.id} steps={plan.steps} project={saved.project} picking={elements}
-    absent={documentChoice('model', trainStart)} refusal={refusedAt('input')}
+    absent={documentChoice(saved.project, 'model', trainStart)} refusal={refusedAt('input')}
     onReveal={(source) => selection.select(selectStep(state, source))}
     selection={(index, reference) => ({
       problems: inputProblems('checkpoint', index),

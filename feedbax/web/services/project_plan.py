@@ -1036,6 +1036,7 @@ def _light_history(
         changed = StudioDefinitionChange(path=path, place=definition_place(
             parts, node.document_ids.get if isinstance(node, PlannedRun) else lambda _slot: None,
             element=key.name if isinstance(key, ElementKey) else None,
+            element_name=node.label if isinstance(node, PlannedElement) else None,
             variation=variation_targets(new.spec.params if isinstance(new.spec, EvaluationRequestSpec) else None),
         ))
     status, reason = saved_request_status(

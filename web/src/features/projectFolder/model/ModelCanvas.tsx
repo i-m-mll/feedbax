@@ -68,6 +68,9 @@ export type ModelCardData = {
   addPort?: (anchor: DOMRect) => void;
   /** Writes an Objective term on `port`, for a port a term can read. */
   addTerm?: (port: Port) => ((anchor: DOMRect) => void) | undefined;
+  /** Whether a term was just written on `port`; its Objective mark shows the add, then `endTermAdded` runs. */
+  termAdded?: (port: Port) => boolean;
+  endTermAdded?: () => void;
 };
 export type ModelCard = Node<ModelCardData, 'modelCard'>;
 export type ModelEdgeData = {
@@ -142,7 +145,7 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
     return { port, key, reason, available, problem, verdict };
   });
   const geometry = JSON.stringify([!!data.collapsed, !!data.flipped, [...data.portSides ?? []], ports.map(({ port, key, verdict, problem }) =>
-    [key, port.name, port.mark, verdict === 'allowed' || verdict === 'marked', !!problem])]);
+    [key, port.name, port.mark, !!data.termAdded?.(port), verdict === 'allowed' || verdict === 'marked', !!problem])]);
   useEffect(() => { update(id); }, [id, update, geometry]);
   useEffect(() => { if (data.renaming) input.current?.select(); }, [data.renaming]);
   return <SurfaceCard as="article" className="studio-model-card" data-stacked={data.stacked} selected={data.selected}
@@ -174,6 +177,7 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
       const connectable = interactive && (!physical || data.physicalConnections);
       const addTerm = data.collapsed || data.canPick ? undefined : data.addTerm?.(port);
       const typeName = portTypeName(port);
+      const added = !!data.termAdded?.(port);
       return <div key={key} className="studio-model-port" data-collapsed={data.collapsed}
         data-direction={port.direction} data-side={location} data-hollow={!!port.taskSignal || !!port.growing}
         data-verdict={verdict}>
@@ -223,8 +227,10 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
         {addTerm && <Button variant="bare" size="mark" className="studio-model-port-term nodrag nopan"
           aria-label={studioAccessibleName('addTerm', port.name)} {...appTip(studioName('addTerm'))}
           onClick={(event) => { event.stopPropagation(); addTerm(event.currentTarget.getBoundingClientRect()); }}>+</Button>}
-        {!data.collapsed && port.mark && <span role="img" aria-label={studioName(port.mark)}
-          {...appTip(studioName(port.mark))}>{port.mark === 'task' ? '▥' : '◇'}</span>}
+        {!data.collapsed && (port.mark || added) && <span role="img" aria-label={studioName(port.mark ?? 'objective')}
+          className="studio-model-port-mark" data-added={added || undefined}
+          onAnimationEnd={added ? data.endTermAdded : undefined}
+          {...appTip(studioName(port.mark ?? 'objective'))}>{port.mark === 'task' ? '▥' : '◇'}</span>}
         {!data.collapsed && problem && <FieldProblem reason={problem} />}
         {!data.collapsed && change && <ChangeMark className="nodrag nopan" {...change} />}
         {!data.collapsed && reason && verdict === 'refused' && <span className="studio-model-port-reason" role="status">{reason}</span>}

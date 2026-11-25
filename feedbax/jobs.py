@@ -1421,6 +1421,7 @@ class JobService(PlanJobReader):
             )
             if row["state"] == "succeeded" and job in pending:
                 activity.status = JobStatus.COLLECTING
+                activity.ended_at_ms = None
                 activity.seen = False
                 activity.allowed_actions = []
             if activity.status == JobStatus.BLOCKED:
@@ -1617,6 +1618,7 @@ class JobService(PlanJobReader):
         )
         self.host.mirror_collected_evaluate(
             job, receipt=ref.model_dump(mode="json"), progress=attempt["progress"], delivery=attempt["delivery"],
+            submitted_at_ms=attempt["submitted_at_ms"], ended_at_ms=attempt["ended_at_ms"],
         )
         return self._activity_rows(self.host.jobs(job_id=attempt_id))[attempt_id]
 
@@ -1677,6 +1679,7 @@ class JobService(PlanJobReader):
         self.host.mirror_collected_train(
             job, state=state, receipt=receipt.model_dump(mode="json") if receipt is not None else None,
             progress=attempt["progress"], delivery=attempt["delivery"],
+            submitted_at_ms=attempt["submitted_at_ms"], ended_at_ms=attempt["ended_at_ms"],
         )
         return self._activity_rows(self.host.jobs(job_id=attempt_id))[attempt_id]
 
@@ -2644,6 +2647,8 @@ def _project_activity(
         earlier_definition=earlier_definition,
         actor=actor,
         progress=progress,
+        submitted_at_ms=job["submitted_at_ms"],
+        ended_at_ms=job["ended_at_ms"],
         outcome=JobOutcome.model_validate(
             {key: value for key, value in outcome.items() if key in JobOutcome.model_fields}
         )
@@ -2652,6 +2657,6 @@ def _project_activity(
         **{
             key: value
             for key, value in job["data"].items()
-            if key in StudioActivityJob.model_fields and key not in {"actor", "kind"}
+            if key in StudioActivityJob.model_fields and key not in {"actor", "kind", "submitted_at_ms", "ended_at_ms"}
         },
     )

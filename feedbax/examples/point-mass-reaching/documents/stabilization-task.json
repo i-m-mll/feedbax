@@ -113,7 +113,7 @@
       },
       {
         "id": "target_vel",
-        "name": "target_vel",
+        "name": "Target velocity",
         "type": {
           "base": "real",
           "shape": [

@@ -71,6 +71,43 @@ def _admit(client, token: str, *jobs) -> None:
     client.admit(token, [AdmissionItem(job.id, job) for job in jobs], record={})
 
 
+def test_activity_times_follow_the_host_job_lifecycle(host, tmp_path, monkeypatch):
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "intents.jsonl"))
+    job = _studio_job("timed", "timeline", HELD_UNTIL_STOPPED)
+    with TestClient(create_app(projects_dir=tmp_path / "projects")) as studio:
+        def read():
+            response = studio.get("/api/jobs", params={"project": job.project})
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        def row():
+            return next(iter(read()["jobs"]), None)
+
+        _admit(host, "timed", job)
+        live = wait_until(row)
+        assert live["ended_at_ms"] is None
+        cursor = read()["cursor"]
+        stopped = studio.post("/api/jobs/stop", json={"job_ids": [job.id], "mode": "force"})
+        assert stopped.status_code == 202, stopped.text
+
+        def finished():
+            shown = row()
+            return shown if shown is not None and shown["status"] == "stopped" else None
+
+        terminal = wait_until(finished)
+        events = host.events(projects=(job.project,))["events"]
+        started, ended = (
+            int(next(event["time"] for event in events if event["kind"] == kind) * 1000)
+            for kind in ("queued", "terminal")
+        )
+        assert live["submitted_at_ms"] == terminal["submitted_at_ms"] == started
+        assert terminal["ended_at_ms"] == ended >= started > 0
+        _, page = studio.app.state.job_activity.events(after=cursor, projects=(job.project,), wait=0, machine=False)
+        activity = next(event.activity for event in page.events if event.kind == "terminal")
+        assert (activity.submitted_at_ms, activity.ended_at_ms) == (started, ended)
+
+
 def test_an_unreadable_record_is_listed_only_for_its_own_project(host, tmp_path, monkeypatch):
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
     monkeypatch.setenv("FEEDBAX_CONTROLLER_EVENT_LOG", str(tmp_path / "intents.jsonl"))
