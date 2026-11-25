@@ -38,6 +38,7 @@ from feedbax.objectives.document import (
     compile_objective,
 )
 from feedbax.contracts.task_document import VALUE_TYPES, Length, Rest
+from feedbax.contracts.window import Window, WindowEpoch
 from feedbax.tasks.document import (
     Cell,
     DocumentTask,
@@ -462,12 +463,12 @@ def test_objective_windows_reduce_defined_samples_with_history(functions):
             id=reduction.value,
             measure=formula,
             reduction=reduction,
-            epochs=("first", "left", "right"),
+            window=Window(spans=(WindowEpoch(kind="epoch", epoch="first"), WindowEpoch(kind="epoch", epoch="left"), WindowEpoch(kind="epoch", epoch="right"))),
         )
         for reduction in Reduction
     ) + (
-        ObjectiveTerm(id="left", measure=formula, reduction=Reduction.SUM, epochs=("left",)),
-        ObjectiveTerm(id="right", measure=formula, reduction=Reduction.SUM, epochs=("right",)),
+        ObjectiveTerm(id="left", measure=formula, reduction=Reduction.SUM, window=Window(spans=(WindowEpoch(kind="epoch", epoch="left"),))),
+        ObjectiveTerm(id="right", measure=formula, reduction=Reduction.SUM, window=Window(spans=(WindowEpoch(kind="epoch", epoch="right"),))),
         ObjectiveTerm(id="disabled", measure=expression("42"), enabled=False),
     )
     executor = compile_objective(
@@ -511,7 +512,7 @@ def test_inherited_objective_preserves_term_ids_without_observing_missing_values
         ObjectiveTerm(id="covered", measure=expression("x", (x,))),
         ObjectiveTerm(id="missing-measure", measure=expression("y", (y,))),
         ObjectiveTerm(id="missing-weight", measure=expression("x", (x,)), weight=expression("y", (y,))),
-        ObjectiveTerm(id="missing-epoch", measure=expression("x", (x,)), epochs=("probe", "move")),
+        ObjectiveTerm(id="missing-epoch", measure=expression("x", (x,)), window=Window(spans=(WindowEpoch(kind="epoch", epoch="probe"), WindowEpoch(kind="epoch", epoch="move")))),
     ))
     strict = compile_objective(document, (x,), functions, task=task)
     assert not isinstance(strict, ObjectiveExecutor)
@@ -763,7 +764,7 @@ def test_document_pair_drives_signed_model_graph_with_real_reset(kind, functions
         measure=expression("sqnorm(command)", (command,)),
         weight=expression("2.3"),
         reduction=Reduction.SUM,
-        epochs=("move",),
+        window=Window(spans=(WindowEpoch(kind="epoch", epoch="move"),)),
     )
     executor = compile_objective(
         ObjectiveDocument(id="effort", terms=(term,)),
@@ -906,7 +907,7 @@ def test_three_reaches_draw_one_target_per_move_and_hold_and_score_every_move(fu
 
     objective = ObjectiveDocument.model_validate({
         "id": "score", "terms": [{
-            "id": "distance", "epochs": ["move"], "reduction": "sum",
+            "id": "distance", "window": {"spans": [{"kind": "epoch", "epoch": "move"}]}, "reduction": "sum",
             "measure_type": dict(VALUE_TYPES)["Distance"],
             "measure": {"kind": "call", "function": "norm", "args": [{"kind": "name", "reference": "target"}]},
         }],

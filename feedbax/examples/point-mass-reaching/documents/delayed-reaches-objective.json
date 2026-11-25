@@ -93,6 +93,20 @@
             "time": -2
           }
         },
+        "window": {
+          "spans": [
+            {
+              "kind": "moment",
+              "at": {
+                "anchor": {
+                  "kind": "epoch",
+                  "epoch": "move",
+                  "edge": "end"
+                }
+              }
+            }
+          ]
+        },
         "reduction": "last"
       },
       {

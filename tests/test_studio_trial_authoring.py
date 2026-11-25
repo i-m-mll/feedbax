@@ -305,7 +305,7 @@ def test_revision_bound_task_and_objective_edits_run_on_host(private_host, tmp_p
         term = {"id": "effort", "name": "Control effort", "measure": CallValue(
             kind="call", function="sqnorm", args=(NameValue(kind="name", reference=output.value.id),)
         ).model_dump(mode="json"), "weight": LiteralValue(value=2).model_dump(mode="json")}
-        windowed = term | {"id": "move-effort", "epochs": ["move"]}
+        windowed = term | {"id": "move-effort", "window": {"spans": [{"kind": "epoch", "epoch": "move"}]}}
 
         def squared_target(identifier, source):
             return {
@@ -764,7 +764,7 @@ def test_trial_authoring_preserves_field_presence_when_editing_objective_terms(t
     del task["fixed_steps"]
     objective = raw["documents"]["objective"]["payload"]
     term = objective["terms"][0]
-    for field in ("enabled", "reduction", "epochs"):
+    for field in ("enabled", "reduction", "window"):
         del term[field]
     folders = ProjectFolderService(tmp_path)
     project = "term-defaults"
@@ -785,8 +785,8 @@ def test_trial_authoring_preserves_field_presence_when_editing_objective_terms(t
         assert "fixed_steps" not in view["task"]
         assert view["objective"] == objective
         for op, values in (
-            ("add", {"enabled": False, "reduction": "sum", "epochs": ["move"]}),
-            ("replace", {"enabled": True, "reduction": "mean", "epochs": []}),
+            ("add", {"enabled": False, "reduction": "sum", "window": {"spans": [{"kind": "epoch", "epoch": "move"}]}}),
+            ("replace", {"enabled": True, "reduction": "mean", "window": None}),
         ):
             shown = view["objective"]["terms"][0]
             edits = [
