@@ -582,8 +582,9 @@ def model_fields(
             return ModelFieldResponse(problems=[Problem(
                 code=ProblemCode.STRUCTURE, reason="This field has no writable sweep destination.",
             )])
-        write = OverridePatch(op="replace", path=axis.target.patch_path, value=value)
-        relative = pointer(field.address.stored_path())
+        path = axis.target.patch_path if write_address == field.address else write_address.to_text()
+        write = OverridePatch(op="replace", path=path, value=value)
+        relative = pointer(write_address.stored_path())
         selected = selected_edit_runs(plan, body.run.step, body)
         alternatives = []
         writable = []
@@ -599,7 +600,7 @@ def model_fields(
                 writable.append(run.row)
         for source, definition in sources.items():
             held = selected_model(definition, owner_name)
-            for part in field.address.stored_path():
+            for part in write_address.stored_path():
                 held = held.get(part) if isinstance(held, dict) else None
             file = source_value_file(project, source, held, value)
             if file is not None:

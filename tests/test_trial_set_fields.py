@@ -31,6 +31,72 @@ from feedbax.plugins.declarations import DistributionSource, callable_declaratio
 from tests.test_document_train_pair import authored_documents, document_project
 
 
+
+@pytest.mark.parametrize("operation, slot, parameter, changed", [
+    ("scale", "factor", 3.0, [3.0, 6.0]),
+    ("add", "value", 3.0, [4.0, 5.0]),
+    ("clamp", "high", 1.5, [1.0, 1.5]),
+])
+def test_timed_intervention_reads_a_task_operand_on_its_exact_window(operation, slot, parameter, changed):
+    functions, *_ = authored_documents()
+    operands = {slot: {"kind": "task", "variable": "gain"}}
+    if operation == "clamp":
+        operands["low"] = {"kind": "value", "value": -1.0}
+    model = ModelDocument.model_validate({
+        "step_seconds": 0.01,
+        "ports": {
+            "inputs": [{"id": "drive", "name": "drive", "type": {"shape": [2]}}],
+            "outputs": [{"id": "command", "name": "command", "type": {"shape": [2]}}],
+        },
+        "interior": {
+            "components": {"relay": {"kind": "leaf", "name": "Relay", "type": "feedbax.Input"}},
+            "wires": {
+                "in": {"source": {"owner": "inputs", "port": "drive"},
+                       "target": {"owner": "component", "component": "relay", "port": "input"}},
+                "out": {
+                    "source": {"owner": "component", "component": "relay", "port": "output"},
+                    "target": {"owner": "outputs", "port": "command"},
+                    "attachments": [{
+                        "id": "pulse", "kind": "intervention", "operation": operation, "operands": operands,
+                        "window": {"spans": [{
+                            "kind": "interval",
+                            "start": {"anchor": {"kind": "trial", "edge": "start"}, "offset": {"value": 2, "unit": "st"}},
+                            "end": {"offset": {"value": 2, "unit": "st"}},
+                        }]},
+                    }],
+                },
+            },
+        },
+    })
+    task = TaskDocument.model_validate({
+        "id": "task", "fixed_steps": 5,
+        "variables": [{
+            "id": "gain", "name": "gain", "type": {"base": "real"}, "value": {"kind": "literal", "value": parameter},
+        }],
+        "epochs": [{"id": "move", "name": "Move", "end": {"kind": "length", "length": {
+            "kind": "literal", "value": 5, "unit": "st",
+        }}}],
+        "signals": [{
+            "id": "drive", "name": "drive", "type": {"base": "real", "shape": [2]},
+            "cells": [{"id": "drive", "first_epoch": "move", "last_epoch": "move", "value": {
+                "kind": "call", "function": "vector",
+                "args": [{"kind": "literal", "value": value} for value in (1.0, 2.0)],
+            }}],
+        }],
+    })
+    compiled = compile_trial_execution(
+        model, task, ComponentRegistry(), functions, python_tasks=application_python_tasks(),
+    )
+    assert isinstance(compiled, PreparedTrialExecution), compiled
+    trial = compiled.execution.task.ahead(TaskParameters(), jr.key(0), jr.key(1))
+    graph = compiled.executable.graph
+    inputs = {port: trial.inputs[signal] for port, signal in compiled.execution.input_bindings}
+    reset = compiled.execution.reset.prepare(graph, trial.inits, key=jr.key(2), inputs=inputs)
+    after, _ = graph(inputs, reset.state, key=jr.key(3), n_steps=5, cycle_init=reset.cycle_init)
+    nominal = [1.0, 2.0]
+    np.testing.assert_array_equal(after["command"], [nominal, nominal, changed, changed, nominal])
+
+
 def test_curl_set_entry_uses_its_amplitude_and_onset_draws():
     registry = ComponentRegistry()
     functions, *_ = authored_documents()
