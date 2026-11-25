@@ -41,7 +41,7 @@ import { useAuthoringCatalog } from '@/api/studioAuthoring';
 import { selectionProblems } from './selectionEdits';
 import { ProjectEditConflictError, type ProjectEditController } from './projectEditController';
 import type { ChangeMark } from '@/components/values/fieldModel';
-import { savedRunId, stepSourceRows } from './projectWindowPlan';
+import { pinnedSelectionLabels, savedRunId, stepSourceRows } from './projectWindowPlan';
 import { placeElement, type Reveal } from './projectWindowProblems';
 import { ChangeRow, ProblemRow } from '@/features/projectWindow/StudioProblems';
 import { SavedFigureResult } from './SavedLightProducts';
@@ -405,7 +405,7 @@ export function useManagedAnalyze({
           problems,
           runs: source && projection && !('subset' in where) && <SelectionRule
             scope={{ project: saved.project_id, revision: projection.revision, variant: key.variant }} source={source}
-            rule={where.rule ?? ''} pinned={where.rows?.map(({ key: row }) => row)} planned={subset} picking={selection}
+            rule={where.rule ?? ''} pinned={pinnedSelectionLabels(where)} planned={subset} picking={selection}
             disabled={!canBind} problem={problems.rule}
             pick={{ rows: stepSourceRows(projection, source.id, key.variant), onCommit: write }}
             onCommit={(rule) => {
