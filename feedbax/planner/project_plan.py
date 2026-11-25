@@ -2864,7 +2864,7 @@ class _Compiler:
     ) -> Payload | ProjectDiagnostic | _EvaluatePayload:
         from feedbax.execution.trial_resolution import pair_trial_source, resolve_python_task
         from feedbax.contracts.rollout import CannotRun
-        from feedbax.training.evaluation_variant import resolve_evaluation_variant
+        from feedbax.training.evaluation_variant import resolve_evaluation_task, resolve_evaluation_variant
 
         if (
             payload.get("evaluation_type") != ROLLOUT_TYPE or not isinstance(reference, ProductRef)
@@ -2932,7 +2932,11 @@ class _Compiler:
                 resolved = documents.resolved_signal_bindings(
                     {signal.name: signal.id for signal in signals}, settings.input_bindings,
                 )
-                runtime = train.trial_documents.input_bindings
+                runtime_task = resolve_evaluation_task(train.trial_documents.task_source, settings.variation)
+                runtime_signals = runtime_task.signals if isinstance(runtime_task, TaskDocument) else signals
+                runtime = train.trial_documents.resolved_signal_bindings({
+                    signal.name: signal.id for signal in runtime_signals
+                })
                 overrides = {key: value for key, value in resolved.items() if key not in runtime or runtime[key] != value}
                 if overrides:
                     params["input_bindings"] = overrides
