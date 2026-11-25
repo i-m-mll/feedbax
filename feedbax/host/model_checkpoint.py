@@ -254,7 +254,7 @@ def _restore_model(
             path for path in retained - destination_leaves.keys()
             if is_generated_attachment_node(path[-1], source_leaves[path].type)
             and not any(
-                value.kind == "learned"
+                value.kind == "parameter"
                 for value in template.get_node(".".join(path[:-1])).component_bindings[path[-1]].model_facts.values
             )
         }
@@ -443,7 +443,7 @@ def _describe(
         for value in owner.values:
             address = semantic_key("model", "value", path, value.symbol)
             leaf = attrgetter(value.field)(component)
-            if leaf is None and value.kind == "learned":
+            if leaf is None and value.kind == "parameter":
                 continue
             if type(leaf) is float:
                 representation = "python-float"

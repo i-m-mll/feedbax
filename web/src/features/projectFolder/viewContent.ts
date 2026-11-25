@@ -5,6 +5,7 @@ import type { ModelDocument, StudioProjectWindowMapProblem } from '@/generated/s
 
 export const viewsByKind = {
   train: ['runs', 'model', 'task', 'objective', 'training', 'scene', 'results'],
+  synthesize: ['runs', 'model', 'task', 'objective', 'results'],
   evaluate: ['runs', 'model', 'task', 'objective', 'scene', 'results'],
   analyze: ['runs', 'analysis', 'figures', 'results'],
   report: ['runs', 'document'],

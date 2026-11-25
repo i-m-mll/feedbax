@@ -16,7 +16,7 @@ from feedbax.checkpoint_coordinates import (
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.expression_values import Expression
 
-RequestKind = Literal["train", "evaluate", "analyze", "render", "report"]
+RequestKind = Literal["train", "synthesize", "evaluate", "analyze", "render", "report"]
 RequestId = Annotated[
     str, StringConstraints(pattern=rf"^({'|'.join(get_args(RequestKind))}):[0-9a-f]{{64}}$")
 ]

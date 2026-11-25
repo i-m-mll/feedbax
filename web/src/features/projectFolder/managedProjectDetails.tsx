@@ -20,7 +20,7 @@ import {
   DocumentReferenceSchema, ModelDocumentSchema,
   type EvaluateModelRequest, type ModelDocument, type StudioSavedEvaluationRow,
   type StudioSavedTrainKey, type StudioProjectWindowMapProblem, type ModelAddress, type TrialRecord,
-  type StudioSavedEvaluationReplayRequest, type TrialMean, type TrialMeanOptions, type TrialMeanSelection,
+  type StudioSavedEvaluationReplayRequest, type StudioTrialAuthoring, type TrialMean, type TrialMeanOptions, type TrialMeanSelection,
 } from '@/generated/studioContracts';
 import { modelDocumentId, ownDefinition } from './authoredEdits';
 import { placeMember, type Reveal } from './projectWindowProblems';
@@ -93,6 +93,8 @@ interface DetailInputs {
   readonly drawerSections: DrawerSections;
   readonly openModelProblems?: (element: ModelAddress, opener: HTMLElement) => void;
   readonly exceptions?: ExceptionMentions;
+  /** The step's trial, whose epochs and Task variables the Model's attachments read. */
+  readonly trial?: StudioTrialAuthoring;
 }
 
 const rootModelPath: string[] = [];
@@ -349,6 +351,7 @@ export function useManagedProjectDetails(input: DetailInputs): Record<DetailName
     sections: input.drawerSections,
     openProblems: input.openModelProblems,
     exceptions: input.exceptions,
+    trial: input.trial,
   });
   return {
     model: stored ? storedView : { body: null },

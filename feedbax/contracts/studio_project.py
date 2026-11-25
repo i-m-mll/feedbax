@@ -270,6 +270,10 @@ class StudioTrainStep(Step):
     kind: Literal["train"]
 
 
+class StudioSynthesizeStep(Step):
+    kind: Literal["synthesize"]
+
+
 class StudioEvaluateStep(Step):
     kind: Literal["evaluate"]
 
@@ -292,7 +296,8 @@ class CreateNamedStep(StrictModel):
     kind: Literal["step"]
     id: ProjectName
     step: Annotated[
-        StudioTrainStep | StudioEvaluateStep | StudioAnalyzeStep | StudioReportStep, Field(discriminator="kind")
+        StudioTrainStep | StudioSynthesizeStep | StudioEvaluateStep | StudioAnalyzeStep | StudioReportStep,
+        Field(discriminator="kind"),
     ]
 
 

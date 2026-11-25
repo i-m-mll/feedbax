@@ -1,6 +1,6 @@
 import type { StudioResultState, StudioRunStatusId } from "@/components/activity/studioVocabulary";
 import type {
-  ReceiptValidity, StudioActivityJob, StudioDefinitionChange, StudioProjectWindowMapProblem, StudioSavedTrainChange,
+  ReceiptValidity, StepKind, StudioActivityJob, StudioDefinitionChange, StudioProjectWindowMapProblem, StudioSavedTrainChange,
 } from "@/generated/studioContracts";
 
 export interface RunAddress {
@@ -78,7 +78,7 @@ export interface PlanStepView {
   readonly id: string;
   /** The step's shown name, `shownName` of its key. */
   readonly label: string;
-  readonly kind: "train" | "evaluate" | "analyze" | "report";
+  readonly kind: StepKind;
   readonly group?: string | null;
   readonly sweeps: readonly PlanSweepView[];
   readonly runs: readonly PlanRunView[];

@@ -82,7 +82,7 @@ def _trace(name: str, node: ComponentSpec, components: ComponentRegistry) -> Lea
     return {
         value.symbol: ValueShape(tuple(leaf.shape), str(leaf.dtype))
         for value in facts.values
-        if value.kind == "learned" and (leaf := attrgetter(value.field)(built)) is not None
+        if value.kind == "parameter" and (leaf := attrgetter(value.field)(built)) is not None
     }
 
 
@@ -91,7 +91,7 @@ def checkpoint_misfit(source: GraphSpec, destination: GraphSpec, components: Com
     leaves = dict(graph_leaf_specs(destination))
     for path, node in graph_leaf_specs(source):
         facts = component_model_facts(node, components)
-        learned = facts is not None and any(value.kind == "learned" for value in facts.values)
+        learned = facts is not None and any(value.kind == "parameter" for value in facts.values)
         target = leaves.get(path)
         if target is None:
             if is_generated_attachment_node(path[-1], node.type) and not learned:

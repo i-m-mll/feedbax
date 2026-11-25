@@ -40,9 +40,9 @@ class StudioRunRuleRequest(StrictModel):
 class StudioRunRuleChosen(StrictModel):
     kind: Literal["chosen"] = "chosen"
     runs: list[RowKey]
-    """The producer's rows the rule's axis terms choose; a lowest or highest term ranks among them."""
+    """The producer's chosen rows, or its candidates while a ranking or metric condition remains unresolved."""
     count: int
-    """Chosen rows, requested ranks, or candidates when the rule depends on a final metric."""
+    """Chosen rows, requested ranks, or candidates while the rule waits for final metrics."""
     conditional: bool = Field(default=False, exclude_if=lambda value: not value)
 
 

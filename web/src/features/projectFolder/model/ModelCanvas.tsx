@@ -80,6 +80,8 @@ export type ModelEdgeData = {
   waypoints?: readonly ModelPosition[];
   attachments?: readonly {
     id: string; label: string; description: string; mark: string; delay: boolean; select(): void; drag?: ModelLocation;
+    /** The output whose signal a delay's Initial reads at the trial's start: its card and handle. */
+    initial?: { card: string; handle: string };
     ghost?: boolean; change?: ChangeMarkProps;
   }[];
   ghost?: boolean;
@@ -318,11 +320,22 @@ const Wire = memo(function Wire({ id, data, type, source, target, sourceX, sourc
     }))));
   }, [labelled, path, labelX, labelY, cards]);
   const mid = place?.point ?? { x: labelX, y: labelY };
+  const initial = data?.attachments?.find((item) => item.initial)?.initial;
+  const initialFrom = useStore((state) => {
+    const node = initial && state.nodeLookup.get(initial.card);
+    const handle = node?.internals.handleBounds?.source?.find((bounds) => bounds.id === initial!.handle);
+    return node && handle ? `${node.internals.positionAbsolute.x + handle.x + handle.width / 2},${node.internals.positionAbsolute.y + handle.y + handle.height / 2}` : undefined;
+  });
+  const initialPath = initialFrom && (() => {
+    const [x, y] = initialFrom.split(',').map(Number);
+    return getBezierPath({ sourceX: x, sourceY: y, sourcePosition: Position.Right, targetX: mid.x, targetY: mid.y + 9, targetPosition: Position.Bottom })[0];
+  })();
   /** Solid from the source to the delay's square, dashed from it to the target. */
   const dash = delayed && place
     ? `${place.along} 0 ${'5 3 '.repeat(Math.min(1000, Math.ceil((pathRef.current?.getTotalLength() ?? 0) / 8)))}` : undefined;
   return <>
     {(delayed || labelled) && <path d={path} ref={pathRef} visibility="hidden" aria-hidden="true" />}
+    {initialPath && <path d={initialPath} className="studio-model-wire" fill="none" strokeWidth={1.3} strokeDasharray="5 3" aria-hidden="true" />}
     <BaseEdge id={id} path={path} markerEnd={markerEnd} className="studio-model-wire"
       style={{ strokeWidth: data?.selected || data?.bundleCount ? 3 : physical ? 2.4 : 1.3,
         strokeDasharray: data?.ghost ? '4 3' : delayed ? dash : undefined }} />
