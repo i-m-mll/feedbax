@@ -170,7 +170,7 @@ export function useTrialClock({
   const mean = averaging ? replay.mean : undefined;
   const recordedTrial = replay.read.kind === 'read' ? replay.read : undefined;
   const { shown, query, possible, picked, reading } = useShown(pick, clock, offer, view, stored, replay, sceneVisible);
-  const drawn = view && taskDocument ? shelfTask(view, taskDocument, objectiveDocument) : undefined;
+  const drawn = view && taskDocument ? shelfTask(view, taskDocument, objectiveDocument, stored) : undefined;
   const [taskTime, setTaskTime] = usePlayhead(playhead, JSON.stringify(['task', taskDocument]));
   const [heldTime, setTime] = pick?.trials === 'recorded' ? [replay.time, replay.setTime] : [taskTime, setTaskTime];
   const stateTime = pick?.trials === 'recorded' ? recordedTrial?.stateTime : undefined;
