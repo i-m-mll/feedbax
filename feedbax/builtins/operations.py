@@ -18,6 +18,7 @@ from feedbax.analysis.operation_inputs import verify_dataset
 from feedbax.contracts.operation import DatasetPort
 from feedbax.dataset import Dataset, Variable
 from feedbax.contracts.rollout import RAW_STATES_SCHEMA, STATES_SCHEMA
+from feedbax.contracts.rollout_dataset import rollout_coordinates
 
 
 _MEMBER_AXES = ("checkpoint", "condition", "trial")
@@ -37,7 +38,7 @@ def _coordinate(name: str, *, units: str | None = None) -> FieldDescriptor:
 
 
 _STATE_COORDS = {name: _coordinate(name) for name in _MEMBER_AXES}
-_STATE_COORDS["state_time"] = _coordinate("state_time", units="s")
+_STATE_COORDS["state_time"] = rollout_coordinates(None)["state_time"]
 _RECORDED_VELOCITY = FieldDescriptor(dims=(*_STATE_AXES, "xy"), units="m/s", frame="world")
 _STATES = DatasetPort(
     schema_ids=(RAW_STATES_SCHEMA, STATES_SCHEMA),
@@ -88,7 +89,9 @@ def _summary_port(
                 for name in ("mean", "standard_deviation", "lower", "upper")
             },
             "count": FieldDescriptor(dims=dims, units="1"),
-            **({"peak_time": FieldDescriptor(dims=dims, units="s")} if peak_time else {}),
+            **({
+                "peak_time": FieldDescriptor(dims=dims, units="s", trial_time=_STATE_COORDS["state_time"].trial_time),
+            } if peak_time else {}),
         },
         coordinates={name: _STATE_COORDS[name] for name in dims},
     )
@@ -271,6 +274,10 @@ def summarize_peak_velocity(
     time_sizes = dict(zip(descriptor.coords["state_time"].dims, time.shape, strict=True))
     time = time.reshape(tuple(time_sizes.get(dim, 1) for dim in descriptor.variables[params.variable].dims))
     trial_peak_times = np.take_along_axis(time, peak_indices, axis=-1).squeeze(-1)
+    peak_time = _PEAK_SUMMARY.variables["peak_time"].model_copy(update={
+        "trial_time": descriptor.coords["state_time"].trial_time,
+    })
+    port = _PEAK_SUMMARY.model_copy(update={"variables": {**_PEAK_SUMMARY.variables, "peak_time": peak_time}})
     return _product(
-        _PEAK_SUMMARY, velocity, stacking, {**result, "peak_time": trial_peak_times.mean(axis=trial_axis)},
+        port, velocity, stacking, {**result, "peak_time": trial_peak_times.mean(axis=trial_axis)},
     )
