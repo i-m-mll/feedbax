@@ -3,7 +3,9 @@ import { BookOpen, Plus, Search } from 'lucide-react';
 import { useId, useState, type ReactNode } from 'react';
 import { createProjectFolder, deleteProjectFolder, listProjectExamples, listProjectFolders } from '@/api/projectFolders';
 import { shownError } from '@/api/shownErrors';
-import { studioAccessibleName, studioDateTime, studioFormat, studioName, studioReason } from '@/components/activity/studioVocabulary';
+import {
+  studioAccessibleName, studioDateTime, studioFormat, studioName, studioReason, type StudioNameId,
+} from '@/components/activity/studioVocabulary';
 import { Button } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
 import { Menu, MenuContent, MenuItem, MenuTrigger } from '@/components/ui/Menu';
@@ -21,17 +23,17 @@ function projectHref(id: string) {
 }
 
 /** An action that leaves the start page for a project's window: it runs `invoke`, or opens the menu of `items`. */
-type StartAction = { label: string; glyph: ReactNode; disabled?: boolean } & (
+type StartAction = { name: StudioNameId; glyph: ReactNode; disabled?: boolean } & (
   { invoke(): void } | { items: ReactNode }
 );
 
 function ActionButton({ action }: { action: StartAction }) {
   const button = <Button variant="ghost" align="start" className="w-full gap-2" disabled={action.disabled}
-    onClick={'invoke' in action ? action.invoke : undefined}>{action.glyph}{action.label}</Button>;
+    onClick={'invoke' in action ? action.invoke : undefined}>{action.glyph}{studioName(action.name)}</Button>;
   if ('invoke' in action) return button;
   return <Menu>
     <MenuTrigger render={button} />
-    <MenuContent aria-label={action.label} side="right">{action.items}</MenuContent>
+    <MenuContent aria-label={studioName(action.name)} side="right">{action.items}</MenuContent>
   </Menu>;
 }
 
@@ -49,7 +51,7 @@ function NameDialog({ naming, onChange, onClose }: { naming: Naming; onChange(na
     onSuccess: (document) => window.location.assign(projectHref(document.snapshot.project_id)),
   });
   const busy = create.isPending || create.isSuccess;
-  const label = studioName(naming.example ? 'newFromExample' : 'newProject');
+  const label = studioName('newProject');
   const problem = invalid ? studioReason('projectNameCharacters', studioName('project'))
     : create.isError ? shownError(create.error) : undefined;
   return <Dialog ariaLabel={label} manageFocus onClose={() => { if (!busy) onClose(); }}
@@ -91,7 +93,7 @@ function DeleteDialog({ project, onClose }: { project: StudioProjectListEntry; o
   return <Dialog ariaLabel={title} manageFocus onClose={() => { if (!remove.isPending) onClose(); }}
     panelClassName="grid w-80 gap-3">
     <h2 className="font-medium">{title}</h2>
-    <p className="truncate text-shell-muted" title={project.folder}>{project.folder}</p>
+    <p className="text-shell-muted"><FolderPath folder={project.folder} /></p>
     {remove.isError && <p role="alert">{shownError(remove.error)}</p>}
     <div className="flex justify-end gap-2">
       <Button onClick={onClose} disabled={remove.isPending}>{studioName('cancel')}</Button>
@@ -99,6 +101,11 @@ function DeleteDialog({ project, onClose }: { project: StudioProjectListEntry; o
         onClick={() => remove.mutate()}>{studioName('delete')}</Button>
     </div>
   </Dialog>;
+}
+
+/** A folder's path, cut at its start when it is too long, so that its own name stays in view. */
+function FolderPath({ folder }: { folder: string }) {
+  return <span dir="rtl" className="block truncate text-left"><bdi dir="ltr">{folder}</bdi></span>;
 }
 
 function matches(project: StudioProjectListEntry, filter: string) {
@@ -119,9 +126,9 @@ export function StartPage() {
   const rows = [...projects.data ?? []].filter((project) => matches(project, filter))
     .sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified));
   const actions: StartAction[] = [
-    { label: studioName('newProject'), glyph: <Plus aria-hidden="true" />, invoke: () => setNaming({ name: '' }) },
+    { name: 'newProject', glyph: <Plus aria-hidden="true" />, invoke: () => setNaming({ name: '' }) },
     {
-      label: studioName('newFromExample'), glyph: <BookOpen aria-hidden="true" />, disabled: !examples.data && !examples.isError,
+      name: 'examples', glyph: <BookOpen aria-hidden="true" />, disabled: !examples.data && !examples.isError,
       items: examples.isError
         ? <MenuItem disabled>{shownError(examples.error)}</MenuItem>
         : examples.data?.map((example) => (
@@ -134,7 +141,7 @@ export function StartPage() {
     <Dialog ariaLabel={studioName('studio')} manageFocus closeOnBackdrop={false} closeOnEscape={false} onClose={() => {}}
       panelClassName="grid h-[min(36rem,88vh)] w-[min(60rem,94vw)] grid-cols-[11rem_minmax(0,1fr)] gap-3">
       <nav aria-label={studioName('studio')} className="grid content-start gap-1">
-        {actions.map((action) => <ActionButton key={action.label} action={action} />)}
+        {actions.map((action) => <ActionButton key={action.name} action={action} />)}
       </nav>
       <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-2">
         <TextField aria-label={studioName('filter')} placeholder={studioName('filter')} leading={<Search />}
@@ -157,7 +164,7 @@ export function StartPage() {
                 items: <MenuItem onClick={() => setDeleting(project)}>{studioName('delete')}</MenuItem>,
               }}>
                 <TableRowHeader><a href={projectHref(project.project_id)} className="block truncate">{project.name}</a></TableRowHeader>
-                <TableCell className="text-shell-muted" title={project.folder}>{project.folder}</TableCell>
+                <TableCell className="text-shell-muted"><FolderPath folder={project.folder} /></TableCell>
                 <TableCell className="tabular-nums text-shell-muted">{studioDateTime(Date.parse(project.modified))}</TableCell>
                 <TableCell className="text-right tabular-nums text-shell-muted">{project.step_count}</TableCell>
               </TableRow>
