@@ -457,7 +457,7 @@ export function TrialObjectiveTable({ view, commit, selected, select, runs, scor
     select(value.id, 'measure');
     setAdded(value.id);
   };
-  return <Table aria-label={studioName('objectiveTerms')} held={1} columns={columns.map((id) => columnWidths[id])}
+  return <Table aria-label={studioName('objectiveTerms')} held={1} heldEnd columns={columns.map((id) => columnWidths[id])}
     box={{ ref: box, axis: 'both', className: 'h-full min-h-0 [--fade-inset-top:var(--row-height)]' }}
     moveRow={move}
     addRow={{ label: studioName('addTerm'), disabled: !commit || !sources.length, items: sources.map((source) =>
@@ -489,7 +489,7 @@ export function TrialObjectiveTable({ view, commit, selected, select, runs, scor
         </> }}>
         {!commit ? <TableRowHeader {...cell('name')}>{name}</TableRowHeader> : <TableFieldCell header {...cell('name')}>
           <span className="flex h-full min-w-0 items-center">
-            <InlineEdit form="cell" value={term.name ?? ''} editing={renaming === term.id} className="min-w-0 flex-1"
+            <InlineEdit form="cell" value={term.name ?? ''} empty={name} editing={renaming === term.id} className="min-w-0 flex-1"
               aria-label={studioAccessibleName('rename', name)}
               onEditingChange={(editing) => setRenaming(editing ? term.id : undefined)}
               onCommit={(next) => {
@@ -567,14 +567,13 @@ export function TrialObjectiveInspector({ view, commit, selected, runs, shown }:
   if (!term) return null;
   const fields = termFields(view, term, index, commit, runs, shown);
   const order: (TermField | 'window')[] = ['name', 'measure', 'window', 'weight', 'enabled', 'reduction'];
-  const first = order.find((field) => field === selected?.field);
   const name = term.name ?? studioAccessibleName('term', index + 1);
   const period = view.period_seconds;
   return <Inspector name={name} type={term.name ? studioName('term') : undefined}>
     {shown && period != null && <section aria-label={studioName('plot')} className="grid gap-1 empty:hidden">
       <TermTrace label={name} term={term.id} shown={shown} stepSeconds={period} />
     </section>}
-    {[...first ? [first] : [], ...order.filter((field) => field !== first)].map((field) => field === 'window'
+    {order.map((field) => field === 'window'
       ? <FieldRow key="window" label={studioName('window')} labelId={windowLabel}>
         <TermWindow view={view} term={term} index={index} commit={commit} labelId={windowLabel} />
       </FieldRow>

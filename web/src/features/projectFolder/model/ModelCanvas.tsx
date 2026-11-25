@@ -66,7 +66,7 @@ export type ModelCardData = {
   /** Opens, at the empty handle, the list of signals outside that can be brought in as a new port. */
   addPort?: (anchor: DOMRect) => void;
   /** Writes an Objective term on `port`, for a port a term can read. */
-  addTerm?: (port: Port) => (() => void) | undefined;
+  addTerm?: (port: Port) => ((anchor: DOMRect) => void) | undefined;
 };
 export type ModelCard = Node<ModelCardData, 'modelCard'>;
 export type ModelEdgeData = {
@@ -221,7 +221,7 @@ const Card = memo(function Card({ id, data }: NodeProps<ModelCard>) {
         {!data.collapsed && typeName && <span className="studio-model-port-type">{typeName}</span>}
         {addTerm && <Button variant="bare" size="mark" className="studio-model-port-term nodrag nopan"
           aria-label={studioAccessibleName('addTerm', port.name)} {...appTip(studioName('addTerm'))}
-          onClick={(event) => { event.stopPropagation(); addTerm(); }}>+</Button>}
+          onClick={(event) => { event.stopPropagation(); addTerm(event.currentTarget.getBoundingClientRect()); }}>+</Button>}
         {!data.collapsed && port.mark && <span role="img" aria-label={studioName(port.mark)}
           {...appTip(studioName(port.mark))}>{port.mark === 'task' ? '▥' : '◇'}</span>}
         {!data.collapsed && problem && <span role="img" aria-description={problem} aria-label={studioName('problems')}>◆</span>}

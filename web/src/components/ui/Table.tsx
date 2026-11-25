@@ -65,6 +65,8 @@ export interface TableProps extends TableHTMLAttributes<HTMLTableElement> {
   columns: readonly TableColumn[];
   /** How many leading columns stay in place while the rest scroll: those up to and including a row's name. */
   held?: number;
+  /** The last column stays in place at the trailing edge while the rest scroll, as an on-off check that must stay reachable. */
+  heldEnd?: boolean;
   /** A row added at the foot of the last held column (the name column), or of the first column when none is held. */
   addRow?: TableAdd;
   /** A column added at the trailing end of the header, as wide as its control; `TableAddColumn` draws it. */
@@ -100,7 +102,7 @@ const addBounds = { least: '0px', greatest: '4rem' };
  * outside their cells; while one is dragged the others are drawn where they will be, and the order is written once,
  * on release. Each row's menu is drawn over the trailing end of its name cell.
  */
-export function Table({ columns, held = 0, addRow, addColumn, moveRow, moveColumn, box, className, style, children, ...props }: TableProps) {
+export function Table({ columns, held = 0, heldEnd = false, addRow, addColumn, moveRow, moveColumn, box, className, style, children, ...props }: TableProps) {
   const table = useRef<HTMLTableElement>(null);
   const probe = useRef<HTMLSpanElement>(null);
   const widths = useRef<number[]>([]);
@@ -142,7 +144,8 @@ export function Table({ columns, held = 0, addRow, addColumn, moveRow, moveColum
     offsets.forEach((offset, index) => table.current!.style.setProperty(`--held-left-${index + 1}`, `${offset}px`));
     table.current.parentElement?.style.setProperty('--fade-inset-left',
       `${widths.current.slice(0, shown).reduce((sum, width) => sum + width, 0)}px`);
-  }, [JSON.stringify(bounds), shown]);
+    table.current.parentElement?.style.setProperty('--fade-inset-right', `${heldEnd ? widths.current.at(-1) ?? 0 : 0}px`);
+  }, [JSON.stringify(bounds), shown, heldEnd]);
 
   useLayoutEffect(() => {
     fit();
@@ -230,7 +233,7 @@ export function Table({ columns, held = 0, addRow, addColumn, moveRow, moveColum
     <ScrollFade ref={ref} axis={axis} className={clsx('studio-table-box relative', boxClassName)} {...boxProps} style={boxStyle}>
       <span ref={probe} aria-hidden="true" className="pointer-events-none invisible absolute left-0 top-0 h-0" />
       <Shape.Provider value={shape}>
-        <table ref={table} data-held={shown || undefined}
+        <table ref={table} data-held={shown || undefined} data-held-end={heldEnd || undefined}
           className={clsx('studio-table table-fixed border-separate border-spacing-0 text-shell-foreground', className)}
           style={style as CSSProperties}
           onPointerMove={sortableColumns ? (event) => {

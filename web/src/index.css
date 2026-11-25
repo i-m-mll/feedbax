@@ -158,19 +158,21 @@
   --fade-inset-top: 0px;
   /* Where the left fade starts, right of content pinned to the left such as a table's held columns. */
   --fade-inset-left: 0px;
+  /* Where the right fade ends, left of content pinned to the right such as a table's trailing held column. */
+  --fade-inset-right: 0px;
   --fade-top: 0px;
   --fade-bottom: 0px;
   --fade-left: 0px;
   --fade-right: 0px;
   /* Content scrolled into view stops clear of the fades. */
   scroll-padding-block: calc(var(--fade-inset-top) + var(--studio-scroll-fade)) var(--studio-scroll-fade);
-  scroll-padding-inline: calc(var(--fade-inset-left) + var(--studio-scroll-fade)) var(--studio-scroll-fade);
+  scroll-padding-inline: calc(var(--fade-inset-left) + var(--studio-scroll-fade)) calc(var(--fade-inset-right) + var(--studio-scroll-fade));
   -webkit-mask-image:
     linear-gradient(to bottom, #000 var(--fade-inset-top), transparent var(--fade-inset-top), #000 calc(var(--fade-inset-top) + var(--fade-top)), #000 calc(100% - var(--fade-bottom)), transparent),
-    linear-gradient(to right, #000 var(--fade-inset-left), transparent var(--fade-inset-left), #000 calc(var(--fade-inset-left) + var(--fade-left)), #000 calc(100% - var(--fade-right)), transparent);
+    linear-gradient(to right, #000 var(--fade-inset-left), transparent var(--fade-inset-left), #000 calc(var(--fade-inset-left) + var(--fade-left)), #000 calc(100% - var(--fade-inset-right) - var(--fade-right)), transparent calc(100% - var(--fade-inset-right)), #000 calc(100% - var(--fade-inset-right)));
   mask-image:
     linear-gradient(to bottom, #000 var(--fade-inset-top), transparent var(--fade-inset-top), #000 calc(var(--fade-inset-top) + var(--fade-top)), #000 calc(100% - var(--fade-bottom)), transparent),
-    linear-gradient(to right, #000 var(--fade-inset-left), transparent var(--fade-inset-left), #000 calc(var(--fade-inset-left) + var(--fade-left)), #000 calc(100% - var(--fade-right)), transparent);
+    linear-gradient(to right, #000 var(--fade-inset-left), transparent var(--fade-inset-left), #000 calc(var(--fade-inset-left) + var(--fade-left)), #000 calc(100% - var(--fade-inset-right) - var(--fade-right)), transparent calc(100% - var(--fade-inset-right)), #000 calc(100% - var(--fade-inset-right)));
   -webkit-mask-composite: source-in;
   mask-composite: intersect;
 }
@@ -214,6 +216,29 @@
 .studio-table[data-held="4"] thead tr > :nth-child(-n + 4) {
   z-index: 2;
   background-color: var(--surface-header);
+}
+
+/* A table's trailing held column stays at the right edge over the columns scrolling beneath it. */
+.studio-table[data-held-end] tr > :last-child {
+  position: sticky;
+  right: 0;
+  z-index: 1;
+}
+
+.studio-table[data-held-end] tbody tr > :last-child {
+  background:
+    linear-gradient(var(--cell-fill, transparent), var(--cell-fill, transparent)),
+    linear-gradient(var(--row-fill, transparent), var(--row-fill, transparent)),
+    var(--table-surface);
+}
+
+.studio-table[data-held-end] thead tr > :last-child {
+  z-index: 2;
+  background-color: var(--surface-header);
+}
+
+.studio-table-box[data-overflow-right] .studio-table[data-held-end] tr > :last-child {
+  box-shadow: inset 1px 0 var(--border-muted);
 }
 
 /* Once the table is scrolled, a line divides the held columns from those beneath them. */

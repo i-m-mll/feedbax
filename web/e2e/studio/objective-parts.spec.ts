@@ -81,3 +81,27 @@ test('Add Term at the foot of the Term column adds a row with its Measure focuse
   await expect(row.getByRole('textbox', { name: 'Measure', exact: true })).toBeFocused();
   await expect(row.getByRole('textbox', { name: 'Measure', exact: true })).toHaveValue('sqnorm(goal)');
 });
+
+// Catches an Enabled check pushed off a narrow table by the Inspector, a shipped term whose Enabled cannot be turned
+// off, an unnamed term whose Term cell is blank, and an Inspector whose fields move to put the clicked one first.
+test('with the Inspector open, an unnamed term shows its name and its Enabled check turns it off', async ({ page, request }) => {
+  test.setTimeout(45_000);
+  await page.setViewportSize({ width: 1024, height: 760 });
+  const { table, inspector, terms } = await open(page, request);
+  const [before] = await terms();
+  expect(before.name).toBeUndefined();
+  await expect(table.getByRole('textbox', { name: 'Rename Term 1', exact: true })).toHaveAttribute('placeholder', 'Term 1');
+  await table.getByRole('textbox', { name: 'Measure', exact: true }).click();
+  const labels = () => inspector.locator('.value-field, [role="group"]').evaluateAll((fields) =>
+    fields.map((field) => field.getAttribute('aria-label')).filter(Boolean));
+  const order = await labels();
+  expect(order.length).toBeGreaterThan(3);
+
+  const check = table.getByRole('checkbox');
+  const box = (await table.evaluate((element) => element.parentElement!.getBoundingClientRect().toJSON())) as DOMRect;
+  const shown = (await check.boundingBox())!;
+  expect(shown.x + shown.width).toBeLessThanOrEqual(box.x + box.width);
+  await check.click();
+  await expect.poll(async () => ((await terms())[0] as Term & { enabled?: boolean }).enabled).toBe(false);
+  expect(await labels()).toEqual(order);
+});
