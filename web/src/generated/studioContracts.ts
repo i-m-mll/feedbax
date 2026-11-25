@@ -4422,6 +4422,10 @@ export type StudioProjectPatchBatch = {
   "created"?: Array<CreateNamedDocument>;
 };
 
+export type StudioProjectPlanChanged = {
+  "project_id": string;
+};
+
 export type StudioProjectRename = {
   "revision": Sha256;
   "name": string;
@@ -12792,6 +12796,12 @@ export const StudioProjectPatchBatchSchema: z.ZodType<StudioProjectPatchBatch> =
   }).strict()
 ) as unknown as z.ZodType<StudioProjectPatchBatch>;
 
+export const StudioProjectPlanChangedSchema: z.ZodType<StudioProjectPlanChanged> = z.lazy(() =>
+  z.object({
+    "project_id": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+  }).strict()
+) as unknown as z.ZodType<StudioProjectPlanChanged>;
+
 export const StudioProjectRenameSchema: z.ZodType<StudioProjectRename> = z.lazy(() =>
   z.object({
     "revision": Sha256Schema,
@@ -13921,6 +13931,7 @@ export const contractSchemas = {
   StudioProjectExamples: StudioProjectExamplesSchema,
   StudioProjectList: StudioProjectListSchema,
   StudioProjectNew: StudioProjectNewSchema,
+  StudioProjectPlanChanged: StudioProjectPlanChangedSchema,
   StudioProjectWindowMap: StudioProjectWindowMapSchema,
   StudioProjectPatch: StudioProjectPatchSchema,
   StudioProjectPatchBatch: StudioProjectPatchBatchSchema,
@@ -14101,6 +14112,7 @@ export interface ContractTypeMap {
   StudioProjectExamples: StudioProjectExamples;
   StudioProjectList: StudioProjectList;
   StudioProjectNew: StudioProjectNew;
+  StudioProjectPlanChanged: StudioProjectPlanChanged;
   StudioProjectWindowMap: StudioProjectWindowMap;
   StudioProjectPatch: StudioProjectPatch;
   StudioProjectPatchBatch: StudioProjectPatchBatch;
