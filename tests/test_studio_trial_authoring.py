@@ -17,6 +17,7 @@ from feedbax.planner.project_plan import ProjectPlanMemo, RunKey, compile_projec
 from feedbax.contracts.studio_trials import StudioTrialAuthoring
 from feedbax.contracts.request_identity import decode_request
 from feedbax.application.composition import application_python_tasks
+from feedbax.examples import load_shipped_projects
 from feedbax.tasks.registry import PythonTaskRegistry
 from feedbax.web.app import create_app
 from feedbax.web.services import project_plan as window_service
@@ -45,6 +46,33 @@ def _python_project():
     documents.update(task=None, python_task={"document": "task"})
     raw["steps"]["baseline"]["base"]["inline"]["params"]["trial_set"] = {"kind": "sample", "count": 1}
     return raw
+
+
+@pytest.mark.parametrize("competing_label", [False, True])
+def test_task_pairing_prefers_the_matching_signal_id(tmp_path, competing_label):
+    project = load_shipped_projects()["point-mass-reaching"]
+    original = compile_project(project)
+    raw = project.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    signals = raw["documents"]["simple-reaches-task"]["payload"]["signals"]
+    next(signal for signal in signals if signal["id"] == "target_pos")["name"] = "target position"
+    if competing_label:
+        next(signal for signal in signals if signal["id"] == "target_vel")["name"] = "target_pos"
+    renamed = Project.model_validate(raw)
+    run = RunKey("default", "simple-reaches", "default")
+    with TestClient(create_app(projects_dir=tmp_path, automatic_run="off")) as client:
+        folders = client.app.state.project_folders
+        _save_project(folders, "implicit-binding", renamed)
+        snapshot = folders.read("implicit-binding")
+        response = client.post("/api/projects/implicit-binding/authoring/trials", json={
+            "revision": snapshot.revision,
+            "run": {"variant": run.variant, "step": run.step, "row": run.row},
+        })
+        assert response.status_code == 200, response.text
+        view = StudioTrialAuthoring.model_validate(response.json())
+        target = next(port for port in view.inputs if port.id == "target_pos")
+        assert (target.signal_id, target.explicit) == ("target_pos", False)
+        assert not view.problems
+        assert folders.read_plan("implicit-binding", revision=None).plan.row(run).request_id == original.row(run).request_id
 
 
 @pytest.mark.parametrize("rename", ["signal", "root input"])
