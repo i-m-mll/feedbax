@@ -275,12 +275,13 @@ def preview_trial_source(
     *,
     python_tasks: PythonTaskRegistry,
     input_bindings: Mapping[str, str | None],
+    graph_override: GraphSpec | None = None,
     nominal: bool = False,
 ) -> PreviewTrialSource | tuple[Problem, ...]:
     """Compile the Task's trial, including each Model link that can be resolved."""
     paired = pair_trial_source(
         model, task, components, functions, python_tasks=python_tasks, input_bindings=input_bindings,
-        nominal=nominal,
+        graph_override=graph_override, nominal=nominal,
     )
     if isinstance(paired, TrialPair):
         scope = model_measure_scope(model, paired.model.signals)
