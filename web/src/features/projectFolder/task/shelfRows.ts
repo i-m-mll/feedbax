@@ -177,8 +177,9 @@ const stepEdges = (share: readonly number[], stepSeconds: number) =>
 const stepShareBars = (share: readonly number[], stepSeconds: number) => shareBars(share, stepEdges(share, stepSeconds));
 
 /**
- * A batch of trials' rows: one per epoch, since epochs of different trials overlap in time, one per signal and one per
- * term; each heavy where every trial is in the epoch, has the signal or has the term apply, light where some do.
+ * A batch of trials' rows: one per epoch, since epochs of different trials overlap in time, one per signal, term and
+ * intervention; each heavy where every trial is in the epoch, has the signal, has the term apply or has the
+ * intervention act, light where some do.
  */
 export function batchRows(task: ShelfTask, aggregate: TrialAggregate, stepSeconds: number): ShelfRow[] {
   return [
@@ -192,42 +193,17 @@ export function batchRows(task: ShelfTask, aggregate: TrialAggregate, stepSecond
     ...termRows(task, (term) => ({
       bars: stepShareBars(aggregate.terms?.[term]?.steps ?? [], stepSeconds), problems: aggregate.terms?.[term]?.problems,
     })),
+    ...interventionRows(task, Object.keys(aggregate.interventions ?? {}),
+      (key) => stepShareBars(aggregate.interventions?.[key] ?? [], stepSeconds)),
   ];
-}
-
-/**
- * The bars of the steps `held` gives of each trial of every condition, on time from Align's epoch: heavy where every
- * trial holds, light where some do. Only intervention windows are aligned here; the Service's shelf has no share of them.
- */
-function alignedBars(mean: TrialMean, records: ReadonlyMap<string, TrialRecord>, stepSeconds: number,
-  held: (record: TrialRecord) => readonly unknown[]): ShelfBar[] {
-  const counts = new Map<number, number>();
-  let trials = 0;
-  for (const condition of mean.conditions) {
-    for (const [id, { origin }] of Object.entries(condition.trials)) {
-      const record = records.get(id);
-      if (!record) continue;
-      trials += 1;
-      const shift = Math.round(origin / stepSeconds);
-      held(record).forEach((value, step) => {
-        if (value) counts.set(step - shift, (counts.get(step - shift) ?? 0) + 1);
-      });
-    }
-  }
-  if (!counts.size) return [];
-  const first = Math.min(...counts.keys());
-  const share = Array.from({ length: Math.max(...counts.keys()) - first + 1 }, (_, index) => (counts.get(first + index) ?? 0) / trials);
-  return shareBars(share, Array.from({ length: share.length + 1 }, (_, index) => (first + index) * stepSeconds));
 }
 
 /**
  * Under Mean, on time from Align's epoch, the Service's shelf: the epochs row, each epoch instance from its mean start
  * to its mean end over every trial of every condition with a whisker from where its end falls least to greatest; and
- * one row per signal and per term, each heavy where every trial holds and light where some do.
+ * one row per signal, term and intervention, each heavy where every trial holds and light where some do.
  */
-export function meanRows(task: ShelfTask, mean: TrialMean, records: readonly TrialRecord[], stepSeconds: number): ShelfRow[] {
-  const { shelf } = mean;
-  const byId = new Map(records.map((record) => [record.id, record]));
+export function meanRows(task: ShelfTask, { shelf }: TrialMean): ShelfRow[] {
   const segments = shelf.epochs.flatMap(({ epoch, label, occurrence, start, end }): ShelfSegment[] => end.mean > start.mean ? [{
     key: `${epoch}:${occurrence}`, name: label, start: start.mean, end: end.mean, selects: named(task.document, `epoch:${epoch}`),
     ...end.upper > end.lower && { spread: { least: end.lower, greatest: end.upper } },
@@ -241,7 +217,6 @@ export function meanRows(task: ShelfTask, mean: TrialMean, records: readonly Tri
     ...termRows(task, (term) => ({
       bars: shareBars(shelf.terms[term]?.steps ?? [], shelf.times), problems: shelf.terms[term]?.problems,
     })),
-    ...interventionRows(task, records.flatMap((record) => Object.keys(record.intervention_windows ?? {})),
-      (key) => alignedBars(mean, byId, stepSeconds, (record) => record.intervention_windows?.[key] ?? [])),
+    ...interventionRows(task, Object.keys(shelf.interventions ?? {}), (key) => shareBars(shelf.interventions?.[key] ?? [], shelf.times)),
   ];
 }

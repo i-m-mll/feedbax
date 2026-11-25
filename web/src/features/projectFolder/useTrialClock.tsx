@@ -13,7 +13,7 @@ import { studioRegionIssue, StudioRegion } from '@/components/activity/StudioReg
 import type { SceneTrial } from '@/components/scene/trialScene';
 import { frameAt } from '@/components/timeline/trialClock';
 import type {
-  Problem, StudioSavedEvaluationRow, TaskDocument, TrialMean, TrialRecord,
+  Problem, StudioSavedEvaluationRow, StudioSavedTrainKey, TaskDocument, TrialMean, TrialRecord,
 } from '@/generated/studioContracts';
 import { selectElement, type ElementSelectionStore } from '@/features/projectWindow/elementSelection';
 import { showProjectWindowView, type ProjectWindowState, type ProjectWindowView } from '@/features/projectWindow/projectWindowState';
@@ -21,7 +21,7 @@ import { clockRun, type FigureClock } from './figureClock';
 import { recordedTrials, useSavedEvaluationScene, type StoredModel } from './managedProjectDetails';
 import type { TrialView } from './StudioTrialAuthoring';
 import { batchRows, meanRows, nominalRows, trialRows, trialTermRows, type ShelfTask } from './task/shelfRows';
-import { shelfTask, taskDocumentOf, useNominalTrial, useTaskBatch, useTaskSamples } from './task/taskTrials';
+import { shelfTask, taskDocumentOf, useNominalTrial, useTaskBatch, useTaskSamples, type SampledRun } from './task/taskTrials';
 import type { TrialShown, TrialsUnavailable } from './task/trialSample';
 
 interface TrialClockInputs {
@@ -35,6 +35,8 @@ interface TrialClockInputs {
   readonly taskDocument: string | undefined;
   /** The Objective document the view reads, whose terms the shelf's term rows select. */
   readonly objectiveDocument: string | undefined;
+  /** The run the view is of, whose documents the clock samples. */
+  readonly run: StudioSavedTrainKey | undefined;
   readonly stored: StoredModel | undefined;
   readonly evaluation: StudioSavedEvaluationRow | undefined;
   /** Whether a Scene is shown, which draws the samples a trial may be beside the one shown. */
@@ -61,15 +63,15 @@ function problemElement(task: TaskDocument, problem: Problem): string | undefine
  * recorded trial) or the aggregate of the samples or of the recorded trials; the Problems that keep it from being
  * drawn; or nothing while it is read. With it, what the Scene draws: the picked trial and the trials beside it.
  */
-function useShown(pick: TrialPick | undefined, clock: TrialClock, offer: TrialOffer, view: TrialView | undefined,
-  stored: StoredModel | undefined, replay: ReturnType<typeof useSavedEvaluationScene>, sceneVisible: boolean) {
+function useShown(pick: TrialPick | undefined, clock: TrialClock, offer: TrialOffer,
+  source: SampledRun | undefined, replay: ReturnType<typeof useSavedEvaluationScene>, sceneVisible: boolean) {
   const count = sampleCount(clock, offer);
   const recorded = replay.read.kind === 'read' ? replay.read : undefined;
   const sampled = pick?.trials === 'samples';
-  const nominal = useNominalTrial(view, stored?.value, pick?.trials === 'nominal');
+  const nominal = useNominalTrial(source, pick?.trials === 'nominal');
   const possibleShown = sceneVisible && count > 0 && (pick?.trials === 'nominal' || pick?.showing.kind === 'all');
-  const samples = useTaskSamples(view, stored?.value, clock.seed, count, sampled && pick.showing.kind === 'one' || possibleShown);
-  const batch = useTaskBatch(view, stored?.value, clock.seed, count, sampled && pick.showing.kind === 'all');
+  const samples = useTaskSamples(source, clock.seed, count, sampled && pick.showing.kind === 'one' || possibleShown);
+  const batch = useTaskBatch(source, clock.seed, count, sampled && pick.showing.kind === 'all');
   const one = (drawn: TrialRecord[] | TrialsUnavailable | undefined, index: number, of: number): TrialShown | TrialsUnavailable | undefined => {
     if (!drawn || !Array.isArray(drawn)) return drawn;
     const record = drawn[index];
@@ -118,8 +120,8 @@ const noRecords: readonly TrialRecord[] = [];
  * the recorded trials' shares on time from Align's epoch.
  */
 function rowsOf(task: ShelfTask, pick: TrialPick, shown: TrialShown | TrialsUnavailable | undefined, stepSeconds: number,
-  mean: { value: TrialMean; records: readonly TrialRecord[] } | undefined): ShelfRow[] | undefined {
-  if (pick.showing.kind === 'mean') return mean && meanRows(task, mean.value, mean.records, stepSeconds);
+  mean: TrialMean | undefined): ShelfRow[] | undefined {
+  if (pick.showing.kind === 'mean') return mean && meanRows(task, mean);
   if (pick.trials === 'nominal') {
     return [...nominalRows(task), ...shown?.kind === 'one' ? trialTermRows(task, shown.record, stepSeconds) : []];
   }
@@ -153,7 +155,7 @@ const frames = (steps: number, stepSeconds: number) => Array.from({ length: step
  * the time; with the bottom bar's clock group and the shelf on that time.
  */
 export function useTrialClock({
-  windowState, setWindowState, projectId, revision, view, taskDocument, objectiveDocument, stored, evaluation, sceneVisible,
+  windowState, setWindowState, projectId, revision, view, taskDocument, objectiveDocument, run, stored, evaluation, sceneVisible,
   shelfView, elements, playhead,
 }: TrialClockInputs) {
   const clock = windowState.clock ?? defaultTrialClock;
@@ -169,7 +171,7 @@ export function useTrialClock({
   const averaging = pick?.showing.kind === 'mean';
   const mean = averaging ? replay.mean : undefined;
   const recordedTrial = replay.read.kind === 'read' ? replay.read : undefined;
-  const { shown, query, possible, picked, reading } = useShown(pick, clock, offer, view, stored, replay, sceneVisible);
+  const { shown, query, possible, picked, reading } = useShown(pick, clock, offer, run && { projectId, revision, run }, replay, sceneVisible);
   const drawn = view && taskDocument ? shelfTask(view, taskDocument, objectiveDocument, stored) : undefined;
   const [taskTime, setTaskTime] = usePlayhead(playhead, JSON.stringify(['task', taskDocument]));
   const [heldTime, setTime] = pick?.trials === 'recorded' ? [replay.time, replay.setTime] : [taskTime, setTaskTime];
@@ -179,8 +181,7 @@ export function useTrialClock({
       ? { start: 0, duration: stateTime[stateTime.length - 1], frameTimes: [...stateTime] } : null;
   /** A recorded trial's step is its run's; any other trial's is the step's Model's. */
   const step = replayTimeline && stateTime ? stateTime[1] : period;
-  const averaged = mean && recordedTrial && { value: mean, records: recordedTrial.records };
-  const rows = pick && (drawn && step != null ? rowsOf(drawn, pick, shown, step, averaged) : shown && []);
+  const rows = pick && (drawn && step != null ? rowsOf(drawn, pick, shown, step, mean) : shown && []);
   const epochs = rows?.find((row) => row.kind === 'segments');
   const timeline: ClockTimeline = replayTimeline
     ? { ...replayTimeline, bands: [] }
