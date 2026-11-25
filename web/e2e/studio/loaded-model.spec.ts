@@ -8,7 +8,8 @@ const digest = (character: string) => character.repeat(64);
 const object = (sha256: string, size_bytes: number) => ({ object_id: `content-object://sha256/${sha256}`, sha256, size_bytes });
 
 // Catches a model file that does not fit refused with only its first problem, or away from the Model it was loaded
-// against; and a model file that fits imported but not listed under its Model, or not shown once loaded.
+// against; a model file that fits imported but not listed under its Model, or not shown once loaded; and a loaded
+// model that still offers the Library or a field's kind menu.
 test('Load reports every problem of a model file at the Model picker, and shows one that fits under its Model', async ({ page, request }) => {
   const files = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.evaluate_authoring'));
   const { snapshot, projectPath } = await seedManagedProject(request, files);
@@ -69,4 +70,12 @@ test('Load reports every problem of a model file at the Model picker, and shows 
   await page.getByRole('button', { name: 'Loaded Model reach-baseline' }).click();
   const items = page.getByRole('menu', { name: 'Loaded Model' }).getByRole('menuitemradio');
   await expect(items).toHaveText(['Point mass', 'reach-baseline']);
+  await page.keyboard.press('Escape');
+
+  // A loaded model is read-only: no Library to place from, and a component's kind marks open nothing.
+  await expect(page.getByRole('textbox', { name: 'Search Library', exact: true })).toHaveCount(0);
+  await page.getByRole('treeitem', { name: 'Recurrent controller', exact: true }).click();
+  const inspector = page.getByRole('complementary', { name: 'Inspector' });
+  await expect(inspector.getByRole('img', { name: /kind: Value$/ }).first()).toBeVisible();
+  await expect(inspector.getByRole('button', { name: /kind: / })).toHaveCount(0);
 });

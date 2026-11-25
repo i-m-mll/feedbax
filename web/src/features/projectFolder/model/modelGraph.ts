@@ -33,8 +33,8 @@ const shapeText = (type: SignalType) => type.shape?.length ? `[${type.shape.join
 
 export function portTypeLabel(port: Port) {
   const { type } = port;
-  if (typeof type === 'string' || !type.space) return portTypeName(port);
-  return [portTypeName(port), type.base, shapeText(type)].filter(Boolean).join(' ');
+  if (typeof type === 'string') return humanizeLabel(type);
+  return [type.space ? portTypeName(port) : type.unit, type.base, shapeText(type)].filter(Boolean).join(' ');
 }
 
 export function addressKey(address: ModelAddress) {

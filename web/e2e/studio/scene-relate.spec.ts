@@ -64,9 +64,13 @@ test('Relate dragged from the hand to the target adds one Objective term and its
 
 
   // A second relation of the same two places is drawn beside the first, not over it.
-  await page.mouse.move(fromX, fromY);
+  await tab(page, 'Scene').click();
+  await scene(page).getByRole('toolbar').getByRole('button', { name: 'Relate', exact: true }).click();
+  const [againX, againY] = await centre(hand.locator('circle').first());
+  const [overX, overY] = await centre(target.locator('circle').first());
+  await page.mouse.move(againX, againY);
   await page.mouse.down();
-  await page.mouse.move(toX, toY, { steps: 8 });
+  await page.mouse.move(overX, overY, { steps: 8 });
   await page.mouse.up();
   await expect(lines).toHaveCount(drawn + 2);
   const segments = await lines.evaluateAll((elements) => (elements as SVGLineElement[]).slice(-2).map((element) =>
