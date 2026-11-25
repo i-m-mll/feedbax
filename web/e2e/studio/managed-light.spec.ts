@@ -207,7 +207,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   }
   const selectElement = (name: string) => activate(page, analysis.getByRole('group', { name: 'Select ' + name, exact: true }));
   await place('Aligned velocity');
-  await selectElement('aligned_velocity');
+  await selectElement('Aligned velocity');
   if (!await inspector.isVisible()) await palette(page, 'showInspector', 'Show Inspector');
   for (const [field, label] of [
     ['Position', /effector~1position$/], ['Velocity', /effector~1velocity$/], ['Target', /target_pos$/],
@@ -219,7 +219,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   await edit(() => chooseOption(page, roleField('States'), 'states'));
 
   await place('Trial summary');
-  await selectElement('summarize_velocity');
+  await selectElement('Trial summary');
   await edit(() => number(page, boundsScale, '1.5'));
   const beforeRefusal = await edit(() => number(page, inspector.getByRole('textbox', { name: 'Ddof', exact: true }), '0'));
   const refusal = page.waitForResponse((response) => new URL(response.url()).pathname === reviewPath &&
@@ -236,24 +236,24 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   await expect(roleField('Velocity')).toHaveAccessibleDescription(/Requires dataset schemas/);
   await expect(roleField('Velocity').getByRole('img', { name: 'Problem', exact: true })).toHaveAttribute('data-app-tip', /Requires dataset schemas/);
   expect((await snapshot()).revision).toBe(beforeRefusal.revision);
-  await edit(() => chooseOption(page, roleField('Velocity'), 'aligned_velocity.velocity'));
+  await edit(() => chooseOption(page, roleField('Velocity'), 'Aligned velocity.velocity'));
 
   await place('Velocity Summary');
-  await selectElement('velocity_summary');
-  const wired = await edit(() => chooseOption(page, roleField('Summary'), 'summarize_velocity.summary'));
+  await selectElement('Velocity Summary');
+  const wired = await edit(() => chooseOption(page, roleField('Summary'), 'Trial summary.summary'));
   await expect(analysis.locator('.react-flow__edge')).toHaveCount(3);
   if (first) {
     const authored = rootPayload(wired.project.documents!.analysis) as unknown as AnalysisDocument;
     const state = '/v1/model/state/' + first.plantId + '/';
     expect(authored.operations).toMatchObject({
-      aligned_velocity: {
+      'aligned-velocity': {
         operation: 'feedbax.aligned_velocity',
         params: { position: state + 'effector~1position', velocity: state + 'effector~1velocity', target: '/v1/task/output/target_pos' },
         inputs: { states: { input: 'states' } },
       },
-      summarize_velocity: {
+      'trial-summary': {
         operation: 'feedbax.summarize_velocity', params: { bounds_scale: 1.5, ddof: 0 },
-        inputs: { velocity: { element: 'aligned_velocity', product: 'velocity' } },
+        inputs: { velocity: { element: 'aligned-velocity', product: 'velocity' } },
       },
     });
   }
@@ -262,11 +262,11 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
     projection.analysis_elements!.filter(({ key }) => key.variant === scope && key.step === 'analyze')
       .map(({ name, requests: [{ request_id }] }) => [name, request_id]),
   );
-  expect(Object.keys(requests(original)).sort()).toEqual(['aligned_velocity', 'summarize_velocity', 'velocity_summary']);
+  expect(Object.keys(requests(original)).sort()).toEqual(['aligned-velocity', 'trial-summary', 'velocity-summary']);
   expect(original.problems.filter(({ step }) => step === 'analyze')).toEqual([]);
   expectAnalyzeSources(original);
   await openView(page, 'figures');
-  await activate(page, figures.getByRole('button', { name: 'velocity_summary', exact: true }));
+  await activate(page, figures.getByRole('button', { name: 'Velocity Summary', exact: true }));
   await palette(page, 'newStep', 'New Step');
   await chooseStepKind(page, 'Report', true);
   await expect(document.getByRole('textbox', { name: 'Report Title', exact: true })).toBeVisible();
@@ -281,7 +281,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   expect(report.blocks).toHaveLength(2);
   const role = Object.keys(inputs)[0];
   expect(report.blocks[1]).toMatchObject({ figure: role });
-  expect(inputs[role]).toMatchObject({ step: 'analyze', element: 'velocity_summary', product: 'figure' });
+  expect(inputs[role]).toMatchObject({ step: 'analyze', element: 'velocity-summary', product: 'figure' });
 
   const settled = await plan(ordered.revision);
   expect(settled.problems.filter(({ step }) => step === 'analyze' || step === 'report')).toEqual([]);
@@ -300,9 +300,9 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
       return { ...found, ...found.requests[0] };
     };
     return {
-      aligned: element('aligned_velocity'),
-      summary: element('summarize_velocity'),
-      figure: element('velocity_summary'),
+      aligned: element('aligned-velocity'),
+      summary: element('trial-summary'),
+      figure: element('velocity-summary'),
       report: projection.rows.find(({ key }) => key.variant === scope && key.step === 'report')!,
     };
   }
@@ -352,7 +352,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   async function showFigure() {
     await activate(page, mapStep(page, 'analyze'));
     await openView(page, 'figures');
-    await activate(page, figures.getByRole('button', { name: 'velocity_summary', exact: true }));
+    await activate(page, figures.getByRole('button', { name: 'Velocity Summary', exact: true }));
   }
   async function drawnFigure(name: 'Current Result' | 'Previous Result') {
     const plot = figures.getByRole('region', { name, exact: true }).locator('svg.main-svg').first();
@@ -372,7 +372,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   const [aligned, summary, figure, renderedReport] = result(completed);
   expect(result(completed).map(({ job_id }) => job_id).sort()).toEqual(createdJobs.sort());
   for (const { receipt } of result(completed)) expect(receipt.manifest_sha256).toMatch(/^[a-f0-9]{64}$/);
-  expect(figure.request_id).toBe(requests(completed).velocity_summary);
+  expect(figure.request_id).toBe(requests(completed)['velocity-summary']);
   expect(renderedReport.request_id).toBe(reportRequest?.request_id);
   const firstFigure = await request.get(figure.products.figure);
   expect(firstFigure.ok(), await firstFigure.text()).toBe(true);
@@ -442,14 +442,14 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
 
   await activate(page, mapStep(page, 'analyze'));
   await openView(page, 'analysis');
-  await selectElement('summarize_velocity');
+  await selectElement('Trial summary');
   if (!await inspector.isVisible()) await palette(page, 'showInspector', 'Show Inspector');
   const changed = await edit(() => number(page, boundsScale, '2'));
   const stale = await plan(changed.revision);
   const [stillCurrent, staleSummary, staleFigure, staleReport] = lightStatus(stale);
   expect(stillCurrent.current).toEqual(identity(aligned));
   expect(staleSummary.changed).toMatchObject({
-    path: expect.stringContaining('bounds_scale'), place: { part: 'analysis', element: 'summarize_velocity' },
+    path: expect.stringContaining('bounds_scale'), place: { part: 'analysis', element: 'trial-summary' },
   });
   expect([staleSummary, staleFigure, staleReport].map(({ status, previous }) => [status, previous]))
     .toEqual([summary, figure, renderedReport].map((entry) => ['stale', identity(entry)]));
@@ -457,7 +457,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
     matchesCli(stale),
     (async () => {
       await openView(page, 'figures');
-      await activate(page, figures.getByRole('button', { name: 'velocity_summary', exact: true }));
+      await activate(page, figures.getByRole('button', { name: 'Velocity Summary', exact: true }));
       await drawnFigure('Previous Result');
     })(),
   ]);
@@ -468,7 +468,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   expect(lightStatus(await plan(undo.revision))).toEqual(lightStatus(completed));
   expect(await attempts()).toEqual(beforeEdit);
 
-  await selectElement('summarize_velocity');
+  await selectElement('Trial summary');
   const reapplied = await edit(() => number(page, boundsScale, '2'));
   await activate(page, mapStep(page, 'report'));
   await openView(page, 'document');
@@ -606,7 +606,7 @@ test('authors a paired Analyze and shared successors from the primary variant', 
   await drawer.getByRole('textbox', { name: 'Search Library', exact: true }).fill('Aligned velocity');
   await drawer.getByRole('option', { name: 'Aligned velocity', exact: true }).dblclick();
   await expect.poll(async () => rootPayload((await snapshot()).project.documents?.analysis))
-    .toMatchObject({ operations: { aligned_velocity: { operation: 'feedbax.aligned_velocity' } } });
+    .toMatchObject({ operations: { 'aligned-velocity': { operation: 'feedbax.aligned_velocity' } } });
 
   const evaluated = await successor('Evaluate', 'evaluate');
   const stepInspector = page.getByRole('complementary', { name: 'Inspector', exact: true });

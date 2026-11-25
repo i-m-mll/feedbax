@@ -33,3 +33,9 @@
 .react-flow__edge.studio-carried .studio-model-wire { stroke-dasharray: 4 3; }
 /* The wire a dropped card would split, kept under the pointer but drawn as the two wires that replace it. */
 .react-flow__edge.studio-carried-split .studio-model-wire { opacity: 0; }
+.studio-model-port-mark { display: inline-block; }
+.studio-model-port-mark[data-added] { animation: studio-model-term-added 1.2s ease-out; }
+@keyframes studio-model-term-added {
+  0%, 40% { color: var(--studio-shell-accent); transform: scale(1.6); }
+  100% { transform: none; }
+}

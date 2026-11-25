@@ -17,10 +17,14 @@ function payloadElements(payload: JsonValue | undefined): Readonly<Record<string
   return { ...section('operations'), ...section('views') };
 }
 
-/** Every operation and figure key the project's Analysis documents hold; a new element's key is none of them. */
-export function heldElementKeys(documents: Documents, composed: Composed): ReadonlySet<string> {
-  return new Set(documentsOfRole({ documents }, 'analysis')
-    .flatMap((name) => Object.keys(payloadElements(documentPayload(documents, composed, name)))));
+/**
+ * Every operation and figure the project's Analysis documents hold, by key, with its shown name; a new element's key is
+ * none of the keys, and its name none of the names.
+ */
+export function heldElements(documents: Documents, composed: Composed): ReadonlyMap<string, string> {
+  return new Map(documentsOfRole({ documents }, 'analysis')
+    .flatMap((name) => Object.entries(payloadElements(documentPayload(documents, composed, name))))
+    .map(([key, element]) => [key, shownName(key, element)]));
 }
 
 /** The shown name of `element` of the Analysis document `step` reads. */
