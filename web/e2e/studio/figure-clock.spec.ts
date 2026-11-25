@@ -21,7 +21,7 @@ async function speedFigure(page: Page, request: APIRequestContext, home: string,
   const opened = await request.get(path + '/open');
   expect(opened.ok(), await opened.text()).toBe(true);
   const { snapshot } = await opened.json() as StudioProjectDocument;
-  await appendManagedFiles(request, snapshot, [
+  const { snapshot: seeded } = await appendManagedFiles(request, snapshot, [
     { kind: 'document', id: 'analysis', document: {
       schema: 'feedbax.analysis_document.v1', payload: {
         inputs: { states: { kind: 'dataset' } },
@@ -53,7 +53,7 @@ async function speedFigure(page: Page, request: APIRequestContext, home: string,
   await run('train');
   await run('baseline');
   await run('analyze');
-  const projected = await request.get(path + '/train-runs', { params: { window_map: 'true' } });
+  const projected = await request.get(path + '/train-runs', { params: { revision: seeded.revision, window_map: 'true' } });
   expect(projected.ok(), await projected.text()).toBe(true);
   const { window_map } = await projected.json() as StudioSavedTrainRuns;
   const trials = window_map!.evaluations!.find(({ key }) => key.step === 'baseline')!.trials;
@@ -65,6 +65,11 @@ async function showFigure(page: Page) {
   await mapStep(page, 'analyze').click();
   await panel(page, 'Runs').click();
   await tab(page, 'Figures').click();
+  return drawnFigure(page);
+}
+
+/** The shown Analyze's Speed by trial figure, once drawn. */
+async function drawnFigure(page: Page) {
   const figures = panel(page, 'Figures');
   await figures.getByRole('button', { name: 'profile', exact: true }).click();
   const plot = figures.locator('.js-plotly-plot');
@@ -74,10 +79,10 @@ async function showFigure(page: Page) {
 
 interface DrawnTrace { trial?: string; visible: unknown; width: number }
 
-/** The traces as Plotly draws them: each one's trial, whether it is drawn, and its line width. */
+/** The traces as the figure asks Plotly to draw them: each one's trial, whether it is drawn, and its line width. */
 const drawnTraces = (plot: Locator) => plot.evaluate((node) =>
-  (node as unknown as { _fullData: { meta?: { group?: { trial?: string } }; visible: unknown; line: { width: number } }[] })
-    ._fullData.map((trace): DrawnTrace => ({ trial: trace.meta?.group?.trial, visible: trace.visible, width: trace.line.width })));
+  (node as unknown as { data: { meta?: { group?: { trial?: string } }; visible?: unknown; line?: { width?: number } }[] })
+    .data.map((trace): DrawnTrace => ({ trial: trace.meta?.group?.trial, visible: trace.visible ?? true, width: trace.line?.width ?? 2 })));
 
 const shownTrials = async (plot: Locator) => (await drawnTraces(plot)).filter(({ visible }) => visible === true).map(({ trial }) => trial);
 
@@ -153,11 +158,11 @@ test('with the Scene pinned on an Evaluate and its Analyze selected, scrubbing m
 
   const top = await plot.evaluate((node, x) => {
     const gd = node as unknown as {
-      data: { x: number[]; y: number[]; meta: { group: { trial: string } } }[];
+      _fullData: { x: ArrayLike<number>; y: ArrayLike<number>; meta: { group: { trial: string } } }[];
       _fullLayout: Record<'xaxis' | 'yaxis', { _offset: number; l2p(value: number): number }>;
     };
-    const at = gd.data[0].x.findIndex((time) => time >= x);
-    const highest = gd.data.reduce((best, trace) => trace.y[at] > best.y[at] ? trace : best);
+    const at = Array.from(gd._fullData[0].x).findIndex((time) => time >= x);
+    const highest = gd._fullData.reduce((best, trace) => trace.y[at] > best.y[at] ? trace : best);
     const box = node.getBoundingClientRect();
     const { xaxis, yaxis } = gd._fullLayout;
     return { trial: highest.meta.group.trial, x: box.left + xaxis._offset + xaxis.l2p(highest.x[at]), y: box.top + yaxis._offset + yaxis.l2p(highest.y[at]) };
@@ -173,7 +178,7 @@ test('with the Scene pinned on an Evaluate and its Analyze selected, scrubbing m
     await route.fulfill({ json: product });
   });
   await page.reload();
-  const untimed = await showFigure(page);
+  const untimed = await drawnFigure(page);
   await expect(untimed.locator('svg.main-svg').first()).toBeVisible();
   await expect(playhead).toHaveCount(0);
 });

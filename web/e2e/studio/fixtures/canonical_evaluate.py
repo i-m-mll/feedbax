@@ -95,9 +95,16 @@ def seed_eight_trials(home: str, project_id: str):
 
 
 def seed_sixty_four_trials(home: str, project_id: str):
-    """The evaluation project whose baseline records 64 trials sampled from the task."""
+    """The evaluation project with a task of 64 validation trials, each target moved a little, which the baseline records."""
     raw = _evaluation_project()
-    raw["steps"]["baseline"]["base"]["inline"]["params"]["trial_set"] = {"kind": "sample", "count": 64}
+    task = raw["documents"]["task"]["payload"]
+    trials = task["validation_trials"]
+    task["validation_trials"] = [
+        deepcopy(trials[index % len(trials)]) | {"variables": trials[index % len(trials)]["variables"] | {
+            "target": [value + 0.001 * (index // len(trials)) for value in trials[index % len(trials)]["variables"]["target"]],
+        }}
+        for index in range(64)
+    ]
     return _seed(home, project_id, raw)
 
 
@@ -327,7 +334,7 @@ def observe(home: str, project: str, revision: str, trial_index: str):
 if __name__ == "__main__":
     action, *args = sys.argv[1:]
     print(json.dumps({
-        "seed": seed, "seed-eight-trials": seed_eight_trials, "seed-step-rename": seed_step_rename, "observe": observe, "walkthrough-files": walkthrough_files,
+        "seed": seed, "seed-eight-trials": seed_eight_trials, "seed-sixty-four-trials": seed_sixty_four_trials, "seed-step-rename": seed_step_rename, "observe": observe, "walkthrough-files": walkthrough_files,
         "series-files": series_files, "seed-series-variants": seed_series_variants,
         "scoped-series-files": scoped_series_files, "measured-subset-files": measured_subset_files,
         "grouped-subset-files": grouped_subset_files, "train-measures": train_measures,

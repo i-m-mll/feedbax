@@ -1,12 +1,11 @@
 import { createContext } from 'react';
 import type {
-  FigureLayoutMeta, FigureProduct, FigureRun, StudioSavedEvaluationRow, StudioSavedTrainKey, StudioSavedTrainRuns,
+  FigureLayoutMeta, FigureProduct, FigureRun, StudioSavedEvaluationRow, StudioSavedTrainRuns,
 } from '@/generated/studioContracts';
 
-/** The recorded run whose trials the clock shows. */
+/** The recorded run whose trials the clock shows: the job of the Evaluate result they were read from. */
 export interface ClockRun {
-  readonly key: StudioSavedTrainKey;
-  readonly request_id: string;
+  readonly job_id: string;
 }
 
 /**
@@ -29,24 +28,30 @@ export const FigureClockContext = createContext<{
   readonly declare?: (runs: FigureLayoutMeta['runs'] | undefined) => void;
 }>({});
 
-const sameKey = (a: StudioSavedTrainKey, b: StudioSavedTrainKey) => a.step === b.step && a.variant === b.variant && a.row === b.row;
+const jobs = (runs: FigureLayoutMeta['runs']) => new Set(Object.values(runs).flat().map(({ job_id }: FigureRun) => job_id));
 
-/** The saved evaluation a figure's declared runs name, when they name exactly one. */
+/**
+ * The saved evaluation whose current or previous result a figure's declared runs read, when they read exactly one; aliases
+ * that project the same job are one evaluation.
+ */
 export function declaredEvaluation(projection: StudioSavedTrainRuns | undefined, runs: FigureLayoutMeta['runs'] | undefined) {
   if (!runs) return undefined;
-  const declared = Object.values(runs).flat();
-  const named = projection?.window_map?.evaluations?.filter(({ key }) => declared.some((run) => sameKey(run.key, key))) ?? [];
-  return named.length === 1 ? named[0] : undefined;
+  const declared = jobs(runs);
+  const named = projection?.window_map?.evaluations?.filter(({ result, previous }) =>
+    !!result && declared.has(result.job_id) || !!previous && declared.has(previous.job_id)) ?? [];
+  const byJob = new Map(named.map((row) => [(row.result ?? row.previous)!.job_id, row]));
+  return byJob.size === 1 ? named[0] : undefined;
 }
 
-/** The clock's run for a saved evaluation. */
-export const clockRun = (evaluation: StudioSavedEvaluationRow | undefined): ClockRun | undefined =>
-  evaluation && { key: evaluation.key, request_id: evaluation.request_id };
+/** The clock's run for a saved evaluation: the job of the result its trials are drawn from. */
+export const clockRun = (evaluation: StudioSavedEvaluationRow | undefined): ClockRun | undefined => {
+  const result = evaluation?.result ?? evaluation?.previous;
+  return result ? { job_id: result.job_id } : undefined;
+};
 
 /** Whether the clock shows trials of a run `figure` declares, whose trials it may then mark. */
-export const marksTrials = (figure: FigureProduct, clock: FigureClock | undefined) => !!clock?.run &&
-  Object.values(figure.layout.meta.runs).flat().some((declared: FigureRun) =>
-    declared.request_id === clock.run!.request_id && sameKey(declared.key, clock.run!.key));
+export const marksTrials = (figure: FigureProduct, clock: FigureClock | undefined) =>
+  !!clock?.run && jobs(figure.layout.meta.runs).has(clock.run.job_id);
 
 /** A panel the playhead is drawn in: one whose x is the clock's time, measured from the clock's epoch. */
 export interface TimePanel {
