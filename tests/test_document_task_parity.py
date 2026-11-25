@@ -37,7 +37,8 @@ from feedbax.objectives.document import (
     Reduction,
     compile_objective,
 )
-from feedbax.contracts.task_document import VALUE_TYPES, Length, Rest
+from feedbax.contracts.task_document import VALUE_TYPES, Length, Rest, Until
+from feedbax.contracts.time_units import TimeValue
 from feedbax.contracts.window import Window, WindowEpoch
 from feedbax.tasks.document import (
     Cell,
@@ -994,3 +995,35 @@ def test_wrong_list_count_marks_the_cell_that_uses_the_repeat_index(functions):
     assert [(error.code, error.path) for error in result] == [
         ("list_count", ("signals", "target", "cells", "reach-target", "value"))
     ]
+
+
+
+def test_until_signal_window_refuses_only_runtime_boundaries(functions):
+    def task(window_epoch):
+        return TaskDocument(
+            id="window",
+            variables=(),
+            epochs=(
+                Epoch(id="start", name="start", end=Length(length=expression("2 st"))),
+                Epoch(id="reach", name="reach", end=Until(
+                    condition=expression("true"), limit=TimeValue(value=4, unit="st"),
+                )),
+            ),
+            signals=(Signal(
+                id="gate", name="gate", type=BOOLEAN,
+                cells=(Cell(id="always", first_epoch="start", last_epoch="reach", value=expression("true")),),
+                window=Window(spans=(WindowEpoch(kind="epoch", epoch=window_epoch),)),
+            ),),
+        )
+
+    supported = compile_task(task("start"), functions, model=PORTLESS)
+    assert isinstance(supported, DocumentTask), supported
+    key = jr.key(0)
+    record = supported.ahead(TaskParameters(), key, key)
+    np.testing.assert_array_equal(record.present["gate"], [True, True, False, False, False, False])
+
+    refused = compile_task(task("reach"), functions, model=PORTLESS)
+    assert isinstance(refused, tuple)
+    (problem,) = refused
+    assert problem.path == ("signals", "gate", "window")
+    assert "only known after Until" in problem.reason

@@ -1,5 +1,5 @@
 import { PanelBottomOpen, Pause, Play, Repeat, RotateCcw, StepBack, StepForward, type LucideIcon } from 'lucide-react';
-import { useRef, useState, type ReactNode } from 'react';
+import { useRef, useState } from 'react';
 import { studioName, studioUnit, type StudioNameId } from '@/components/activity/studioVocabulary';
 import { SPEED_OPTIONS, usePlaybackTransport } from '@/components/viewer/usePlaybackTransport';
 import { IconButton } from '@/components/ui/Button';
@@ -33,10 +33,9 @@ const seconds = (value: number) => `${value.toFixed(2)} ${studioUnit('second')}`
 /**
  * The bottom bar's clock, on two lines. The upper holds the scrubber, with the shown trial's epochs as bands, and the
  * readout; the scrubber's track is the extent the shelf's time axis spans. The lower holds the trial picker and how
- * its trials are shown (One, All, Mean, with Mean's By and Align), the transport, Loop and Speed, and the shelf's switch.
+ * its trials are shown, the transport, Loop and Speed, and the shelf's switch.
  */
-export function ClockGroup({ timeline, time, onTimeChange, axis, shelfOpen, onShelfChange, showing, ...picker }: TrialPickerProps & {
-  readonly showing?: ReactNode;
+export function ClockGroup({ timeline, time, onTimeChange, axis, shelfOpen, onShelfChange, ...picker }: TrialPickerProps & {
   readonly timeline: ClockTimeline;
   readonly time: number;
   readonly onTimeChange: (time: number) => void;
@@ -67,7 +66,6 @@ export function ClockGroup({ timeline, time, onTimeChange, axis, shelfOpen, onSh
     </div>
     <div className="studio-clock__controls">
       <TrialPicker {...picker} />
-      {showing}
       <div className="flex shrink-0 items-center">
         <ClockButton name="restart" icon={RotateCcw} disabled={still} onClick={() => transport.seek(start)} />
         <ClockButton name="previousFrame" icon={StepBack} disabled={still} onClick={() => transport.step(-1)} />

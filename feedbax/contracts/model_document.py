@@ -52,7 +52,10 @@ class InterventionAttachment(StrictModel):
     kind: Literal["intervention"]
     id: ModelElementId
     operation: str
-    fields: dict[str, JsonValue] = Field(default_factory=dict)
+    fields: dict[str, JsonValue] = Field(
+        default_factory=dict,
+        description="Operation values are numbers, numeric arrays, or NameValue references to a Task variable or local Model output.",
+    )
     window: Window | None = None
 
 

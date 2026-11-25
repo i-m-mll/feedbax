@@ -1,4 +1,4 @@
-"""Resolve Selectors on the trial's post-step sample axis."""
+"""Resolve windows on the trial's post-step sample axis."""
 
 from dataclasses import dataclass
 from typing import NamedTuple
@@ -8,15 +8,14 @@ import jax.numpy as jnp
 
 from feedbax.contracts.expression_check import references
 from feedbax.contracts.expression_registry import FunctionRegistry
-from feedbax.contracts.expression_values import (
-    TIME, Level, NodePath, Problem, ProblemCode, ScopedValue, Site, ValueBase, ValueType,
-)
+from feedbax.contracts.expression_values import NodePath, Problem, ProblemCode, ScopedValue
 from feedbax.contracts.time_units import TimeValue, time_steps
 from feedbax.contracts.window import (
     Window, WindowEpoch, WindowEpochAnchor, WindowInterval, WindowMoment, WindowOffset,
-    WindowPosition, WindowRelativePosition,
+    WindowPosition, WindowRelativePosition, window_offset_site,
 )
 from feedbax.expression_compile import Compiled, Inputs, compile_expression
+from feedbax.runtime.timing import runtime_time_steps
 
 
 class EpochRecord(NamedTuple):
@@ -57,8 +56,8 @@ def _shift(offset: int | Compiled, inputs: Inputs, period: float):
     inputs = inputs._replace(parameters=offset.parameters)
     state = offset.with_trial(inputs, offset.evaluate_run(inputs))
     result, _ = offset.evaluate_step(inputs, state)
-    steps = jnp.rint(result.value / period)
-    return steps, result.defined & jnp.isfinite(steps)
+    steps = runtime_time_steps(result.value, period)
+    return steps, result.defined & jnp.isfinite(result.value)
 
 
 @dataclass(frozen=True)
@@ -79,6 +78,25 @@ class CompiledWindow:
     spans: tuple[tuple[int, ...] | _Interval | _Moment, ...]
     period: float
     references: frozenset[str]
+
+    def reads_runtime_epoch(self, first_until: int) -> bool:
+        """Whether an ahead-of-rollout mask needs a boundary known only after Until."""
+        def uncertain(boundary: _Boundary, *, sample=False):
+            if boundary.indices is None:
+                return False
+            last = max(boundary.indices, default=-1)
+            return last > first_until or last == first_until and (sample or boundary.edge == "end")
+
+        for span in self.spans:
+            if isinstance(span, tuple):
+                if max(span, default=-1) >= first_until:
+                    return True
+            elif isinstance(span, _Moment):
+                if uncertain(span.at, sample=True):
+                    return True
+            elif uncertain(span.start) or isinstance(span.end, _Boundary) and uncertain(span.end):
+                return True
+        return False
 
     def mask(self, record: EpochRecord, n_steps: int, inputs: Inputs) -> jax.Array:
         steps = jnp.arange(n_steps)
@@ -118,9 +136,7 @@ def compile_window(
     problems: list[Problem] = []
     used: set[str] = set()
     spans = []
-    site = Site(
-        expected=ValueType(base=ValueBase.REAL, dimensions=TIME), finest=Level.TRIAL, names=names,
-    )
+    site = window_offset_site(names)
 
     def occurrences(epoch: WindowEpoch, at: NodePath) -> tuple[int, ...]:
         found = tuple(index for index, id in enumerate(epochs) if id == epoch.epoch)
@@ -165,7 +181,7 @@ def compile_window(
         )
 
     for index, span in enumerate(window.spans):
-        at = (*path, "spans", index)
+        at = (*path, "spans", str(index))
         if isinstance(span, WindowEpoch):
             spans.append(occurrences(span, at))
         elif isinstance(span, WindowMoment):
