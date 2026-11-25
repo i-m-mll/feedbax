@@ -169,6 +169,7 @@ class JobsSnapshot(TypedDict):
     oldest_cursor: int
     jobs: list[JsonObject]
     records: NotRequired[dict[str, JsonObject]]
+    attempt_addresses: NotRequired[dict[str, list[str]]]
     terminal_train_receipts: NotRequired[dict[str, JsonObject]]
     checkpoint_differences: NotRequired[dict[str, JsonObject]]
     checkpoint_producers: NotRequired[dict[str, str]]
