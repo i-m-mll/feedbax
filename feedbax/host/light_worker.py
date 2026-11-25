@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import ExitStack
 from dataclasses import asdict
 from functools import lru_cache
@@ -26,6 +27,7 @@ from feedbax.contracts.request_specs import (
 )
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.studio_figure import FigureRun
+from feedbax.contracts.trial_clock import TrialMeanSelection
 from feedbax.dataset import Dataset
 from feedbax.contracts.member_stack import labelled_members
 from feedbax.dataset_sweep import dataset_entries, stack_dataset_members
@@ -46,6 +48,7 @@ from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.dataset import open_stored_dataset, publish_dataset
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.plot.dataset_figure import render as render_figure
+from feedbax.plot.figure_trial_clock import FigureRecordedDataset
 
 if TYPE_CHECKING:
     from feedbax.analysis.operations import RegisteredOperation
@@ -105,6 +108,67 @@ def _dataset_inputs(
     return datasets
 
 
+def _recorded_figure_trials(
+    success: SuccessView, roles: set[str], bindings: Bindings, stack: ExitStack,
+) -> dict[str, list[FigureRecordedDataset]]:
+    """Find the exact source clocks, retaining the member keys of stacked Analyze inputs."""
+    opened: dict[str, Dataset] = {}
+
+    def recorded(member: BoundMember, keys: frozenset[str]) -> Iterator[tuple[str, frozenset[str]]]:
+        ref = dataset_member(member)
+        digest = ref.content.sha256
+        dataset = opened.get(digest)
+        if dataset is None:
+            dataset = stack.enter_context(open_stored_dataset(success.store, ref))
+            opened[digest] = dataset
+        keys = keys | {member.key}
+        descriptor = dataset.descriptor
+        if "trial_record" in descriptor.attrs and "epoch_start" in descriptor.variables:
+            yield digest, keys
+        elif member.selection is not None:
+            producer = success.read_receipt(member.selection.receipt)
+            for members in producer.inputs.values():
+                for parent in members:
+                    if parent.content.media_type == DATASET_MEDIA_TYPE:
+                        yield from recorded(parent, keys)
+
+    sources = {}
+    for role in roles:
+        by_digest: dict[str, frozenset[str]] = {}
+        for member in bindings[role]:
+            for digest, keys in recorded(member, frozenset()):
+                by_digest[digest] = by_digest.get(digest, frozenset()) | keys
+        sources[role] = [FigureRecordedDataset(opened[digest], keys) for digest, keys in by_digest.items()]
+    return sources
+
+
+def render_saved_figure(
+    store: ImmutableArtifactBlobProvider,
+    request: DecodedRequest,
+    bindings: Bindings,
+    *,
+    mean: TrialMeanSelection | None = None,
+) -> bytes:
+    """Draw directly from exact bound datasets, with no publication or job submission."""
+    spec = request.spec
+    if not isinstance(spec, RenderRequestSpec):
+        raise ValueError("Expected a saved figure request.")
+    with ExitStack() as stack:
+        datasets = _dataset_inputs(store, request, bindings, stack)
+        success = SuccessView(store)
+        recorded = None
+        if mean is not None:
+            roles = {layer.role for layer in spec.document.layers if "trial" in layer.group}
+            recorded = _recorded_figure_trials(success, roles, bindings, stack)
+        figure = render_figure(
+            spec.document, datasets, names=spec.names, mean=mean, recorded_trials=recorded,
+            runs=figure_source_runs(success, bindings),
+        )
+        document = figure.to_json()
+        assert document is not None
+        return document.encode()
+
+
 def _retain_staged_object(
     store: ImmutableArtifactBlobProvider, content: ContentRef, attempt: str
 ) -> None:
@@ -118,32 +182,29 @@ def _retain_staged_object(
 
 
 def figure_source_runs(
-    store: ImmutableArtifactBlobProvider, spec: RenderRequestSpec, bindings: Bindings,
+    view: SuccessView, bindings: Bindings,
 ) -> dict[str, tuple[FigureRun, ...]]:
-    """Verify the planned role origins against the actual saved input receipts."""
-    if not spec.source_runs:
-        return {}
-    if spec.source_runs.keys() != bindings.keys():
-        raise ValueError("Figure source runs must cover each bound dataset role.")
-    view = SuccessView(store)
-    producers: dict[str, frozenset[str]] = {}
+    """Follow the figure's bound datasets to the runs that produced their source data."""
+    producers: dict[str, tuple[FigureRun, ...]] = {}
 
-    def lineage(member: BoundMember) -> frozenset[str]:
+    def lineage(member: BoundMember) -> tuple[FigureRun, ...]:
         if member.selection is None or member.content.media_type != DATASET_MEDIA_TYPE:
-            return frozenset()
+            return ()
         ref = member.selection.receipt
         if ref.sha256 not in producers:
             receipt = view.read_receipt(ref)
-            producers[ref.sha256] = frozenset((receipt.request.id,)).union(
-                *(lineage(parent) for group in receipt.inputs.values() for parent in group),
+            sources = tuple(
+                run for group in receipt.inputs.values() for parent in group for run in lineage(parent)
+            )
+            producers[ref.sha256] = sources or (
+                FigureRun(job_id=receipt.attempt, request_id=receipt.request.id),
             )
         return producers[ref.sha256]
 
-    for role, sources in spec.source_runs.items():
-        actual = frozenset().union(*(lineage(member) for member in bindings[role]))
-        if any(run.request_id not in actual for run in sources):
-            raise ValueError(f"Figure role {role!r} differs from its saved run lineage.")
-    return spec.source_runs
+    return {
+        role: tuple(sources.values()) for role, members in bindings.items()
+        if (sources := {run.job_id: run for member in members for run in lineage(member)})
+    }
 
 
 def _compute(
@@ -179,14 +240,7 @@ def _compute(
             name=role, content=content, descriptor={"descriptor_sha256": ref.descriptor_sha256}
         )
     if isinstance(spec, RenderRequestSpec):
-        with ExitStack() as stack:
-            figure = render_figure(
-                spec.document, _dataset_inputs(store, request, bindings, stack), names=spec.names,
-                runs=figure_source_runs(store, spec, bindings),
-            )
-            document = figure.to_json()
-            assert document is not None
-            raw = document.encode()
+        raw = render_saved_figure(store, request, bindings)
         with store._exclusive_lock():
             ref = store.store_object(raw)
             content = ContentRef(

@@ -1,4 +1,4 @@
-import { asApiRequestError, requestJson, sentBody } from '@/api/request';
+import { asApiRequestError, requestJson, requestResponse, sentBody } from '@/api/request';
 import {
   parseContract,
   type ContractTypeMap,
@@ -46,6 +46,25 @@ export async function listProjectFolders(signal?: AbortSignal) {
     return parseContract('StudioProjectList', await requestJson(projectsPath, { signal, cache: 'no-store' })).projects;
   } catch (error) {
     throw asApiRequestError(error, projectsPath);
+  }
+}
+
+export async function listProjectExamples(signal?: AbortSignal) {
+  const path = `${projectsPath}/examples`;
+  try {
+    return parseContract('StudioProjectExamples', await requestJson(path, { signal, cache: 'no-store' })).examples;
+  } catch (error) {
+    throw asApiRequestError(error, path);
+  }
+}
+
+/** Deletes the project folder of the listed `id`. */
+export async function deleteProjectFolder(id: string, signal?: AbortSignal) {
+  const path = projectPath(id);
+  try {
+    await requestResponse(path, { method: 'DELETE', signal });
+  } catch (error) {
+    throw asApiRequestError(error, path);
   }
 }
 
