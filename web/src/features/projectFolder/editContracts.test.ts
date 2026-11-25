@@ -25,7 +25,7 @@ const shapes: Record<string, Step> = {
   'a sweep without a subject axis': evaluate({ subject: [{ step: 'train', checkpoint: 'last' }, { step: 'train_b' }] },
     { axes: { mass: { path: 'payload.mass', values: [1, 2] } } }),
   'a where': evaluate({ subject: { step: 'train', checkpoint: 'last', where: {
-    axes: { seed: [{ id: '0', label: '0' }] },
+    clauses: [{ seed: [{ id: '0', label: '0' }] }],
   } } }, { axes: subjectAxis }),
   'a named subset': evaluate({ subject: [{ step: 'train', checkpoint: 'last', where: { subset: 'best' } }, { step: 'train_b' }] },
     { axes: subjectAxis }),
