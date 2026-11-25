@@ -9,7 +9,6 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, m
 from feedbax.contracts.figure_document import FigureDocument
 from feedbax.contracts.report_document import ReportDocument
 from feedbax.contracts.request_refs import Name
-from feedbax.contracts.studio_figure import FigureRun
 from feedbax.contracts.training import TrialDocuments as TrialDocuments
 from feedbax.plugins.declarations import validate_declaration_key
 
@@ -101,8 +100,6 @@ class RenderRequestSpec(RequestSpec):
     document: FigureDocument
     names: dict[Name, dict[Name, str]] = Field(default_factory=dict)
     """The printed name of each value ID of the step-valued labels the figure splits or selects by."""
-    source_runs: dict[Name, tuple[FigureRun, ...]] = Field(default_factory=dict)
-    """The project rows that supply each role's datasets, authenticated during rendering."""
 
 
 class ReportRequestSpec(RequestSpec):
