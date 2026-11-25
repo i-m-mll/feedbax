@@ -260,9 +260,11 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
         stale, stale_report = projection(edited)
         assert stale["align"]["result"] == elements["align"]["result"]
         assert {stale[name]["status"] for name in ("summarize", "profile")} == {stale_report["status"]} == {"stale"}
-        assert stale["summarize"]["changed"]["place"] == {"part": "analysis", "element": "summarize"}
+        assert stale["summarize"]["changed"]["place"] == {
+            "part": "analysis", "element": "summarize", "name": "summarize",
+        }
         assert "bounds_scale" in stale["summarize"]["changed"]["path"]
-        assert stale["profile"]["changed"]["place"] == {"part": "analysis", "element": "profile"}
+        assert stale["profile"]["changed"]["place"] == {"part": "analysis", "element": "profile", "name": "profile"}
         assert "inputs.summary" in stale["profile"]["changed"]["path"]
         assert stale_report["light"]["changed"]["place"] == {"part": "input", "role": "velocity_summary"}
         previous_url = stale["profile"]["previous"]["products"]["figure"]

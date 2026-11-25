@@ -1228,11 +1228,16 @@ def trial_authoring(
         objective_document = definition.document_ids.get(objective_path)
     task_source = None
     task_field_sources = {}
+    reset_model = documents.model
     if step.kind == "evaluate" and (upstream := evaluate_subject(definition)):
         producer = next((row for row in plan.rows if row.key == upstream[0]), None)
         if producer is not None:
             model_document = producer.document_ids.get("payload.trial_documents.model")
             objective_document = producer.document_ids.get(objective_path)
+        if model_document is not None:
+            authored_model = compose_document(project.documents.get, model_document)
+            if not isinstance(authored_model, ProjectDiagnostic):
+                reset_model = ModelDocument.model_validate(authored_model.payload)
         objective_source = StudioTrialObjectiveSource(kind="train", step=upstream[0].step)
         task_source = evaluate_value_source(upstream[1])
         for target, origin_path in projected.task_origins.items():
@@ -1307,7 +1312,7 @@ def trial_authoring(
         input_bindings=documents.input_bindings, inputs=_input_rows(documents, projected),
         outputs=[StudioTrialOutput(address=ModelAddress.from_text(value.id), value=value)
                  for value in paired.model.outputs] if paired else [],
-        resets=[StudioTrialReset(address=field.address, path=task_start_path(documents.model, field.address),
+        resets=[StudioTrialReset(address=field.address, path=task_start_path(reset_model, field.address),
                                  type=field.type, finest=field.finest, required=field.required)
                 for field in projected.resets],
         fields=fields, problems=[*projected.problems, *field_problems, *refused],
