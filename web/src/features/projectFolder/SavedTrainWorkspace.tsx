@@ -342,7 +342,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         const { archive, name } = await exportLoadedModel(current.project_id, {
           revision: current.revision, key: row.key, job_id: result.job_id, completed_updates: updates,
         }, editor.signal);
-        saveFile(archive, name);
+        await saveFile(archive, name);
       }, (reason) => ({ kind: 'runs', reasons: { [run.id]: reason } }));
     }, { subject: run.label, instance: run.id, enabled: !!updates });
   }
