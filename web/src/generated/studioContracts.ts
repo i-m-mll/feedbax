@@ -2341,6 +2341,7 @@ export interface TrialRecord {
   variable_defined: Record<string, JsonValue>;
   timeline: TaskTimelineCue[];
   terms?: Record<string, TrialTerm>;
+  intervention_windows?: Record<string, boolean[]>;
   states?: Record<string, TrialStateTrack>;
   configurations?: Record<string, JsonValue>;
   observations?: Record<string, JsonValue>;
@@ -2814,6 +2815,8 @@ export type AxisLabels = {
 export type AxisSelectionClause = Record<string, Array<SelectedAxisValue>>;
 
 export type AxisValue = {
+  "task_variables"?: Array<Variable>;
+  "task_links"?: Array<Link>;
   "patches"?: Record<string, PatchValue | null>;
   "label"?: string | null;
   "value"?: JsonValue;
@@ -3776,6 +3779,8 @@ export type RootDocument = {
 };
 
 export type Row = {
+  "task_variables"?: Array<Variable>;
+  "task_links"?: Array<Link>;
   "patches"?: Record<string, PatchValue | null>;
   "label"?: string | null;
   "value"?: JsonValue;
@@ -3859,8 +3864,19 @@ export type SetAxis = {
   "optional"?: boolean;
 };
 
+export type SetDocument = {
+  "entries": Record<string, SetEntry>;
+};
+
 export type SetDocumentValue = {
   "value": JsonValue;
+};
+
+export type SetEntry = {
+  "task_variables"?: Array<Variable>;
+  "task_links"?: Array<Link>;
+  "label"?: string | null;
+  "differences"?: Differences;
 };
 
 export type SetEntryParts = {
@@ -10064,6 +10080,7 @@ export const TrialRecordSchema: z.ZodType<TrialRecord> = z.lazy(() =>
       "variable_defined": z.record(z.string(), jsonValueSchema),
       "timeline": z.array(TaskTimelineCueSchema),
       "terms": z.record(z.string(), TrialTermSchema).optional(),
+      "intervention_windows": z.record(z.string(), z.array(z.boolean())).optional(),
       "states": z.record(z.string(), TrialStateTrackSchema).optional(),
       "configurations": z.record(z.string(), jsonValueSchema).optional(),
       "observations": z.record(z.string(), jsonValueSchema).optional(),
@@ -10814,6 +10831,8 @@ export const AxisSelectionClauseSchema: z.ZodType<AxisSelectionClause> = z.lazy(
 
 export const AxisValueSchema: z.ZodType<AxisValue> = z.lazy(() =>
   z.object({
+    "task_variables": z.array(VariableSchema).optional(),
+    "task_links": z.array(LinkSchema).optional(),
     "patches": z.record(SweepTargetSchema, z.union([PatchValueSchema, z.null()])).optional(),
     "label": z.union([z.string(), z.null()]).optional(),
     "value": jsonValueSchema.optional(),
@@ -12118,6 +12137,8 @@ export const RootDocumentSchema: z.ZodType<RootDocument> = z.lazy(() =>
 
 export const RowSchema: z.ZodType<Row> = z.lazy(() =>
   z.object({
+    "task_variables": z.array(VariableSchema).optional(),
+    "task_links": z.array(LinkSchema).optional(),
     "patches": z.record(SweepTargetSchema, z.union([PatchValueSchema, z.null()])).optional(),
     "label": z.union([z.string(), z.null()]).optional(),
     "value": jsonValueSchema.optional(),
@@ -12230,11 +12251,26 @@ export const SetAxisSchema: z.ZodType<SetAxis> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<SetAxis>;
 
+export const SetDocumentSchema: z.ZodType<SetDocument> = z.lazy(() =>
+  z.object({
+    "entries": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), SetEntrySchema),
+  }).strict()
+) as unknown as z.ZodType<SetDocument>;
+
 export const SetDocumentValueSchema: z.ZodType<SetDocumentValue> = z.lazy(() =>
   z.object({
     "value": jsonValueSchema,
   }).strict()
 ) as unknown as z.ZodType<SetDocumentValue>;
+
+export const SetEntrySchema: z.ZodType<SetEntry> = z.lazy(() =>
+  z.object({
+    "task_variables": z.array(VariableSchema).optional(),
+    "task_links": z.array(LinkSchema).optional(),
+    "label": z.union([z.string(), z.null()]).optional(),
+    "differences": DifferencesSchema.optional(),
+  }).strict()
+) as unknown as z.ZodType<SetEntry>;
 
 export const SetEntryPartsSchema: z.ZodType<SetEntryParts> = z.lazy(() =>
   z.object({
@@ -14266,6 +14302,8 @@ export const contractSchemas = {
   ValidityAcceptance: ValidityAcceptanceSchema,
   AnalysisDocument: AnalysisDocumentSchema,
   TaskDocument: TaskDocumentSchema,
+  SetDocument: SetDocumentSchema,
+  SetEntry: SetEntrySchema,
   PythonTaskSelection: PythonTaskSelectionSchema,
   ObjectiveDocument: ObjectiveDocumentSchema,
   Window: WindowSchema,
@@ -14450,6 +14488,8 @@ export interface ContractTypeMap {
   ValidityAcceptance: ValidityAcceptance;
   AnalysisDocument: AnalysisDocument;
   TaskDocument: TaskDocument;
+  SetDocument: SetDocument;
+  SetEntry: SetEntry;
   PythonTaskSelection: PythonTaskSelection;
   ObjectiveDocument: ObjectiveDocument;
   Window: Window;
