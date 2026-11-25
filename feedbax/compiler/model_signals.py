@@ -84,14 +84,16 @@ class ModelSignalTable:
 
     def connection_problem(
         self, scope: tuple[str, ...], source: SignalSource | None, target: SignalTarget,
-        provided: SignalType, required: SignalType,
+        provided: SignalType | ValueType, required: SignalType,
     ) -> str | None:
         """Compare a proposed source with the target's own claims before any wire it might replace."""
         offered = {} if source is None else {
             leaf.path: leaf._facts for leaf in self.at_port(_end_address(scope, source, "output"))
         }
         expected = self._claims.get(_end_address(scope, target, "input").to_text(), {(): _Facts.from_claim(required)})
-        for path, facts in (offered or {(): _Facts.from_claim(provided)}).items():
+        if not offered:
+            offered = {(): _Facts.from_value(provided) if isinstance(provided, ValueType) else _Facts.from_claim(provided)}
+        for path, facts in offered.items():
             if (claim := expected.get(path)) is not None and (reason := claim.conflict(facts)):
                 return f"Signal type does not fit: {reason}"
         return None

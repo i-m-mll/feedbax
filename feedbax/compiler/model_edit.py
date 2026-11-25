@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from feedbax.contracts import model_edit as edits
 from feedbax.contracts.acausal import EquationsDomain
+from feedbax.contracts.expression_values import ValueType
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_attachment import AddModelAttachment, ChangeModelAttachment, ModelAttachmentDifference
 from feedbax.contracts.model_document import (
@@ -1188,6 +1189,7 @@ def review_model_connections(
     next_input: Callable[[Record], tuple[str, str, int] | None],
     library: tuple[Record, ...] = (),
     task_signal: edits.ModelTaskSignal | None = None,
+    task_type: ValueType | None = None,
     signals: ModelSignalTable | None = None,
 ) -> edits.ModelConnectionReview:
     from feedbax.compiler.model_signals import ModelSignalTable
@@ -1235,7 +1237,7 @@ def review_model_connections(
         problem = table.connection_problem(
             address.composites,
             review.source if not (grow_source or isinstance(review.source, edits.TaskSignalSource)) else None,
-            verdict.target, offered.type, required.type,
+            verdict.target, task_type or offered.type, required.type,
         )
         return verdict.model_copy(update={"problem": problem})
 

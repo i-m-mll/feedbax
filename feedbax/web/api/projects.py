@@ -351,9 +351,9 @@ def replay_project(
 def review_model_connections(
     project_id: ProjectName, body: ModelConnectionReviewRequest, request: Request, response: Response,
 ) -> ModelConnectionReview:
-    components = request.app.state.bootstrap_state.bundle.components
+    bundle = request.app.state.bootstrap_state.bundle
     return _project_response(
-        response, lambda: request.app.state.project_folders.review_model_connections(project_id, body, components)
+        response, lambda: request.app.state.project_folders.review_model_connections(project_id, body, bundle)
     )
 
 
