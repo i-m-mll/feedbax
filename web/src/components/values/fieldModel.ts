@@ -110,6 +110,8 @@ export interface FieldModel {
   readonly parts?: readonly FieldModel[];
   /** The sweep may be turned into its listed values. */
   readonly canList?: boolean;
+  /** The value in the other time unit under the Model's Step, as `30 st` beside `0.3 s`. */
+  readonly paired?: string;
   /** Where the value comes from, when that is not a change. */
   readonly origin?: string;
   /** The value differs from what it inherits, or the selected runs hold another than the document's. */

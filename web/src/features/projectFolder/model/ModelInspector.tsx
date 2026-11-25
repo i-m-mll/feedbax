@@ -55,7 +55,7 @@ export function componentFields(component: Component, definition: ComponentDefin
   }
   const values = { ...definition?.default_params, ...component.fields };
   return (definition?.param_schema ?? [])
-    .filter(({ name }) => name !== 'dt' && name !== 'control_dt' && !projected?.has(name))
+    .filter(({ name }) => !projected?.has(name))
     .map((schema) => fromParamSchema(schema, values[schema.name] as JsonValue | undefined,
       change && ((value) => change(['fields', schema.name], value))));
 }

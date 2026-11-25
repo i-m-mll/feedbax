@@ -187,3 +187,29 @@ test('renaming a signal in the grid keeps the Model input it feeds', async ({ pa
   await expect(inputs.filter({ hasText: /^aim$/ })).toHaveCount(1);
   await expect(inputs.filter({ hasText: /^target_pos$/ })).toHaveCount(0);
 });
+
+// Catches a time field that shows only its authored unit, a paired value left from the old Step after Step changes, and
+// a length that rounds to no step taken without its Problem.
+test('an End reads in both units, re-reads when Step changes, and refuses a length that rounds to no step', async ({ page, request }) => {
+  const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  const primary = page.locator('[data-slot="primary"]');
+  const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
+  const end = primary.getByRole('tabpanel').getByRole('table', { name: 'Epochs', exact: true })
+    .getByRole('group', { name: 'End field', exact: true });
+  const shown = end.locator('[data-field-box]');
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Task', exact: true }).click();
+  await expect(shown).toHaveText('80 st · 0.8 s');
+  await enter(end.getByRole('textbox', { name: 'End', exact: true }), '0.07 s');
+  await expect(shown).toHaveText('0.07 s · 7 st');
+
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  await enter(inspector.getByRole('textbox', { name: 'Step', exact: true }), '0.02 s');
+  await page.getByRole('tab', { name: 'Task', exact: true }).click();
+  await expect(shown).toHaveText('0.07 s · 4 st');
+
+  await enter(end.getByRole('textbox', { name: 'End', exact: true }), '0.004 s');
+  await expect(end.getByRole('textbox', { name: 'End', exact: true })).toHaveAttribute('aria-invalid', 'true');
+  await expect(end.locator('[data-field-after]')).toHaveCount(0);
+});
