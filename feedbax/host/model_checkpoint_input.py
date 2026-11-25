@@ -8,7 +8,7 @@ from uuid import uuid4
 from feedbax.contracts.artifact_custody import ContentLeaseRecord, ContentObjectRef, ContentRetentionTarget
 from feedbax.contracts.effective_success import (
     Bindings, BoundMember, CheckpointModelSourceEvidence, CheckpointPublicationSource, Product, RequestObject,
-    exact_model_checkpoint_input,
+    ExcludedInputs, ExcludedProduct, exact_model_checkpoint_input, excluded_inputs,
 )
 from feedbax.contracts.request_refs import BatchMember, EffectiveBindingId, RequestId
 from feedbax.contracts.studio_training import PublishedTrainingCheckpoint
@@ -70,13 +70,17 @@ def retain_checkpoint_model(
 @contextmanager
 def bind_managed_inputs(
     view: SuccessView, request: RequestObject, *,
-    origins: Mapping[RequestId, ContentObjectRef], checkpoint_bindings: Sequence[dict], project: str,
-) -> Iterator[tuple[EffectiveBindingId, Bindings]]:
-    exact = exact_model_checkpoint_input(view.read_request(request))
+    origins: Mapping[RequestId, ContentObjectRef | ExcludedProduct], checkpoint_bindings: Sequence[dict], project: str,
+) -> Iterator[tuple[EffectiveBindingId, Bindings, ExcludedInputs]]:
+    decoded = view.read_request(request)
+    exact = exact_model_checkpoint_input(decoded)
+    excluded = excluded_inputs(decoded, origins)
+    chosen = {key: origin for key, origin in origins.items() if isinstance(origin, ContentObjectRef)}
     if exact is None:
         if checkpoint_bindings:
             raise ValueError("Unexpected Host checkpoint binding")
-        yield view.bind(request, origins=origins)
+        effective, bindings = view.bind(request, origins=chosen, excluded=excluded)
+        yield effective, bindings, excluded
         return
     if len(checkpoint_bindings) != 1:
         raise ValueError("Analyze requires one exact Host checkpoint binding")
@@ -105,6 +109,7 @@ def bind_managed_inputs(
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         ))
     try:
-        yield view.bind(request, origins=origins, checkpoint_model=checkpoint_model)
+        effective, bindings = view.bind(request, origins=chosen, checkpoint_model=checkpoint_model, excluded=excluded)
+        yield effective, bindings, excluded
     finally:
         store.release_lease(lease.lease_id)

@@ -206,6 +206,8 @@ def publish_evaluate_success(
                 producer=producer, checkpoints=tuple(checkpoints), closure=closure,
                 terminal_receipt=terminal_receipt, terminal_checkpoint=terminal_checkpoint,
                 ranked_candidates=tuple(ranked_candidates),
+                metric_producer=ContentObjectRef.model_validate(binding["metric_producer"])
+                if terminal_checkpoint is None and "metric_producer" in binding else None,
             ),
         )
         result = view.publish_bound(

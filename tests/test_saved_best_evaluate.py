@@ -59,9 +59,9 @@ def test_best_plan_identity_changes_with_candidates_and_refuses_unsupported_rule
     subject["where"]["rule"] += " per missing"
     refused = compile_project(Project.model_validate(raw))
     assert [item.path for item in refused.diagnostics] == ["inputs.subject.where.rule"]
-    subject["where"] = {"rule": "train_loss<1"}
+    subject["where"] = {"rule": "highest 1 missing_metric"}
     [refused] = compile_project(Project.model_validate(raw)).diagnostics
-    assert refused.path == "inputs.subject.where.rule" and "train_loss<1" in refused.detail
+    assert refused.path == "inputs.subject.where.rule" and "missing_metric" in refused.detail
 
 
 def test_saved_best_binds_and_freezes_ordered_ranks(host, tmp_path, monkeypatch):

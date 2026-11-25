@@ -17,6 +17,7 @@ from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET
 from feedbax.contracts.effective_success import (
     INDEX_REF,
     Bindings,
+    ExcludedInputs,
     BoundMember,
     Products,
     RequestObject,
@@ -34,10 +35,12 @@ from feedbax.contracts.request_identity import (
     DecodedRequest,
     EncodedRequest,
     effective_binding_id,
+    retained_request_inputs,
 )
 from feedbax.contracts.model_input import DOCUMENT_INPUT_MEDIA_TYPES, decode_document_input, document_input_object
 from feedbax.contracts.request_refs import (
     BestRank,
+    ConditionalProduct,
     ContentRef,
     EffectiveBindingId,
     InputMember,
@@ -162,7 +165,13 @@ class SuccessView:
         if origin is None:
             raise ValueError(f"Producer success is unavailable for {member.key!r}")
         producer = self.read_receipt(origin)
-        read_effective_request(producer, self.store.get_object)
+        if isinstance(reference, ConditionalProduct):
+            from feedbax.persistence.train_metrics import passes_final_metric_condition
+
+            if not passes_final_metric_condition(self.store, producer, reference):
+                raise ValueError("The producer's final metrics do not meet the rule")
+        else:
+            read_effective_request(producer, self.store.get_object)
         product, occurrence = select_bound_product(request, reference, producer)
         verify_success_content(self.store, product)
         return BoundMember(
@@ -191,9 +200,10 @@ class SuccessView:
 
     def bind(
         self, request: RequestObject, *, origins: Mapping[RequestId, ContentObjectRef] | None = None,
-        checkpoint_model: BoundMember | None = None,
+        checkpoint_model: BoundMember | None = None, excluded: ExcludedInputs | None = None,
     ) -> tuple[EffectiveBindingId, Bindings]:
         decoded = self.read_request(request)
+        retained = self.retained_inputs(decoded, excluded or {})
         checkpoint = exact_model_checkpoint_input(decoded)
         if (checkpoint is None) != (checkpoint_model is None):
             raise ValueError("Analyze requires the exact Host checkpoint binding")
@@ -205,7 +215,7 @@ class SuccessView:
         else:
             expected = {
                 member.reference.request_id
-                for members in decoded.inputs.values()
+                for members in retained.values()
                 for member in members
                 if member != model_member and isinstance(member.reference, ProductRef)
             }
@@ -221,14 +231,14 @@ class SuccessView:
                 )
                 for member in members
             )
-            for role, members in decoded.inputs.items()
+            for role, members in retained.items()
         }
-        return effective_binding_id(decoded, inputs), inputs
+        return effective_binding_id(decoded, inputs, excluded=excluded), inputs
 
     def read_success(self, receipt_ref: ContentObjectRef) -> PublishedSuccess:
         receipt = self.read_receipt(receipt_ref)
         decoded = read_effective_request(receipt, self.store.get_object)
-        self._verify_inputs(decoded, receipt.inputs)
+        self._verify_inputs(decoded, receipt.inputs, receipt.excluded)
         if receipt.evaluation_manifest is not None:
             verify_evaluation_success_evidence(self.store, receipt)
         for products in receipt.products.values():
@@ -240,15 +250,36 @@ class SuccessView:
                 self.store.verify_object(slot_ref)
         return PublishedSuccess(receipt_ref, receipt)
 
-    def verify_bindings(self, request: RequestObject, bindings: Bindings) -> EffectiveBindingId:
+    def verify_bindings(
+        self, request: RequestObject, bindings: Bindings, *, excluded: ExcludedInputs | None = None,
+    ) -> EffectiveBindingId:
         """Authenticate a frozen binding without consulting current producer aliases."""
         decoded = self.read_request(request)
-        effective = effective_binding_id(decoded, bindings)
-        self._verify_inputs(decoded, bindings)
+        effective = effective_binding_id(decoded, bindings, excluded=excluded)
+        self._verify_inputs(decoded, bindings, excluded or {})
         return effective
 
-    def _verify_inputs(self, decoded: DecodedRequest, bindings: Bindings) -> None:
+    def retained_inputs(self, decoded: DecodedRequest, excluded: ExcludedInputs) -> RequestInputs:
+        if not excluded:
+            return decoded.inputs
+
+        from feedbax.persistence.metric_exclusion import exclusion_objects
+
+        if decoded.kind not in {"analyze", "render", "report"}:
+            raise ValueError("Only a gathered input can omit an excluded producer")
+        retained = retained_request_inputs(decoded, excluded)
+        if not all(retained.values()):
+            raise ValueError("A successful gather requires a chosen member for each input")
         for role, members in decoded.inputs.items():
+            for member in members:
+                if (proof := excluded.get(role, {}).get(member.key)) is not None:
+                    assert isinstance(member.reference, ProductRef)
+                    for ref in exclusion_objects(self.store, proof, member.reference.request_id):
+                        require_sound(self.store, ref)
+        return retained
+
+    def _verify_inputs(self, decoded: DecodedRequest, bindings: Bindings, excluded: ExcludedInputs) -> None:
+        for role, members in self.retained_inputs(decoded, excluded).items():
             for member, bound in zip(members, bindings[role], strict=True):
                 self._verify_bound(decoded, member, bound)
 
@@ -425,13 +456,13 @@ class SuccessView:
         evaluation_manifest: ContentObjectRef | None = None,
         provider: DistributionSource | None = None,
         target: AttemptTarget = LOCAL_TARGET,
-        execution_evidence: ContentObjectRef | None = None,
+        execution_evidence: ContentObjectRef | None = None, excluded: ExcludedInputs | None = None,
     ) -> PublishedSuccess:
         """Commit an accepted attempt using its pinned bindings, including on replay."""
         return self._publish(
             request, attempt, products, bindings=bindings, continuation=continuation, recovery=recovery,
             evaluation_manifest=evaluation_manifest, provider=provider, target=target,
-            execution_evidence=execution_evidence,
+            execution_evidence=execution_evidence, excluded=excluded,
         )
 
     def _publish(
@@ -441,10 +472,11 @@ class SuccessView:
         evaluation_manifest: ContentObjectRef | None = None,
         provider: DistributionSource | None = None,
         target: AttemptTarget = LOCAL_TARGET,
-        execution_evidence: ContentObjectRef | None = None,
+        execution_evidence: ContentObjectRef | None = None, excluded: ExcludedInputs | None = None,
     ) -> PublishedSuccess:
         from feedbax.persistence.evidence import read_staged_evidence, release_staged_evidence, verify_execution_replay
 
+        exclusions = excluded or {}
         with self.store._exclusive_lock():
             if existing := self._index.attempts.get(attempt):
                 if bindings is None:
@@ -453,8 +485,8 @@ class SuccessView:
                 if (
                     published.receipt.request, published.receipt.products, published.receipt.inputs,
                     published.receipt.continuation, published.receipt.recovery, published.receipt.evaluation_manifest,
-                    published.receipt.provider, published.receipt.target,
-                ) != (request, products, bindings, continuation, recovery, evaluation_manifest, provider, target):
+                    published.receipt.provider, published.receipt.target, published.receipt.excluded,
+                ) != (request, products, bindings, continuation, recovery, evaluation_manifest, provider, target, exclusions):
                     raise ValueError("Published attempt has different request, bindings, or products")
                 verify_execution_replay(published.receipt, execution_evidence)
                 self.ensure_published_run_ref(existing, published.receipt)
@@ -465,7 +497,7 @@ class SuccessView:
             if bindings is None:
                 effective, inputs = self.bind(request)
             else:
-                effective = self.verify_bindings(request, bindings)
+                effective = self.verify_bindings(request, bindings, excluded=exclusions)
                 inputs = bindings
             previous = self._index.authored.get(request.id)
             if previous is not None:
@@ -484,6 +516,7 @@ class SuccessView:
                 target=target,
                 effective=effective,
                 inputs=inputs,
+                excluded=exclusions,
                 products=products,
                 supersedes=previous,
                 continuation=continuation,

@@ -71,8 +71,8 @@ from feedbax.planner.project_plan import (
 )
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.receipt_validity import CodeDifference, InputDifference, ReceiptValidity, ValidityJudgement
-from feedbax.contracts.effective_success import EvaluationSubjectValue, TerminalTrainSubject
-from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestCandidate, BestRank, ContentRef, LastMember, ProductRef, RequestId, UpdateSeriesMember
+from feedbax.contracts.effective_success import EvaluationSubjectValue, ExcludedProduct, MetricExclusion, TerminalTrainSubject
+from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestCandidate, BestRank, ConditionalProduct, ContentRef, LastMember, ProductRef, RequestId, UpdateSeriesMember
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
 from feedbax.contracts.rollout import RolloutParameters
 from feedbax.contracts.validation_placement import ValidationPlacement
@@ -859,6 +859,7 @@ class JobService(PlanJobReader):
         if encoded.id != node.request_id or encoded.data != raw:
             raise ValueError("The saved request bytes do not match the Plan identity.")
         parents = {}
+        excluded = {}
         for role, bindings in planned_input_groups(node).items():
             for binding in bindings:
                 reference = binding.member.reference
@@ -873,7 +874,9 @@ class JobService(PlanJobReader):
                     anchors = cast(list[dict[str, Any]], self.host.jobs(project=project, request=reference.request_id))
                     anchor = next((job["id"] for job in reversed(anchors) if (
                         job["data"].get("manifest_root") == str(store.root)
-                        and (job["state"] in _LIVE_STATES or (job["state"] == "succeeded" and self._receipt_matches(job)))
+                        and (job["state"] in _LIVE_STATES | {"not_chosen"} or (
+                            job["state"] == "succeeded" and self._receipt_matches(job)
+                        ))
                     )), None)
                 else:
                     anchor = (
@@ -881,7 +884,13 @@ class JobService(PlanJobReader):
                         if candidate.job is not None and candidate.job.request == reference.request_id else None
                     )
                 if anchor is None:
-                    raise ValueError(f"/inputs/{role}: no admitted exact producer for {reference.request_id}.")
+                    absent = excluded.get(reference.request_id)
+                    if absent is None and not exact_checkpoint:
+                        absent = self._planned_metric_exclusion(plan, store, reference.request_id)
+                    if absent is None:
+                        raise ValueError(f"/inputs/{role}: no admitted exact producer for {reference.request_id}.")
+                    excluded[reference.request_id] = absent
+                    continue
                 parents.setdefault(reference.request_id, Edge(anchor, authenticated_completion=exact_checkpoint))
 
         name = plan_attempt_key(node.key)
@@ -890,7 +899,7 @@ class JobService(PlanJobReader):
             data["label"] = f"{data['label']} · {node.label or node.key.name}"
         store_document_inputs(store, decoded.inputs, plan.documents.__getitem__)
         payload = LightDelivery(
-            project_id=project, manifest_root=Path(store.root), request=store_request(store, encoded),
+            project_id=project, manifest_root=Path(store.root), request=store_request(store, encoded), excluded=excluded,
         )
         profile = self._light_worker
         slot = "light"
@@ -907,6 +916,36 @@ class JobService(PlanJobReader):
             edges=tuple(parents.values()),
             data=data | {"manifest_root": str(store.root), "runtime": launch.argv[0]},
         ))
+
+    @staticmethod
+    def _planned_metric_exclusion(
+        plan: ProjectPlan, store: ImmutableArtifactBlobProvider, request_id: RequestId,
+    ) -> ExcludedProduct | None:
+        """A settled false condition supplies evidence without an Evaluate attempt."""
+        from feedbax.persistence.effective_success import SuccessView, store_request
+        from feedbax.persistence.train_metrics import passes_final_metric_condition
+
+        raw = plan.requests.get(request_id)
+        if raw is None or not request_id.startswith(("train:", "evaluate:")):
+            return None
+        decoded = decode_request(raw, plan.documents.__getitem__)
+        conditions = [
+            member.reference for members in decoded.inputs.values() for member in members
+            if isinstance(member.reference, ConditionalProduct)
+        ]
+        if len(conditions) != 1:
+            return None
+        (condition,) = conditions
+        view = SuccessView(store)
+        held = view.authored(condition.request_id)
+        if held is None or passes_final_metric_condition(store, held.receipt, condition):
+            return None
+        encoded = encode_request(decoded.spec, decoded.inputs)
+        if encoded.id != request_id or encoded.data != raw:
+            raise ValueError("The excluded producer differs from the saved request.")
+        return ExcludedProduct(
+            request=store_request(store, encoded), cause=MetricExclusion(train=held.ref),
+        )
 
     def _evaluation_item(
         self, project: str, request_id: str, raw: bytes, data: dict[str, Any],
@@ -935,7 +974,10 @@ class JobService(PlanJobReader):
             ),
         )
         launch = replace(self._evaluation_worker, payload=payload.model_dump(mode="json", by_alias=True))
-        if isinstance(subject, ProductRef) and isinstance(subject.select, UpdateSeriesMember) and not params.variation:
+        if (
+            isinstance(subject, ProductRef) and not isinstance(subject, ConditionalProduct)
+            and isinstance(subject.select, UpdateSeriesMember) and not params.variation
+        ):
             qualification = self._live_validation_qualifications.get((subject.request_id, request_id))
             if qualification is not None:
                 data = data | {"validation_qualification": qualification.model_dump(mode="json")}
@@ -1932,12 +1974,15 @@ class JobService(PlanJobReader):
             (parent := attempts.get(edge.job_id)) is None or parent["state"] in _LIVE_STATES
             for edge in candidate.edges
         )
-        origins = {}
+        origins = {key: ExcludedProduct.model_validate(value)
+                   for key, value in candidate.launch.payload.get("excluded", {}).items()}
         for edge in parents:
             if (parent := attempts.get(edge.job_id)) is not None and parent["state"] == "reused":
                 parent = attempts.get(parent["outcome"]["retained_attempt"])
             if parent is not None and parent["state"] == "succeeded" and (ref := view.attempt_ref(parent["id"])) is not None:
                 origins[parent["request"]] = ref
+            elif parent is not None and parent["state"] == "not_chosen":
+                origins[parent["request"]] = ExcludedProduct.model_validate(parent["outcome"]["excluded_product"])
         for job in reversed(jobs):
             if job["state"] in _LIVE_STATES:
                 return None
@@ -1955,7 +2000,7 @@ class JobService(PlanJobReader):
             old_parents = {edge["job_id"] for edge in job["edges"] if not edge.get("authenticated_completion")}
             if (
                 terminal_receipt is None and old_parents != parent_ids
-                and (not _is_light_request(candidate.request) or len(origins) != len(parents))
+                and (not _is_light_request(candidate.request) or len(origins) < len(parents))
             ):
                 return None
             retained = view.read_receipt(ref)
@@ -2588,7 +2633,7 @@ def _job_status(
 ) -> tuple[JobStatus, str | None]:
     state = job["state"]
     outcome = job.get("outcome") or {}
-    reason = (outcome.get("error") or {}).get("message")
+    reason = outcome.get("reason") or (outcome.get("error") or {}).get("message")
     kind = job["request"].partition(":")[0]
     evaluate = kind == "evaluate"
     if state == "succeeded" and not receipt_intact:
@@ -2641,6 +2686,8 @@ def saved_request_status(
         return live.status, live.reason
     if attempts:
         latest = attempts[-1]
+        if latest.status is JobStatus.NOT_CHOSEN:
+            return latest.status, latest.reason
         if success is not None and latest.status is not JobStatus.CORRUPT:
             notice = None
             if latest != success:

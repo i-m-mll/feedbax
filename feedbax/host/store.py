@@ -12,11 +12,14 @@ from uuid import uuid4
 
 from feedbax.checkpoint_coordinates import finite_coordinates
 from feedbax.contracts.artifact_custody import ContentObjectRef
-from feedbax.contracts.effective_success import RequestObject, TerminalTrainSubject
+from feedbax.contracts.effective_success import (
+    EmptyInputExclusion, ExcludedProduct, LightOrigins, MetricExclusion, RequestObject, TerminalTrainSubject,
+    excluded_inputs,
+)
 from feedbax.contracts.execution_target import SessionTarget, attempt_target
 from feedbax.contracts.live_evaluate import LIVE_EVALUATE_POINT
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
-from feedbax.contracts.request_refs import BestRank, ContentRef, LastMember, ProductRef
+from feedbax.contracts.request_refs import BestRank, ConditionalProduct, ContentRef, LastMember, ProductRef
 from feedbax.contracts.validation_placement import ValidationPlacement
 from feedbax.host import live_evaluate
 from feedbax.persistence.best_selection import BestMetricUnavailable, completion_score, ranked_requests
@@ -112,7 +115,7 @@ INSERT OR IGNORE INTO policy VALUES ('compute', 4), ('light', 1);
 
 LIVE = "('queued','assigned','running','stopping')"
 ACTIVE = "('assigned','running','stopping')"
-TERMINAL = "('succeeded','reused','stopped','failed','interrupted','blocked')"
+TERMINAL = "('succeeded','reused','stopped','failed','interrupted','blocked','not_chosen')"
 
 JOB_ID = re.compile(r"[a-zA-Z0-9_-]{1,128}")
 TRAIN_REQUEST_ID = re.compile(r"train:[0-9a-f]{64}")
@@ -246,6 +249,13 @@ class Store:
             self.db.execute(
                 "UPDATE edges SET satisfied=1 WHERE parent=? AND publication='' AND NOT authenticated_completion",
                 (row["id"],),
+            )
+
+        elif outcome["outcome"] == "not_chosen":
+            self.db.execute(
+                """UPDATE edges SET satisfied=1 WHERE parent=? AND publication='' AND NOT authenticated_completion
+                   AND job IN (SELECT id FROM jobs WHERE json_extract(launch,'$.warm_entrypoint')=?)""",
+                (row["id"], LIGHT_ENTRYPOINT),
             )
 
     def ingest(self, row: sqlite3.Row, kind: str, data: dict) -> None:
@@ -608,17 +618,25 @@ class Store:
 
     @staticmethod
     def _light_request(launch: dict, project: str, request_id: str):
-        payload = launch["payload"]
-        root = Path(payload["manifest_root"])
-        request = RequestObject.model_validate(payload["request"])
+        from feedbax.host.light_jobs import LightDelivery
+        from feedbax.persistence.metric_exclusion import exclusion_objects
+
+        delivery = LightDelivery.model_validate(launch["payload"])
+        root, request = delivery.manifest_root, delivery.request
         if (
-            payload["project_id"] != project or request.id != request_id
+            delivery.project_id != project or request.id != request_id
             or not root.is_absolute() or root.resolve() != root
         ):
             raise ValueError("Light launch differs from its admitted project, Store or request.")
-        decoded = Store._success_view(root).read_request(request)
+        view = Store._success_view(root)
+        decoded = view.read_request(request)
         if decoded.kind not in ("analyze", "render", "report"):
             raise ValueError("Managed light jobs require an Analyze, Render or Report request.")
+        if delivery.excluded:
+            if not delivery.excluded.keys() <= Store._light_requests(decoded):
+                raise ValueError("Excluded deliveries must name authored ordinary light inputs.")
+            for source, proof in delivery.excluded.items():
+                exclusion_objects(view.store, proof, source)
         return decoded
 
     @staticmethod
@@ -675,18 +693,53 @@ class Store:
         payload = launch["payload"]
         root = payload["manifest_root"]
         try:
-            expected = self._light_requests(self._light_request(launch, row["project"], row["request"]))
+            excluded = payload.get("excluded", {})
+            expected = self._light_requests(self._light_request(launch, row["project"], row["request"])) - excluded.keys()
             parents = tuple(edge["parent"] for edge in self.db.execute(
                 "SELECT parent FROM edges WHERE job=? AND NOT authenticated_completion ORDER BY parent", (row["id"],)
             ))
             sources = self._light_parents(row["project"], root, expected, parents)
             view = self._success_view(root)
-            return {
-                source["request"]: self._light_receipt(view, self.deferred.exact_source(source))
-                for source in sources
-            }
+            origins = dict(excluded)
+            for source in sources:
+                if source["state"] == "not_chosen":
+                    origins[source["request"]] = json.loads(source["outcome"])["excluded_product"]
+                else:
+                    origins[source["request"]] = self._light_receipt(view, self.deferred.exact_source(source))
+            return origins
         except (ValueError, TypeError, KeyError, OSError) as error:
             raise CompletionFileError(str(error)) from error
+
+    def exclude_empty_light(self, row: sqlite3.Row, origins: dict) -> bool:
+        """Propagate an authenticated absence when a required light input has no chosen member."""
+        if not any("cause" in origin for origin in origins.values()):
+            return False
+        from pydantic import TypeAdapter
+
+        from feedbax.persistence.metric_exclusion import exclusion_objects
+
+        launch = json.loads(row["launch"])
+        payload = launch["payload"]
+        try:
+            decoded = self._light_request(launch, row["project"], row["request"])
+            excluded = excluded_inputs(decoded, TypeAdapter(LightOrigins).validate_python(origins))
+            for role, proofs in excluded.items():
+                members = decoded.inputs[role]
+                if len(members) != len(proofs):
+                    continue
+                request = RequestObject.model_validate(payload["request"])
+                proof = ExcludedProduct(request=request, cause=EmptyInputExclusion(role=role, members=proofs))
+                store = self._success_view(payload["manifest_root"]).store
+                exclusion_objects(store, proof, request.id)
+                with self.db:
+                    self.finished(row, {
+                        "outcome": "not_chosen", "reason": f"No chosen producer supplies input {role!r}.",
+                        "excluded_product": proof.model_dump(mode="json"),
+                    })
+                return True
+        except (ValueError, KeyError, OSError, TypeError) as error:
+            raise CompletionFileError(str(error)) from error
+        return False
 
     def _validate_job(self, job: dict) -> None:
         if not JOB_ID.fullmatch(require_text(job.get("id"), "job id")):
@@ -1273,7 +1326,8 @@ class Store:
                 ):
                     raise ValueError("Managed delivery worker does not match the declared numerical requirements")
                 self._light_parents(
-                    job["project"], payload["manifest_root"], self._light_requests(decoded),
+                    job["project"], payload["manifest_root"],
+                    self._light_requests(decoded) - payload.get("excluded", {}).keys(),
                     tuple(
                         aliases.get(edge["job_id"], edge["job_id"])
                         for edge in job["edges"] if not edge.get("authenticated_completion")
@@ -1301,7 +1355,11 @@ class Store:
                     is not None
                 )
             else:
-                satisfied = source is not None and source["state"] in ("succeeded", "reused")
+                satisfied = source is not None and (
+                    source["state"] in ("succeeded", "reused") or (
+                        source["state"] == "not_chosen" and job["launch"]["warm_entrypoint"] == LIGHT_ENTRYPOINT
+                    )
+                )
             cycle = self.db.execute(
                 """WITH RECURSIVE ancestors(id) AS (
                        VALUES (?) UNION SELECT edges.parent FROM edges JOIN ancestors ON edges.job=ancestors.id
@@ -2285,6 +2343,48 @@ class Store:
         )
         self.append(job, "dependency_bound", binding)
 
+    def _condition_pin(
+        self, job: sqlite3.Row, anchor: str, checkpoint: dict, candidates: dict,
+    ) -> tuple[str, TerminalTrainSubject] | None:
+        from feedbax.persistence.evaluation_subject import read_terminal_train_subject
+        from feedbax.persistence.train_metrics import passes_final_metric_condition
+        from feedbax.contracts.run_rule import METRIC_CONDITION_FALSE
+
+        key = anchor, None, None, None, True
+        if key not in candidates:
+            candidates[key] = self._completion_candidate(anchor, terminal_model=True, current=True)
+        candidate = candidates[key]
+        self._record_completion_rejections(job, anchor, candidate.rejections)
+        if candidate.error is not None:
+            self.finished(job, {"outcome": "blocked", "error": candidate.error})
+        if candidate.binding is None:
+            return None
+        launch = json.loads(job["launch"])
+        try:
+            reference = ConditionalProduct.model_validate(checkpoint)
+            pin = TerminalTrainSubject.model_validate(candidate.binding["terminal"])
+            store = self._success_view(launch["payload"]["manifest_root"]).store
+            receipt, _ = read_terminal_train_subject(store, pin, reference.request_id)
+            if passes_final_metric_condition(store, receipt, reference):
+                return receipt.attempt, pin
+        except (OSError, TypeError, KeyError, ValueError) as error:
+            self.finished(job, {"outcome": "blocked", "error": {
+                "code": "input_unavailable", "message": str(error),
+            }})
+        else:
+            canonical = launch["payload"]["canonical_request"]
+            proof = ExcludedProduct(
+                request=RequestObject.model_validate({
+                    "id": job["request"], "object": canonical["request"], "documents": canonical.get("documents", ()),
+                }),
+                cause=MetricExclusion(train=pin.receipt),
+            )
+            self.finished(job, {
+                "outcome": "not_chosen", "reason": METRIC_CONDITION_FALSE,
+                "excluded_product": proof.model_dump(mode="json"),
+            })
+        return None
+
     def resolve_completions(self) -> None:
         with self.db:
             rows = self.db.execute(
@@ -2315,6 +2415,11 @@ class Store:
                         "error": {"code": "invalid_request", "message": str(error)},
                     })
                     continue
+                condition = None
+                if isinstance(checkpoint, dict) and checkpoint.get("kind") == "conditional":
+                    condition = self._condition_pin(job, anchor, checkpoint, candidates)
+                    if condition is None:
+                        continue
                 is_live = json.loads(job["data"]).get("placement") == "live"
                 tip = live_evaluate.pinned_tip(self.db, job["id"]) if is_live else None
                 if is_live and tip is None:
@@ -2326,25 +2431,30 @@ class Store:
                     continue
                 if tip is not None and tip["state"] in LIVE_STATES:
                     continue
-                tip_id = tip["id"] if tip is not None else None
+                tip_id = condition[0] if condition is not None else tip["id"] if tip is not None else None
                 terminal_model = (
                     job["request"].startswith("evaluate:") and selection is None
                     and launch["warm_entrypoint"] == EVALUATE_ENTRYPOINT
                     and isinstance(checkpoint, dict) and (checkpoint.get("select") or {}).get("kind") == "last"
                 )
                 key = anchor, selection, train_slots, tip_id, terminal_model
-                if key not in candidates:
-                    candidates[key] = self._completion_candidate(
+                if condition is not None and terminal_model:
+                    candidate = candidates[anchor, None, None, None, True]
+                elif key in candidates:
+                    candidate = candidates[key]
+                else:
+                    candidate = candidates[key] = self._completion_candidate(
                         anchor, selection, train_slots=train_slots, tip=tip_id, terminal_model=terminal_model,
                         current=not is_live,
                     )
-                candidate = candidates[key]
                 binding, error, rejections = candidate.binding, candidate.error, candidate.rejections
                 self._record_completion_rejections(job, anchor, rejections)
                 if error is not None:
                     outcome = "interrupted" if is_live and error["code"] == "input_unavailable" else "blocked"
                     self.finished(job, {"outcome": outcome, "error": error})
                 elif binding is not None:
+                    if condition is not None and "terminal" not in binding:
+                        binding = binding | {"metric_producer": condition[1].receipt.model_dump(mode="json")}
                     if is_live:
                         binding = binding | {"live_evaluation_points": live_evaluate.selected_points(
                             self.db, job["id"], binding["checkpoint_selection"]["members"],
@@ -2367,11 +2477,26 @@ class Store:
         ]
 
     def verify_completion_bindings(self, row: sqlite3.Row, launch: dict, bindings: list[dict]) -> None:
+        from feedbax.persistence.train_metrics import passes_final_metric_condition
+
         train_slots = train_source_slots(launch)
         payload = launch["payload"]
         request = payload.get("canonical_request") or {}
         terminal = request.get("terminal")
         for binding in bindings if terminal is None else ({"terminal": terminal},):
+            checkpoint = request.get("checkpoint")
+            if isinstance(checkpoint, dict) and checkpoint.get("kind") == "conditional":
+                view = self._success_view(payload["manifest_root"])
+                try:
+                    evidence = (
+                        TerminalTrainSubject.model_validate(binding["terminal"]).receipt
+                        if "terminal" in binding else ContentObjectRef.model_validate(binding["metric_producer"])
+                    )
+                    producer = view.read_receipt(evidence)
+                    if not passes_final_metric_condition(view.store, producer, ConditionalProduct.model_validate(checkpoint)):
+                        raise ValueError("The producer's final metrics do not meet the rule.")
+                except (OSError, TypeError, KeyError, ValueError) as error:
+                    raise CompletionFileError(str(error)) from error
             if "terminal" in binding:
                 from feedbax.persistence.evaluation_subject import read_terminal_train_subject
 
