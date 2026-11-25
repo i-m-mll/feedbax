@@ -4,6 +4,7 @@ from feedbax.application.bundle import new_application_registry_bundle
 from feedbax.contracts.jobs import JobStatus
 from feedbax.contracts.project import Project
 from feedbax.contracts.run_rule import metric_condition_holds
+from feedbax.contracts.studio_subset import StudioRunRuleChosen, StudioRunRuleRequest
 from feedbax.contracts.store_closure import ReceiptRoot, StoreClosureRef
 from feedbax.jobs import JobService
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -31,7 +32,8 @@ def test_final_metric_condition_excludes_one_replicated_candidate(host, tmp_path
         key: {"value": seed, "patches": {"seed": {"value": seed}}}
         for key, seed in (("zero", 0), ("high", 1000))
     }}}}
-    raw["steps"]["baseline"]["inputs"]["subject"]["where"] = {"rule": "train_loss < seed"}
+    rule = "train_loss < seed"
+    raw["steps"]["baseline"]["inputs"]["subject"]["where"] = {"rule": rule}
     raw["steps"]["speed"] = {
         "kind": "analyze",
         "base": {"inline": {
@@ -52,6 +54,25 @@ def test_final_metric_condition_excludes_one_replicated_candidate(host, tmp_path
     evaluations = [run for run in saved.plan.runs if run.kind == "evaluate"]
     gathered, = saved.plan.elements.values()
     assert len(trains) == len(evaluations) == len(gathered.inputs["states"]) == 2
+    rejected_train, = [run.key for run in trains if run.coordinates["seed"].value == 0]
+    accepted_train, = [run.key for run in trains if run.key != rejected_train]
+
+    def assert_selection(*expected):
+        plan = service.read(project, revision=saved.revision)
+        window = plan.window_map(evaluation_tasks=bundle.python_tasks)
+        baseline, = [step for step in window.steps if step.step_id == "baseline"]
+        subject, = baseline.inputs
+        assert subject.subset is not None
+        assert (subject.subset.count, subject.subset.total) == (len(expected), 2)
+        assert {member.row for member in subject.subset.members} == {key.row for key in expected}
+        check = service.check_run_rule(project, StudioRunRuleRequest(
+            revision=saved.revision, variant=trains[0].key.variant, step="train", rule=rule,
+        ))
+        assert isinstance(check.result, StudioRunRuleChosen)
+        assert (check.result.count, check.total) == (len(expected), 2)
+        assert set(check.result.runs) == {key.row for key in expected}
+
+    assert_selection(rejected_train, accepted_train)
 
     def settle(admitted):
         attempts = {}
@@ -63,10 +84,15 @@ def test_final_metric_condition_excludes_one_replicated_candidate(host, tmp_path
             attempts[row["request"]] = row
         return attempts
 
-    trained = settle(jobs.admit_plan(
-        folders, saved, run_keys=tuple(run.key for run in trains), token=token("metric-train"),
-    ))
-    assert all(row["state"] == "succeeded" for row in trained.values()), [row["outcome"] for row in trained.values()]
+    for key, expected in (
+        (rejected_train, (rejected_train, accepted_train)),
+        (accepted_train, (accepted_train,)),
+    ):
+        trained, = settle(jobs.admit_plan(
+            folders, saved, run_keys=(key,), token=token(f"metric-train-{key.row}"),
+        )).values()
+        assert trained["state"] == "succeeded", trained["outcome"]
+        assert_selection(*expected)
     status = {row.key: row.status for row in service.read(project, revision=None).status_rows()}
     zero, = [run.key for run in evaluations if run.coordinates["seed"].value == 0]
     assert status[zero] is JobStatus.NOT_CHOSEN

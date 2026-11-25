@@ -202,9 +202,13 @@ class PlannedSubset:
     document: str | None
     rank_groups: tuple[PlannedRankGroup, ...] = ()
     source: SubsetSource | None = None
-    conditional: bool = False
+    metric_conditions: Mapping[RunKey, ConditionalProduct] | None = None
     best: RuleBest | None = None
     """The rule's lowest or highest term, which ranks the members once they have run."""
+
+    @property
+    def conditional(self) -> bool:
+        return self.metric_conditions is not None
 
     @property
     def ranks(self) -> tuple[str, ...]:
@@ -4290,7 +4294,10 @@ class _Compiler:
                 deepcopy(terms), candidate_count,
                 tuple(run.key for _, run in keyed_runs), subset_document,
                 source=source,
-                best=best, conditional=bool(conditions),
+                best=best, metric_conditions=MappingProxyType({
+                    run.key: product for member, run in members
+                    if isinstance((product := member.member.reference), ConditionalProduct)
+                }) if conditions else None,
             )
             if terms is not None
             else None
