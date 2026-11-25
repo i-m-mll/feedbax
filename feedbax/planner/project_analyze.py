@@ -579,6 +579,7 @@ class _Lowerer:
             self._check_roles(element.inputs, set(definition.inputs))
             inputs = {}
             entries: dict[str, _Entries] = {}
+            dataset_dimensions: set[str] = set()
             for role, expected in definition.inputs.items():
                 source = element.inputs[role]
                 wire_path = f"inputs.{role}"
@@ -586,16 +587,21 @@ class _Lowerer:
                     inputs[role] = self._step_input(source, expected.kind, wire_path)
                     continue
                 inputs[role], actual, entries[role] = self._input(source, wire_path)
-                outputs = any(binding.producer_element is not None for binding in inputs[role])
+                dataset_dimensions.update(actual.dimensions)
+                operation_output = any(binding.producer_element is not None for binding in inputs[role])
                 try:
-                    require_dataset_port(actual, expected, fields=outputs)
-                    if outputs:
-                        for parameter, requirement in expected.selected_variables.items():
+                    require_dataset_port(actual, expected, fields=operation_output)
+                    if operation_output:
+                        for parameter, requirement in expected.for_dimensions(actual.dimensions).selected_variables.items():
                             require_dataset_fields(
                                 actual.variables, {getattr(params, parameter): requirement}
                             )
                 except ValueError as error:
                     raise _ElementIssue(wire_path, str(error)) from error
+            outputs = {
+                role: port.for_dimensions(dataset_dimensions) if dataset_dimensions else port
+                for role, port in definition.outputs.items()
+            }
             ports = {role: port for role, port in definition.inputs.items() if isinstance(port, DatasetInputPort)}
             groups = {
                 role: grouped for role, port in ports.items()
@@ -605,8 +611,8 @@ class _Lowerer:
             spec = AnalysisRequestSpec(analysis_type=registered.key, params=params.model_dump(mode="json"))
             if not groups:
                 self._record(
-                    name, spec, inputs, definition.outputs, element.label, names,
-                    entries=_carried(entries, definition.outputs),
+                    name, spec, inputs, outputs, element.label, names,
+                    entries=_carried(entries, outputs),
                 )
                 return
             requests = []
@@ -622,7 +628,7 @@ class _Lowerer:
                     for role, bindings in inputs.items()
                 }
                 inner = _carried(
-                    {role: self._entries(request[role], f"inputs.{role}") for role in entries}, definition.outputs,
+                    {role: self._entries(request[role], f"inputs.{role}") for role in entries}, outputs,
                 )
                 requests.append((mapped, request, inner))
             members = _member_ids([mapped for mapped, *_ in requests], names)
@@ -630,7 +636,7 @@ class _Lowerer:
                 raise _ElementIssue("inputs", "Mapped requests repeat one combination of labels.")
             for member, (mapped, request, inner) in zip(members, requests, strict=True):
                 self._record(
-                    name, spec, request, definition.outputs, element.label, names,
+                    name, spec, request, outputs, element.label, names,
                     member=member, mapped=mapped, entries=inner,
                 )
         except _ElementIssue as error:
