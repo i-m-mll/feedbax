@@ -401,7 +401,7 @@ from feedbax.web.models.trajectory import (
     TrajectoryMetadata,
 )
 from feedbax.contracts.expression_values import FieldTextResult, Problem
-from feedbax.contracts.expression_site import SiteProjection
+from feedbax.contracts.expression_site import ExpressionPartSite, SiteProjection
 from feedbax.contracts.project_sweep import RangeValues, SampleValues
 from feedbax.contracts.time_units import TimeValue
 from feedbax.contracts.studio_field import (
@@ -451,7 +451,8 @@ from feedbax.contracts.request_specs import DocumentTrainingConfig, SynthesisReq
 from feedbax.contracts.synthesis import SynthesisStepPayload
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.studio_trials import (
-    StudioRelatePoint, StudioRelatePort, StudioTrialAuthoring, StudioTrialAuthoringRequest, StudioTrialRelate,
+    StudioRelatePoint, StudioRelatePort, StudioTrialAuthoring, StudioTrialAuthoringRequest,
+    StudioTrialExpressionMenuRequest, StudioTrialRelate,
 )
 from feedbax.contracts.studio_checkpoint_rule import StudioCheckpointRuleEdit, StudioCheckpointRuleRequest
 from feedbax.contracts.studio_subset import (
@@ -542,6 +543,8 @@ AUTHORED_CONTRACT_MODELS = (
     StudioLoadedModelImportResult,
     StudioTrialAuthoring,
     StudioTrialAuthoringRequest,
+    StudioTrialExpressionMenuRequest,
+    ExpressionPartSite,
     StudioTrialRelate,
     StudioRelatePoint,
     StudioRelatePort,

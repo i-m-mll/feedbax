@@ -27,6 +27,7 @@ export type TreeChoiceProps<Value extends string> = TreeSelection<Value> & {
   trailing?: ReactNode;
   /** The list is open when the choice is first drawn. */
   defaultOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
 };
 
 /** A row of the open list: the level above, a level below, or an option. */
@@ -68,7 +69,7 @@ function TreeInput({ open, list, ...props }: InputHTMLAttributes<HTMLInputElemen
  * typing filters across every level and shows each match with its path. A level with no option under it is not drawn.
  */
 export function TreeChoice<Value extends string>(props: TreeChoiceProps<Value>) {
-  const { options, disabled, invalid, className, trailing, defaultOpen = false } = props;
+  const { options, disabled, invalid, className, trailing, defaultOpen = false, onOpenChange } = props;
   const label = props['aria-label'];
   const box = useRef<HTMLDivElement>(null);
   const list = useId();
@@ -84,6 +85,7 @@ export function TreeChoice<Value extends string>(props: TreeChoiceProps<Value>) 
   const show = (next: boolean) => {
     if (next === open) return;
     setOpen(next);
+    onOpenChange?.(next);
     setAt([]);
     setQuery('');
   };

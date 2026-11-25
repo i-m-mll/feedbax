@@ -69,6 +69,7 @@ from feedbax.web.services.authored_scope import edited_authored_rows
 from feedbax.web.services.evaluate_sources import evaluate_subject, evaluate_value_source
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
 from feedbax.web.services.set_authoring import prepare_set_entry_task, trial_set_fields
+from feedbax.web.services.trial_expression_menus import TrialExpressionField
 from feedbax.web.services.store_choice import EditStore, all_readers_store, choose_store
 from feedbax.studio.selection import StoredEdit
 from feedbax.studio.numeric_fields import project_numeric_field, time_conversion
@@ -1326,7 +1327,10 @@ def _field_problems(path, site: Site, text: str, functions, problems) -> list[Pr
     ]
 
 
-def _trial_fields(path, site: Site, expression, functions, sweep, row, problems, name_paths, period) -> list[StudioTrialField]:
+def _trial_fields(
+    path, site: Site, expression, functions, sweep, row, problems, name_paths, period,
+    menu_fields: dict[str, TrialExpressionField],
+) -> list[StudioTrialField]:
     """The field at ``path`` with its text, its structure where its value names only what is in scope, its problems,
     and each number in it the step can sweep: ``sweep`` gives the sweep of the number at a path, if the step can sweep it.
 
@@ -1335,7 +1339,10 @@ def _trial_fields(path, site: Site, expression, functions, sweep, row, problems,
     """
     missing = references(expression) - {item.id for item in site.names} if expression is not None else set()
     shown = expression is not None and not missing
-    projection = project_site(site, functions, expression, name_paths=name_paths)
+    field_path = pointer(tuple(map(str, path)))
+    projection = project_site(site, functions, expression, name_paths=name_paths, defer_parts=True)
+    if not _epoch_end_field(path, "limit"):
+        menu_fields[field_path] = TrialExpressionField(site, expression)
     fields = []
     implicit_offset = expression is None and is_window_offset(path[0], path[1:])
     numeric = window_offset_expression(None) if implicit_offset else expression
@@ -1346,9 +1353,11 @@ def _trial_fields(path, site: Site, expression, functions, sweep, row, problems,
         current = at(numeric, inner)
         view = project_numeric_field(
             StudioTrialField, swept.field, swept.axis, functions, row, current.value,
-            period=period, effective_unit=current.unit, path=pointer(tuple(map(str, (*path, *inner)))),
+            period=period, effective_unit=current.unit, defer_parts=True,
+            path=pointer(tuple(map(str, (*path, *inner)))),
         )
         if inner:
+            menu_fields[view.path] = TrialExpressionField(swept.field.site, None)
             fields.append(view)
         elif view.sweep is not None or view.can_sweep:
             if implicit_offset and view.sweep is None:
@@ -1371,14 +1380,14 @@ def _trial_fields(path, site: Site, expression, functions, sweep, row, problems,
         if isinstance(resolved, tuple):
             marks = [problem.model_copy(update={"path": path}) for problem in resolved]
     return [StudioTrialField(
-        path=pointer(tuple(map(str, path))), label=_field_label(path), site=projection, text=text,
+        path=field_path, label=_field_label(path), site=projection, text=text,
         structure=value_structure(expression, site, functions) if shown else None,
         conversion=time_conversion(expression, period, trial_time_use(path[0], path[1:])),
         problems=marks,
     ), *fields]
 
 
-def _condition_field(placement, site, functions, row):
+def _condition_field(placement, site, functions, row, menu_fields):
     path = "set_fields", placement.axis, "condition"
     condition = placement.condition
     problems = ()
@@ -1392,7 +1401,7 @@ def _condition_field(placement, site, functions, row):
                 Problem(code=ProblemCode.STRUCTURE, reason=item.detail, path=path)
                 for item in row.problems if item.path == pointer(path)
             )
-    (view,) = _trial_fields(path, site, condition, functions, lambda *_: None, row, problems, {}, None)
+    (view,) = _trial_fields(path, site, condition, functions, lambda *_: None, row, problems, {}, None, menu_fields)
     if view.text and view.problems:
         span = TextSpan(start=0, end=len(view.text))
         view = view.model_copy(update={"problems": [
@@ -1559,13 +1568,15 @@ def trial_authoring(
     clock = documents.model.step_seconds
     period = clock if isinstance(clock, float) else None
     fields = []
+    menu_fields: dict[str, TrialExpressionField] = {}
     for path, site in projected.fields.items():
         if path[1:2] == ("validation_trials",):
             continue
         if path[:2] == ("task", "signals") and path[2] not in authored_signals:
             continue  # Internal gate and operand signals are not editable Task fields.
         fields.extend(_trial_fields(
-            path, site, expression(path), bundle.expression_functions, sweep, row, projected.problems, output_paths, period,
+            path, site, expression(path), bundle.expression_functions, sweep, row, projected.problems,
+            output_paths, period, menu_fields,
         ))
     origins = {}
     if (
@@ -1584,13 +1595,20 @@ def trial_authoring(
     set_fields = trial_set_fields(project, key.step)
     if set_fields:
         site = _set_condition_site(definition, projected)
-        fields.extend(_condition_field(placement, site, bundle.expression_functions, row) for placement in set_fields)
+        fields.extend(
+            _condition_field(placement, site, bundle.expression_functions, row, menu_fields)
+            for placement in set_fields
+        )
     field_problems = [
         problem for field in fields for problem in field.problems
         if not _held_problems(problem.path, projected.problems)
     ]
     return StudioTrialAuthoring(
-        revision=snapshot.revision, run=body.run, model=model_document,
+        revision=snapshot.revision, run=body.run,
+        expression_context=folders.trial_expression_menus.remember(
+            project_id, snapshot.revision, key, menu_fields,
+        ),
+        model=model_document,
         task_document=definition.document_ids.get(task_path) if task_path else None,
         objective_document=objective_document,
         task=task, objective=documents.objective, objective_source=objective_source,

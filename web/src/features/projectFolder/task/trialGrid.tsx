@@ -24,7 +24,7 @@ function projected(view: TrialView, parts: readonly string[], stored: string, op
   const projection = view.fields.find((field) => field.path === path);
   if (!projection) return rawField({ id: options.id, label: options.label, value: '', type: { kind: 'readOnly' } });
   const { commit, runs } = options;
-  return trialField(projection, options.label, runs, {
+  return trialField(view, projection, options.label, runs, {
     id: options.id, kind: expressionKind(options.value as never), changed: changedAt(view, 'task', stored, commit),
     commit: commit && ((edit) => commit(studioAccessibleName('set', options.name), { kind: 'expression', path, edit })),
   });

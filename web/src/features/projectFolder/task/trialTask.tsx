@@ -148,7 +148,7 @@ function variables(view: TrialView, task: TaskDocument, types: readonly StudioNa
     const projection = view.fields.find((field) => field.path === path);
     const sweep = projection?.sweep?.id;
     const value: FieldModel = projection ? {
-      ...trialField(projection, studioName('value'), runs, {
+      ...trialField(view, projection, studioName('value'), runs, {
         id: `value:${variable.id}`, kind: expressionKind(variable.value),
         changed: changedAt(view, 'task', `/variables/${index}/value`, commit), source: view.task_source ?? undefined,
         commit: commit && ((edit) => commit(studioAccessibleName('set', variable.name), { kind: 'expression', path, edit })),
@@ -159,7 +159,7 @@ function variables(view: TrialView, task: TaskDocument, types: readonly StudioNa
     } : rawField({ id: `value:${variable.id}`, label: studioName('value'), value: '', type: { kind: 'readOnly' } });
     const countPath = authoredPointer(['task', 'variables', variable.id, 'count']);
     const countProjection = variable.count ? view.fields.find((field) => field.path === countPath) : undefined;
-    const count = variable.count ? countProjection ? trialField(countProjection, studioName('count'), runs, {
+    const count = variable.count ? countProjection ? trialField(view, countProjection, studioName('count'), runs, {
       id: `count:${variable.id}`, kind: expressionKind(variable.count),
       changed: changedAt(view, 'task', `/variables/${index}/count`, commit),
       commit: commit && ((edit) => commit(studioAccessibleName('set', studioName('count')), { kind: 'expression', path: countPath, edit })),
@@ -245,7 +245,7 @@ function setVariables(view: TrialView, weigh?: (axis: string) => TaskSetVariable
     const projection = view.fields.find((field) => field.path === path);
     return {
       axis, set, weigh: weigh?.(axis),
-      condition: projection && trialField(projection, studioName('condition'), runs, {
+      condition: projection && trialField(view, projection, studioName('condition'), runs, {
         id: `condition:${axis}`, kind: expressionKind(condition ?? undefined),
         commit: commit && ((edit) => commit(studioAccessibleName('set', studioName('condition')), { kind: 'expression', path, edit })),
       }),
