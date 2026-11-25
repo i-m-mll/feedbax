@@ -12,7 +12,7 @@ class ModelDelayCarry(StrictModel):
     kind: Literal["zeros"] = "zeros"
     scope: Literal["trial"] = "trial"
     shape: tuple[Annotated[int, Field(strict=True, ge=0)], ...]
-    dtype: Literal["float32"] = "float32"
+    dtype: Literal["float32", "float64"] = "float32"
     units: str | None = Field(default=None, exclude_if=lambda value: value is None)
     steps: Annotated[int, Field(strict=True, ge=1)] = Field(default=1, exclude_if=lambda value: value == 1)
     initial: Annotated[float, Field(allow_inf_nan=False)] = Field(default=0, exclude_if=lambda value: value == 0)

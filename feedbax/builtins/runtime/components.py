@@ -358,7 +358,8 @@ def split_output_prototype(
     if width != total:
         raise ValueError(f"Split input final dimension {width} does not match sum(sizes) {total}")
     prefix = shape[:-1]
-    return {f"out_{index}": jnp.zeros((*prefix, size)) for index, size in enumerate(sizes)}
+    (array,) = jt.leaves(proto)
+    return {f"out_{index}": jnp.zeros((*prefix, size), dtype=array.dtype) for index, size in enumerate(sizes)}
 
 
 def switch_output_prototype(
