@@ -560,10 +560,10 @@ def _instantiate_graph(
         output_ports=tuple(spec.output_ports),
         input_bindings=input_bindings,
         output_bindings=output_bindings,
-        input_shapes={
-            port: tuple(shape)
+        input_arrays={
+            port: (tuple(shape), str(prototype.dtype))
             for port, binding in input_bindings.items()
-            if (shape := shape_from_proto(resolution.node_inputs.get(binding))) is not None
+            if (shape := shape_from_proto(prototype := resolution.node_inputs.get(binding))) is not None
         },
         parameter_constraints=normalize_parameter_constraints(spec.parameter_constraints),
         component_bindings=component_bindings,
