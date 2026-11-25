@@ -333,3 +333,29 @@ it('marks a drawer row with its worst state, and choosing the mark selects those
     selection: { kind: 'rows', stepId: train.id, runIds: [runs[0].id, runs[1].id] }, focus: null,
   });
 });
+
+it('lights the lineage of every selected run, not only the last one clicked', () => {
+  const probe = { id: 'probe', label: 'probe', values: [{ id: 'x', label: 'x' }, { id: 'y', label: 'y' }] };
+  const evaluate: PlanStepView = {
+    id: 'probes', label: 'probes', kind: 'evaluate', sweeps: [probe],
+    runs: probe.values.map((value): PlanRunView => ({
+      id: `probe-${value.id}`, label: value.label, values: { probe: value.id }, status: 'not_run', state: 'not_run', results: [],
+    })),
+    inputs: [{ id: 'model', label: 'Model', sourceStepId: train.id }],
+    statusCounts: { not_run: 2 },
+  };
+  mapWithState({
+    steps: [train, evaluate],
+    edges: [
+      { from: { stepId: train.id, runId: 'mid-first' }, to: { stepId: evaluate.id, runId: 'probe-x' } },
+      { from: { stepId: train.id, runId: 'mid-second' }, to: { stepId: evaluate.id, runId: 'probe-y' } },
+    ],
+  });
+  const card = within(screen.getByRole('article', { name: studioAccessibleName('train', train.label) }));
+  const probes = within(screen.getByRole('article', { name: studioAccessibleName('evaluate', evaluate.label) }));
+  fireEvent.click(card.getByRole('button', { name: mark('seed 1 · rate 0.003') }));
+  fireEvent.click(card.getByRole('button', { name: mark('seed 2 · rate 0.003') }), { metaKey: true });
+  for (const value of ['x', 'y']) {
+    expect(probes.getByRole('button', { name: mark(`probe ${value}`) }).getAttribute('data-map-focus')).toBe('downstream');
+  }
+});

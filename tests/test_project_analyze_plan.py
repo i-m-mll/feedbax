@@ -5,9 +5,11 @@ import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
+import pytest
 
 from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySettings
-from feedbax.contracts.project_inputs import StepReference
+from feedbax.contracts.project_inputs import StepReference, SubsetTerms
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.figure_document import FigureDocument
 from feedbax.contracts.model_address import ModelAddress
@@ -508,10 +510,17 @@ def test_analyze_collects_static_rows_in_each_named_variant():
     assert compile_project(project, operations=operations).elements == plan.elements
 
 
+def test_unconstrained_axis_selection_omits_clauses():
+    assert "clauses" not in SubsetTerms().model_dump(mode="json")
+    for clauses in ([], [{}], [{"seed": [{"id": "a", "label": "A"}]}, {}]):
+        with pytest.raises(ValidationError, match="clauses"):
+            SubsetTerms.model_validate({"clauses": clauses})
+
+
 def test_axis_pin_widens_when_its_source_gains_an_unconstrained_axis():
     project = _project()
     project.steps["analyze"].inputs["states"] = StepReference.model_validate({
-        "step": "baseline", "where": {"clauses": [{}]},
+        "step": "baseline",
     })
     operations = _operations()
     before = compile_project(project, operations=operations)

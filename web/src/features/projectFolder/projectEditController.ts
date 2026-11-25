@@ -686,6 +686,20 @@ export class ProjectEditController {
     });
   }
 
+  /**
+   * Runs a route that publishes a new revision of the project when it succeeds, such as an import, and records what it
+   * published as one Undo entry. An outcome without a snapshot published nothing.
+   */
+  publishingCommand<T>(
+    name: string, run: (before: StudioProjectSnapshot, signal: AbortSignal) => Promise<{ outcome: T; snapshot?: StudioProjectSnapshot }>,
+  ): Promise<T> {
+    return this.exclusiveTransaction(async (before) => {
+      const { outcome, snapshot } = await run(before, this.signal);
+      if (snapshot) await this.recordWithFollowing(name, before, snapshot);
+      return outcome;
+    });
+  }
+
   private authoredCommand(
     write: () => Promise<StudioProjectDocument>,
     achieved: (document: StudioProjectDocument, before: StudioProjectSnapshot) => boolean,

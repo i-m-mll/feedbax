@@ -81,6 +81,8 @@ type Props = {
   problem?: { address: ModelAddress; reason: string };
   problems?: readonly { address: ModelAddress; reason: string }[];
   projectionRun?: StudioSavedTrainKey;
+  /** Writes a term on the port at `address` into the Objective of `projectionRun`'s step; answers with a refusal. */
+  relate?: (address: ModelAddress) => Promise<string | undefined>;
   path: readonly string[];
   /** Sets the path shown in `document`, the shown Model when absent. */
   setPath(path: string[], document?: string): void;
@@ -205,7 +207,7 @@ function LeafChoices({ entries, query, choose, disabled }: {
   </section>)}</>;
 }
 
-export function useStoredModelView({ model, saved, editor, elements: state, active, topologyApplies, fieldEditable, fieldChosenSteps, planCurrent, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, askStore, evaluate, problem, problems, projectionRun, path, setPath, sections, openProblems, exceptions }: Props) {
+export function useStoredModelView({ model, saved, editor, elements: state, active, topologyApplies, fieldEditable, fieldChosenSteps, planCurrent, fieldRows, fieldAxes, selectedSweepValues, confirmRunRemoval, askStore, evaluate, problem, problems, projectionRun, relate, path, setPath, sections, openProblems, exceptions }: Props) {
   const selected = useModelSelection(state, model?.id);
   const pick = useStore(state, (current) => current.pick);
   const reveal = useStore(state, (current) => current.reveal);
@@ -255,7 +257,10 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const readBody = evaluate && { ...evaluate, revision: saved.revision };
   /** The runs of the selected sweep values: a Model edit is stored on them, and their differences are drawn. */
   const valueRuns = !evaluate && fieldRows?.length && fieldAxes ? { rows: [...fieldRows], axes: fieldAxes } : undefined;
-  const projectionBody = model && { ...(projectionRun ? { run: projectionRun } : {}), document: model.id, revision: saved.revision, ...valueRuns };
+  const projectionBody = model && {
+    ...(evaluate ? { run: evaluate.run, evaluate_scope: evaluate.scope } : projectionRun ? { run: projectionRun } : {}),
+    document: model.id, revision: saved.revision, ...valueRuns,
+  };
   const projectionRunId = projectionRun && JSON.stringify(projectionRun);
   /** The runs whose Model the view shows: a review of a connection reviews that Model. */
   const shownSelection = evaluate ? { run: evaluate.run, evaluate_scope: evaluate.scope }
@@ -263,14 +268,18 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const projection = useQuery({
     queryKey: ['model-projection', saved.project_id, projectionBody],
     queryFn: ({ signal }) => readModelProjection(saved.project_id, projectionBody!, signal),
-    enabled: active && !!projectionBody && !evaluate,
+    enabled: active && !!projectionBody,
     placeholderData: (previous, query) => sameSubject(query?.queryKey[2], projectionBody) ? previous : undefined,
   });
   const projectedPorts = useMemo(() => new Map<string, Port['type']>([...projection.data?.ports ?? [], ...projection.data?.physical_ports ?? []]
     .map(({ address, type }) => [addressKey(address), type])), [projection.data]);
+  /** A port read by a term of the selected step's Objective, itself or by a leaf under it, carries the Objective mark. */
   const markedPorts = useMemo(() => new Map([
     ...(projection.data?.task_inputs ?? []).map((address) => [addressKey(address), 'task'] as const),
-    ...(projection.data?.objective_ports ?? []).map((address) => [addressKey(address), 'objective'] as const),
+    ...(projection.data?.ports ?? []).filter(({ readers }) => readers?.length).map(({ address }) => {
+      const { element } = address;
+      return [addressKey(element.kind === 'field' && element.parent.kind === 'port' ? at(address, element.parent) : address), 'objective'] as const;
+    }),
   ]), [projection.data]);
   const attachments = useQuery({
     queryKey: ['model-evaluate-model', saved.project_id, readBody],
@@ -283,10 +292,12 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   /** What the shown document adds, removes and rewires from its base, then the selected value's from the document. */
   const marked = useMemo(() => {
     const found = new Map<string, MarkedDifference>();
-    for (const difference of projection.data?.base_differences ?? []) found.set(addressKey(difference.address), { difference, value: false });
+    for (const difference of evaluate ? [] : projection.data?.base_differences ?? []) {
+      found.set(addressKey(difference.address), { difference, value: false });
+    }
     if (hasValue) for (const difference of projection.data?.value_differences ?? []) found.set(addressKey(difference.address), { difference, value: true });
     return found;
-  }, [projection.data, hasValue]);
+  }, [projection.data, evaluate, hasValue]);
   const removed = useMemo(() => [...marked.values()].flatMap(({ difference }) =>
     difference.change === 'removed' ? [difference] : []), [marked]);
   /**
@@ -444,7 +455,8 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
   const ownNames = projectedLists.map((list) => new Set(list.map(({ id }) => id.split('.').at(-1)!)));
   const projectedNames = new Set([...ownNames[0] ?? []].filter((name) => ownNames.every((names) => names.has(name))));
   /** The project's Problems in the shown Model, the graph's own among them: the list Problems shows. */
-  const modelProblems = problems ?? [];
+  const modelProblems = [...new Map([...problems ?? [], ...projection.data?.problems ?? []]
+    .map((item) => [JSON.stringify([addressKey(item.address), item.reason]), item] as const)).values()];
   const addressedProblems = new Map<string, string>();
   for (const item of issue?.address ? [...modelProblems, { address: issue.address, reason: issue.reason }] : modelProblems) {
     let address = item.address;
@@ -1092,6 +1104,13 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
         renaming: !ghost && rename === key, endRename: () => setRename(undefined),
         rename: (name) => { void apply(studioName('rename'), { op: 'rename', address, name }).then((ok) => { if (ok) setRename(undefined); }); },
         addPort: !definition && id === inputCard && currentPath.length && editTopology && !locked ? setAddPort : undefined,
+        addTerm: relate && !ghost && id !== inputCard ? (port) => {
+          if (port.taskSignal || port.growing || port.direction === 'physical' || definition && port.direction !== 'output') return undefined;
+          const portAddress = at(graph, { kind: 'port', end: port.end });
+          return () => {
+            if (model) void relate(portAddress).then((reason) => setIssue(reason ? { document: model.id, address: portAddress, reason } : undefined));
+          };
+        } : undefined,
       },
     };
   }

@@ -1,12 +1,12 @@
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ClickPoint, FullAxis, PlotElement } from 'plotly.js-dist-min';
 import { useQuery } from '@tanstack/react-query';
-import { requestJson } from '@/api/request';
+import { requestJson, sentBody } from '@/api/request';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import { useRootAttribute } from '@/appearance/useRootAttribute';
 import { studioAccessibleName, studioName, studioRunStatus } from '@/components/activity/studioVocabulary';
 import { StatusMark } from '@/components/ui/StatusMark';
-import { parseContract, type FigureProduct, type StudioSavedLightHistory } from '@/generated/studioContracts';
+import { parseContract, type FigureProduct, type StudioSavedLightHistory, type TrialMeanSelection } from '@/generated/studioContracts';
 import { axisAttribute, FigureClockContext, marksTrials, timePanels, traceTrial, trialRestyle, type TimePanel } from './figureClock';
 import { Button } from '@/components/ui/Button';
 import { Section } from '@/components/ui/Section';
@@ -75,7 +75,24 @@ function clickedTrace(node: PlotElement, figure: FigureProduct, points: readonly
   return best?.trace;
 }
 
-function SavedPlot({ url, name }: { url: string; name: string }) {
+/**
+ * Where a figure's product is read: its saved product, or under Mean the Service's rendering of its job for the
+ * clock's By and Align, which is not saved.
+ */
+type FigureSource =
+  | { readonly kind: 'saved'; readonly url: string }
+  | { readonly kind: 'mean'; readonly project: string; readonly revision: string; readonly jobId: string; readonly mean: TrialMeanSelection };
+
+function readFigure(source: FigureSource, signal: AbortSignal) {
+  if (source.kind === 'saved') return requestJson(source.url, { signal });
+  const path = `/api/projects/${encodeURIComponent(source.project)}/figures/mean`;
+  return requestJson(path, {
+    method: 'POST', signal,
+    body: sentBody('StudioSavedFigureMeanRequest', { revision: source.revision, job_id: source.jobId, mean: source.mean }, path),
+  });
+}
+
+function SavedPlot({ source, name }: { source: FigureSource; name: string }) {
   const target = useRef<HTMLDivElement>(null);
   const lines = useRef<(HTMLDivElement | null)[]>([]);
   const [drawn, setDrawn] = useState<PlotElement>();
@@ -85,8 +102,8 @@ function SavedPlot({ url, name }: { url: string; name: string }) {
   const latest = useRef(clock);
   latest.current = clock;
   const figure = useQuery({
-    queryKey: ['saved-plotly-figure', url],
-    queryFn: async ({ signal }) => parseContract('FigureProduct', await requestJson(url, { signal })),
+    queryKey: ['saved-plotly-figure', source],
+    queryFn: async ({ signal }) => parseContract('FigureProduct', await readFigure(source, signal)),
   });
   const runs = figure.data?.layout.meta.runs;
   useEffect(() => {
@@ -188,13 +205,23 @@ function SavedPlot({ url, name }: { url: string; name: string }) {
   </StudioRegion>;
 }
 
-export function SavedFigureResult({ history, name }: { history: StudioSavedLightHistory; name: string }) {
+/**
+ * A figure's current or previous result; under Mean (`mean`), the current result's job rendered as each condition's
+ * mean at the project's `revision`.
+ */
+export function SavedFigureResult({ history, name, project, revision, mean }: {
+  history: StudioSavedLightHistory; name: string; project: string; revision: string; mean?: TrialMeanSelection;
+}) {
   const [previousSelected, setPreviousSelected] = useState(false);
   const current = history.result?.products.figure;
   const previous = history.previous?.products.figure;
   const showPrevious = Boolean(previous && (!current || previousSelected));
   const url = showPrevious ? previous : current;
   if (!url) return null;
+  const shown = showPrevious ? history.previous : history.result;
+  const source: FigureSource = mean && shown
+    ? { kind: 'mean', project, revision, jobId: shown.job_id, mean }
+    : { kind: 'saved', url };
   return <section aria-label={studioName(showPrevious ? 'previousResult' : 'currentResult')} className="space-y-2 p-2">
     {(showPrevious || current && previous) && <div className="flex items-center gap-2">
       {showPrevious && <StatusMark status="stale" label={studioRunStatus('stale')} />}
@@ -203,7 +230,7 @@ export function SavedFigureResult({ history, name }: { history: StudioSavedLight
         <Button pressed={showPrevious} onClick={() => setPreviousSelected(true)}>{studioName('previousResult')}</Button>
       </>}
     </div>}
-    <SavedPlot key={url} url={url} name={name} />
+    <SavedPlot key={JSON.stringify(source)} source={source} name={name} />
   </section>;
 }
 

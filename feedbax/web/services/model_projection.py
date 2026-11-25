@@ -1,22 +1,25 @@
 """Project the selected run's compiler and task facts onto stored Model addresses."""
 
+from collections import defaultdict
 from typing import cast, get_args
 
-from feedbax.compiler.model_document import lower_model_document
+from feedbax.compiler.model_document import inspect_model_signals
 from feedbax.compiler.model_edit import conserving_port_type, model_ungroup_eligibility
 from feedbax.compiler.model_ports import ModelRegistryPorts
-from feedbax.compiler.resolution import resolve_graph_parameters
-from feedbax.contracts.model_address import ComponentPortAddress, ModelAddress, PortElement
+from feedbax.compiler.model_signals import ModelSignalTable, ResolvedSignalLeaf
+from feedbax.contracts.model_address import ComponentElement, ComponentPortAddress, FieldElement, ModelAddress, PortElement
 from feedbax.contracts.model_document import ModelDocument, PhysicalPortType, SignalType
 from feedbax.contracts.objective_document import ObjectiveDocument
-from feedbax.contracts.model_edit import ModelPhysicalPortProjection, ModelPortProjection, ModelProjection
+from feedbax.contracts.model_edit import (
+    EvaluateModelRequest, ModelPhysicalPortProjection, ModelPortProjection, ModelProjection, StepRuns,
+)
 from feedbax.contracts.expression_check import references
-from feedbax.compiler.graph_schema import _enumerate_graph_ports
 from feedbax.contracts.project import BasedDocument
-from feedbax.contracts.trial_bindings import selected_signal_id
 from feedbax.planner.project_plan import RunKey
 from feedbax.project_folder import ProjectFolderInvalid, model_edit_source
-from feedbax.project_model_selection import selected_model as selected_model, selected_model_and_task, task_signal
+from feedbax.project_model_selection import (
+    matched_task_inputs, model_task_signals, selected_model as selected_model, selected_model_and_task, task_signal,
+)
 from feedbax.compiler.model_differences import structural_differences
 from feedbax.web.services.trial_scope import runs_scope, selected_value, value_model
 
@@ -89,95 +92,110 @@ def model_differences(folders, project_id, body, snapshot, shown, layout):
     return {"base_differences": from_base, "value_differences": from_value}
 
 
-def model_projection(folders, project_id, body, components):
+def _publishes_origin(leaf: ResolvedSignalLeaf, origin: ModelAddress) -> bool:
+    if leaf.address == origin:
+        return True
+    element = origin.element
+    port = leaf.port.element
+    return (
+        leaf.origin == origin and leaf.port.composites == origin.composites
+        and isinstance(element, FieldElement) and isinstance(element.parent, ComponentElement)
+        and element.path[:1] == ("state",)
+        and isinstance(port, PortElement) and isinstance(port.end, ComponentPortAddress)
+        and port.end.component == element.parent.id
+    )
+
+
+def _objective_readers(objective: object, signals: ModelSignalTable) -> dict[str, dict[str, None]]:
+    readers: dict[str, dict[str, None]] = defaultdict(dict)
+    if objective is None:
+        return readers
+    document = ObjectiveDocument.model_validate(objective)
+    readable = signals.readable_leaves
+    for term in document.terms:
+        for reference in references(term.measure) | references(term.weight):
+            if not reference.startswith("{"):
+                continue
+            try:
+                address = ModelAddress.from_text(reference)
+            except ValueError:
+                continue
+            leaf = signals.at(address)
+            if leaf is None:
+                continue
+            places = [leaf]
+            if leaf.origin is not None and leaf.origin != leaf.address:
+                places.extend(item for item in readable if _publishes_origin(item, leaf.origin))
+            for place in places:
+                readers[place.address.to_text()][term.id] = None
+                readers[place.port.to_text()][term.id] = None
+    return readers
+
+
+def evaluate_projection(folders, project_id, body, bundle):
+    from feedbax.web.services.evaluate_sources import read_evaluate_model
+    from feedbax.web.services.trial_authoring import _pairing
+
+    key = RunKey(body.run.variant, body.run.step, body.run.row)
+    plan = folders.read_plan(project_id, revision=body.revision, source_runs=(key,)).plan
+    reading = read_evaluate_model(
+        folders, project_id, EvaluateModelRequest(
+            revision=body.revision, run=body.run, scope=body.evaluate_scope or StepRuns(kind="step"),
+        ), bundle.components, selected=plan, model_document=body.document,
+    )
+    model = reading.state.resolved_model
+    definition = plan.selected_definitions.get(key)
+    if definition is None:
+        return model, (), None, {}
+    try:
+        documents, _, _ = _pairing(plan, key, bundle, definition=definition)
+    except ValueError:
+        return model, (), None, {}
+    if definition.document_ids.get("inputs.subject") == body.document:
+        model = documents.model
+    return model, model_task_signals(folders, documents.task_source), documents.objective, documents.input_bindings
+
+
+def model_projection(folders, project_id, body, bundle):
     snapshot = folders.read(project_id, revision=body.revision)
     payload, layout = model_edit_source(snapshot, body.document)
     authored = ModelDocument.model_validate(payload)
     differences = model_differences(folders, project_id, body, snapshot, authored.model_dump(mode="json"), layout)
     selected = None
-    if body.run is not None:
+    step = snapshot.project.steps.get(body.run.step) if body.run is not None else None
+    if step is not None and step.kind == "evaluate":
+        selected = evaluate_projection(folders, project_id, body, bundle)
+    elif body.evaluate_scope is not None:
+        raise ProjectFolderInvalid("Choose an Evaluate run for this Model selection.")
+    elif body.run is not None:
         try:
             selected = selected_model_and_task(folders, project_id, body)
         except ProjectFolderInvalid:
-            # A broken pairing can leave the current Model independently readable.
             pass
-    model, task, objective, overrides = selected or (authored, None, None, {})
-    task_signals = tuple(task_signal(item) for item in task.exposed_data if item.bindable) if task is not None else ()
-    names = {signal.label: signal.id for signal in task_signals}
-    ids = set(names.values())
-    bound = tuple(
-        port for port in model.ports.inputs
-        if selected_signal_id(port.id, port.name, names, overrides) in ids
-    )
-    supplied = {port.name for port in bound}
-    authority = ModelRegistryPorts(components)
-    ports: dict[str, ModelPortProjection] = {}
+    model, task, objective, overrides = selected or (authored, (), None, {})
+    model = model or authored
+    task_signals = tuple(task_signal(item) for item in task)
+    bound = matched_task_inputs(model, task, overrides)
+    supplied = {port.name: signal.type for port, signal in bound}
+    authority = ModelRegistryPorts(bundle.components)
+    table = inspect_model_signals(model, bundle.components, supplied)
+    readers = _objective_readers(objective, table)
+    ports: list[ModelPortProjection] = []
     physical_ports: list[ModelPhysicalPortProjection] = []
     for port in _declared_ports(authority, model):
         if isinstance(port, ModelPhysicalPortProjection):
             physical_ports.append(port)
-        else:
-            ports[port.address.to_text()] = port
-    task_inputs = tuple(
-        ModelAddress.model_validate({
-            "composites": [],
-            "element": {"kind": "port", "end": {"owner": "inputs", "port": port.id}},
-        }) for port in bound
-    )
-    known = dict(
-        task_signals=task_signals, task_inputs=task_inputs, resolved_model=model, physical_ports=tuple(physical_ports),
-        ungroup=model_ungroup_eligibility(model), **differences,
-    )
-    try:
-        lowered = lower_model_document(
-            model, components, supplied_inputs=frozenset(supplied),
-        )
-    except ValueError:
-        return ModelProjection(ports=tuple(ports.values()), **known)
-    try:
-        resolution = resolve_graph_parameters(
-            lowered.graph, {}, components, allow_incomplete=True,
-        )
-    except ValueError:
-        return ModelProjection(ports=tuple(ports.values()), **known)
-
-    def collect(resolved, owner, composites):
-        for port in _enumerate_graph_ports(resolved.graph, component_registry=components, resolution=resolved):
-            value = port.value_schema
-            if port.node_id is None:
-                declarations = owner.ports.inputs if port.direction == "input" else owner.ports.outputs
-                item = next((item for item in declarations if (item.id if composites else item.name) == port.port), None)
-                if item is None:
-                    continue
-                address = _boundary_port(composites, port.direction, item.id)
-            elif port.node_id in owner.interior.components:
-                address = _port(composites, port.node_id, port.direction, port.port)
-            else:
-                continue
-            key = address.to_text()
-            declared = ports[key].type if key in ports else SignalType()
-            ports[key] = ModelPortProjection(address=address, type=SignalType(
-                base=declared.base or value.dtype, shape=declared.shape if declared.shape is not None else value.shape,
-                unit=declared.unit or value.units,
+            continue
+        leaves = table.at_port(port.address)
+        if not leaves or leaves[0].path:
+            ports.append(port.model_copy(update={"readers": tuple(readers.get(port.address.to_text(), ()))}))
+        for leaf in leaves:
+            ports.append(ModelPortProjection(
+                address=leaf.address, type=leaf.signal_type,
+                readers=tuple(readers.get(leaf.address.to_text(), ())),
             ))
-        for child, branch in resolved.subgraphs.items():
-            component = owner.interior.components.get(child)
-            if component is not None and component.kind == "composite":
-                collect(branch, component, (*composites, child))
-    collect(resolution, model, ())
-    objective_ports = {}
-    if isinstance(objective, dict):
-        document = ObjectiveDocument.model_validate(objective)
-        for term in document.terms:
-            for reference in references(term.measure):
-                if not reference.startswith("{"):
-                    continue
-                try:
-                    address = ModelAddress.from_text(reference)
-                except ValueError:
-                    continue
-                if isinstance(address.element, PortElement):
-                    objective_ports[reference] = address
     return ModelProjection(
-        ports=tuple(ports.values()), objective_ports=tuple(objective_ports.values()), **known,
+        ports=tuple(ports), physical_ports=tuple(physical_ports), problems=table.problems, task_signals=task_signals,
+        task_inputs=tuple(_boundary_port((), "input", port.id) for port, _ in bound), resolved_model=model,
+        ungroup=model_ungroup_eligibility(model), **differences,
     )

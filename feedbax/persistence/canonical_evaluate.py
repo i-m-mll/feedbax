@@ -18,13 +18,14 @@ from feedbax.contracts.jobs import (
     JobReceipt, StudioEvaluationCheckpoint, StudioEvaluationCheckpointGap,
     StudioEvaluationObjectivePoint, StudioEvaluationObjectiveSeries, StudioEvaluationObjectiveTerm,
 )
+from feedbax.contracts.loaded_model import IMPORTED_MODEL_MEDIA_TYPE, ImportedModelProvenance, ImportedModelSource
 from feedbax.contracts.manifest import (
     EvaluationRunManifest,
     EvaluationRunSpec,
     load_manifest_bytes,
 )
 from feedbax.contracts.model_input import (
-    INITIAL_MODEL_MEDIA_TYPE, OBJECTIVE_INPUT_MEDIA_TYPE, TASK_INPUT_MEDIA_TYPE, document_input_object,
+    INITIAL_MODEL_MEDIA_TYPE, OBJECTIVE_INPUT_MEDIA_TYPE, TASK_INPUT_MEDIA_TYPE, document_input_object, read_document_input,
 )
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.project_sources import pointer
@@ -49,6 +50,7 @@ from feedbax.persistence.evaluation_trial_records import RecordedTrialLayout, re
 from feedbax.persistence.checkpoint_selection import selected_coordinates
 from feedbax.persistence.best_selection import completion_score
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+from feedbax.persistence.project_subject import imported_model_provenance, read_imported_model
 
 if TYPE_CHECKING:
     from feedbax.dataset import Dataset
@@ -72,7 +74,8 @@ class EvaluationRequestBinding(StrictModel):
                 raise ValueError("Evaluate requires a model subject")
         elif (
             self.checkpoint is not None or self.terminal is not None
-            or self.initial_model.media_type != INITIAL_MODEL_MEDIA_TYPE or self.initial_model.tree
+            or self.initial_model.media_type not in {INITIAL_MODEL_MEDIA_TYPE, IMPORTED_MODEL_MEDIA_TYPE}
+            or self.initial_model.tree
         ):
             raise ValueError("Initial Evaluate requires one immutable Model input")
         return self
@@ -154,23 +157,29 @@ def decode_rollout_request(
 
 
 def initial_evaluation_references(decoded: DecodedRequest) -> dict[str, ContentRef]:
-    required = {"subject": INITIAL_MODEL_MEDIA_TYPE, "task": TASK_INPUT_MEDIA_TYPE}
+    required = {
+        "subject": {INITIAL_MODEL_MEDIA_TYPE, IMPORTED_MODEL_MEDIA_TYPE},
+        "task": {TASK_INPUT_MEDIA_TYPE},
+    }
     if "objective" in decoded.inputs:
-        required["objective"] = OBJECTIVE_INPUT_MEDIA_TYPE
+        required["objective"] = {OBJECTIVE_INPUT_MEDIA_TYPE}
     if decoded.inputs.keys() != required.keys():
         raise CannotRun("/inputs", "initial Evaluate requires a Model and Task, with an optional Objective")
     refs = {}
-    for role, media_type in required.items():
+    for role, media_types in required.items():
         members = decoded.inputs[role]
         content = members[0].reference
-        if len(members) != 1 or not isinstance(content, ContentRef) or content.tree or content.media_type != media_type:
+        if len(members) != 1 or not isinstance(content, ContentRef) or content.tree or content.media_type not in media_types:
             raise CannotRun(f"/inputs/{role}", "requires one immutable document of the declared kind")
         refs[role] = content
     return refs
 
 
 def initial_evaluation_provenance(refs: dict[str, ContentRef]) -> Provenance:
-    kinds = {"subject": "ModelDocument", "task": "TaskDocument", "objective": "ObjectiveDocument"}
+    kinds = {
+        "subject": "LoadedModel" if refs["subject"].media_type == IMPORTED_MODEL_MEDIA_TYPE else "ModelDocument",
+        "task": "TaskDocument", "objective": "ObjectiveDocument",
+    }
     return Provenance(parents=[
         ParentRef(kind=kinds[role], id=ref.sha256, role=role, metadata={"sha256": ref.sha256, "size_bytes": ref.size})
         for role, ref in refs.items()
@@ -178,21 +187,36 @@ def initial_evaluation_provenance(refs: dict[str, ContentRef]) -> Provenance:
 
 
 def verify_initial_rollout(
-    manifest: EvaluationRunManifest, refs: dict[str, ContentRef],
+    store: ImmutableArtifactBlobProvider, manifest: EvaluationRunManifest, refs: dict[str, ContentRef],
 ) -> ResolvedInitialRollout:
     binding = ResolvedRolloutBinding.model_validate(manifest.metadata["effective_binding"])
     (member,) = binding.members
     objective = refs.get("objective")
     params = RolloutParameters.model_validate(EvaluationRunSpec.model_validate(manifest.evaluation_spec.inline).params)
+    loaded, _ = verified_imported_subject(store, refs["subject"])
     if (
         not isinstance(member, ResolvedInitialRollout) or member.initial_model != refs["subject"].sha256
         or manifest.input_training_runs or manifest.provenance != initial_evaluation_provenance(refs)
         or "placement" in manifest.metadata or binding.digest() != manifest.metadata.get("effective_binding_sha256")
         or binding.objective != (objective.sha256 if objective is not None else None)
+        or manifest.loaded_model != loaded or member.replica_ids != (loaded.replicas if loaded else ())
         or (binding.seed, binding.trial_policy, member.trials) != (params.seed, params.trial_policy, params.trials)
     ):
         raise ValueError("Initial rollout manifest differs from its exact document subject")
     return member
+
+
+def verified_imported_subject(
+    store: ImmutableArtifactBlobProvider, subject: ContentRef, *, verify_bytes: bool = False,
+) -> tuple[ImportedModelProvenance | None, tuple[ContentObjectRef, ...]]:
+    if subject.media_type != IMPORTED_MODEL_MEDIA_TYPE:
+        return None, ()
+    source = read_document_input(subject, store)
+    assert isinstance(source, ImportedModelSource)
+    _, tree = read_imported_model(store, source, verify_bytes=verify_bytes)
+    return imported_model_provenance(source, tree), (
+        source.model, source.weights.descriptor, *tree.members.values(),
+    )
 
 
 def best_bound_rank(subject: BestRank, binding: dict, *, verify_metrics: bool = False) -> int:
@@ -334,6 +358,9 @@ def decode_evaluation_manifest(
         or projection.params != spec.params
         or projection.inputs != manifest.provenance.parents
         or projection.training_run_ids != [item.id for item in manifest.input_training_runs]
+        or (manifest.loaded_model is not None) != (
+            isinstance(subject, ContentRef) and subject.media_type == IMPORTED_MODEL_MEDIA_TYPE
+        )
     ):
         raise ValueError("Evaluate result differs from its canonical request and declared inputs.")
     return manifest, subject
@@ -355,7 +382,7 @@ def verify_evaluation_receipt(
         refs = initial_evaluation_references(decode_request(store.get_object(request), _unexpected_document))
         for content in refs.values():
             store.verify_object(document_input_object(content))
-        verify_initial_rollout(manifest, refs)
+        verify_initial_rollout(store, manifest, refs)
         return manifest, subject
     if "terminal" in binding:
         from feedbax.persistence.evaluation_subject import read_terminal_train_subject, terminal_train_provenance

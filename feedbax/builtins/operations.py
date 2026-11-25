@@ -20,9 +20,9 @@ from feedbax.dataset import Dataset, Variable
 from feedbax.contracts.rollout import RAW_STATES_SCHEMA, STATES_SCHEMA
 
 
-_MEMBER_AXES = ("checkpoint", "condition", "trial")
+_MEMBER_AXES = ("condition", "trial")
 _STATE_AXES = (*_MEMBER_AXES, "state_time")
-_SUMMARY_AXES = ("checkpoint", "condition", "state_time")
+_SUMMARY_AXES = ("condition", "state_time")
 _REACH_FRAME = "reach-aligned"
 _VELOCITY_SCHEMA = "feedbax.analysis.aligned_velocity.v1"
 _SPEED_SCHEMA = "feedbax.analysis.trial_speed.v1"

@@ -6,7 +6,6 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 
 import jax
-import jax.numpy as jnp
 
 from feedbax.compiler.graph import (
     ExecutableGraph,
@@ -17,8 +16,9 @@ from feedbax.compiler.graph import (
     resolve_graph,
 )
 from feedbax.compiler.model_document import (
-    LoweredModelDocument, ModelCompilationProblem, ResolvedModelInterface, lower_model_document,
+    LoweredModelDocument, ModelCompilationProblem, ResolvedModelInterface, lower_model_document, model_input_prototypes,
 )
+from feedbax.compiler.model_document import declared_model_input_prototypes as declared_model_input_prototypes
 from feedbax.compiler.model_reset import ModelResetField
 from feedbax.compiler.model_signals import ModelMeasureScope, ResolvedSignalLeaf, model_measure_scope
 from feedbax.compiler.resolution import ParameterResolutionError, ParameterResolutionErrors
@@ -82,9 +82,6 @@ class ResolvedTrialExecution:
         )
 
 
-_DTYPES = {ValueBase.BOOLEAN: jnp.bool_, ValueBase.INTEGER: jnp.int32, ValueBase.REAL: jnp.float32}
-
-
 @dataclass(frozen=True)
 class TrialPair:
     model: ResolvedModelInterface
@@ -110,21 +107,6 @@ def evaluation_conditions(task: TaskDocument | PythonTaskSelection, registry: Py
     if isinstance(template, tuple):
         raise ValueError(template[0].reason)
     return template.condition_ids
-
-
-def declared_model_input_prototypes(model: ModelDocument) -> dict[str, jax.ShapeDtypeStruct]:
-    prototypes = {}
-    for port in model.ports.inputs:
-        shape = port.type.shape
-        if shape is None or any(type(size) is not int or size <= 0 for size in shape):
-            continue
-        base = port.type.base
-        dtype = (
-            jnp.bool_ if base in ("bool", "boolean") else
-            jnp.int32 if base in ("int", "int32", "integer") else jnp.float32
-        )
-        prototypes[port.name] = jax.ShapeDtypeStruct(shape, dtype)
-    return prototypes
 
 
 def pair_trial_source(
@@ -161,18 +143,9 @@ def pair_trial_source(
         if signal_id is not None and signal_id in signal_types:
             supplied_types[port.name] = signal_types[signal_id]
     supplied = frozenset(supplied_types)
-    declared_prototypes = declared_model_input_prototypes(model)
     try:
         lowered = lower_model_document(model, components, supplied_inputs=supplied)
-        prototypes = {
-            target: (
-                jax.ShapeDtypeStruct(value.shape, _DTYPES[value.base])
-                if (value := supplied_types.get(port)) is not None
-                else declared_prototypes[port]
-            )
-            for port, target in lowered.graph.input_bindings.items()
-            if port in supplied or port in declared_prototypes
-        }
+        prototypes = model_input_prototypes(lowered.graph, model, supplied_types)
         if graph_override is not None:
             if graph_override.input_bindings != lowered.graph.input_bindings:
                 return (Problem(

@@ -1025,9 +1025,9 @@ export interface ModelConnectionReviewRequest {
   document: string;
   rows?: string[];
   axes?: Record<string, string[]>;
+  evaluate_scope?: StepRuns | AxisValueRuns | ListedRuns | VariantRuns | null;
   graph: ModelAddress;
   source: ComponentPortEnd | InputBoundaryEnd | TaskSignalSource;
-  evaluate_scope?: StepRuns | AxisValueRuns | ListedRuns | VariantRuns | null;
   grow_source?: boolean;
 }
 
@@ -1106,7 +1106,6 @@ export interface ModelProjection {
   physical_ports?: ModelPhysicalPortProjection[];
   task_signals?: ModelTaskSignal[];
   task_inputs?: ModelAddress[];
-  objective_ports?: ModelAddress[];
   problems?: ModelGraphProblem[];
   resolved_model?: ModelDocument | null;
   base_differences?: Array<ModelAddedElement | ModelRemovedElement | ModelRewiredElement>;
@@ -1120,6 +1119,7 @@ export interface ModelProjectionRequest {
   document: string;
   rows?: string[];
   axes?: Record<string, string[]>;
+  evaluate_scope?: StepRuns | AxisValueRuns | ListedRuns | VariantRuns | null;
 }
 
 export interface ModelTaskSignal {
@@ -3287,7 +3287,7 @@ export type InputRole = {
   "required": boolean;
   "gathers": boolean;
   "producer": InputProducer | null;
-  "documents": Array<"model" | "task">;
+  "documents": Array<"model" | "task" | "loaded_model">;
   "checkpoint_sets": boolean;
 };
 
@@ -7601,9 +7601,9 @@ export const ModelConnectionReviewRequestSchema: z.ZodType<ModelConnectionReview
       "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
       "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).optional(),
       "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1))).optional(),
+      "evaluate_scope": z.union([StepRunsSchema, AxisValueRunsSchema, ListedRunsSchema, VariantRunsSchema]).nullable().optional(),
       "graph": ModelAddressSchema,
       "source": z.union([z.union([ComponentPortEndSchema, InputBoundaryEndSchema]), TaskSignalSourceSchema]),
-      "evaluate_scope": z.union([StepRunsSchema, AxisValueRunsSchema, ListedRunsSchema, VariantRunsSchema]).nullable().optional(),
       "grow_source": z.boolean().optional(),
     })
     .strict()
@@ -7734,7 +7734,6 @@ export const ModelProjectionSchema: z.ZodType<ModelProjection> = z.lazy(() =>
       "physical_ports": z.array(ModelPhysicalPortProjectionSchema).optional(),
       "task_signals": z.array(ModelTaskSignalSchema).optional(),
       "task_inputs": z.array(ModelAddressSchema).optional(),
-      "objective_ports": z.array(ModelAddressSchema).optional(),
       "problems": z.array(ModelGraphProblemSchema).optional(),
       "resolved_model": ModelDocumentSchema.nullable().optional(),
       "base_differences": z.array(z.union([ModelAddedElementSchema, ModelRemovedElementSchema, ModelRewiredElementSchema])).optional(),
@@ -7752,6 +7751,7 @@ export const ModelProjectionRequestSchema: z.ZodType<ModelProjectionRequest> = z
       "document": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
       "rows": z.array(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_=-]*$"))).optional(),
       "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(z.string().min(1))).optional(),
+      "evaluate_scope": z.union([StepRunsSchema, AxisValueRunsSchema, ListedRunsSchema, VariantRunsSchema]).nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<ModelProjectionRequest>;
@@ -10594,7 +10594,7 @@ export const AxisLabelsSchema: z.ZodType<AxisLabels> = z.lazy(() =>
 ) as unknown as z.ZodType<AxisLabels>;
 
 export const AxisSelectionClauseSchema: z.ZodType<AxisSelectionClause> = z.lazy(() =>
-  z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(SelectedAxisValueSchema).min(1))
+  z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(SelectedAxisValueSchema).min(1)).refine((entries) => Object.keys(entries).length >= 1, { message: 'expected at least 1 entries' })
 ) as unknown as z.ZodType<AxisSelectionClause>;
 
 export const AxisValueSchema: z.ZodType<AxisValue> = z.lazy(() =>
@@ -11257,7 +11257,7 @@ export const InputRoleSchema: z.ZodType<InputRole> = z.lazy(() =>
     "required": z.boolean(),
     "gathers": z.boolean(),
     "producer": z.union([InputProducerSchema, z.null()]),
-    "documents": z.array(z.union([z.literal("model"), z.literal("task")])),
+    "documents": z.array(z.union([z.literal("model"), z.literal("task"), z.literal("loaded_model")])),
     "checkpoint_sets": z.boolean(),
   }).strict()
 ) as unknown as z.ZodType<InputRole>;

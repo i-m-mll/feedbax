@@ -7,16 +7,17 @@ from pathlib import Path
 
 from feedbax.compiler.model_assets import model_asset_refs
 from feedbax.contracts.acausal import ACAUSAL_GRAPH_SCHEMA_ID, AcausalGraphSpec
-from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ContentObjectRef
+from feedbax.contracts.artifact_custody import CONTENT_OBJECT_REF_PREFIX, ContentObjectRef, ContentRetentionTarget
 from feedbax.contracts.effective_success import TerminalTrainSubject
-from feedbax.contracts.model_input import document_input_object
 from feedbax.contracts.graph import GRAPH_SPEC_SCHEMA_ID, GraphSpec
+from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
+from feedbax.contracts.project import LoadedModelDocument
 from feedbax.contracts.project_io import TextProject
 from feedbax.contracts.task_document import TASK_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.training_document import TRAINING_DOCUMENT_SCHEMA_ID
 from feedbax.planner.project_plan import compile_project
-from feedbax.contracts.project_resolution import ProjectDiagnostic, compose_document
+from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, compose_document
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import ProductRef
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
@@ -46,6 +47,7 @@ from feedbax.persistence.canonical_evaluate import BoundEvaluationJobInput, init
 from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
 from feedbax.persistence.method_checkpoint import method_checkpoint_files
 from feedbax.persistence.checkpoint_errors import CheckpointCustodyError
+from feedbax.persistence.project_subject import imported_model_reader
 
 
 @dataclass(frozen=True)
@@ -78,7 +80,8 @@ def _authored_roots(text: TextProject, gaps: list[str]) -> list[RootObservation]
         if document.schema_id in (TASK_DOCUMENT_SCHEMA_ID, OBJECTIVE_DOCUMENT_SCHEMA_ID, TRAINING_DOCUMENT_SCHEMA_ID):
             continue
         model = graph_schemas.get(document.schema_id)
-        if model is None:
+        loaded = document.schema_id == LOADED_MODEL_SCHEMA_ID
+        if model is None and not loaded:
             gaps.append(f"document {name}: no Store-root traversal for {document.schema_id}")
             continue
         composed = compose_document(text.project.documents.get, name)
@@ -86,6 +89,13 @@ def _authored_roots(text: TextProject, gaps: list[str]) -> list[RootObservation]
             gaps.append(f"document {name}: {composed.detail}")
             continue
         try:
+            if loaded:
+                source = LoadedModelDocument.model_validate(composed.payload).source
+                roots.append(RootObservation(f"document:{name}", (
+                    object_target(source.model), ContentRetentionTarget(ref_kind="tree", tree=source.weights),
+                )))
+                continue
+            assert model is not None
             assets = tuple(
                 ref for _, ref in model_asset_refs(model.model_validate(composed.payload))
             )
@@ -95,7 +105,7 @@ def _authored_roots(text: TextProject, gaps: list[str]) -> list[RootObservation]
             if assets:
                 roots.append(_observed(f"document:{name}", *assets))
 
-    plan = compile_project(text.project)
+    plan = compile_project(text.project, readers=BaseReaders(imported_model=imported_model_reader(text.store_path)))
     for (_, step), planned in plan.steps.items():
         if planned.kind != "train":
             gaps.append(f"step {step}: no complete Store-root traversal for {planned.kind}")
@@ -197,6 +207,8 @@ def _job_roots(
             raise ValueError("Train launch differs from the scoped job")
         assert binding.canonical_request is not None
         refs.extend((binding.canonical_request.request, *binding.canonical_request.documents))
+        if (imported := binding.canonical_request.imported_model) is not None:
+            refs.extend(success_content_objects(ImmutableArtifactBlobProvider(root), imported))
         from feedbax.compiler.model_document import lower_model_document
         from feedbax.application.composition import load_application
 
@@ -220,7 +232,8 @@ def _job_roots(
         if binding.canonical_request.initial_model is not None:
             store = ImmutableArtifactBlobProvider(root)
             decoded = decode_request(store.get_object(binding.canonical_request.request), store.get_object)
-            refs.extend(document_input_object(content) for content in initial_evaluation_references(decoded).values())
+            for content in initial_evaluation_references(decoded).values():
+                refs.extend(success_content_objects(store, content))
     else:
         gaps.append(f"{name}: no typed canonical launch binding")
 

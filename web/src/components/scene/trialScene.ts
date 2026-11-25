@@ -1,11 +1,15 @@
 import type { StudioRegionIssue } from '@/components/activity/StudioRegion';
-import { studioName } from '@/components/activity/studioVocabulary';
-import { elementKey, type ElementAddress } from '@/features/projectWindow/elementSelection';
+import { studioName, studioReason } from '@/components/activity/studioVocabulary';
+import { addressKey } from '@/features/projectFolder/model/modelGraph';
+import { elementKey, isModelAddress, type ElementAddress } from '@/features/projectWindow/elementSelection';
+import { frameAt } from '@/components/timeline/trialClock';
 import type {
-  DomainDiagnostic, JsonValue, ModelAddress, StudioSceneGeometryFrame, TaskDocument, TrialRecord, ValueType,
+  DomainDiagnostic, JsonValue, ModelAddress, StudioSceneGeometryFrame, TaskDocument, TrialMean, TrialRecord, TrialRelation, ValueType,
 } from '@/generated/studioContracts';
 import type { ScenePoint } from './planarProjection';
-import type { Scene, SceneElement, SceneGroup, SceneShape, SceneTrack } from './sceneView';
+import type {
+  Scene, SceneElement, SceneEnd, SceneGroup, SceneMeanPath, ScenePlace, SceneRelation, SceneShape, SceneTrack,
+} from './sceneView';
 
 /** Values of a Model's states, by state address, that pose its mechanisms. */
 export type StateValues = Readonly<Record<string, JsonValue>>;
@@ -60,7 +64,51 @@ export function recordedTracks(record: TrialRecord, frame: number, trails: boole
   });
 }
 
+const planar = (rows: readonly (readonly number[])[]) => rows.every((row) => row.length === 2)
+  ? rows.map(([x, y]): ScenePoint => [x, y]) : undefined;
+
+/**
+ * Each condition's mean of each world-frame path `mean` holds, at `time` in seconds from Align's epoch; a condition
+ * whose common span does not hold `time` has no mark. Paths that are one quantity under two names are drawn once.
+ */
+export function meanPaths(mean: TrialMean, time: number, trails: boolean): SceneMeanPath[] {
+  return mean.conditions.flatMap((condition) => {
+    const within = condition.span && time >= condition.span.start - 1e-9 && time <= condition.span.end + 1e-9;
+    const frame = frameAt(condition.time, time);
+    const paths = new Map(Object.values(condition.states).map((summary) => [JSON.stringify(summary.mean), summary]));
+    return [...paths.values()].flatMap((summary): SceneMeanPath[] => {
+      const [points, lower, upper] = [planar(summary.mean), planar(summary.lower), planar(summary.upper)];
+      if (!points?.length || !lower || !upper) return [];
+      return [{
+        points, lower, upper, drawn: trails ? within ? frame + 1 : 0 : points.length, ...within && { head: points[frame] },
+      }];
+    });
+  });
+}
+
+/**
+ * Under Mean, each trial's world-frame paths drawn thin, with no mark of their own: under `trails`, each up to the
+ * playhead's aligned `time`, which is that trial's alignment origin plus `time` on its own record.
+ */
+function alignedTracks(mean: TrialMean, records: readonly TrialRecord[], stateTime: readonly number[], time: number, trails: boolean): SceneTrack[] {
+  const origins = new Map(mean.conditions.flatMap((condition) =>
+    Object.entries(condition.trials).map(([trial, alignment]) => [trial, alignment.origin] as const)));
+  return records.flatMap((record) => {
+    const origin = origins.get(record.id);
+    if (origin === undefined) return [];
+    return recordedTracks(record, frameAt(stateTime, origin + time), trails, false).map(({ head: _head, ...track }) => track);
+  });
+}
+
 const component = (address: ModelAddress) => address.element.kind === 'component' ? address.element.id : undefined;
+
+/** The component an address is of: itself, or the component that owns the field it names. */
+function owner(address: ModelAddress) {
+  const { element } = address;
+  const id = element.kind === 'component' ? element.id
+    : element.kind === 'field' && element.parent.kind === 'component' ? element.parent.id : undefined;
+  return id === undefined ? undefined : { key: JSON.stringify([address.composites, id]), id };
+}
 
 /** Each mechanism the geometry holds, with its bodies, joints and muscles, and each diagnostic on the element it names. */
 export function mechanismGroups(geometry: SceneModelGeometry): SceneGroup[] {
@@ -120,6 +168,59 @@ function signalPlace(record: TrialRecord, id: string, step: number): ScenePoint 
   return at(record.present[id], step) === true ? point(at(record.inputs[id], step)) : undefined;
 }
 
+/**
+ * The places Relate can join: each anchor the posed geometry draws, named by the mechanism that draws it, and each
+ * task variable or signal with a place at the playhead. An anchor no signal reads is not an end, and says so.
+ */
+export function relateEnds(geometry: SceneModelGeometry, task: SceneGroup | undefined): SceneEnd[] {
+  const names = new Map(geometry.mechanisms.map((mechanism) => [owner(mechanism.address)?.key, mechanism.name]));
+  const anchors = (geometry.anchors ?? []).map((anchor): SceneEnd => {
+    const of = owner(anchor.address);
+    const name = names.get(of?.key) ?? of?.id ?? studioName('anchor');
+    return {
+      key: JSON.stringify(['anchor', addressKey(anchor.address)]), place: { kind: 'anchor', address: anchor.address },
+      name, point: anchor.position, ...!anchor.signal && { reason: studioReason('unreadAnchor', name) },
+    };
+  });
+  const places = (task?.elements ?? []).flatMap((element): SceneEnd[] => {
+    if (element.shape?.kind !== 'point' || isModelAddress(element.address)) return [];
+    const [kind, ...id] = element.address.element.id.split(':');
+    if (kind !== 'variable' && kind !== 'signal') return [];
+    return [{ key: element.key, name: element.name, place: { kind, id: id.join(':') }, point: element.shape.point }];
+  });
+  return [...anchors, ...places];
+}
+
+/**
+ * Each term of the picked trial's Objective at state frame `frame`: a relation as its two ends, a lone place as its
+ * point. An end with no place at the frame (a signal not present, a computed point undefined) is not drawn.
+ */
+export function termDrawings(record: TrialRecord | undefined, geometry: SceneModelGeometry, frame: number) {
+  const anchors = new Map((geometry.anchors ?? []).map((anchor) => [addressKey(anchor.address), anchor.position]));
+  const placed = (place: TrialRelation['first']): ScenePoint | undefined => {
+    switch (place.kind) {
+      case 'anchor': return anchors.get(addressKey(place.address));
+      case 'variable': return record && variablePlace(record, place.id, frame);
+      case 'signal': return record && signalPlace(record, place.id, frame);
+      case 'computed': return point(at(place.samples, frame));
+    }
+  };
+  const relations: SceneRelation[] = [];
+  const places: ScenePlace[] = [];
+  for (const [term, value] of Object.entries(record?.terms ?? {})) {
+    for (const relation of value.relations ?? []) {
+      const first = placed(relation.first);
+      const second = placed(relation.second);
+      if (first && second) relations.push({ term, ends: [first, second] });
+    }
+    for (const place of value.places ?? []) {
+      const shown = placed(place);
+      if (shown) places.push({ term, point: shown });
+    }
+  }
+  return { relations, places };
+}
+
 /** The task a Scene draws: the document that holds it, and its definition. */
 export interface SceneTask {
   readonly document: string;
@@ -161,6 +262,11 @@ export function taskGroup(task: SceneTask, record: TrialRecord | undefined, poss
  */
 export interface SceneTrial {
   readonly picked: TrialRecord | undefined;
+  /**
+   * Under Mean, each condition's mean, the playhead's time from Align's epoch, and the recorded trials' state times;
+   * `possible` then holds every recorded trial and nothing is picked.
+   */
+  readonly mean?: { readonly value: TrialMean; readonly time: number; readonly stateTime: readonly number[] };
   readonly possible: readonly TrialRecord[];
   readonly frame: number;
   readonly task: SceneTask | undefined;
@@ -170,9 +276,10 @@ export interface SceneTrial {
 
 /**
  * The Scene of what the clock shows: the mechanisms posed by the picked trial, the rest pose beneath, each recorded
- * track (the picked trial's heavier) and the task.
+ * track (the picked trial's heavier) and the task. Under Mean, the mechanisms at rest alone, drawn faint, each trial's
+ * tracks thin, each condition's mean path with its spread, and where the task's places may be.
  */
-export function trialScene({ posed, rest, task, picked, possible, frame, trails }: {
+export function trialScene({ posed, rest, task, picked, possible, frame, trails, mean }: {
   posed: SceneModelGeometry;
   rest: SceneModelGeometry | undefined;
   task: SceneTask | undefined;
@@ -181,14 +288,29 @@ export function trialScene({ posed, rest, task, picked, possible, frame, trails 
   /** The state frame at the playhead; the task's values are read at the step it begins. */
   frame: number;
   trails: boolean;
+  mean?: SceneTrial['mean'];
 }): Scene {
+  if (mean) {
+    const places = task && taskGroup(task, undefined, possible, 0);
+    return {
+      groups: places ? [places] : [],
+      ends: relateEnds(posed, places),
+      ...termDrawings(undefined, posed, 0),
+      rest: mechanismShapes(posed),
+      tracks: alignedTracks(mean.value, possible, mean.stateTime, mean.time, trails),
+      means: meanPaths(mean.value, mean.time, trails),
+    };
+  }
   const drawn = task && taskGroup(task, picked, possible, frame);
   return {
     groups: [...mechanismGroups(posed), ...drawn ? [drawn] : []],
+    ends: relateEnds(posed, drawn),
+    ...termDrawings(picked, posed, frame),
     rest: rest ? mechanismShapes(rest) : [],
     tracks: [
       ...possible.filter((record) => record.id !== picked?.id).flatMap((record) => recordedTracks(record, frame, trails, false)),
       ...picked ? recordedTracks(picked, frame, trails, true) : [],
     ],
+    means: [],
   };
 }

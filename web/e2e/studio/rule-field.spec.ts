@@ -109,6 +109,11 @@ test('a run rule narrows an Evaluate subject and a Train Start, and a rule namin
   await expect(page.getByRole('menuitem', { name: 'To Rows', exact: true })).toHaveCount(0);
   await page.keyboard.press('Escape');
 
+  await rule.fill('');
+  await rule.press('Enter');
+  await expect.poll(async () => (await reads('evaluate', 'subject')).where).toBeUndefined();
+  await expect(runRows(page)).toHaveCount(4);
+
   await select(page, 'train');
   await card.getByRole('button', { name: 'New Step train', exact: true }).click();
   await chooseStepKind(page, 'Train');
@@ -121,6 +126,11 @@ test('a run rule narrows an Evaluate subject and a Train Start, and a rule namin
   expect((await started).ok()).toBe(true);
   await expect.poll(async () => withDefaultClauses((await reads('train-2', 'checkpoint')).where)).toEqual({ rule: 'seed=3', clauses: [{}] });
   await expect(runRows(page)).toHaveCount(1);
+
+  await rule.fill('');
+  await rule.press('Enter');
+  await expect.poll(async () => (await reads('train-2', 'checkpoint')).where).toBeUndefined();
+  await expect(runRows(page)).toHaveCount(4);
 });
 
 // Catches the new step's first field taking the keyboard when its form lands after the user has started writing the

@@ -16,6 +16,7 @@ from feedbax.contracts.expression_values import (
     Expression,
     Level,
     NameValue,
+    NodePath,
     Problem,
     ProblemCode,
     ScopedValue,
@@ -34,6 +35,7 @@ from feedbax.contracts.expression_check import references
 from feedbax.expression_compile import Compiled, Inputs, compile_expression
 from feedbax.contracts.expression_registry import Evaluation, FunctionRegistry
 from feedbax.objectives.base import TermTree
+from feedbax.objectives.term_points import TermPoints, measure_points
 from feedbax.runtime.epoch_windows import whole_window
 from feedbax.tasks.document import Trial, TrialSource
 
@@ -54,6 +56,7 @@ class TermTrace(NamedTuple):
     steps: jax.Array
     reduced: TermValue
     weight: Evaluation | None
+    points: tuple[Evaluation, ...] = ()
 
     @property
     def covered(self) -> jax.Array:
@@ -126,10 +129,13 @@ class ObjectiveExecutor(eqx.Module):
         )(retained, trials, trial_keys)
         return _reduce_trials(values)
 
-    def evaluate_with_traces(self, retained, trials, *, run_key, trial_keys, parameters=None):
+    def point_operands(self) -> dict[str, TermPoints]:
+        return {term.id: measure_points(term.measure.checked) for term in self.terms if isinstance(term, _Term)}
+
+    def evaluate_with_traces(self, retained, trials, *, run_key, trial_keys, parameters=None, observed_points=None):
         traces = jax.vmap(
             lambda kept, trial, key: self.trial_terms(
-                kept, trial, run_key, key, parameters=parameters,
+                kept, trial, run_key, key, parameters=parameters, observed_points=observed_points,
             )
         )(retained, trials, trial_keys)
         return _reduce_trials({term: trace.reduced for term, trace in traces.items()}), traces
@@ -157,6 +163,7 @@ class ObjectiveExecutor(eqx.Module):
         *,
         parameters=None,
         unobserved: Set[str] = frozenset(),
+        observed_points: Mapping[str, tuple[NodePath, ...]] | None = None,
     ) -> Mapping[str, TermTrace]:
         """The weight, weighted measure, covered steps and reduction of each term."""
         n_steps = self.n_steps
@@ -203,14 +210,17 @@ class ObjectiveExecutor(eqx.Module):
             weight_state = term.weight.with_trial(
                 weight_inputs, term.weight.evaluate_run(weight_inputs)
             )
+            paths = observed_points.get(term.id, ()) if observed_points is not None else ()
             if not measure_is_step:
                 measure, _ = term.measure.evaluate_step(measure_inputs, measure_state)
                 weight, _ = term.weight.evaluate_step(weight_inputs, weight_state)
                 covered = jnp.asarray(measure.defined & weight.defined)
+                points = term.measure.observe_points(measure_inputs, measure_state, paths)
                 results[term.id] = TermTrace(
                     None, jnp.broadcast_to(covered, (n_steps,)),
                     TermValue(measure.value * weight.value, covered),
                     _weight_trace(weight, selected) if show_weight else None,
+                    jax.tree.map(lambda value: jnp.broadcast_to(value, (n_steps, *jnp.shape(value))), points),
                 )
                 continue
             if n_steps == 0:
@@ -228,9 +238,9 @@ class ObjectiveExecutor(eqx.Module):
                 measure_state, weight_state = states
                 sample, environment, mask, local, fraction = data
                 values = fixed | environment
-                measure, measure_state = term.measure.evaluate_step(
-                    measure_inputs._replace(values=values, step=sample, defined=mask), measure_state
-                )
+                measure_step = measure_inputs._replace(values=values, step=sample, defined=mask)
+                points = term.measure.observe_points(measure_step, measure_state, paths)
+                measure, measure_state = term.measure.evaluate_step(measure_step, measure_state)
                 weight = None
                 if weight_is_step:
                     weight, weight_state = term.weight.evaluate_step(
@@ -241,9 +251,9 @@ class ObjectiveExecutor(eqx.Module):
                         ),
                         weight_state,
                     )
-                return (measure_state, weight_state), (measure, weight)
+                return (measure_state, weight_state), (measure, weight, points)
 
-            _, (samples, weight) = jax.lax.scan(
+            _, (samples, weight, points) = jax.lax.scan(
                 step, (measure_state, weight_state), (k, traces, available, t, u)
             )
             if weight is None:
@@ -252,7 +262,7 @@ class ObjectiveExecutor(eqx.Module):
             values = samples.value * weights.value
             steps = samples.defined & weights.defined
             reduced = _reduce(values, steps, term.reduction)
-            results[term.id] = TermTrace(values, steps, reduced, weights if show_weight else None)
+            results[term.id] = TermTrace(values, steps, reduced, weights if show_weight else None, points)
         return results
 
 
@@ -367,6 +377,7 @@ def compile_objective(
             period_seconds=period,
             path=(*path, "measure"),
             nominal=nominal,
+            record_points=True,
         )
         if not isinstance(measure, Compiled):
             problems.extend(measure)

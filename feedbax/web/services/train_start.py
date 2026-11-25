@@ -5,8 +5,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
+from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
 from feedbax.contracts.project import Project, RemoveProjectValue, SetProjectValue, Step, member_name
-from feedbax.contracts.project_inputs import StepReference
+from feedbax.contracts.project_inputs import LoadedModelReference, StepReference
 from feedbax.contracts.project_io import project_declaration_name
 from feedbax.contracts.project_resolution import ProjectDiagnostic, StepTemplate, compose_step
 from feedbax.contracts.project_sweep import Sweep
@@ -78,10 +79,15 @@ def _sweep_difference(parent: dict[str, Any] | None, own: dict[str, Any] | None)
     return difference or None
 
 
-def _started(own: _Definition, payload: dict[str, Any], source: StepReference | None, parent: _Definition | None):
+def _started(
+    own: _Definition, payload: dict[str, Any],
+    source: StepReference | LoadedModelReference | None, parent: _Definition | None,
+):
     """The step's authored fields that give it ``payload``, its sweep, inputs and requirements from ``source``."""
     inputs = {name: binding for name, binding in own.inputs.items() if name != "checkpoint"}
-    if source is None:
+    if not isinstance(source, StepReference):
+        if source is not None:
+            inputs["checkpoint"] = source.model_dump(mode="json", exclude_none=True)
         return {
             "base": {"inline": payload}, "sweep": own.sweep, "inputs": inputs or None,
             "requires": list(own.requires) or None, "deltas": None,
@@ -116,13 +122,16 @@ def prepare_train_start(
     source = body.source
     if step is None or step.kind != "train":
         raise ProjectFolderInvalid("Choose a Train step.")
-    if source is not None and (
-        not isinstance(source, StepReference)
-        or (parent := project.steps.get(source.step)) is None
+    if isinstance(source, StepReference) and (
+        (parent := project.steps.get(source.step)) is None
         or parent.kind != "train"
         or source.step == step_id
     ):
         raise ProjectFolderInvalid("A Train step starts from another Train step's checkpoint.")
+    if isinstance(source, LoadedModelReference):
+        selected = project.documents.get(source.source.document)
+        if selected is None or selected.schema_id != LOADED_MODEL_SCHEMA_ID or source.source.pointer or source.source.unresolved:
+            raise ProjectFolderInvalid("Choose a Loaded Model document.")
 
     def problem(diagnostic: ProjectDiagnostic) -> StudioTrainStartEdit:
         return StudioTrainStartEdit(
@@ -134,7 +143,7 @@ def prepare_train_start(
     own = _definition(project, step_id)
     if isinstance(own, ProjectDiagnostic):
         return problem(own)
-    parent_definition = _definition(project, source.step) if source is not None else None
+    parent_definition = _definition(project, source.step) if isinstance(source, StepReference) else None
     if isinstance(parent_definition, ProjectDiagnostic):
         return problem(parent_definition)
     payload = {key: value for key, value in own.payload.items() if key != _POLICY}

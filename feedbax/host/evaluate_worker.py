@@ -28,6 +28,7 @@ from feedbax.contracts.manifest import (
     normalize_manifest_spec_payloads,
 )
 from feedbax.contracts.model_checkpoint import SemanticModelEncoding
+from feedbax.contracts.loaded_model import ImportedModelSource, decode_imported_model_document
 from feedbax.contracts.model_input import CheckpointModelSource, InitialModelSource, read_document_input
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
@@ -59,6 +60,7 @@ from feedbax.persistence.canonical_evaluate import (
     evaluation_subject_provenance,
     initial_evaluation_provenance,
     initial_evaluation_references,
+    verified_imported_subject,
 )
 from feedbax.contracts.rollout import CannotRun
 from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
@@ -153,6 +155,8 @@ def resolve_rollout(
     import jax
 
     from feedbax.objectives.document import ObjectiveUse
+    from feedbax.compiler.model_anchors import anchored_outputs
+    from feedbax.execution.trial_places import bind_trial_places
     from feedbax.training.evaluation_variant import resolve_evaluation_variant, validate_evaluation_source
     from feedbax.host.rollout_scoring import RolloutScorer
 
@@ -181,7 +185,11 @@ def resolve_rollout(
             raise variant.task_refusal(varied[0])
         paired = varied.paired
     try:
-        scorer = RolloutScorer(paired.execution, paired.objective, params.seed, params.trials)
+        places = bind_trial_places(
+            paired.objective, paired.execution.task,
+            anchored_outputs(initial.document, registry.components, paired.signal_scope.leaves),
+        )
+        scorer = RolloutScorer(paired.execution, paired.objective, params.seed, params.trials, places=places)
     except ValueError as error:
         raise CannotRun("/params/trials", str(error)) from error
     return ResolvedRollout(paired, variant, source_pair, scorer)
@@ -216,9 +224,21 @@ def _prepare_model_rollout(
     *, seed: int, registry: ApplicationRegistryBundle,
 ) -> PreparedRollout:
     initial = InitialModelSource(document=documents.model, seed=seed)
+    return _prepare_weighted_rollout(
+        initial, documents.task_source, documents.objective, documents.input_bindings,
+        params, slot, registry=registry, coordinate=coordinate,
+    )
+
+
+def _prepare_weighted_rollout(
+    initial: InitialModelSource, task_source: TaskDocument | PythonTaskSelection,
+    objective: ObjectiveDocument | None, input_bindings: dict[str, str | None],
+    params: RolloutParameters, slot: SemanticModelSlot, *, registry: ApplicationRegistryBundle,
+    coordinate: int | None = None, imported_subject_sha256: str | None = None,
+) -> PreparedRollout:
     resolved = resolve_rollout(
-        initial, documents.task_source, documents.objective, slot.graph, params, registry=registry,
-        model_assets=slot.provider, input_bindings=documents.input_bindings,
+        initial, task_source, objective, slot.graph, params, registry=registry,
+        model_assets=slot.provider, input_bindings=input_bindings,
     )
     paired, variant, source_pair = resolved.paired, resolved.variant, resolved.source_pair
     source = CheckpointModelSource(tree=slot.tree, encoding=slot.encoding, initial=initial)
@@ -229,18 +249,27 @@ def _prepare_model_rollout(
     )
     if isinstance(restored, tuple):
         problem = restored[0]
-        raise CannotRun(json_pointer(("inputs", "subject", "checkpoint", *problem.path)), problem.reason)
+        raise CannotRun(json_pointer(("inputs", "subject", *problem.path)), problem.reason)
     model, task = rollout_semantics(
         restored.resolved.graph, restored.resolved.key_schedule, paired.task_source,
         paired.execution.input_bindings, variant.source_overrides,
     )
-    member = ResolvedRolloutMember(
-        coordinate=coordinate, model_tree=slot.tree.descriptor.sha256, model=model, task=task, trials=params.trials,
-        replica_ids=restored.replica_ids if len(restored.replica_ids) > 1 else (),
-    )
+    replicas = ()
+    if len(restored.replica_ids) > 1 or imported_subject_sha256 is not None:
+        replicas = tuple(zip(restored.replica_ids, restored.graphs, strict=True))
+    if imported_subject_sha256 is not None:
+        member = ResolvedInitialRollout(
+            initial_model=imported_subject_sha256, model=model, task=task, trials=params.trials,
+            replica_ids=restored.replica_ids,
+        )
+    else:
+        assert coordinate is not None
+        member = ResolvedRolloutMember(
+            coordinate=coordinate, model_tree=slot.tree.descriptor.sha256, model=model, task=task, trials=params.trials,
+            replica_ids=restored.replica_ids if replicas else (),
+        )
     return _prepared_rollout(
-        resolved, restored.graphs[0], member, documents.objective, slot=slot,
-        replicas=tuple(zip(restored.replica_ids, restored.graphs, strict=True)) if len(restored.graphs) > 1 else (),
+        resolved, restored.graphs[0], member, objective, slot=slot, replicas=replicas,
     )
 
 
@@ -253,8 +282,18 @@ def _prepare_initial_rollout(
     source = read_document_input(refs["subject"], store)
     task = read_document_input(refs["task"], store)
     objective = read_document_input(refs["objective"], store) if "objective" in refs else None
-    assert isinstance(source, InitialModelSource) and isinstance(task, (TaskDocument, PythonTaskSelection))
+    assert isinstance(task, (TaskDocument, PythonTaskSelection))
     assert objective is None or isinstance(objective, ObjectiveDocument)
+    if isinstance(source, ImportedModelSource):
+        from feedbax.host.model_checkpoint import SemanticModelSlot
+
+        model = decode_imported_model_document(store.get_object(source.model))
+        slot = SemanticModelSlot.open_store(store, source.weights, source.encoding, components=registry.components)
+        return _prepare_weighted_rollout(
+            InitialModelSource(document=model), task, objective, params.input_bindings,
+            params, slot, registry=registry, imported_subject_sha256=refs["subject"].sha256,
+        )
+    assert isinstance(source, InitialModelSource)
     resolved = resolve_rollout(
         source, task, objective, None, params, registry=registry, model_assets=store,
         input_bindings=params.input_bindings,
@@ -347,6 +386,7 @@ def rollout_dataset(
     trial_fields, trial_coordinates, record_layout = trial_dataset_fields(
         paired.execution.task, evaluated, layout, leading=leading, labels=labels, document=document,
         observation_origins=paired.execution.observation_origins,
+        places=prepared.scorer.places,
     )
     variables.update(trial_fields)
     state_coordinates.update(trial_coordinates)
@@ -690,10 +730,12 @@ def main(argv: Sequence[str]) -> int:
         events.phase("restoring")
         launch = request.canonical_request
         registry = load_application().bundle
+        loaded_model = None
         if isinstance(subject, ContentRef):
             binding = {}
             decoded = decode_request(store.get_object(launch.request), store.get_object)
             refs = initial_evaluation_references(decoded)
+            loaded_model, _ = verified_imported_subject(store, subject)
             members = ((None, partial(_prepare_initial_rollout, refs, params, registry=registry, store=store)),)
             train, provenance = [], initial_evaluation_provenance(refs)
         elif launch.terminal is not None or "terminal" in (binding := read_host_completion_binding()):
@@ -748,6 +790,7 @@ def main(argv: Sequence[str]) -> int:
                         kind="EvaluationRunSpec", inline=projection.model_dump(mode="json"),
                     ),
                     input_training_runs=train,
+                    loaded_model=loaded_model,
                     provenance=provenance,
                     artifacts=[
                         ArtifactRef(

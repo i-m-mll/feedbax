@@ -26,7 +26,7 @@ from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectRevisionConflict
 from tests.support.host import admit, held_until_released, run_job, token, wait_until
-from tests.support.managed_train_fixture import managed_train_payload, managed_train_project
+from tests.support.managed_train_fixture import managed_evaluation_step, managed_train_payload, managed_train_project
 
 
 def _write_project(root: Path, spec: DocumentTrainingRequestSpec) -> None:
@@ -199,6 +199,52 @@ def test_saved_train_read_can_include_the_settled_window_map(host, tmp_path, mon
     (unscored,) = (problem for problem in window["problems"] if problem["step"] == "unscored")
     assert unscored["place"] == {"part": "objective", "document": "unscored"}
     assert not (root / "results").exists()
+
+
+def test_saved_window_map_keeps_both_producers_of_waiting_diagonal_rows(host, tmp_path, monkeypatch):
+    projects = tmp_path / "projects"
+    root = projects / "diagonal"
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    monkeypatch.setenv("FEEDBAX_ORCHESTRATION_ROOT", str(tmp_path / "orchestration"))
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    train = raw["steps"]["train"]
+    train["base"]["inline"]["seed"] = 0
+    train["sweep"] = {"axes": {
+        "seed": {"values": {key: {"patches": {"seed": {"value": seed}}} for key, seed in (("a", 0), ("b", 1))}},
+        "batches": {"values": {key: {"patches": {"training_config.n_batches": {"value": batches}}}
+                               for key, batches in (("short", 2), ("long", 3))}},
+    }}
+    evaluate = managed_evaluation_step("train") | {"sweep": {"axes": {"subject": {"input": "subject"}}}}
+    pairs = (("short", "a"), ("long", "b"))
+    evaluate["inputs"]["subject"]["where"] = {"clauses": [
+        {axis: [{"id": value, "label": value}] for axis, value in (("batches", batches), ("seed", seed))}
+        for batches, seed in pairs
+    ]}
+    raw["steps"]["evaluate"] = evaluate
+    for relative, data in dump_text_project(
+        Project.model_validate(raw), ProjectConfiguration(project="diagonal", store="results")
+    ).items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+    with TestClient(create_app(projects_dir=projects)) as client:
+        revision = client.get("/api/projects/diagonal").json()["revision"]
+        response = client.get("/api/projects/diagonal/train-runs", params={"revision": revision, "window_map": True})
+    assert response.status_code == 200, response.text
+    window = response.json()["window_map"]
+    def key(address):
+        return address["variant"], address["step"], address["row"]
+
+    evaluations = {key(item["key"]): item["status"] for item in window["evaluations"]}
+    assert len(evaluations) == 2 and set(evaluations.values()) == {"waiting"}
+    edges = [edge for edge in window["edges"] if key(edge["to_key"]) in evaluations]
+    assert {key(edge["to_key"]) for edge in edges} == evaluations.keys()
+    assert len(edges) == 2
+    assert {edge["from_key"]["row"] for edge in edges} == {
+        f"batches={batches}--seed={seed}" for batches, seed in pairs
+    }
+    assert all(edge["from_key"]["step"] == "train" for edge in edges)
 
 
 def test_plan_joins_exact_train_attempts_and_receipts_across_reload(host, tmp_path, monkeypatch, record_property):

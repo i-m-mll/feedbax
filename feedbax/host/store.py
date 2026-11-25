@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Literal, NamedTuple
 from uuid import uuid4
 
+from feedbax.checkpoint_coordinates import finite_coordinates
 from feedbax.contracts.artifact_custody import ContentObjectRef
 from feedbax.contracts.effective_success import RequestObject, TerminalTrainSubject
 from feedbax.contracts.execution_target import SessionTarget, attempt_target
@@ -818,6 +819,7 @@ class Store:
                     from feedbax.contracts.model_input import read_document_input
                     from feedbax.persistence.canonical_evaluate import (
                         BoundEvaluationJobInput, decode_rollout_request, initial_evaluation_references,
+                        verified_imported_subject,
                     )
 
                     try:
@@ -834,6 +836,7 @@ class Store:
                             raise ValueError("Initial Evaluate differs from its canonical request.")
                         for content in initial_evaluation_references(view.read_request(request)).values():
                             read_document_input(content, view.store)
+                        verified_imported_subject(view.store, launch.canonical_request.initial_model, verify_bytes=True)
                     except (OSError, TypeError, ValueError, KeyError) as error:
                         results.append({
                             "run_key": run_key, "job_id": None, "disposition": "rejected",
@@ -1855,6 +1858,30 @@ class Store:
             )
             members.append(member | {"publication_cursor": cursor})
         return missing, members
+
+    def checkpoint_for_export(self, *, job_id: str, project: str, manifest_root: str, update: int) -> dict | None:
+        """Authenticate a checkpoint on the named attempt's exact recovery lineage."""
+        coordinates = finite_coordinates((update,))
+        attempt = self.get(job_id)
+        if (
+            attempt is None or attempt["project"] != project or not attempt["request"].startswith("train:")
+            or json.loads(attempt["data"]).get("manifest_root") != manifest_root
+        ):
+            return None
+        path = [attempt]
+        while path[-1]["continues"] is not None:
+            ancestor = self.get(path[-1]["continues"])
+            if ancestor is None or (ancestor["project"], ancestor["request"]) != (project, attempt["request"]):
+                raise HostError("checkpoint_unavailable", "The selected Train lineage is incomplete.")
+            path.append(ancestor)
+        read = self._completion_candidate(
+            path[-1]["id"], CheckpointSelection(coordinates, requires_catalog=False), tip=job_id, observe=True,
+        )
+        if read.binding is not None:
+            return read.binding["checkpoint_selection"]["members"][0]["checkpoint"]
+        if read.rejections:
+            raise HostError("checkpoint_unavailable", read.rejections[-1].message)
+        return None
 
     def _series_closure(self, attempt: sqlite3.Row, path: tuple[sqlite3.Row, ...]) -> dict | None:
         if attempt["state"] == "succeeded":

@@ -18,6 +18,7 @@ from feedbax.runtime._graph_key_schedule import (
 )
 from feedbax.runtime.graph import Graph, GraphTraceRequest
 from feedbax.compiler.model_reset import ModelResetPlan
+from feedbax.contracts.expression_values import NodePath
 from feedbax.tasks.document import TaskParameters, Trial, TrialSource
 
 
@@ -108,6 +109,7 @@ class TrialExecution:
         run_key: jax.Array,
         trial_keys: jax.Array,
         capture_state: Callable | None = None,
+        observed_points: Mapping[str, tuple[NodePath, ...]] | None = None,
     ) -> TrialEvaluation:
         retained, history = self.rollout_batch(
             graph, trials, trial_keys, capture_state=capture_state,
@@ -118,7 +120,7 @@ class TrialExecution:
                 score = objective.evaluate(retained, trials, run_key=run_key, trial_keys=trial_keys)
             else:
                 score, traces = objective.evaluate_with_traces(
-                    retained, trials, run_key=run_key, trial_keys=trial_keys,
+                    retained, trials, run_key=run_key, trial_keys=trial_keys, observed_points=observed_points,
                 )
         return TrialEvaluation(score, trials, retained, history, traces)
 
@@ -157,8 +159,10 @@ class TrialExecution:
     def evaluate(
         self, graph: Graph, objective: ObjectiveExecutor | None, parameters: TaskParameters, *,
         key: jax.Array, trial_ids: tuple[str, ...], capture_state: Callable | None = None,
+        observed_points: Mapping[str, tuple[NodePath, ...]] | None = None,
     ) -> TrialEvaluation:
         trials, keys = sample_evaluation_trials(self.task, parameters, key=key, trial_ids=trial_ids)
         return self.score(
             graph, objective, trials, run_key=key, trial_keys=keys, capture_state=capture_state,
+            observed_points=observed_points,
         )
