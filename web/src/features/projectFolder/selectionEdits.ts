@@ -15,8 +15,11 @@ export function stepSelections(binding: InputBinding | null | undefined): StepRe
 
 export type SelectionChange =
   | { kind: 'add'; reference: StepReference }
-  /** `reference` names a step, or an operation's output in an Analyze card. */
-  | { kind: 'replace'; index: number; reference: Pick<StepReference, 'step' | 'element' | 'product'> }
+  /**
+   * `reference` names a step, or an operation's output in an Analyze card. A reference that reads a checkpoint keeps
+   * the checkpoint of the selection it replaces.
+   */
+  | { kind: 'replace'; index: number; reference: Pick<StepReference, 'step' | 'element' | 'product' | 'checkpoint'> }
   | { kind: 'remove'; index: number };
 
 /**
@@ -28,7 +31,8 @@ export function changedSelections(selections: readonly StepReference[], change: 
     : change.kind === 'remove' ? selections.filter((_, index) => index !== change.index)
       : selections.map((reference, index) => index !== change.index ? reference : {
         ...change.reference,
-        ...(reference.checkpoint != null && change.reference.element == null && { checkpoint: reference.checkpoint }),
+        ...(reference.checkpoint != null && change.reference.checkpoint != null && change.reference.element == null &&
+          { checkpoint: reference.checkpoint }),
       });
   return next.length === 1 ? next[0] : next;
 }
@@ -138,22 +142,26 @@ export function exceptionRuleProblem(
 
 /**
  * What a wire from step `source` to step `target` adds: a selection of `source` on the one input of `target` that
- * takes a list of `source`'s kind. A target that has no such input, or already reads `source` there, takes none.
+ * gathers `source`'s kind. A target that has no such input, or already reads `source` there, takes none.
  */
 export function connection(
   steps: Readonly<Record<string, Step | null>> | null | undefined, source: string, target: string,
 ): { role: string; edits: ProjectValueEdit[]; reads: string[] } | undefined {
   const from = steps?.[source];
   const to = steps?.[target];
-  if (!from || !to || source === target || from.kind !== producerKind[to.kind]) return undefined;
+  const producers = to && producerKinds[to.kind] || [];
+  const produces = (step: Step | null | undefined) => !!step && producers.includes(step.kind);
+  if (!from || !to || source === target || !produces(from)) return undefined;
   const roles = Object.entries(to.inputs ?? {}).filter(([role, binding]) =>
     (to.kind !== 'evaluate' || role === 'subject') &&
-    stepSelections(binding)?.every(({ step }) => steps[step]?.kind === from.kind));
+    stepSelections(binding)?.every(({ step }) => produces(steps[step])));
   if (roles.length !== 1) return undefined;
   const [[role, binding]] = roles;
   const selections = stepSelections(binding)!;
   if (selections.some(({ step }) => step === source)) return undefined;
-  const reference = to.kind === 'evaluate' ? { step: source, checkpoint: selections[0].checkpoint ?? 'last' } : { step: source };
+  const reference = from.kind === 'train'
+    ? { step: source, checkpoint: selections.find(({ checkpoint }) => checkpoint != null)?.checkpoint ?? 'last' }
+    : { step: source };
   const next = changedSelections(selections, { kind: 'add', reference });
   return {
     role,
@@ -162,8 +170,8 @@ export function connection(
   };
 }
 
-/** The kind of step whose runs an input of a step of each kind gathers as a list. */
-const producerKind: Partial<Record<StepKind, StepKind>> = { evaluate: 'train', analyze: 'evaluate' };
+/** The kinds of step whose runs an input of a step of each kind gathers as a list. */
+const producerKinds: Partial<Record<StepKind, readonly StepKind[]>> = { evaluate: ['train', 'synthesize'], analyze: ['evaluate'] };
 
 /** The edits that fan an Evaluate step out over the members of its subject, when no axis does yet. */
 export function subjectAxisEdits(step: Step): ProjectValueEdit[] {

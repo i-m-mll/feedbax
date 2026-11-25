@@ -23,7 +23,7 @@ import '@/components/values/valueField.css';
 type Choice = { id: string; label: string };
 
 /** The inspector fields of a step an edit can be refused on: its input, a selection's Checkpoint or Runs by index, and Trials. */
-export type StepField = 'input' | 'checkpoint' | `subset.${number}` | 'trials';
+export type StepField = 'input' | 'checkpoint' | `subset.${number}` | 'trials' | 'method';
 
 /** A field group's members, one step in; no space at all when the group's control is all there is. */
 const members = 'value-field-parts grid gap-1 empty:hidden';

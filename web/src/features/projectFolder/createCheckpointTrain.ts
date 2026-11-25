@@ -24,14 +24,17 @@ function continuation(source: StepReference, inherited: boolean): Step {
   };
 }
 
-export function trainSourceSubset(
+/** The runs of a model-producing step of one of `kinds` that `source` chooses, with the terms that choose them. */
+export function modelSourceSubset(
   source: PipelineMapStepSource,
   view: PlanView,
   projection: StudioSavedTrainRuns,
+  kinds: readonly ('train' | 'synthesize')[],
 ) {
   const { stepId, selection } = source;
-  const step = view.steps.find(({ id }) => id === stepId);
-  if (step?.kind !== 'train' || !step.runs.length) throw new Error('Choose a runnable Train step.');
+  const found = view.steps.find(({ id }) => id === stepId);
+  const step = found && (kinds as readonly string[]).includes(found.kind) ? found : undefined;
+  if (!step?.runs.length) throw new Error('Choose a runnable model step.');
   const members = selection ? selectedRuns(step, selection) : step.runs;
   const variant = planVariants(projection)[0];
   if (!variant || !members.length || members.some((member) => member.variant !== variant)) throw new ProjectEditConflictError();
@@ -50,7 +53,7 @@ export async function createCheckpointTrain(
   view: PlanView,
   projection: StudioSavedTrainRuns,
 ) {
-  const { step, where } = trainSourceSubset(source, view, projection);
+  const { step, where } = modelSourceSubset(source, view, projection, ['train']);
   const id = generatedName('train', holds(editor.getSnapshot().saved.project.steps));
   await editor.createFile({
     kind: 'step', id,

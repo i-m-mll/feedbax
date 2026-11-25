@@ -2,9 +2,9 @@ import { useState, type ReactNode } from 'react';
 import { studioStep } from '@/components/activity/studioVocabulary';
 import { Menu, MenuContent, MenuItem, type MenuContentProps } from '@/components/ui/Menu';
 import { gestureContext } from '@/features/projectWindow/heldGestures';
+import type { StepKind } from '@/generated/studioContracts';
 
-export const stepKinds = ['train', 'evaluate', 'analyze', 'report'] as const;
-export type StepKind = typeof stepKinds[number];
+export const stepKinds = ['train', 'synthesize', 'evaluate', 'analyze', 'report'] as const satisfies readonly StepKind[];
 /** The kinds that can be created at one place, each with its action. */
 export type StepInsertion = Readonly<Partial<Record<StepKind, () => void>>>;
 
@@ -51,7 +51,7 @@ function placement(from: Element | Point | null): Omit<Placement, 'fromKeyboard'
   return { anchor: pointAnchor({ x: window.innerWidth / 2, y: bar }), align: 'center', returnFocus: null };
 }
 
-/** One menu of the four step kinds, anchored to whatever invoked it. */
+/** One menu of the step kinds, anchored to whatever invoked it. */
 export function useStepInsertMenu(): { open(insertion: StepInsertion): void; menu: ReactNode } {
   const [request, setRequest] = useState<{ insertion: StepInsertion } & Placement>();
   const menu = (
