@@ -380,7 +380,7 @@ def _instant_cycle_issues(graph: GraphSpec, base_path: str) -> list[SchemaValida
             return [
                 SchemaValidationIssue(
                     type="instant_cycle",
-                    message="Instant wires contain a same-step cycle; mark one cycle edge recurrent",
+                    message="Instant wires contain a same-step cycle; one wire needs a carry initializer",
                     location={
                         "path": f"{base_path}/wires/{first_index}",
                         "cycle_wires": ",".join(str(index) for index in cycle),
