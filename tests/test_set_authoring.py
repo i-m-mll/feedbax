@@ -297,6 +297,12 @@ def test_duplicate_run_names_match_window_and_activity_and_the_kept_run_is_selec
     _save_project(folders, PROJECT, Project.model_validate(raw))
     assert [row.label for row in _rows(folders, "baseline").values()] == ["Run 1"]
 
+    raw["steps"]["train"]["sweep"]["axes"]["mode"] = {"values": {"unset": {"value": None}}}
+    _save_project(folders, PROJECT, Project.model_validate(raw))
+    plan, _ = read()
+    kept = next(row for row in plan.rows if row.key.step == "train" and "run" in row.kept_axes)
+    assert _plan_run_data("a", plan, kept)["coordinates"] == {"mode": None}
+
 
 def test_set_entry_task_edits_reach_only_selected_sweep_and_trial_rows(studio):
     folders, client = studio
