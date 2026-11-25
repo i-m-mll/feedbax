@@ -6,14 +6,15 @@ from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE, SemanticMo
 from feedbax.contracts.model_input import CheckpointModelSource, InitialModelSource
 from feedbax.contracts.request_refs import LastMember, ProductRef
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
+from feedbax.contracts.training import TrialDocuments
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.checkpoint_publication import model_product, read_retained_checkpoint
 
 
 def checkpoint_model_source(
     bound: BoundMember, *, artifacts: ImmutableArtifactBlobProvider,
-) -> CheckpointModelSource:
-    """Read the authored Model and exact semantic product selected by a frozen binding."""
+) -> tuple[CheckpointModelSource, TrialDocuments]:
+    """Read the exact checkpoint Model and its Train trial pairing."""
     if (source := bound.checkpoint_model) is not None:
         checkpoint, spec = read_retained_checkpoint(artifacts, source.publication, source.producer)
         model = model_product(checkpoint)
@@ -39,11 +40,12 @@ def checkpoint_model_source(
 
 def _model_source(
     tree: ContentTreeRef, encoding: SemanticModelEncoding, spec: DocumentTrainingRequestSpec,
-) -> CheckpointModelSource:
+) -> tuple[CheckpointModelSource, TrialDocuments]:
     documents = spec.trial_documents
-    return CheckpointModelSource(
+    source = CheckpointModelSource(
         tree=tree, encoding=encoding,
         initial=InitialModelSource(
             document=documents.model, seed=spec.seed or 0,
         ),
     )
+    return source, documents
