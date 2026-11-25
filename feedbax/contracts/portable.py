@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field as dataclass_field
 from copy import copy
 from functools import lru_cache
 from types import UnionType
@@ -46,6 +46,17 @@ type OutputSignal = SignalProperties | StateSignal | PassedSignal
 type OutputSignals = Mapping[SignalLeafPath, OutputSignal]
 
 
+def signal_leaf_declaration(declarations: OutputSignals, path: SignalLeafPath) -> OutputSignal | None:
+    exact = declarations.get(path)
+    if exact is not None:
+        return exact
+    for size in range(len(path) - 1, -1, -1):
+        ancestor = declarations.get(path[:size])
+        if isinstance(ancestor, PassedSignal):
+            return PassedSignal((*ancestor.source, *path[size:]), ancestor.keeps)
+    return None
+
+
 @dataclass(frozen=True)
 class Ports:
     """One authority for fixed port names and their types."""
@@ -54,8 +65,8 @@ class Ports:
     outputs: Mapping[str, PortType]
     dynamic: DynamicPortPolicy | None = None
     required_inputs: tuple[str, ...] = ()
-    input_leaves: Mapping[SignalLeafPath, SignalProperties] = field(default_factory=dict)
-    output_leaves: OutputSignals | Callable[[Mapping[str, Any]], OutputSignals] = field(
+    input_leaves: Mapping[SignalLeafPath, SignalProperties] = dataclass_field(default_factory=dict)
+    output_leaves: OutputSignals | Callable[[Mapping[str, Any]], OutputSignals] = dataclass_field(
         default_factory=dict
     )
 
@@ -80,14 +91,10 @@ class Ports:
         self, path: SignalLeafPath, params: Mapping[str, Any],
     ) -> OutputSignal | None:
         """Resolve a port-first path, including a pass of an entire subtree."""
-        declarations = self.output_leaves(params) if callable(self.output_leaves) else self.output_leaves
-        for size in range(len(path), 0, -1):
-            declaration = declarations.get(path[:size])
-            if isinstance(declaration, PassedSignal):
-                return PassedSignal((*declaration.source, *path[size:]), declaration.keeps)
-            if size == len(path) and declaration is not None:
-                return declaration
-        return None
+        return signal_leaf_declaration(self.declared_outputs(params), path)
+
+    def declared_outputs(self, params: Mapping[str, Any]) -> OutputSignals:
+        return self.output_leaves(params) if callable(self.output_leaves) else self.output_leaves
 
 
 @dataclass(frozen=True)
