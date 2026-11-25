@@ -356,7 +356,7 @@ def observe(state, ctx):
             def terminal():
                 opening = remote.opening_rows(reviewed).get(TRAIN)
                 assert opening is None or opening.status != "failed", opening.reason if opening else None
-                return _terminal_without_rpc(run.venue / "host" / "host.sqlite")
+                return _terminal_without_rpc(run.venue / "host" / "host.sqlite", count=1)
 
             settled = wait_until(terminal)
             assert [row[1] for row in settled] == ["succeeded"], settled
@@ -365,6 +365,7 @@ def observe(state, ctx):
             assert snapshot_tree_identity(run.venue / "project-packages" / pin.snapshot.content_sha256) == (
                 pin.snapshot.content_sha256, pin.snapshot.file_count,
             )
+            assert str(pin.snapshot.commit) in (run.venue / "environment" / "uv.lock").read_text()
             session = provider.jobs(run.driver, request.id)
             (job,) = session.host.jobs_snapshot()["jobs"]
             store = ImmutableArtifactBlobProvider(run.venue / "stores" / reviewed.project_id)
@@ -372,6 +373,7 @@ def observe(state, ctx):
             receipt = SuccessView(store).read_owned_success(ref).receipt
             assert read_final_train_metrics(store, receipt, train.request_id)("package_value") == 27.5
     finally:
+        _terminate_local_venue(run.venue)
         sys.modules.pop("remote_method_probe", None)
 
 

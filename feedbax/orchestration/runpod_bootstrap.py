@@ -206,6 +206,18 @@ def _install_project_packages(root, settings, verify_tree, uv, python, env) -> N
             env=env, check=True, timeout=10,
         )
 
+    environment = root / "environment"
+    _private(environment)
+    encoded_pins = json.dumps(packages, sort_keys=True)
+    lines = ["version = 1", f"project-package-pins = {json.dumps(encoded_pins)}"]
+    installed = subprocess.check_output(
+        [str(python), "-I", "-B", "-c", _PACKAGE_VERSIONS], env=env, text=True, timeout=10,
+    )
+    for requirement in sorted(installed.splitlines()):
+        name, version = requirement.split("==", 1)
+        lines.extend(("", "[[package]]", f"name = {json.dumps(name)}", f"version = {json.dumps(version)}"))
+    _publish(environment / "uv.lock", ("\n".join(lines) + "\n").encode())
+
 
 def _install(root: Path, settings: dict, verify_tree: Callable[[Path], tuple[str, int]]) -> None:
     cached_probe = root / "probe.json"

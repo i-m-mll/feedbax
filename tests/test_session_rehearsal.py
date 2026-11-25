@@ -112,12 +112,12 @@ def _controller(root: Path, provider_root: Path, projects: Path, gate: Path, ses
         raise AssertionError("Didn't interrupt the accepted delegation.")
 
 
-def _terminal_without_rpc(database: Path):
+def _terminal_without_rpc(database: Path, *, count: int = 2):
     if not database.exists():
         return None
     with closing(sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)) as db:
         rows = db.execute("SELECT id, state, outcome FROM jobs ORDER BY seq").fetchall()
-    return rows if len(rows) == 2 and all(row[2] is not None for row in rows) else None
+    return rows if len(rows) == count and all(row[2] is not None for row in rows) else None
 
 
 def test_remote_stop_accepts_before_contacting_the_venue(host, tmp_path, monkeypatch):

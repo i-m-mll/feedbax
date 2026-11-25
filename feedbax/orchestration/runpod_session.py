@@ -385,12 +385,14 @@ class RunPodSessionProvider:
         return self._client(self._connection(resource), self._layout(resource), access)
 
     def jobs(self, driver: SessionDriver, session_id: UUID) -> SessionJobs:
-        resource = driver.record(session_id).venue
+        record = driver.record(session_id)
+        resource = record.venue
         if driver.provider is not self or resource is None:
             raise SessionError("Saved-plan submission requires this RunPod venue.")
         layout = self._layout(resource)
+        lock_root = "environment" if record.launch.request.project_packages else "repo"
         return SessionJobs(driver, session_id, venue_jobs=VenueJobs(
-            self._connection(resource), python=layout.python, cwd=layout.root / "repo",
+            self._connection(resource), python=layout.python, cwd=layout.root / lock_root,
             host_root=layout.host, projects_root=layout.root / "projects", stores_root=layout.root / "stores",
             worker_environment=self.environment.worker_environment,
         ))
