@@ -41,12 +41,12 @@ def _component_port(component, direction, port, *, scope=()):
 
 def test_shipped_point_mass_outputs_keep_state_meaning_without_stored_units():
     model = _example()
-    assert all(not port["type"].get("unit") for port in model["ports"]["outputs"] if port["id"] in {
-        "hand", "velocity",
-    })
+    assert next(port["type"] for port in model["ports"]["outputs"] if port["id"] == "effector") == {}
     signals, interface = _resolve(model)
     assert not signals.problems
-    hand = signals.at(boundary_signal_port((), "outputs", "hand"))
+    root = boundary_signal_port((), "outputs", "effector")
+    outputs = {leaf.path: leaf for leaf in signals.at_port(root)}
+    hand = outputs["pos",]
     assert hand.type == ValueType(base=ValueBase.REAL, shape=(2,), dimensions=LENGTH, space="point")
     assert hand.origin == ModelAddress.at_state((), "plant", "effector/position")
     assert hand.unit == "m"
@@ -54,11 +54,11 @@ def test_shipped_point_mass_outputs_keep_state_meaning_without_stored_units():
     recorded_position = next(leaf for leaf in interface.readable_leaves if leaf.port == effector and leaf.path == ("pos",))
     assert recorded_position.origin == hand.origin
     assert signals.at(recorded_position.address) == recorded_position
-    velocity = signals.at(boundary_signal_port((), "outputs", "velocity"))
+    velocity = outputs["vel",]
     assert velocity.type == ValueType(base=ValueBase.REAL, shape=(2,), dimensions=LENGTH.combine(TIME, -1), space="free")
     assert velocity.origin == ModelAddress.at_state((), "plant", "effector/velocity")
     assert velocity.unit == "m/s"
-    assert {port.name: port.type for port in interface.outputs}["hand"] == hand.type
+    assert signals.at(hand.address) == hand
     # An open readout can supply a force input without acquiring the input's type itself.
     assert signals.at(_component_port("plant", "input", "force")).dimensions == UNITS["N"].dimensions
     assert signals.at(boundary_signal_port((), "outputs", "command")).dimensions is None
@@ -66,6 +66,13 @@ def test_shipped_point_mass_outputs_keep_state_meaning_without_stored_units():
 
 def test_bad_wire_is_local_and_leaves_other_signals_readable():
     model = _example()
+    model["interior"]["components"]["velocity"] = {
+        "kind": "leaf", "name": "Velocity", "type": "feedbax.SelectState", "fields": {"paths": ["vel"]},
+    }
+    model["interior"]["wires"]["select-velocity"] = {
+        "source": {"owner": "component", "component": "plant", "port": "effector"},
+        "target": {"owner": "component", "component": "velocity", "port": "state"},
+    }
     model["interior"]["components"]["point_receiver"] = {
         "kind": "composite", "name": "Point receiver",
         "ports": {
@@ -87,7 +94,8 @@ def test_bad_wire_is_local_and_leaves_other_signals_readable():
         "composites": [], "element": {"kind": "wire", "id": "bad"},
     })
     assert "point" in problem.reason and "free" in problem.reason
-    hand = interface.signals.at(boundary_signal_port((), "outputs", "hand"))
+    root = boundary_signal_port((), "outputs", "effector")
+    hand = next(leaf for leaf in interface.signals.at_port(root) if leaf.path == ("pos",))
     assert hand.origin == ModelAddress.at_state((), "plant", "effector/position")
     downstream = signals.at(_component_port("point_receiver", "output", "out"))
     assert downstream.origin is None and downstream.dimensions is None

@@ -1,13 +1,13 @@
 """Exercise the installed examples through ordinary project and training entry points."""
 
 from math import isfinite
+from pathlib import Path
 
 import equinox as eqx
 import jax.random as jr
 import numpy as np
 
 from feedbax.execution.trial_resolution import PreparedTrialExecution, compile_trial_execution
-from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID
 from feedbax.planner.project_plan import compile_project
@@ -28,6 +28,7 @@ from feedbax.host.model_checkpoint import SemanticModelSlot, SemanticModelWriter
 
 _VALIDATION_COUNTS = {"simple-reaches": 28, "delayed-reaches": 28, "stabilization": 4}
 _REACH_TERMS = {"effector_position", "effector_final_velocity", "nn_hidden", "nn_output"}
+_POINT_MASS_REFERENCE = Path(__file__).parent / "fixtures" / "point_mass_one_update.npz"
 
 
 def test_shipped_trial_documents_have_unique_names():
@@ -77,10 +78,24 @@ def test_shipped_trial_examples_plan_train_and_score_validation(tmp_path):
         ids = ("0",)
         state = initialize_method(method, settings, models=(initial_model,), seed=seed, replica_ids=ids)
         validate_method_extra(state.extra, replicas=len(ids))
-        trained = TrainingLoop(
+        loop = TrainingLoop(
             method, settings, execution=paired.execution, objective=paired.objective,
             batch_size=request.training_config.batch_size, seed=seed, replica_ids=ids,
-        ).run_block(state, completed=0, count=request.target_total)
+        )
+        completed = 0
+        if name == "simple-reaches":
+            first = loop.run_block(state, completed=0, count=1)
+            first_validation = paired.execution.validation(
+                replica_value(first.state.model, 0), paired.objective, TaskParameters(), key=jr.key(27),
+            )
+            paths = paired.signal_scope.paths
+            values = {paths[address]: array for address, array in first_validation.retained.items()}
+            # Same seed and task on the pre-reseed graph with separate position and velocity outputs.
+            with np.load(_POINT_MASS_REFERENCE, allow_pickle=False) as reference:
+                np.testing.assert_allclose(values["effector", "pos"], reference["hand"], rtol=2e-6, atol=2e-7)
+                np.testing.assert_allclose(values["effector", "vel"], reference["velocity"], rtol=2e-6, atol=2e-7)
+            state, completed = first.state, first.completed
+        trained = loop.run_block(state, completed=completed, count=request.target_total - completed)
         assert trained.completed == request.target_total == 2
         assert np.isfinite(trained.metrics["train_loss"]).all()
         grad_norm = trained.metrics["grad_norm"]
@@ -109,10 +124,7 @@ def test_shipped_trial_examples_plan_train_and_score_validation(tmp_path):
         )
         assert isfinite(float(result.objective.loss))
 
-        retained = {}
-        for address, value in result.retained.items():
-            element = ModelAddress.from_text(address).element
-            assert element.kind == "port" and element.end.owner == "outputs"
-            retained[element.end.port] = value
-        assert retained.keys() == {"hand", "velocity", "command", "activity"}
-        np.testing.assert_array_equal(retained["hand"][:, 0], result.trials.variables["start"])
+        paths = paired.signal_scope.paths
+        retained = {paths[address]: value for address, value in result.retained.items()}
+        assert retained.keys() == {("effector", "pos"), ("effector", "vel"), ("command",), ("activity",)}
+        np.testing.assert_array_equal(retained["effector", "pos"][:, 0], result.trials.variables["start"])
