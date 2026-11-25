@@ -121,12 +121,7 @@ def _model_payload(*, curl=False, writable_gru=False, rename=False):
             }
         controller["wires"]["decode"]["attachments"] = [{
             "kind": "delay", "id": "read-delay", "delay": {"value": 2, "unit": "st"},
-            "initial": {"kind": "name", "reference": ModelAddress.model_validate({
-                "composites": ["wrapper", "controller"],
-                "element": {"kind": "port", "end": {
-                    "owner": "component", "component": "cell", "port": "output", "direction": "output",
-                }},
-            }).to_text()},
+            "initial_source": {"kind": "wire", "source": {"owner": "component", "component": "cell", "port": "output"}},
         }]
     if rename:
         payload["interior"]["components"]["plant"]["name"] = "Renamed plant"
