@@ -17,7 +17,7 @@ from feedbax.contracts.trial_clock import TrialClockChoice, TrialMeanOptions
 from feedbax.contracts.trial_record import TaskTimelineCue, TrialRecord, TrialStateTrack, TrialTerm
 from feedbax.execution.trial_clock import TrialClockRecord
 from feedbax.execution.trial_places import BoundTermPlaces, TrialPlacePlan, finite_points, project_term_places
-from feedbax.execution.trial_record import trial_weight_values
+from feedbax.execution.trial_record import intervention_windows, trial_weight_values
 
 if TYPE_CHECKING:
     from feedbax.contracts.task_document import TaskDocument
@@ -113,6 +113,8 @@ def trial_dataset_fields(
         put(_task_field("variable", key), value, axes)
     for key, value in (trial.variable_defined or {}).items():
         put(_task_field("variable_defined", key), value, transition_axes)
+    for address, mask in intervention_windows(trial.inputs, document).items():
+        put(_task_field("intervention_window", address), mask, transition_axes)
     for name, trace in (evaluated.term_traces or {}).items():
         put(_term_field("steps", name), trace.steps, transition_axes)
         if trace.values is not None:
@@ -243,6 +245,7 @@ def read_trial_record(
         present=groups.get("presence", {}), variables=groups.get("variable", {}),
         variable_defined=groups.get("variable_defined", {}), timeline=read_trial_timeline(dataset, selection, layout),
         terms=terms,
+        intervention_windows=groups.get("intervention_window", {}),
         states={
             model_state_address(name).to_text(): read_position_track(dataset, name, selection)
             for name in layout.positions

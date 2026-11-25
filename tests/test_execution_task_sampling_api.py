@@ -80,6 +80,28 @@ def test_aggregate_of_delayed_reaches_shares_the_drawn_epoch(client, expression_
     assert (catch["least"], catch["greatest"]) == (False, True)
 
 
+def test_preview_returns_active_samples_at_the_source_intervention_address(client, expression_functions):
+    payload = authored_preview("delayed", expression_functions) | {"nominal": True}
+    owner = {"kind": "port", "end": {"owner": "inputs", "port": "task-input"}}
+    address = ModelAddress.model_validate({
+        "composites": [], "element": {"kind": "attachment", "id": "pulse", "parent": owner},
+    }).to_text()
+    payload["model"]["interior"]["attachments"] = {"sources": {"task-input": [{
+        "kind": "intervention", "id": "pulse", "operation": "add", "fields": {"value": [0.1, 0.0]},
+        "window": {"spans": [{
+            "kind": "interval", "start": {
+                "anchor": {"kind": "epoch", "epoch": "move", "edge": "start"},
+                "offset": {"value": 2, "unit": "st"},
+            }, "end": {"offset": {"value": 0.03, "unit": "s"}},
+        }]},
+    }]}}
+    response = client.post("/api/execution/task-trials/sample", json=payload)
+    assert response.status_code == 200, response.text
+    (trial,) = response.json()["drawn"]["trials"]
+    first = next(epoch["start"] for epoch in trial["timeline"] if epoch["epoch"] == "move") + 2
+    assert np.flatnonzero(trial["intervention_windows"][address]).tolist() == list(range(first, first + 3))
+
+
 def test_a_binding_problem_does_not_hide_the_trial(client, expression_functions):
     payload = authored_preview("simple", expression_functions)
     payload["input_bindings"] = {"task-input": "target_vel"}

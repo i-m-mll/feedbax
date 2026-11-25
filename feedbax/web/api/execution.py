@@ -177,6 +177,7 @@ async def sample_task_trials(
             jax.tree.map(lambda values: values[index], samples),
             id=id, epoch_ids=task.epochs, epoch_labels=labels,
             terms={name: term_record(name, trace, index) for name, trace in term_traces.items()},
+            document=preview.document,
         )
         for index, id in enumerate(ids)
     ]

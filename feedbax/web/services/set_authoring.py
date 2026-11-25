@@ -15,11 +15,13 @@ from feedbax.contracts.project_sweep import (
     SetEntryParts, SweepExpansionError, TrialSetField, WeightedSetTrials,
 )
 from feedbax.contracts.set_document import (
-    SET_DOCUMENT_SCHEMA_ID, SetMisfit, axis_from_set, check_fit, entry_pointer, read_set, resolve_set_axes, set_from_axis, sets_offered, step_model,
+    SET_DOCUMENT_SCHEMA_ID, SetMisfit, SetEntry, axis_from_set, check_fit, entry_pointer,
+    read_set, resolve_set_axes, set_from_axis, sets_offered, step_model,
 )
 from feedbax.contracts.studio_project import AuthoredFileAddress, CreateNamedDocument, StudioProjectFilePatch
 from feedbax.contracts.studio_sets import (
-    AddSetEntry, ApplySet, DuplicateRun, InlineSet, RemoveAxisValue, SaveSet, SetFieldWeight, SetToField, SetToSweep,
+    AddSetEntry, ApplySet, DuplicateRun, InlineSet, RemoveAxisValue, SaveSet, SetEntryTask,
+    SetFieldWeight, SetToField, SetToSweep,
     StudioAxisValue, StudioSetEdit, StudioSetEditRequest,
     StudioSetsOffered, StudioSetsOfferedRequest,
 )
@@ -88,6 +90,8 @@ def set_edit(folders, project_id: str, body: StudioSetEditRequest) -> StudioSetE
         stored = _set_field_weight(project, command)
     elif isinstance(command, AddSetEntry):
         stored, selected = _add_set_entry(project, command)
+    elif isinstance(command, SetEntryTask):
+        stored = _set_entry_task(project, command)
     else:
         stored = _remove_value(project, command)
     result = _set_store(folders, project_id, project, step, body, stored)
@@ -346,6 +350,21 @@ def _add_set_entry(project: Project, command: AddSetEntry) -> tuple[StoredEdit, 
     if not isinstance(axis, SetAxis):
         raise ProjectFolderInvalid(f"{command.axis} reads no Set.")
     return _insert_set_entry(project, command.axis, axis.set)
+
+
+def _set_entry_task(project: Project, command: SetEntryTask) -> StoredEdit:
+    field = project.steps[command.step].set_fields.get(command.axis)
+    axis = field.axis if field is not None else _authored_axis(project, command.step, command.axis)
+    if not isinstance(axis, SetAxis):
+        raise ProjectFolderInvalid(f"{command.axis} reads no Set.")
+    content = _composed(project, axis.set)
+    entries = content["entries"]
+    if command.entry not in entries:
+        raise ProjectFolderInvalid("That Set entry is no longer available.")
+    additions = command.model_dump(mode="json", include={"task_variables", "task_links"}, exclude_none=True)
+    entry = SetEntry.model_validate(entries[command.entry] | additions)
+    changed = content | {"entries": entries | {command.entry: entry.model_dump(mode="json", exclude_unset=True)}}
+    return set_document_write(project, axis.set, content_edits(content, changed), set_readers(project, axis.set))
 
 
 def _save_set(project: Project, command: SaveSet) -> StoredEdit:

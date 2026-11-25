@@ -224,6 +224,7 @@ class PreviewTrialSource:
     task: TrialSource
     outputs: tuple[ScopedValue, ...]
     signal_scope: ModelMeasureScope | None = None
+    document: TaskDocument | None = None
 
 
 def preview_trial_source(
@@ -243,7 +244,8 @@ def preview_trial_source(
     )
     if isinstance(paired, TrialPair):
         scope = model_measure_scope(model, paired.model.signals)
-        return PreviewTrialSource(paired.task, scope.names, scope)
+        document = paired.task_source if isinstance(paired.task_source, TaskDocument) else None
+        return PreviewTrialSource(paired.task, scope.names, scope, document)
     if any(problem.path[:1] != ("model",) for problem in paired):
         return tuple(problem for problem in paired if problem.path[:1] != ("links",))
     return compile_unpaired_task(model, task, functions, python_tasks=python_tasks, nominal=nominal)
