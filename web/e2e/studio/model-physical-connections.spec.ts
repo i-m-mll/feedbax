@@ -162,9 +162,14 @@ test('a Library element dropped on a physical connection is joined into it', asy
   await drawer.getByRole('textbox', { name: 'Search Library', exact: true }).fill('LinearSpring');
   const spring = drawer.getByRole('option', { name: 'LinearSpring', exact: true });
   const path = connections.first().locator('path.react-flow__edge-path');
+  // A point of the connection that no card covers.
   const middle = await path.evaluate((line: SVGPathElement) => {
-    const { x, y } = line.getPointAtLength(line.getTotalLength() / 2).matrixTransform(line.getScreenCTM()!);
-    return { x, y };
+    const length = line.getTotalLength();
+    for (const fraction of [0.5, 0.4, 0.6, 0.3, 0.7, 0.2, 0.8]) {
+      const { x, y } = line.getPointAtLength(length * fraction).matrixTransform(line.getScreenCTM()!);
+      if (document.elementFromPoint(x, y)?.closest('.react-flow__edge')) return { x, y };
+    }
+    throw new Error('Every point of the connection is covered');
   });
   const inserted = await edited(async () => {
     await spring.hover();

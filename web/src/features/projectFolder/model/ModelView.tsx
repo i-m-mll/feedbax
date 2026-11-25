@@ -28,7 +28,7 @@ import { rawField } from '@/components/values/adapters/raw';
 import type { ChangeSource, FieldModel } from '@/components/values/fieldModel';
 import { canvasViewportCommands, type CanvasViewport } from '@/components/canvas/StudioCanvas';
 import { bindStudioCommand, commandAttributes } from '@/features/projectWindow/studioCommands';
-import type {
+import type { PhysicalInterior,
   AddModelAttachment, ChangeModelAttachment, ComponentDefinition, EvaluateModelRequest, JsonValue,
   RemoveModelAttachment, SetField,
   ModelAddress, ModelClipboard, ModelConnectionReview, ModelConnectionVerdict, ModelDocument, ModelEditCommand, ModelFieldRequest, ModelPosition, ModelProjection,
@@ -1100,6 +1100,26 @@ export function useStoredModelView({ model, saved, editor, elements: state, acti
     .map(([id, component]) => makeCard(id, objects.length, component, true));
   const nodes = [makeCard(inputCard, 0), ...objects.map(([id, component], index) => makeCard(id, index, component)),
     ...ghostCards, ...placed.map(placingCard), makeCard(outputCard, 0)];
+  /** A connected physical port faces the cards it is connected to, so that no connection runs behind its own card. */
+  {
+    const place = new Map(nodes.map((node) => [node.id, node.position.x]));
+    const pull = new Map<string, Map<string, number>>();
+    const physicalConnections = (drawnInterior as Partial<PhysicalInterior> | undefined)?.connections ?? {};
+    for (const { a, b } of Object.values(physicalConnections)) {
+      for (const [self, other] of [[a, b], [b, a]] as const) {
+        const card = idFor(self), across = idFor(other);
+        const offset = (place.get(across) ?? 0) - (place.get(card) ?? 0);
+        const ports = pull.get(card) ?? new Map<string, number>();
+        pull.set(card, ports);
+        const key = `physical:${self.port}`;
+        ports.set(key, (ports.get(key) ?? 0) + Math.sign(offset));
+      }
+    }
+    for (const node of nodes) {
+      const ports = pull.get(node.id);
+      if (ports) node.data.portSides = new Map([...ports].filter(([, sum]) => sum).map(([key, sum]) => [key, sum < 0 ? 'left' : 'right']));
+    }
+  }
   /** How low each wire's ports sit on their cards, which orders the routes between the same cards. */
   const depths = new Map<string, number>();
   const bundled = new Map<string, ModelEdge>();
