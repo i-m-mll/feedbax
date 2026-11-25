@@ -14,7 +14,7 @@ import numpy as np
 from feedbax.host.operation_runtime import run_operation
 from feedbax.contracts.artifact_custody import ContentRootRecord
 from feedbax.contracts.dataset import DATASET_MEDIA_TYPE, DatasetProductRef
-from feedbax.contracts.effective_success import Bindings, Product, Products, success_content_ref
+from feedbax.contracts.effective_success import Bindings, BoundMember, Product, Products, success_content_ref
 from feedbax.contracts.figure_document import PLOTLY_MEDIA_TYPE
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.request_identity import DecodedRequest
@@ -25,6 +25,7 @@ from feedbax.contracts.request_specs import (
     ReportRequestSpec,
 )
 from feedbax.contracts.strict_json import strict_json_loads
+from feedbax.contracts.trial_clock import TrialMeanSelection
 from feedbax.dataset import Dataset
 from feedbax.contracts.member_stack import labelled_members
 from feedbax.dataset_sweep import dataset_entries, stack_dataset_members
@@ -104,6 +105,68 @@ def _dataset_inputs(
     return datasets
 
 
+def _recorded_figure_trials(
+    store: ImmutableArtifactBlobProvider, roles: set[str], bindings: Bindings, stack: ExitStack,
+) -> dict[str, dict[str, Dataset]]:
+    """Follow a trial-preserving product to the exact recorded input used by its retained receipt."""
+    success = SuccessView(store)
+    opened: dict[str, Dataset] = {}
+
+    def recorded(member: BoundMember) -> dict[str, Dataset]:
+        ref = dataset_member(member)
+        digest = ref.content.sha256
+        dataset = opened.get(digest)
+        if dataset is None:
+            dataset = stack.enter_context(open_stored_dataset(store, ref))
+            opened[digest] = dataset
+        if "trial_record" in dataset.descriptor.attrs:
+            return {digest: dataset}
+        if member.selection is None:
+            return {}
+        producer = success.read_receipt(member.selection.receipt)
+        return {
+            sha: source
+            for members in producer.inputs.values()
+            for parent in members
+            if parent.content.media_type == DATASET_MEDIA_TYPE
+            for sha, source in recorded(parent).items()
+        }
+
+    sources = {}
+    for role in roles:
+        datasets = {}
+        for member in bindings[role]:
+            results = recorded(member)
+            if len(results) != 1:
+                raise ValueError(f"Figure input {role!r}/{member.key!r} requires one retained trial clock.")
+            datasets[member.key], = results.values()
+        sources[role] = datasets
+    return sources
+
+
+def render_saved_figure(
+    store: ImmutableArtifactBlobProvider,
+    request: DecodedRequest,
+    bindings: Bindings,
+    *,
+    mean: TrialMeanSelection | None = None,
+) -> bytes:
+    """Draw directly from exact bound datasets, with no publication or job submission."""
+    spec = request.spec
+    if not isinstance(spec, RenderRequestSpec):
+        raise ValueError("Expected a saved figure request.")
+    with ExitStack() as stack:
+        datasets = _dataset_inputs(store, request, bindings, stack)
+        recorded = None
+        if mean is not None:
+            roles = {layer.role for layer in spec.document.layers if "trial" in layer.group}
+            recorded = _recorded_figure_trials(store, roles, bindings, stack)
+        figure = render_figure(spec.document, datasets, names=spec.names, mean=mean, recorded_trials=recorded)
+        document = figure.to_json()
+        assert document is not None
+        return document.encode()
+
+
 def _retain_staged_object(
     store: ImmutableArtifactBlobProvider, content: ContentRef, attempt: str
 ) -> None:
@@ -149,13 +212,7 @@ def _compute(
             name=role, content=content, descriptor={"descriptor_sha256": ref.descriptor_sha256}
         )
     if isinstance(spec, RenderRequestSpec):
-        with ExitStack() as stack:
-            figure = render_figure(
-                spec.document, _dataset_inputs(store, request, bindings, stack), names=spec.names,
-            )
-            document = figure.to_json()
-            assert document is not None
-            raw = document.encode()
+        raw = render_saved_figure(store, request, bindings)
         with store._exclusive_lock():
             ref = store.store_object(raw)
             content = ContentRef(

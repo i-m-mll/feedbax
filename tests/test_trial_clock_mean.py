@@ -1,6 +1,7 @@
 """Check recorded Mean replay and figure samples against the same independent reference."""
 
 from contextlib import nullcontext
+import json
 
 import numpy as np
 import pytest
@@ -51,6 +52,7 @@ def unequal_epochs():
             "condition": Variable(np.array(["condition-id"]), ("condition",)),
             "trial": Variable(np.array(_TRIALS), ("trial",)),
             "state_time": Variable(_TIME, ("state_time",), units="s"),
+            "xy": Variable(np.array(["x", "y"]), ("xy",)),
         },
         attrs={"trial_record": layout.model_dump(mode="json")},
     )
@@ -106,3 +108,56 @@ def test_saved_mean_groups_discrete_values_and_intersects_aligned_times(unequal_
     (condition,) = pooled.mean.conditions
     assert condition.values == {}
     assert condition.time == _reference((0, 1, 2), (0, 0, 0))[0]
+
+
+def test_saved_figure_mean_uses_the_same_aligned_sample_reference(unequal_epochs, tmp_path):
+    from feedbax.contracts.dataset import DATASET_MEDIA_TYPE
+    from feedbax.contracts.effective_success import BoundMember
+    from feedbax.contracts.figure_document import FigureDocument
+    from feedbax.contracts.request_identity import decode_request, encode_request
+    from feedbax.contracts.request_refs import InputMember, ProductRef
+    from feedbax.contracts.request_specs import RenderRequestSpec
+    from feedbax.host.light_worker import render_saved_figure
+    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
+    from feedbax.persistence.dataset import publish_dataset
+
+    document = FigureDocument.model_validate({
+        "data": ["states"],
+        "layout": [{"name": "path", "row": 1, "col": 1}],
+        "layers": [
+            {
+                "name": "path", "panel": "path", "role": "states", "mark": "line",
+                "group": ["condition", "trial"],
+                "encode": {"x": "state_time", "y": {
+                    "variable": _POSITION, "select": {"xy": {"index": 0}},
+                }},
+            },
+            {
+                "name": "authored", "panel": "path", "role": "states", "mark": "line",
+                "encode": {"x": "state_time", "y": "state_time"},
+            },
+        ],
+    })
+    store = ImmutableArtifactBlobProvider(tmp_path)
+    ref = publish_dataset(store, unequal_epochs)
+    encoded = encode_request(RenderRequestSpec(document=document), {"states": (InputMember(
+        key="states", reference=ProductRef(request_id="evaluate:" + "a" * 64, role="states"),
+    ),)})
+    request = decode_request(encoded.data, encoded.documents.__getitem__)
+    bindings = {"states": (BoundMember(
+        key="states", content=ref.content.model_copy(update={"media_type": DATASET_MEDIA_TYPE}),
+        descriptor={"descriptor_sha256": ref.descriptor_sha256},
+    ),)}
+    plain = json.loads(render_saved_figure(store, request, bindings))
+    rendered = json.loads(render_saved_figure(store, request, bindings, mean=TrialMeanSelection(align="move")))
+    traces = rendered["data"]
+    assert traces[-1] == plain["data"][-1]
+    assert [trace["meta"]["group"]["trial"] for trace in traces[:-1] if "trial" in trace["meta"]["group"]] == list(_TRIALS)
+    for direction, indices in enumerate(((0, 1), (2,))):
+        group = {"condition": "condition-id", "direction": direction}
+        upper, lower, average = [trace for trace in traces[:-1] if trace["meta"]["group"] == group]
+        time, mean, mins, maxes = _reference(indices, _START)
+        for trace, values in ((average, mean), (lower, mins), (upper, maxes)):
+            assert trace["x"] == time
+            assert trace["y"] == [xy[0] for xy in values]
+        assert lower["fill"] == "tonexty"

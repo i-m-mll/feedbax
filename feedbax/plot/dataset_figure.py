@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from itertools import cycle
@@ -11,9 +12,11 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.colors import qualitative
 
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.dataset import DatasetDescriptor, FieldDescriptor
 from feedbax.contracts.figure_document import (
     BandLayer,
+    BandStyle,
     Encoding,
     FigureDocument,
     FigureLayer,
@@ -25,9 +28,15 @@ from feedbax.contracts.figure_document import (
     layer_encodings,
     validate_figure_bindings,
 )
+from feedbax.contracts.rollout import CannotRun
+from feedbax.contracts.trial_clock import TrialMeanOptions, TrialMeanSelection
 from feedbax.dataset import Dataset
+from feedbax.execution.trial_clock import (
+    AlignedSeries, TrialClockRecord, align_trials, aligned_sample_times, common_span, summarize_series,
+)
 from feedbax.plot.colors import color_add_alpha
 from feedbax.plot.figure_grid import assemble_figure_grid
+from feedbax.plot.figure_trial_clock import FigureTrialSource, recorded_sample_times
 
 
 type Label = str | int | float | bool | None
@@ -203,12 +212,98 @@ def _draw(
     return center, upper, lower
 
 
+
+@dataclass(frozen=True)
+class _TrialTrace:
+    group: dict[str, Label]
+    coordinates: dict[str, Label]
+    channels: dict[str, _Samples]
+    color: str
+    record: TrialClockRecord
+    options: TrialMeanOptions
+
+
+def _trial_traces(
+    layer: FigureLayer,
+    rows: list[_TrialTrace],
+    mean: TrialMeanSelection,
+) -> list[go.Scatter]:
+    """Draw an aligned thin trace for each trial and a summary for each clock condition."""
+    nontrial: dict[tuple[tuple[str, Label], ...], list[_TrialTrace]] = defaultdict(list)
+    for row in rows:
+        nontrial[tuple((name, value) for name, value in row.coordinates.items() if name != "trial")].append(row)
+    traces = []
+    for coordinates, cohort in nontrial.items():
+        options = cohort[0].options
+        if any(row.options != options for row in cohort):
+            raise ValueError("Plotted trials disagree on the available By and Align choices.")
+        by_trial = {row.record.id: row for row in cohort}
+        is_time = cohort[0].channels["x"].name in {"state_time", "transition_start", "transition_end"}
+        for condition in align_trials((row.record for row in cohort), options, mean):
+            color = by_trial[condition.trials[0].record.id].color
+            series = []
+            group = dict(coordinates) | {
+                f"task/{name}" if name == "trial" or name in dict(coordinates) else name: (
+                    canonical_json_v2_bytes(value).decode() if isinstance(value, (list, dict)) else value
+                )
+                for name, value in condition.values.items()
+            }
+            for trial in condition.trials:
+                row = by_trial[trial.record.id]
+                x, y = row.channels["x"], row.channels["y"]
+                recorded = (
+                    x.values if is_time else recorded_sample_times(trial, x.dimension, x.positions)
+                )
+                time = trial.times(recorded)
+                if y.values.shape != time.shape or x.values.shape != time.shape:
+                    raise ValueError("The plotted channels do not share the recorded trial samples.")
+                samples = AlignedSeries(time, np.column_stack((x.values, y.values)), trial.alignment.span)
+                series.append(samples)
+                inside = (time >= trial.alignment.span.start) & (time <= trial.alignment.span.end)
+                label = (layer.style.label or layer.name).format_map(row.group)
+                traces.append(go.Scatter(
+                    name=label, legendgroup=label, showlegend=False,
+                    x=(time if is_time else x.values)[inside].tolist(), y=y.values[inside].tolist(),
+                    mode="lines", line={"color": color, "dash": layer.style.line_dash, "width": 1},
+                    opacity=0.3, meta={"layer": layer.name, "group": row.coordinates},
+                ))
+            span = common_span(item.extent for item in series)
+            if span is None:
+                continue
+            time = aligned_sample_times([item.time for item in series], span=span)
+            summary = summarize_series(series, time)
+            x_mean, y_mean = np.asarray(summary.mean).T
+            if is_time:
+                x_mean = time
+            labels = {choice.id: choice.label for choice in options.by}
+            label_parts = [str(cohort[0].group[name]) for name, _ in coordinates if cohort[0].group[name] is not None]
+            label_parts.extend(f"{labels[name]}={value}" for name, value in condition.values.items())
+            label = " · ".join(label_parts) or layer.name
+            alpha = layer.style.band_alpha if isinstance(layer, BandLayer) else BandStyle().band_alpha
+            for name, values in (("upper", summary.upper), ("lower", summary.lower), ("mean", summary.mean)):
+                center = name == "mean"
+                traces.append(go.Scatter(
+                    name=label, legendgroup=label, showlegend=center and layer.style.showlegend,
+                    x=x_mean.tolist(), y=(y_mean if center else np.asarray(values)[:, 1]).tolist(), mode="lines",
+                    line=(
+                        {"color": color, "dash": layer.style.line_dash, "width": layer.style.line_width}
+                        if center else {"color": "rgba(0,0,0,0)"}
+                    ),
+                    fill="tonexty" if name == "lower" else None,
+                    fillcolor=color_add_alpha(color, alpha) if name == "lower" else None,
+                    hoverinfo=None if center else "skip",
+                    meta={"layer": layer.name, "group": group},
+                ))
+    return traces
+
 def render(
     figure: FigureDocument,
     datasets: Mapping[str, Dataset],
     theme: str | go.layout.Template | Mapping[str, Any] | None = None,
     *,
     names: Mapping[str, Mapping[str, str]] | None = None,
+    mean: TrialMeanSelection | None = None,
+    recorded_trials: Mapping[str, Mapping[str, Dataset]] | None = None,
 ) -> go.Figure:
     """Render only the authored bindings and prepared values, printing ``names`` for the value IDs they cover."""
     sources = {
@@ -226,6 +321,12 @@ def render(
         before = len(traces[layer.panel])
         try:
             selection = _selected(source, layer.select, {})
+            clock = None
+            trial_rows: list[_TrialTrace] = []
+            if mean is not None and "trial" in layer.group:
+                if recorded_trials is None or layer.role not in recorded_trials:
+                    raise ValueError(f"No retained trial clock for data role {layer.role!r}.")
+                clock = FigureTrialSource(source.dataset, recorded_trials[layer.role], source.read)
             for group, positions in _groups(source, layer.group, selection):
                 channels = {}
                 for channel, encoding in layer_encodings(layer):
@@ -233,12 +334,24 @@ def render(
                         channels[channel] = _encoded(source, encoding, positions)
                     except ValueError as error:
                         raise ValueError(f"channel {channel!r}: {error}") from error
-                label = (layer.style.label or layer.name).format_map(group)
                 color = layer.style.color or next(colors)
-                traces[layer.panel].extend(_draw(layer, channels, label, color))
+                if clock is not None:
+                    record, options = clock.project(positions)
+                    coordinates = {}
+                    for name in layer.group:
+                        dimension, labels = source.coordinate(name)
+                        coordinates[name] = labels[positions[dimension][0]]
+                    trial_rows.append(_TrialTrace(group, coordinates, channels, color, record, options))
+                else:
+                    label = (layer.style.label or layer.name).format_map(group)
+                    traces[layer.panel].extend(_draw(layer, channels, label, color))
                 inferred_labels.setdefault(
                     layer.panel, {axis: channels[axis].label for axis in ("x", "y")}
                 )
+            if mean is not None and trial_rows:
+                traces[layer.panel].extend(_trial_traces(layer, trial_rows, mean))
+        except CannotRun:
+            raise
         except (KeyError, ValueError) as error:
             raise ValueError(f"Layer {layer.name!r}: {error}") from error
         if len(traces[layer.panel]) == before:

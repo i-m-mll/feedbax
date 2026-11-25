@@ -19,7 +19,9 @@ from feedbax.analysis.report_document import PLOTLY_SCRIPT_NAME, REPORT_HTML_NAM
 from feedbax.execution.trial_resolution import evaluation_conditions
 from feedbax.contracts._request_codec import same_typed_value
 from feedbax.contracts.artifact_custody import ContentObjectRef, ContentTreeRef
-from feedbax.contracts.effective_success import RequestObject, read_success_request, success_content_ref
+from feedbax.contracts.effective_success import (
+    RequestObject, Success, read_effective_request, read_success_request, success_content_ref,
+)
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.jobs import (
@@ -84,6 +86,7 @@ from feedbax.contracts.request_refs import (
     BatchMember, BatchSetMember, BestRank, LastMember, ProductRef, UpdateSeriesMember,
 )
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec
+from feedbax.contracts.trial_clock import StudioSavedFigureMeanRequest
 from feedbax.contracts.trial_record import StudioTrialReplayResponse
 from feedbax.persistence.completion import completion_file
 from feedbax.host.plan_history import PlanRowRef, PlanSuccess, plan_run_key, settled_results
@@ -595,10 +598,9 @@ class ProjectPlanService:
         evaluation_tasks = self.jobs.registries.python_tasks
         return view.response(include_window_map=include_window_map, evaluation_tasks=evaluation_tasks)
 
-    def light_product(
-        self, project: str, revision: str, job_id: str, role: str, member: str,
-    ) -> SavedLightProduct:
-        """Read a product of a current or previous result visible on the saved Plan."""
+    def _saved_light_receipt(
+        self, project: str, revision: str, job_id: str, role: str,
+    ) -> tuple[ImmutableArtifactBlobProvider, Success]:
         view = self.read(project, revision=revision)
         visible = next((result for history in view.light.values() for result in (history.result, history.previous)
                         if result is not None and result.job_id == job_id and role in result.products), None)
@@ -610,7 +612,16 @@ class ProjectPlanService:
         if ref is None or ref.sha256 != visible.receipt.manifest_sha256:
             raise JobConflict("The saved result receipt could not be authenticated.")
         try:
-            receipt = success.read_receipt(ref)
+            return store, success.read_receipt(ref)
+        except (OSError, TypeError, ValueError, KeyError) as error:
+            raise JobConflict("The saved result receipt could not be authenticated.") from error
+
+    def light_product(
+        self, project: str, revision: str, job_id: str, role: str, member: str,
+    ) -> SavedLightProduct:
+        """Read a product of a current or previous result visible on the saved Plan."""
+        store, receipt = self._saved_light_receipt(project, revision, job_id, role)
+        try:
             product, = receipt.products[role]
             content = success_content_ref(product.content)
             if isinstance(content, ContentTreeRef):
@@ -631,6 +642,19 @@ class ProjectPlanService:
             return SavedLightProduct(store.get_object(content), "application/json")
         except (OSError, TypeError, ValueError, KeyError) as error:
             raise JobConflict("The saved product could not be authenticated.") from error
+
+
+    def figure_mean(self, project: str, body: StudioSavedFigureMeanRequest) -> SavedLightProduct:
+        from feedbax.host.light_worker import render_saved_figure
+
+        store, receipt = self._saved_light_receipt(project, body.revision, body.job_id, PLOTLY_FIGURE_ROLE)
+        try:
+            request = read_effective_request(receipt, store.get_object)
+            return SavedLightProduct(render_saved_figure(store, request, receipt.inputs, mean=body.mean), "application/json")
+        except CannotRun as error:
+            raise ProjectFolderInvalid(str(error)) from error
+        except (OSError, TypeError, ValueError, KeyError) as error:
+            raise JobConflict(f"The saved figure could not be drawn on this clock. {error}") from error
 
     def check_run_rule(self, project_id: str, body: StudioRunRuleRequest) -> StudioRunRuleCheck:
         """What ``body.rule`` chooses among the producer's planned rows, as the plan would choose them."""
