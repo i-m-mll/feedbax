@@ -60,10 +60,14 @@
   --studio-category-text: #747474;
   --studio-shadow-soft: 0 12px 32px rgba(15, 23, 42, 0.08);
   --studio-shadow-lift: 0 18px 40px rgba(15, 23, 42, 0.12);
+  --studio-shade-top: inset 0 10px 8px -8px rgba(15, 23, 42, 0.16);
+  --studio-shade-bottom: inset 0 -10px 8px -8px rgba(15, 23, 42, 0.16);
 }
 
 :root[data-theme='dark'] {
   --studio-shell-accent: #c1aedf;
+  --studio-shade-top: inset 0 10px 8px -8px rgba(0, 0, 0, 0.5);
+  --studio-shade-bottom: inset 0 -10px 8px -8px rgba(0, 0, 0, 0.5);
   --studio-scrim: rgba(0, 0, 0, 0.5);
   --studio-logo-ink: var(--text-primary);
   --studio-logo-paper: var(--surface-header);
@@ -175,6 +179,17 @@
     linear-gradient(to right, #000 var(--fade-inset-left), transparent var(--fade-inset-left), #000 calc(var(--fade-inset-left) + var(--fade-left)), #000 calc(100% - var(--fade-inset-right) - var(--fade-right)), transparent calc(100% - var(--fade-inset-right)), #000 calc(100% - var(--fade-inset-right)));
   -webkit-mask-composite: source-in;
   mask-composite: intersect;
+}
+
+/* A drawer list shows whole rows: a shade inside the edge it overflows marks the rows past it, over no row's text. */
+[data-section-body].studio-scroll-fade:has([data-list-row]) {
+  --studio-scroll-fade: 0px;
+}
+
+[data-section-body].studio-scroll-fade:has([data-list-row])[data-overflow-top] { box-shadow: var(--studio-shade-top); }
+[data-section-body].studio-scroll-fade:has([data-list-row])[data-overflow-bottom] { box-shadow: var(--studio-shade-bottom); }
+[data-section-body].studio-scroll-fade:has([data-list-row])[data-overflow-top][data-overflow-bottom] {
+  box-shadow: var(--studio-shade-top), var(--studio-shade-bottom);
 }
 
 .studio-scroll-fade[data-overflow-top] { --fade-top: var(--studio-scroll-fade); }
