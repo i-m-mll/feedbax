@@ -1116,7 +1116,7 @@ def coordinate_text(coordinate: SweepCoordinate) -> str:
     return str(value) if isinstance(value, (int, float, str)) else coordinate.value_id
 
 
-def sweep_value_name(axis: str, coordinate: SweepCoordinate, *, prefix: bool = True) -> str:
+def sweep_value_name(axis: str, coordinate: SweepCoordinate) -> str:
     """Present a run choice by its name, or print a swept value in its authored unit."""
     if coordinate.label is not None:
         return coordinate.label
@@ -1128,7 +1128,7 @@ def sweep_value_name(axis: str, coordinate: SweepCoordinate, *, prefix: bool = T
     if value is None and not coordinate.explicit_null:
         return member_display_name(coordinate.value_id)
     text = value if isinstance(value, str) else canonical_json_v2_bytes(_generated_key_value(value)).decode()
-    return " ".join(part for part in (member_display_name(axis) if prefix else None, text, unit) if part)
+    return " ".join(part for part in (member_display_name(axis), text, unit) if part)
 
 
 def sweep_row_name(values: Iterator[tuple[str, SweepCoordinate]]) -> str | None:

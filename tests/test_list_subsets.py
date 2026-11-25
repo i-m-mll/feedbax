@@ -59,7 +59,7 @@ def test_each_selection_ranks_its_own_step_by_name_and_records_its_subset():
         "rate=b", "train/rank-1", "train/rank-2", "train_b/rank-1", "train_b/rank-2",
     ]
     labels = {run.inputs["subject"].member.key: run.label for run in plan.runs if run.kind == "evaluate"}
-    assert labels["train_b/rank-2"] == "subject=train_b, rank 2"
+    assert labels["train_b/rank-2"] == "Train b · Rank 2"
 
     edited = listed_best()
     edited["steps"]["train_b"]["sweep"] = _rates({"d": 0.004, "e": 0.0005, "f": 0.0015, "g": 0.0025})
@@ -170,7 +170,7 @@ def test_grouped_ranks_of_listed_steps_are_named_and_selected_by_key():
     assert sorted(runs) == [
         "train/rate=a/rank-1", "train/rate=b/rank-1", "train_b/rate=a/rank-1", "train_b/rate=b/rank-1",
     ]
-    assert runs["train_b/rate=b/rank-1"].label == "subject=train_b, rate=0.002, rank 1"
+    assert runs["train_b/rate=b/rank-1"].label == "Train b · Rate 0.002 · Rank 1"
     assert not any(re.search("[0-9a-f]{64}", run.label) for run in runs.values())
 
     steps["baseline"]["sweep"]["exceptions"] = {"dropped": {
