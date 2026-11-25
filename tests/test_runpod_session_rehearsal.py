@@ -246,6 +246,130 @@ def test_approved_runpod_offer_opens_in_another_region_and_projects_its_stages(
             release_ssh.set()
 
 
+@pytest.mark.round("A local RunPod rehearsal installs and trains at the sealed project package commit.")
+def test_remote_train_installs_the_project_package_at_the_quoted_commit(host, native_execution, monkeypatch):
+    from feedbax.persistence.train_metrics import read_final_train_metrics
+    from tests.support.git_fixtures import run_fixture_git
+    from tests.support.managed_train_fixture import managed_train_project
+
+    run = native_execution
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    repository = run.controller / "custom-source"
+    project = repository / "method-package"
+    module = project / "remote_method_probe" / "__init__.py"
+    module.parent.mkdir(parents=True)
+    (repository / ".gitignore").write_text("__pycache__/\n")
+    (project / "pyproject.toml").write_text('''[project]
+name = "remote-method-probe"
+version = "0.1"
+
+[project.entry-points."feedbax.plugins"]
+probe = "remote_method_probe"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["remote_method_probe"]
+''')
+    original = '''import jax.numpy as jnp
+from pydantic import BaseModel
+from feedbax.training.methods import TrainingState, training_method
+
+class Settings(BaseModel):
+    pass
+
+def init(settings, model, key):
+    return TrainingState(model)
+
+@training_method(settings=Settings, init=init, metrics=("package_value",))
+def observe(state, ctx):
+    return state, {"package_value": jnp.asarray(27.5)}
+'''
+    module.write_text(original)
+    run_fixture_git(repository, "init")
+    run_fixture_git(repository, "add", ".")
+    run_fixture_git(repository, "commit", "-m", "Pinned training method")
+    commit = run_fixture_git(repository, "rev-parse", "HEAD")
+
+    site = run.controller / "package-site"
+    subprocess.run(
+        ["uv", "pip", "install", "--offline", "--no-deps", "--target", str(site), "--editable", str(project)],
+        check=True, capture_output=True, text=True, timeout=HANG_SECONDS,
+    )
+    monkeypatch.syspath_prepend(str(site))
+    monkeypatch.syspath_prepend(str(project))
+
+    raw = managed_train_project(batches=1).model_dump(mode="json", by_alias=True, exclude_unset=True)
+    authored = raw["steps"]["train"]["base"]["inline"]
+    authored.update(method="remote_method_probe.observe", settings={})
+    projects = run.controller / "projects"
+    for name, data in dump_text_project(
+        Project.model_validate(raw), ProjectConfiguration(project=PROJECT, store="results"),
+    ).items():
+        path = projects / PROJECT / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    provider = run.provider
+    profile = SessionTargetProfile(
+        kind="session", id="runpod-witness", label="RunPod witness", driver=provider.target,
+        resources=run.resources.model_dump(mode="json"), lifecycle=KeepOpen(), maximum_microusd=750_000,
+    )
+    quote_requests = []
+
+    def review_quote(request):
+        quote_requests.append(request)
+        provider.review_quote(request)
+        return StudioVenueQuote(provider.hourly_microusd(request))
+
+    venue = StudioVenue(
+        run.driver, run.environment.digest, provider.jobs, 120, review_quote,
+        pin_project_package=provider.pin_project_package,
+    )
+    remote = StudioRemoteRuns((profile,), (venue,),
+        attest=lambda quote, request: _authorization(request, expires_at_ms=quote.expires_at_ms),
+    )
+    try:
+        with TestClient(create_app(projects_dir=projects, remote_runs=remote)) as client:
+            reviewed = client.app.state.project_folders.read_plan(PROJECT, revision=None)
+            (train,) = reviewed.plan.runs
+            assert train.admission_problem is None and train.metric_names == {"package_value"}
+            route = f"/api/projects/{PROJECT}/train-runs"
+            body = {"revision": reviewed.revision, "target": profile.id, "run_keys": [asdict(TRAIN)]}
+            module.write_text(original.replace("27.5", "99.0"))
+            dirty = client.post(f"{route}/quote", json=body)
+            assert dirty.status_code == 409 and "uncommitted changes" in dirty.json()["detail"]
+            assert "Train 'train'" in dirty.json()["detail"] and not quote_requests and not run.fake.pods
+
+            module.write_text(original)
+            quote = client.post(f"{route}/quote", json=body)
+            assert quote.status_code == 200, quote.text
+            (request,) = quote_requests
+            (pin,) = request.project_packages
+            assert (pin.distribution, pin.snapshot.commit, pin.project_dir) == ("remote-method-probe", commit, "method-package")
+            assert not run.fake.pods
+            module.write_text(original.replace("27.5", "99.0"))
+            approved = client.post(f"{route}/approve", json={"quote": quote.json()["id"]})
+            assert approved.status_code == 202, approved.text
+
+            terminal = wait_until(lambda: _terminal_without_rpc(run.venue / "host" / "host.sqlite"))
+            assert [row[1] for row in terminal] == ["succeeded"], terminal
+            record = run.driver.record(request.id)
+            assert record.realization.probe["project_packages"] == [pin.model_dump(mode="json")]
+            assert snapshot_tree_identity(run.venue / "project-packages" / pin.snapshot.content_sha256) == (
+                pin.snapshot.content_sha256, pin.snapshot.file_count,
+            )
+            session = provider.jobs(run.driver, request.id)
+            (job,) = session.host.jobs_snapshot()["jobs"]
+            store = ImmutableArtifactBlobProvider(run.venue / "stores" / reviewed.project_id)
+            ref = ContentObjectRef.model_validate(job["outcome"]["store_success"])
+            receipt = SuccessView(store).read_owned_success(ref).receipt
+            assert read_final_train_metrics(store, receipt, train.request_id)("package_value") == 27.5
+    finally:
+        sys.modules.pop("remote_method_probe", None)
+
+
 @pytest.mark.round(
     "A saved plan runs real Train and Evaluate workers in a venue built by a real `uv sync`, "
     "and is collected over SSH."

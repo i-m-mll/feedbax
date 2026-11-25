@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -125,10 +126,95 @@ print(json.dumps({"jax": jax.__version__, "backend": backend, "devices": devices
 """
 
 
+_PACKAGE_VERSIONS = """
+from importlib.metadata import distributions
+
+for distribution in distributions():
+    print(f"{distribution.name}=={distribution.version}")
+"""
+
+
+_PACKAGE_VERIFY = """
+from importlib.metadata import distribution
+import json
+from pathlib import Path
+import sys
+from urllib.parse import unquote, urlsplit
+
+for pin, source in json.loads(sys.argv[1]):
+    installed = distribution(pin["distribution"])
+    direct = urlsplit(json.loads(installed.read_text("direct_url.json") or "{}").get("url", ""))
+    if (
+        installed.version != pin["version"] or direct.scheme != "file" or direct.netloc
+        or Path(unquote(direct.path)).resolve() != Path(source).resolve()
+        or not any(entry.group == "feedbax.plugins" for entry in installed.entry_points)
+    ):
+        raise ValueError(f"Installed project package differs from its approved source: {pin['distribution']}")
+"""
+
+
+def _package_copies(root: Path, packages: list[dict]) -> list[str]:
+    if not packages:
+        return []
+    _private(root / "incoming-packages")
+    _private(root / "project-packages")
+    missing = []
+    for digest in sorted({pin["snapshot"]["content_sha256"] for pin in packages}):
+        if not re.fullmatch(r"[a-f0-9]{64}", digest):
+            raise ValueError("Project package has an invalid snapshot digest.")
+        if not (root / "project-packages" / digest).exists():
+            _private(root / "incoming-packages" / digest)
+            missing.append(digest)
+    return missing
+
+
+def _install_project_packages(root, settings, verify_tree, uv, python, env) -> None:
+    packages = settings.get("project_packages", [])
+    if not packages:
+        return
+    with tempfile.TemporaryDirectory(prefix="build-packages-", dir=root) as temporary:
+        build_root = Path(temporary)
+        sources = []
+        for pin in packages:
+            snapshot = pin["snapshot"]
+            digest = snapshot["content_sha256"]
+            sealed = root / "project-packages" / digest
+            if not sealed.exists():
+                incoming = root / "incoming-packages" / digest
+                if verify_tree(incoming) != (digest, snapshot["file_count"]):
+                    raise ValueError(f"Transferred project package differs from its approved snapshot: {pin['distribution']}")
+                os.rename(incoming, sealed)
+            elif verify_tree(sealed) != (digest, snapshot["file_count"]):
+                raise ValueError(f"Staged project package differs from its approved snapshot: {pin['distribution']}")
+            build = build_root / digest
+            if not build.exists():
+                shutil.copytree(sealed, build, symlinks=True)
+                for directory, _, _ in os.walk(build):
+                    Path(directory).chmod(0o700)
+            sources.append((pin, str(build / pin["project_dir"])))
+        constraints = build_root / "constraints.txt"
+        constraints.write_bytes(subprocess.check_output(
+            [str(python), "-I", "-B", "-c", _PACKAGE_VERSIONS], env=env, timeout=10,
+        ))
+        command = [uv, "pip", "install", "--python", str(python), "--constraint", str(constraints)]
+        for pin, _ in sources:
+            command.extend(("--reinstall-package", pin["distribution"]))
+        command.extend(source for _, source in sources)
+        subprocess.run(command, cwd=build_root, env=env, stdout=sys.stderr, check=True, timeout=settings["timeout"])
+        subprocess.run(
+            [str(python), "-I", "-B", "-c", _PACKAGE_VERIFY, json.dumps(sources)],
+            env=env, check=True, timeout=10,
+        )
+
+
 def _install(root: Path, settings: dict, verify_tree: Callable[[Path], tuple[str, int]]) -> None:
     cached_probe = root / "probe.json"
+    packages = settings.get("project_packages", [])
     if cached_probe.exists():
-        sys.stdout.buffer.write(cached_probe.read_bytes())
+        probe = cached_probe.read_bytes()
+        if json.loads(probe).get("project_packages", []) != packages:
+            raise ValueError("The completed install identifies different project packages.")
+        sys.stdout.buffer.write(probe)
         return
 
     incoming, repo = root / "incoming", root / "repo"
@@ -154,10 +240,13 @@ def _install(root: Path, settings: dict, verify_tree: Callable[[Path], tuple[str
         command.extend(("--extra", extra))
     subprocess.run(command, cwd=repo, env=env, stdout=sys.stderr, check=True, timeout=settings["timeout"])
     python = root / "venv" / "bin" / "python"
+    _install_project_packages(root, settings, verify_tree, uv, python, env)
     probe = subprocess.check_output(
         [str(python), "-I", "-B", "-c", _PROBE, str(repo), settings["backend"]],
         cwd=repo, env=env, timeout=30,
     )
+    if packages:
+        probe = json.dumps(json.loads(probe) | {"project_packages": packages}).encode()
     _publish(cached_probe, probe)
     sys.stdout.buffer.write(probe)
 
@@ -212,7 +301,8 @@ def bootstrap(verify_tree: Callable[[Path], tuple[str, int]]) -> None:
                     _verified_uv(root, digest)
                 except FileNotFoundError:
                     send_uv = True
-            print(json.dumps({"send": not (root / "repo").exists(), "send_uv": send_uv}))
+            send_packages = _package_copies(root, settings.get("project_packages", []))
+            print(json.dumps({"send": not (root / "repo").exists(), "send_uv": send_uv, "send_packages": send_packages}))
         elif action == "install":
             _install(root, settings, verify_tree)
         elif action == "complete":

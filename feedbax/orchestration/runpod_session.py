@@ -19,9 +19,13 @@ from feedbax.contracts.execution_target import OpeningStep
 from feedbax.contracts.strict_json import strict_json_loads, strict_model_validate_json
 from feedbax.host import watchdog
 from feedbax.host.client import HostClient, StdioAttachment
+from feedbax.host.io import private_directory
 from feedbax.host.protocol import HostError, JsonObject, SessionAccess
 from feedbax.orchestration import repo_tree, runpod_bootstrap
-from feedbax.orchestration.repo_snapshot import RepoSnapshotRecord, SealedRepoSnapshot, verify_repo_snapshot
+from feedbax.orchestration.project_packages import ProjectPackagePin, pin_project_package
+from feedbax.orchestration.repo_snapshot import (
+    RepoSnapshotError, RepoSnapshotRecord, SealedRepoSnapshot, repo_snapshot_path, verify_repo_snapshot,
+)
 from feedbax.orchestration.runpod_cutoff import NativeRunPodCutoff
 from feedbax.orchestration.runpod_session_provider import RunPodAcquisition
 from feedbax.orchestration.session import (
@@ -31,6 +35,7 @@ from feedbax.orchestration.session import (
 from feedbax.orchestration.session_jobs import SessionJobs
 from feedbax.orchestration.venue_jobs import VenueJobs
 from feedbax.persistence.ssh_store import SSHStoreConnection
+from feedbax.plugins.declarations import DistributionSource
 
 
 type DependencyName = Annotated[str, Field(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")]
@@ -152,6 +157,13 @@ class RunPodSessionProvider:
         if self.environment.digest != request.environment:
             raise SessionError("The RunPod session names a different environment declaration.")
 
+    @property
+    def _project_package_cache(self) -> Path:
+        return self.acquisition.root / "project-packages"
+
+    def pin_project_package(self, source: DistributionSource) -> ProjectPackagePin:
+        return pin_project_package(source, private_directory(self._project_package_cache))
+
     def inventory(self) -> tuple[ProviderResource, ...]:
         return tuple(self.acquisition.inventory())
 
@@ -234,7 +246,7 @@ class RunPodSessionProvider:
             )
         except SessionOpeningFailed:
             raise
-        except (SessionError, OSError, ValueError) as error:
+        except (SessionError, OSError, RepoSnapshotError, ValueError) as error:
             raise SessionOpeningFailed(f"RunPod realization failed: {error}") from error
 
     def _realize(
@@ -257,6 +269,8 @@ class RunPodSessionProvider:
             bounded().run(native.proof_argv(resource, launch), b""), resource, launch,
         ) if native is not None else None
         realized = self._read(bounded(), layout)
+        pins = launch.request.project_packages
+        packages = [pin.model_dump(mode="json") for pin in pins]
         if realized is None:
             self._check_uv_binary()
             prepare: dict[str, object] = {}
@@ -273,8 +287,14 @@ class RunPodSessionProvider:
                     },
                 }
             prepare["uv_sha256"] = self.environment.uv_sha256
+            if packages:
+                prepare["project_packages"] = packages
             prepared = strict_json_loads(self._call(bounded(), layout, "prepare", prepare))
-            if prepared["send_uv"] or prepared["send"]:
+            send_packages = set(prepared.get("send_packages", ()))
+            by_content = {pin.snapshot.content_sha256: pin for pin in pins}
+            if send_packages - by_content.keys():
+                raise SessionError("RunPod requested a project source outside the authorized launch.")
+            if prepared["send_uv"] or prepared["send"] or send_packages:
                 opening("copying")
             if prepared["send_uv"]:
                 digest, binary = self.environment.uv_sha256, self._uv_binary
@@ -289,6 +309,11 @@ class RunPodSessionProvider:
                     self.snapshot.staging_root, content_sha256=record.content_sha256, file_count=record.file_count,
                 )
                 bounded().copy_tree(self.snapshot.staging_root, layout.root / "incoming")
+            for digest in sorted(send_packages):
+                pin = by_content[digest]
+                local = repo_snapshot_path(self._project_package_cache, pin.distribution, digest)
+                verify_repo_snapshot(local, content_sha256=digest, file_count=pin.snapshot.file_count)
+                bounded().copy_tree(local, layout.root / "incoming-packages" / digest)
             opening("installing")
             install_seconds = remaining()
             probe = self._call(replace(connection, timeout_seconds=install_seconds), layout, "install", {
@@ -302,6 +327,7 @@ class RunPodSessionProvider:
                 "extras": self.environment.extras,
                 "backend": self.environment.backend,
                 "worker_env": self.environment.worker_environment,
+                "project_packages": packages,
             })
             evidence = strict_json_loads(probe) | {"placement": placement}
             if self.environment.uv_sha256 is not None:
@@ -313,6 +339,8 @@ class RunPodSessionProvider:
             )
         if realized.launch != launch or realized.environment != self.environment.digest:
             raise SessionError("Existing RunPod realization identifies a different authorized launch.")
+        if realized.probe.get("project_packages", []) != packages:
+            raise SessionError("RunPod realization differs from the authorized project packages.")
         if native is not None:
             proof = native.read_proof(
                 bounded().run(native.proof_argv(resource, launch), b""), resource, launch,

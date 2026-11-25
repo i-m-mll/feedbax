@@ -95,6 +95,6 @@ def load_remote_runs(paths: AppPaths, release: Release) -> StudioRemoteRuns | No
 
     venue = StudioVenue(
         driver, environment.digest, provider.jobs, config.authorization_seconds,
-        review_quote=review_quote,
+        review_quote=review_quote, pin_project_package=provider.pin_project_package,
     )
     return StudioRemoteRuns(profiles, (venue,), attest=approval)
