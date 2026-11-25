@@ -36,7 +36,7 @@ from feedbax.expression_compile import Compiled, Inputs, compile_expression
 from feedbax.contracts.expression_registry import Evaluation, FunctionRegistry
 from feedbax.objectives.base import TermTree
 from feedbax.objectives.term_points import TermPoints, measure_points
-from feedbax.runtime.epoch_windows import whole_window
+from feedbax.runtime.epoch_windows import CompiledWindow, compile_window
 from feedbax.tasks.document import Trial, TrialSource
 
 
@@ -82,7 +82,7 @@ class _Term:
     measure: Compiled
     weight: Compiled
     reduction: Reduction
-    epochs: tuple[int, ...]
+    window: CompiledWindow | None
     references: frozenset[str]
     weight_references: frozenset[str]
 
@@ -195,7 +195,10 @@ class ObjectiveExecutor(eqx.Module):
             if isinstance(term, _UncoveredTerm) or term.references - supplied:
                 results[term.id] = uncovered
                 continue
-            selected = whole_window(trial.epochs, n_steps, term.epochs)
+            selected = (
+                jnp.ones(n_steps, dtype=bool) if term.window is None
+                else term.window.mask(trial.epochs, n_steps, Inputs((), fixed, run_key, trial_key, defined=available))
+            )
             show_weight = not term.weight_references & unobserved
             weight_is_step = term.weight.checked.root.level == Level.STEP
             measure_is_step = term.measure.checked.root.level == Level.STEP
@@ -310,7 +313,6 @@ def compile_objective(
 ) -> ObjectiveExecutor | tuple[Problem, ...]:
     """Compile an authored objective or rebind the validated Train terms to Evaluate."""
     period = task.period
-    epoch_ids = set(task.epochs)
     problems = []
     terms = []
     seen = set()
@@ -363,9 +365,8 @@ def compile_objective(
             if unpaired:
                 problems.extend(unpaired)
                 continue
-        absent = set(term.epochs) - epoch_ids
         if use in (ObjectiveUse.INHERITED, ObjectiveUse.PREVIEW) and (
-            absent or measure_refs - measure_ids or weight_refs - weight_ids
+            measure_refs - measure_ids or weight_refs - weight_ids
         ):
             terms.append(_UncoveredTerm(term.id))
             continue
@@ -382,14 +383,26 @@ def compile_objective(
         if not isinstance(measure, Compiled):
             problems.extend(measure)
             continue
-        if absent or term.epochs and measure.checked.root.level != Level.STEP:
-            reason = (
-                f"Unknown epochs {sorted(absent)}." if absent else "This measure has no time axis."
+        window = None
+        if term.window is not None:
+            window_path = (*path, "window")
+            if measure.checked.root.level != Level.STEP:
+                problems.append(Problem(
+                    code=ProblemCode.OUT_OF_SCOPE, path=window_path, reason="This measure has no time axis.",
+                ))
+                continue
+            window = compile_window(
+                term.window, epochs=task.epochs, period=period, names=names, functions=functions,
+                field_address=(document.id, *window_path), path=window_path, nominal=nominal,
             )
-            problems.append(
-                Problem(code=ProblemCode.OUT_OF_SCOPE, path=(*path, "epochs"), reason=reason)
-            )
-            continue
+            if isinstance(window, tuple):
+                if use in (ObjectiveUse.INHERITED, ObjectiveUse.PREVIEW) and all(
+                    problem.code == ProblemCode.UNKNOWN_NAME for problem in window
+                ):
+                    terms.append(_UncoveredTerm(term.id))
+                else:
+                    problems.extend(window)
+                continue
         limit = Level.STEP if measure.checked.root.level == Level.STEP else Level.TRIAL
         weight_site = Site(expected=scalar, names=weight_names, finest=limit)
         if sites is not None:
@@ -407,13 +420,15 @@ def compile_objective(
             problems.extend(weight)
             continue
         used = (references(measure.checked.tree) | references(weight.checked.tree)) - {"t", "T", "u"}
+        if window is not None:
+            used |= window.references
         terms.append(
             _Term(
                 term.id,
                 measure,
                 weight,
                 term.reduction,
-                tuple(index for index, epoch in enumerate(task.epochs) if epoch in term.epochs),
+                window,
                 used,
                 weight_refs,
             )

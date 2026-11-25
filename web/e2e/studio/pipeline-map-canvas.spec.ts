@@ -51,6 +51,11 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', { 
   await page.keyboard.press('Shift+F6');
   await page.keyboard.press('F6');
   await expect(region).toBeFocused();
+  const toolbar = page.getByRole('toolbar', { name: 'Pipeline Map', exact: true });
+  await page.keyboard.press('Tab');
+  await expect(toolbar.getByRole('button', { name: 'Fit View', exact: true })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Tab');
   await page.keyboard.press('Tab');
   await expect(mapStep(page, 'train')).toBeFocused();
   await page.keyboard.press('ArrowRight');
@@ -81,8 +86,7 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', { 
   await mark(excluded).press('Escape');
   await expect(mark(excluded)).toHaveAttribute('aria-pressed', 'true');
 
-  const rail = page.getByRole('navigation', { name: 'Details', exact: true });
-  const fitMap = () => rail.getByRole('button', { name: 'Fit View', exact: true }).click();
+  const fitMap = () => toolbar.getByRole('button', { name: 'Fit View', exact: true }).click();
   const paneControl = canvas.locator('.react-flow__pane');
   const motion = [];
   for (const reducedMotion of ['no-preference', 'reduce'] as const) {
@@ -119,7 +123,7 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', { 
   await info.attach('pipeline-zoom-motion', { body: JSON.stringify(motion), contentType: 'application/json' });
 
   const initial = await camera();
-  await rail.getByRole('button', { name: 'Zoom In', exact: true }).click();
+  await toolbar.getByRole('button', { name: 'Zoom In', exact: true }).click();
   await expect.poll(async () => (await camera()).zoom).toBeGreaterThan(initial.zoom);
   const zoomed = await camera();
   const pane = await canvas.locator('.react-flow__pane').boundingBox();
