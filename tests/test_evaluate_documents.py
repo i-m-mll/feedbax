@@ -14,18 +14,18 @@ from tests.support.managed_train_fixture import managed_evaluation_step, managed
 FEE = "train:8d8d2d1fa72a44162040459972acc90a0599ef5ff7d9fb08bc9ecf6c40594b23"
 DEFAULT = "evaluate:a26c3206ad32dd581a8c14d17219d8ba5a90fc92bb12dfb07ec3336196482119"
 FIELD_CHANGED = "evaluate:f4b1e53097d9f25fa2a42123f1eed48acd3927ef527d3f7726fd8653c30689ea"
-ATTACHMENT_ADDED = "evaluate:fc67dc6d375bc60d520ca089daf6140a11307c0c1c4bf4731b6c998d78efad05"
+ATTACHMENT_ADDED = "evaluate:4c139b6baa83c6c41e68bea0c45a3cfc28c44a74a90b2f169931afd30af6be77"
 FEWER_CONDITIONS = "evaluate:29a1c6c556faf512665101434ebb5f2688e1a7f7c99d6bceefd59c150f5c75ab"
 SWEPT_PUSHED = (
     ("trained==347a995705cde9b16ee3a665dede47e6594d0c1158f3809255731f622a8fbe30",
-     "evaluate:c54b9af65e38f25d557021b9c449662649d941aead73abb9a85430e96954815c"),
+     "evaluate:2931116d3359564263ba0d566422013e2100150efc9ea470aa9e531836c58f71"),
     ("trained==abb0ffe5124ac74b8d431462660c668b987dd969c5bf76fc07a20894a2b46eea",
-     "evaluate:90916c97780df4345b6c20cc96b25def8a427c7b296d86d5c4024c920b2616dd"),
+     "evaluate:cd547494d9a606d6a5087d7c5de87f0c1f33ddb36a629618fab8811a6dc38298"),
 )
 NEAREST_SHARED = {
     "fee": "train:3cd016c0ddf2f4077faef9904870609863ceaf1b139c361b7002796c1e9dc93e",
     "other": FEE,
-    "check": "evaluate:f5a49797212cddbeda9d826703af3584292e6d59b46dd67d406da994cb75683c",
+    "check": "evaluate:6de59798cd541434fce97b71bf178409f00614ac3dcd93c8e1d414d0de93d4ab",
 }
 UNPAIRED_TASK = "Model input 'target_pos' needs a Task signal."
 
