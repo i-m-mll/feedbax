@@ -102,6 +102,8 @@ def _extra_layout(extra: PyTree, count: int):
 def _checkpoint_metadata(value):
     if isinstance(value, jax.tree_util.PyTreeDef):
         return project_pytree(value, lambda: ("leaf",))
+    if isinstance(value, np.dtype):
+        return str(value)
     if isinstance(value, jax.ShapeDtypeStruct):
         return value.shape, str(value.dtype), value.weak_type
     if isinstance(value, type) and "<locals>" not in value.__qualname__:
