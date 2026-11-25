@@ -176,7 +176,7 @@ def pair_trial_source(
                     reason="The selected task changes which optional inputs use the trained model's defaults.",
                 ),)
             lowered = replace(lowered, graph=graph_override)
-        interface = lowered.interface(model, components, input_prototypes=prototypes)
+        interface = lowered.interface(model, components, input_prototypes=prototypes, task_inputs=supplied_types)
     except ModelCompilationProblem as error:
         return model_compilation_problems(error)
     except ParameterResolutionError as error:
@@ -202,7 +202,13 @@ def pair_trial_source(
             reason="The prepared Task's conditions differ from its registry declaration.",
         ),)
     bindings, problems = bind_task_inputs(interface, compiled.interface.signals, authored)
-    return TrialPair(interface, compiled, lowered, prototypes, bindings, (*links, *problems), task)
+    graph_problems = tuple(Problem(
+        code=ProblemCode.TYPE_MISMATCH,
+        reason=issue.reason,
+        path=("model", *issue.address.stored_path()),
+        model_address=issue.address,
+    ) for issue in interface.signals.problems)
+    return TrialPair(interface, compiled, lowered, prototypes, bindings, (*links, *problems, *graph_problems), task)
 
 
 def declared_model_outputs(model: ModelDocument) -> tuple[ScopedValue, ...]:
@@ -223,7 +229,7 @@ def declared_model_outputs(model: ModelDocument) -> tuple[ScopedValue, ...]:
         })
         outputs.append(ScopedValue(
             id=address.to_text(), name=port.name, level=Level.STEP,
-            type=ValueType(base=kind, shape=shape, dimensions=unit.dimensions),
+            type=ValueType(base=kind, shape=shape, dimensions=unit.dimensions, space=port.type.space),
         ))
     return tuple(outputs)
 

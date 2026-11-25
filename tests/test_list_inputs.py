@@ -40,7 +40,7 @@ def _two_model_definition(masses=None):
     conditions = steps["conditions"]
     conditions["inputs"]["subject"] = [
         {"step": "train", "checkpoint": "last"},
-        {"step": "train_b", "checkpoint": "last", "where": {"axes": {"rate": [{"id": "high", "label": "0.003"}]}}},
+        {"step": "train_b", "checkpoint": "last", "where": {"clauses": [{"rate": [{"id": "high", "label": "0.003"}]}]}},
     ]
     conditions["sweep"]["axes"] = {"model": {"input": "subject"}, **conditions["sweep"]["axes"]}
     steps["conditions_b"] = deepcopy(conditions)
@@ -126,7 +126,7 @@ def test_zip_pairs_two_inputs_by_label_and_refuses_a_partial_pairing():
     del analysis["views"]
     reordered = [{"id": value, "label": value} for value in ("heavy", "nominal")]
     analyze = definition["steps"]["analyze"]
-    analyze["inputs"] = {"left": {"step": "conditions"}, "right": {"step": "conditions_b", "where": {"axes": {"mass": reordered}}}}
+    analyze["inputs"] = {"left": {"step": "conditions"}, "right": {"step": "conditions_b", "where": {"clauses": [{"mass": reordered}]}}}
     analyze["sweep"] = {"axes": {"a": {"input": "left"}, "b": {"input": "right"}}, "combination": "zip"}
     del definition["steps"]["report"]
     plan = compile_project(Project.model_validate(definition), operations=_operations())
@@ -137,7 +137,7 @@ def test_zip_pairs_two_inputs_by_label_and_refuses_a_partial_pairing():
         (left,), (right,) = run.inputs["left"], run.inputs["right"]
         assert left.producer.row == right.producer.row
 
-    analyze["inputs"]["right"]["where"]["axes"]["mass"] = reordered[:1]
+    analyze["inputs"]["right"]["where"]["clauses"][0]["mass"] = reordered[:1]
     (problem,) = compile_project(Project.model_validate(definition), operations=_operations()).diagnostics
     assert (problem.step, problem.path) == ("analyze", "sweep.combination")
     assert "one to one" in problem.detail

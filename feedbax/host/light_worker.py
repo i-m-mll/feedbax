@@ -118,32 +118,29 @@ def _retain_staged_object(
 
 
 def figure_source_runs(
-    store: ImmutableArtifactBlobProvider, spec: RenderRequestSpec, bindings: Bindings,
+    view: SuccessView, bindings: Bindings,
 ) -> dict[str, tuple[FigureRun, ...]]:
-    """Verify the planned role origins against the actual saved input receipts."""
-    if not spec.source_runs:
-        return {}
-    if spec.source_runs.keys() != bindings.keys():
-        raise ValueError("Figure source runs must cover each bound dataset role.")
-    view = SuccessView(store)
-    producers: dict[str, frozenset[str]] = {}
+    """Follow the figure's bound datasets to the runs that produced their source data."""
+    producers: dict[str, tuple[FigureRun, ...]] = {}
 
-    def lineage(member: BoundMember) -> frozenset[str]:
+    def lineage(member: BoundMember) -> tuple[FigureRun, ...]:
         if member.selection is None or member.content.media_type != DATASET_MEDIA_TYPE:
-            return frozenset()
+            return ()
         ref = member.selection.receipt
         if ref.sha256 not in producers:
             receipt = view.read_receipt(ref)
-            producers[ref.sha256] = frozenset((receipt.request.id,)).union(
-                *(lineage(parent) for group in receipt.inputs.values() for parent in group),
+            sources = tuple(
+                run for group in receipt.inputs.values() for parent in group for run in lineage(parent)
+            )
+            producers[ref.sha256] = sources or (
+                FigureRun(job_id=receipt.attempt, request_id=receipt.request.id),
             )
         return producers[ref.sha256]
 
-    for role, sources in spec.source_runs.items():
-        actual = frozenset().union(*(lineage(member) for member in bindings[role]))
-        if any(run.request_id not in actual for run in sources):
-            raise ValueError(f"Figure role {role!r} differs from its saved run lineage.")
-    return spec.source_runs
+    return {
+        role: tuple(sources.values()) for role, members in bindings.items()
+        if (sources := {run.job_id: run for member in members for run in lineage(member)})
+    }
 
 
 def _compute(
@@ -182,7 +179,7 @@ def _compute(
         with ExitStack() as stack:
             figure = render_figure(
                 spec.document, _dataset_inputs(store, request, bindings, stack), names=spec.names,
-                runs=figure_source_runs(store, spec, bindings),
+                runs=figure_source_runs(SuccessView(store), bindings),
             )
             document = figure.to_json()
             assert document is not None
