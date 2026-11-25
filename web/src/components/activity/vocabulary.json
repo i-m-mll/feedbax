@@ -137,7 +137,11 @@
     "project": "Project",
     "projects": "Projects",
     "newProject": "New Project",
+    "newFromExample": "New from Example",
     "modified": "Modified",
+    "folder": "Folder",
+    "filter": "Filter",
+    "delete": "Delete",
     "range": "Range",
     "rank": "Rank",
     "reason": "Reason",
@@ -570,6 +574,7 @@
     "takesText": "{value} takes text"
   },
   "format": {
+    "deleteProject": "Delete {name}?",
     "leavesUnfed": "Leaves {name} unfed",
     "validityDriver": "{driver} revision {previous} → {present}",
     "validityArguments": "Arguments of {slots}",
