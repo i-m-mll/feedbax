@@ -50,8 +50,10 @@ from feedbax.expression_compile import Compiled, Inputs, compile_expression
 from feedbax.contracts.expression_registry import FunctionRegistry
 from feedbax.contracts.rollout import trial_indices
 from feedbax.contracts.trial_bindings import selected_signal_id
+from feedbax.contracts.time_units import length_steps, literal_time
 from feedbax.runtime._graph_key_schedule import map_trial_samples, validation_trial_keys
 from feedbax.runtime.epoch_windows import EpochRecord, in_epoch
+from feedbax.runtime.timing import runtime_time_steps
 
 
 @dataclass(frozen=True)
@@ -121,6 +123,7 @@ class _Field:
     address: tuple[str, ...]
     code: Compiled
     list_count: int | None = None
+    length_in_steps: bool = False
 
     def inputs(self, parameters, prepared, values, k=0, *, epoch_entry=False, repeat=None):
         args = (
@@ -212,9 +215,8 @@ class DocumentTask:
             elif field is None:
                 length = 0
             else:
-                length = jnp.rint(
-                    field.evaluate(parameters, prepared, values | {"i": repeat}, repeat=repeat) / self.period
-                ).astype(int)
+                value = field.evaluate(parameters, prepared, values | {"i": repeat}, repeat=repeat)
+                length = value if field.length_in_steps else runtime_time_steps(value, self.period)
             lengths.append(jnp.clip(length, 0, bound))
         if None in self.length_fields:
             lengths[self.length_fields.index(None)] = jnp.maximum(0, self.n_steps - sum(lengths))
@@ -649,24 +651,21 @@ def compile_task(
             continue
         count = None
         if isinstance(length, LiteralValue):
-            (seconds,) = field.code.parameters
-            steps = round(float(seconds) / period)
-            if seconds < 0 or (seconds > 0 and steps == 0):
-                problem(
-                    ProblemCode.STRUCTURE,
-                    "Length must be zero or round to at least one step.",
-                    path,
-                )
+            try:
+                steps = length_steps(literal_time(length), period)
+            except ValueError as error:
+                problem(ProblemCode.STRUCTURE, str(error), path)
+                steps = 0
+            field = replace(field, code=replace(field.code, parameters=(jnp.asarray(steps),)), length_in_steps=True)
             if bound is None:
                 bound = steps
             elif steps > bound:
                 problem(ProblemCode.LENGTH_BUDGET, "The length exceeds its step bound.", path)
             count = EpochSteps(least=max(steps, 0), nominal=max(steps, 0), greatest=max(steps, 0))
-        if (
-            discrete
-            and all(isinstance(arg, LiteralValue) for arg in length.args)
-        ):
-            low, high = (round(float(seconds) / period) for seconds in field.code.parameters)
+        if discrete:
+            field = replace(field, length_in_steps=True)
+        if discrete and all(isinstance(arg, LiteralValue) for arg in length.args):
+            low, high = map(int, field.code.parameters)
             if not 0 <= low <= high:
                 problem(
                     ProblemCode.STRUCTURE, "Length draw needs ordered nonnegative bounds.", path
@@ -675,8 +674,8 @@ def compile_task(
                 bound = high
             elif high > bound:
                 problem(ProblemCode.LENGTH_BUDGET, "The draw exceeds the epoch bound.", path)
-            else:
-                count = EpochSteps(least=low, nominal=round((low + high) / 2), greatest=high)
+            if 0 <= low <= high:
+                count = EpochSteps(least=low, nominal=(low + high + 1) // 2, greatest=high)
         if bound is None:
             problem(ProblemCode.UNBOUNDED_LENGTH, "A variable length needs a step bound.", path)
         lengths.append(field)
