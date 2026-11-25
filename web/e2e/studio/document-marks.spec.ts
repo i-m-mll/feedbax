@@ -265,7 +265,7 @@ test('an attachment a based Model document adds is marked as authored there, and
   const { snapshot } = await appendManagedFiles(request, seeded, [
     { kind: 'document', id: 'point-mass-2', document: {
       schema: 'feedbax.spec.model', base: { document: 'point-mass' }, differences: {
-        '/interior/wires/decode/attachments': { value: [{ id: 'lag', kind: 'delay', delay: { value: 1, unit: 'st' }, initial: 0 }] },
+        '/interior/wires/decode/attachments': { value: [{ id: 'lag', kind: 'delay', delay: { value: 1, unit: 'st' }, initial_source: { kind: 'value', value: 0 } }] },
       },
     } },
     { kind: 'document', id: 'point-mass-3', document: { schema: 'feedbax.spec.model', base: { document: 'point-mass-2' } } },
