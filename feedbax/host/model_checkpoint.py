@@ -205,7 +205,7 @@ class SemanticModelSlot:
 
     def restore(
         self, template: Graph | None = None, *,
-        target: ModelRestoreTarget | None = None, replica_index: int = 0,
+        target: ModelRestoreTarget | None = None, replica_index: int = 0, synthesized: bool = False,
     ) -> Graph:
         """Verify the source slot, then bind compatible retained values to the target."""
         if template is None:
@@ -221,28 +221,34 @@ class SemanticModelSlot:
             )
         except ArrayContainerError as exc:
             raise ModelCheckpointError(path, str(exc)) from exc
-        return _restore_model(self.graph, template, decoded.tensors, decoded.descriptor.metadata, target)
+        return _restore_model(
+            self.graph, template, decoded.tensors, decoded.descriptor.metadata, target, synthesized=synthesized,
+        )
 
     def restore_all(
         self, templates: Sequence[Graph], *,
-        targets: Sequence[ModelRestoreTarget] | None = None,
+        targets: Sequence[ModelRestoreTarget] | None = None, synthesized: bool = False,
     ) -> tuple[Graph, ...]:
         """Restore every replica using templates in checkpoint order."""
         if len(templates) != len(self.replicas) or (targets is not None and len(targets) != len(templates)):
             raise ModelCheckpointError("/model/replicas", "templates do not match the checkpoint replica count")
         return tuple(
-            self.restore(template, target=None if targets is None else targets[index], replica_index=index)
+            self.restore(
+                template, target=None if targets is None else targets[index], replica_index=index, synthesized=synthesized,
+            )
             for index, template in enumerate(templates)
         )
 
 
 def _restore_model(
     graph: GraphSpec, template: Graph, tensors: Mapping[str, jax.Array | np.ndarray],
-    actual: object, target: ModelRestoreTarget | None = None,
+    actual: object, target: ModelRestoreTarget | None = None, *, synthesized: bool = False,
 ) -> Graph:
     expected, declarations = _describe(graph, template)
     if not isinstance(actual, dict):
         raise ModelCheckpointError("/v1/model", "missing value declarations")
+    if synthesized:
+        tensors = _synthesized_precision(expected, tensors, declarations)
     _verify_values(expected, declarations, tensors, actual)
 
     source_leaves = dict(graph_leaf_specs(graph))
@@ -309,6 +315,24 @@ def _restore_model(
     if unexpected := overrides.keys() - applied:
         raise ModelCheckpointError(min(unexpected), "override has no declared scalar source destination")
     return restored.prepare()
+
+
+def _synthesized_precision(expected, tensors, declarations):
+    """Round a 64-bit synthesized array to the consumer's declared 32-bit slot."""
+    adapted = dict(tensors)
+    for address in expected.keys() & tensors.keys():
+        current, saved = expected[address], tensors[address]
+        if (
+            declarations[address]["representation"] != "jax-array" or saved.shape != current.shape
+            or (saved.dtype, current.dtype) != (np.dtype("float64"), np.dtype("float32"))
+        ):
+            continue
+        with np.errstate(over="ignore"):
+            target = np.asarray(saved, dtype=np.float32)
+        if not np.isfinite(target).all():
+            raise ModelCheckpointError(address, "Synthesized parameter is outside the consumer's finite float32 range")
+        adapted[address] = target
+    return adapted
 
 
 def _verify_exact_model(original: Graph, restored: Graph) -> None:

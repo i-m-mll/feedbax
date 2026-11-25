@@ -10,7 +10,7 @@ from feedbax.compiler.graph import ExecutableGraph, GraphCompilationError, Graph
 from feedbax.compiler.model_document import ModelCompilationProblem, lower_model_document
 from feedbax.execution.trial_resolution import PreparedTrialExecution, declared_model_input_prototypes, resolve_trial_execution
 from feedbax.contracts.expression_values import Problem, ProblemCode
-from feedbax.contracts.model_input import InitialModelSource, ModelSource
+from feedbax.contracts.model_input import InitialModelSource, ModelSource, SynthesizedModelSource
 from feedbax.contracts.project import json_pointer_parts
 from feedbax.objectives.document import ObjectiveUse
 from feedbax.runtime._graph_key_schedule import model_initialization_key
@@ -61,7 +61,7 @@ def reconstruct_model(
     source_overrides: Mapping[str, float] | None = None,
     slot: SemanticModelSlot | None = None,
 ) -> ReconstructedModel | tuple[Problem, ...]:
-    """Build an initial model or restore learned values onto a compiled template."""
+    """Build an initial model or restore parameter values onto a compiled template."""
     if variant_seed is not None and not isinstance(variant, GraphResolution):
         return (Problem(
             code=ProblemCode.STRUCTURE, path=("model",),
@@ -113,6 +113,7 @@ def reconstruct_model(
         )
         graphs = slot.restore_all(
             tuple(source.graph for source in sources),
+            synthesized=isinstance(source, SynthesizedModelSource),
             targets=None if variant is None else tuple(
                 ModelRestoreTarget(target.resolved.graph, target.graph, source_overrides or {}) for target in targets
             ),

@@ -91,8 +91,9 @@ from feedbax.contracts.run_rule import RuleRefusal, choose
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import (
     BatchMember, BatchSetMember, BestRank, LastMember, ProductRef, UpdateSeriesMember,
+    is_synthesized_model_product,
 )
-from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec, SynthesisRequestSpec
 from feedbax.contracts.trial_clock import StudioSavedFigureMeanRequest
 from feedbax.contracts.trial_record import StudioTrialReplayResponse
 from feedbax.dataset import Dataset
@@ -302,7 +303,14 @@ class ProjectPlanRead:
         conditions: dict[str, list[str] | None] = {}
 
         def task_conditions(row: PlannedRow) -> list[str] | None:
-            if evaluation_tasks is None or row.train is None or (task := row.train.task) is None:
+            if evaluation_tasks is None:
+                return None
+            task = row.train.task if row.train is not None else None
+            if isinstance(row, PlannedRun) and row.kind == "synthesize":
+                spec = decode_request(plan.requests[row.request_id], plan.documents.__getitem__).spec
+                if isinstance(spec, SynthesisRequestSpec):
+                    task = spec.trial_documents.task_source
+            if task is None:
                 return None
             identity = to_json(task.model_dump(mode="json")).decode()
             if identity not in conditions:
@@ -446,7 +454,7 @@ class ProjectPlanRead:
                     target_total=row.train.target_total if row.train is not None else None,
                     resolved=row.resolved,
                     member_key=producer_member_key(row.key.variant, row.key.row, gathers_variants=False)
-                    if row.kind in {"train", "evaluate"} else None,
+                    if row.kind in {"train", "evaluate", "synthesize"} else None,
                     coordinates={
                         axis: StudioProjectWindowMapCoordinate(
                             value_id=coordinate.value_id, label=coordinate.label, value=coordinate.value,
@@ -1108,7 +1116,7 @@ def _light_result(settled: SettledProjectPlan, attempt: PlanJobAttempt | None) -
     success = attempt.light_success
     project = f"/api/projects/{quote(settled.project_id, safe='')}"
     attempt_path = f"{settled.revision}/{attempt.job_id}"
-    if success.request.id.startswith("analyze:"):
+    if success.request.id.startswith(("analyze:", "synthesize:")):
         products = {
             role: f"{project}/operation-products/{attempt_path}/{quote(role, safe='')}"
             for role, members in success.products.items()
@@ -1153,6 +1161,10 @@ def _evaluation_row(
                 rule = "last"
     sources = planned.sources if planned is not None and planned.terminal is None else ()
     inputs: dict[RunKey | ElementKey, JobStatus] = {source: upstream.status for source in sources if (upstream := history.get(source)) is not None}
+    if is_synthesized_model_product(reference):
+        for source in sources:
+            if (producer := settled.plan.light_requests.get(source)) is not None:
+                inputs[source] = _light_history(settled, jobs, producer).status
     dependency = _dependency_state(settled.plan, inputs)
     trials = []
     problem = None
@@ -1167,7 +1179,17 @@ def _evaluation_row(
                 producers = tuple(candidate.reference.request_id for candidate in candidates)
             case _:
                 producers = ()
-        can_run = set(producers) <= jobs.checkpoint_producers
+        if is_synthesized_model_product(subject):
+            can_run = any(
+                attempt.light_success is not None or attempt.status in {
+                    JobStatus.QUEUED, JobStatus.STARTING, JobStatus.RUNNING,
+                }
+                for attempt in jobs.by_request.get(subject.request_id, ())
+            )
+            if not can_run and dependency is None:
+                raise CannotRun("/inputs/subject", "Synthesize must publish its model before Evaluate can run.")
+        else:
+            can_run = set(producers) <= jobs.checkpoint_producers
         if not can_run and dependency is None:
             raise CannotRun("/inputs/subject", EVALUATION_SUBJECT_REQUIRED)
         if can_run and isinstance(subject, ProductRef) and isinstance(subject.select, BatchSetMember) and not set(subject.select.batches) <= set(
@@ -1244,6 +1266,7 @@ def _saved_evaluation_result(
         bound_subject=_planned_bound(attempt.bound_subject, planned), validity=attempt.validity,
         provenance=attempt.provenance,
         loaded_model=attempt.loaded_model,
+        origin=attempt.model_origin,
     )
 
 def _subject_checkpoint_path(settled: SettledProjectPlan, run: PlannedRun, planned: PlannedInput) -> str:

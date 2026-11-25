@@ -33,7 +33,7 @@ from feedbax.contracts.loaded_model import IMPORTED_MODEL_MEDIA_TYPE
 from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE, SemanticModelEncoding
 from feedbax.contracts.operation import DatasetPort, ModelPort, OperationDefinition, TaskPort
 from feedbax.contracts.request_identity import DecodedRequest
-from feedbax.contracts.request_refs import BatchMember, ContentRef, LastMember, ProductRef, RequestId
+from feedbax.contracts.request_refs import BatchMember, ContentRef, LastMember, ProductRef, RequestId, is_synthesized_model_product
 from feedbax.contracts.request_specs import (
     AnalysisRequestSpec,
     NumericalSettings,
@@ -114,7 +114,7 @@ def _typed_operation_input(port, members) -> bool:
         return (
             isinstance(reference, ProductRef) and reference.request_id.startswith("train:")
             and reference.role == "checkpoint" and isinstance(reference.select, (LastMember, BatchMember))
-        ) or (isinstance(reference, ContentRef) and not reference.tree and reference.media_type in {
+        ) or is_synthesized_model_product(reference) or (isinstance(reference, ContentRef) and not reference.tree and reference.media_type in {
             INITIAL_MODEL_MEDIA_TYPE, IMPORTED_MODEL_MEDIA_TYPE,
         })
     if isinstance(port, TaskPort):

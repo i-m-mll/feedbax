@@ -7,6 +7,7 @@ from feedbax.application.composition import load_application
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.effective_success import success_content_ref
 from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE, SemanticModelEncoding
+from feedbax.contracts.model_origin import ModelProductKey, SynthesizedModelOrigin
 from feedbax.contracts.project import Project
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import SynthesisRequestSpec, TrialDocuments
@@ -88,6 +89,22 @@ def test_saved_synthesize_is_admitted_and_owns_a_model_product(host, tmp_path):
         store.get_object(replica.arrays), expected_descriptor_sha256=replica.descriptor.array_descriptor_sha256,
     ).tensors
     assert parameters and all(value.dtype == np.float64 for value in parameters.values())
+
+    evaluate = RunKey("default", "baseline", "default")
+    (rolled_out,) = jobs.admit_plan(folders, plan, run_keys=(evaluate,), token=token("evaluate-synthesis")).items
+    assert rolled_out.disposition == "admitted", rolled_out
+    job = wait_until(lambda: (
+        job if (job := job_row(host, rolled_out.job_id)) and job["outcome"] is not None else None
+    ))
+    assert job["state"] == "succeeded", job["outcome"]
+    result = jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=rolled_out.job_id)
+    assert result._manifest().model_origin == SynthesizedModelOrigin(
+        kind="synthesized", key=ModelProductKey(variant="default", step="synthesize", row="default"),
+        job_id=admitted.job_id, request_id=receipt.request.id,
+    )
+    with result.open_states() as dataset:
+        assert "checkpoint" not in dataset.descriptor.dimensions
+        assert dataset.descriptor.dimensions["trial"] > 0
 
 
 def test_synthesis_writes_one_replica_with_every_parameter(tmp_path):

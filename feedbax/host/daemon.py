@@ -433,9 +433,12 @@ class Host:
         if "light_affinity" in profile and self._light_busy(key):
             return
         origins = None
+        model_subject = None
         try:
             if launch["warm_entrypoint"] == LIGHT_ENTRYPOINT:
                 origins = self.store.light_origins(row)
+            elif (launch["payload"].get("canonical_request") or {}).get("model") is not None:
+                model_subject = self.store.synthesized_subject(row, launch["payload"])
             self.store.verify_completion_bindings(row, launch, bindings)
         except CompletionFileError as error:
             with self.store.db:
@@ -476,11 +479,13 @@ class Host:
         paths["scratch"].mkdir(parents=True, exist_ok=True)
         write_json(paths["input"], launch["payload"])
         completion_bindings_sha256 = None
-        if bindings or origins is not None:
+        if bindings or origins is not None or model_subject is not None:
             paths["completion_bindings"] = paths["directory"] / "completion-bindings.json"
             delivery_bindings: JsonObject = {"bindings": bindings}
             if origins is not None:
                 delivery_bindings["origins"] = origins
+            if model_subject is not None:
+                delivery_bindings["model_subject"] = model_subject.model_dump(mode="json")
             completion_bindings_sha256 = hashlib.sha256(encode(delivery_bindings)).hexdigest()
             write_json(paths["completion_bindings"], delivery_bindings)
         live_evaluate_sha256 = None

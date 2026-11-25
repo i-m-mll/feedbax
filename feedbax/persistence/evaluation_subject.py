@@ -10,15 +10,20 @@ from feedbax.contracts.effective_success import (
 )
 from feedbax.contracts.base import ParentRef, Provenance
 from feedbax.contracts.manifest import EvaluationRunManifest, EvaluationRunSpec, TrainingRunManifest, load_manifest_bytes, training_run_manifest_id
+from feedbax.contracts.model_origin import SynthesizedModelOrigin
 from feedbax.contracts.request_identity import DecodedRequest
-from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestRank, ContentRef, InputMember, LastMember, ProductRef, RequestId, UpdateSeriesMember
+from feedbax.contracts.request_refs import (
+    BatchMember, BatchSetMember, BestRank, ContentRef, InputMember, LastMember, ProductRef, RequestId, UpdateSeriesMember,
+    is_synthesized_model_product,
+)
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec
 from feedbax.persistence.canonical_train import BoundStudioTrainingJobInput
 from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters
 from feedbax.contracts.jobs import JobReceipt
 from feedbax.persistence.canonical_evaluate import (
+    SynthesizedSubjectBinding,
     decode_evaluation_manifest, evaluation_manifest_id, initial_evaluation_references, states_product, states_ref,
-    verified_imported_subject, verify_initial_rollout,
+    verified_imported_subject, verify_initial_rollout, verify_synthesized_rollout,
 )
 from feedbax.persistence.array_container import open_array_container
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -342,6 +347,16 @@ def verify_evaluation_success_evidence(
                 visitors.object(item)
         return ref, *imported
     (bound,) = success.inputs["subject"]
+    if is_synthesized_model_product(subject):
+        if (
+            bound.selection is None or not isinstance(origin := manifest.model_origin, SynthesizedModelOrigin)
+            or success.products != {"states": (states_product(manifest),)}
+            or manifest.metadata["canonical_request"] != success.request.object.model_dump(mode="json")
+        ):
+            raise ValueError("Accepted Synthesize rollout differs from its Store success")
+        binding = SynthesizedSubjectBinding(receipt=bound.selection.receipt, key=origin.key)
+        verify_synthesized_rollout(store, manifest, subject, binding)
+        return (ref,)
     source = bound.evaluation_subject
     assert source is not None
     value = EvaluationSubjectValue.model_validate(bound.descriptor)

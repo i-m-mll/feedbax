@@ -27,15 +27,20 @@ from feedbax.contracts.manifest import (
 from feedbax.contracts.model_input import (
     INITIAL_MODEL_MEDIA_TYPE, OBJECTIVE_INPUT_MEDIA_TYPE, TASK_INPUT_MEDIA_TYPE, document_input_object, read_document_input,
 )
+from feedbax.contracts.model_origin import ModelProductKey, SynthesizedModelOrigin
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.request_identity import DecodedRequest, decode_request
-from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestRank, ContentRef, LastMember, ProductRef, UpdateSeriesMember
+from feedbax.contracts.request_refs import (
+    BatchMember, BatchSetMember, BestRank, ContentRef, LastMember, ProductRef, UpdateSeriesMember,
+    is_synthesized_model_product,
+)
 from feedbax.contracts.request_specs import EvaluationRequestSpec
 from feedbax.contracts.rollout import (
     RAW_STATES_SCHEMA as RAW_STATES_SCHEMA,
     CannotRun,
     ResolvedInitialRollout,
+    ResolvedSynthesizedRollout,
     ResolvedRolloutBinding,
     ROLLOUT_TYPE as ROLLOUT_TYPE,
     STATES_SCHEMA as STATES_SCHEMA,
@@ -65,17 +70,19 @@ class EvaluationRequestBinding(StrictModel):
     request: ContentObjectRef
     checkpoint: ProductRef | BestRank | None = Field(default=None, exclude_if=lambda value: value is None)
     initial_model: ContentRef | None = Field(default=None, exclude_if=lambda value: value is None)
+    model: ProductRef | None = Field(default=None, exclude_if=lambda value: value is None)
     terminal: TerminalTrainSubject | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
     def _one_model_source(self) -> EvaluationRequestBinding:
-        if self.initial_model is None:
-            if self.checkpoint is None:
-                raise ValueError("Evaluate requires a model subject")
-        elif (
-            self.checkpoint is not None or self.terminal is not None
-            or self.initial_model.media_type not in {INITIAL_MODEL_MEDIA_TYPE, IMPORTED_MODEL_MEDIA_TYPE}
-            or self.initial_model.tree
+        if sum(source is not None for source in (self.initial_model, self.checkpoint, self.model)) != 1:
+            raise ValueError("Evaluate requires exactly one model subject")
+        if self.terminal is not None and self.checkpoint is None:
+            raise ValueError("A terminal Train receipt requires its checkpoint selection")
+        if self.model is not None and not is_synthesized_model_product(self.model):
+            raise ValueError("Synthesize supplies one model without a selector")
+        if self.initial_model is not None and (
+            self.initial_model.media_type not in {INITIAL_MODEL_MEDIA_TYPE, IMPORTED_MODEL_MEDIA_TYPE} or self.initial_model.tree
         ):
             raise ValueError("Initial Evaluate requires one immutable Model input")
         return self
@@ -84,6 +91,8 @@ class EvaluationRequestBinding(StrictModel):
     def subject(self) -> EvaluationSubject:
         if self.initial_model is not None:
             return self.initial_model
+        if self.model is not None:
+            return self.model
         assert self.checkpoint is not None
         return self.checkpoint
 
@@ -93,6 +102,17 @@ class BoundEvaluationJobInput(StrictModel):
     request_id: str
     manifest_root: Path
     canonical_request: EvaluationRequestBinding
+
+
+class SynthesizedSubjectBinding(StrictModel):
+    receipt: ContentObjectRef
+    key: ModelProductKey
+
+    def provenance(self, origin: SynthesizedModelOrigin) -> Provenance:
+        return Provenance(parents=[ParentRef(
+            kind="Success", id=origin.job_id, role="subject",
+            metadata={"manifest_sha256": self.receipt.sha256, "request_id": origin.request_id},
+        )])
 
 
 def _unexpected_document(digest: str) -> bytes:
@@ -129,8 +149,8 @@ def decode_rollout_request(
     if isinstance(subject, ContentRef):
         initial_evaluation_references(decoded)
     elif decoded.inputs.keys() != {"subject"}:
-        raise CannotRun("/inputs", "a checkpoint rollout inherits its Task and Objective")
-    elif not isinstance(subject, BestRank) and (
+        raise CannotRun("/inputs", "a model product rollout inherits its Task and Objective")
+    elif not is_synthesized_model_product(subject) and not isinstance(subject, BestRank) and (
         not isinstance(subject, ProductRef)
         or subject.role != "checkpoint"
         or not subject.request_id.startswith("train:")
@@ -217,6 +237,28 @@ def verified_imported_subject(
     return imported_model_provenance(source, tree), (
         source.model, source.weights.descriptor, *tree.members.values(),
     )
+
+
+def verify_synthesized_rollout(
+    store: ImmutableArtifactBlobProvider, manifest: EvaluationRunManifest, subject: ProductRef,
+    binding: SynthesizedSubjectBinding,
+) -> None:
+    from feedbax.persistence.model_input import read_synthesized_model
+
+    source, spec, success = read_synthesized_model(store, binding.receipt, subject)
+    origin = SynthesizedModelOrigin(kind="synthesized", key=binding.key, job_id=success.attempt, request_id=subject.request_id)
+    effective = ResolvedRolloutBinding.model_validate(manifest.metadata["effective_binding"])
+    (member,) = effective.members
+    params = RolloutParameters.model_validate(manifest.evaluation_spec.inline["params"])
+    if (
+        not isinstance(member, ResolvedSynthesizedRollout) or member.model_tree != source.tree.descriptor.sha256
+        or manifest.model_origin != origin or manifest.provenance != binding.provenance(origin)
+        or manifest.input_training_runs or "placement" in manifest.metadata
+        or effective.digest() != manifest.metadata.get("effective_binding_sha256")
+        or effective.objective != rollout_objective_sha256(spec.trial_documents.objective)
+        or (effective.seed, effective.trial_policy, member.trials) != (params.seed, params.trial_policy, params.trials)
+    ):
+        raise ValueError("Evaluate receipt differs from its exact Synthesize model subject")
 
 
 def best_bound_rank(subject: BestRank, binding: dict, *, verify_metrics: bool = False) -> int:
@@ -383,6 +425,9 @@ def verify_evaluation_receipt(
         for content in refs.values():
             store.verify_object(document_input_object(content))
         verify_initial_rollout(store, manifest, refs)
+        return manifest, subject
+    if is_synthesized_model_product(subject):
+        verify_synthesized_rollout(store, manifest, subject, SynthesizedSubjectBinding.model_validate(binding["model_subject"]))
         return manifest, subject
     if "terminal" in binding:
         from feedbax.persistence.evaluation_subject import read_terminal_train_subject, terminal_train_provenance
