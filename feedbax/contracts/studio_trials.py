@@ -6,7 +6,7 @@ from pydantic import Field, JsonValue, field_serializer
 
 from feedbax.contracts.project_sweep import SetEntryParts, SetTrialSampling
 from feedbax.contracts.base import StrictModel
-from feedbax.contracts.expression_values import Expression, Level, Problem, ScopedValue, ValueType, WeightPart
+from feedbax.contracts.expression_values import Expression, Level, NodePath, Problem, ScopedValue, ValueType, WeightPart
 from feedbax.contracts.jobs import StudioSavedTrainKey
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import (
@@ -146,6 +146,19 @@ class StudioTrialAuthoringRequest(StrictModel):
     ] | None = None
 
 
+class StudioTrialExpressionMenuRequest(StrictModel):
+    """One opened expression part from a projected trial authoring view."""
+
+    revision: Sha256
+    run: StudioSavedTrainKey
+    expression_context: str
+    """The opaque context returned by trial authoring for this view."""
+    field: Pointer
+    """The path of the StudioTrialField that owns the expression."""
+    part: NodePath
+    """The relative path of the part in the expression. The root path is empty."""
+
+
 class StudioTrialEpoch(StrictModel):
     """An epoch of the paired task; ``steps`` once the Task pairs with the Model."""
 
@@ -189,6 +202,8 @@ class StudioSetField(StrictModel):
 class StudioTrialAuthoring(StrictModel):
     revision: Sha256
     run: StudioSavedTrainKey
+    expression_context: str
+    """Identifies the prepared view for subsequent expression menu requests."""
     model: ProjectName | None
     task_document: ProjectName | None
     objective_document: ProjectName | None
@@ -222,6 +237,7 @@ class StudioTrialAuthoring(StrictModel):
     outputs: list[StudioTrialOutput]
     resets: list[StudioTrialReset]
     fields: list[StudioTrialField]
+    """Expression parts are returned by the menu route on request."""
     problems: list[Problem]
     related_term: str | None = Field(default=None, exclude_if=lambda value: value is None)
     files: list[StudioProjectFilePatch]

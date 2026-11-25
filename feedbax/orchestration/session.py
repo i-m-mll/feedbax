@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Annotated, Literal, Protocol
 from uuid import UUID
 
-from pydantic import ConfigDict, Field, SecretStr
+from pydantic import ConfigDict, Field, SecretStr, field_validator
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
@@ -26,6 +26,7 @@ from feedbax.contracts.strict_json import strict_model_validate_json
 from feedbax.host.client import HostClient
 from feedbax.host.io import private_directory
 from feedbax.host.protocol import JsonObject, SessionAccess
+from feedbax.orchestration.project_packages import ProjectPackagePin
 
 
 class SessionError(RuntimeError):
@@ -66,6 +67,16 @@ class SessionRequest(SessionModel):
     lifecycle: SessionLifecycle
     maximum_microusd: Nonnegative
     profile: TargetId | None = Field(default=None, exclude_if=lambda profile: profile is None)
+
+    project_packages: tuple[ProjectPackagePin, ...] = Field(default=(), exclude_if=lambda packages: not packages)
+
+    @field_validator("project_packages")
+    @classmethod
+    def _ordered_packages(cls, value: tuple[ProjectPackagePin, ...]) -> tuple[ProjectPackagePin, ...]:
+        names = [package.distribution for package in value]
+        if names != sorted(set(names)):
+            raise ValueError("Project package pins must be unique and ordered by distribution.")
+        return value
 
     @property
     def placement(self) -> SessionTarget:

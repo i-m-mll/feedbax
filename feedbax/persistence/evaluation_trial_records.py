@@ -130,8 +130,8 @@ def trial_dataset_fields(
             put(_point_field(name, index, "values"), values, transition_axes, point=True)
             put(_point_field(name, index, "defined"), defined, transition_axes)
     raw_states = {
-        model_state_address(value.key).to_text(): value.key for value in layout.values
-        if value.key.startswith("/v1/model/state/")
+        model_state_address(value.field.key).to_text(): value.field.key for value in layout.values
+        if value.field.key.startswith("/v1/model/state/")
     }
     observations = {}
     for operand, origin in observation_origins:
@@ -156,8 +156,8 @@ def trial_dataset_fields(
         choices.update(document.validation_trials[0].variables)
     return fields, coords, RecordedTrialLayout(
         epochs=tuple((epoch, labels.get(epoch, epoch)) for epoch in task.epochs),
-        positions=tuple(value.key for value in layout.values if value.position),
-        configurations=tuple(value.key for value in layout.values if value.configuration),
+        positions=tuple(value.field.key for value in layout.values if value.field.position),
+        configurations=tuple(value.field.key for value in layout.values if value.field.configuration),
         discrete_variables=tuple(
             TrialClockChoice(id=value.id, label=value.name)
             for value in task.interface.variables

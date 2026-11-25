@@ -536,6 +536,14 @@ def test_trial_expression_edits_and_removes_a_saved_set_condition(tmp_path):
         assert wrong_type["problems"][0]["span"] == {"start": 0, "end": 1}
         _, valid = author("load", {"kind": "text", "text": "not is_catch"}, save=True)
         assert not valid["problems"] and valid["text"] == "not is_catch"
+        view, field = author("load")
+        assert not field["site"]["parts"]
+        menu = client.post(f"{BASE}/authoring/trials/expression-menu", json={
+            "revision": view["revision"], "run": run, "expression_context": view["expression_context"],
+            "field": field["path"], "part": ["args", 0],
+        })
+        assert menu.status_code == 200, menu.text
+        assert menu.json()["names"] == ["catch", "is_catch"]
         saved = folders.read(PROJECT).project.steps["train"].set_fields["load"]
         assert saved.condition.args[0].reference == "is_catch"
         assert _runs(folders, "train")

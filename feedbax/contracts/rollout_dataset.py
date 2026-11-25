@@ -7,6 +7,7 @@ from feedbax.contracts.dataset import FieldDescriptor, TrialFigureTime
 from feedbax.contracts.expression_values import LENGTH, ScopedValue, ValueType
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.request_refs import BestRank, ContentRef, ProductRef, UpdateSeriesMember, is_synthesized_model_product
+from feedbax.contracts.retained_state import RetainedStateField
 from feedbax.contracts.semantic_values import semantic_key
 from feedbax.contracts.task_document import Signal
 
@@ -51,10 +52,14 @@ def rollout_coordinates(update_axis: UpdateAxis | None) -> dict[str, FieldDescri
 
 def rollout_dataset_port(
     signals: Iterable[ScopedValue | Signal], schema: str, update_axis: UpdateAxis | None,
+    *, model_states: Sequence[RetainedStateField] = (),
 ) -> DatasetPort:
     leading = rollout_leading(update_axis)
     fields = dict(rollout_signal_field(signal.id, signal.name, signal.type, leading) for signal in signals)
-    coordinates = rollout_coordinates(update_axis)
+    fields.update({state.key: state.descriptor((*leading, "trial")) for state in model_states})
+    coordinates = rollout_coordinates(update_axis) | {
+        axis: FieldDescriptor(dims=(axis,)) for state in model_states for axis in state.axes
+    }
     if any("xy" in field.dims for field in fields.values()):
         coordinates["xy"] = XY
     return DatasetPort(schema_ids=(schema,), variables=fields, coordinates=coordinates)

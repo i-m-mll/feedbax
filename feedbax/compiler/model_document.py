@@ -18,6 +18,7 @@ from feedbax.compiler.model_signals import (
     ModelSignalTable, ResolvedSignalLeaf, boundary_signal_port, resolve_model_signals, task_data_value_type,
 )
 from feedbax.compiler.prototypes import prototypes_from_task_bindings
+from feedbax.compiler.retained_state import resolve_retained_state_fields
 from feedbax.compiler.model_edit import model_graph_problems
 from feedbax.compiler.model_ports import BOUNDARY_PORT_PLACEMENT_REASON, ModelRegistryPorts, derives_input_width
 from feedbax.contracts.acausal import AcausalConnectionSpec, AcausalGraphSpec, PlanarDynamicsSpec, SolverConfigSpec
@@ -42,6 +43,7 @@ from feedbax.contracts.model_document import (
     PhysicalInterior, ProbeAttachment, SignalInput, SignalType,
 )
 from feedbax.contracts.project import json_pointer_parts
+from feedbax.contracts.retained_state import RetainedStateField
 from feedbax.contracts.task_document import TaskDocument
 from feedbax.contracts.time_units import TimeValue, length_steps, time_in_seconds
 from feedbax.mechanics.mechanics import Mechanics
@@ -918,6 +920,7 @@ class LoweredModelDocument:
             self.plugins,
             resolve_model_reset(resolution, components),
             table,
+            resolve_retained_state_fields(resolution, components),
         )
 
     def source_address(self, path: str) -> ModelAddress | None:
@@ -941,6 +944,7 @@ class ResolvedModelInterface:
     plugins: tuple[str, ...]
     reset: ModelResetPlan = ModelResetPlan()
     signals: ModelSignalTable = field(default_factory=ModelSignalTable)
+    retained_state_fields: tuple[RetainedStateField, ...] = ()
 
     @property
     def readable_leaves(self) -> tuple[ResolvedSignalLeaf, ...]:

@@ -64,7 +64,9 @@ class StudioAnalyzeAuthoring(StrictModel):
     document: ProjectName
     operations: list[OperationDefinition]
     states: DatasetPort | None
-    """The port common to the saved states the step's ``states`` input reads; none when it has no such input."""
+    """The port of the step's ``states`` input, including the coordinates of its member stack."""
+    operation_outputs: dict[ProjectName, dict[ProjectName, DatasetPort]] = Field(default_factory=dict)
+    """The ports of the run's operation outputs, by element and product, including carried or mapped stack coordinates."""
     sources: dict[ProjectName, dict[ProjectName, list[DatasetSource]]]
     """Compatible inputs and outputs of plannable operations, by receiving element and role."""
     variables: dict[str, dict[str, list[str]]]

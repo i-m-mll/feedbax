@@ -175,7 +175,7 @@ def quote_saved_run(
 
     def quote() -> StudioMachineQuote:
         reviewed = request.app.state.project_folders.read_plan(project_id, revision=body.revision)
-        return remote.quote(reviewed, body)
+        return remote.quote(reviewed, body, methods=request.app.state.bootstrap_state.bundle.training_methods)
 
     try:
         return _project_response(response, quote)
