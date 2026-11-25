@@ -118,6 +118,7 @@ function SceneDrawingCanvas({
     ...sceneElements(scene).flatMap((element) => element.possible ?? []),
     ...scene.rest.flatMap(shapePoints),
     ...scene.tracks.flatMap((track) => track.points),
+    ...scene.means.flatMap((path) => [...path.lower, ...path.upper]),
   ]), [scene]);
   const fit = fitScale(bounds, viewportWidth, viewportHeight);
   const autoFit = !fitToSlot || camera === fittedCamera;
@@ -195,6 +196,22 @@ function SceneDrawingCanvas({
               strokeWidth={track.picked ? 1.5 : 1} strokeDasharray="0 3" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
             {track.head && <circle data-scene-cursor cx={project(track.head)[0]} cy={project(track.head)[1]} r={track.picked ? 3 : 1.5}
               fill={stroke} />}
+          </g>;
+        })}
+      </g>
+      <g pointerEvents="none" aria-hidden="true">
+        {scene.means.map((path, index) => {
+          const spread = path.lower.map((low, at) => {
+            const [[x0, y0], [x1, y1]] = [project(low), project(path.upper[at])];
+            return `M${x0},${y0}H${x1}V${y1}H${x0}Z`;
+          }).join('');
+          return <g key={index}>
+            <path data-scene-spread d={spread} fill="var(--studio-scene-outline)" fillOpacity={0.12} stroke="none" />
+            {path.drawn > 0 && <polyline data-scene-mean fill="none" stroke="var(--studio-scene-outline)"
+              points={path.points.slice(0, path.drawn).map((point) => project(point).join(',')).join(' ')}
+              strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />}
+            {path.head && <circle data-scene-cursor cx={project(path.head)[0]} cy={project(path.head)[1]} r={3}
+              fill="var(--studio-scene-outline)" />}
           </g>;
         })}
       </g>

@@ -20,6 +20,7 @@ import {
   DocumentReferenceSchema, ModelDocumentSchema,
   type EvaluateModelRequest, type ModelDocument, type StudioSavedEvaluationRow,
   type StudioSavedTrainKey, type StudioProjectWindowMapProblem, type ModelAddress, type TrialRecord,
+  type StudioSavedEvaluationReplayRequest, type TrialMean, type TrialMeanOptions, type TrialMeanSelection,
 } from '@/generated/studioContracts';
 import { modelDocumentId, ownDefinition } from './authoredEdits';
 import { placeMember, type Reveal } from './projectWindowProblems';
@@ -106,7 +107,7 @@ export function recordedTrials(evaluation: StudioSavedEvaluationRow | undefined)
 
 /**
  * The recorded trials the clock reads, as the Scene draws them: every trial read (the one shown, or all of them under
- * All), the picked one among them, and their state times; or why they are not read.
+ * All and Mean), the picked one among them, and their state times; or why they are not read.
  */
 export type RecordedTrialRead =
   | { readonly kind: 'read'; readonly records: readonly TrialRecord[]; readonly picked: TrialRecord; readonly stateTime: readonly number[] }
@@ -115,11 +116,26 @@ export type RecordedTrialRead =
   | { readonly kind: 'failed'; readonly issue: StudioRegionIssue; readonly retry: () => void };
 
 /**
- * The trials the saved evaluation recorded as `showing` shows them (the picked one, or all of them with their
- * aggregate), and their time on the window's playhead.
+ * What one replay reads for `showing`: the picked trial; every trial (All); every trial with each condition's Mean for
+ * `mean` (Mean). Every reply carries the By and Align the trials offer; Mean's carries its summaries beside every
+ * trial's record.
+ */
+function replayRequest(showing: TrialShowing, trials: readonly string[], mean: TrialMeanSelection):
+  Pick<StudioSavedEvaluationReplayRequest, 'trial' | 'mean'> {
+  switch (showing.kind) {
+    case 'one': return { trial: trials[showing.index] };
+    case 'all': return { trial: null };
+    case 'mean': return { trial: null, mean };
+  }
+}
+
+/**
+ * The trials the saved evaluation recorded as `showing` shows them (the picked one; all of them with their aggregate;
+ * all of them with each condition's Mean for `mean`), and their time on the window's playhead: the trial's time, or
+ * under Mean the time from Align's epoch.
  */
 export function useSavedEvaluationScene(projectId: string, revision: string, evaluation: StudioSavedEvaluationRow | undefined,
-  showing: TrialShowing | undefined, playhead: PlayheadStore) {
+  showing: TrialShowing | undefined, mean: TrialMeanSelection, playhead: PlayheadStore) {
   const result = evaluation?.result;
   const jobId = result?.job_id;
   const coordinates = result?.checkpoint_sources?.map(({ completed_updates }) => completed_updates);
@@ -127,24 +143,26 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
   const chosen = chosenCheckpoint?.jobId === jobId ? chosenCheckpoint?.coordinate : undefined;
   const checkpoint = chosen !== undefined && coordinates?.includes(chosen) ? chosen : coordinates?.[0];
   const all = showing?.kind === 'all';
-  const trial = jobId && showing ? all ? null : evaluation?.trials[showing.index] : undefined;
-  const readable = trial !== undefined && (!evaluation?.checkpoint_series || checkpoint !== undefined);
+  const request = jobId && evaluation && showing ? replayRequest(showing, evaluation.trials, mean) : undefined;
+  const readable = request?.trial !== undefined && (!evaluation?.checkpoint_series || checkpoint !== undefined);
   const read = (aggregate: boolean) => ({ signal }: { signal: AbortSignal }) => {
-    if (!evaluation || !jobId || trial === undefined) throw new Error('Select a saved Evaluate trial.');
-    return fetchSavedEvaluationReplay(projectId, { revision, key: evaluation.key, job_id: jobId, trial, checkpoint, aggregate }, signal);
+    if (!evaluation || !jobId || !request) throw new Error('Select a saved Evaluate trial.');
+    return fetchSavedEvaluationReplay(projectId, { revision, key: evaluation.key, job_id: jobId, ...request, checkpoint, aggregate }, signal);
   };
-  const key = ['saved-evaluation-replay', projectId, revision, evaluation?.key, jobId, trial, checkpoint];
-  const replay = useQuery({ queryKey: key, queryFn: read(false), enabled: readable });
+  const key = ['saved-evaluation-replay', projectId, revision, evaluation?.key, jobId, request?.trial, checkpoint];
+  const replay = useQuery({ queryKey: request?.mean ? [...key, 'mean', request.mean] : key, queryFn: read(false), enabled: readable });
   const aggregate = useQuery({ queryKey: [...key, 'aggregate'], queryFn: read(true), enabled: readable && all });
   const records = replay.data?.drawn.kind === 'trials' ? replay.data.drawn.trials : undefined;
-  const picked = records?.[all ? showing.index : 0];
+  const picked = records?.[showing && showing.kind !== 'one' ? showing.index : 0];
   const state: RecordedTrialRead = replay.error
     ? { kind: 'failed', issue: studioRegionIssue('scene', replay.error), retry: () => { void replay.refetch(); } }
     : replay.data && records && picked
       ? { kind: 'read', records, picked, stateTime: replay.data.state_time }
       : { kind: replay.isFetching ? 'loading' : 'empty' };
   const batch = aggregate.data?.drawn.kind === 'aggregate' ? aggregate.data.drawn : undefined;
-  const timeScope = JSON.stringify(['recorded', jobId, trial, checkpoint]);
+  const averaged: TrialMean | undefined = request?.mean ? replay.data?.mean ?? undefined : undefined;
+  const meanOptions: TrialMeanOptions | undefined = replay.data?.mean_options ?? undefined;
+  const timeScope = JSON.stringify(['recorded', jobId, request?.trial, request?.mean ?? null, checkpoint]);
   const [time, setTime] = usePlayhead(playhead, timeScope);
   const chooseCheckpoint = (coordinate: number) => {
     if (jobId && coordinates?.includes(coordinate)) setCheckpoint({ jobId, coordinate });
@@ -154,7 +172,10 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
     selected: checkpoint,
     onSelect: chooseCheckpoint,
   } : undefined;
-  return { read: state, aggregate: { data: batch, error: aggregate.error, refetch: aggregate.refetch }, time, setTime, checkpoints, chooseCheckpoint, checkpoint };
+  return {
+    read: state, aggregate: { data: batch, error: aggregate.error, refetch: aggregate.refetch }, mean: averaged, meanOptions,
+    time, setTime, checkpoints, chooseCheckpoint, checkpoint,
+  };
 }
 
 /**

@@ -746,6 +746,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     focusedView: windowState.mode === 'map' ? null : focusView, reveal: revealed, savePosition: saveElementPosition, selection: elements,
     sections: drawerSections, steps: plan.steps, failures: stepFailures(step?.kind === 'analyze' ? step.id : undefined),
     selectStep: (source) => selection.select(selectStep(state, source)),
+    mean: trialClock.mean,
   });
   const report = useManagedReport({
     editor, snapshot, plan, projection: shown, variant, stepId: step?.kind === 'report' ? step.id : undefined,
