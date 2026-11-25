@@ -2,7 +2,7 @@
 
 from typing import Annotated, Literal
 
-from pydantic import Field, JsonValue
+from pydantic import Field, JsonValue, field_serializer
 
 from feedbax.contracts.project_sweep import SetEntryParts, SetTrialSampling
 from feedbax.contracts.base import StrictModel
@@ -230,3 +230,8 @@ class StudioTrialAuthoring(StrictModel):
         default=None, min_length=1, exclude_if=lambda value: value is None,
     )
     """An unanswered edit. No files or documents are proposed until the caller chooses a store."""
+
+    @field_serializer("task", "objective")
+    def _authored_document(self, document: TaskDocument | PythonTaskSelection | ObjectiveDocument | None):
+        # The editor uses field presence to choose between add and replace.
+        return document.model_dump(mode="json", exclude_unset=True) if document is not None else None

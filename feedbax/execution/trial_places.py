@@ -1,8 +1,10 @@
 """Locate typed Objective operands in a posed Scene and in a trial record."""
 
+from __future__ import annotations
+
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal
 
 import numpy as np
 from pydantic import Field
@@ -15,8 +17,10 @@ from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.trial_record import (
     TrialAnchorPlace, TrialComputedPlace, TrialPlace, TrialRelation, TrialSignalPlace, TrialVariablePlace,
 )
-from feedbax.objectives.document import ObjectiveExecutor
-from feedbax.tasks.document import TrialSource
+
+if TYPE_CHECKING:
+    from feedbax.objectives.document import ObjectiveExecutor
+    from feedbax.tasks.document import TrialSource
 
 
 class BoundComputedPlace(StrictModel):

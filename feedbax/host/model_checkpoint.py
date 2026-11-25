@@ -352,7 +352,8 @@ def _value_differences(
             differences.append("owner, revision, value schema or representation differs")
         if restored.shape != current.shape or restored.dtype != current.dtype:
             differences.append(
-                f"expected {current.shape} {current.dtype}, found {restored.shape} {restored.dtype}",
+                f"expected shape {current.shape} and dtype {current.dtype}, "
+                f"found shape {restored.shape} and dtype {restored.dtype}",
             )
         if differences:
             yield "mismatched_slot", path, ", ".join(differences)

@@ -391,7 +391,14 @@ def test_restore_revalidates_both_windows_after_a_service_restart(tmp_path):
         assert result.headers["x-feedbax-project"] == issued["project"]["id"]
 
     first_control, first_browser, first_origin = desktop()
-    opened = [ticket(first_control), ticket(first_control, project_folder=str(repo))]
+    start = ticket(first_control)
+    started = first_browser.post("/_desktop/exchange", headers={**first_origin, "X-Feedbax-Ticket": start["ticket"]})
+    assert started.status_code == 204, started.text
+    assert started.headers["x-feedbax-start"] == "1"
+    created = first_browser.post("/api/projects", json={"name": "managed_project"}, headers=first_origin)
+    assert created.status_code == 201, created.text
+    managed_id = created.json()["snapshot"]["project_id"]
+    opened = [ticket(first_control, project_id=managed_id), ticket(first_control, project_folder=str(repo))]
     arrangement = {
         "mode": "details", "primaryView": "model", "secondaryView": "scene",
         "mapDrawerOpen": False, "detailsDrawerOpen": True, "inspectorOpen": False,
@@ -414,6 +421,10 @@ def test_restore_revalidates_both_windows_after_a_service_restart(tmp_path):
     control, browser, origin = desktop()
     external_id = opened[1]["project"]["id"]
     assert control.post("/_desktop/ticket", json={"project_id": external_id}).status_code == 404
+    browser.cookies.update(first_browser.cookies)
+    for project_id in expected:
+        assert browser.get(f"/api/desktop/preferences/windows/{project_id}").status_code == 403
+    browser.cookies.clear()
     for original in opened:
         folder = original["folder"]
         request = {"project_folder": folder["path"], "folder_identity": folder["identity"]}

@@ -73,6 +73,7 @@ class ModelSignalTable:
     _ports: Mapping[str, tuple[ResolvedSignalLeaf, ...]] = field(default_factory=dict)
     problems: tuple[ModelGraphProblem, ...] = ()
     _claims: Mapping[str, Mapping[SignalLeafPath, _Facts]] = field(default_factory=dict)
+    _structured_bases: Mapping[str, str] = field(default_factory=dict)
 
     def at(self, address: ModelAddress) -> ResolvedSignalLeaf | None:
         element = address.element
@@ -84,6 +85,9 @@ class ModelSignalTable:
 
     def at_port(self, address: ModelAddress) -> tuple[ResolvedSignalLeaf, ...]:
         return self._ports.get(address.to_text(), ())
+
+    def structured_base(self, address: ModelAddress) -> str | None:
+        return self._structured_bases.get(address.to_text())
 
     def connection_problem(
         self, scope: tuple[str, ...], source: SignalSource | None, target: SignalTarget,
@@ -329,6 +333,7 @@ class _Route:
     target: _Port
     problem: ModelAddress
     makes_value: bool = False
+    label: str | None = None
 
 
 @dataclass(frozen=True)
@@ -336,6 +341,12 @@ class _Incoming:
     source: tuple[str, SignalLeafPath]
     problem: ModelAddress
     origin: ModelAddress | None = None
+    label: str | None = None
+
+
+def _wire_end_label(owner: ModelDocument | CompositeComponent, end: SignalSource | SignalTarget, port: _Port) -> str:
+    card = owner.interior.components[end.component].name if isinstance(end, ComponentPortEnd) else end.owner.title()
+    return f"{card} · {port.name}"
 
 
 @dataclass(frozen=True)
@@ -352,6 +363,7 @@ class _Resolved:
     origin: ModelAddress | None = None
     conflict: str | None = None
     blocked: bool = False
+    structured_base: str | None = None
 
 
 class _Resolve:
@@ -468,15 +480,20 @@ class _Resolve:
                     selected = {path[1:]: item for path, item in declarations.items() if path[0] == port}
                     registered = SignalType(base=spec.dtype, shape=tuple(spec.shape) if spec.shape is not None else None) if spec else SignalType()
                     prototype = prototypes.get((name, port))
-                    if direction == "input" and prototype is None:
+                    if direction == "input":
                         dimension = _component_port_dimension(
                             component_type=node.type, node_params=node.params, port=port, direction="input",
                         )
-                        if dimension is not None:
+                        if dimension is not None and (
+                            prototype is None or dimension["metadata"]["dimension_param"] is None
+                            or dimension["metadata"]["dimension_param"] in component.fields
+                        ):
                             dtype = node.params.get("dtype")
+                            base = registered.base
+                            if prototype is None and _port_base(base) is None and isinstance(dtype, str):
+                                base = dtype
                             registered = SignalType(
-                                base=dtype if _port_base(registered.base) is None and isinstance(dtype, str) else registered.base,
-                                shape=tuple(dimension["shape"]),
+                                base=base, shape=tuple(dimension["shape"]),
                             )
                     leaf_port = self.port(
                         address, port, prototype, registered, declarations=selected, states=states,
@@ -494,7 +511,8 @@ class _Resolve:
             if source is None or target is None:
                 continue
             address = ModelAddress(composites=scope, element=WireElement(kind="wire", id=name))
-            self.routes.append(_Route(source, target, address, bool(wire.attachments)))
+            label = f"{_wire_end_label(owner, wire.source, source)} → {_wire_end_label(owner, wire.target, target)}"
+            self.routes.append(_Route(source, target, address, bool(wire.attachments), label))
 
     def authored_node(self, component) -> ComponentSpec | None:
         declaration = self.components.get(component.type)
@@ -546,7 +564,7 @@ class _Resolve:
                 origin = _leaf_address(target.address, path) if route.makes_value else (
                     _leaf_address(source.address, path) if source.attachments else None
                 )
-                incoming[target.key, path] = _Incoming((source.key, path), route.problem, origin)
+                incoming[target.key, path] = _Incoming((source.key, path), route.problem, origin, route.label)
         return incoming
 
     def local(self, port: _Port, path: SignalLeafPath, *, connected: bool) -> _Local:
@@ -597,10 +615,26 @@ class _Resolve:
                             local[item].origin if declaration.keeps == "type" else None,
                         )
 
+        # Carry a port's structural base only when its leaves forward one entire port unchanged.
+        whole_structure = set()
+        for key, port in self.ports.items():
+            if () in port.paths:
+                continue
+            first = incoming.get((key, next(iter(port.paths))))
+            if first is None or (source := self.ports.get(first.source[0])) is None:
+                continue
+            if source.paths.keys() == port.paths.keys() and all(
+                (edge := incoming.get((key, path))) is not None and edge.source == (source.key, path)
+                for path in port.paths
+            ):
+                whole_structure.add(key)
+
         resolved: dict[tuple[str, SignalLeafPath], _Resolved] = {}
 
         def advance(item, previous: _Resolved) -> _Resolved:
             here = local[item]
+            key, path = item
+            structured_base = self.ports[key].claim.base if path else None
             edge = incoming.get(item)
             if previous.blocked:
                 return _Resolved(here.prototype.fill(here.facts), blocked=True)
@@ -608,10 +642,15 @@ class _Resolve:
             if conflict is not None:
                 return _Resolved(here.facts, conflict=conflict, blocked=True)
             if edge is None:
-                return _Resolved(here.prototype.fill(here.facts), here.origin if here.makes_value else None)
+                return _Resolved(
+                    here.prototype.fill(here.facts), here.origin if here.makes_value else None,
+                    structured_base=structured_base,
+                )
             facts = here.facts.fill(previous.facts).fill(here.prototype)
             origin = edge.origin or previous.origin
-            return _Resolved(facts, origin)
+            if structured_base is None and key in whole_structure:
+                structured_base = previous.structured_base
+            return _Resolved(facts, origin, structured_base=structured_base)
 
         for key in local:
             if key in resolved:
@@ -646,24 +685,32 @@ class _Resolve:
 
         by_port = {}
         claims = {}
+        structured_bases = {}
         for key, port in self.ports.items():
             leaves = []
             for path in port.paths:
                 item = key, path
                 row = resolved[item]
                 if row.conflict is not None:
-                    address = incoming[item].problem
-                    self.problem(address, f"Signal type does not fit: {row.conflict}")
+                    wire = incoming[item]
+                    reason = f"Signal type does not fit: {row.conflict}"
+                    self.problem(wire.problem, f"{wire.label}: {reason}" if wire.label is not None else reason)
                 facts = row.facts
                 proto = local[item].prototype
                 base = proto.base or facts.base
-                shape = proto.shape if proto.shape is not None else facts.shape
+                shape = local[item].facts.shape
+                if shape is None:
+                    shape = proto.shape if proto.shape is not None else facts.shape
                 leaves.append(ResolvedSignalLeaf(
                     port.address, path, port.name, _Facts(base, shape, facts.dimensions, facts.unit, facts.space), row.origin,
                 ))
             by_port[key] = tuple(leaves)
             claims[key] = {path: local[key, path].facts for path in port.paths}
-        return ModelSignalTable(by_port, tuple(self.problems.values()), claims)
+            if () not in port.paths:
+                base = resolved[key, next(iter(port.paths))].structured_base
+                if base is not None and all(resolved[key, path].structured_base == base for path in port.paths):
+                    structured_bases[key] = base
+        return ModelSignalTable(by_port, tuple(self.problems.values()), claims, structured_bases)
 
 
 def resolve_model_signals(
