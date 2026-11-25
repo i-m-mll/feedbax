@@ -37,7 +37,7 @@ class InputDifference(ReferenceValue):
     kind: Literal["input"] = "input"
     role: Name
     member: Name
-    before: ContentRef
+    before: ContentRef | None
     after: ContentRef | None
     detail: Name | None = None
 

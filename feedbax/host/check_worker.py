@@ -76,7 +76,7 @@ def _check_light(delivery: ValidityCheckDelivery) -> ValidityCheckEvidence:
     previous = view.read_success(delivery.receipt).receipt
     if previous.request.id != delivery.request_id or delivery.checks != ("environment",):
         raise ValueError("Quick replay needs the exact successful request and environment check")
-    view.verify_bindings(previous.request, previous.inputs)
+    view.verify_bindings(previous.request, previous.inputs, excluded=previous.excluded)
     matches = check_light_environment(
         store, view.read_request(previous.request), previous.inputs, previous.products,
         os.environ["FEEDBAX_HOST_JOB_ID"],

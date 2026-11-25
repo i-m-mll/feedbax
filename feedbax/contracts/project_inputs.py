@@ -16,7 +16,7 @@ from feedbax.contracts.base import StrictModel
 from feedbax.contracts.expression_values import UnresolvedValue
 from feedbax.contracts.request_refs import CheckpointBatches, CheckpointCadence, Name, UpdateRule
 from feedbax.contracts.run_rule import RuleRefusal, SweepCoordinate, choose, parse
-from feedbax.contracts.expression_text import RuleBest
+from feedbax.contracts.expression_text import RuleBest, RuleCondition
 from feedbax.contracts.selection import ManifestPredicate
 
 # These names serve as file stems and path segments in project-level patches.
@@ -172,11 +172,12 @@ def select_step_rows[Row, Coordinate: SweepCoordinate](
     coordinate_label: Callable[[Coordinate], str],
     missing: Callable[[SelectedAxisValueRefusal], None],
     producer: str,
-) -> tuple[tuple[tuple[str, Row], ...], RuleBest | None]:
+    final_metrics: Callable[[tuple[Row, ...]], frozenset[str]] | None = None,
+) -> tuple[tuple[tuple[str, Row], ...], RuleBest | None, tuple[RuleCondition, ...]]:
     """Select each matching producer row once and report the values of invalid clauses."""
     members = tuple(rows)
     if terms is None:
-        return tuple((member_key(row), row) for row in members), None
+        return tuple((member_key(row), row) for row in members), None, ()
     if isinstance(terms, StoreSubset):
         raise RuleRefusal("query", "store queries cannot select static step rows")
     chosen_members = members
@@ -208,9 +209,9 @@ def select_step_rows[Row, Coordinate: SweepCoordinate](
             if not broken:
                 matched.update(set.intersection(*constraint_matches))
         chosen_members = tuple(members[position] for position in sorted(matched))
-    chosen = choose(terms.rule, chosen_members, coordinates=coordinates, producer=producer)
+    chosen = choose(terms.rule, chosen_members, coordinates=coordinates, producer=producer, final_metrics=final_metrics)
     if terms.bound_ranks is None:
-        return tuple((member_key(row), row) for row in chosen.rows), chosen.best
+        return tuple((member_key(row), row) for row in chosen.rows), chosen.best, chosen.conditions
     picked = set(map(id, chosen.rows))
     indices = {address(row): index for index, row in enumerate(members)}
     selected: list[tuple[str, Row]] = []
@@ -221,7 +222,7 @@ def select_step_rows[Row, Coordinate: SweepCoordinate](
         member = members[indices[where]]
         if id(member) in picked:
             selected.append((rank.key, member))
-    return tuple(selected), None
+    return tuple(selected), None, chosen.conditions
 
 
 def select_sweep_exception_rows[Row](

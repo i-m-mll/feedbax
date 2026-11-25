@@ -307,7 +307,7 @@ def main(_argv: list[str]) -> int:
     role, operation = validate_light_request(request)
     with bind_managed_inputs(
         view, delivery.request, origins=exact.origins, checkpoint_bindings=exact.bindings, project=delivery.project_id,
-    ) as (_, bindings):
+    ) as (_, bindings, _):
         product = _compute(store, request, bindings, attempt, role, operation)
     result = {"outcome": "succeeded", "products": {role: [product.model_dump(mode="json")]}}
     if operation is not None:
