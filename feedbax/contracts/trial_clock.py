@@ -3,6 +3,7 @@
 from pydantic import Field, JsonValue
 
 from feedbax.contracts.base import StrictModel
+from feedbax.contracts.expression_values import Problem
 
 
 class TrialMeanSelection(StrictModel):
@@ -71,9 +72,25 @@ class TrialMeanCondition(StrictModel):
     epochs: list[TrialMeanEpoch]
 
 
+class TrialMeanTermShare(StrictModel):
+    steps: list[float]
+    problems: list[Problem]
+
+
+class TrialMeanShelf(StrictModel):
+    """Timeline shared by all trials in the Mean view, on seconds from its alignment origin."""
+
+    times: list[float]
+    """Interval edges, with one more edge than the number of shares when nonempty."""
+    epochs: list[TrialMeanEpoch]
+    signals: dict[str, list[float]]
+    terms: dict[str, TrialMeanTermShare]
+
+
 class TrialMean(StrictModel):
     selection: TrialMeanSelection
     conditions: list[TrialMeanCondition]
+    shelf: TrialMeanShelf
 
 
 class StudioSavedFigureMeanRequest(StrictModel):

@@ -232,7 +232,7 @@ def trial_field_sweep(
 
 
 def trial_time_use(role: str, path: FieldPath) -> TimeUse:
-    if role == "task" and path[:1] == ("epochs",) and path[2:4] == ("end", "length"):
+    if role == "task" and path[:1] == ("epochs",) and path[2:4] in (("end", "length"), ("end", "limit")):
         return "length"
     if is_window_offset(role, path[:7]):
         return "offset"

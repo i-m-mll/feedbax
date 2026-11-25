@@ -11,7 +11,8 @@ from feedbax.compiler.model_ports import model_unstored_fields
 from feedbax.contracts.expression_values import TIME, Level, LiteralValue, Problem, ProblemCode, Site, UnresolvedValue, ValueBase, ValueType
 from feedbax.contracts.model_address import AttachmentElement, ComponentElement, FieldElement, ModelAddress, PortElement, WireElement
 from feedbax.contracts.model_document import (
-    MODEL_DOCUMENT_SCHEMA_ID, CompositeComponent, DelayAttachment, InterventionAttachment, LeafComponent, ModelDocument,
+    MODEL_DOCUMENT_SCHEMA_ID, CompositeComponent, DelayAttachment, DelayInitialValue, InterventionAttachment,
+    LeafComponent, ModelDocument,
 )
 from feedbax.contracts.model_edit import (
     EvaluateModelRequest, ListedRuns, StepRuns, ModelEditCommand, SetField,
@@ -107,8 +108,15 @@ def _attachment_fields(branch: ModelDocument | CompositeComponent, owner: ModelA
             yield _duration(owner, "Delay", ("delay",), delay, "st", stored=True, sampled=True)
         else:
             yield _duration(owner, "Delay", ("delay",), delay.value, delay.unit, stored=True, sampled=True)
-        values = {"initial": attachment.initial}
-    elif isinstance(attachment, InterventionAttachment):
+        if isinstance(attachment.initial_source, DelayInitialValue):
+            address = _address(owner, "initial_source", "value")
+            yield _Field(address, NumericField(
+                address.stored_path(), "Initial", attachment.initial_source.value,
+                Site(expected=ValueType(base=ValueBase.REAL), finest=Level.RUN, structural=True),
+                True, lambda value: value,
+            ))
+        return
+    if isinstance(attachment, InterventionAttachment):
         names = {"clamp": ("low", "high"), "scale": ("factor",)}.get(attachment.operation.lower(), ())
         values = {name: attachment.fields.get(name) for name in names}
     else:
@@ -116,7 +124,7 @@ def _attachment_fields(branch: ModelDocument | CompositeComponent, owner: ModelA
     for name, value in values.items():
         if (number := _numeric_value(value)) is None:
             continue
-        address = _address(owner, *(("initial",) if name == "initial" else ("fields", name)))
+        address = _address(owner, "fields", name)
 
         def validate(number: int | float, name=name) -> int | float:
             low = number if name == "low" else values.get("low")

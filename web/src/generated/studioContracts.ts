@@ -607,7 +607,22 @@ export interface DelayAttachment {
   kind: "delay";
   id: string;
   delay: ModelTime | UnresolvedValue;
-  initial?: JsonValue;
+  initial_source?: DelayInitialValue | DelayInitialTask | DelayInitialWire;
+}
+
+export interface DelayInitialTask {
+  kind: "task";
+  variable: string;
+}
+
+export interface DelayInitialValue {
+  kind: "value";
+  value: number | UnresolvedValue;
+}
+
+export interface DelayInitialWire {
+  kind: "wire";
+  source?: ComponentPortEnd | InputBoundaryEnd | null;
 }
 
 export interface HoldAttachment {
@@ -2216,6 +2231,7 @@ export interface TrialClockSpan {
 export interface TrialMean {
   selection: TrialMeanSelection;
   conditions: TrialMeanCondition[];
+  shelf: TrialMeanShelf;
 }
 
 export interface TrialMeanCondition {
@@ -2233,6 +2249,18 @@ export interface TrialMeanEpoch {
   occurrence: number;
   start: TrialBoundarySummary;
   end: TrialBoundarySummary;
+}
+
+export interface TrialMeanShelf {
+  times: number[];
+  epochs: TrialMeanEpoch[];
+  signals: Record<string, number[]>;
+  terms: Record<string, TrialMeanTermShare>;
+}
+
+export interface TrialMeanTermShare {
+  steps: number[];
+  problems: Problem[];
 }
 
 export interface TrialMeanOptions {
@@ -7029,10 +7057,37 @@ export const DelayAttachmentSchema: z.ZodType<DelayAttachment> = z.lazy(() =>
       "kind": z.literal("delay"),
       "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
       "delay": z.union([ModelTimeSchema, UnresolvedValueSchema]),
-      "initial": jsonValueSchema.optional(),
+      "initial_source": z.union([DelayInitialValueSchema, DelayInitialTaskSchema, DelayInitialWireSchema]).optional(),
     })
     .strict()
 ) as unknown as z.ZodType<DelayAttachment>;
+
+export const DelayInitialTaskSchema: z.ZodType<DelayInitialTask> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("task"),
+      "variable": z.string().min(1),
+    })
+    .strict()
+) as unknown as z.ZodType<DelayInitialTask>;
+
+export const DelayInitialValueSchema: z.ZodType<DelayInitialValue> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("value"),
+      "value": z.union([z.number().finite(), UnresolvedValueSchema]),
+    })
+    .strict()
+) as unknown as z.ZodType<DelayInitialValue>;
+
+export const DelayInitialWireSchema: z.ZodType<DelayInitialWire> = z.lazy(() =>
+  z
+    .object({
+      "kind": z.literal("wire"),
+      "source": z.union([ComponentPortEndSchema, InputBoundaryEndSchema]).nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<DelayInitialWire>;
 
 export const HoldAttachmentSchema: z.ZodType<HoldAttachment> = z.lazy(() =>
   z
@@ -9874,6 +9929,7 @@ export const TrialMeanSchema: z.ZodType<TrialMean> = z.lazy(() =>
     .object({
       "selection": TrialMeanSelectionSchema,
       "conditions": z.array(TrialMeanConditionSchema),
+      "shelf": TrialMeanShelfSchema,
     })
     .strict()
 ) as unknown as z.ZodType<TrialMean>;
@@ -9902,6 +9958,26 @@ export const TrialMeanEpochSchema: z.ZodType<TrialMeanEpoch> = z.lazy(() =>
     })
     .strict()
 ) as unknown as z.ZodType<TrialMeanEpoch>;
+
+export const TrialMeanShelfSchema: z.ZodType<TrialMeanShelf> = z.lazy(() =>
+  z
+    .object({
+      "times": z.array(z.number().finite()),
+      "epochs": z.array(TrialMeanEpochSchema),
+      "signals": z.record(z.string(), z.array(z.number().finite())),
+      "terms": z.record(z.string(), TrialMeanTermShareSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialMeanShelf>;
+
+export const TrialMeanTermShareSchema: z.ZodType<TrialMeanTermShare> = z.lazy(() =>
+  z
+    .object({
+      "steps": z.array(z.number().finite()),
+      "problems": z.array(ProblemSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialMeanTermShare>;
 
 export const TrialMeanOptionsSchema: z.ZodType<TrialMeanOptions> = z.lazy(() =>
   z
