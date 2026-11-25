@@ -15,7 +15,7 @@ from feedbax.contracts.execution_target import AttemptTarget, LOCAL_TARGET, LOCA
 from feedbax.contracts.expression_values import TextSpan
 from feedbax.contracts.receipt_validity import ReceiptValidity
 from feedbax.contracts.project import StepKind
-from feedbax.contracts.project_inputs import StepReference, SubsetTerms
+from feedbax.contracts.project_inputs import SelectedAxisValueProblem, StepReference, SubsetTerms
 from feedbax.contracts.project_inputs import CheckpointRule
 from feedbax.contracts.project_sources import SourceKind
 from feedbax.contracts.project_sweep import SweepException
@@ -399,6 +399,7 @@ class StudioProjectWindowMapProblem(StrictModel):
     blocked_by: StudioSavedTrainKey | None = Field(default=None, exclude_if=lambda value: value is None)
     """The producer row a ``blocked_input`` row waits on."""
     span: TextSpan | None = Field(default=None, exclude_if=lambda value: value is None)
+    selection_value: SelectedAxisValueProblem | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @classmethod
     def from_diagnostic(cls, diagnostic: ProjectDiagnostic, *, declaration: str) -> StudioProjectWindowMapProblem:
@@ -413,7 +414,7 @@ class StudioProjectWindowMapProblem(StrictModel):
             ) if diagnostic.step else None,
             document_path=diagnostic.document_path, address=diagnostic.authored_file or source,
             layer=diagnostic.layer, authored_path=diagnostic.authored_path,
-            span=diagnostic.span,
+            span=diagnostic.span, selection_value=diagnostic.selection_value,
             blocked_by=StudioSavedTrainKey.model_validate(diagnostic.blocked_by, from_attributes=True)
             if diagnostic.blocked_by is not None else None,
         )

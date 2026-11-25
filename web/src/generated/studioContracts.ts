@@ -3535,6 +3535,17 @@ export type ScopedValue = {
   "list_count"?: number | null;
 };
 
+export type SelectedAxisValue = {
+  "id": string;
+  "label": string;
+};
+
+export type SelectedAxisValueProblem = {
+  "axis": string;
+  "missing": SelectedAxisValue;
+  "remaining": Array<SelectedAxisValue>;
+};
+
 export type SelectedRow = {
   "key": string;
   "variant": string;
@@ -3741,6 +3752,7 @@ export type StoreKind = "all_readers" | "selected_readers" | "sweep_value" | "se
 export type StoreSubset = {
   "rule"?: string;
   "rows"?: Array<SelectedRow>;
+  "axes"?: Record<string, Array<SelectedAxisValue>>;
   "query": ManifestPredicate;
 };
 
@@ -4252,6 +4264,7 @@ export type StudioProjectWindowMapProblem = {
   "authored_path"?: string | null;
   "blocked_by"?: StudioSavedTrainKey | null;
   "span"?: TextSpan | null;
+  "selection_value"?: SelectedAxisValueProblem | null;
 };
 
 export type StudioProjectWindowMapRequest = {
@@ -4696,6 +4709,7 @@ export type StudioValueStructure = {
 export type SubsetTerms = {
   "rule"?: string;
   "rows"?: Array<SelectedRow>;
+  "axes"?: Record<string, Array<SelectedAxisValue>>;
 };
 
 export type Sweep = {
@@ -11240,6 +11254,21 @@ export const ScopedValueSchema: z.ZodType<ScopedValue> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<ScopedValue>;
 
+export const SelectedAxisValueSchema: z.ZodType<SelectedAxisValue> = z.lazy(() =>
+  z.object({
+    "id": z.string().min(1),
+    "label": z.string(),
+  }).strict()
+) as unknown as z.ZodType<SelectedAxisValue>;
+
+export const SelectedAxisValueProblemSchema: z.ZodType<SelectedAxisValueProblem> = z.lazy(() =>
+  z.object({
+    "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
+    "missing": SelectedAxisValueSchema,
+    "remaining": z.array(SelectedAxisValueSchema),
+  }).strict()
+) as unknown as z.ZodType<SelectedAxisValueProblem>;
+
 export const SelectedRowSchema: z.ZodType<SelectedRow> = z.lazy(() =>
   z.object({
     "key": z.string().min(1),
@@ -11515,6 +11544,7 @@ export const StoreSubsetSchema: z.ZodType<StoreSubset> = z.lazy(() =>
   z.object({
     "rule": z.string().optional(),
     "rows": z.array(SelectedRowSchema).optional(),
+    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(SelectedAxisValueSchema).min(1)).optional(),
     "query": ManifestPredicateSchema,
   }).strict()
 ) as unknown as z.ZodType<StoreSubset>;
@@ -12178,6 +12208,7 @@ export const StudioProjectWindowMapProblemSchema: z.ZodType<StudioProjectWindowM
     "authored_path": z.union([z.string(), z.null()]).optional(),
     "blocked_by": z.union([StudioSavedTrainKeySchema, z.null()]).optional(),
     "span": z.union([TextSpanSchema, z.null()]).optional(),
+    "selection_value": z.union([SelectedAxisValueProblemSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<StudioProjectWindowMapProblem>;
 
@@ -12734,6 +12765,7 @@ export const SubsetTermsSchema: z.ZodType<SubsetTerms> = z.lazy(() =>
   z.object({
     "rule": z.string().optional(),
     "rows": z.array(SelectedRowSchema).optional(),
+    "axes": z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(SelectedAxisValueSchema).min(1)).optional(),
   }).strict()
 ) as unknown as z.ZodType<SubsetTerms>;
 
