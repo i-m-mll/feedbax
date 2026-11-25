@@ -317,7 +317,7 @@ class GraphTraceRequest:
     leaf: SignalLeafPath = ()
 
 
-def _trace_leaf(value: PyTree, path: SignalLeafPath) -> PyTree:
+def signal_leaf_value(value: PyTree, path: SignalLeafPath) -> PyTree:
     for part in path:
         value = value[part] if isinstance(part, int) or isinstance(value, dict) else getattr(value, part)
     return value
@@ -1062,7 +1062,7 @@ class Graph(GraphNode):
                 raise ValueError(f"Scoped trace {request.selector!r} needs a node port")
             endpoint = ScopedPort((*request.scope, request.node), request.port)
             if endpoint in values:
-                observed[request.selector] = _trace_leaf(values[endpoint], request.leaf)
+                observed[request.selector] = signal_leaf_value(values[endpoint], request.leaf)
         for endpoint, value in values.items():
             if len(endpoint.node) == 1:
                 root_values[endpoint.node[0], endpoint.port] = value
@@ -1241,7 +1241,7 @@ class Graph(GraphNode):
                         f"Trace selector {request.selector!r} did not produce "
                         f"port {request.node}.{request.port}"
                     )
-                values[request.selector] = _trace_leaf(port_values[key], request.leaf)
+                values[request.selector] = signal_leaf_value(port_values[key], request.leaf)
                 continue
 
             if request.kind == "edge":
@@ -1282,7 +1282,7 @@ class Graph(GraphNode):
                         f"Trace selector {request.selector!r} references missing "
                         f"graph output {output_name!r}"
                     )
-                values[request.selector] = _trace_leaf(outputs[output_name], request.leaf)
+                values[request.selector] = signal_leaf_value(outputs[output_name], request.leaf)
                 continue
 
             if request.kind == "recurrent_carry":

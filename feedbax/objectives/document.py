@@ -25,6 +25,7 @@ from feedbax.contracts.expression_values import (
     ValueType,
     walk,
 )
+from feedbax.contracts.task_document import EpochEnd
 from feedbax.contracts.model_address import FieldElement, ModelAddress, OutputBoundaryEnd, PortElement
 from feedbax.contracts.objective_document import (
     ObjectiveDocument as ObjectiveDocument,
@@ -92,6 +93,33 @@ class _UncoveredTerm:
     id: str
 
 
+@dataclass(frozen=True)
+class _EpochRead:
+    name: ScopedValue
+    slots: tuple[int, ...]
+    outcome: EpochEnd
+
+    def read(self, trial: Trial):
+        matches = jnp.take(trial.epochs.outcomes, jnp.asarray(self.slots), axis=-1) == int(self.outcome)
+        return matches if self.name.list_count else matches[0]
+
+
+def _epoch_reads(task: TrialSource) -> tuple[_EpochRead, ...]:
+    reads = []
+    for epoch, name in task.interface.epoch_conditions:
+        slots = tuple(index for index, given in enumerate(task.epochs) if given == epoch)
+        for suffix, outcome in (("condition", EpochEnd.CONDITION), ("limit", EpochEnd.LIMIT)):
+            reads.append(_EpochRead(
+                ScopedValue(
+                    id=f"epoch:{epoch}:{suffix}", name=f"epoch.{name}.{suffix}",
+                    type=ValueType(base=ValueBase.BOOLEAN), level=Level.TRIAL,
+                    list_count=len(slots) if len(slots) > 1 else None,
+                ),
+                slots, outcome,
+            ))
+    return tuple(reads)
+
+
 class ObjectiveExecutor(eqx.Module):
     """One implementation for per-trial reduction and covered-trial means."""
 
@@ -100,6 +128,7 @@ class ObjectiveExecutor(eqx.Module):
     names: tuple[ScopedValue, ...] = ()
     period: float = 1.0
     n_steps: int = 0
+    epochs: tuple[_EpochRead, ...] = ()
 
     def __call__(self, states, trial_specs: Trial, model: ObjectiveInputs):
         """Expose the same batch values as a loss tree."""
@@ -173,7 +202,7 @@ class ObjectiveExecutor(eqx.Module):
             None, jnp.zeros(n_steps, dtype=bool),
             TermValue(jnp.asarray(0.0), jnp.asarray(False)), None,
         )
-        fixed = {}
+        fixed = {read.name.id: read.read(trial) for read in self.epochs}
         traces = {}
         available = {}
         for name in self.names:
@@ -311,6 +340,8 @@ def compile_objective(
     """Compile an authored objective or rebind the validated Train terms to Evaluate."""
     period = task.period
     epoch_ids = set(task.epochs)
+    epoch_reads = _epoch_reads(task)
+    names = (*names, *(read.name for read in epoch_reads))
     problems = []
     terms = []
     seen = set()
@@ -433,6 +464,7 @@ def compile_objective(
         tuple(name for name in names if name.id in referenced),
         period,
         task.n_steps,
+        tuple(read for read in epoch_reads if read.name.id in referenced),
     )
 
 

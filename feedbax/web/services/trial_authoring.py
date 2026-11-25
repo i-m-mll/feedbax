@@ -6,7 +6,7 @@ from dataclasses import dataclass, field, replace
 
 from feedbax.execution.trial_resolution import TrialPair, compile_unpaired_task, pair_trial_source
 from feedbax.contracts.expression_values import (
-    Level, Problem, ProblemCode, ScopedValue, Site, SweepList, SweepRange, SweepSample, UnresolvedValue,
+    Level, LiteralValue, Problem, ProblemCode, ScopedValue, Site, SweepList, SweepRange, SweepSample, UnresolvedValue,
     ValueBase, ValueType,
 )
 from feedbax.tasks.document import TrialSource, zero
@@ -44,9 +44,10 @@ from feedbax.contracts.studio_trials import (
     StudioTrialStructureEdit,
 )
 from feedbax.contracts.task_document import (
-    PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, PythonTaskSelection, Rest, TaskDocument,
+    PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, Length, PythonTaskSelection, TaskDocument,
 )
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
+from feedbax.contracts.time_units import TimeValue, length_steps
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument, ObjectiveTerm
 from feedbax.contracts.training import TrialDocuments
 from feedbax.contracts.trial_bindings import selected_signal_id
@@ -286,12 +287,33 @@ def _expression_edit(change, documents, projection, bundle):
     raw = document.model_dump(mode="json", exclude_unset=True)
     if end is not None and text.strip() == "rest":
         return StudioTrialDocumentEdit(kind=role, edits=_end_edits(raw, end, "rest", {}))
+    condition, separator, limit = text.rpartition("≤") if end is not None else ("", "", "")
+    if separator:
+        condition_path = (role, *rest[:-1], "condition")
+        condition_site = projection.fields[condition_path]
+        parsed = parse(condition.strip(), condition_site, bundle.expression_functions)
+        value = UnresolvedValue(text=condition.strip()) if isinstance(parsed, tuple) else parsed.value
+        if isinstance(value, SweepList | SweepRange | SweepSample):
+            return one
+        limit = _until_limit(limit.strip(), site, bundle, documents, (role, *rest[:-1], "limit"))
+        if isinstance(limit, tuple):
+            return limit
+        return StudioTrialDocumentEdit(kind=role, edits=_end_edits(
+            raw, end, "until", {"condition": value.model_dump(mode="json"), "limit": limit.model_dump(mode="json")},
+        ))
+    if role == "task" and rest[:1] == ["epochs"] and tuple(rest[2:]) == ("end", "limit"):
+        limit = _until_limit(text, site, bundle, documents, (role, *rest))
+        if isinstance(limit, tuple):
+            return limit
+        return StudioTrialDocumentEdit(kind=role, edits=[SetProjectValue(
+            op="replace", path=index_pointer(raw, tuple(rest)), value=limit.model_dump(mode="json"),
+        )])
     parsed = parse(text, site, bundle.expression_functions)
     value = UnresolvedValue(text=text) if isinstance(parsed, tuple) else parsed.value
     if isinstance(value, SweepList | SweepRange | SweepSample):
         return one
     stored_value = value.model_dump(mode="json")
-    if end is not None and isinstance(at(document, tuple(rest[:-1])), Rest):
+    if end is not None and not isinstance(at(document, tuple(rest[:-1])), Length):
         return StudioTrialDocumentEdit(kind=role, edits=_end_edits(
             raw, end, "length", {"length": stored_value},
         ))
@@ -300,6 +322,23 @@ def _expression_edit(change, documents, projection, bundle):
     return StudioTrialDocumentEdit(kind=role, edits=[SetProjectValue(
         op="replace" if stored else "add", path=path, value=stored_value,
     )])
+
+
+def _until_limit(text, site, bundle, documents, path):
+    parsed = parse(text, site, bundle.expression_functions)
+    if isinstance(parsed, tuple):
+        return tuple(problem.model_copy(update={"path": path}) for problem in parsed)
+    literal = parsed.value
+    if not isinstance(literal, LiteralValue) or type(literal.value) not in (float, int) or literal.unit not in {"s", "st"}:
+        return (Problem(code=ProblemCode.MISSING_LIMIT, reason="Until needs a limit in seconds or steps.", path=path),)
+    limit = TimeValue(value=literal.value, unit=literal.unit)
+    period = documents.model.step_seconds
+    if isinstance(period, float):
+        try:
+            length_steps(limit, period)
+        except ValueError as error:
+            return (Problem(code=ProblemCode.STRUCTURE, reason=str(error), path=path),)
+    return limit
 
 
 def _end_of(document, role, rest) -> str | None:
@@ -320,6 +359,14 @@ def _end_edits(raw, end: str, kind: str, fields: dict) -> list:
     edits += [SetProjectValue(op="replace" if key in held else "add", path=f"{end}/{key}", value=value)
               for key, value in fields.items()]
     edits += [RemoveProjectValue(op="remove", path=f"{end}/{key}") for key in held if key != "kind" and key not in fields]
+    if kind == "until":
+        epoch_index = int(json_pointer_parts(end)[1])
+        epoch = raw["epochs"][epoch_index]["id"]
+        edits.extend(
+            RemoveProjectValue(op="remove", path=pointer(("validation_trials", str(index), "epoch_steps", epoch)))
+            for index, trial in enumerate(raw.get("validation_trials", ()))
+            if epoch in trial.get("epoch_steps", ())
+        )
     return edits
 
 
@@ -1269,23 +1316,32 @@ def trial_authoring(
         document = _field_document(documents, path[0])
         if document is None:
             return None
-        found = site_expression(document, tuple(map(str, path[1:])))
+        raw_path = tuple(map(str, path[1:]))
+        if path[0] == "task" and path[1:2] == ("epochs",) and path[3:] == ("end", "limit"):
+            stored_limit = at(document, raw_path)
+            if isinstance(stored_limit, TimeValue):
+                return LiteralValue(value=stored_limit.value, unit=stored_limit.unit)
+        found = site_expression(document, raw_path)
         if found is None and path[0] == "task" and path[1] == "signals" and path[3:] == ("absent",):
             signal = next(item for item in document.signals if item.id == path[2])
             return zero(signal.type.base, signal.type.shape)
         return found
 
     def sweep(path, site, label):
-        if paired is None:
+        if paired is None or path[0] == "task" and path[1:2] == ("epochs",) and path[3:] == ("end", "limit"):
             return None
         return _field_sweep(project, plan, key, definition, path, site, label)
 
-    fields = [
-        field for path, site in projected.fields.items() if path[1:2] != ("validation_trials",)
-        for field in _trial_fields(
-            path, site, expression(path), bundle.expression_functions, sweep, row, projected.problems, output_paths,
-        )
-    ]
+    fields = []
+    for path, site in projected.fields.items():
+        if path[1:2] == ("validation_trials",):
+            continue
+        value = expression(path)
+        if path[0] == "task" and path[1:2] == ("epochs",) and path[3:] == ("end", "condition") and value is None:
+            continue
+        fields.extend(_trial_fields(
+            path, site, value, bundle.expression_functions, sweep, row, projected.problems, output_paths,
+        ))
     field_problems = [
         problem for field in fields for problem in field.problems
         if not _held_problems(problem.path, projected.problems)
