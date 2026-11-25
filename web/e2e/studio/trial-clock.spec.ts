@@ -1,6 +1,7 @@
 import type { Locator } from '@playwright/test';
 import { expect, test } from './fixtures/studio';
 import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
+import { showTrials } from './fixtures/controls';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -45,8 +46,12 @@ test('one clock plays every picked trial, its scrubber on the shelf\'s axis, and
   const track = (await clock.locator('[data-clock-track]').boundingBox())!;
   expect(Math.abs(track.x - span.x)).toBeLessThan(1);
   expect(Math.abs(track.width - span.width)).toBeLessThan(1);
+  expect(track.width).toBeGreaterThan(0.6 * (await footer.boundingBox())!.width);
+  for (const button of await footer.getByRole('button').all()) {
+    expect((await button.boundingBox())!.y).toBeGreaterThanOrEqual(track.y + track.height);
+  }
 
-  await clock.getByRole('group', { name: 'Trials', exact: true }).getByRole('button', { name: 'All', exact: true }).click();
+  await showTrials(page, 'All');
   await expect(picker).toHaveText('4 trials');
   await expect(readout).toHaveText(new RegExp(`^${time.toFixed(2)} s /`));
 

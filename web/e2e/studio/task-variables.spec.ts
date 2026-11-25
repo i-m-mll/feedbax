@@ -145,7 +145,7 @@ test('the Variables table names, types and values a new task\'s variables, and s
 // Catches a Task view that cannot be scrolled from most of its area: a wheel over a table that has nothing more to
 // scroll is kept by the table instead of moving the view around it.
 test('a wheel over the Variables table scrolls the Task view', async ({ page, request }) => {
-  await page.setViewportSize({ width: 1440, height: 700 });
+  await page.setViewportSize({ width: 1440, height: 600 });
   const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const panel = page.locator('[data-slot="primary"]').getByRole('tabpanel', { name: 'Task', exact: true });
   const table = panel.getByRole('table', { name: 'Variables', exact: true });

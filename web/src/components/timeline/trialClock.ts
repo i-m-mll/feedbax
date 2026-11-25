@@ -126,11 +126,20 @@ function offered({ trials, showing }: TrialPick, clock: TrialClock, offer: Trial
 }
 
 /**
- * What is shown: the pick while it exists for the selection, else the most specific single trial that does (the first
- * recorded trial, then the nominal trial, then the first sample); nothing when no trial exists.
+ * What is shown: the pick while it exists for the selection; else, for All or Mean, the same showing of the picked set
+ * or another set that has it, so that a step change keeps the choice; else the most specific single trial that exists
+ * (the first recorded trial, then the nominal trial, then the first sample); nothing when no trial exists.
  */
 export function shownPick(clock: TrialClock, offer: TrialOffer): TrialPick | undefined {
-  if (clock.picked && offered(clock.picked, clock, offer)) return clock.picked;
+  const picked = clock.picked;
+  if (picked && offered(picked, clock, offer)) return picked;
+  const kind = picked?.showing.kind;
+  if (picked && kind !== 'one') {
+    const sets = [picked.trials, ...(['recorded', 'samples'] as const).filter((trials) => trials !== picked.trials)];
+    const kept = sets.map((trials): TrialPick => ({ trials, showing: { kind: kind!, index: 0 } }))
+      .find((pick) => offered(pick, clock, offer));
+    if (kept) return kept;
+  }
   const first = (trials: TrialSet): TrialPick => ({ trials, showing: { kind: 'one', index: 0 } });
   if (offer.recorded) return first('recorded');
   if (offer.nominal) return first('nominal');

@@ -174,6 +174,7 @@ export function ProjectWindow({
   };
   const root = useRef<HTMLDivElement>(null);
   const { ref: panel, width, height } = useElementSize<HTMLElement>();
+  const { ref: shelfBox, height: shelfHeight } = useElementSize<HTMLDivElement>();
   const [preview, setPreview] = useState<ProjectWindowSizePreview>({});
   const [requestedFocus, setRequestedFocus] = useState<{ region: WindowRegion }>();
   const [paletteScope, setPaletteScope] = usePaletteState();
@@ -207,7 +208,7 @@ export function ProjectWindow({
   const sides = (region: ProjectWindowViewRegion | null) => ({ drawer: !!region?.drawer, inspector: !!region?.inspector });
   const focusedSides = sides(focusedRegion);
   const mode = availableViews.length ? state.mode : 'map';
-  const fit = fitProjectWindow(width, height, {
+  const fit = fitProjectWindow(width, height - shelfHeight, {
     ...state,
     mode,
     secondaryView,
@@ -620,7 +621,7 @@ export function ProjectWindow({
             )}
           </aside>
         </section>
-        <div className="studio-window-shelf" hidden={!shelf}>{shelf}</div>
+        <div ref={shelfBox} className="studio-window-shelf" hidden={!shelf}>{shelf}</div>
         {settingsOpen && (
           <section ref={settingsRegion} className="studio-window-settings" aria-label={studioName('settings')}
             data-studio-focus-region="settings" tabIndex={-1}

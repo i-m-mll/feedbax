@@ -158,6 +158,103 @@ def _saved_light_definition(*, paired=False):
     return project
 
 
+def test_saved_operation_products_can_be_read_without_a_figure(host, tmp_path, monkeypatch):
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    monkeypatch.setenv("JAX_PLATFORMS", "cpu")
+    monkeypatch.setenv("JAX_ENABLE_X64", "0")
+    definition = _report_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    shipped = load_shipped_projects()["point-mass-reaching"].model_dump(mode="json", by_alias=True, exclude_unset=True)
+    task = shipped["documents"]["simple-reaches-task"]
+    del task["payload"]["validation_trials"]
+    task["payload"]["fixed_steps"] = 8
+    task["payload"]["epochs"][0]["end"]["length"]["value"] = 8
+    definition["documents"] = {
+        "point-mass": shipped["documents"]["point-mass"], "task": task,
+        "velocity-analysis": definition["documents"]["velocity-analysis"],
+    }
+    definition["steps"] = {
+        "analyze": definition["steps"]["analyze"],
+        "baseline": {
+            "kind": "evaluate",
+            "base": {"inline": {"evaluation_type": "feedbax.rollout", "params": {
+                "seed": 17, "trial_policy": "paired", "variation": [],
+                "trial_set": {"kind": "sample", "count": 2}, "input_bindings": {"target_pos": "target_pos"},
+            }}},
+            "inputs": {
+                "subject": {"kind": "initial_model", "source": {"document": "point-mass"}},
+                "task": {"kind": "task", "source": {"document": "task"}},
+            },
+        },
+    }
+    analysis = definition["documents"]["velocity-analysis"]["payload"]
+    del analysis["views"]
+
+    path = "/api/projects/datasets"
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, "datasets", Project.model_validate(definition))
+
+    def expect(response, status=200):
+        assert response.status_code == status, response.text
+        return response.json()
+
+    with TestClient(create_app(projects_dir=tmp_path, automatic_run="off")) as client:
+        def projection():
+            revision = expect(client.get(path))["revision"]
+            window = expect(client.get(f"{path}/train-runs", params={
+                "revision": revision, "window_map": True,
+            }))["window_map"]
+            assert not window["problems"], window["problems"]
+            assert all(element["kind"] == "analyze" for element in window["analysis_elements"])
+            return revision, {element["name"]: element["requests"][0] for element in window["analysis_elements"]}
+
+        revision, _ = projection()
+        submission = expect(client.post(f"{path}/train-runs", json={
+            "revision": revision, "token": token("operation-datasets"),
+            "run_keys": [{"variant": "default", "step": step, "row": "default"} for step in ("baseline", "analyze")],
+        }), 202)
+        for item in submission["items"]:
+            job = wait_until(lambda: (
+                observed if (observed := job_row(host, item["job_id"])) and observed["outcome"] is not None else None
+            ))
+            assert job["state"] == "succeeded", job["outcome"]
+
+        _, elements = projection()
+        summary = elements["summarize"]["result"]
+        url = summary["products"]["summary"]
+        descriptor = expect(client.get(url))
+        assert descriptor["variables"]["mean"]["units"] == "m/s"
+        assert descriptor["variables"]["mean"]["dims"] == ["condition", "state_time"]
+        total = descriptor["dimensions"]["state_time"]
+        assert expect(client.get(f"{url}/values", params={"field": "count", "offset": total - 2, "limit": 3})) == {
+            "field": "count", "offset": total - 2, "total": total, "values": [2, 2],
+        }
+        aligned = elements["align"]["result"]
+        velocity = aligned["products"]["velocity"]
+        assert expect(client.get(f"{velocity}/values", params={"field": "trial"}))["values"] == _TRIALS
+        sample = expect(client.get(f"{velocity}/values", params={
+            "field": "parallel_velocity", "offset": total - 2, "limit": 4,
+        }))
+        assert sample["total"] == 2 * total
+        store = ImmutableArtifactBlobProvider(tmp_path / "datasets" / "results")
+        success = SuccessView(store)
+        ref = success.attempt_ref(aligned["job_id"])
+        assert ref is not None
+        receipt = success.read_receipt(ref)
+        with open_stored_dataset(store, dataset_member(receipt.products["velocity"][0])) as retained:
+            expected = np.asarray(retained.data("parallel_velocity")).ravel()[total - 2:total + 2]
+        np.testing.assert_array_equal(sample["values"], expected)
+        expect(client.get(f"{url}/values", params={"field": "absent"}), 404)
+        expect(client.get(f"{url}/values", params={"field": "mean", "limit": 257}), 422)
+
+        analysis["operations"]["summarize"]["params"]["bounds_scale"] = 2.0
+        _save_project(folders, "datasets", Project.model_validate(definition))
+        _, revised = projection()
+        previous = revised["summarize"]["previous"]
+        assert revised["summarize"]["status"] == "stale"
+        assert previous["job_id"] == summary["job_id"]
+        assert expect(client.get(previous["products"]["summary"])) == descriptor
+
+
 def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host, tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
     monkeypatch.setenv("JAX_PLATFORMS", "cpu")
@@ -244,6 +341,7 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
         elements, report = projection(rev)
         assert all(element["status"] == "succeeded" for element in elements.values())
         assert report["status"] == "succeeded"
+        aligned_descriptor = expect(client.get(elements["align"]["result"]["products"]["velocity"])).json()
         figure = elements["profile"]["result"]
         figure_url = figure["products"]["figure"]
         figure_response = expect(client.get(figure_url))
@@ -274,7 +372,9 @@ def test_saved_light_chain_reuses_exact_receipts_and_retains_a_stale_figure(host
         _save_project(folders, project, Project.model_validate(definition))
         edited = revision()
         stale, stale_report = projection(edited)
-        assert stale["align"]["result"] == elements["align"]["result"]
+        stable_align, old_align = stale["align"]["result"], elements["align"]["result"]
+        assert stable_align | {"products": old_align["products"]} == old_align
+        assert expect(client.get(stable_align["products"]["velocity"])).json() == aligned_descriptor
         assert {stale[name]["status"] for name in ("summarize", "profile")} == {stale_report["status"]} == {"stale"}
         assert stale["summarize"]["changed"]["place"] == {
             "part": "analysis", "element": "summarize", "name": "summarize", "field": "/params/bounds_scale",

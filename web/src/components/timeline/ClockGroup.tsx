@@ -31,10 +31,9 @@ const percent = (value: number, total: number) => `${(100 * value / total).toFix
 const seconds = (value: number) => `${value.toFixed(2)} ${studioUnit('second')}`;
 
 /**
- * The bottom bar's clock, in order: the trial picker and how its trials are shown (One, All, Mean, with Mean's By and
- * Align), the transport, the scrubber with the shown trial's epochs as bands, the readout, Loop and Speed, and the
- * shelf's switch. The scrubber's track is the extent the shelf's time axis spans. Where the bar is too narrow for one
- * row, the transport and what follows it take a second.
+ * The bottom bar's clock, on two lines. The upper holds the scrubber, with the shown trial's epochs as bands, and the
+ * readout; the scrubber's track is the extent the shelf's time axis spans. The lower holds the trial picker and how
+ * its trials are shown (One, All, Mean, with Mean's By and Align), the transport, Loop and Speed, and the shelf's switch.
  */
 export function ClockGroup({ timeline, time, onTimeChange, axis, shelfOpen, onShelfChange, showing, ...picker }: TrialPickerProps & {
   readonly showing?: ReactNode;
@@ -53,12 +52,22 @@ export function ClockGroup({ timeline, time, onTimeChange, axis, shelfOpen, onSh
   const track = useRef<HTMLDivElement>(null);
   usePublishedAxis(axis, track);
   const still = !transport.hasTimeline;
-  return <div role="group" aria-label={studioName('clock')} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-    <div className="flex min-w-0 max-w-full items-center gap-2">
+  return <div role="group" aria-label={studioName('clock')} className="studio-clock">
+    <div className="studio-clock__line">
+      <div ref={track} className="relative min-w-0" data-clock-track="">
+        {duration > 0 && bands.map((band, index) => <span key={`${band.start}:${band.end}`} aria-hidden="true"
+          className={`pointer-events-none absolute inset-y-0.5 rounded-sm bg-shell-foreground ${index % 2 ? 'opacity-[0.04]' : 'opacity-[0.09]'}`}
+          style={{ left: percent(band.start - start, duration), width: percent(band.end - band.start, duration) }} />)}
+        <Slider size="line" min={start} max={start + duration} step={duration / 1000 || 1} value={transport.bounded} disabled={still}
+          aria-label={studioName('playbackPosition')} onValueChange={transport.seek} />
+      </div>
+      <span className="w-[17ch] whitespace-nowrap pl-2 text-right text-xs tabular-nums text-shell-muted">
+        {seconds(transport.bounded)} / {seconds(start + duration)}
+      </span>
+    </div>
+    <div className="studio-clock__controls">
       <TrialPicker {...picker} />
       {showing}
-    </div>
-    <div className="flex min-w-0 grow basis-96 items-center gap-2">
       <div className="flex shrink-0 items-center">
         <ClockButton name="restart" icon={RotateCcw} disabled={still} onClick={() => transport.seek(start)} />
         <ClockButton name="previousFrame" icon={StepBack} disabled={still} onClick={() => transport.step(-1)} />
@@ -66,16 +75,6 @@ export function ClockGroup({ timeline, time, onTimeChange, axis, shelfOpen, onSh
           onClick={transport.togglePlay} />
         <ClockButton name="nextFrame" icon={StepForward} disabled={still} onClick={() => transport.step(1)} />
       </div>
-      <div ref={track} className="relative min-w-16 grow" data-clock-track="">
-        {duration > 0 && bands.map((band, index) => <span key={`${band.start}:${band.end}`} aria-hidden="true"
-          className={`pointer-events-none absolute inset-y-1.5 rounded-sm bg-shell-foreground ${index % 2 ? 'opacity-[0.04]' : 'opacity-[0.09]'}`}
-          style={{ left: percent(band.start - start, duration), width: percent(band.end - band.start, duration) }} />)}
-        <Slider min={start} max={start + duration} step={duration / 1000 || 1} value={transport.bounded} disabled={still}
-          aria-label={studioName('playbackPosition')} onValueChange={transport.seek} />
-      </div>
-      <span className="w-[17ch] shrink-0 whitespace-nowrap text-right text-xs tabular-nums text-shell-muted">
-        {seconds(transport.bounded)} / {seconds(start + duration)}
-      </span>
       <div className="flex shrink-0 items-center gap-1">
         <ClockButton name="loop" icon={Repeat} onClick={transport.toggleLoop} pressed={transport.looping} />
         <Select items={speedItems} value={String(speed)} onValueChange={(value) => setSpeed(Number(value))}
