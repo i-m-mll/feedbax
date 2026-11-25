@@ -242,13 +242,15 @@ def _prepare_train(
     resumed: bool, source_spec: DocumentTrainingRequestSpec | None, phase: Callable[[str], None],
 ) -> _PreparedTrain:
     from feedbax.contracts.method_checkpoint import MethodCheckpointIdentity
-    from feedbax.contracts.model_input import CheckpointModelSource, InitialModelSource
+    from feedbax.contracts.loaded_model import ImportedModelSource, decode_imported_model_document
+    from feedbax.contracts.model_input import CheckpointModelSource, InitialModelSource, read_document_input
     from feedbax.persistence.model_assets import model_artifact_provider
     from feedbax.runtime._graph_key_schedule import model_initialization_key
     from feedbax.host.model_input import reconstruct_model
     from feedbax.host.method_checkpoint import read_method_checkpoint, validate_method_extra
     from feedbax.training.method_runtime import TrainingLoop, initialize_method, stack_replicas
-    from feedbax.host.model_checkpoint import SemanticModelWriter
+    from feedbax.host.model_checkpoint import SemanticModelSlot, SemanticModelWriter
+    from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
     from feedbax.training.train_driver import TrainSchedule, carries_method_state, train_start_clock
     from feedbax.validity.recording import numerical_work
 
@@ -259,14 +261,30 @@ def _prepare_train(
     config = spec.training_config
     replica_ids = tuple(map(str, range(config.replicates)))
     restored = None
+    imported = None
+    imported_model = None
+    if producer is None and (content := launch.canonical_request.imported_model) is not None:
+        phase("restoring")
+        if spec.checkpoint_initialization != "initialize_from":
+            raise ValueError("/inputs/checkpoint: a Loaded Model supports only initialize_from.")
+        store = ImmutableArtifactBlobProvider(launch.manifest_root)
+        imported = read_document_input(content, store)
+        assert isinstance(imported, ImportedModelSource)
+        imported_model = decode_imported_model_document(store.get_object(imported.model))
+        with numerical_work():
+            imported_slot = SemanticModelSlot.open_store(store, imported.weights, imported.encoding, components=registries.components)
+        if len(imported_slot.replica_ids) != config.replicates:
+            raise ValueError("/training_config/replicates: Loaded Model replica count differs from the target.")
+        replica_ids = imported_slot.replica_ids
     if producer is not None:
         phase("restoring")
         with numerical_work():
             restored = read_method_checkpoint(producer.checkpoint_root, producer.pointer, components=registries.components)
         if restored.clock.completed_updates != producer.completed_updates:
             raise ValueError("Checkpoint coordinate differs from its pinned binding.")
-        if restored.model.replica_ids != replica_ids:
-            raise ValueError("/training_config/replicates: checkpoint replica IDs differ from the target.")
+        if len(restored.model.replica_ids) != config.replicates:
+            raise ValueError("/training_config/replicates: checkpoint replica count differs from the target.")
+        replica_ids = restored.model.replica_ids
         if resumed and restored.identity != identity:
             raise ValueError("Resume requires the exact admitted Train request and method.")
         if not resumed and policy is not None and policy.state == "preserve" and restored.identity.method_key != identity.method_key:
@@ -277,7 +295,9 @@ def _prepare_train(
 
     phase("building")
     graph = trial.graph.graph
-    model_assets = restored.model.provider if restored is not None else model_artifact_provider(graph)
+    model_assets = restored.model.provider if restored is not None else (
+        imported_slot.provider if imported is not None else model_artifact_provider(graph)
+    )
     paired = []
     for replica_id in replica_ids:
         with numerical_work():
@@ -313,6 +333,21 @@ def _prepare_train(
                 model_source, registry=registries, artifacts=model_assets,
                 template=source_graph, variant=variant, variant_seed=spec.seed if variant is not None else None,
                 slot=restored.model,
+            )
+        if isinstance(reconstructed, tuple):
+            problem = reconstructed[0]
+            raise ValueError("/inputs/checkpoint/" + "/".join(map(str, problem.path)) + ": " + problem.reason)
+        models = reconstructed.graphs
+    elif imported is not None:
+        assert imported_model is not None
+        with numerical_work():
+            reconstructed = reconstruct_model(
+                CheckpointModelSource(
+                    tree=imported.weights, encoding=imported.encoding,
+                    initial=InitialModelSource(document=imported_model),
+                ),
+                registry=registries, artifacts=model_assets,
+                variant=trial.graph, variant_seed=spec.seed, slot=imported_slot,
             )
         if isinstance(reconstructed, tuple):
             problem = reconstructed[0]

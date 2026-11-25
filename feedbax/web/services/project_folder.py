@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from base64 import b64decode, urlsafe_b64encode
 from binascii import Error as Base64Error
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from hmac import compare_digest, digest
 import os
@@ -14,7 +15,7 @@ from typing import TYPE_CHECKING
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.model_address import ModelAddress
-from feedbax.contracts.project import ProjectValueEdit, Sha256
+from feedbax.contracts.project import Project, ProjectValueEdit, Sha256
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_io import PROJECT_DECLARATION_SUFFIX, TextProject, TextProjectExternalInputs
 from feedbax.contracts.project_resolution import BaseReaders, RunKey
@@ -31,10 +32,10 @@ from feedbax.project_folder import (
     model_edit_source,
     preview_authored_files as preview_authored_files,
 )
-from feedbax.project_model_selection import selected_task_signal
 
 if TYPE_CHECKING:
     from feedbax.analysis.operations import OperationRegistry
+    from feedbax.application.bundle import ApplicationRegistryBundle
     from feedbax.plot.templates import FigureTemplateRegistry
     from feedbax.component_registry import ComponentRegistry
     from feedbax.contracts.model_edit import (
@@ -66,10 +67,12 @@ class ProjectFolderService(ProjectFolder):
         python_tasks: PythonTaskRegistry | None = None,
         training_methods: TrainingMethodRegistry | None = None,
         figure_templates: FigureTemplateRegistry | None = None,
+        load_examples: Callable[[], Mapping[str, Project]] = dict,
     ) -> None:
         super().__init__(
             root, operations=operations, components=components, functions=functions,
             python_tasks=python_tasks, figure_templates=figure_templates, training_methods=training_methods,
+            load_examples=load_examples,
         )
         self._model_undo_key = token_bytes(32)
 
@@ -120,54 +123,63 @@ class ProjectFolderService(ProjectFolder):
         return BaseReaders(external=read_pin, figure_external=read_pin)
 
     def review_model_connections(
-        self, project_id: str, body: ModelConnectionReviewRequest, components: ComponentRegistry,
+        self, project_id: str, body: ModelConnectionReviewRequest, bundle: ApplicationRegistryBundle,
     ) -> ModelConnectionReview:
         from feedbax.compiler.model_document import inspect_model_signals
         from feedbax.contracts.model_document import ModelDocument
-        from feedbax.contracts.model_edit import EvaluateModelRequest, TaskSignalSource
+        from feedbax.contracts.model_edit import TaskSignalSource
         from feedbax.compiler.model_edit import review_model_connections
         from feedbax.compiler.model_ports import ModelRegistryPorts
-        from feedbax.project_model_selection import selected_model
-        from feedbax.web.services.evaluate_sources import read_evaluate_model
+        from feedbax.project_model_selection import matched_task_inputs, selected_model, selected_model_and_task, task_signal
+        from feedbax.web.services.model_projection import evaluate_projection
         from feedbax.web.services.trial_scope import selection_scope
 
         snapshot = self.read(project_id, revision=body.revision)
         payload, _ = model_edit_source(snapshot, body.document)
+        model = ModelDocument.model_validate(payload)
+        task, overrides = (), {}
+        components = bundle.components
+        task_source = body.source if isinstance(body.source, TaskSignalSource) else None
         try:
             if body.run is None and (body.rows or body.axes or body.evaluate_scope is not None):
                 raise ProjectFolderInvalid("Choose a run for this Model selection.")
-            if body.run is not None:
-                key = RunKey(body.run.variant, body.run.step, body.run.row)
-                if body.evaluate_scope is not None:
-                    reading = read_evaluate_model(self, project_id, EvaluateModelRequest(
-                        revision=body.revision, run=body.run, scope=body.evaluate_scope,
-                    ), components, model_document=body.document)
-                    if reading.state.resolved_model is None:
+            run = body.run or (task_source.run if task_source is not None else None)
+            if run is not None:
+                selection = body.model_copy(update={"run": run})
+                step = snapshot.project.steps.get(run.step)
+                if step is not None and step.kind == "evaluate":
+                    resolved, task, _, overrides = evaluate_projection(self, project_id, selection, bundle)
+                    if resolved is None:
                         raise ProjectFolderInvalid("The selected Evaluate has no readable Model.")
-                    payload = reading.state.resolved_model.model_dump(mode="json")
+                    model = resolved
                 else:
+                    if body.evaluate_scope is not None:
+                        raise ProjectFolderInvalid("Choose an Evaluate run for this Model selection.")
+                    key = RunKey(run.variant, run.step, run.row)
                     plan = self.read_plan(project_id, revision=body.revision, source_runs=(key,)).plan
                     if body.rows or body.axes:
                         selection_scope(snapshot.project, plan, key, tuple(body.rows), body.axes or None)
                     definition = plan.selected_definitions.get(key)
-                    if definition is not None and (resolved := selected_model(definition, body.document)) is not None:
-                        payload = resolved
+                    if definition is not None and selected_model(definition, body.document) is not None:
+                        model, task, _, overrides = selected_model_and_task(self, project_id, selection, definition=definition)
             authority = ModelRegistryPorts(components)
-            task_signal = None
-            if isinstance(body.source, TaskSignalSource):
+            offered = None
+            if task_source is not None:
                 if body.graph.composites:
                     raise ProjectFolderInvalid("A task signal connects at the Model root")
-                task_signal = selected_task_signal(self, project_id, body.model_copy(
-                    update={"run": body.run or body.source.run},
-                ), body.source.signal)
+                offered = next((item for item in task if item.id == task_source.signal), None)
+                if offered is None:
+                    raise ProjectFolderInvalid("The selected task does not expose this signal")
             library = tuple({
                 "kind": "leaf", "type": item.identity.type_id if item.identity else item.name,
                 "revision": item.revision, "fields": {}, "port_counts": {},
             } for item in components.list_all() if not item.is_composite)
-            model = ModelDocument.model_validate(payload)
+            supplied = {port.name: item.type for port, item in matched_task_inputs(model, task, overrides)}
             return review_model_connections(
                 model, body, layout=authority.layout, next_input=authority.next_input,
-                library=library, task_signal=task_signal, signals=inspect_model_signals(model, components),
+                library=library, task_signal=task_signal(offered) if offered is not None else None,
+                task_type=offered.type if offered is not None else None,
+                signals=inspect_model_signals(model, components, supplied),
             )
         except ValueError as error:
             raise ProjectFolderInvalid(str(error)) from error

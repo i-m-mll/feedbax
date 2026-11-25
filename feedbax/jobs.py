@@ -55,6 +55,7 @@ from feedbax.contracts.jobs import (
     StudioTrainCheckpointSource,
     StudioVenueStream,
 )
+from feedbax.contracts.loaded_model import ImportedModelProvenance
 from feedbax.contracts.live_evaluate import LIVE_EVALUATE_POINT, LiveEvaluationObservation
 from feedbax.contracts.manifest import (
     EvaluationRunManifest,
@@ -234,6 +235,7 @@ class PlanJobAttempt:
     request_id: RequestId | None = None
     revision: str | None = None
     trials: tuple[str, ...] = ()
+    loaded_model: ImportedModelProvenance | None = None
 
 
 @dataclass(frozen=True)
@@ -262,6 +264,7 @@ class _VerifiedEvaluation:
     checkpoint_sources: tuple[StudioTrainCheckpointSource, ...] = ()
     bound_subject: StudioBoundBestSubject | None = None
     trials: tuple[str, ...] = ()
+    loaded_model: ImportedModelProvenance | None = None
 
 
 @dataclass(frozen=True)
@@ -443,6 +446,7 @@ class PlanJobReader:
                 metric_names=metric_names if receipt is not None else (),
                 request_id=request_id, revision=job["data"].get("revision"),
                 trials=result.trials if result is not None else (),
+                loaded_model=result.loaded_model if result is not None else None,
             )
             attempts.setdefault(request_id, []).append(attempt)
             for address in known:
@@ -2332,7 +2336,7 @@ def _verify_stored_evaluation(
     if isinstance(subject, ContentRef):
         return _VerifiedEvaluation(
             receipt, states_ref(manifest).content.size, None, "ordinary", manifest_object,
-            trials=_evaluation_trials(manifest),
+            trials=_evaluation_trials(manifest), loaded_model=manifest.loaded_model,
         )
     (bound,) = success.inputs["subject"]
     source = bound.evaluation_subject

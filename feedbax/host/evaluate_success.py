@@ -86,7 +86,8 @@ def publish_evaluate_success(
             from feedbax.persistence.canonical_evaluate import initial_evaluation_references
 
             verify_initial_evaluation_states(store, manifest, initial_evaluation_references(decoded))
-            require_evaluation_coverage(computation, (rollout_slot(None, "0"),))
+            replicas = manifest.loaded_model.replicas if manifest.loaded_model else ("0",)
+            require_evaluation_coverage(computation, tuple(rollout_slot(None, replica) for replica in replicas))
             _, bindings = view.bind(request, origins={})
             return view.publish_bound(
                 request, attempt=attempt, products={"states": (product,)}, bindings=bindings,

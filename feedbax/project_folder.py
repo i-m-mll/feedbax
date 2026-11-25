@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from base64 import b64decode, b64encode
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -66,7 +66,7 @@ from feedbax.planner.project_plan import ProjectPlan, ProjectPlanMemo, RunKey, c
 from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, compose_document
 from feedbax.contracts.project_sweep import GeneratedAxis, NamedAxis, Sweep, model_field_target
 from feedbax.contracts.result_address import ANALYSIS_SCHEMA, payload_elements
-from feedbax.persistence.project_subject import terminal_train_reader
+from feedbax.persistence.project_subject import imported_model_reader, terminal_train_reader
 from feedbax.persistence.reachability import DEFAULT_SUPERSEDED_DAYS
 from feedbax.project_members import (
     change_member_key, duplicate_document_name, duplicate_step, fresh_element_keys, generated_name,
@@ -456,7 +456,7 @@ def compile_saved_project(
     training_methods: TrainingMethodRegistry | None = None,
 ) -> SettledProjectPlan:
     """Compile exact authored bytes and reuse them only with matching input authority."""
-    readers = replace(readers, terminal_train=terminal_train_reader(store))
+    readers = replace(readers, terminal_train=terminal_train_reader(store), imported_model=imported_model_reader(store))
     semantic_root = project_semantic_root(text.project)
     source_runs = frozenset(source_runs)
     stamp = (
@@ -466,7 +466,7 @@ def compile_saved_project(
     )
     observations: dict[str, dict[str, object]] = {}
     observed_readers = {}
-    for kind in ("terminal_train", "figure_external"):
+    for kind in ("terminal_train", "imported_model", "figure_external"):
         if (reader := getattr(readers, kind)) is not None:
             observations[kind] = {}
             observed_readers[kind] = partial(_observe_plan_input, reader, observations[kind])
@@ -931,6 +931,7 @@ class ProjectFolder:
         figure_templates: FigureTemplateRegistry | None = None,
         local_folder: ProjectFolderLocation | None = None,
         training_methods: TrainingMethodRegistry | None = None,
+        load_examples: Callable[[], Mapping[str, Project]] = dict,
     ) -> None:
         self.root = root.resolve()
         self._local_folder = local_folder
@@ -940,6 +941,7 @@ class ProjectFolder:
         self.functions = functions
         self.python_tasks = python_tasks
         self.training_methods = training_methods
+        self._load_examples = load_examples
         self._plan_memo = lru_cache(maxsize=8)(lambda _project_id: SavedPlanMemo())
         self._known_locations: dict[str, ProjectFolderLocation] = {}
         self._known_locations_lock = Lock()
@@ -1168,15 +1170,16 @@ class ProjectFolder:
             folder.check()
             yield plan
 
+    def project_examples(self) -> Mapping[str, Project]:
+        return self._load_examples()
+
     def new(self, name: str, *, example: str | None = None) -> StudioProjectDocument:
         if re.fullmatch(r"untitled-[0-9a-f]+", name, re.IGNORECASE):
             raise ProjectFolderInvalid("Choose a name for the project.")
         configuration = ProjectConfiguration(project=name, store="results")
         project = Project()
         if example is not None:
-            from feedbax.examples import load_shipped_projects
-
-            project = load_shipped_projects().get(example)
+            project = self.project_examples().get(example)
             if project is None:
                 raise ProjectFolderNotFound(example)
         self.root.mkdir(parents=True, exist_ok=True)

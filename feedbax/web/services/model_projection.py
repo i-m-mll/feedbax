@@ -6,7 +6,7 @@ from typing import cast, get_args
 from feedbax.compiler.model_document import inspect_model_signals
 from feedbax.compiler.model_edit import conserving_port_type, model_ungroup_eligibility
 from feedbax.compiler.model_ports import ModelRegistryPorts
-from feedbax.compiler.model_signals import ModelSignalTable, ResolvedSignalLeaf, task_data_value_type
+from feedbax.compiler.model_signals import ModelSignalTable, ResolvedSignalLeaf
 from feedbax.contracts.model_address import ComponentElement, ComponentPortAddress, FieldElement, ModelAddress, PortElement
 from feedbax.contracts.model_document import ModelDocument, PhysicalPortType, SignalType
 from feedbax.contracts.objective_document import ObjectiveDocument
@@ -15,11 +15,10 @@ from feedbax.contracts.model_edit import (
 )
 from feedbax.contracts.expression_check import references
 from feedbax.contracts.project import BasedDocument
-from feedbax.contracts.trial_bindings import selected_signal_id
 from feedbax.planner.project_plan import RunKey
 from feedbax.project_folder import ProjectFolderInvalid, model_edit_source
 from feedbax.project_model_selection import (
-    model_task_signals, selected_model as selected_model, selected_model_and_task, task_signal,
+    matched_task_inputs, model_task_signals, selected_model as selected_model, selected_model_and_task, task_signal,
 )
 from feedbax.compiler.model_differences import structural_differences
 from feedbax.web.services.trial_scope import runs_scope, selected_value, value_model
@@ -133,7 +132,7 @@ def _objective_readers(objective: object, signals: ModelSignalTable) -> dict[str
     return readers
 
 
-def _evaluate_projection(folders, project_id, body, authored, bundle):
+def evaluate_projection(folders, project_id, body, bundle):
     from feedbax.web.services.evaluate_sources import read_evaluate_model
     from feedbax.web.services.trial_authoring import _pairing
 
@@ -144,14 +143,14 @@ def _evaluate_projection(folders, project_id, body, authored, bundle):
             revision=body.revision, run=body.run, scope=body.evaluate_scope or StepRuns(kind="step"),
         ), bundle.components, selected=plan, model_document=body.document,
     )
-    model = reading.state.resolved_model or authored
+    model = reading.state.resolved_model
     definition = plan.selected_definitions.get(key)
     if definition is None:
-        return model, None, None, {}
+        return model, (), None, {}
     try:
         documents, _, _ = _pairing(plan, key, bundle, definition=definition)
     except ValueError:
-        return model, None, None, {}
+        return model, (), None, {}
     if definition.document_ids.get("inputs.subject") == body.document:
         model = documents.model
     return model, model_task_signals(folders, documents.task_source), documents.objective, documents.input_bindings
@@ -165,7 +164,7 @@ def model_projection(folders, project_id, body, bundle):
     selected = None
     step = snapshot.project.steps.get(body.run.step) if body.run is not None else None
     if step is not None and step.kind == "evaluate":
-        selected = _evaluate_projection(folders, project_id, body, authored, bundle)
+        selected = evaluate_projection(folders, project_id, body, bundle)
     elif body.evaluate_scope is not None:
         raise ProjectFolderInvalid("Choose an Evaluate run for this Model selection.")
     elif body.run is not None:
@@ -173,16 +172,11 @@ def model_projection(folders, project_id, body, bundle):
             selected = selected_model_and_task(folders, project_id, body)
         except ProjectFolderInvalid:
             pass
-    model, task, objective, overrides = selected or (authored, None, None, {})
-    data = {item.id: item for item in task.exposed_data if item.bindable} if task is not None else {}
-    task_signals = tuple(task_signal(item) for item in data.values())
-    names = {item.label: item.id for item in data.values()}
-    bound = {
-        port.id: data[signal] for port in model.ports.inputs
-        if (signal := selected_signal_id(port.id, port.name, names, overrides)) in data
-    }
-    supplied = {port.name: value for port in model.ports.inputs
-                if port.id in bound and (value := task_data_value_type(bound[port.id])) is not None}
+    model, task, objective, overrides = selected or (authored, (), None, {})
+    model = model or authored
+    task_signals = tuple(task_signal(item) for item in task)
+    bound = matched_task_inputs(model, task, overrides)
+    supplied = {port.name: signal.type for port, signal in bound}
     authority = ModelRegistryPorts(bundle.components)
     table = inspect_model_signals(model, bundle.components, supplied)
     readers = _objective_readers(objective, table)
@@ -202,6 +196,6 @@ def model_projection(folders, project_id, body, bundle):
             ))
     return ModelProjection(
         ports=tuple(ports), physical_ports=tuple(physical_ports), problems=table.problems, task_signals=task_signals,
-        task_inputs=tuple(_boundary_port((), "input", port) for port in bound), resolved_model=model,
+        task_inputs=tuple(_boundary_port((), "input", port.id) for port, _ in bound), resolved_model=model,
         ungroup=model_ungroup_eligibility(model), **differences,
     )

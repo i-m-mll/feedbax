@@ -3287,7 +3287,7 @@ export type InputRole = {
   "required": boolean;
   "gathers": boolean;
   "producer": InputProducer | null;
-  "documents": Array<"model" | "task">;
+  "documents": Array<"model" | "task" | "loaded_model">;
   "checkpoint_sets": boolean;
 };
 
@@ -10594,7 +10594,7 @@ export const AxisLabelsSchema: z.ZodType<AxisLabels> = z.lazy(() =>
 ) as unknown as z.ZodType<AxisLabels>;
 
 export const AxisSelectionClauseSchema: z.ZodType<AxisSelectionClause> = z.lazy(() =>
-  z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(SelectedAxisValueSchema).min(1))
+  z.record(z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")), z.array(SelectedAxisValueSchema).min(1)).refine((entries) => Object.keys(entries).length >= 1, { message: 'expected at least 1 entries' })
 ) as unknown as z.ZodType<AxisSelectionClause>;
 
 export const AxisValueSchema: z.ZodType<AxisValue> = z.lazy(() =>
@@ -11257,7 +11257,7 @@ export const InputRoleSchema: z.ZodType<InputRole> = z.lazy(() =>
     "required": z.boolean(),
     "gathers": z.boolean(),
     "producer": z.union([InputProducerSchema, z.null()]),
-    "documents": z.array(z.union([z.literal("model"), z.literal("task")])),
+    "documents": z.array(z.union([z.literal("model"), z.literal("task"), z.literal("loaded_model")])),
     "checkpoint_sets": z.boolean(),
   }).strict()
 ) as unknown as z.ZodType<InputRole>;

@@ -61,7 +61,7 @@ export function selectedRowTerms(rows: readonly StudioProjectWindowMapRow[], pic
     product[axis] = [...chosen.values()].sort((left, right) => compareIds(left.id, right.id));
     outside = stillOutside;
   }
-  if (!outside.length) return { clauses: storedClauses([product]) };
+  if (!outside.length) return Object.keys(product).length ? { clauses: storedClauses([product]) } : {};
 
   const clauses = selected.map(({ values }) =>
     Object.fromEntries(Object.entries(values).map(([axis, value]) => [axis, [pinValue(value)]])));
