@@ -2131,3 +2131,61 @@ def test_reading_the_plan_refuses_an_acausal_leaf_in_a_causal_model(monkeypatch)
         "'feedbax.Mass' for node 'mass' belongs to domain 'feedbax.domain.acausal'" in problem.detail
         for problem in train.problems
     )
+
+
+def test_shipped_effector_delay_keeps_the_full_recorded_value(tmp_path):
+    from feedbax.runtime.raw_state import bind_raw_state
+    from feedbax.tasks.document import TaskParameters
+
+    example = load_shipped_projects()["point-mass-reaching"]
+    name = "simple-reaches"
+    selected = example.model_copy(update={"steps": {name: example.steps[name]}})
+    app = create_app(projects_dir=tmp_path)
+    folders = app.state.project_folders
+    _save_project(folders, "reach", selected)
+    snapshot = folders.read("reach")
+    with TestClient(app) as client:
+        response = client.post("/api/projects/reach/model/edit", json={
+            "revision": snapshot.revision, "presentation_revision": snapshot.presentation_revision,
+            "document": "point-mass",
+            "step": name,
+            "command": {"operation": {"op": "set_attachment", "difference": {
+                "op": "add",
+                "after": None,
+                "owner": {"composites": [], "element": {"kind": "wire", "id": "effector"}},
+                "attachment": {"kind": "delay", "id": "observe-lag", "delay": {"value": 2, "unit": "st"}},
+            }}},
+        })
+    assert response.status_code == 200, response.text
+    assert response.json()["result"]["status"] == "applied", response.text
+
+    plan = folders.read_plan("reach", revision=None).plan
+    assert not plan.diagnostics, plan.diagnostics
+    run, = plan.runs
+    assert run.admission_problem is None, run.admission_problem
+    spec = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
+    prepared = _prepare_request(spec, new_application_registry_bundle())
+    executable = prepared.executable
+    graph = executable.graph
+    task = prepared.execution.task
+    layout = bind_raw_state(graph, executable.resolved.graph)
+    delay_wire, = [
+        wire for wire in executable.resolved.graph.wires
+        if (wire.recurrent_initializer or {}).get("model_delay_id") == "observe-lag"
+    ]
+    key = jax.random.key(4)
+    trial = task.ahead(TaskParameters(), key, key)
+    inputs = {port: trial.inputs[signal] for port, signal in prepared.execution.input_bindings}
+    reset = prepared.execution.reset.prepare(graph, trial.inits, key=key, inputs=inputs)
+    outputs, _, retained, history = graph.rollout_with_trace_and_history(
+        inputs, reset.state, key=key, cycle_init=reset.cycle_init, n_steps=8,
+        trace=(GraphTraceRequest("port", "before", node=delay_wire.source_node, port=delay_wire.source_port),),
+        capture_state=layout.capture,
+    )
+    leaves = jax.tree.leaves(retained["before"])
+    assert any(np.any(np.asarray(leaf) != 0) for leaf in leaves)
+    for actual, prior in zip(jax.tree.leaves(outputs["effector"]), leaves, strict=True):
+        np.testing.assert_array_equal(actual[:2], 0)
+        np.testing.assert_array_equal(actual[2:], prior[:-2])
+    for field in ("pos", "vel", "force"):
+        assert history[f"/v1/model/carry/effector/observe-lag/{field}"].shape == (9, 2, 2)

@@ -546,10 +546,7 @@ class _Lower:
                         steps = length_steps(delay, self.period)
                     except ValueError as error:
                         raise self.problem(path, "field", str(error), parent=origin, path=("delay",)) from error
-                    if signal is None or signal.shape is None:
-                        raise self.problem(path, "attachment", "delay has no resolved reset shape", parent=at, id=attachment.id)
-                    if signal.dtype not in ("float32", "float64"):
-                        raise self.problem(path, "attachment", "delay requires a real floating-point reset", parent=at, id=attachment.id)
+                    signal = signal or _Signal()
                     initial, reset_output = 0, None
                     match attachment.initial_source:
                         case DelayInitialValue(value=value):
@@ -564,11 +561,13 @@ class _Lower:
                                 path, "attachment", "Choose a Delay Initial source available at reset",
                                 parent=at, id=attachment.id,
                             )
-                    limit = float(np.finfo(signal.dtype).max)
-                    if type(initial) not in (int, float) or not -limit <= initial <= limit:
+                    limit = float(np.finfo(signal.dtype).max) if signal.dtype in ("float32", "float64") else float("inf")
+                    if type(initial) not in (int, float) or not isfinite(initial) or not -limit <= initial <= limit:
                         raise self.problem(path, "attachment", "delay Initial requires a qualified numeric value", parent=at, id=attachment.id)
+                    dtype = signal.dtype if signal.dtype in ("float32", "float64") else None
                     reset = ModelDelayCarry(
-                        shape=signal.shape, dtype=signal.dtype, units=signal.units,
+                        shape=signal.shape if dtype is not None else None,
+                        dtype=dtype or _model_float_dtype(), units=signal.units,
                         steps=steps, initial=initial, reset_output=reset_output,
                         model_delay_id=attachment.id, model_wire_id=key,
                     ).model_dump(mode="json")
@@ -685,7 +684,8 @@ class _Lower:
                 if reset is not None:
                     relay = _generated("output", b.port)
                     add_generated(relay, "feedbax.Input", {}, origin=at)
-                    emit(output, (relay, "input"), key, at, reset=reset)
+                    origin = {"kind": "attachment", "parent": at, "id": reset["model_delay_id"]}
+                    emit(output, (relay, "input"), key, origin, reset=reset)
                     output = (relay, "output")
                 output_bindings[external] = output
             else:
