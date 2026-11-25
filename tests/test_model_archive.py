@@ -87,6 +87,34 @@ def test_native_archive_preserves_replicas_in_a_new_store(native_archive, tmp_pa
     assert export_model_archive(store, result.weights, result.encoding) == raw
 
 
+def test_archive_import_creates_a_named_document_at_the_guarded_revision(native_archive, tmp_path):
+    from fastapi.testclient import TestClient
+
+    from feedbax.contracts.project import LoadedModelDocument
+    from feedbax.web.app import create_app
+
+    _, _, _, _, archive, checkpoint = native_archive
+    with TestClient(create_app(projects_dir=tmp_path / "projects")) as client:
+        created = client.post("/api/projects", json={"name": "load", "example": "point-mass-reaching"})
+        assert created.status_code == 201, created.text
+        prior = created.json()["snapshot"]
+        url = f"/api/projects/{prior['project_id']}/loaded-models/import"
+        query = {"name": "imported", "model": "point-mass", "revision": prior["revision"]}
+        headers = {"Content-Type": "application/octet-stream"}
+        rejected = client.post(url, params=query, content=b"not an archive", headers=headers)
+        assert rejected.status_code == 422, rejected.text
+        assert rejected.json()["status"] == "unreadable_archive"
+        assert client.get(f"/api/projects/{prior['project_id']}").json()["revision"] == prior["revision"]
+        imported = client.post(url, params=query, content=archive, headers=headers)
+        assert imported.status_code == 201, imported.text
+        saved = imported.json()
+        assert saved["document"] == "imported"
+        payload = LoadedModelDocument.model_validate(saved["snapshot"]["project"]["documents"]["imported"]["payload"])
+        assert payload.source.weights == checkpoint.tree
+        assert payload.model.document == "point-mass"
+        assert client.post(url, params=query, content=archive, headers=headers).status_code == 409
+
+
 @pytest.mark.parametrize("unsupported_owner", [False, True])
 def test_fit_reports_missing_extra_and_wrong_shape_across_replicas(native_archive, tmp_path, unsupported_owner):
     model, components, _, _, raw, _ = native_archive
