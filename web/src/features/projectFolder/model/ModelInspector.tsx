@@ -105,8 +105,10 @@ export function initialField(item: DelayAttachment, linked: string | undefined, 
   const label = studioName('initial');
   if (linked !== undefined) return rawField({ id: 'initial', label, type: { kind: 'readOnly' }, value: linked });
   return rawField({
-    id: 'initial', label, type: { kind: 'number' }, value: typeof item.initial === 'number' ? item.initial : 0,
-    change: change && ((value) => change({ ...item, initial: value })),
+    id: 'initial', label, type: { kind: 'number' },
+    value: item.initial_source?.kind === 'value' && typeof item.initial_source.value === 'number' ? item.initial_source.value : 0,
+    change: change && ((value) => typeof value === 'number'
+      ? change({ ...item, initial_source: { kind: 'value', value } }) : studioReason('takesNumber', label)),
   });
 }
 
