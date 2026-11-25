@@ -2216,6 +2216,7 @@ export interface TrialClockSpan {
 export interface TrialMean {
   selection: TrialMeanSelection;
   conditions: TrialMeanCondition[];
+  shelf: TrialMeanShelf;
 }
 
 export interface TrialMeanCondition {
@@ -2233,6 +2234,18 @@ export interface TrialMeanEpoch {
   occurrence: number;
   start: TrialBoundarySummary;
   end: TrialBoundarySummary;
+}
+
+export interface TrialMeanShelf {
+  times: number[];
+  epochs: TrialMeanEpoch[];
+  signals: Record<string, number[]>;
+  terms: Record<string, TrialMeanTermShare>;
+}
+
+export interface TrialMeanTermShare {
+  steps: number[];
+  problems: Problem[];
 }
 
 export interface TrialMeanOptions {
@@ -9874,6 +9887,7 @@ export const TrialMeanSchema: z.ZodType<TrialMean> = z.lazy(() =>
     .object({
       "selection": TrialMeanSelectionSchema,
       "conditions": z.array(TrialMeanConditionSchema),
+      "shelf": TrialMeanShelfSchema,
     })
     .strict()
 ) as unknown as z.ZodType<TrialMean>;
@@ -9902,6 +9916,26 @@ export const TrialMeanEpochSchema: z.ZodType<TrialMeanEpoch> = z.lazy(() =>
     })
     .strict()
 ) as unknown as z.ZodType<TrialMeanEpoch>;
+
+export const TrialMeanShelfSchema: z.ZodType<TrialMeanShelf> = z.lazy(() =>
+  z
+    .object({
+      "times": z.array(z.number().finite()),
+      "epochs": z.array(TrialMeanEpochSchema),
+      "signals": z.record(z.string(), z.array(z.number().finite())),
+      "terms": z.record(z.string(), TrialMeanTermShareSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialMeanShelf>;
+
+export const TrialMeanTermShareSchema: z.ZodType<TrialMeanTermShare> = z.lazy(() =>
+  z
+    .object({
+      "steps": z.array(z.number().finite()),
+      "problems": z.array(ProblemSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialMeanTermShare>;
 
 export const TrialMeanOptionsSchema: z.ZodType<TrialMeanOptions> = z.lazy(() =>
   z
