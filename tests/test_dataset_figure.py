@@ -456,6 +456,15 @@ def test_trajectory_scales_preserve_spatial_samples_and_group_values():
     assert product.layout.meta.panels["pca"].z_axis == "scene.zaxis"
     assert product.layout.meta.panels["hand"].time is None
 
+    titled = document.model_dump(mode="json")
+    titled["layers"][1]["encode"]["color"]["field"] = "mass"
+    titled["color_scales"]["condition"]["title"] = "Mass"
+    legends = render(
+        FigureDocument.model_validate(titled), {"trials": data},
+        names={"mass": {"nominal": "Mass 0.5 kg", "loaded": "Mass 2 kg"}},
+    )
+    assert legends.layout.coloraxis2.colorbar.ticktext == ("2 kg", "0.5 kg")
+
     wrong = document.model_dump(mode="json")
     wrong["layers"][0]["encode"]["color"]["field"] = "time"
     with pytest.raises(ValueError, match="one scalar value per plotted group"):
