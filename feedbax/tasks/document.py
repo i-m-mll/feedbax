@@ -1054,6 +1054,10 @@ def compile_task(
         signals = [instantiate(signal) for signal in signals]
     epoch_ids = tuple(epochs)
     instance_ids = tuple(epoch_ids[index] for index in instances)
+    first_until = next(
+        (slot for slot, index in enumerate(instances) if conditions[index] is not None),
+        len(instances),
+    )
     windows = {signal.id: signal.window for signal in document.signals if signal.window is not None}
     for index, signal in enumerate(signals):
         if signal.id not in windows:
@@ -1065,6 +1069,12 @@ def compile_task(
         )
         if isinstance(compiled, tuple):
             problems.extend(compiled)
+        elif compiled.reads_runtime_epoch(first_until):
+            problem(
+                ProblemCode.OUT_OF_SCOPE,
+                "This signal window needs an epoch boundary that is only known after Until.",
+                path,
+            )
         else:
             signals[index] = replace(signal, window=compiled)
     if problems:
