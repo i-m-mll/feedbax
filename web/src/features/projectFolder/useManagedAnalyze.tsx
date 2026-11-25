@@ -471,11 +471,12 @@ export function useManagedAnalyze({
     {operation && definition && key && <div className="grid gap-1">
       <SettingsForm key={selected} schema={definition.parameter_json_schema} value={operation.params ?? {}}
         projected={(path) => {
+          // A parameter reads as authored: an unset one is drawn unset, not as its declared default.
           const schema = path.length === 1 && definition.param_schema.find(({ name }) => name === path[0]);
-          const options = schema && catalog?.variables[definition.key]?.[schema.name];
-          return schema && options ? fromParamSchema(schema, operation.params?.[schema.name], canEdit
-            ? (value) => writeParameter(path, value) : undefined,
-          { options: options.map((option) => ({ value: option, label: catalog?.variable_names?.[option] ?? option })) }) : undefined;
+          if (!schema) return undefined;
+          const variables = catalog?.variables[definition.key]?.[schema.name];
+          return fromParamSchema(schema, operation.params?.[schema.name], canEdit ? (value) => writeParameter(path, value) : undefined,
+            variables ? { options: variables.map((option) => ({ value: option, label: catalog?.variable_names?.[option] ?? option })) } : {});
         }}
         changed={(path) => changedAt(['operations', selected, 'params', ...path])}
         reason={(path) => fieldProblem(authoredPointer(['params', ...path]))}
