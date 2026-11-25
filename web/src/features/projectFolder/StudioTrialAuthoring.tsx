@@ -16,7 +16,7 @@ import { Tree, type TreeHandle, type TreeNode } from '@/components/ui/Tree';
 import {
   evaluateChange, reasonOf, type ChangeMark, type ChangeSource, type FieldModel, type FieldRefusal,
 } from '@/components/values/fieldModel';
-import { Drawer, DrawerSection, type DrawerSections } from '@/features/projectWindow/DrawerForms';
+import { Drawer, DrawerSection, focusField, type DrawerSections } from '@/features/projectWindow/DrawerForms';
 import {
   Table, TableCell, TableFieldCell, TableHeaderCell, TableHeaderRow, TableRow, TableRowHeader, type TableColumn,
 } from '@/components/ui/Table';
@@ -439,7 +439,8 @@ export function TrialObjectiveTable({ view, commit, selected, select, runs, scor
   const [added, setAdded] = useState<string>();
   useEffect(() => {
     if (!added || !terms.some(({ id }) => id === added)) return;
-    box.current?.querySelector<HTMLInputElement>(`[data-field="${CSS.escape(measureAnchor(added))}"] input`)?.focus();
+    const measure = box.current?.querySelector<HTMLInputElement>(`[data-field="${CSS.escape(measureAnchor(added))}"] input`);
+    if (measure) focusField(measure);
     setAdded(undefined);
   }, [added, terms]);
   const save = (name: string, edits: ProjectValueEdit[], removes?: boolean) => commit?.(name, { kind: 'objective', edits }, removes);

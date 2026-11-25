@@ -62,6 +62,8 @@ export function ReferenceField({ label, groups, value, onChoose, picking, proble
       itemToStringValue={(item: ReferenceChoice) => item.id}
       disabled={disabled}
       autoHighlight
+      // Modal like a Select: a press outside only closes it, so it never opens another field's menu beside it.
+      modal
     >
       <Combobox.Trigger {...aria} aria-invalid={problem !== undefined || undefined}
           aria-describedby={problem ? problemId : undefined}

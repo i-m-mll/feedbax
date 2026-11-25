@@ -557,6 +557,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     if (!extend) setExcludedUsers({});
     setResultAttempt(undefined);
     setProblemReveal(undefined);
+    // An element is selected within the step it was chosen in; choosing another step shows that step.
+    if (id !== step?.id) clearSelection(elements);
     selection.select(selectStep(state, id, extend));
   }
   const ready = Boolean(shown && !pending && !outside && connected && !plans.error);

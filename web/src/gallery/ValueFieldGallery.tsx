@@ -217,7 +217,7 @@ export function ValueFieldGallery() {
           <SettingsForm schema={settingsSchema} value={settings.value} write={settings.write} choose={settings.choose}
             changed={(path) => path.length === 1 && changedPaths.has(path[0]) ? changed : undefined} />
           <Button className="justify-self-start" disabled={!settings.undo} onClick={settings.undo}>Undo</Button>
-          <ValueField model={fromParamSchema({ name: 'locked', type: 'float', default: 3 }, undefined)} />
+          <ValueField model={fromParamSchema({ name: 'locked', type: 'float' }, 3)} />
         </div>
       </div>
       <div className="grid gap-2" aria-label="Cells">

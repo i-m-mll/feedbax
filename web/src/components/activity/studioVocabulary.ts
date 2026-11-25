@@ -80,6 +80,15 @@ const countFormat = new Intl.NumberFormat();
 const usdFormat = new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 6 });
 const dateTimeFormat = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'long' });
 
+const byteUnits = ['B', 'kB', 'MB', 'GB', 'TB'] as const;
+const byteCount = new Intl.NumberFormat(undefined, { maximumSignificantDigits: 3 });
+
+export function studioBytes(count: number) {
+  let scale = 0;
+  while (scale < byteUnits.length - 1 && Number(count.toPrecision(3)) >= 1000 ** (scale + 1)) scale += 1;
+  return `${byteCount.format(count / 1000 ** scale)} ${byteUnits[scale]}`;
+}
+
 export function studioMoney(microusd: number) {
   return usdFormat.format(microusd / 1_000_000);
 }

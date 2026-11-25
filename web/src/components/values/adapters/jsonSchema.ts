@@ -26,6 +26,8 @@ export interface SchemaContext {
   readonly origin?: (path: readonly string[]) => string | undefined;
   /** The changed mark of the value at this path, when a difference of the shown document sets it. */
   readonly changed?: (path: readonly string[]) => ChangeMark | undefined;
+  /** The Problem of the value at this path, drawn on its field. */
+  readonly reason?: (path: readonly string[]) => string | undefined;
   /** The value at this path differs between the runs the form shows: it is drawn as Mixed. */
   readonly mixed?: (path: readonly string[]) => boolean;
   /** The source's account of the class-valued field at this path, where it has one. */
@@ -128,14 +130,17 @@ export function setIn(value: JsonValue | undefined, path: readonly string[], nex
 export function fromJsonSchema(key: string, property: JsonValue, value: JsonValue | undefined, context: SchemaContext,
   path: readonly string[] = [key]): FieldModel {
   const anchor = context.anchor?.(path);
+  const reason = context.reason?.(path);
   const projection = context.projected?.(path);
   if (projection) {
+    const placed = { ...projection, path, anchor, reason: reason ?? projection.reason };
     // A projection that marks its own change (a selected run's value) keeps it; otherwise it takes its path's.
-    if (projection.change) return { ...projection, path, anchor };
+    if (projection.change) return placed;
     const changed = context.changed?.(path);
-    return { ...projection, path, anchor, change: changed, commit: withReset(projection.commit, changed) };
+    return { ...placed, change: changed, commit: withReset(projection.commit, changed) };
   }
-  const field = { ...declaredField(key, property, value, context, path), path, anchor };
+  const declared = declaredField(key, property, value, context, path);
+  const field = { ...declared, path, anchor, reason: reason ?? declared.reason };
   return context.mixed?.(path) && field.type.kind !== 'group' ? { ...field, value: null, text: null } : field;
 }
 

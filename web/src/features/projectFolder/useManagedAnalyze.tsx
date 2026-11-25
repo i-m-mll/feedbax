@@ -41,8 +41,8 @@ import { useAuthoringCatalog } from '@/api/studioAuthoring';
 import { ProjectEditConflictError, type ProjectEditController, type ProjectEditSnapshot } from './projectEditController';
 import type { ChangeMark } from '@/components/values/fieldModel';
 import { savedRunId, stepSourceRows } from './projectWindowPlan';
-import { placeElement, type Reveal } from './projectWindowProblems';
-import { ChangeRow, ProblemRow } from '@/features/projectWindow/StudioProblems';
+import { placeElement, placedField, type Reveal } from './projectWindowProblems';
+import { ProblemRow } from '@/features/projectWindow/StudioProblems';
 import { SavedFigureResult } from './SavedLightProducts';
 import { ElementRequests, requestMember } from './ElementRequests';
 import { generatedName, keyOfLabel } from './generatedName';
@@ -52,16 +52,14 @@ type Source = OperationElement['inputs'][string];
 
 /**
  * What the step's authoring catalog depends on: the step's shape (its base, sweep, deltas and states input, which the
- * operations and their choices depend on) and the saved contents of the document it reads and its bases (which its
- * Changed marks and input sources depend on).
+ * operations and their choices depend on) and the saved project revision, since its Changed marks, input sources and
+ * variable names read the document, its bases and the Task upstream.
  */
 function catalogBasis({ saved, draft }: Pick<ProjectEditSnapshot, 'saved' | 'draft'>, stepId: string | undefined) {
   const step = stepId ? draft.steps?.[stepId] : undefined;
   if (step?.kind !== 'analyze') return { shape: undefined, basis: JSON.stringify([]) };
   const shape = JSON.stringify([step.base, step.sweep, step.deltas, step.inputs?.states]);
-  const document = stepDocument(step.base);
-  const contents = document && baseChain(saved.project.documents, document).map((name) => saved.project.documents?.[name]);
-  return { shape, basis: JSON.stringify([shape, contents ?? null]) };
+  return { shape, basis: JSON.stringify([shape, saved.revision]) };
 }
 type RefusalPlace = 'dialog' | readonly [string, string] | { readonly key: string };
 
@@ -387,11 +385,20 @@ export function useManagedAnalyze({
       return { id: JSON.stringify([target, role]), source: from, target, label: label === from ? undefined : label };
     }));
   const landed = refusal?.scope === scope ? refusal : undefined;
+  const elementProblems = diagnostics.filter((item) => selected && placeElement(item.place) === selected);
+  /** The fields the inspector draws for the selected element, by the pointer a Problem names one with. */
+  const drawnFields = new Set([
+    ...roles.map(({ name }) => authoredPointer(['inputs', name])),
+    ...(definition?.param_schema ?? []).map(({ name }) => authoredPointer(['params', name])),
+  ]);
+  const fieldProblem = (field: string) => elementProblems.find((item) => placedField(item) === field)?.detail;
   const roleRefusal = (element: string, role: string) =>
-    landed && Array.isArray(landed.at) && landed.at[0] === element && landed.at[1] === role ? landed.reason : undefined;
+    landed && Array.isArray(landed.at) && landed.at[0] === element && landed.at[1] === role ? landed.reason
+      : element === selected ? fieldProblem(authoredPointer(['inputs', role])) : undefined;
   const selectedCommands = selected && (operation || figure) ? elementCommands(selected)
     : chosenElements.length ? [splitCommand(chosenElements)] : [];
-  const selectedProblems = diagnostics.filter((item) => selected && placeElement(item.place) === selected);
+  /** The selected element's Problems that are not drawn on one of its fields. */
+  const selectedProblems = elementProblems.filter((item) => !drawnFields.has(placedField(item) ?? ''));
   const selectedElement = selected ? planned.get(selected) : undefined;
   const mapped = selectedElement && selectedElement.requests.length > 1;
   const chosenMember = chosenRequest?.scope === scope && chosenRequest.element === selected ? chosenRequest.member : undefined;
@@ -459,17 +466,18 @@ export function useManagedAnalyze({
     </p>}
     {mapped && selected && <ElementRequests requests={selectedElement.requests} selected={chosenMember}
       onSelect={(member) => setChosenRequest(member === undefined ? undefined : { scope, element: selected, member })} />}
-    {selectedPlan?.changed && <ChangeRow change={selectedPlan.changed} />}
     {operation && definition && key && <div className="grid gap-1">
       <SettingsForm key={selected} schema={definition.parameter_json_schema} value={operation.params ?? {}}
         projected={(path) => {
+          // A parameter reads as authored: an unset one is drawn unset, not as its declared default.
           const schema = path.length === 1 && definition.param_schema.find(({ name }) => name === path[0]);
-          const options = schema && catalog?.variables[definition.key]?.[schema.name];
-          return schema && options ? fromParamSchema(schema, operation.params?.[schema.name], canEdit
-            ? (value) => writeParameter(path, value) : undefined,
-          { options: options.map((option) => ({ value: option, label: catalog?.variable_names?.[option] ?? option })) }) : undefined;
+          if (!schema) return undefined;
+          const variables = catalog?.variables[definition.key]?.[schema.name];
+          return fromParamSchema(schema, operation.params?.[schema.name], canEdit ? (value) => writeParameter(path, value) : undefined,
+            variables ? { options: variables.map((option) => ({ value: option, label: catalog?.variable_names?.[option] ?? option })) } : {});
         }}
         changed={(path) => changedAt(['operations', selected, 'params', ...path])}
+        reason={(path) => fieldProblem(authoredPointer(['params', ...path]))}
         write={canEdit ? writeParameter : undefined} />
     </div>}
     {figure && selected && selectedFigure && <label className="grid gap-1">
