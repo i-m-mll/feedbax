@@ -14791,6 +14791,7 @@ export const contractSchemas = {
   StudioTrialAuthoring: StudioTrialAuthoringSchema,
   StudioTrialAuthoringRequest: StudioTrialAuthoringRequestSchema,
   StudioTrialExpressionMenuRequest: StudioTrialExpressionMenuRequestSchema,
+  ExpressionPartSite: ExpressionPartSiteSchema,
   StudioTrialRelate: StudioTrialRelateSchema,
   StudioRelatePoint: StudioRelatePointSchema,
   StudioRelatePort: StudioRelatePortSchema,
@@ -14981,6 +14982,7 @@ export interface ContractTypeMap {
   StudioTrialAuthoring: StudioTrialAuthoring;
   StudioTrialAuthoringRequest: StudioTrialAuthoringRequest;
   StudioTrialExpressionMenuRequest: StudioTrialExpressionMenuRequest;
+  ExpressionPartSite: ExpressionPartSite;
   StudioTrialRelate: StudioTrialRelate;
   StudioRelatePoint: StudioRelatePoint;
   StudioRelatePort: StudioRelatePort;

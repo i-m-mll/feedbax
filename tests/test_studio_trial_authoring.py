@@ -1319,3 +1319,60 @@ def test_until_authoring_switches_and_refuses_a_limit_that_rounds_to_zero(tmp_pa
         assert restored.files and not restored.problems
         assert restored.task.epochs[0].end.kind == "length"
         assert_empty_condition(change("length", "rest"), "rest")
+
+
+def test_expression_menu_reuses_the_exact_projected_pairing(tmp_path, monkeypatch):
+    from feedbax.contracts.expression_site import project_site
+
+    app = create_app(projects_dir=tmp_path)
+    project = "expression-menu"
+    _save_project(app.state.project_folders, project, Project.model_validate(document_project(authored_documents())))
+    url = f"/api/projects/{project}/authoring/trials"
+    run = {"variant": "default", "step": "train", "row": "default"}
+    pointer = "/task/variables/target/value"
+
+    with TestClient(app) as client:
+        folders = app.state.project_folders
+        revision = folders.read(project).revision
+        request = {"revision": revision, "run": run}
+        authored = client.post(url, json=request)
+        assert authored.status_code == 200, authored.text
+        view = StudioTrialAuthoring.model_validate(authored.json())
+        assert all(not field.site.parts for field in view.fields)
+
+        edit = client.post(url, json=request | {"change": {
+            "kind": "expression", "path": pointer, "edit": {"kind": "text", "text": "start"},
+        }})
+        assert edit.status_code == 200, edit.text
+        preview = StudioTrialAuthoring.model_validate(edit.json())
+        assert preview.files and preview.revision == revision
+        assert preview.expression_context != view.expression_context
+
+        def forbid_plan(*args, **kwargs):
+            pytest.fail("Opening an expression menu attempted to prepare another trial pairing.")
+
+        monkeypatch.setattr(folders, "read_plan", forbid_plan)
+        field = next(field for field in view.fields if field.path == pointer)
+        expression = next(variable.value for variable in view.task.variables if variable.id == "target")
+        functions = app.state.bootstrap_state.bundle.expression_functions
+        expected = project_site(field.site.site, functions, expression).parts
+
+        def menu(**updates):
+            return client.post(url + "/expression-menu", json=(request | {
+                "expression_context": view.expression_context, "field": pointer, "part": ["args", 0],
+            } | updates))
+
+        response = menu()
+        assert response.status_code == 200, response.text
+        assert response.json() == next(part.model_dump(mode="json") for part in expected if part.path == ("args", 0))
+        assert menu(expression_context=preview.expression_context).status_code == 422
+        assert menu(part=["args", 999]).status_code == 422
+        assert menu(field="/unknown").status_code == 422
+        expired = menu(run=run | {"step": "other"})
+        assert expired.status_code == 409
+        assert expired.json() == {"detail": {
+            "code": "trial_expression_context_unavailable",
+            "message": "Reload trial authoring before requesting another expression menu.",
+        }}
+        stale = menu(revision="0" * 64)
+        assert stale.status_code == 409 and stale.json()["detail"]["current"] == revision
