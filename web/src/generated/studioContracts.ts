@@ -247,6 +247,7 @@ export interface StudioSavedEvaluationReplayRequest {
   trial?: string | null;
   aggregate?: boolean;
   checkpoint?: number | null;
+  mean?: TrialMeanSelection | null;
 }
 
 export interface StudioEvaluationObjectiveSeries {
@@ -2139,12 +2140,79 @@ export interface TaskTimelineCue {
   outcome: number;
 }
 
+export interface TrialBoundarySummary {
+  mean: number;
+  lower: number;
+  upper: number;
+}
+
+export interface TrialClockAlignment {
+  origin: number;
+  span: TrialClockSpan;
+}
+
+export interface TrialClockChoice {
+  id: string;
+  label: string;
+}
+
+export interface TrialClockSpan {
+  start: number;
+  end: number;
+}
+
+export interface TrialMean {
+  selection: TrialMeanSelection;
+  conditions: TrialMeanCondition[];
+}
+
+export interface TrialMeanCondition {
+  values: Record<string, JsonValue>;
+  trials: Record<string, TrialClockAlignment>;
+  span: TrialClockSpan | null;
+  time: number[];
+  states: Record<string, TrialSeriesSummary>;
+  epochs: TrialMeanEpoch[];
+}
+
+export interface TrialMeanEpoch {
+  epoch: string;
+  label: string;
+  occurrence: number;
+  start: TrialBoundarySummary;
+  end: TrialBoundarySummary;
+}
+
+export interface TrialMeanOptions {
+  by: TrialClockChoice[];
+  align: TrialClockChoice[];
+}
+
+export interface TrialMeanSelection {
+  by?: string[] | null;
+  align?: string | null;
+}
+
+export interface TrialSeriesSummary {
+  mean: number[][];
+  lower: number[][];
+  upper: number[][];
+}
+
+export interface StudioSavedFigureMeanRequest {
+  revision: string;
+  job_id: string;
+  mean: TrialMeanSelection;
+}
+
 export interface StudioTrialReplayResponse {
   n_steps: number;
   state_time: number[];
   position: string | null;
   receipt: JobReceipt;
   drawn: TrialRecords | TrialAggregate;
+  mean_options?: TrialMeanOptions | null;
+  mean?: TrialMean | null;
 }
 
 export interface TrialRecord {
@@ -5955,6 +6023,7 @@ export const StudioSavedEvaluationReplayRequestSchema: z.ZodType<StudioSavedEval
       "trial": z.string().nullable().optional(),
       "aggregate": z.boolean().optional(),
       "checkpoint": z.number().int().safe().gte(0).nullable().optional(),
+      "mean": TrialMeanSelectionSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioSavedEvaluationReplayRequest>;
@@ -9231,6 +9300,115 @@ export const TaskTimelineCueSchema: z.ZodType<TaskTimelineCue> = z.lazy(() =>
     .strict()
 ) as unknown as z.ZodType<TaskTimelineCue>;
 
+export const TrialBoundarySummarySchema: z.ZodType<TrialBoundarySummary> = z.lazy(() =>
+  z
+    .object({
+      "mean": z.number().finite(),
+      "lower": z.number().finite(),
+      "upper": z.number().finite(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialBoundarySummary>;
+
+export const TrialClockAlignmentSchema: z.ZodType<TrialClockAlignment> = z.lazy(() =>
+  z
+    .object({
+      "origin": z.number().finite(),
+      "span": TrialClockSpanSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<TrialClockAlignment>;
+
+export const TrialClockChoiceSchema: z.ZodType<TrialClockChoice> = z.lazy(() =>
+  z
+    .object({
+      "id": z.string(),
+      "label": z.string(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialClockChoice>;
+
+export const TrialClockSpanSchema: z.ZodType<TrialClockSpan> = z.lazy(() =>
+  z
+    .object({
+      "start": z.number().finite(),
+      "end": z.number().finite(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialClockSpan>;
+
+export const TrialMeanSchema: z.ZodType<TrialMean> = z.lazy(() =>
+  z
+    .object({
+      "selection": TrialMeanSelectionSchema,
+      "conditions": z.array(TrialMeanConditionSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialMean>;
+
+export const TrialMeanConditionSchema: z.ZodType<TrialMeanCondition> = z.lazy(() =>
+  z
+    .object({
+      "values": z.record(z.string(), jsonValueSchema),
+      "trials": z.record(z.string(), TrialClockAlignmentSchema),
+      "span": TrialClockSpanSchema.nullable(),
+      "time": z.array(z.number().finite()),
+      "states": z.record(z.string(), TrialSeriesSummarySchema),
+      "epochs": z.array(TrialMeanEpochSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialMeanCondition>;
+
+export const TrialMeanEpochSchema: z.ZodType<TrialMeanEpoch> = z.lazy(() =>
+  z
+    .object({
+      "epoch": z.string(),
+      "label": z.string(),
+      "occurrence": z.number().int().safe(),
+      "start": TrialBoundarySummarySchema,
+      "end": TrialBoundarySummarySchema,
+    })
+    .strict()
+) as unknown as z.ZodType<TrialMeanEpoch>;
+
+export const TrialMeanOptionsSchema: z.ZodType<TrialMeanOptions> = z.lazy(() =>
+  z
+    .object({
+      "by": z.array(TrialClockChoiceSchema),
+      "align": z.array(TrialClockChoiceSchema),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialMeanOptions>;
+
+export const TrialMeanSelectionSchema: z.ZodType<TrialMeanSelection> = z.lazy(() =>
+  z
+    .object({
+      "by": z.array(z.string()).nullable().optional(),
+      "align": z.string().nullable().optional(),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialMeanSelection>;
+
+export const TrialSeriesSummarySchema: z.ZodType<TrialSeriesSummary> = z.lazy(() =>
+  z
+    .object({
+      "mean": z.array(z.array(z.number().finite())),
+      "lower": z.array(z.array(z.number().finite())),
+      "upper": z.array(z.array(z.number().finite())),
+    })
+    .strict()
+) as unknown as z.ZodType<TrialSeriesSummary>;
+
+export const StudioSavedFigureMeanRequestSchema: z.ZodType<StudioSavedFigureMeanRequest> = z.lazy(() =>
+  z
+    .object({
+      "revision": z.string().regex(new RegExp("^[a-f0-9]{64}$")),
+      "job_id": z.string(),
+      "mean": TrialMeanSelectionSchema,
+    })
+    .strict()
+) as unknown as z.ZodType<StudioSavedFigureMeanRequest>;
+
 export const StudioTrialReplayResponseSchema: z.ZodType<StudioTrialReplayResponse> = z.lazy(() =>
   z
     .object({
@@ -9239,6 +9417,8 @@ export const StudioTrialReplayResponseSchema: z.ZodType<StudioTrialReplayRespons
       "position": z.string().nullable(),
       "receipt": JobReceiptSchema,
       "drawn": z.union([TrialRecordsSchema, TrialAggregateSchema]),
+      "mean_options": TrialMeanOptionsSchema.nullable().optional(),
+      "mean": TrialMeanSchema.nullable().optional(),
     })
     .strict()
 ) as unknown as z.ZodType<StudioTrialReplayResponse>;
@@ -13125,6 +13305,7 @@ export const contractSchemas = {
   StudioSceneGeometryResponse: StudioSceneGeometryResponseSchema,
   StudioErrorReport: StudioErrorReportSchema,
   StudioTrialReplayResponse: StudioTrialReplayResponseSchema,
+  StudioSavedFigureMeanRequest: StudioSavedFigureMeanRequestSchema,
   PenzaiBuilderListResponse: PenzaiBuilderListResponseSchema,
   PenzaiInspectorResponse: PenzaiInspectorResponseSchema,
   PenzaiNodeRequest: PenzaiNodeRequestSchema,
@@ -13291,6 +13472,7 @@ export interface ContractTypeMap {
   StudioSceneGeometryResponse: StudioSceneGeometryResponse;
   StudioErrorReport: StudioErrorReport;
   StudioTrialReplayResponse: StudioTrialReplayResponse;
+  StudioSavedFigureMeanRequest: StudioSavedFigureMeanRequest;
   PenzaiBuilderListResponse: PenzaiBuilderListResponse;
   PenzaiInspectorResponse: PenzaiInspectorResponse;
   PenzaiNodeRequest: PenzaiNodeRequest;
