@@ -258,6 +258,29 @@ def test_removing_the_last_copy_removes_the_axis(studio):
     assert _runs(folders, "baseline") == before
 
 
+def test_window_map_serves_axis_and_value_names(private_host, tmp_path, monkeypatch):
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(private_host.root))
+    project = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    project["steps"]["train"]["sweep"] = {"axes": {"learning-rate": {"values": {
+        "slow": {"value": 0.001, "patches": {"settings.optimizer.learning_rate.value": {"value": 0.001}}},
+    }}}}
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, PROJECT, Project.model_validate(project))
+    revision = folders.read(PROJECT).revision
+    with TestClient(create_app(projects_dir=tmp_path, automatic_run="off")) as client:
+        response = client.get(f"{BASE}/train-runs", params={"revision": revision, "window_map": True})
+        assert response.status_code == 200, response.text
+
+    window = response.json()["window_map"]
+    (step,) = window["steps"]
+    (row,) = window["rows"]
+    assert row["label"] == "Learning rate 0.001"
+    assert step["axes"] == [{
+        "id": "learning-rate", "label": "Learning rate",
+        "values": [{"id": "slow", "label": "Learning rate 0.001", "value_label": "0.001", "rule": "0.001"}],
+    }]
+
+
 def test_duplicate_run_names_match_window_and_activity_and_the_kept_run_is_selectable(studio):
     folders, client = studio
 
@@ -273,8 +296,9 @@ def test_duplicate_run_names_match_window_and_activity_and_the_kept_run_is_selec
     plan, result = read()
     train = next(step for step in result["window_map"]["steps"] if step["step_id"] == "train")
     assert train["label"] == "Train"
-    assert [(value["id"], value["label"]) for value in train["axes"][0]["values"]] == [
-        ("", "Run 1"), ("run-2", "Run 2"),
+    assert train["axes"][0]["label"] == "Run"
+    assert [(value["id"], value["label"], value["value_label"]) for value in train["axes"][0]["values"]] == [
+        ("", "Run 1", "Run 1"), ("run-2", "Run 2", "Run 2"),
     ]
     rows = [row for row in result["window_map"]["rows"] if row["key"]["step"] == "train"]
     assert [(row["key"]["row"], row["label"], row["coordinates"]["run"]["axis_value"]) for row in rows] == [
