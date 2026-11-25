@@ -15,7 +15,7 @@ import { TaskVariables, type VariableEdits } from './TaskVariables';
 import { TaskDocumentBody } from './TaskView';
 import type { StudioCommand } from '@/features/projectWindow/studioCommands';
 import type { WeightPart } from '@/generated/studioContracts';
-import type { ModelStart, SetEntryWeight, TaskSelection, TaskSetVariable, TaskVariable, UninitializedStart, VariableInitializes } from './taskModel';
+import type { ModelStart, SetEntryWeight, TaskSelection, TaskSetVariable, TaskVariable, UnstartedValue, VariableInitializes } from './taskModel';
 
 const sameType = (a: ValueType, b: ValueType) => studioValueType(a) === studioValueType(b);
 
@@ -26,6 +26,7 @@ const fits = (field: ValueType, variable: ValueType) => {
   const offset = target.length - source.length;
   return offset >= 0 && source.every((size, index) => size === 1 || size === target[offset + index])
     && canonicalJsonV2(field.dimensions ?? {}) === canonicalJsonV2(variable.dimensions ?? {})
+    && (field.space == null || variable.space == null || field.space === variable.space)
     && (field.base === variable.base || field.base === 'real' && variable.base === 'integer');
 };
 
@@ -72,16 +73,22 @@ function initializes(view: TrialView, task: TaskDocument, variable: TaskDocument
   };
 }
 
-/** The paired Model's values no variable of `task` initializes. */
-function uninitialized(view: TrialView, task: TaskDocument, types: readonly StudioNamedValueType[]): UninitializedStart[] {
+/** The paired Model's values no variable of `task` initializes that the Task has a problem with. */
+function unstarted(view: TrialView, task: TaskDocument, types: readonly StudioNamedValueType[], commit?: Commit): UnstartedValue[] {
   const variables = new Set(task.variables.map(({ id }) => id));
   const linked = new Set((task.links ?? []).flatMap(({ model_field, variable }) => variables.has(variable) ? [model_field] : []));
-  return view.resets.filter((reset) => !linked.has(addressKey(reset.address)))
-    .map((reset) => {
-      const id = addressKey(reset.address);
-      const reason = view.problems.find(({ path = [] }) => path[0] === 'links' && path[1] === id)?.reason;
-      return { ...startOf(reset), anchor: startAnchor(id), reason, type: typeName(reset.type, types), valueType: reset.type };
-    });
+  return view.resets.flatMap((reset) => {
+    const id = addressKey(reset.address);
+    const reason = view.problems.find(({ path = [] }) => path[0] === 'links' && path[1] === id)?.reason;
+    if (linked.has(id) || !reason) return [];
+    return [{
+      ...startOf(reset), anchor: startAnchor(id), reason, type: typeName(reset.type, types), valueType: reset.type,
+      variables: task.variables.filter((variable) => fits(reset.type, variable.type)).map(({ id, name }) => ({ id, name })),
+      initialize: commit && (async (variable: string) => reasonOf(await commit(studioAccessibleName('set', studioName('initializes')), {
+        kind: 'structure', changes: [{ op: 'link', model_field: id, variable }],
+      }))),
+    }];
+  });
 }
 
 /** The variables of the task document the step reads, each with its Type and Value fields. */
@@ -135,9 +142,7 @@ function variableEdits(task: TaskDocument, commit?: Commit): VariableEdits {
     reasonOf(await commit(name, change, removes));
   const named = (id: string) => task.variables.find((variable) => variable.id === id)?.name;
   return {
-    add: (name, start) => structure(studioName('addVariable'), { kind: 'structure', changes: [start
-      ? { op: 'add', member: 'variable', name, type: start.valueType, initializes: [start.id] }
-      : { op: 'add', member: 'variable', name }] }),
+    add: (name) => structure(studioName('addVariable'), { kind: 'structure', changes: [{ op: 'add', member: 'variable', name }] }),
     rename: (id, name) => structure(studioAccessibleName('rename', named(id)),
       { kind: 'structure', changes: [{ op: 'rename', member: 'variable', id, name }] }),
     remove: (id) => structure(studioAccessibleName('remove', named(id)),
@@ -153,7 +158,7 @@ function useVariables(view: TrialView, commit?: Commit, runs?: TrialRuns) {
   const catalog = useAuthoringCatalog();
   const task = 'variables' in view.task ? view.task : undefined;
   const types = catalog.data?.tasks.value_types ?? [];
-  return task && { task, variables: variables(view, task, types, commit, runs), starts: uninitialized(view, task, types) };
+  return task && { task, variables: variables(view, task, types, commit, runs), unstarted: unstarted(view, task, types, commit) };
 }
 
 const entryWeight = (weight: WeightPart | { on?: WeightPart; off?: WeightPart } | null | undefined): SetEntryWeight | undefined =>
@@ -187,7 +192,7 @@ export function TrialTaskDocument({ view, commit, runs, selected, select, drawn,
   const shown = useVariables(view, commit, runs);
   if (!shown) return null;
   return <TaskDocumentBody variables={<TaskVariables variables={shown.variables}
-    sets={setVariables(view, weigh).map((set) => ({ ...set, toSweep: toSweep?.(set.axis) }))} starts={shown.starts} selected={selectedVariable(selected)}
+    sets={setVariables(view, weigh).map((set) => ({ ...set, toSweep: toSweep?.(set.axis) }))} unstarted={shown.unstarted} selected={selectedVariable(selected)}
     select={(selection) => select(`${selection.kind}:${selection.id}`)} edits={variableEdits(shown.task, commit)}
     drawn={drawn} />}
     grid={<TrialTaskGrid view={view} commit={commit} runs={runs} selected={selected} select={select} />} />;

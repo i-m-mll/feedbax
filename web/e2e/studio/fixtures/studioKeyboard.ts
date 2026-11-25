@@ -1,4 +1,4 @@
-import { expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
+import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 import { studioName } from '../../../src/components/activity/studioVocabulary';
 import type { ProjectWindowView } from '../../../src/features/projectWindow/projectWindowState';
 import type { StudioProjectSnapshot } from '../../../src/generated/studioContracts';
@@ -142,5 +142,15 @@ export async function chooseOutlineRow(page: Page, row: Locator, name: string) {
 export async function startProject(page: Page) {
   await page.goto('/');
   await page.getByRole('table', { name: 'Projects', exact: true }).getByRole('button', { name: 'New Project', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'New Project', exact: true });
+  await dialog.getByRole('textbox', { name: 'Name', exact: true }).fill(testProjectName());
+  await dialog.getByRole('button', { name: 'New Project', exact: true }).click();
   await page.waitForURL(/[?&]project=/);
+}
+
+let projectSequence = 0;
+
+export function testProjectName() {
+  const title = test.info().title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 55).replace(/^-|-$/g, '');
+  return `test-${title}-${++projectSequence}`;
 }

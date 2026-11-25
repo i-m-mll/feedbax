@@ -305,7 +305,7 @@ def test_addressed_route_settles_document_and_position_and_rejects_raw_patch(tmp
 
 def test_batch_created_model_recovers_its_original_file_revision_after_undo(tmp_path):
     with TestClient(create_app(projects_dir=tmp_path)) as client:
-        response = client.post("/api/projects")
+        response = client.post("/api/projects", json={"name": "model-edits"})
         assert response.is_success, response.text
         empty = response.json()["snapshot"]
         url = f"/api/projects/{empty['project_id']}"

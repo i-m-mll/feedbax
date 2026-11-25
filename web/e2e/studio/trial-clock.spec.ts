@@ -80,3 +80,26 @@ test('a link to a field the Model lacks does not stop a sample', async ({ page, 
   await expect(variables.getByRole('columnheader', { name: 'Drawn', exact: true })).toBeVisible();
   await expect(shelf).not.toHaveAttribute('aria-disabled', 'true');
 });
+
+// Catches a scrubber that moves or resizes when the trial picker's label changes length, which also moves the shelf's
+// columns that follow its span.
+test('the scrubber\'s bounds do not depend on the trial picker\'s label', async ({ page, request }) => {
+  const { snapshot } = await seedManagedProject(request, await fixture('delayed-reaches-files'));
+  const clock = page.locator('footer.studio-window-bottom').getByRole('group', { name: 'Clock', exact: true });
+  const picker = clock.getByRole('button', { name: /^Trial / });
+  const track = clock.locator('[data-clock-track]');
+  const pick = async (name: string) => {
+    await picker.click();
+    await page.getByRole('radio', { name, exact: true }).click();
+    await expect(picker).toHaveText(name);
+    return (await track.boundingBox())!;
+  };
+
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await mapStep(page, 'train').click();
+  await page.getByRole('tab', { name: 'Task', exact: true }).click();
+  const short = await pick('nominal');
+  const long = await pick('sample 2 of 4');
+  expect(long.x).toBeCloseTo(short.x, 1);
+  expect(long.width).toBeCloseTo(short.width, 1);
+});

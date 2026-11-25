@@ -57,13 +57,24 @@ ANGLE = Dimensions(angle=1)
 LENGTH = Dimensions(length=1)
 
 
+type SignalSpace = Literal["point", "free"]
+
+
 class ValueType(ValueRecord):
     base: ValueBase
     shape: tuple[Annotated[StrictInt, Field(gt=0)], ...] = ()
     dimensions: Dimensions = DIMENSIONLESS
+    space: SignalSpace | None = Field(default=None, exclude_if=lambda value: value is None)
 
     def accepts(self, actual: ValueType) -> bool:
-        return self.accepts_shape_and_base(actual) and self.dimensions == actual.dimensions
+        return (
+            self.accepts_shape_and_base(actual)
+            and self.dimensions == actual.dimensions
+            and self.accepts_space(actual)
+        )
+
+    def accepts_space(self, actual: ValueType) -> bool:
+        return self.space is None or actual.space is None or self.space == actual.space
 
     def accepts_shape_and_base(self, actual: ValueType) -> bool:
         return self.shape == actual.shape and (

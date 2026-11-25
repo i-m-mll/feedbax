@@ -10,8 +10,8 @@ export async function openProjectEditor(projectId: string, signal?: AbortSignal)
   return bindProjectEditor(await openProjectFolder(projectId, signal), signal);
 }
 
-export async function newProjectEditor(signal?: AbortSignal) {
-  return bindProjectEditor(await createProjectFolder(signal), signal);
+export async function newProjectEditor(name: string, signal?: AbortSignal) {
+  return bindProjectEditor(await createProjectFolder({ name }, signal), signal);
 }
 
 export function bindProjectEditor(initial: StudioProjectDocument, signal?: AbortSignal) {

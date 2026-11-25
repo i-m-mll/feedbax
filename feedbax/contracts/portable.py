@@ -2,26 +2,48 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from copy import copy
 from functools import lru_cache
 from types import UnionType
 from typing import Annotated, Union, get_args, get_origin
 import inspect
-from typing import TYPE_CHECKING, Any, ClassVar, get_type_hints
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_type_hints
 from abc import ABC, abstractmethod
 
 from pydantic import BaseModel, ConfigDict, create_model
 
 from feedbax.contracts.component import DynamicPortPolicy, PortType, PortTypeSpec
-from feedbax.contracts.model_values import ModelFacts
+from feedbax.contracts.expression_values import SignalSpace
+from feedbax.contracts.model_values import ModelFacts, SignalLeafPath
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from feedbax.contracts.component_history import History
     from feedbax.contracts.component_presentation import PresentationOverride
+
+
+@dataclass(frozen=True)
+class SignalProperties:
+    unit: str | None = None
+    space: SignalSpace | None = None
+
+
+@dataclass(frozen=True)
+class StateSignal:
+    symbol: str
+
+
+@dataclass(frozen=True)
+class PassedSignal:
+    source: SignalLeafPath
+    keeps: Literal["identity", "type"]
+
+
+type OutputSignal = SignalProperties | StateSignal | PassedSignal
+type OutputSignals = Mapping[SignalLeafPath, OutputSignal]
 
 
 @dataclass(frozen=True)
@@ -32,6 +54,10 @@ class Ports:
     outputs: Mapping[str, PortType]
     dynamic: DynamicPortPolicy | None = None
     required_inputs: tuple[str, ...] = ()
+    input_leaves: Mapping[SignalLeafPath, SignalProperties] = field(default_factory=dict)
+    output_leaves: OutputSignals | Callable[[Mapping[str, Any]], OutputSignals] = field(
+        default_factory=dict
+    )
 
     def __post_init__(self):
         for names in (self.inputs, self.outputs):
@@ -49,6 +75,19 @@ class Ports:
     @property
     def types(self):
         return PortTypeSpec(inputs=dict(self.inputs), outputs=dict(self.outputs))
+
+    def output_leaf(
+        self, path: SignalLeafPath, params: Mapping[str, Any],
+    ) -> OutputSignal | None:
+        """Resolve a port-first path, including a pass of an entire subtree."""
+        declarations = self.output_leaves(params) if callable(self.output_leaves) else self.output_leaves
+        for size in range(len(path), 0, -1):
+            declaration = declarations.get(path[:size])
+            if isinstance(declaration, PassedSignal):
+                return PassedSignal((*declaration.source, *path[size:]), declaration.keeps)
+            if size == len(path) and declaration is not None:
+                return declaration
+        return None
 
 
 @dataclass(frozen=True)
