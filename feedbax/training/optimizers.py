@@ -14,9 +14,11 @@ import types
 import typing
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import cache
 from typing import Annotated, Any, Literal, Union
 
 import jax
+import jax.numpy as jnp
 import jax.typing
 import optax
 from optax._src import alias
@@ -169,6 +171,7 @@ def build_schedule(spec: BaseModel) -> optax.Schedule:
 @dataclass(frozen=True)
 class _StepSchedule:
     rate: optax.Schedule
+    dtype: jax.typing.DTypeLike
 
     def init(self) -> tuple[()]:
         return ()
@@ -177,7 +180,10 @@ class _StepSchedule:
         return state
 
     def __call__(self, _state: tuple[()], *, schedule_step: int | jax.Array = 0, **_extra_args):
-        return self.rate(schedule_step)
+        # Optax derives the arithmetic precision of nonconstant schedules from the clock.
+        if self.dtype == jnp.float64:
+            schedule_step = jnp.asarray(schedule_step, dtype=jnp.int64)
+        return jnp.asarray(self.rate(schedule_step), dtype=self.dtype)
 
 
 def build_step_optimizer(
@@ -186,13 +192,31 @@ def build_step_optimizer(
     """Build an optimizer whose scheduled parameters follow an explicit update clock."""
     entry, arguments = _arguments(spec)
     static = []
+    schedules = {}
     for name, kind in entry.kinds.items():
         value = arguments[name]
         if kind == "schedule" and value is not None:
-            arguments[name] = _StepSchedule(build_schedule(value))
+            schedules[name] = build_schedule(value)
         elif kind == "static" or value is None:
             static.append(name)
-    optimizer = optax.inject_hyperparams(entry.factory, static_args=static)(**arguments)
+    inject = optax.inject_hyperparams(entry.factory, static_args=static)
+    if schedules:
+        rate_name = next(iter(schedules))
+
+        @cache
+        def with_dtype(dtype):
+            scheduled = {name: _StepSchedule(rate, dtype) for name, rate in schedules.items()}
+            return inject(**(arguments | scheduled))
+
+        def init(params):
+            return with_dtype(optax.tree.dtype(params, "highest")).init(params)
+
+        def update(updates, state, params=None, **extra_args):
+            return with_dtype(state.hyperparams[rate_name].dtype).update(updates, state, params, **extra_args)
+
+        optimizer = optax.GradientTransformationExtraArgs(init, update)
+    else:
+        optimizer = inject(**arguments)
     if gradient_clip is None:
         return optax.chain(optimizer)
     return optax.chain(optax.clip_by_global_norm(float(gradient_clip)), optimizer)
