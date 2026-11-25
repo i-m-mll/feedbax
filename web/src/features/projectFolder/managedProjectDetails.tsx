@@ -1,7 +1,7 @@
 import type { ExceptionMentions } from '@/components/values/adapters/fieldView';
 import { documentPayload } from './documentPayload';
 import { conditionLabels } from './evaluateAuthoring';
-import { useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { fetchSavedEvaluationReplay } from '@/api/jobs';
 import type { MapDocumentScope } from '@/components/pipeline/StudioPipelineMap';
@@ -161,7 +161,11 @@ export function useSavedEvaluationScene(projectId: string, revision: string, eva
     return fetchSavedEvaluationReplay(projectId, { revision, key: evaluation.key, job_id: jobId, ...request, checkpoint, aggregate }, signal);
   };
   const key = ['saved-evaluation-replay', projectId, revision, evaluation?.key, jobId, request?.trial, checkpoint];
-  const replay = useQuery({ queryKey: request?.mean ? [...key, 'mean', request.mean] : key, queryFn: read(false), enabled: readable });
+  // A changed By or Align keeps the Mean drawn, and its fields open, until the new Mean is read.
+  const replay = useQuery({
+    queryKey: request?.mean ? [...key, 'mean', request.mean] : key, queryFn: read(false), enabled: readable,
+    placeholderData: request?.mean ? keepPreviousData : undefined,
+  });
   const aggregate = useQuery({ queryKey: [...key, 'aggregate'], queryFn: read(true), enabled: readable && all });
   const records = replay.data?.drawn.kind === 'trials' ? replay.data.drawn.trials : undefined;
   const picked = records?.[showing && showing.kind !== 'one' ? showing.index : 0];
