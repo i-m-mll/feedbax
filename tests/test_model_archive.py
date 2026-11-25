@@ -37,6 +37,7 @@ def native_archive(tmp_path_factory):
     registry = new_application_registry_bundle()
     trial = compile_trial_execution(
         model, task, registry.components, registry.expression_functions, python_tasks=registry.python_tasks,
+        input_bindings={"target_pos": "target_pos"},
     )
     assert isinstance(trial, PreparedTrialExecution), trial
     template = trial.executable.graph

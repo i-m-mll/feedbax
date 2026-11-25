@@ -17,6 +17,7 @@ from pydantic import Field, JsonValue, PrivateAttr, TypeAdapter, model_validator
 
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
+from feedbax.contracts.display_names import member_display_name
 from feedbax.contracts.expression_values import DrawValue, Expression, TextSpan, WeightPart
 from feedbax.contracts.manifest import OverridePatch
 from feedbax.contracts.model_address import FieldElement, ModelAddress
@@ -522,6 +523,8 @@ class SweepCoordinate:
     value_id: str
     label: str | None = None
     value: JsonValue = None
+    unit: str | None = field(default=None, kw_only=True)
+    explicit_null: bool = field(default=False, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -565,6 +568,8 @@ class ExpandedRow:
     """Each input axis's value on this row, its member, which ``coordinates`` holds only as the member's own
     coordinates."""
     task_additions: tuple[TaskAdditions, ...] = ()
+    kept_axes: tuple[str, ...] = ()
+    """Optional sweep axes that kept this run without selecting an authored value."""
 
     def inherited_id(self, axes: tuple[str, ...]) -> str | None:
         """Project generated choices onto the inherited axes, or keep an authored row ID.
@@ -994,7 +999,7 @@ def _generated_choices(
             key = "value-" + sha256_bytes(sweep_value_identity_bytes(value))
         yield _AxisChoice(
             key,
-            SweepCoordinate(key, str(value), value),
+            SweepCoordinate(key, value=value),
             {axis.path: SetValue(value=value)},
             patch_authors=authors,
         )
@@ -1025,7 +1030,10 @@ def _choices(
                 choices = tuple(
                     _AxisChoice(
                         key,
-                        SweepCoordinate(key, value.label, value.value),
+                        SweepCoordinate(
+                            key, value.label, value.value,
+                            explicit_null=value.value is None and "value" in value.model_fields_set,
+                        ),
                         _patches(value),
                         patch_authors=value._patch_authors,
                         task_additions=_task_additions(value),
@@ -1085,24 +1093,51 @@ def _choices(
 
 def axis_coordinates(
     coordinates: Mapping[str, SweepCoordinate], input_axes: Mapping[str, SweepCoordinate],
+    kept_axes: Sequence[str] = (),
 ) -> dict[str, SweepCoordinate]:
     """Each axis a row is chosen by: its coordinates, and its input axes' members."""
-    return {**coordinates, **input_axes}
+    return {**coordinates, **input_axes, **dict.fromkeys(kept_axes, _KEPT_VALUE)}
+
+
+def numbered_run_name(number: int) -> str:
+    return f"Run {number}"
+
+
+_KEPT_VALUE = SweepCoordinate("", numbered_run_name(1))
 
 
 def coordinate_text(coordinate: SweepCoordinate) -> str:
-    """A coordinate as drawn: its label, else its single value, else its name."""
+    """The token a result-address selector can use for a coordinate."""
     if coordinate.label is not None:
         return coordinate.label
     value = coordinate.value
     if isinstance(value, bool):
         return "true" if value else "false"
-    if isinstance(value, int | float | str):
-        return str(value)
-    return coordinate.value_id
+    return str(value) if isinstance(value, (int, float, str)) else coordinate.value_id
 
 
-def _expanded(axes: Mapping[str, Axis], selection: Mapping[str, _AxisChoice]) -> ExpandedRow:
+def sweep_value_name(axis: str, coordinate: SweepCoordinate, *, prefix: bool = True) -> str:
+    """Present a run choice by its name, or print a swept value in its authored unit."""
+    if coordinate.label is not None:
+        return coordinate.label
+    value = coordinate.value
+    unit = coordinate.unit
+    if isinstance(value, dict) and isinstance(value.get("unit"), str) and "value" in value:
+        unit = value["unit"]
+        value = value["value"]
+    if value is None and not coordinate.explicit_null:
+        return member_display_name(coordinate.value_id)
+    text = value if isinstance(value, str) else canonical_json_v2_bytes(_generated_key_value(value)).decode()
+    return " ".join(part for part in (member_display_name(axis) if prefix else None, text, unit) if part)
+
+
+def sweep_row_name(values: Iterator[tuple[str, SweepCoordinate]]) -> str | None:
+    return " · ".join(sweep_value_name(axis, value) for axis, value in values) or None
+
+
+def _expanded(
+    axes: Mapping[str, Axis], selection: Mapping[str, _AxisChoice], kept_axes: tuple[str, ...] = (),
+) -> ExpandedRow:
     """The row of one value per axis in ``selection``; an axis it has no value on is absent from its ID and label."""
     axis_value_ids = {name: choice.key for name, choice in selection.items()}
     row_id = axis_values_id(axis_value_ids) if axis_value_ids else DEFAULT_SWEEP_ROW
@@ -1112,11 +1147,13 @@ def _expanded(axes: Mapping[str, Axis], selection: Mapping[str, _AxisChoice]) ->
     authors: dict[str, str] = {}
     bindings: dict[str, str] = {}
     input_axes: dict[str, SweepInputCoordinate] = {}
-    labels = []
+    selected_values = {}
     for name, axis in axes.items():
         if (choice := selection.get(name)) is None:
+            if name in kept_axes:
+                selected_values[name] = _KEPT_VALUE
             continue
-        labels.append(f"{name}={coordinate_text(choice.coordinate)}")
+        selected_values[name] = choice.coordinate
         member = choice.member
         if isinstance(axis, InputAxis):
             assert member is not None
@@ -1153,8 +1190,9 @@ def _expanded(axes: Mapping[str, Axis], selection: Mapping[str, _AxisChoice]) ->
             patches[path] = patch
         authors.update(choice.patch_authors)
     return ExpandedRow(
-        row_id, ", ".join(labels) or None, coordinates, patches, bindings, origins, authors, axis_value_ids,
+        row_id, sweep_row_name(iter(selected_values.items())), coordinates, patches, bindings, origins, authors, axis_value_ids,
         input_axes, tuple(choice.task_additions for choice in selection.values() if choice.task_additions is not None),
+        kept_axes,
     )
 
 
@@ -1175,7 +1213,7 @@ def _select_exception_rows(
             exception.where,
             rows,
             key=lambda row: row.id,
-            coordinates=lambda row: axis_coordinates(row.coordinates, row.input_axes), producer="this step",
+            coordinates=lambda row: axis_coordinates(row.coordinates, row.input_axes, row.kept_axes), producer="this step",
         )
     except RuleRefusal as error:
         term = f".{error.path}" if error.path else ""
@@ -1281,7 +1319,7 @@ def _condition_picks(name: str, where: AxisCondition, rows: Sequence[ExpandedRow
         picked = {
             id(row) for row in select_sweep_exception_rows(
                 SweepExceptionTerms.model_validate(where.model_dump(exclude_none=True)), rows, key=lambda row: row.id,
-                coordinates=lambda row: axis_coordinates(row.coordinates, row.input_axes), producer="this step",
+                coordinates=lambda row: axis_coordinates(row.coordinates, row.input_axes, row.kept_axes), producer="this step",
             )
         }
     except RuleRefusal as error:
@@ -1306,13 +1344,14 @@ def _conditioned(
         picks = (True,) * len(pairs) if where is None else _condition_picks(name, where, [row for _, row in pairs])
         divided = []
         for (selection, row), picked in zip(pairs, picks, strict=True):
-            if not picked or _optional(axis):
-                divided.append((selection, row))
             if not picked:
+                divided.append((selection, row))
                 continue
+            if _optional(axis):
+                divided.append((selection, _expanded(plan.axes, selection, (*row.kept_axes, name))))
             for choice in choices[name]:
                 chosen = selection | {name: choice}
-                divided.append((chosen, _expanded(plan.axes, chosen)))
+                divided.append((chosen, _expanded(plan.axes, chosen, row.kept_axes)))
         if len(plan.rows) + len(divided) > max_rows:
             raise SweepExpansionError(
                 SweepExpansionCode.ROW_BUDGET, "sweep",
@@ -1446,14 +1485,15 @@ def _expand_checkpoint_axis(
     for row, updates in rows_and_updates:
         for update in updates:
             key = str(update)
+            coordinate = SweepCoordinate(key, value=update)
             keys = {**row.axis_value_ids, name: key}
             authors = dict(row.patch_authors)
             if axis._author is not None:
                 authors[axis.path] = axis._author
             result.append(replace(
                 row, id=axis_values_id(keys), axis_value_ids=keys,
-                label=", ".join(part for part in (row.label, f"{name}={key}") if part),
-                coordinates={**row.coordinates, name: SweepCoordinate(key, key, update)},
+                label=" · ".join(part for part in (row.label, sweep_value_name(name, coordinate)) if part),
+                coordinates={**row.coordinates, name: coordinate},
                 patches={**row.patches, axis.path: SetValue(value=[{"at": update}])},
                 patch_origins={**row.patch_origins, axis.path: ("sweep_value", name, key)},
                 patch_authors=authors,

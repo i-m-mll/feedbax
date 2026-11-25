@@ -81,6 +81,10 @@ def test_published_speed_figure_keeps_trial_order_and_checkpoint_samples(tmp_pat
         f"plant.mass=2 · Trial {trial} · Run {run}" for run in (1, 2) for trial in (1, 2)
     ]
     assert len({trace.legendgroup for trace in duplicate.data}) == 4
+    named = render(document, {"speed": stacked}, names=names | {"member": {"original": "Run 1", "duplicate": "Run 2"}})
+    assert [trace.name for trace in named.data] == [
+        f"Run {run} · Trial {trial}" for run in (1, 2) for trial in (1, 2)
+    ]
 
     layer, = document.layers
     selected = layer.model_copy(update={"select": layer.select | {"trial": trials[1]}})
