@@ -73,6 +73,7 @@ class ModelSignalTable:
     _ports: Mapping[str, tuple[ResolvedSignalLeaf, ...]] = field(default_factory=dict)
     problems: tuple[ModelGraphProblem, ...] = ()
     _claims: Mapping[str, Mapping[SignalLeafPath, _Facts]] = field(default_factory=dict)
+    _structured_bases: Mapping[str, str] = field(default_factory=dict)
 
     def at(self, address: ModelAddress) -> ResolvedSignalLeaf | None:
         element = address.element
@@ -84,6 +85,9 @@ class ModelSignalTable:
 
     def at_port(self, address: ModelAddress) -> tuple[ResolvedSignalLeaf, ...]:
         return self._ports.get(address.to_text(), ())
+
+    def structured_base(self, address: ModelAddress) -> str | None:
+        return self._structured_bases.get(address.to_text())
 
     def connection_problem(
         self, scope: tuple[str, ...], source: SignalSource | None, target: SignalTarget,
@@ -359,6 +363,7 @@ class _Resolved:
     origin: ModelAddress | None = None
     conflict: str | None = None
     blocked: bool = False
+    structured_base: str | None = None
 
 
 class _Resolve:
@@ -610,10 +615,26 @@ class _Resolve:
                             local[item].origin if declaration.keeps == "type" else None,
                         )
 
+        # Carry a port's structural base only when its leaves forward one entire port unchanged.
+        whole_structure = set()
+        for key, port in self.ports.items():
+            if () in port.paths:
+                continue
+            first = incoming.get((key, next(iter(port.paths))))
+            if first is None or (source := self.ports.get(first.source[0])) is None:
+                continue
+            if source.paths.keys() == port.paths.keys() and all(
+                (edge := incoming.get((key, path))) is not None and edge.source == (source.key, path)
+                for path in port.paths
+            ):
+                whole_structure.add(key)
+
         resolved: dict[tuple[str, SignalLeafPath], _Resolved] = {}
 
         def advance(item, previous: _Resolved) -> _Resolved:
             here = local[item]
+            key, path = item
+            structured_base = self.ports[key].claim.base if path else None
             edge = incoming.get(item)
             if previous.blocked:
                 return _Resolved(here.prototype.fill(here.facts), blocked=True)
@@ -621,10 +642,15 @@ class _Resolve:
             if conflict is not None:
                 return _Resolved(here.facts, conflict=conflict, blocked=True)
             if edge is None:
-                return _Resolved(here.prototype.fill(here.facts), here.origin if here.makes_value else None)
+                return _Resolved(
+                    here.prototype.fill(here.facts), here.origin if here.makes_value else None,
+                    structured_base=structured_base,
+                )
             facts = here.facts.fill(previous.facts).fill(here.prototype)
             origin = edge.origin or previous.origin
-            return _Resolved(facts, origin)
+            if structured_base is None and key in whole_structure:
+                structured_base = previous.structured_base
+            return _Resolved(facts, origin, structured_base=structured_base)
 
         for key in local:
             if key in resolved:
@@ -659,6 +685,7 @@ class _Resolve:
 
         by_port = {}
         claims = {}
+        structured_bases = {}
         for key, port in self.ports.items():
             leaves = []
             for path in port.paths:
@@ -679,7 +706,11 @@ class _Resolve:
                 ))
             by_port[key] = tuple(leaves)
             claims[key] = {path: local[key, path].facts for path in port.paths}
-        return ModelSignalTable(by_port, tuple(self.problems.values()), claims)
+            if () not in port.paths:
+                base = resolved[key, next(iter(port.paths))].structured_base
+                if base is not None and all(resolved[key, path].structured_base == base for path in port.paths):
+                    structured_bases[key] = base
+        return ModelSignalTable(by_port, tuple(self.problems.values()), claims, structured_bases)
 
 
 def resolve_model_signals(
