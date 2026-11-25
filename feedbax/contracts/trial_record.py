@@ -85,6 +85,8 @@ class TrialRecord(BaseModel):
     """Recorded world-frame state tracks, keyed by state Model address."""
     configurations: dict[str, JsonValue] = Field(default_factory=dict)
     """Recorded configuration state histories, keyed by state Model address."""
+    observations: dict[str, JsonValue] = Field(default_factory=dict)
+    """Post-step values read by reported terms, keyed by their Model origin addresses."""
 
 
 class TrialRecords(BaseModel):
