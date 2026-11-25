@@ -115,7 +115,7 @@ test('M1 starts an ordinary run, watches loss, and resumes the checkpoint from A
   },
 );
 
-test('Activity shows the original CLI and Studio clients for a saved Train request', { tag: '@round' }, async ({ page, request, studio }, info) => {
+test('Activity names the CLI client of a saved Train request, and no client for Studio', { tag: '@round' }, async ({ page, request, studio }, info) => {
   test.setTimeout(45_000);
   const { snapshot, projectPath, configuration } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   const project = snapshot.project_id;
@@ -136,8 +136,10 @@ test('Activity shows the original CLI and Studio clients for a saved Train reque
   await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
   const studioJob = await admit(page, projectPath);
   await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
-  const studioEntry = entries.filter({ has: page.getByText('Studio', { exact: true }) });
-  await expect(studioEntry.getByText('Client', { exact: true })).toBeVisible();
+  // A run this Studio submitted names no client; one from the command line does.
+  const studioEntry = entries.filter({ hasNot: page.getByText('CLI', { exact: true }) });
+  await expect(studioEntry).toHaveCount(1);
+  await expect(studioEntry.getByText('Client', { exact: true })).toHaveCount(0);
   await expect(studioEntry.getByText('Label', { exact: true })).toHaveCount(0);
   await expect(cli.getByText(label, { exact: true })).toBeVisible();
   await expect(studioEntry.getByText('Done', { exact: true })).toBeVisible({ timeout: 18_000 });

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from pydantic import Field, model_validator
@@ -11,6 +12,7 @@ from feedbax.contracts.model_document import ModelDocument
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.studio_refinements import validate_cross_field_refinements
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
+from feedbax.contracts.trial_bindings import selected_signal_id
 
 
 class TrialDocuments(StrictModel):
@@ -33,6 +35,33 @@ class TrialDocuments(StrictModel):
             return self.task
         assert self.python_task is not None
         return self.python_task
+
+    def resolved_signal_bindings(
+        self, names: Mapping[str, str], overrides: Mapping[str, str | None] | None = None,
+    ) -> dict[str, str | None]:
+        """Record the chosen signal ID at each Model input."""
+        bindings = self.input_bindings | overrides if overrides is not None else self.input_bindings
+        return bindings | {
+            port.id: selected_signal_id(port.id, port.name, names, bindings) for port in self.model.ports.inputs
+        }
+
+    def without_signal_labels(self) -> TrialDocuments:
+        """Use stable signal IDs as names while retaining the resolved input choices."""
+        if self.task is None or not self.task.signals:
+            return self
+        bindings = self.resolved_signal_bindings({signal.name: signal.id for signal in self.task.signals})
+        signal_ids = {signal.id for signal in self.task.signals}
+        for port in self.model.ports.inputs:
+            default = port.name if port.name in signal_ids else None
+            if bindings[port.id] == default:
+                del bindings[port.id]
+        if bindings == self.input_bindings and all(signal.name == signal.id for signal in self.task.signals):
+            return self
+        signals = tuple(
+            signal if signal.name == signal.id else signal.model_copy(update={"name": signal.id})
+            for signal in self.task.signals
+        )
+        return self.model_copy(update={"task": self.task.model_copy(update={"signals": signals}), "input_bindings": bindings})
 
     @model_validator(mode="after")
     def _one_task(self) -> "TrialDocuments":

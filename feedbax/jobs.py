@@ -377,7 +377,9 @@ class PlanJobReader:
             if damage is not None:
                 receipt = None
             elif evaluate:
-                result = _verified_evaluation_result(job, store) if succeeded else None
+                if succeeded:
+                    assert success_view is not None
+                    result = _verified_evaluation_result(job, success_view)
                 receipt, size = (result.receipt, result.size) if result is not None else (None, None)
                 if result is not None and result.checkpoint_source is not None:
                     checkpoint_source = result.checkpoint_source
@@ -952,7 +954,54 @@ class JobService(PlanJobReader):
             or not job["request"].startswith("evaluate:") or job["state"] != "succeeded"
         ):
             raise JobNotFound(job_id)
-        return self._retained_evaluation(job, store)
+        from feedbax.persistence.effective_success import SuccessView
+
+        return self._retained_evaluation(job, SuccessView(ImmutableArtifactBlobProvider(store)))
+
+    @inspect_without_recording()
+    def read_saved_evaluation_result(
+        self, *, plan: SettledProjectPlan, run: PlannedRun, job_id: str,
+    ) -> EvaluationResult:
+        """Read a current request's result or the latest readable prior result for this row."""
+        from feedbax.persistence.effective_success import SuccessView
+
+        store = str(plan.store_path)
+        address = plan_attempt_key(run.key)
+        snapshot = self.host.jobs_snapshot(
+            project=plan.project_id, start_host=False, attempt_addresses=(store, [address]),
+        )
+        addresses = snapshot.get("attempt_addresses", {})
+        candidates = [
+            job for job in snapshot["jobs"]
+            if job["state"] == "succeeded" and job["request"].startswith("evaluate:")
+            and job["data"].get("manifest_root") == store
+        ]
+        if (selected := next((job for job in candidates if job["id"] == job_id), None)) is None:
+            raise JobNotFound(job_id)
+        view = SuccessView(ImmutableArtifactBlobProvider(plan.store_path))
+        if selected["request"] == run.request_id:
+            try:
+                return self._retained_evaluation(selected, view)
+            except JobConflict as error:
+                raise JobNotFound(job_id) from error
+
+        def is_addressed(job: dict[str, Any]) -> bool:
+            return job["data"].get("run_key") == address or address in addresses.get(job["id"], ())
+
+        if is_addressed(selected):
+            for job in reversed(candidates):
+                if job["request"] == run.request_id or not is_addressed(job):
+                    continue
+                try:
+                    result = self._retained_evaluation(job, view)
+                except JobConflict:
+                    if job["id"] == job_id:
+                        break
+                    continue
+                if job["id"] == job_id:
+                    return result
+                break
+        raise JobNotFound(job_id)
 
     @inspect_without_recording()
     def read_evaluation_objective_attempt(
@@ -968,7 +1017,9 @@ class JobService(PlanJobReader):
         if job["request"] != request_id or job["data"].get("manifest_root") != str(store):
             raise JobNotFound(job_id)
         if job["state"] == "succeeded":
-            return self._retained_evaluation(job, store)
+            from feedbax.persistence.effective_success import SuccessView
+
+            return self._retained_evaluation(job, SuccessView(ImmutableArtifactBlobProvider(store)))
         if job.get("checkpoint_objective_error"):
             raise JobConflict("The live Evaluate checkpoint evidence could not be authenticated.")
         evidence = job.get("checkpoint_objective")
@@ -977,18 +1028,17 @@ class JobService(PlanJobReader):
         return LiveEvaluationObservation.model_validate(evidence)
 
     @staticmethod
-    def _retained_evaluation(job: dict[str, Any], store: Path) -> EvaluationResult:
-        from feedbax.persistence.effective_success import SuccessView
+    def _retained_evaluation(job: dict[str, Any], view: SuccessView) -> EvaluationResult:
         from feedbax.persistence.canonical_evaluate import EvaluationResult
 
-        damage = _owned_result_damage(SuccessView(ImmutableArtifactBlobProvider(store)), job)
+        damage = _owned_result_damage(view, job)
         if damage is not None:
             raise JobConflict(damage)
-        result = _verified_evaluation_result(job, store)
+        result = _verified_evaluation_result(job, view)
         if result is None:
             raise JobConflict("The completed Evaluate receipt cannot be authenticated.")
         return EvaluationResult(
-            store, job["id"], job["request"], result.receipt, manifest_object=result.manifest_object,
+            view.store.root, job["id"], job["request"], result.receipt, manifest_object=result.manifest_object,
         )
 
     def _training_item(
@@ -1421,6 +1471,7 @@ class JobService(PlanJobReader):
             )
             if row["state"] == "succeeded" and job in pending:
                 activity.status = JobStatus.COLLECTING
+                activity.ended_at_ms = None
                 activity.seen = False
                 activity.allowed_actions = []
             if activity.status == JobStatus.BLOCKED:
@@ -1617,6 +1668,7 @@ class JobService(PlanJobReader):
         )
         self.host.mirror_collected_evaluate(
             job, receipt=ref.model_dump(mode="json"), progress=attempt["progress"], delivery=attempt["delivery"],
+            submitted_at_ms=attempt["submitted_at_ms"], ended_at_ms=attempt["ended_at_ms"],
         )
         return self._activity_rows(self.host.jobs(job_id=attempt_id))[attempt_id]
 
@@ -1677,6 +1729,7 @@ class JobService(PlanJobReader):
         self.host.mirror_collected_train(
             job, state=state, receipt=receipt.model_dump(mode="json") if receipt is not None else None,
             progress=attempt["progress"], delivery=attempt["delivery"],
+            submitted_at_ms=attempt["submitted_at_ms"], ended_at_ms=attempt["ended_at_ms"],
         )
         return self._activity_rows(self.host.jobs(job_id=attempt_id))[attempt_id]
 
@@ -1928,7 +1981,7 @@ class JobService(PlanJobReader):
         if _is_light_request(job["request"]) or _is_collected_train(job):
             return _verified_store_result(view, job) is not None
         if job["request"].startswith("evaluate:"):
-            return _verified_evaluation_result(job, root, terminal_receipt=terminal_receipt) is not None
+            return _verified_evaluation_result(job, view, terminal_receipt=terminal_receipt) is not None
         return _verified_training_receipt(job, root) is not None
 
     def _activity_rows(
@@ -2262,16 +2315,13 @@ def _collected_train_checkpoint_source(view: SuccessView, result: Success) -> St
 
 
 def _verified_evaluation_result(
-    job: dict[str, Any], store: Path, *, terminal_receipt: ContentObjectRef | None = None,
+    job: dict[str, Any], view: SuccessView, *, terminal_receipt: ContentObjectRef | None = None,
 ) -> _VerifiedEvaluation | None:
-    from feedbax.contracts.artifact_custody import ContentObjectRef
-    from feedbax.persistence.effective_success import SuccessView
     from feedbax.persistence.canonical_evaluate import states_product, states_ref, verify_evaluation_receipt
 
     try:
         outcome = job.get("outcome") or {}
         receipt = JobReceipt.model_validate(outcome.get("receipt"))
-        view = SuccessView(ImmutableArtifactBlobProvider(store))
         accepted = ContentObjectRef.model_validate(outcome["store_success"])
         if view.attempt_ref(job["id"]) != accepted:
             return None
@@ -2299,7 +2349,7 @@ def _verified_evaluation_result(
 
         binding, = _pinned_dependencies(job)
         manifest, subject = verify_evaluation_receipt(
-            store, attempt=job["id"], request_id=job["request"], project=job["project"],
+            view.store.root, attempt=job["id"], request_id=job["request"], project=job["project"],
             receipt=receipt, binding=binding, manifest_object=manifest_object,
         )
         if success.products != {"states": (states_product(manifest),)}:
@@ -2644,6 +2694,8 @@ def _project_activity(
         earlier_definition=earlier_definition,
         actor=actor,
         progress=progress,
+        submitted_at_ms=job["submitted_at_ms"],
+        ended_at_ms=job["ended_at_ms"],
         outcome=JobOutcome.model_validate(
             {key: value for key, value in outcome.items() if key in JobOutcome.model_fields}
         )
@@ -2652,6 +2704,6 @@ def _project_activity(
         **{
             key: value
             for key, value in job["data"].items()
-            if key in StudioActivityJob.model_fields and key not in {"actor", "kind"}
+            if key in StudioActivityJob.model_fields and key not in {"actor", "kind", "submitted_at_ms", "ended_at_ms"}
         },
     )

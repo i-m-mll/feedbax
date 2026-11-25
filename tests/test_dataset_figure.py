@@ -19,6 +19,7 @@ from feedbax.contracts.figure_document import (
     PlotlyFigureProduct,
     validate_figure_bindings,
 )
+from feedbax.contracts.project_sweep import SweepInputMember
 from feedbax.contracts.report_document import ReportDocument
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.request_refs import ContentRef, InputMember, ProductRef
@@ -26,6 +27,7 @@ from feedbax.contracts.request_specs import RenderRequestSpec
 from feedbax.contracts.rollout import RAW_STATES_SCHEMA
 from feedbax.contracts.studio_figure import FigureProduct
 from feedbax.dataset import Dataset, Variable
+from feedbax.dataset_sweep import stack_dataset_members
 from feedbax.host.light_worker import _compute
 from feedbax.host.light_jobs import validate_light_request
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
@@ -67,6 +69,18 @@ def test_published_speed_figure_keeps_trial_order_and_checkpoint_samples(tmp_pat
     for trace, samples in zip(figure.data, ([0, 5, 13], [17, 3, 0]), strict=True):
         np.testing.assert_array_equal(trace.x, time)
         np.testing.assert_array_equal(trace.y, samples)
+
+    stacked = stack_dataset_members([
+        (SweepInputMember("original", {}), speed), (SweepInputMember("duplicate", {}), speed),
+    ])
+    duplicate = render(document, {"speed": stacked}, names=names)
+    assert [(trace.meta["group"]["member"], trace.meta["group"]["trial"]) for trace in duplicate.data] == [
+        (member, trial) for member in ("original", "duplicate") for trial in trials
+    ]
+    assert [trace.name for trace in duplicate.data] == [
+        f"plant.mass=2 · Trial {trial} · Run {run}" for run in (1, 2) for trial in (1, 2)
+    ]
+    assert len({trace.legendgroup for trace in duplicate.data}) == 4
 
     layer, = document.layers
     selected = layer.model_copy(update={"select": layer.select | {"trial": trials[1]}})

@@ -170,7 +170,10 @@ def test_remote_stop_accepts_before_contacting_the_venue(host, tmp_path, monkeyp
             app = client.app
             app.state.remote_runs = remote
             remote.observe(app.state.project_folders, app.state.job_service)
-            assert {row["job_id"] for row in client.get("/api/jobs").json()["jobs"]} >= set(ids)
+            rows = {row["job_id"]: row for row in client.get("/api/jobs").json()["jobs"] if row["job_id"] in ids}
+            assert rows.keys() == set(ids)
+            assert all(row["ended_at_ms"] is None for row in rows.values())
+            submitted = {id_: row["submitted_at_ms"] for id_, row in rows.items()}
             accepting = True
             body = {"job_ids": ids, "mode": "force"}
             for _ in range(2):
@@ -185,9 +188,15 @@ def test_remote_stop_accepts_before_contacting_the_venue(host, tmp_path, monkeyp
             wait_until(lambda: all(row["state"] == "stopped" for row in venue.jobs()))
             remote.observe(app.state.project_folders, app.state.job_service)
             assert deliveries == [(tuple(ids), "force")]
-            assert {
-                row["job_id"]: row["status"] for row in client.get("/api/jobs").json()["jobs"] if row["job_id"] in ids
-            } == dict.fromkeys(ids, "stopped")
+            rows = {row["job_id"]: row for row in client.get("/api/jobs").json()["jobs"] if row["job_id"] in ids}
+            assert {id_: row["status"] for id_, row in rows.items()} == dict.fromkeys(ids, "stopped")
+            venue_times = {
+                (event["job_id"], event["kind"]): int(event["time"] * 1000)
+                for event in venue.events()["events"] if event["job_id"] in ids
+            }
+            for id_, row in rows.items():
+                assert row["submitted_at_ms"] == submitted[id_] == venue_times[id_, "queued"]
+                assert row["ended_at_ms"] == venue_times[id_, "terminal"]
     finally:
         remote.stop_collection()
         if venue is not None:
@@ -344,6 +353,8 @@ TrainingLoop.run_block = execute
                 source, attempt, project=project_id, store=destination_store, project_root=local_plan.project_root,
             )
             assert result.activity.target == state.placement
+            assert result.activity.submitted_at_ms == attempt["submitted_at_ms"]
+            assert result.activity.ended_at_ms == attempt["ended_at_ms"]
             return CollectedAttempt(result.activity.job_id, result.evidence_sha256)
 
         ack = session.host.acknowledge_collection

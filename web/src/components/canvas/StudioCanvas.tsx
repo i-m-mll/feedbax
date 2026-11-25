@@ -25,7 +25,12 @@ type Props = ReactFlowProps & {
   /** HTML documents supply their own bounds in canvas coordinates. */
   contentBounds?: Rect | null;
   fitReady?: boolean;
-  fitNewContent?: boolean;
+  /**
+   * When the view is fitted to the content again, until the user moves it: `once`, when content first appears;
+   * `overflow`, also whenever a change of content or region leaves content past the region's edge; `always`, whenever
+   * the content changes, zooming in as far as `maxZoom`.
+   */
+  refit?: 'once' | 'overflow' | 'always';
   lockAutoFit?: boolean;
   viewportRef?: Ref<CanvasViewport>;
   navigateContent?: boolean;
@@ -62,7 +67,7 @@ function adjacentControl(root: HTMLElement, current: HTMLElement, [dx, dy]: read
 
 /** The shared mounted canvas, with a viewport independent of the region's size. */
 export function StudioCanvas({
-  contentBounds, fitReady = true, fitNewContent = false, lockAutoFit = false, viewportRef, navigateContent = false,
+  contentBounds, fitReady = true, refit = 'once', lockAutoFit = false, viewportRef, navigateContent = false,
   children, onMove, minZoom = 0.5, maxZoom = 2, zoomOnDoubleClick = true, ...flow
 }: Props) {
   const flowId = useId();
@@ -86,8 +91,8 @@ export function StudioCanvas({
     const liveBounds = contentBounds === undefined && !fitReady
       ? getNodesBounds([...store.getState().nodeLookup.values()]) : bounds;
     if (!liveBounds || !viewportInitialized || !width || !height) return;
-    void setViewport(getViewportForBounds(liveBounds, width, height, minZoom, fitNewContent ? maxZoom : Math.min(1, maxZoom), 0.14));
-  }, [bounds, contentBounds, fitReady, store, viewportInitialized, width, height, minZoom, fitNewContent, maxZoom, setViewport]);
+    void setViewport(getViewportForBounds(liveBounds, width, height, minZoom, refit === 'always' ? maxZoom : Math.min(1, maxZoom), 0.14));
+  }, [bounds, contentBounds, fitReady, store, viewportInitialized, width, height, minZoom, refit, maxZoom, setViewport]);
   const viewport = {
     fitView: () => { moved.current = true; fit(); },
     zoomIn: () => { moved.current = true; void zoomIn(); },
@@ -97,15 +102,19 @@ export function StudioCanvas({
   useEffect(() => {
     if (lockAutoFit) moved.current = true;
     if (!fitReady || !bounds || !boundsKey || !viewportInitialized || !width || !height || moved.current) return;
-    if (fitted.current === boundsKey || (fitted.current && !fitNewContent)) return;
+    // A region that shrinks can cut off content that fitted, so `overflow` checks again at each size.
+    const key = refit === 'overflow' ? `${boundsKey}@${width}x${height}` : boundsKey;
+    if (fitted.current === key || (fitted.current && refit === 'once')) return;
     const frame = requestAnimationFrame(() => {
       if (moved.current) return;
-      fitted.current = boundsKey;
-      if (fitNewContent || bounds.x < 0 || bounds.y < 0 || bounds.width + bounds.x > width ||
-          bounds.height + bounds.y > height) fit();
+      fitted.current = key;
+      const { x, y, zoom } = getViewport();
+      const left = bounds.x * zoom + x, top = bounds.y * zoom + y;
+      if (refit === 'always' || left < 0 || top < 0 || left + bounds.width * zoom > width ||
+          top + bounds.height * zoom > height) fit();
     });
     return () => cancelAnimationFrame(frame);
-  }, [fit, boundsKey, bounds, fitReady, viewportInitialized, width, height, fitNewContent, lockAutoFit]);
+  }, [fit, boundsKey, bounds, fitReady, viewportInitialized, width, height, refit, lockAutoFit, getViewport]);
   useEffect(() => () => {
     if (revealFrame.current !== undefined) cancelAnimationFrame(revealFrame.current);
   }, []);

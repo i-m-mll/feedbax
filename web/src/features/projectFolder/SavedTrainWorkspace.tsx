@@ -7,7 +7,7 @@ import { isStudioDefect, shownError } from '@/api/shownErrors';
 import { prepareCheckpointRuleEdit, prepareSubsetToRows, prepareTrainStart, useAuthoringCatalog } from '@/api/studioAuthoring';
 import { StudioRegion, studioRegionIssue, type StudioRegionState } from '@/components/activity/StudioRegion';
 import {
-  studioAccessibleName, studioCountOf, studioFormat, studioName, studioPlaceIsDocument, studioProblemName, studioReason, studioRunReason, studioRunStatus,
+  studioAccessibleName, studioCountOf, studioFormat, studioName, studioPlaceIsDocument, studioProblemName, studioReason, studioRunReason, studioRunStatus, studioStep,
 } from '@/components/activity/studioVocabulary';
 import { HeaderActivity } from '@/components/layout/HeaderActivity';
 import {
@@ -124,7 +124,7 @@ type EditorSession = ReturnType<typeof bindProjectEditor>;
 /** The Model's own initial state, at which the Scene's geometry tells whether the Model has anything to draw. */
 const restPose: readonly StateValues[] = [{}];
 /** What a Scene draws of a step the clock does not read: its Model at rest. */
-const restTrial: SceneTrial = { picked: undefined, possible: [], frame: 0, task: undefined, trails: false };
+const restTrial: SceneTrial = { picked: undefined, possible: [], reading: false, frame: 0, task: undefined, trails: false };
 const slots = ['primary', 'secondary'] as const;
 /** The anchor of an Evaluate's sampled number of trials, which the Trials editor draws. */
 const trialCount = '/params/trial_set/count';
@@ -223,11 +223,14 @@ export default function StudioProjectWorkspace({
   return <ManagedProjectWindow session={load.session} onNewStep={onNewStep} />;
 }
 
+/** The key of a step being added, which no authored step can have. */
+const addingStepId = ' adding';
+
 function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession } & ProjectWindowCommands) {
   const stoppedCheckpointId = useId();
   const { editor } = session;
   const snapshot = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
-  const { saved, configuration, pending, outside } = snapshot;
+  const { saved, configuration, pending, outside, planVersion } = snapshot;
   const jobs = useStudioJobs();
   const connectionKind = useConnection().kind;
   const connected = connectionKind === 'connected';
@@ -246,8 +249,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   }, [armedPick, elements]);
   const selectedElements = useStore(elements, (current) => current.selection);
   const mapViewport = useRef<CanvasViewport>(null);
-  const jobsVersion = `${jobs.data?.cursor}:${jobs.data?.remote_version}`;
-  const plans = useSavedPlan(editor, jobsVersion);
+  const plans = useSavedPlan(editor);
   const selection = useProjectWindowSelection(Object.keys(saved.project.steps ?? {})[0] ?? null, plans.inTurn);
   /** The failure of the last gesture that has no object of its own to land on. */
   const [commandError, setCommandError] = useState<unknown>();
@@ -267,6 +269,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     ? refusal.reason : undefined;
   /** How many of its edits are waiting or in flight. */
   const [edits, setEdits] = useState(0);
+  /** A step being added, drawn on the map from the gesture until its gestures settle on a plan that has it. */
+  const [adding, setAdding] = useState<{ kind: PlanStepView['kind']; after?: string; revision: string }>();
   const busy = edits > 0;
   const [renamingStep, setRenamingStep] = useState<MapStepRename['editing']>(null);
   /** The step whose key the inspector is editing. */
@@ -306,6 +310,9 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const { shown } = plans;
   /** The plan shown is of an earlier revision while the shown revision's plan is read, which its regions mark. */
   const planPending = !!shown && !plans.current;
+  useEffect(() => {
+    if (adding && edits === 0 && plans.current) setAdding(undefined);
+  }, [adding, edits, plans.current]);
   const refetchPlan = plans.refetch;
   const refreshProjection = useCallback(() => refetchPlan(), [refetchPlan]);
   const validity = useResultValidity({
@@ -343,7 +350,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
         const { archive, name } = await exportLoadedModel(current.project_id, {
           revision: current.revision, key: row.key, job_id: result.job_id, completed_updates: updates,
         }, editor.signal);
-        saveFile(archive, name);
+        await saveFile(archive, name);
       }, (reason) => ({ kind: 'runs', reasons: { [run.id]: reason } }));
     }, { subject: run.label, instance: run.id, enabled: !!updates });
   }
@@ -550,6 +557,8 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     if (!extend) setExcludedUsers({});
     setResultAttempt(undefined);
     setProblemReveal(undefined);
+    // An element is selected within the step it was chosen in; choosing another step shows that step.
+    if (id !== step?.id) clearSelection(elements);
     selection.select(selectStep(state, id, extend));
   }
   const ready = Boolean(shown && !pending && !outside && connected && !plans.error);
@@ -573,7 +582,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     enabled: ready && checkpointAttempt !== undefined,
     placeholderData: keepPreviousData,
     gcTime: 0,
-  }, jobsVersion);
+  }, String(planVersion));
   useEffect(() => {
     if (!ready || !focusFirstModel || step?.id !== focusFirstModel) return;
     requestSlotFocus((count) => count + 1);
@@ -1170,10 +1179,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     }, refuseStep(source.stepId));
   }
 
-  function openStepMenu(kinds: StepInsertion) {
+  function openStepMenu(kinds: StepInsertion, after?: string) {
     const revision = saved.revision;
     insertMenu.open(Object.fromEntries(Object.entries(kinds).map(([kind, create]) =>
-      [kind, () => { if (latestRevision.current === revision) create(); }])));
+      [kind, () => {
+        if (latestRevision.current !== revision) return;
+        setAdding({ kind: kind as PlanStepView['kind'], after, revision });
+        create();
+      }])));
   }
 
   const shownRow = shownResult.row;
@@ -1187,7 +1200,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       evaluate: () => evaluateTrain(
         { stepId: shownRow.key.step, selection: { kind: 'rows', stepId: shownRow.key.step, runIds: [stoppedSubject.runId] } },
         shown, stoppedSubject),
-    });
+    }, shownRow.key.step);
   }, { enabled: applies && variantApplies });
 
   const evaluateInputs = authored?.kind === 'evaluate' ? authored : undefined;
@@ -1246,7 +1259,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
   const inputEditorKey = JSON.stringify([variant, selection.pipeline]);
   const inputEditor = step && (trainStart && startRole ? <InputEditor key={inputEditorKey} label={studioName('start')} role={startRole}
     binding={authored?.inputs?.checkpoint} self={step.id} steps={plan.steps} project={saved.project} picking={elements}
-    absent={documentChoice('model', trainStart)} refusal={refusedAt('input')}
+    absent={documentChoice(saved.project, 'model', trainStart)} refusal={refusedAt('input')}
     onReveal={(source) => selection.select(selectStep(state, source))}
     selection={(index, reference) => ({
       problems: inputProblems('checkpoint', index),
@@ -1611,7 +1624,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
 
   function newStepCommand(source?: PipelineMapStepSource, subject?: string) {
     const insertion = stepInsertion(source);
-    return insertion && bindStudioCommand('newStep', () => openStepMenu(insertion.kinds),
+    return insertion && bindStudioCommand('newStep', () => openStepMenu(insertion.kinds, source?.stepId),
       { enabled: insertion.enabled, subject, instance: JSON.stringify(source ?? null) });
   }
 
@@ -1738,12 +1751,16 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       await editor.flush();
     }, refuseStep(target));
   }
+  const mapPlan = useMemo(() => adding ? { ...shownPlan, steps: [...shownPlan.steps, {
+    id: addingStepId, label: studioStep(adding.kind).name, kind: adding.kind, sweeps: [], runs: [], statusCounts: {},
+    inputs: adding.after ? [{ id: 'source', label: 'source', sourceStepId: adding.after }] : [], adding: true,
+  }] } : shownPlan, [adding, shownPlan]);
   const mapProps = {
     connect: applies ? {
       accepts: (source: string, target: string) => !!connection(saved.project.steps, source, target),
       connect: connectSteps,
     } : undefined,
-    plan: shownPlan, state, problemSteps, rename: renameStep, onEnterStep: enterStep, stepMenu: stepCommands,
+    plan: mapPlan, state, problemSteps, rename: renameStep, onEnterStep: enterStep, stepMenu: stepCommands,
     onSelectionChange: (value: PipelineSelectionState) => {
       setResultAttempt(undefined);
       setProblemReveal(undefined);

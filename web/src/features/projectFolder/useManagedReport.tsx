@@ -210,7 +210,8 @@ export function useManagedReport({
 
   const body = report && <div className="mx-auto grid w-full max-w-3xl gap-4 p-4">
     {planned && <p role="status">{studioRunStatus(planned.status)}
-      {planned.reason && <span className="block text-shell-muted">{planned.reason}</span>}
+      {planned.status === 'failed' && planned.reason
+        && <span className="block text-shell-muted">{planned.reason}</span>}
     </p>}
     {planned && projection?.window_map?.problems.filter((problem) => problem.step === planned.key.step &&
       (problem.variant === null || problem.variant === planned.key.variant) && (problem.row == null || problem.row === planned.key.row))

@@ -14,7 +14,7 @@ import {
   selectionCheckpoints, type CheckpointKind, type CheckpointRange, type EditableCheckpointRule, type SelectionCheckpoint,
 } from './evaluateAuthoring';
 import {
-  documentChoice, documentChoiceId, documentGroup, documentKind, stepChoice, stepChoiceId, stepGroup, type DocumentKind,
+  chosenDocument, documentChoice, documentGroup, documentKind, stepChoice, stepChoiceId, stepGroup, type DocumentKind,
 } from './referenceChoices';
 import { savedRunId } from './projectWindowPlan';
 import { changedSelections, stepSelections, type SelectionProblems } from './selectionEdits';
@@ -154,8 +154,9 @@ export function InputEditor({ label, role, binding, self, steps, project, output
   const choose = (index: number | 'new', choice: ReferenceChoice) => {
     if (!onChange) return;
     if (absent && choice.id === absent.id) return onChange({ kind: 'absent' });
-    const chosen = choice.id === documentChoiceId(choice.label) && documentKind(project, choice.label, role.documents);
-    if (chosen) return onChange({ kind: 'document', document: choice.label, role: chosen });
+    const document = chosenDocument(choice);
+    const chosen = document !== undefined && documentKind(project, document, role.documents);
+    if (chosen) return onChange({ kind: 'document', document, role: chosen });
     const reference = reads(choice);
     if (!reference) return;
     const current = selections ?? [];
@@ -179,7 +180,7 @@ export function InputEditor({ label, role, binding, self, steps, project, output
     ? selections.map((reference) => ({ value: shown(reference), reference }))
     : role.gathers && !document ? []
       : [{ value: document !== undefined
-        ? documentChoice(documentKind(project, document, role.documents) ?? role.documents[0] ?? 'model', document)
+        ? documentChoice(project, documentKind(project, document, role.documents) ?? role.documents[0] ?? 'model', document)
         : absent ?? null }];
   const parts = rows.map(({ reference }, index) => reference ? selection?.(index, reference) : undefined);
   function checkpointEditor({ rule, selections: covered }: SelectionCheckpoint, step?: string) {

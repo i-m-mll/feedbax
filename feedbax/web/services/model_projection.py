@@ -11,7 +11,7 @@ from feedbax.contracts.model_address import ComponentElement, ComponentPortAddre
 from feedbax.contracts.model_document import ModelDocument, PhysicalPortType, SignalType
 from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.model_edit import (
-    EvaluateModelRequest, ModelPhysicalPortProjection, ModelPortProjection, ModelProjection, StepRuns,
+    EvaluateModelRequest, ModelPhysicalPortProjection, ModelPortProjection, ModelProjection, ModelTaskInput, StepRuns,
 )
 from feedbax.contracts.expression_check import references
 from feedbax.contracts.project import BasedDocument
@@ -106,13 +106,12 @@ def _publishes_origin(leaf: ResolvedSignalLeaf, origin: ModelAddress) -> bool:
     )
 
 
-def _objective_readers(objective: object, signals: ModelSignalTable) -> dict[str, dict[str, None]]:
+def _objective_readers(objective: ObjectiveDocument | None, signals: ModelSignalTable) -> dict[str, dict[str, None]]:
     readers: dict[str, dict[str, None]] = defaultdict(dict)
     if objective is None:
         return readers
-    document = ObjectiveDocument.model_validate(objective)
     readable = signals.readable_leaves
-    for term in document.terms:
+    for term in objective.terms:
         for reference in references(term.measure) | references(term.weight):
             if not reference.startswith("{"):
                 continue
@@ -168,10 +167,7 @@ def model_projection(folders, project_id, body, bundle):
     elif body.evaluate_scope is not None:
         raise ProjectFolderInvalid("Choose an Evaluate run for this Model selection.")
     elif body.run is not None:
-        try:
-            selected = selected_model_and_task(folders, project_id, body)
-        except ProjectFolderInvalid:
-            pass
+        selected = selected_model_and_task(folders, project_id, body)
     model, task, objective, overrides = selected or (authored, (), None, {})
     model = model or authored
     task_signals = tuple(task_signal(item) for item in task)
@@ -201,6 +197,9 @@ def model_projection(folders, project_id, body, bundle):
             ))
     return ModelProjection(
         ports=tuple(ports), physical_ports=tuple(physical_ports), problems=table.problems, task_signals=task_signals,
-        task_inputs=tuple(_boundary_port((), "input", port.id) for port, _ in bound), resolved_model=model,
+        task_inputs=tuple(
+            ModelTaskInput(composites=(), element=_boundary_port((), "input", port.id).element, signal_id=signal.id)
+            for port, signal in bound
+        ), resolved_model=model,
         ungroup=model_ungroup_eligibility(model), **differences,
     )

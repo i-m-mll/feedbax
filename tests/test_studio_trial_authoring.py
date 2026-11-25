@@ -740,6 +740,24 @@ def test_scoped_objective_writes_preserve_other_requests(tmp_path, kind):
             assert weights == {selected: 3, other: 3}
 
 
+def test_trial_authoring_refuses_a_row_removed_by_a_saved_sweep(tmp_path):
+    raw = document_project(authored_documents())
+    raw["steps"]["train"]["sweep"] = {"axes": {
+        "seed": {"values": {"one": {"patches": {"seed": {"value": 1}}}}},
+    }}
+    app = create_app(projects_dir=tmp_path)
+    with TestClient(app) as client:
+        folders = app.state.project_folders
+        _save_project(folders, "reach", Project.model_validate(raw))
+        snapshot = folders.read("reach")
+        response = client.post("/api/projects/reach/authoring/trials", json={
+            "revision": snapshot.revision,
+            "run": {"variant": "default", "step": "train", "row": "default"},
+        })
+        assert response.status_code == 422, response.text
+        assert response.json()["detail"] == "The selected run no longer belongs to this step."
+
+
 def test_trial_authoring_preserves_field_presence_when_editing_objective_terms(tmp_path):
     raw = document_project(authored_documents())
     task = raw["documents"]["task"]["payload"]

@@ -5,6 +5,7 @@ import type {
   StudioSavedTrainRuns, StudioTrialReplayResponse, TrialRecords,
 } from '../../src/generated/studioContracts';
 import { savedRunId } from '../../src/features/projectFolder/projectWindowPlan';
+import { studioBytes } from '../../src/components/activity/studioVocabulary';
 import { authorEvaluateConditions } from './fixtures/authorEvaluateConditions';
 import { captureStudioWindow, chooseSweepValue, drawnRunLabel, enter, mapStep, runName, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
@@ -261,17 +262,15 @@ async function runSavedEvaluation(page: Page, request: APIRequestContext, info: 
   await expect(baselineCard).toContainText('1');
   await expect(plans(page).getByRole('columnheader', { name: 'Size', exact: true })).toBeVisible();
   const settled = await plan();
-  const formatBytes = new Intl.NumberFormat('en-US', { style: 'unit', unit: 'byte', unitDisplay: 'narrow' });
   const conditionSizes = settled.window_map!.evaluations!
-    .filter(({ key }) => key.step === 'conditions').map(({ result }) => result!.size_bytes);
+    .filter(({ key }) => key.step === 'conditions').map(({ result }) => studioBytes(result!.size_bytes));
   expect(conditionSizes).toHaveLength(2);
   for (const size of new Set(conditionSizes)) {
-    await expect(plans(page).getByText(formatBytes.format(size), { exact: true }))
-      .toHaveCount(conditionSizes.filter((other) => other === size).length);
+    await expect(plans(page).getByText(size, { exact: true })).toHaveCount(conditionSizes.filter((other) => other === size).length);
   }
   await chooseStep(page, 'baseline');
   const baselineSize = settled.window_map!.evaluations!.find(({ key }) => key.step === 'baseline')!.result!.size_bytes;
-  await expect(plans(page).getByText(formatBytes.format(baselineSize), { exact: true })).toHaveCount(1);
+  await expect(plans(page).getByText(studioBytes(baselineSize), { exact: true })).toHaveCount(1);
   await chooseStep(page, 'finite');
   const [finite] = await submit(page, path);
   const submitted = [...baseline, ...conditions, finite];

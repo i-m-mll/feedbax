@@ -120,8 +120,8 @@ function savedResult(result: { request_id: string; job_id: string; validity?: Pl
 const noChecks: ReadonlySet<string> = new Set();
 
 /**
- * The value an optional axis gives the runs it keeps beside their copies: the axis's first mark, with no name of its
- * own. It is no value of the authored axis, so no edit names it.
+ * The value an optional axis gives the runs it keeps beside their copies: the axis's first mark, labelled with the
+ * axis's name, as the copies' values are named after it. It is no value of the authored axis, so no edit names it.
  */
 export const unvalued = '';
 
@@ -338,7 +338,7 @@ export function projectWindowPlan(
     for (const axis of optionalAxes(project, row.key.step)) {
       if (axis in row.coordinates || axis in (row.input_axes ?? {}) || !kept.get(JSON.stringify([row.key.step, axis]))?.has(row.key.row)) continue;
       const entries = sweeps.get(axis) ?? new Map<string, string>();
-      sweeps.set(axis, new Map([[unvalued, ''], ...entries]));
+      sweeps.set(axis, new Map([[unvalued, axis], ...entries]));
       values[axis] = unvalued;
     }
     const id = savedRunId(row.key);
@@ -451,7 +451,8 @@ export function projectWindowPlan(
     };
   });
   return {
-    steps,
+    // One order whichever source the steps come from, so the drawer and map do not reorder as the plan is read.
+    steps: steps.sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true })),
     edges: (map?.edges ?? []).filter(({ from_key, to_key }) => from_key.variant === scope && to_key.variant === scope)
       .map(({ from_key, to_key }) => ({
         from: { stepId: from_key.step, runId: savedRunId(from_key) },

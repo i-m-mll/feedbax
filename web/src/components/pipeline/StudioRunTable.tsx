@@ -2,7 +2,7 @@ import { appTip } from "@window-shell/browser/tooltip";
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { StudioCollectionProgress, StudioRunProgress, StudioRunStatus } from "@/components/activity/StudioRunStatus";
-import { studioName, studioRunReason, studioRunStatus } from "@/components/activity/studioVocabulary";
+import { studioBytes, studioName, studioRunReason, studioRunStatus } from "@/components/activity/studioVocabulary";
 import { StatusMark } from "@/components/ui/StatusMark";
 import type { PlanRunView, PlanStepView, PlanSweepView } from "@/features/pipeline/planView";
 import {
@@ -25,7 +25,6 @@ const gutter = "pl-1 pr-2 text-right";
 /** The controls inside a run's row; a press anywhere else on the row chooses the run. */
 const rowControls = "button, a, input, select, textarea, [role=button], [role=menuitem], [contenteditable=true]";
 
-const byteSize = new Intl.NumberFormat(undefined, { style: "unit", unit: "byte", unitDisplay: "narrow" });
 
 export interface RunSelectionProps {
   step: PlanStepView;
@@ -240,7 +239,7 @@ export function StudioRunTable({ step, state, onSelectionChange, rows, related, 
                   {(run.status === "running" || run.status === "stopped") && run.progress &&
                     <StudioRunProgress progress={run.progress} etaSeconds={run.status === "running" ? run.etaSeconds : undefined} />}
                   {run.status === "collecting" && <StudioCollectionProgress progress={run.collectionProgress} />}
-                  {run.sizeBytes !== undefined && byteSize.format(run.sizeBytes)}
+                  {run.sizeBytes !== undefined && studioBytes(run.sizeBytes)}
                 </TableCell>
               </TableRow>} />
             );

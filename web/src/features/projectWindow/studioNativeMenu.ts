@@ -67,6 +67,8 @@ export type StudioWindowAction = { kind: 'drag' | 'zoom' } | { kind: 'title'; ti
 interface NativeMenuHost {
   publish(snapshot: Snapshot | null): Promise<void>;
   windowAction?(action: StudioWindowAction): Promise<void>;
+  /** Saves `bytes` where the user chooses in the system save panel; answers false when the user cancels. */
+  saveFile?(name: string, bytes: Uint8Array): Promise<boolean>;
 }
 
 declare global {

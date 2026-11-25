@@ -29,13 +29,14 @@ class Variable:
     dims: Dimensions
     units: str | None = field(default=None, kw_only=True)
     quantity: str | None = field(default=None, kw_only=True)
+    label: str | None = field(default=None, kw_only=True)
     frame: str | None = field(default=None, kw_only=True)
     trial_time: TrialFigureTime | None = field(default=None, kw_only=True)
 
     @classmethod
     def from_field(cls, data: Array, field: FieldDescriptor, dims: Dimensions) -> Variable:
         return cls(
-            data, dims, units=field.units, quantity=field.quantity, frame=field.frame,
+            data, dims, units=field.units, quantity=field.quantity, label=field.label, frame=field.frame,
             trial_time=field.trial_time,
         )
 
@@ -141,6 +142,7 @@ class Dataset:
                 dims=variable.dims,
                 units=variable.units,
                 quantity=variable.quantity,
+                label=variable.label,
                 frame=variable.frame,
                 trial_time=variable.trial_time,
                 inline_values=inline_values,

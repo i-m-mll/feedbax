@@ -71,6 +71,29 @@ def test_relate_uses_the_root_output_and_edits_only_the_objective(project):
     assert not related_term.epochs
 
 
+def test_term_added_from_a_component_port_uses_its_root_output(project):
+    client, url, body, _, _ = project
+    field = {
+        "kind": "field",
+        "parent": {"kind": "port", "end": {
+            "owner": "component", "component": "plant", "direction": "output", "port": "effector",
+        }},
+        "path": ["force"],
+    }
+    related = client.post(f"{url}/authoring/trials", json=body | {"change": {
+        "kind": "relate", "first": {"kind": "port", "address": {"composites": [], "element": field}},
+    }})
+    assert related.is_success, related.text
+    change = related.json()
+    saved = client.patch(url, json={"revision": body["revision"], "files": change["files"]})
+    assert saved.is_success, saved.text
+    terms = saved.json()["project"]["documents"]["simple-reaches-objective"]["payload"]["terms"]
+    term = ObjectiveTerm.model_validate(next(item for item in terms if item["id"] == change["related_term"]))
+    root_port = {"kind": "port", "end": {"owner": "outputs", "port": "effector"}}
+    root = ModelAddress.model_validate({"composites": [], "element": field | {"parent": root_port}})
+    assert term.measure == CallValue(function="sqnorm", args=(NameValue(reference=root.to_text()),))
+
+
 def test_recorded_relation_uses_the_drawn_anchor_and_computed_point(project, tmp_path):
     client, url, body, snapshot, anchor = project
     shown = client.post(f"{url}/authoring/trials", json=body)

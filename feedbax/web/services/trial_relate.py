@@ -50,10 +50,10 @@ def related_term(
                 leaf = outputs.get(place.address.to_text())
                 located = pair.model.signals.at(place.address)
                 origin = located.origin if located is not None else None
-            if leaf is None and origin is not None:
+            if origin is not None:
                 leaf = min(
                     (value for value in outputs.values() if value.origin == origin),
-                    key=output_preference, default=None,
+                    key=output_preference, default=leaf,
                 )
             if leaf is None or leaf.type is None:
                 raise ValueError("This Model place has no readable signal.")

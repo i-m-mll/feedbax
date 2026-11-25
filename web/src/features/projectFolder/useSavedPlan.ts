@@ -32,15 +32,15 @@ export interface SavedPlan {
   refetch(): Promise<unknown>;
 }
 
-export function useSavedPlan(editor: ProjectEditController, version: string): SavedPlan {
-  const { saved } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
+export function useSavedPlan(editor: ProjectEditController): SavedPlan {
+  const { saved, planVersion } = useSyncExternalStore(editor.subscribe, editor.getSnapshot);
   const queries = useQueryClient();
   const query = useFollowingQuery({
     queryKey: planKey(saved.project_id, saved.revision),
     queryFn: ({ signal }) => fetchSavedTrainRuns(saved.project_id, saved.revision, signal),
     placeholderData: keepPreviousData,
     gcTime: 0,
-  }, version);
+  }, String(planVersion));
   const compiled = useRef<{ revision: string; project: Project }>();
   if (query.data?.revision === saved.revision) compiled.current = { revision: saved.revision, project: saved.project };
   const read = query.data;

@@ -239,7 +239,9 @@ test('an addressed Model numeric field authors a step sweep from the inspector',
   await runFields;
   await field.getByRole('button', { name: 'Mass kind: Value', exact: true }).click();
   await page.getByRole('menuitemradio', { name: 'Sweep', exact: true }).click();
-  await enter(field.getByRole('textbox', { name: 'Mass', exact: true }), '1, 2');
+  const text = field.getByRole('textbox', { name: 'Mass', exact: true });
+  await expect(text).toBeFocused();
+  await enter(text, '1, 2');
   await expect.poll(async () => (await readPlan(request, projectPath)).plan.window_map!.rows
     .map(({ coordinates }) => coordinates.mass?.value)).toEqual([1, 2]);
   const { plan } = await readPlan(request, projectPath);

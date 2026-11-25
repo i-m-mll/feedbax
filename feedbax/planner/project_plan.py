@@ -22,7 +22,7 @@ from feedbax.contracts._request_codec import same_typed_value
 from feedbax.contracts.analysis_document import AnalyzeDatasetInput, AnalyzeInput, AnalyzeModelInput, AnalyzeTaskInput
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
-from feedbax.contracts.expression_values import Problem, TextSpan, UnresolvedValue, ValueBase
+from feedbax.contracts.expression_values import Level, Problem, ScopedValue, TextSpan, UnresolvedValue, ValueBase
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, FigureDocument, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.graph import GraphSpec
@@ -88,6 +88,7 @@ from feedbax.contracts.result_address import (
     AddressProblem, ElementHolders, analyze_cards, payload_elements, shared_element_keys,
 )
 from feedbax.contracts.rollout import ROLLOUT_TYPE, RolloutParameters, authored_rollout_settings, resolve_trial_ids
+from feedbax.contracts.rollout_dataset import common_rollout_port, rollout_dataset_port, rollout_update_axis
 from feedbax.contracts.project_sweep import (
     CHECKPOINT_RULE_TARGET,
     CheckpointRuleAxis,
@@ -340,6 +341,8 @@ class TrainFacts:
     """The completed-update count the run starts from: 0 when fresh; None when the run controls do not resolve."""
     target_total: int | None
     """The completed-update count at the run's end; None when the run controls do not resolve."""
+    input_bindings: dict[str, str | None] = field(default_factory=dict)
+    """Authored choices before implicit matches are bound in the Train request."""
 
 
 _CHECKPOINT_INITIALIZATION: TypeAdapter[Literal["initialize_from"] | TrainContinuation | None] = TypeAdapter(
@@ -348,12 +351,19 @@ _CHECKPOINT_INITIALIZATION: TypeAdapter[Literal["initialize_from"] | TrainContin
 
 
 def _train_facts(payload: Payload, python_tasks: PythonTaskRegistry) -> TrainFacts:
-    """Read the Task as the request would carry it: a Python task by its canonical selection."""
+    """Read the authored Task and run controls, resolving Python task selections."""
     from feedbax.tasks.registry import resolve_python_task_instance
 
     trial = payload.get("trial_documents")
     task: TaskDocument | PythonTaskSelection | None = None
+    bindings = {}
     if isinstance(trial, dict):
+        raw_bindings = trial.get("input_bindings", {})
+        if isinstance(raw_bindings, dict):
+            bindings = {
+                port: signal for port, signal in raw_bindings.items()
+                if isinstance(port, str) and (signal is None or isinstance(signal, str))
+            }
         try:
             if trial.get("task") is not None:
                 task = TaskDocument.model_validate(trial["task"])
@@ -369,9 +379,9 @@ def _train_facts(payload: Payload, python_tasks: PythonTaskRegistry) -> TrainFac
         batches = DocumentTrainingConfig.model_validate(payload.get("training_config")).n_batches
         start = _CHECKPOINT_INITIALIZATION.validate_python(payload.get("checkpoint_initialization"))
     except ValidationError:
-        return TrainFacts(task, None, None)
+        return TrainFacts(task, None, None, bindings)
     origin = start.source_completed_updates if isinstance(start, TrainContinuation) else 0
-    return TrainFacts(task, origin, origin + batches)
+    return TrainFacts(task, origin, origin + batches, bindings)
 
 
 @dataclass(frozen=True)
@@ -430,6 +440,7 @@ class PlannedRun(PlannedRow):
     inputs: Mapping[str, PlannedInput]
     omissions: Mapping[str, str]
     requires: tuple[str, ...]
+    dataset_port: DatasetPort | None = None
 
     @property
     def admission_problem(self) -> RunProblem | None:
@@ -965,6 +976,14 @@ class _ModelSource:
     unpaired: bool = False
     """The Train's Model, Task and Objective do not pair, so nothing evaluates what it would train."""
     authored_model: ModelDocument | None = None
+    trial: TrainFacts | None = None
+
+    @cached_property
+    def evaluation_stamp(self) -> tuple[str, str | None]:
+        trial = self.trial
+        return self.stamp, sha256_bytes(to_json((
+            trial.task.model_dump(mode="json") if trial.task is not None else None, trial.input_bindings,
+        ))) if trial is not None else None
 
 
 @dataclass(frozen=True)
@@ -1225,25 +1244,27 @@ class _LoweredRow:
     encoded_spec: RequestSpec | None = None
     resolved: bool = True
     pinned_model: ModelDocument | None = None
+    dataset_port: DatasetPort | None = None
 
 
 @dataclass(frozen=True)
-class _Unpaired:
-    """An Evaluate payload whose Task does not pair with its subject's Model, lowered so the row is still planned.
+class _EvaluatePayload:
+    """A managed Evaluate's lowered payload and declared Task dataset fields.
 
     ``payload`` is None when the Task does not resolve, so its trial rule does not lower."""
 
     payload: Payload | None
-    problems: tuple[ProjectDiagnostic, ...]
+    problems: tuple[ProjectDiagnostic, ...] = ()
+    dataset_port: DatasetPort | None = None
 
 
 def _map_problem[T](
-    result: T | ProjectDiagnostic | _Unpaired, move: Callable[[ProjectDiagnostic], ProjectDiagnostic],
-) -> T | ProjectDiagnostic | _Unpaired:
+    result: T | ProjectDiagnostic | _EvaluatePayload, move: Callable[[ProjectDiagnostic], ProjectDiagnostic],
+) -> T | ProjectDiagnostic | _EvaluatePayload:
     """Place the problem of a lowered Evaluate payload with ``move``."""
     if isinstance(result, ProjectDiagnostic):
         return move(result)
-    if isinstance(result, _Unpaired):
+    if isinstance(result, _EvaluatePayload) and result.problems:
         return replace(result, problems=tuple(map(move, result.problems)))
     return result
 
@@ -2280,7 +2301,7 @@ class _Compiler:
             if subject is not None and subject.candidates
             else (model_source,) if model_source is not None else ()
         )
-        source_stamp = tuple(source.stamp if source is not None else None for source in source_models)
+        source_stamp = tuple(source.evaluation_stamp if source is not None else None for source in source_models)
         source_problem = model_source.evaluation_problem if model_source is not None else None
         checkpoint = inputs.get("checkpoint") if kind == "train" else None
         trained = self.model_sources.get(checkpoint.producer) if checkpoint is not None and checkpoint.producer else None
@@ -2412,7 +2433,9 @@ class _Compiler:
                     train=train,
                 )
             refusals: tuple[RunProblem, ...] = ()
-            if isinstance(payload, _Unpaired):
+            dataset_port = None
+            if isinstance(payload, _EvaluatePayload):
+                dataset_port = payload.dataset_port
                 refusals = tuple(
                     RunProblem(problem.path, problem.detail, problem.model_address, problem.variation_target)
                     for problem in payload.problems
@@ -2441,6 +2464,7 @@ class _Compiler:
                 model_source=lowered.model_source or authored_model,
                 train=train,
                 problems=self.locate_sweep_run_problems((*refusals, *lowered.problems), composition, key, row),
+                dataset_port=dataset_port,
             )
 
         if self.previous is None:
@@ -2535,7 +2559,7 @@ class _Compiler:
         self, key: RunKey, payload: Payload, model_source: _ModelSource | None,
         reference: object, has_differences: bool,
         document_ids: Mapping[str, str], read: Callable[[str], Document | None],
-    ) -> Payload | ProjectDiagnostic | _Unpaired:
+    ) -> Payload | ProjectDiagnostic | _EvaluatePayload:
         original = payload.get("params")
         slots = self.evaluation_slots(key, payload, model_source, reference, document_ids, read)
         if isinstance(slots, ProjectDiagnostic):
@@ -2611,7 +2635,10 @@ class _Compiler:
             if not isinstance(params, dict):
                 return problem("payload.params", "Declare rollout parameters.")
             try:
-                variation = own_task_variation(train.trial_documents.task_source, slots["task"], params.get("variation", []))
+                authored = model_source.trial.task if model_source.trial is not None else None
+                variation = own_task_variation(
+                    authored or train.trial_documents.task_source, slots["task"], params.get("variation", []),
+                )
             except ValueError as error:
                 return problem("payload.params.variation", str(error))
             if variation is not None:
@@ -2622,12 +2649,12 @@ class _Compiler:
     def _lower_evaluate_payload(
         self, key: RunKey, payload: Payload, model_source: _ModelSource | None,
         reference: object, has_differences: bool, model: _EvaluationModel | None,
-    ) -> Payload | ProjectDiagnostic | _Unpaired:
+    ) -> Payload | ProjectDiagnostic | _EvaluatePayload:
         if not has_differences and model is None:
             return self.lower_evaluate_trials(key, payload, reference, model_source)
         original = payload.get("params")
         lowered = self.lower_evaluate_model(key, payload, model_source, reference, model)
-        if isinstance(lowered, (ProjectDiagnostic, _Unpaired)):
+        if isinstance(lowered, (ProjectDiagnostic, _EvaluatePayload)):
             return lowered
         result = self.lower_evaluate_trials(key, lowered, reference, model_source)
         # Derived Model patches append to an ordered copy. Report a Task
@@ -2754,6 +2781,8 @@ class _Compiler:
                 narrowed, document_ids=resolved.document_ids, document_uses=resolved.document_uses,
                 problems=self.locate_sweep_run_problems(problems, template, key, row),
                 pinned_model=model if isinstance(subject_ref, LoadedModelReference) else None,
+                dataset_port=rollout_dataset_port(paired.task.interface.signals, settings.states_schema, None)
+                if not isinstance(paired, tuple) and not paired.problems else None,
             ), inputs
         except ModelCompilationProblem as error:
             problems = _trial_problems(model_compilation_problems(error), None, initial=True)
@@ -2777,7 +2806,7 @@ class _Compiler:
     def lower_best_evaluate(
         self, key: RunKey, payload: Payload, subject: PlannedInput, rank: BestRank, has_differences: bool,
         document_ids: Mapping[str, str], read: Callable[[str], Document | None],
-    ) -> Payload | ProjectDiagnostic | _Unpaired:
+    ) -> Payload | ProjectDiagnostic | _EvaluatePayload:
         def problem(detail: str) -> ProjectDiagnostic:
             return ProjectDiagnostic(
                 ResolutionCode.BAD_REFERENCE, subject.best_path, detail, key.step,
@@ -2788,6 +2817,7 @@ class _Compiler:
             return problem("Best requires managed rollout Evaluate.")
         common = None
         unpaired = None
+        ports = []
         for producer, candidate in zip(subject.candidates, rank.candidates, strict=True):
             model = self.model_sources.get(producer)
             name = f"{producer.variant}/{producer.step}/{producer.row}"
@@ -2801,14 +2831,18 @@ class _Compiler:
             )
             if isinstance(lowered, ProjectDiagnostic):
                 return replace(lowered, detail=f"Best candidate {name}: {lowered.detail}")
-            if isinstance(lowered, _Unpaired):
-                unpaired = unpaired or replace(
-                    lowered, problems=tuple(
-                        replace(problem, detail=f"Best candidate {name}: {problem.detail}") for problem in lowered.problems
-                    ),
-                )
+            if isinstance(lowered, _EvaluatePayload):
+                if lowered.problems:
+                    unpaired = unpaired or replace(
+                        lowered, problems=tuple(
+                            replace(problem, detail=f"Best candidate {name}: {problem.detail}") for problem in lowered.problems
+                        ),
+                    )
                 if lowered.payload is None:
+                    assert unpaired is not None
                     return unpaired
+                if lowered.dataset_port is not None:
+                    ports.append(lowered.dataset_port)
                 lowered = lowered.payload
             try:
                 if "trial_set" in lowered["params"]:
@@ -2820,15 +2854,17 @@ class _Compiler:
                 return problem(f"Best candidate {name} resolves a different Evaluate definition or trial order.")
             common = lowered
         assert common is not None
-        return replace(unpaired, payload=common) if unpaired is not None else common
+        return _EvaluatePayload(
+            common, unpaired.problems if unpaired is not None else (),
+            common_rollout_port(ports) if len(ports) == len(subject.candidates) else None,
+        )
 
     def lower_evaluate_trials(
         self, key: RunKey, payload: Payload, reference: object, model_source: _ModelSource | None,
-    ) -> Payload | ProjectDiagnostic | _Unpaired:
-        from feedbax.execution.trial_resolution import evaluation_conditions, pair_trial_source
+    ) -> Payload | ProjectDiagnostic | _EvaluatePayload:
+        from feedbax.execution.trial_resolution import pair_trial_source, resolve_python_task
         from feedbax.contracts.rollout import CannotRun
-        from feedbax.tasks.registry import resolve_python_task_instance
-        from feedbax.training.evaluation_variant import resolve_evaluation_variant
+        from feedbax.training.evaluation_variant import resolve_evaluation_task, resolve_evaluation_variant
 
         if (
             payload.get("evaluation_type") != ROLLOUT_TYPE or not isinstance(reference, ProductRef)
@@ -2847,11 +2883,15 @@ class _Compiler:
                 raise ValueError("Declare a trial-set rule for managed Evaluate.")
             settings = authored_rollout_settings(raw)
             documents = train.trial_documents
+            authored = model_source.trial
+            if authored is not None and isinstance(authored.task, TaskDocument):
+                documents = documents.model_copy(update={"task": authored.task, "input_bindings": authored.input_bindings})
             variant = resolve_evaluation_variant(
                 model_source.evaluation_graph, documents.task_source, settings.variation,
                 components=self.components or _builtin_model_registry(),
             )
             refusals = ()
+            paired_task = None
             if settings.input_bindings or any(target[0] == "task" for target in variant.edit_origins):
                 pairing = pair_trial_source(
                     documents.model, variant.task,
@@ -2868,20 +2908,46 @@ class _Compiler:
                         )
                         for problem, cannot in ((item, variant.task_refusal(item)) for item in problems)
                     )
-                    if isinstance(variant.task, PythonTaskSelection) and isinstance(
-                        resolve_python_task_instance(variant.task, self.python_tasks), tuple,
-                    ):
-                        return _Unpaired(None, refusals)
-                    conditions = evaluation_conditions(variant.task, self.python_tasks)
                 else:
-                    conditions = pairing.task.condition_ids
+                    assert not isinstance(pairing, tuple)
+                    paired_task = pairing.task
+            if paired_task is not None:
+                conditions, signals = paired_task.condition_ids, paired_task.interface.signals
+            elif isinstance(variant.task, TaskDocument):
+                conditions, signals = variant.task.condition_ids, variant.task.signals
             else:
-                conditions = evaluation_conditions(variant.task, self.python_tasks)
+                template = resolve_python_task(variant.task, self.python_tasks)
+                if isinstance(template, tuple):
+                    if refusals:
+                        return _EvaluatePayload(None, refusals)
+                    raise ValueError(template[0].reason)
+                conditions = template.condition_ids
+                signals = tuple(ScopedValue(id=name, name=name, type=type_, level=Level.STEP)
+                                for name, type_ in template.signals.items())
             trials = resolve_trial_ids(raw["trial_set"], conditions)
-            lowered = payload | {"params": {name: value for name, value in raw.items() if name != "trial_set"} | {
-                "trials": list(trials),
-            }}
-            return _Unpaired(lowered, refusals) if refusals else lowered
+            params = {name: value for name, value in raw.items() if name != "trial_set"} | {"trials": list(trials)}
+            if authored is not None and isinstance(authored.task, TaskDocument):
+                # Evaluate's Task can change implicit assignments. Send those differences to the worker, whose
+                # Train admission fixes the original pairing by ID.
+                resolved = documents.resolved_signal_bindings(
+                    {signal.name: signal.id for signal in signals}, settings.input_bindings,
+                )
+                runtime_task = resolve_evaluation_task(train.trial_documents.task_source, settings.variation)
+                runtime_signals = runtime_task.signals if isinstance(runtime_task, TaskDocument) else signals
+                runtime = train.trial_documents.resolved_signal_bindings({
+                    signal.name: signal.id for signal in runtime_signals
+                })
+                overrides = {key: value for key, value in resolved.items() if key not in runtime or runtime[key] != value}
+                if overrides:
+                    params["input_bindings"] = overrides
+                else:
+                    params.pop("input_bindings", None)
+            lowered = payload | {"params": params}
+            return _EvaluatePayload(
+                lowered, refusals,
+                rollout_dataset_port(signals, settings.states_schema, rollout_update_axis(reference))
+                if not refusals else None,
+            )
         except ValueError as error:
             return ProjectDiagnostic(
                 ResolutionCode.INVALID_PAYLOAD,
@@ -2901,7 +2967,7 @@ class _Compiler:
     def lower_evaluate_model(
         self, key: RunKey, payload: Payload, model_source: _ModelSource | None, reference: object,
         model: _EvaluationModel | None = None,
-    ) -> Payload | ProjectDiagnostic | _Unpaired:
+    ) -> Payload | ProjectDiagnostic | _EvaluatePayload:
         from feedbax.compiler.model_attachment import lower_evaluate_attachments
         from feedbax.compiler.model_document import ModelCompilationProblem
         from feedbax.compiler.graph_schema import validate_graph_connection_schema
@@ -2973,7 +3039,7 @@ class _Compiler:
                 "variation": [edit.model_dump(mode="json", exclude_unset=True) for edit in variation],
             }}
         except ModelCompilationProblem as error:
-            return _Unpaired(None, tuple(
+            return _EvaluatePayload(None, tuple(
                 _model_difference_problem(key, document, problem.address, problem.reason,
                                           path=pointer(problem.address.stored_path()))
                 for problem in error.problems
@@ -3345,7 +3411,7 @@ class _Compiler:
         self.requests[encoded.id] = encoded.data
         self.documents.update(encoded.documents)
         if lowered.model_source is not None:
-            self.model_sources[key] = lowered.model_source
+            self.model_sources[key] = replace(lowered.model_source, trial=lowered.train)
         run = PlannedRun(
             key, row.kind, row.label, row.coordinates, encoded.id,
             MappingProxyType(dict(inputs)), MappingProxyType(dict(omissions)), requires,
@@ -3357,6 +3423,7 @@ class _Compiler:
             followed_documents=followed,
             evaluated_model=evaluated,
             train=lowered.train,
+            dataset_port=lowered.dataset_port,
         )
         self.rows[key] = run
         return run
@@ -3529,15 +3596,16 @@ class _Compiler:
         inputs: Mapping[str, tuple[PlannedInput, ...]],
         resolved: SelectedRunDefinition | ResolvedStep,
     ) -> PlannedAnalyzeRun:
-        from feedbax.planner.project_analyze import lower_analyze
+        from feedbax.planner.project_analyze import EvaluateSource, lower_analyze
 
         assert self.operations is not None
         evaluations = {
-            source.producer: (
+            source.producer: EvaluateSource(
                 request_identity.decode_request(
                     self.requests[producer.request_id], self.documents.__getitem__,
                 ).spec,
                 LabelName(source.producer.row, self.rows[source.producer].label, kind="row"),
+                cast(PlannedRun, self.rows[source.producer]).dataset_port,
             )
             for sources in inputs.values() for source in sources
             if source.producer is not None

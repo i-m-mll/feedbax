@@ -796,26 +796,13 @@ class ProjectPlanService:
 
     def _evaluation_result(
         self, project_id: str, body: StudioSavedEvaluationRead,
-    ) -> tuple[ProjectPlanRead, EvaluationResult]:
-        view = self.read(project_id, revision=body.revision)
+    ) -> tuple[SettledProjectPlan, EvaluationResult]:
+        settled = self.folders.read_plan(project_id, revision=body.revision)
         key = RunKey(body.key.variant, body.key.step, body.key.row)
-        row = view.evaluations.get(key)
-        receipt = next((
-            attempt.successful_receipt for attempt in view.attempts_by_run.get(key, ())
-            if attempt.job_id == body.job_id
-        ), None)
-        if row is None:
+        run = settled.plan.row(key)
+        if not isinstance(run, PlannedRun) or run.kind != "evaluate":
             raise JobNotFound(body.job_id)
-        if receipt is None and row.previous is not None and row.previous.job_id == body.job_id:
-            receipt = row.previous.receipt
-        if receipt is None:
-            raise JobNotFound(body.job_id)
-        result = self.jobs.read_evaluation_result(
-            project=view.settled.project_id, store=view.settled.store_path, job_id=body.job_id,
-        )
-        if result.receipt != receipt:
-            raise JobConflict("The selected Evaluate receipt changed.")
-        return view, result
+        return settled, self.jobs.read_saved_evaluation_result(plan=settled, run=run, job_id=body.job_id)
 
     def evaluation_replay(
         self, project_id: str, body: StudioSavedEvaluationReplayRequest,
@@ -867,9 +854,9 @@ class ProjectPlanService:
     def _retained_evaluation_objective(
         self, project_id: str, body: StudioSavedEvaluationRead,
     ) -> StudioEvaluationObjectiveSeries:
-        view, result = self._evaluation_result(project_id, body)
+        settled, result = self._evaluation_result(project_id, body)
         try:
-            store = ImmutableArtifactBlobProvider(view.settled.store_path)
+            store = ImmutableArtifactBlobProvider(settled.store_path)
             receipts = SuccessView(store)
             ref = receipts.attempt_ref(body.job_id)
             if ref is None:
@@ -1036,6 +1023,7 @@ def _light_history(
         changed = StudioDefinitionChange(path=path, place=definition_place(
             parts, node.document_ids.get if isinstance(node, PlannedRun) else lambda _slot: None,
             element=key.name if isinstance(key, ElementKey) else None,
+            element_name=node.label if isinstance(node, PlannedElement) else None,
             variation=variation_targets(new.spec.params if isinstance(new.spec, EvaluationRequestSpec) else None),
         ))
     status, reason = saved_request_status(

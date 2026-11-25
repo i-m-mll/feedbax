@@ -8,8 +8,9 @@ from pydantic import Field
 
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.expression_registry import Evaluation
-from feedbax.contracts.expression_values import LENGTH, DrawValue, Level, ValueBase
+from feedbax.contracts.expression_values import DrawValue, Level, ValueBase
 from feedbax.contracts.project_sources import pointer
+from feedbax.contracts.rollout_dataset import XY, rollout_signal_field
 from feedbax.contracts.semantic_values import model_state_address, semantic_key
 from feedbax.contracts.studio_place import path_parts
 from feedbax.contracts.trial_clock import TrialClockChoice, TrialMeanOptions
@@ -45,8 +46,6 @@ class RecordedTrialLayout(StrictModel):
 
 
 def _task_field(facet: str, name: str) -> str:
-    if facet == "output":
-        return semantic_key("task", "output", (), name)
     return pointer(("v1", "task", facet, name))
 
 
@@ -74,13 +73,17 @@ def trial_dataset_fields(
     trial_axes = (*leading, "trial")
     transition_axes = (*trial_axes, "transition")
     variable_levels = {value.id: value.level for value in task.interface.variables}
-    signal_types = {value.id: value.type for value in task.interface.signals}
+    signals = {value.id: value for value in task.interface.signals}
+
+    def add_xy():
+        if "xy" not in coords:
+            coords["xy"] = Variable.from_field(np.asarray(["x", "y"]), XY, XY.dims)
 
     def put(path, value, axes, *, point=False):
         array = np.asarray(value)
         additional = array.ndim - (len(axes) - len(leading))
         if point and additional == 1 and array.shape[-1] == 2:
-            coords["xy"] = Variable(np.asarray(["x", "y"]), ("xy",))
+            add_xy()
             fields[path] = Variable(
                 array.reshape((1,) * len(leading) + array.shape), (*axes, "xy"),
                 units="m", frame="world",
@@ -96,11 +99,14 @@ def trial_dataset_fields(
     for key, value in trial.inits.items():
         put(_task_field("initial", key), value, trial_axes)
     for key, value in trial.inputs.items():
-        signal_type = signal_types[key]
-        put(
-            _task_field("output", key), value, transition_axes,
-            point=signal_type.shape == (2,) and signal_type.dimensions == LENGTH,
+        signal = signals[key]
+        name, descriptor = rollout_signal_field(key, signal.name, signal.type, leading)
+        array = np.asarray(value)
+        fields[name] = Variable.from_field(
+            array.reshape((1,) * len(leading) + array.shape), descriptor, descriptor.dims,
         )
+        if "xy" in descriptor.dims:
+            add_xy()
         put(_task_field("presence", key), trial.present[key], transition_axes)
     for key, value in trial.variables.items():
         axes = transition_axes if variable_levels[key] == Level.STEP else trial_axes

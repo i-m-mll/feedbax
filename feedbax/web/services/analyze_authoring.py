@@ -1,11 +1,15 @@
 """Project registered operation controls and store the edits of an Analyze step's analysis document."""
 
+from collections.abc import Callable
+
 from feedbax.analysis.operations import OperationRegistry
 from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySettings
-from feedbax.contracts.analysis_document import AnalysisDocument, DatasetSource, StepInput
+from feedbax.contracts.analysis_document import AnalysisDocument, DatasetSource, OperationDataset, StepInput
 from feedbax.contracts.dataset import FieldDescriptor
-from feedbax.contracts.figure_document import validate_figure_bindings
+from feedbax.contracts.figure_document import FigureDocument, FigureTemplateRef, validate_figure_bindings
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem
+from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
+from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.operation import (
     DatasetInputPort,
     DatasetPort,
@@ -14,12 +18,15 @@ from feedbax.contracts.operation import (
     require_dataset_fields,
     require_dataset_port,
 )
-from feedbax.contracts.project import DocumentReference, DocumentEdit, Project, RemoveProjectValue, SetProjectValue, member_name
+from feedbax.contracts.project import (
+    DocumentReference, DocumentEdit, LoadedModelDocument, Project, RemoveProjectValue, SetProjectValue,
+    member_display_name, member_name,
+)
 from feedbax.contracts.project_io import project_declaration_name
 from feedbax.contracts.project_inputs import StepReference
-from feedbax.planner.project_plan import PlannedAnalyzeRun, RunKey, compile_project
-from feedbax.contracts.project_resolution import BaseReaders, ProjectDiagnostic, ResolutionCode, compose_document
+from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode, compose_document
 from feedbax.contracts.project_sources import pointer
+from feedbax.contracts.semantic_values import model_state_address
 from feedbax.contracts.studio_analyze import (
     StudioAnalyzeAuthoring,
     StudioAnalyzeChange,
@@ -28,8 +35,11 @@ from feedbax.contracts.studio_analyze import (
     StudioAnalyzeRequest,
     StudioAnalyzeWire,
 )
+from feedbax.contracts.studio_place import path_parts, task_start
 from feedbax.jobs import JobConflict, JobNotFound
+from feedbax.planner.project_plan import EVALUATION_MODEL, PlannedAnalyzeRun, PlannedRun, ProjectPlan, RunKey, compile_project
 from feedbax.plot.templates import FigureTemplateRegistry
+from feedbax.web.services.authored_scope import preview_plan
 from feedbax.web.services.project_folder import ProjectFolderInvalid
 from feedbax.web.services.project_plan import ProjectPlanRead, ProjectPlanService
 from feedbax.studio.selection import StoredEdit
@@ -60,6 +70,75 @@ def _analysis(project: Project, document: str) -> AnalysisDocument:
     if isinstance(composed, ProjectDiagnostic):
         raise ValueError(composed.detail)
     return AnalysisDocument.model_validate(composed.payload)
+
+
+def _catalog_analysis(project: Project, document: str) -> AnalysisDocument | None:
+    try:
+        return _analysis(project, document)
+    except ValueError:
+        # The window map already carries the diagnostics of a document that cannot be composed.
+        return None
+
+
+def _sources(
+    analysis: AnalysisDocument, registry: OperationRegistry, states: DatasetPort | None,
+    row: PlannedAnalyzeRun | None, templates: FigureTemplateRegistry,
+) -> dict[str, dict[str, list[DatasetSource]]]:
+    operations = {}
+    ports: list[tuple[DatasetSource, DatasetPort]] = []
+    if states is not None:
+        ports.append((StepInput(input="states"), states))
+    for name, operation in analysis.operations.items():
+        try:
+            definition = registry.resolve(operation.operation).value.definition
+        except KeyError:
+            continue
+        operations[name] = definition
+        if row is not None and (requests := row.requests(name)):
+            ports.extend(
+                (OperationDataset(element=name, product=product), port)
+                for product, port in requests[0].datasets.items()
+            )
+
+    sources: dict[str, dict[str, list[DatasetSource]]] = {name: {} for name in analysis.operations | analysis.views}
+    for name, definition in operations.items():
+        for role, expected in definition.inputs.items():
+            if not isinstance(expected, DatasetPort):
+                continue
+            choices = sources[name][role] = []
+            for source, offered in ports:
+                if isinstance(source, OperationDataset) and source.element == name:
+                    continue
+                try:
+                    require_dataset_port(offered, expected)
+                except ValueError:
+                    continue
+                choices.append(source)
+
+    for name, view in analysis.views.items():
+        figure = row.figures.get(name) if row is not None else None
+        if figure is None and isinstance(view.figure, FigureTemplateRef):
+            try:
+                template = templates.resolve(view.figure.template)
+                figure = template.function(template.settings_model.model_validate(view.figure.settings))
+            except (KeyError, ValueError):
+                continue
+        if figure is None and isinstance(view.figure, FigureDocument):
+            figure = view.figure
+        if figure is None:
+            continue
+        for role in figure.data:
+            use = figure.model_copy(update={
+                "data": (role,), "layers": tuple(layer for layer in figure.layers if layer.role == role),
+            })
+            choices = sources[name][role] = []
+            for source, offered in ports:
+                try:
+                    validate_figure_bindings(use, {role: offered})
+                except ValueError:
+                    continue
+                choices.append(source)
+    return sources
 
 
 def _removal(analysis: AnalysisDocument, element: str) -> list[DocumentEdit]:
@@ -100,13 +179,10 @@ def _wire_edit(
 
 
 def _review_wire(
-    proposal: Project, key: RunKey, analysis: AnalysisDocument, family: str, wire: StudioAnalyzeWire,
-    registry: OperationRegistry, states: DatasetPort | None, readers: BaseReaders, figure_templates,
+    plan: ProjectPlan, key: RunKey, analysis: AnalysisDocument, family: str, wire: StudioAnalyzeWire,
+    registry: OperationRegistry, states: DatasetPort | None,
 ) -> None:
     """Refuse a wire the plan of ``proposal`` cannot resolve on ``key``'s run."""
-    plan = compile_project(
-        proposal, operations=registry, figure_templates=figure_templates, readers=readers,
-    )
     problems = [
         problem for problem in plan.diagnostics
         if (problem.variant, problem.step, problem.row) == (key.variant, key.step, key.row)
@@ -132,7 +208,7 @@ def _review_wire(
 
 def analyze_edit(
     project: Project,
-    plan,
+    plan: ProjectPlan,
     key: RunKey,
     document: str,
     change: StudioAnalyzeChange,
@@ -140,9 +216,8 @@ def analyze_edit(
     registry: OperationRegistry,
     states: DatasetPort | None,
     *,
-    readers: BaseReaders = BaseReaders(),
-    figure_templates: FigureTemplateRegistry | None = None,
-) -> StoredEdit:
+    compile_candidate: Callable[[Project], ProjectPlan] | None = None,
+) -> tuple[StoredEdit, ProjectPlan]:
     """Store ``change`` of ``document``, which ``key``'s step reads, for the ``chosen`` steps by the document rule.
 
     The chosen steps read ``document`` or a document based on it; when other steps read it too, a document based on
@@ -167,11 +242,13 @@ def analyze_edit(
     else:
         edits = base_value_edits(project, document, change.paths)
     stored = document_write(project, document, edits, chosen, users)
-    if family is not None and (stored.files or stored.created):
-        _review_wire(
-            preview_stored(project, stored), key, analysis, family, change, registry, states, readers, figure_templates,
-        )
-    return stored
+    if not (stored.files or stored.created):
+        return stored, plan
+    candidate = preview_stored(project, stored)
+    reviewed = compile_candidate(candidate) if compile_candidate is not None else compile_project(candidate, operations=registry)
+    if family is not None:
+        _review_wire(reviewed, key, analysis, family, change, registry, states)
+    return stored, reviewed
 
 
 def _variable_choices(
@@ -201,10 +278,13 @@ def _common_fields(
     left: dict[str, FieldDescriptor], right: dict[str, FieldDescriptor],
 ) -> dict[str, FieldDescriptor]:
     return {
-        name: field if field == other else field.model_copy(update={"inline_values": None})
+        name: field if field == other else field.model_copy(update={
+            "inline_values": field.inline_values if field.inline_values == other.inline_values else None,
+            "label": field.label if field.label == other.label else None,
+        })
         for name, field in left.items()
         if (other := right.get(name)) is not None
-        and field.model_dump(exclude={"inline_values"}) == other.model_dump(exclude={"inline_values"})
+        and field.model_dump(exclude={"inline_values", "label"}) == other.model_dump(exclude={"inline_values", "label"})
     }
 
 
@@ -249,6 +329,61 @@ def _states_port(
     return states
 
 
+def _state_models(project: Project, plan: ProjectPlan, row: PlannedAnalyzeRun) -> list[ModelDocument]:
+    members = {binding.producer for binding in row.inputs.get("states", ())}
+    documents = dict.fromkeys(
+        name for run in plan.runs if run.key in members
+        if (name := run.document_ids.get(EVALUATION_MODEL) or run.document_ids.get("inputs.subject")) is not None
+    )
+    models = []
+    for name in documents:
+        document = compose_document(project.documents.get, name)
+        if not isinstance(document, ProjectDiagnostic) and document.schema_id == LOADED_MODEL_SCHEMA_ID:
+            loaded = LoadedModelDocument.model_validate(document.payload)
+            document = compose_document(project.documents.get, loaded.model.document)
+        if not isinstance(document, ProjectDiagnostic) and document.schema_id == MODEL_DOCUMENT_SCHEMA_ID:
+            models.append(ModelDocument.model_validate(document.payload))
+    return models
+
+
+def _task_names(plan: ProjectPlan, row: PlannedAnalyzeRun) -> dict[str, str]:
+    """The current Task labels common to the Evaluate members whose states the Analyze reads."""
+    names: dict[str, set[str | None]] = {}
+    members = dict.fromkeys(binding.producer for binding in row.inputs.get("states", ()))
+    for key in members:
+        if key is None or not isinstance(run := plan.row(key), PlannedRun) or run.dataset_port is None:
+            continue
+        for field, descriptor in run.dataset_port.variables.items():
+            if field.startswith("/v1/task/output/"):
+                names.setdefault(field, set()).add(descriptor.label)
+    return {
+        field: (next(iter(labels)) if len(labels) == 1 else None) or path_parts(field)[-1]
+        for field, labels in names.items()
+    }
+
+
+def _variable_names(
+    options: dict[str, dict[str, list[str]]], states: DatasetPort | None, models: list[ModelDocument],
+    task_names: dict[str, str],
+) -> dict[str, str]:
+    fields = states.variables if states is not None else {}
+    names = {}
+    for key in dict.fromkeys(key for selectors in options.values() for choices in selectors.values() for key in choices):
+        if key in task_names:
+            names[key] = task_names[key]
+            continue
+        field = fields.get(key)
+        if field is not None and key.startswith("/v1/model/state/"):
+            address = model_state_address(key)
+            labels = {task_start(model, address).name for model in models}
+            if len(labels) == 1:
+                names[key] = labels.pop()
+                continue
+        leaf = path_parts(key)[-1].replace("/", " ") if key.startswith("/") else key
+        names[key] = (field.label or field.quantity if field is not None else None) or member_display_name(leaf)
+    return names
+
+
 def analyze_authoring(
     service: ProjectPlanService, project_id: str, body: StudioAnalyzeRequest
 ) -> StudioAnalyzeAuthoring:
@@ -278,15 +413,16 @@ def analyze_authoring(
         plan = settled.plan
         if plan.variants and plan.variants[0] != key.variant:
             raise ValueError(f"The Analyze step is shared by all variants and is edited in {plan.variants[0]!r}, not {key.variant!r}")
-        problems = [
+        problems = []
+        row = next((row for row in plan.rows if row.key == key and isinstance(row, PlannedAnalyzeRun)), None)
+        step_problems = [
             problem for problem in plan.diagnostics
             if problem.step == key.step and problem.variant in (None, key.variant) and problem.row in (None, key.row)
         ]
-        row = next((row for row in plan.rows if row.key == key and isinstance(row, PlannedAnalyzeRun)), None)
-        if row is None and not problems:
+        if row is None and not step_problems:
             raise ValueError(f"Run {key.row!r} no longer belongs to {member_name(project.steps, key.step)}.")
         if bound is not None and not states_available and not any(
-            problem.path.startswith("inputs.states") for problem in problems
+            problem.path.startswith("inputs.states") for problem in step_problems
         ):
             problems.append(ProjectDiagnostic(
                 ResolutionCode.BAD_REFERENCE, "inputs.states", "Select Evaluate runs of this variant.", key.step,
@@ -297,27 +433,49 @@ def analyze_authoring(
             view = service.read(project_id, revision=body.revision)
             states = _states_port(service, view, row, key, states_available)
         registry = service.jobs.registries.operations
+        templates = service.jobs.registries.figure_templates
         definitions = list(registry.definitions())
+        stored = StoredEdit([])
+        saved_document = step.base.document
+        if body.change:
+            stored, plan = analyze_edit(
+                project, plan, key, saved_document, body.change, frozenset(body.chosen_steps), registry, states,
+                compile_candidate=lambda candidate: preview_plan(service.folders, settled, candidate),
+            )
+            if stored.files or stored.created:
+                project = preview_stored(project, stored)
+                base = project.steps[key.step].base
+                assert isinstance(base, DocumentReference)
+                saved_document = base.document
+                candidate = plan.row(key)
+                row = candidate if isinstance(candidate, PlannedAnalyzeRun) else None
+        analysis = _catalog_analysis(project, saved_document)
+        sources = _sources(analysis, registry, states, row, templates) if analysis is not None else {}
         dimensions = sorted({
             label
             for bindings in row.inputs.values() for binding in bindings for label in binding.member.labels
         }) if row is not None else []
-        stored = analyze_edit(
-            project, plan, key, step.base.document, body.change, frozenset(body.chosen_steps), registry, states,
-            readers=settled.readers, figure_templates=service.jobs.registries.figure_templates,
-        ) if body.change else StoredEdit([])
+        problems.extend(
+            problem for problem in plan.diagnostics
+            if (problem.variant, problem.step, problem.row) == (key.variant, key.step, key.row)
+            and problem.element is not None
+            and path_parts(problem.path)[3:4] in (("params",), ("inputs",))
+        )
+        variables = {definition.key: _variable_choices(definition, states, dimensions) for definition in definitions}
+        models = _state_models(project, plan, row) if row is not None and states is not None else []
+        task_names = _task_names(plan, row) if row is not None and states is not None else {}
     except (JobConflict, JobNotFound, KeyError, ValueError) as error:
         raise ProjectFolderInvalid(str(error)) from error
     return StudioAnalyzeAuthoring(
         revision=snapshot.revision,
-        document=step.base.document,
+        document=saved_document,
         operations=definitions,
         states=states,
-        variables={
-            definition.key: _variable_choices(definition, states, dimensions) for definition in definitions
-        },
+        sources=sources,
+        variables=variables,
+        variable_names=_variable_names(variables, states, models, task_names),
         figure=VelocitySummary(VelocitySummarySettings()),
-        changed=changed_from_base(project, step.base.document),
+        changed=changed_from_base(project, saved_document),
         files=stored.files,
         created=list(stored.created),
         problems=[

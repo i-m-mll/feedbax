@@ -363,6 +363,8 @@ def _edit_value(value, change):
 
 def _changed_value(documents, definition, kind):
     field = _task_field(documents.task_source) if kind == "task" else "objective"
+    if isinstance(documents, _InitialTrialDocuments):
+        return field, definition.input_documents[kind].payload
     return field, definition.payload["trial_documents"][field]
 
 
@@ -511,6 +513,7 @@ def _initial_trial_documents(definition, bundle) -> _InitialTrialDocuments:
 
 def _evaluate_documents(plan, key, definition, bundle):
     upstream = evaluate_subject(definition)
+    authored = None
     if upstream:
         subject = next((row for row in plan.runs if row.key == upstream[0]), None)
         raw = plan.requests.get(subject.request_id) if subject else None
@@ -520,6 +523,9 @@ def _evaluate_documents(plan, key, definition, bundle):
         if not isinstance(request, DocumentTrainingRequestSpec):
             raise ProjectFolderInvalid("The selected Evaluate has no managed Train pairing.")
         documents = request.trial_documents
+        if subject.train is not None and isinstance(subject.train.task, TaskDocument):
+            authored = subject.train
+            documents = documents.model_copy(update={"task": authored.task, "input_bindings": authored.input_bindings})
     elif "subject" in definition.input_documents:
         documents = _initial_trial_documents(definition, bundle)
     else:
@@ -538,6 +544,7 @@ def _evaluate_documents(plan, key, definition, bundle):
         ) is not None:
             raw_params = raw_params | {"variation": variation}
         params = authored_rollout_settings(raw_params)
+        authored_bindings = params.input_bindings
         variant = resolve_evaluation_variant(
             projection.pair.lowered.graph, documents.task_source, params.variation,
             components=bundle.components,
@@ -562,7 +569,9 @@ def _evaluate_documents(plan, key, definition, bundle):
                 code=ProblemCode.STRUCTURE, path=("variation",), reason=str(error),
             )),
         ), None
-    documents = _with_task(documents, task, input_bindings=documents.input_bindings | params.input_bindings)
+    documents = _with_task(
+        documents, task, input_bindings=documents.input_bindings | authored_bindings | params.input_bindings,
+    )
     paired = _project(documents, bundle, graph_override=graph, objective_use=objective_use)
     return documents, replace(paired, task_origins=variant.edit_origins), graph
 
@@ -571,11 +580,13 @@ def _definition(plan, key):
     """The run's definition; a run whose own definition is refused is refused with its problem."""
     definition = plan.selected_definitions.get(key)
     if definition is None:
-        problem = next(
+        problem = next((
             item for item in plan.diagnostics
             if item.step == key.step and item.row == key.row and item.variant in (None, key.variant)
-        )
-        raise ProjectFolderInvalid(problem.detail)
+        ), None)
+        if problem is not None:
+            raise ProjectFolderInvalid(problem.detail)
+        raise ProjectFolderInvalid("The selected run no longer belongs to this step.")
     return definition
 
 
@@ -636,9 +647,8 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, def
     document_path = None
     edited_role = (change.document if isinstance(change, StudioTrialDocumentReset)
                    else change.kind if isinstance(change, StudioTrialDocumentEdit) else None)
-    own_objective = isinstance(documents, _InitialTrialDocuments) and edited_role == "objective"
-    if own_objective:
-        document_path = "inputs.objective"
+    if isinstance(documents, _InitialTrialDocuments) and edited_role is not None:
+        document_path = f"inputs.{edited_role}"
     elif step.kind == "train" and edited_role is not None:
         field, _ = _changed_value(documents, definition, edited_role)
         document_path = f"payload.trial_documents.{field}"
@@ -711,11 +721,9 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, def
                 adapt=(lambda target: _objective_edits(raw, target, change)) if change.kind == "objective" else None,
             )
 
-        preferred = write_for(users)
-        candidates = [
-            ("all_readers", "All Steps", document, preferred),
-            ("selected_readers", "Only This Step", document, write_for(chosen)),
-        ]
+        candidates = [("all_readers", "All Steps", document, write_for(users))]
+        if chosen != users:
+            candidates.append(("selected_readers", "Only This Step", document, write_for(chosen)))
     else:
         stored = store_for(stored_scope, chosen)
         kind, label = (
@@ -974,7 +982,9 @@ def _validate_files(
             figure_templates=bundle.figure_templates, training_methods=bundle.training_methods,
         )
 
-    before = settled.plan if possible <= settled.plan.selected_definitions.keys() else compile_sources(project, possible)
+    before = settled.plan
+    if not possible <= before.selected_definitions.keys():
+        before = folders.read_plan(settled.project_id, revision=body.revision, source_runs=possible).plan
 
     def preview(kind, label, source, stored):
         if not stored.files and not stored.created:
@@ -1227,11 +1237,16 @@ def trial_authoring(
         objective_document = definition.document_ids.get(objective_path)
     task_source = None
     task_field_sources = {}
+    reset_model = documents.model
     if step.kind == "evaluate" and (upstream := evaluate_subject(definition)):
         producer = next((row for row in plan.rows if row.key == upstream[0]), None)
         if producer is not None:
             model_document = producer.document_ids.get("payload.trial_documents.model")
             objective_document = producer.document_ids.get(objective_path)
+        if model_document is not None:
+            authored_model = compose_document(project.documents.get, model_document)
+            if not isinstance(authored_model, ProjectDiagnostic):
+                reset_model = ModelDocument.model_validate(authored_model.payload)
         objective_source = StudioTrialObjectiveSource(kind="train", step=upstream[0].step)
         task_source = evaluate_value_source(upstream[1])
         for target, origin_path in projected.task_origins.items():
@@ -1306,7 +1321,7 @@ def trial_authoring(
         input_bindings=documents.input_bindings, inputs=_input_rows(documents, projected),
         outputs=[StudioTrialOutput(address=ModelAddress.from_text(value.id), value=value)
                  for value in paired.model.outputs] if paired else [],
-        resets=[StudioTrialReset(address=field.address, path=task_start_path(documents.model, field.address),
+        resets=[StudioTrialReset(address=field.address, path=task_start_path(reset_model, field.address),
                                  type=field.type, finest=field.finest, required=field.required)
                 for field in projected.resets],
         fields=fields, problems=[*projected.problems, *field_problems, *refused],

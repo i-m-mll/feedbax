@@ -32,10 +32,12 @@ const sourceId = (source: Source) => JSON.stringify('input' in source ? [source.
  * An operation's or figure's input roles, each wired to one of the document's inputs or another operation's output
  * of the role's kind. Picking fills a role from an element on the canvas.
  */
-export function AnalyzeElementInputs({ document, element, roles, inputs, declarations, outputs, picking, refusal, onWire }: {
+export function AnalyzeElementInputs({ document, element, roles, inputs, declarations, outputs, sources: fitting, picking, refusal, onWire }: {
   document: string;
   element: string;
   roles: readonly { name: string; kind: RoleKind }[];
+  /** The sources that fit each dataset role, as the service reviews a wire: a dataset role offers only these. */
+  sources: Readonly<Record<string, readonly Source[]>>;
   inputs: Readonly<Record<string, Source>>;
   declarations: Readonly<Record<string, Declaration>>;
   /** Each other operation's shown name and dataset products. */
@@ -48,12 +50,14 @@ export function AnalyzeElementInputs({ document, element, roles, inputs, declara
   const labelId = useId();
   const named = (id: string) => ({ kind: 'element', address: { document, element: { kind: 'named', id } } }) as const;
   return <>{roles.map(({ name, kind }) => {
+    const fits = new Set((fitting[name] ?? []).map(sourceId));
+    const offered = (choice: ReferenceChoice) => kind !== 'dataset' || fits.has(choice.id);
     const documentInputs = Object.entries(declarations).filter(([, declaration]) => declaration.kind === kind)
-      .map(([input]): ReferenceChoice => ({ id: sourceId({ input }), label: input, pick: named(input) }));
+      .map(([input]): ReferenceChoice => ({ id: sourceId({ input }), label: input, pick: named(input) })).filter(offered);
     const products = kind !== 'dataset' ? [] : outputs.filter((output) => output.element !== element)
-      .flatMap(({ element: source, name: shown, products }) => products.map((product, index): ReferenceChoice => ({
-        id: sourceId({ element: source, product }), label: shown + '.' + product, ...(index === 0 && { pick: named(source) }),
-      })));
+      .flatMap(({ element: source, name: shown, products }) => products
+        .map((product): ReferenceChoice => ({ id: sourceId({ element: source, product }), label: shown + '.' + product }))
+        .filter(offered).map((choice, index) => index === 0 ? { ...choice, pick: named(source) } : choice));
     const choices = new Map([...documentInputs, ...products].map((choice) => [choice.id, choice]));
     const wired = inputs[name];
     const sources = new Map<string, Source>([

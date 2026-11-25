@@ -97,9 +97,11 @@ test('the epochs grid merges cells, draws an absent cell apart from a zero, reor
   expect((await name.boundingBox())!.x).toBe(before);
 });
 
-// Catches a New from an example that shows the file's key instead of the example's label, an absent cell that takes no
-// caret (so only the Inspector could fill it), typed text that is dropped or written as two edits, and a present cell
-// emptied of its text that is refused or stored empty instead of becoming absent.
+// Catches a New that acts before the authoring catalog is read instead of opening with Blank alone, or whose menu does
+// not gain the examples once the catalog arrives, a New from an example that shows the file's key instead of the
+// example's label, an absent cell that takes no caret (so only the Inspector could fill it), typed text that is dropped
+// or written as two edits, and a present cell emptied of its text that is refused or stored empty instead of becoming
+// absent.
 test('a Task from an example shows its label, and typing into an absent cell makes it present', async ({ page, request }) => {
   test.setTimeout(60_000);
   const { snapshot, projectPath } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
@@ -116,13 +118,24 @@ test('a Task from an example shows its label, and typing into an absent cell mak
   const cells = grid.getByRole('row')
     .filter({ has: page.getByRole('textbox', { name: 'Rename target_pos', exact: true }) }).locator('td[data-cell]');
 
+  let readCatalog!: () => void;
+  const catalogHeld = new Promise<void>((resolve) => { readCatalog = resolve; });
+  await page.route('**/api/projects/authoring/catalog', async (route) => { await catalogHeld; await route.fallback(); });
+  const documents = async () => Object.keys((await saved()).documents ?? {}).sort();
+  const before = await documents();
+
   await page.goto(`/?project=${snapshot.project_id}`);
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Task', exact: true }).click();
   await expect(picker).toHaveText('Simple reaches');
   await picker.click();
   const menu = page.getByRole('menu', { name: 'Task Document', exact: true });
+  const newMenu = page.getByRole('menu', { name: 'New', exact: true });
   await menu.getByRole('menuitem', { name: 'New', exact: true }).click();
+  await expect(newMenu.getByRole('menuitem')).toHaveText(['Blank']);
+  readCatalog();
+  await expect(newMenu.getByRole('menuitem', { name: 'Delayed reaches', exact: true })).toBeVisible();
+  expect(await documents()).toEqual(before);
   await page.getByRole('menuitem', { name: 'Delayed reaches', exact: true }).click();
   const rename = primary.locator('.studio-window-slot__header').getByRole('textbox');
   await expect(rename).toBeFocused();
@@ -153,7 +166,8 @@ test('a Task from an example shows its label, and typing into an absent cell mak
   await expect(cells.nth(0).getByRole('textbox', { name: /^Absent/ })).toBeVisible();
 });
 
-// Catches a signal rename that leaves the Model input it fed unfed, and an Outline that does not say what feeds it.
+// Catches a signal rename that leaves the Model input it fed unfed, an Outline that does not say what feeds it, and an
+// Inputs card that keeps the old name or lists the renamed signal again as an unused port.
 test('renaming a signal in the grid keeps the Model input it feeds', async ({ page, request }) => {
   const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
   await page.goto(`/?project=${snapshot.project_id}`);
@@ -166,4 +180,10 @@ test('renaming a signal in the grid keeps the Model input it feeds', async ({ pa
     .getByRole('tree', { name: 'Model Inputs', exact: true }).getByRole('treeitem').filter({ hasText: 'target_pos' });
   await expect(input).toContainText('aim');
   await expect(input.locator('[data-status-mark]')).toHaveCount(0);
+
+  await page.getByRole('tab', { name: 'Model', exact: true }).click();
+  const inputs = page.locator('[data-slot="primary"]').getByRole('tabpanel', { name: 'Model', exact: true })
+    .locator('[data-id="@inputs"] .studio-model-port > span:first-of-type');
+  await expect(inputs.filter({ hasText: /^aim$/ })).toHaveCount(1);
+  await expect(inputs.filter({ hasText: /^target_pos$/ })).toHaveCount(0);
 });
