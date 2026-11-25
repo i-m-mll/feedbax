@@ -311,6 +311,56 @@ def test_set_entry_task_edits_reach_only_selected_sweep_and_trial_rows(studio):
     assert source["task_variables"][0]["value"]["value"] == 0.07
 
 
+def test_same_named_trial_set_variables_keep_their_entry_origins(tmp_path):
+    from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID
+
+    raw = document_project(authored_documents())
+    fields = raw["steps"]["train"]["set_fields"] = {}
+    for axis, value in (("reach", 1.0), ("hold", 2.0)):
+        bank = f"{axis}-bank"
+        fields[axis] = {"axis": {"set": bank}, "sampling": {"kind": "cooccurring"}}
+        raw["documents"][bank] = {
+            "schema": SET_DOCUMENT_SCHEMA_ID,
+            "payload": {"entries": {"shift": {"task_variables": [{
+                "id": "amount", "name": "Amount", "type": {"base": "real"},
+                "value": {"kind": "literal", "value": value},
+            }]}}},
+        }
+    raw["documents"]["reach-bank"]["payload"]["entries"]["shift"]["task_variables"].append({
+        "id": "other", "name": "Other", "type": {"base": "real"}, "value": {"kind": "literal", "value": 3.0},
+    })
+
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        folders = client.app.state.project_folders
+        _save_project(folders, PROJECT, Project.model_validate(raw))
+        reviewed = folders.read_plan(PROJECT, revision=None)
+        (row,) = reviewed.plan.rows
+        assert not row.problems, row.problems
+        body = {"revision": reviewed.revision, "run": {"variant": "default", "step": "train", "row": "default"}}
+        response = client.post(f"{BASE}/authoring/trials", json=body)
+        assert response.status_code == 200, response.text
+        variables = {item["name"]: item for item in response.json()["variables"] if item.get("set_entry")}
+        assert set(variables) == {"reach · shift · Amount", "hold · shift · Amount", "shift · Other"}
+        reach, hold = (variables[f"{axis} · shift · Amount"] for axis in ("reach", "hold"))
+        assert reach["id"] != hold["id"]
+        for axis, item in (("reach", reach), ("hold", hold)):
+            assert item["set_entry"] == {
+                "step": "train", "axis": axis, "set": f"{axis}-bank", "entry": "shift", "variable": "amount",
+            }
+        response = client.post(f"{BASE}/authoring/trials", json=body | {"change": {
+            "kind": "expression", "path": f"/task/variables/{hold['id']}/value", "edit": {"kind": "text", "text": "4"},
+        }})
+        assert response.status_code == 200, response.text
+        prepared = response.json()
+        assert not prepared.get("store_choices") and prepared["files"], prepared
+        written = client.patch(BASE, json={"revision": reviewed.revision, "files": prepared["files"]})
+        assert written.status_code == 200, written.text
+        stored = folders.read(PROJECT).project.documents
+        for bank, value in (("reach-bank", 1.0), ("hold-bank", 4)):
+            (amount, *_) = stored[bank].payload["entries"]["shift"]["task_variables"]
+            assert amount["name"] == "Amount" and amount["value"]["value"] == value
+
+
 def test_a_set_sweep_adds_variables_to_an_evaluates_inherited_task(tmp_path):
     from feedbax.contracts.set_document import SET_DOCUMENT_SCHEMA_ID
 
