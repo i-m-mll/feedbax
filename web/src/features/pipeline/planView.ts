@@ -88,8 +88,6 @@ export interface PlanStepView {
   readonly statusCounts: Readonly<Partial<Record<StudioResultState, number>>>;
   /** How a run rule reading the step writes each of its axes' values, by axis and value id. */
   readonly ruleAxes?: Readonly<Record<string, Readonly<Record<string, string>>>>;
-  /** The result names of the step's finished runs, which a lowest or highest term ranks by. */
-  readonly ruleMetrics?: readonly string[];
   /** Why the last gesture on the step was refused; its problem mark carries it. */
   readonly refusal?: string;
   /** A step being added: drawn from the gesture until the plan that has it is read, and taking no gestures. */

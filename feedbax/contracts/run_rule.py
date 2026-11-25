@@ -1,7 +1,7 @@
 """The run rule: which of a producer's runs a selection, a sweep exception or an axis condition chooses.
 
 A rule is the text its author wrote, such as ``seed=0..3 lr>=0.01 lowest 1 loss per lr``. It is resolved against the
-runs it reads each time a plan is made: terms on an axis at once, and a lowest or highest term once the runs have run.
+runs it reads each time a plan is made: terms on an axis at once, and conditions on final metrics when the runs finish.
 """
 
 from __future__ import annotations
@@ -42,13 +42,14 @@ class Chosen[Row]:
 
     rows: tuple[Row, ...]
     best: RuleBest | None = None
+    conditions: tuple[RuleCondition, ...] = ()
 
 
 _FUNCTIONS: Mapping[str, Callable[..., Any]] = {
     "add": operator.add, "sub": operator.sub, "mul": operator.mul, "div": operator.truediv, "mod": operator.mod,
     "lt": operator.lt, "le": operator.le, "gt": operator.gt, "ge": operator.ge, "eq": operator.eq, "ne": operator.ne,
     "and": lambda left, right: left and right, "or": lambda left, right: left or right, "not": operator.not_,
-    "neg": operator.neg, "pos": operator.pos, "abs": abs, "min": min, "max": max,
+    "neg": operator.neg, "pos": operator.pos, "abs": abs, "min": min, "max": max, "pow": operator.pow,
 }
 
 
@@ -61,6 +62,9 @@ def value_text(coordinate: SweepCoordinate) -> str:
         return repr(value)
     name = coordinate.value_id if value is None else value
     return name if RULE_NAME.fullmatch(name) and name not in _RESERVED else '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+METRIC_CONDITION_FALSE = "The producer’s final metrics did not meet the rule."
 
 
 _RESERVED = frozenset({"true", "false", "and", "or", "not", "lowest", "highest", "per"})
@@ -93,7 +97,7 @@ def _matches(coordinate: SweepCoordinate, value: LiteralValue | NameValue) -> bo
     )
 
 
-def _evaluate(rule: str, term: RuleCondition, values: Mapping[str, Any]) -> bool:
+def _evaluate(expression: Expression, values: Mapping[str, Any]) -> bool:
     def visit(node: Expression) -> Any:
         match node:
             case LiteralValue(value=value):
@@ -101,22 +105,56 @@ def _evaluate(rule: str, term: RuleCondition, values: Mapping[str, Any]) -> bool
             case NameValue(reference=name):
                 value = values[name]
                 if value is None:
-                    raise RuleRefusal(
-                        "rule", f"{_text(rule, term.span)}: {name} has named values; choose them with {name}=…",
-                        term.span,
-                    )
+                    raise ValueError(f"{name} has named values; choose them with {name}=…")
                 return value
             case CallValue(function=function, args=args, kwargs=kwargs) if function in _FUNCTIONS and not kwargs:
                 return _FUNCTIONS[function](*map(visit, args))
-        raise RuleRefusal("rule", f"{_text(rule, term.span)}: a rule compares values", term.span)
+        raise ValueError("A rule compares values.")
 
-    try:
-        result = visit(term.expression)
-    except (TypeError, ZeroDivisionError) as error:
-        raise RuleRefusal("rule", f"{_text(rule, term.span)}: {error}", term.span) from error
+    result = visit(expression)
     if type(result) is not bool:
-        raise RuleRefusal("rule", f"{_text(rule, term.span)} is not a condition", term.span)
+        raise ValueError("A rule term must be a condition.")
     return result
+
+
+def metric_condition_holds(conditions: tuple[Expression, ...], metric: Callable[[str], float]) -> bool:
+    """Test the bound final-metric conditions against one producer's completion."""
+    values = {name: metric(name) for name in sorted(set().union(*map(_names, conditions)))}
+    try:
+        return all(_evaluate(condition, values) for condition in conditions)
+    except (TypeError, ArithmeticError) as error:
+        raise ValueError(str(error)) from error
+
+
+def bind_metric_conditions(
+    rule: str, conditions: tuple[RuleCondition, ...], row: Mapping[str, SweepCoordinate],
+) -> tuple[Expression, ...]:
+    """Freeze the candidate's axis values so that only its final metrics remain to read."""
+    def bind(node: Expression) -> Expression:
+        match node:
+            case NameValue(reference=name) if name in row:
+                value = _scalar(row[name])
+                if type(value) not in (bool, int, float):
+                    raise ValueError(f"{name} must be a numeric or Boolean axis in a metric comparison.")
+                return LiteralValue(value=value)
+            case NameValue() | LiteralValue():
+                return node
+            case CallValue(function=function, args=args, kwargs=kwargs) if function in _FUNCTIONS and not kwargs:
+                return node.model_copy(update={"args": tuple(map(bind, args))})
+        raise ValueError("A rule compares values.")
+
+    bound = []
+    for term in conditions:
+        try:
+            expression = bind(term.expression)
+            if not isinstance(expression, CallValue) or expression.function not in {
+                "lt", "le", "gt", "ge", "eq", "ne", "and", "or", "not",
+            }:
+                raise ValueError("A rule term must be a condition.")
+            bound.append(expression)
+        except ValueError as error:
+            raise RuleRefusal("rule", f"{_text(rule, term.span)}: {error}", term.span) from error
+    return tuple(bound)
 
 
 def _term_names(term: RuleTerm) -> set[str]:
@@ -150,6 +188,7 @@ def choose[Row](
     coordinates: Callable[[Row], Mapping[str, SweepCoordinate]],
     producer: str,
     ranked: bool = True,
+    final_metrics: Callable[[tuple[Row, ...]], frozenset[str]] | None = None,
 ) -> Chosen[Row]:
     """The rows ``rule`` chooses, in their order, and its lowest or highest term, which ranks them once they have run.
 
@@ -165,6 +204,8 @@ def choose[Row](
         for axis, coordinate in row.items():
             axes.setdefault(axis, []).append(coordinate)
     best: list[RuleBest] = []
+    conditions: list[RuleCondition] = []
+    static = []
     for term in terms:
         text = _text(rule, term.span)
         if isinstance(term, RuleBest):
@@ -176,9 +217,12 @@ def choose[Row](
             names = _term_names(term)
         if unswept := sorted(names - axes.keys()):
             reason = f"{text}: {', '.join(unswept)} is not swept in {producer}"
-            if isinstance(term, RuleCondition):
-                reason += "; a rule cannot yet choose runs by a result's value"
+            if ranked and final_metrics is not None and isinstance(term, RuleCondition):
+                conditions.append(term)
+                continue
             raise RuleRefusal("rule", reason, term.span)
+        if not isinstance(term, RuleBest):
+            static.append(term)
         if isinstance(term, RuleChoice):
             for value in term.values:
                 if not any(_matches(coordinate, value) for coordinate in axes[term.name]):
@@ -188,15 +232,32 @@ def choose[Row](
         raise RuleRefusal("rule", f"{_text(rule, best[1].span)}: a rule ranks by one lowest or highest", best[1].span)
     picked = tuple(
         row for row, values in zip(rows, by_row, strict=True)
-        if all(_holds(rule, term, values) for term in terms if not isinstance(term, RuleBest))
+        if all(_holds(rule, term, values) for term in static)
     )
     if not picked:
         raise RuleRefusal(
             "rule", f"{rule.strip()} chooses no run", TextSpan(start=terms[0].span.start, end=terms[-1].span.end),
         )
+    if conditions:
+        assert final_metrics is not None
+        available = final_metrics(picked)
+        for term in conditions:
+            if unknown := sorted(_term_names(term) - axes.keys() - available):
+                names = ", ".join(unknown)
+                raise RuleRefusal(
+                    "rule", f"{_text(rule, term.span)}: {producer} has no declared final metric {names}.", term.span,
+                )
+        if best:
+            raise RuleRefusal("rule", "A metric condition cannot be combined with Best.", best[0].span)
+        for values in map(coordinates, picked):
+            bind_metric_conditions(rule, tuple(conditions), values)
     ranking = best[0] if best else None
     if ranking is not None:
         text = _text(rule, ranking.span)
+        if final_metrics is not None and ranking.metric not in final_metrics(picked):
+            raise RuleRefusal(
+                "rule", f"{text}: {producer} has no declared final metric {ranking.metric}.", ranking.span,
+            )
         if len(set(ranking.per)) != len(ranking.per):
             raise RuleRefusal("rule", f"{text}: per names an axis twice.", ranking.span)
         groups: Counter[tuple[str, ...]] = Counter()
@@ -209,7 +270,7 @@ def choose[Row](
             if count < ranking.count:
                 target = f" in group {dict(zip(ranking.per, group, strict=True))!r}" if group else ""
                 raise RuleRefusal("rule", f"{text}: asks for {ranking.count} of {count} runs{target}.", ranking.span)
-    return Chosen(picked, ranking)
+    return Chosen(picked, ranking, tuple(conditions))
 
 
 def _values(row: Mapping[str, SweepCoordinate]) -> dict[str, Any]:
@@ -228,5 +289,10 @@ def _holds(rule: str, term: RuleTerm, row: Mapping[str, SweepCoordinate]) -> boo
                 raise RuleRefusal("rule", f"{_text(rule, term.span)}: {name} has named values", term.span)
             return min(first.value, last.value) <= scalar <= max(first.value, last.value)
         case RuleCondition():
-            return all(name in row for name in _names(term.expression)) and _evaluate(rule, term, _values(row))
+            if not all(name in row for name in _names(term.expression)):
+                return False
+            try:
+                return _evaluate(term.expression, _values(row))
+            except (TypeError, ValueError, ArithmeticError) as error:
+                raise RuleRefusal("rule", f"{_text(rule, term.span)}: {error}", term.span) from error
     raise AssertionError(term)

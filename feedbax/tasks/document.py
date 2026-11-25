@@ -699,7 +699,7 @@ def compile_task(
         field = lower(
             variable.value,
             variable.type,
-            Level.STEP,
+            Level.TRIAL if variable.set_choices is not None else Level.STEP,
             (*model.outputs, *scope.values(), time),
             ("variables", key, "value"),
             list_count=count,

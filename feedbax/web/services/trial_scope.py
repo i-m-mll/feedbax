@@ -1084,11 +1084,11 @@ def selected_value(project: Project, step: str, scope: RunScope) -> SelectedValu
 
 def set_readers(project: Project, name: str) -> frozenset[str]:
     """The steps whose sweep has an axis reading the Set document ``name``, and the steps based on them."""
-    direct = {
-        step for step, authored in project.steps.items() if authored.sweep is not None and any(
-            isinstance(axis, SetAxis) and axis.set == name for axis in authored.sweep.axes.values()
-        )
-    }
+    direct = {step for step, authored in project.steps.items() if
+              any(field.axis.set == name for field in authored.set_fields.values())
+              or authored.sweep is not None and any(
+                  isinstance(axis, SetAxis) and axis.set == name for axis in authored.sweep.axes.values()
+              )}
     return frozenset(direct) | base_descendants(project, direct)
 
 
@@ -1261,9 +1261,17 @@ def set_document_write(project: Project, name: str, edits: Sequence[DocumentEdit
             for axis, read in (sweep.axes.items() if sweep else ())
             if isinstance(read, SetAxis) and read.set in mapping
         }
-        if not axes:
+        fields = {
+            axis: field.model_copy(update={"axis": field.axis.model_copy(update={"set": mapping[field.axis.set]})})
+            .model_dump(mode="json", exclude_unset=True)
+            for axis, field in authored.set_fields.items() if field.axis.set in mapping
+        }
+        if not axes and not fields:
             raise ProjectFolderInvalid(f"{member_name(project.steps, step)} no longer reads this Set.")
         address = AuthoredFileAddress(kind="step", id=step)
         local = raw.get("sweep") or {}
-        files.append(file_value(address, raw, ("sweep",), local | {"axes": local.get("axes", {}) | axes}))
+        if axes:
+            files.append(file_value(address, raw, ("sweep",), local | {"axes": local.get("axes", {}) | axes}))
+        if fields:
+            files.append(file_value(address, raw, ("set_fields",), raw.get("set_fields", {}) | fields))
     return StoredEdit(merged_files(files), tuple(stores.created), chosen | set_readers(project, name))

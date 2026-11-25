@@ -115,7 +115,7 @@ export interface JobError {
 }
 
 export interface JobOutcome {
-  outcome: "succeeded" | "stopped" | "failed" | "interrupted" | "blocked";
+  outcome: "succeeded" | "stopped" | "failed" | "interrupted" | "blocked" | "not_chosen";
   error?: JobError | null;
   receipt?: JobReceipt | null;
   signal?: number | null;
@@ -3341,7 +3341,7 @@ export type InputDifference = {
   "kind"?: "input";
   "role": string;
   "member": string;
-  "before": ContentRef;
+  "before": ContentRef | null;
   "after": ContentRef | null;
   "detail"?: string | null;
 };
@@ -3961,7 +3961,6 @@ export type SetToField = {
   "kind": "set_to_field";
   "step": string;
   "axis": string;
-  "condition"?: Expression | null;
 };
 
 export type SetToSweep = {
@@ -6318,7 +6317,7 @@ export const JobErrorSchema: z.ZodType<JobError> = z.lazy(() =>
 export const JobOutcomeSchema: z.ZodType<JobOutcome> = z.lazy(() =>
   z
     .object({
-      "outcome": z.union([z.literal("succeeded"), z.literal("stopped"), z.literal("failed"), z.literal("interrupted"), z.literal("blocked")]),
+      "outcome": z.union([z.literal("succeeded"), z.literal("stopped"), z.literal("failed"), z.literal("interrupted"), z.literal("blocked"), z.literal("not_chosen")]),
       "error": JobErrorSchema.nullable().optional(),
       "receipt": JobReceiptSchema.nullable().optional(),
       "signal": z.number().int().safe().nullable().optional(),
@@ -11589,7 +11588,7 @@ export const InputDifferenceSchema: z.ZodType<InputDifference> = z.lazy(() =>
     "kind": z.literal("input").optional(),
     "role": z.string().min(1),
     "member": z.string().min(1),
-    "before": ContentRefSchema,
+    "before": z.union([ContentRefSchema, z.null()]),
     "after": z.union([ContentRefSchema, z.null()]),
     "detail": z.union([z.string().min(1), z.null()]).optional(),
   }).strict()
@@ -12431,7 +12430,6 @@ export const SetToFieldSchema: z.ZodType<SetToField> = z.lazy(() =>
     "kind": z.literal("set_to_field"),
     "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
     "axis": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
-    "condition": z.union([ExpressionSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<SetToField>;
 

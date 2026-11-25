@@ -1,4 +1,5 @@
-import { studioFormat, studioOpeningStage, studioOpeningStep } from '@/components/activity/studioVocabulary';
+import { studioFormat, studioOpeningStage, studioOpeningStep, type StudioResultState } from '@/components/activity/studioVocabulary';
+import { statusCounted } from '@/components/ui/StatusMark';
 import {
   runResultState, shownName, type PlanResultView, type PlanRunView, type PlanStepView, type PlanSweepView, type PlanView,
 } from '@/features/pipeline/planView';
@@ -447,7 +448,6 @@ export function projectWindowPlan(
       statusCounts: resultCounts(projected?.status_counts ?? {}, runs),
       ruleAxes: projected?.axes && Object.fromEntries(projected.axes.map(({ id, values }) =>
         [id, Object.fromEntries(values.map((value) => [value.id, value.rule]))])),
-      ruleMetrics: projected?.rule_metrics,
     };
   });
   return {
@@ -461,6 +461,7 @@ export function projectWindowPlan(
   };
 }
 
+/** The step's runs by state, of those that count. */
 function resultCounts(counts: Readonly<Record<string, number>>, runs: readonly PlanRunView[]): PlanStepView['statusCounts'] {
   const folded: Record<string, number> = { ...counts };
   for (const { status, state } of runs) {
@@ -468,5 +469,6 @@ function resultCounts(counts: Readonly<Record<string, number>>, runs: readonly P
     folded[status] = (folded[status] ?? 0) - 1;
     folded[state] = (folded[state] ?? 0) + 1;
   }
-  return Object.fromEntries(Object.entries(folded).filter(([, count]) => count > 0));
+  return Object.fromEntries(Object.entries(folded).filter(([state, count]) =>
+    count > 0 && statusCounted(state as StudioResultState)));
 }

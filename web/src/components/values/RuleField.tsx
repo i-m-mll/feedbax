@@ -74,8 +74,9 @@ export interface RuleFieldProps {
 }
 
 /**
- * A run rule on one line: completion offers axes, their operators and values, and where the rule ranks, lowest and
- * highest with the result names after them, once the rule is written in or ArrowDown is pressed. Enter or leaving the
+ * A run rule on one line: completion offers axes, their operators and values, and where the rule reads results, the
+ * declared metrics with their operators, and lowest and highest with the metrics after them, once the rule is written
+ * in or ArrowDown is pressed. Enter or leaving the
  * field saves; Escape restores the saved rule.
  */
 export function RuleField({

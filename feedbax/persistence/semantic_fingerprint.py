@@ -19,6 +19,14 @@ class UnsupportedSemanticValue(TypeError):
     """A value has no defined persistent semantic identity."""
 
 
+def project_pytree(tree: jax.tree_util.PyTreeDef, leaf: Callable[[], object]) -> object:
+    node = tree.node_data()
+    if node is None:
+        return leaf()
+    cls, metadata = node
+    return ("node", f"{cls.__module__}.{cls.__qualname__}", metadata, tuple(project_pytree(child, leaf) for child in tree.children()))
+
+
 def fingerprint_semantic_values(
     *values: Any,
     header: tuple[str, ...] = (),

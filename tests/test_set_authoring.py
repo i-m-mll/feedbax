@@ -268,26 +268,43 @@ def test_set_entry_task_edits_reach_only_selected_sweep_and_trial_rows(studio):
         "kind": "set_entry_task", "step": "other", "axis": "run", "entry": entry, "task_variables": [variable],
     })
 
-    def selected(row):
+    def selected(row, change=None):
         revision = folders.read(PROJECT).revision
         response = client.post(f"{BASE}/authoring/trials", json={
             "revision": revision, "run": {"variant": "default", "step": "other", "row": row},
-        })
+        } | ({"change": change} if change is not None else {}))
         assert response.status_code == 200, response.text
         return response.json()
+
+    def set_expression(row, id, text):
+        revision = folders.read(PROJECT).revision
+        edited = selected(row, {
+            "kind": "expression", "path": f"/task/variables/{id}/value", "edit": {"kind": "text", "text": text},
+        })
+        assert not edited.get("store_choices") and edited["files"], edited
+        response = client.patch(BASE, json={"revision": revision, "files": edited["files"]})
+        assert response.status_code == 200, response.text
 
     for row in _rows(folders, "other"):
         read = selected(row)
         for variables in (read["variables"], read["task"]["variables"]):
             assert any(item["id"] == variable["id"] for item in variables) == (row == f"run={entry}")
+    set_expression(f"run={entry}", "onset", "0.04 s")
+    assert selected(f"run={entry}")["task"]["variables"][-1]["value"]["value"] == 0.04
     _set_edit(folders, client, {"kind": "set_to_field", "step": "other", "axis": "run"})
     read = selected("default")
     for variables in (read["variables"], read["task"]["variables"]):
         assert len([item for item in variables if item["name"] == f"{entry} · Onset"]) == 1
+    scoped = next(item["id"] for item in read["variables"] if item["name"] == f"{entry} · Onset")
+    set_expression("default", scoped, "0.07 s")
+    field = folders.read(PROJECT).project.steps["other"].set_fields["run"]
+    project = folders.read(PROJECT).project
+    source = project.documents[field.axis.set].payload["entries"][entry]
+    assert source["task_variables"][0]["id"] == "onset"
+    assert source["task_variables"][0]["value"]["value"] == 0.07
 
 
-@pytest.mark.parametrize("condition", [None, {"kind": "literal", "value": True, "unit": None}])
-def test_to_field_moves_the_set_into_one_train_and_to_sweep_restores_it(studio, condition):
+def test_to_field_moves_the_set_into_one_train_and_to_sweep_restores_it(studio):
     folders, client = studio
     train_before = _runs(folders, "train")
     for _ in range(3):
@@ -297,11 +314,7 @@ def test_to_field_moves_the_set_into_one_train_and_to_sweep_restores_it(studio, 
     sweep = _runs(folders, "other")
     assert len(sweep) == 4
 
-    _set_edit(folders, client, {
-        "kind": "set_to_field", "step": "other", "axis": "run", "condition": condition,
-    })
-    saved = folders.read(PROJECT).project.steps["other"].set_fields["run"]
-    assert saved.model_dump(mode="json").get("condition") == condition
+    _set_edit(folders, client, {"kind": "set_to_field", "step": "other", "axis": "run"})
     assert list(_runs(folders, "other")) == ["default"]
     revision = folders.read(PROJECT).revision
     reply = client.post(f"{BASE}/authoring/trials", json={
@@ -310,7 +323,8 @@ def test_to_field_moves_the_set_into_one_train_and_to_sweep_restores_it(studio, 
     assert reply.status_code == 200, reply.text
     (field,) = reply.json()["set_fields"]
     assert field["axis"] == "run" and field["set"] == before.set
-    assert field["condition"] == condition
+    assert field["condition"] is None
+    assert next(item for item in reply.json()["fields"] if item["path"] == "/set_fields/run/condition")["text"] == ""
     assert field["entries"][0]["entry"] is None
     assert all(item["weight"] == 1 for item in field["entries"])
     assert _runs(folders, "train") == train_before
@@ -318,6 +332,70 @@ def test_to_field_moves_the_set_into_one_train_and_to_sweep_restores_it(studio, 
     _set_edit(folders, client, {"kind": "set_to_sweep", "step": "other", "axis": "run"})
     assert _runs(folders, "other") == sweep
     assert not folders.read(PROJECT).project.steps["other"].set_fields
+
+
+def test_trial_expression_edits_and_removes_a_saved_set_condition(tmp_path):
+    raw = document_project(authored_documents())
+    raw["documents"]["task"]["payload"]["variables"].append({
+        "id": "is_catch", "name": "is_catch", "type": {"base": "boolean"},
+        "value": {"kind": "literal", "value": False},
+    })
+    raw["documents"]["loads"] = {"schema": "feedbax.set_document.v1", "payload": {"entries": {"heavy": {}}}}
+    raw["steps"]["train"]["set_fields"] = {
+        "load": {"axis": {"set": "loads"}, "sampling": {"kind": "weighted"}},
+        "listed": {
+            "axis": {"set": "loads"}, "sampling": {"kind": "listed"},
+            "condition": {"kind": "literal", "value": True},
+        },
+    }
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, PROJECT, Project.model_validate(raw))
+    run = {"variant": "default", "step": "train", "row": "default"}
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        def author(axis, edit=None, *, save=False):
+            path = f"/set_fields/{axis}/condition"
+            revision = folders.read(PROJECT).revision
+            request = {"run": run, "revision": revision}
+            if edit is not None:
+                request["change"] = {"kind": "expression", "path": path, "edit": edit}
+            response = client.post(f"{BASE}/authoring/trials", json=request)
+            assert response.status_code == 200, response.text
+            payload = response.json()
+            if save:
+                (file,) = payload["files"]
+                assert file["address"] == {"kind": "step", "id": "train"}
+                assert [patch["path"] for patch in file["patches"]] == [path]
+                written = client.patch(BASE, json={"revision": revision, "files": payload["files"]})
+                assert written.status_code == 200, written.text
+            return payload, next(item for item in payload["fields"] if item["path"] == path)
+
+        _, blank = author("load")
+        assert blank["text"] == "" and blank["site"]["site"]["expected"]["base"] == "boolean"
+        assert "is_catch" in {name["id"] for name in blank["site"]["site"]["names"]}
+        _, listed = author("listed")
+        assert "Weighted or Co-occurring" in listed["problems"][0]["reason"]
+        assert listed["problems"][0]["span"] == {"start": 0, "end": 4}
+        author("listed", {"kind": "text", "text": ""}, save=True)
+        assert _runs(folders, "train")
+
+        for rejected in ({"kind": "to_list"}, {"kind": "name_value", "value_id": "one", "label": "One"}):
+            payload, _ = author("load", rejected)
+            assert not payload["files"]
+            assert any(problem["path"] == ["set_fields", "load", "condition"] for problem in payload["problems"])
+        _, unknown = author("load", {"kind": "text", "text": "not missing"}, save=True)
+        assert unknown["problems"][0]["span"] == {"start": 4, "end": 11}
+        _, wrong_type = author("load", {"kind": "text", "text": "7"}, save=True)
+        assert "Expected boolean" in wrong_type["problems"][0]["reason"]
+        assert wrong_type["problems"][0]["span"] == {"start": 0, "end": 1}
+        _, valid = author("load", {"kind": "text", "text": "not is_catch"}, save=True)
+        assert not valid["problems"] and valid["text"] == "not is_catch"
+        saved = folders.read(PROJECT).project.steps["train"].set_fields["load"]
+        assert saved.condition.args[0].reference == "is_catch"
+        assert _runs(folders, "train")
+
+        _, cleared = author("load", {"kind": "text", "text": " "}, save=True)
+        assert cleared["text"] == ""
+        assert folders.read(PROJECT).project.steps["train"].set_fields["load"].condition is None
 
 
 @pytest.mark.parametrize(("sampling", "edits", "weights", "variants"), [
