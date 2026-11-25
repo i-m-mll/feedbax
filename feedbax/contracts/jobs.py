@@ -571,6 +571,10 @@ class StudioActivityJob(StrictModel):
     label: str
     coordinates: dict[str, JsonValue]
     status: JobStatus
+    submitted_at_ms: int = Field(ge=0)
+    """When this job was submitted, in Unix epoch milliseconds."""
+    ended_at_ms: int | None = Field(ge=0)
+    """When this job reached a terminal state, in Unix epoch milliseconds."""
     phase: str | None = None
     reason: str | None = None
     can_resume: bool = False
