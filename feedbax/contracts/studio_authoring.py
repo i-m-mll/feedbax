@@ -36,7 +36,7 @@ class InputRole(StrictModel):
     required: bool
     gathers: bool
     producer: InputProducer | None
-    documents: list[Literal["model", "loaded_model", "task"]]
+    documents: list[Literal["model", "task"]]
     checkpoint_sets: bool
 
 
