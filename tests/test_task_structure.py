@@ -14,7 +14,7 @@ LINKED = ModelAddress.at_state((), "plant", "effector/position").to_text()
 DURATION = {"base": "real", "dimensions": {"time": 1}}
 
 
-POINT = {"base": "real", "shape": [2], "dimensions": {"length": 1}}
+POINT = {"base": "real", "shape": [2], "dimensions": {"length": 1}, "space": "point"}
 
 
 def _project(tmp_path, task=None):
