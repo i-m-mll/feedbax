@@ -17,6 +17,7 @@ from feedbax.contracts.matrix_core import stored_parts
 from feedbax.contracts.studio_scope import StoreKind
 from feedbax.compiler.model_reset import ModelResetField
 from feedbax.compiler.model_signals import model_measure_scope
+from feedbax.compiler.set_fields import entry_variable_id, rename_entry_references
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import AxisValueRuns, ListedRuns, VariantRuns
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES
@@ -25,13 +26,16 @@ from feedbax.contracts.project import (
     LoadedModelDocument, RemoveProjectValue, SetProjectValue, apply_document_edits, json_pointer_parts, member_name,
 )
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
-from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode, compose_document, resolve_step
+from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode, compose_document, compose_step, resolve_step
+from feedbax.contracts.project_sweep import SetAxis
+from feedbax.contracts.set_document import read_set
 from feedbax.planner.project_plan import EVALUATION_TASK, RunKey, compile_project, own_task_variation
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import DocumentTrainingConfig, DocumentTrainingRequestSpec, EvaluationRequestSpec
 from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings
 from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
+from feedbax.contracts.studio_sets import SetEntryTask
 from feedbax.contracts.studio_place import task_start_path
 from feedbax.studio.authoring import training_document_choice
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
@@ -44,7 +48,7 @@ from feedbax.contracts.studio_trials import (
     StudioTrialStructureEdit,
 )
 from feedbax.contracts.task_document import (
-    PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, Length, PythonTaskSelection, TaskDocument,
+    PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, Length, PythonTaskSelection, TaskDocument, Variable,
 )
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.time_units import TimeValue, length_steps
@@ -61,7 +65,7 @@ from feedbax.application.bundle import ApplicationRegistryBundle
 from feedbax.web.services.authored_scope import edited_authored_rows
 from feedbax.web.services.evaluate_sources import evaluate_subject, evaluate_value_source
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
-from feedbax.web.services.set_authoring import trial_set_fields
+from feedbax.web.services.set_authoring import prepare_set_entry_task, trial_set_fields
 from feedbax.web.services.store_choice import EditStore, all_readers_store, choose_store
 from feedbax.studio.selection import StoredEdit
 from feedbax.studio.numeric_fields import project_numeric_field, time_conversion
@@ -671,6 +675,44 @@ def _pairing(plan, key, bundle, *, definition=None):
     raise ProjectFolderInvalid("The selected run has no authored trial pairing.")
 
 
+def _set_variable_edit(project, plan, key, path, change):
+    if path[:2] != ("task", "variables") or len(path) != 4 or path[-1] != "value":
+        return None
+    row = plan.row(key)
+    if row is None:
+        return None
+    template = compose_step(project, key.step)
+    sweep = template.sweep if not isinstance(template, ProjectDiagnostic) else None
+    arms = [
+        (axis, read.set, row.axis_keys[axis], False)
+        for axis, read in (sweep.axes.items() if sweep is not None else ())
+        if isinstance(read, SetAxis) and axis in row.axis_keys
+    ]
+    for axis, placement in project.steps[key.step].set_fields.items():
+        name = placement.axis.set
+        arms.extend((axis, name, entry, True) for entry in read_set(project.documents.get, name).entries)
+    choices = []
+    for axis, name, entry, scoped in arms:
+        source = read_set(project.documents.get, name).entries[entry]
+        refs = {entry_variable_id(axis, entry, variable.id): variable.id for variable in source.task_variables}
+        original = refs.get(path[2]) if scoped else path[2]
+        if not any(variable.id == original for variable in source.task_variables):
+            continue
+        (edit,) = change.edits
+        assert isinstance(edit, SetProjectValue)
+        value = rename_entry_references(edit.value, refs) if scoped else edit.value
+        variables = tuple(
+            Variable.model_validate(variable.model_dump(mode="json") | {"value": value})
+            if variable.id == original else variable for variable in source.task_variables
+        )
+        choices.append((name, scoped, SetEntryTask(
+            kind="set_entry_task", step=key.step, axis=axis, entry=entry, task_variables=variables,
+        )))
+    if len(choices) > 1:
+        raise ProjectFolderInvalid("The variable belongs to more than one selected Set entry.")
+    return choices[0] if choices else None
+
+
 def _prepare_edits(body, folders, project_id, project, settled, key, bundle, definition, documents, projected, *, change):
     scope = body.scope
     plan = settled.plan
@@ -707,6 +749,20 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, def
         change = _expression_edit(expression, documents, projected, bundle)
         if not isinstance(change, StudioTrialDocumentEdit):
             return StoredEdit([]), change, None
+        entry = _set_variable_edit(project, plan, key, path, change)
+        if entry is not None:
+            name, scoped, command = entry
+            selection = scope or (
+                StudioTrialStepScope(kind="step") if scoped
+                else AxisValueRuns(kind="axis_value", axis=command.axis, value=command.entry)
+            )
+            selected = selected_runs(plan, key, selection)
+            stored = prepare_set_entry_task(project, name, command)
+            narrowed = prepare_set_entry_task(project, name, command, {run.step for run in selected})
+            candidates = [("set_entry", "Set Entry", name, stored)]
+            if narrowed != stored:
+                candidates.append(("selected_readers", "Selected Readers", name, narrowed))
+            return _validate_files(body, project, settled, key, selected, folders, bundle, candidates)
     structural = isinstance(change, StudioTrialStructureEdit)
     if structural:
         change = _structure_edit(change, documents, definition)
@@ -1139,7 +1195,7 @@ def _changed_runs(before, after) -> frozenset[RunKey]:
             row.key: (
                 (definition.payload, definition.input_documents)
                 if (definition := plan.selected_definitions.get(row.key)) is not None else None,
-                row.document_ids, row.coordinates,
+                row.document_ids, row.coordinates, row.train,
             )
             for row in plan.rows if row.kind in {"train", "evaluate"} and row.key in authored
         }

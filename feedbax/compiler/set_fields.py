@@ -55,19 +55,23 @@ _BOOL = ValueType(base=ValueBase.BOOLEAN)
 _INT = ValueType(base=ValueBase.INTEGER)
 
 
+def entry_variable_id(axis: str, entry: str, variable: str) -> str:
+    return _id(axis, entry, variable)
+
+
+def rename_entry_references(value, refs: Mapping[str, str]):
+    if isinstance(value, dict):
+        if value.get("kind") == "name" and isinstance(reference := value.get("reference"), str) and reference in refs:
+            return value | {"reference": refs[reference]}
+        return {key: rename_entry_references(item, refs) for key, item in value.items()}
+    if isinstance(value, list):
+        return [rename_entry_references(item, refs) for item in value]
+    return value
+
+
 def _entry_scope(axis: str, entry: str, source: SetEntry) -> SetEntry:
-    refs = {variable.id: _id(axis, entry, variable.id) for variable in source.task_variables}
-
-    def rename(value):
-        if isinstance(value, dict):
-            if value.get("kind") == "name" and isinstance(reference := value.get("reference"), str) and reference in refs:
-                return value | {"reference": refs[reference]}
-            return {key: rename(item) for key, item in value.items()}
-        if isinstance(value, list):
-            return [rename(item) for item in value]
-        return value
-
-    renamed = rename(source.model_dump(mode="json"))
+    refs = {variable.id: entry_variable_id(axis, entry, variable.id) for variable in source.task_variables}
+    renamed = rename_entry_references(source.model_dump(mode="json"), refs)
     for variable in renamed.get("task_variables", ()):
         variable["id"] = refs[variable["id"]]
         variable["name"] = f"{entry} · {variable['name']}"

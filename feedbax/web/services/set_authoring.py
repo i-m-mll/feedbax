@@ -357,14 +357,20 @@ def _set_entry_task(project: Project, command: SetEntryTask) -> StoredEdit:
     axis = field.axis if field is not None else _authored_axis(project, command.step, command.axis)
     if not isinstance(axis, SetAxis):
         raise ProjectFolderInvalid(f"{command.axis} reads no Set.")
-    content = _composed(project, axis.set)
+    return prepare_set_entry_task(project, axis.set, command)
+
+
+def prepare_set_entry_task(project: Project, name: str, command: SetEntryTask, chosen=None) -> StoredEdit:
+    content = _composed(project, name)
     entries = content["entries"]
     if command.entry not in entries:
         raise ProjectFolderInvalid("That Set entry is no longer available.")
     additions = command.model_dump(mode="json", include={"task_variables", "task_links"}, exclude_none=True)
     entry = SetEntry.model_validate(entries[command.entry] | additions)
     changed = content | {"entries": entries | {command.entry: entry.model_dump(mode="json", exclude_unset=True)}}
-    return set_document_write(project, axis.set, content_edits(content, changed), set_readers(project, axis.set))
+    return set_document_write(
+        project, name, content_edits(content, changed), set_readers(project, name) if chosen is None else chosen,
+    )
 
 
 def _save_set(project: Project, command: SaveSet) -> StoredEdit:
