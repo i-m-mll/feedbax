@@ -60,7 +60,8 @@ test('connects the saved Model task signal from the keyboard', async ({ page, re
   }
   await expectVisibleFocus(input);
   await expect(input).toHaveRole('button');
-  await expect(input).toHaveAccessibleDescription('Input · real [2]');
+  // A GRU's input width is its wire's, so an unwired one names no type, and the connection gives it the signal's.
+  await expect(input).toHaveAccessibleDescription('Input');
   const edit = post('edit');
   await page.keyboard.press('Space');
   const applied = await edit;
@@ -73,6 +74,7 @@ test('connects the saved Model task signal from the keyboard', async ({ page, re
   expect(Object.values(saved.interior.wires ?? {})).toContainEqual(expect.objectContaining({
     source: { owner: 'inputs', port: taskPort?.id }, target: firstWire.target,
   }));
+  await expect(input).toHaveAccessibleDescription('Input · Point m real [2]');
 });
 
 test('a wire drawn to an occupied input of another type replaces its wire, keeping its attachment and waypoint', async ({ page, request }) => {
