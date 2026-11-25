@@ -81,7 +81,11 @@ class SelectedAxisValue(StrictModel):
     """The value's display name at selection time, used if the ID subsequently disappears."""
 
 
+type AxisSelectionClause = dict[ProjectName, Annotated[list[SelectedAxisValue], Field(min_length=1)]]
+
+
 class SelectedAxisValueProblem(StrictModel):
+    clause_index: int = Field(ge=0)
     axis: ProjectName
     missing: SelectedAxisValue
     remaining: list[SelectedAxisValue]
@@ -90,7 +94,10 @@ class SelectedAxisValueProblem(StrictModel):
 class SelectedAxisValueRefusal(RuleRefusal):
     def __init__(self, index: int, problem: SelectedAxisValueProblem) -> None:
         self.problem = problem
-        super().__init__(f"axes.{problem.axis}.{index}", f"{problem.axis} no longer has {problem.missing.label!r}.")
+        super().__init__(
+            f"clauses.{problem.clause_index}.{problem.axis}.{index}",
+            f"{problem.axis} no longer has {problem.missing.label!r}.",
+        )
 
 
 class SubsetTerms(StrictModel):
@@ -98,10 +105,8 @@ class SubsetTerms(StrictModel):
 
     rule: str = ""
     bound_ranks: list[BoundRank] | None = Field(default=None, exclude_if=lambda ranks: ranks is None)
-    axes: dict[ProjectName, Annotated[list[SelectedAxisValue], Field(min_length=1)]] = Field(
-        default_factory=dict, exclude_if=lambda axes: not axes,
-    )
-    """Select one of the given IDs on each constrained axis. The axes are joined by AND, and other axes are unrestricted."""
+    clauses: Annotated[list[AxisSelectionClause], Field(min_length=1)] = Field(default_factory=lambda: [{}])
+    """The union of these clauses. Each clause constrains only its named axes and matches any of their given IDs."""
 
     @field_validator("bound_ranks")
     @classmethod
@@ -110,13 +115,24 @@ class SubsetTerms(StrictModel):
             raise ValueError("bound rank keys must be distinct")
         return ranks
 
-    @field_validator("axes")
+    @field_validator("clauses")
     @classmethod
-    def _distinct_axis_values(cls, axes: dict[str, list[SelectedAxisValue]]) -> dict[str, list[SelectedAxisValue]]:
-        for axis, values in axes.items():
-            if len({value.id for value in values}) != len(values):
-                raise ValueError(f"{axis} repeats an axis value")
-        return axes
+    def _canonical_clauses(cls, clauses: list[AxisSelectionClause]) -> list[AxisSelectionClause]:
+        canonical = {}
+        for clause in clauses:
+            if not clause:
+                return [{}]
+            ordered = {}
+            for axis, values in sorted(clause.items()):
+                by_id = {}
+                for value in sorted(values, key=lambda value: (value.id, value.label)):
+                    by_id.setdefault(value.id, value)
+                ordered[axis] = list(by_id.values())
+            identity = tuple((axis, tuple(value.id for value in values)) for axis, values in ordered.items())
+            labels = tuple(value.label for values in ordered.values() for value in values)
+            if identity not in canonical or labels < canonical[identity][0]:
+                canonical[identity] = (labels, ordered)
+        return [canonical[identity][1] for identity in sorted(canonical)]
 
 
 class SweepExceptionTerms(StrictModel):
@@ -155,10 +171,11 @@ def select_step_rows[Row, Coordinate: SweepCoordinate](
         return tuple((member_key(row), row) for row in members), None
     if isinstance(terms, StoreSubset):
         raise RuleRefusal("query", "store queries cannot select static step rows")
-    if terms.axes:
+    clause = terms.clauses[0]
+    if clause:
         values_by_row = tuple((row, coordinates(row)) for row in members)
         positions = {}
-        for axis, wanted in terms.axes.items():
+        for axis, wanted in clause.items():
             available = {
                 value.value_id: SelectedAxisValue(id=value.value_id, label=coordinate_label(value))
                 for _, values in values_by_row if (value := values.get(axis)) is not None
@@ -166,7 +183,7 @@ def select_step_rows[Row, Coordinate: SweepCoordinate](
             for index, value in enumerate(wanted):
                 if value.id not in available:
                     raise SelectedAxisValueRefusal(index, SelectedAxisValueProblem(
-                        axis=axis, missing=value, remaining=list(available.values()),
+                        clause_index=0, axis=axis, missing=value, remaining=list(available.values()),
                     ))
             positions[axis] = {value.id: index for index, value in enumerate(wanted)}
         ordered_axes = sorted(positions)

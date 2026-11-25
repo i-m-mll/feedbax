@@ -49,7 +49,7 @@ export function selectedRowTerms(rows: readonly StudioProjectWindowMapRow[], pic
     }
   }
   if (rows.filter(matches).length !== selected.length) return undefined;
-  return Object.keys(axes).length ? { axes } : {};
+  return { clauses: [axes] };
 }
 
 export function planVariants(saved: StudioSavedTrainRuns | undefined) {
@@ -62,9 +62,11 @@ export function bestRankGroups(subset: StudioProjectWindowMapSubset | null | und
 }
 
 export function pinnedSelectionLabels(terms: SubsetTerms): string[] | undefined {
-  const axes = Object.entries(terms.axes ?? {}).map(([axis, values]) =>
-    `${axis}=${values.map(({ label }) => label).join(', ')}`);
-  return axes.length ? axes : terms.bound_ranks?.map(({ key }) => key);
+  const clauses = (terms.clauses ?? []).flatMap((clause) => {
+    const axes = Object.entries(clause).map(([axis, values]) => `${axis}=${values.map(({ label }) => label).join(', ')}`);
+    return axes.length ? [axes.join(' ')] : [];
+  });
+  return clauses.length ? clauses : terms.bound_ranks?.map(({ key }) => key);
 }
 
 function subsetTerms(terms: SubsetTerms): string[] {
