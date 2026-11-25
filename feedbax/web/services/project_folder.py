@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from base64 import b64decode, urlsafe_b64encode
 from binascii import Error as Base64Error
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from hmac import compare_digest, digest
 import os
@@ -14,7 +15,7 @@ from typing import TYPE_CHECKING
 from feedbax.contracts.base import StrictModel, sha256_bytes
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.model_address import ModelAddress
-from feedbax.contracts.project import ProjectValueEdit, Sha256
+from feedbax.contracts.project import Project, ProjectValueEdit, Sha256
 from feedbax.contracts.project_inputs import ProjectName
 from feedbax.contracts.project_io import PROJECT_DECLARATION_SUFFIX, TextProject, TextProjectExternalInputs
 from feedbax.contracts.project_resolution import BaseReaders, RunKey
@@ -66,10 +67,12 @@ class ProjectFolderService(ProjectFolder):
         python_tasks: PythonTaskRegistry | None = None,
         training_methods: TrainingMethodRegistry | None = None,
         figure_templates: FigureTemplateRegistry | None = None,
+        load_examples: Callable[[], Mapping[str, Project]] = dict,
     ) -> None:
         super().__init__(
             root, operations=operations, components=components, functions=functions,
             python_tasks=python_tasks, figure_templates=figure_templates, training_methods=training_methods,
+            load_examples=load_examples,
         )
         self._model_undo_key = token_bytes(32)
 

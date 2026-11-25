@@ -313,13 +313,12 @@ def read_scene_geometry(
 
 
 @router.get("/examples")
-def list_project_examples(response: Response) -> StudioProjectExamples:
+def list_project_examples(request: Request, response: Response) -> StudioProjectExamples:
     from feedbax.contracts.project import member_display_name
-    from feedbax.examples import load_shipped_projects
 
     return _project_response(response, lambda: StudioProjectExamples(examples=[
         StudioProjectExample(id=key, name=member_display_name(key))
-        for key in load_shipped_projects()
+        for key in request.app.state.project_folders.project_examples()
     ]))
 
 

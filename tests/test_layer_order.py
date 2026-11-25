@@ -26,6 +26,7 @@ LAYERS: tuple[tuple[str, ...], ...] = (
         "feedbax.host.protocol", "feedbax.host.python", "feedbax.host.source_roster", "feedbax.host.watchdog",
     ),
     ("feedbax.contracts",),
+    ("feedbax.examples",),
     ("feedbax.expression_builtins",),
     ("feedbax.dataset", "feedbax.dataset_replicates", "feedbax.dataset_sweep"),
     ("feedbax.runtime",),
@@ -64,7 +65,7 @@ LAYERS: tuple[tuple[str, ...], ...] = (
     ("feedbax.jobs", "feedbax.project_retention"),
     ("feedbax.orchestration",),
     ("feedbax.web",),
-    ("feedbax.bin", "feedbax.desktop", "feedbax.examples", "feedbax.governance", "feedbax.testing"),
+    ("feedbax.bin", "feedbax.desktop", "feedbax.governance", "feedbax.testing"),
     ("feedbax.__main__", "feedbax.cli"),
 )
 
