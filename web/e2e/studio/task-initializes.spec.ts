@@ -2,7 +2,6 @@ import { expect, test } from './fixtures/studio';
 import type { StudioProjectSnapshot, StudioTrialAuthoring, TaskDocument } from '../../src/generated/studioContracts';
 import { fixture, mapStep, seedManagedProject } from './fixtures/canonicalTrain';
 import { pick } from './fixtures/controls';
-import { startProject } from './fixtures/studioKeyboard';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -63,12 +62,10 @@ test('a start the Model needs and no variable initializes is a row with its prob
 });
 
 // Catches the five leftover rows of the point mass: a Model start no variable initializes drawn as a row with no name.
-test('the shipped Task\'s Variables are its variables and its Sets', async ({ page }) => {
-  const created = page.waitForResponse((response) => response.url().endsWith('/api/projects') && response.request().method() === 'POST');
-  await startProject(page);
-  expect((await created).status()).toBe(201);
-  await page.getByRole('button', { name: 'New Step', exact: true }).press('Enter');
-  await page.getByRole('menu').getByRole('menuitem', { name: 'Train', exact: true }).press('Enter');
+test('the shipped Task\'s Variables are its variables and its Sets', async ({ page, request }) => {
+  const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Task', exact: true }).click();
   const table = page.getByRole('tabpanel', { name: 'Task', exact: true }).getByRole('table', { name: 'Variables', exact: true });
   await expect(table.getByRole('rowheader').first()).toBeVisible();
