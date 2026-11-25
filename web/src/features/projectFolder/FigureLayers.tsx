@@ -69,7 +69,7 @@ export function FigureLayers({ figure, fields, edit, refusal }: {
     setChosen(next.name);
   };
   const addRole = () => {
-    const role = generatedName('data', (name) => figure.data.includes(name));
+    const role = generatedName(`data-${figure.data.length + 1}`, (name) => figure.data.includes(name));
     edit?.(studioName('dataRole'), { ...figure, data: [...figure.data, role] });
   };
   const remove = (name: string) => write(studioName('remove'), figure.layers.filter((item) => item.name !== name));
