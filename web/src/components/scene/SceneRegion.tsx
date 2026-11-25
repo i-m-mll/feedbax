@@ -299,8 +299,8 @@ function SceneDrawingCanvas({
         );
       })}
       <g pointerEvents="none" aria-hidden="true">
-        {scene.relations.map(({ term, ends }, index) => {
-          const [[x1, y1], [x2, y2]] = ends.map(project);
+        {parallelRelations(scene.relations.map(({ term, ends: [a, b] }) => ({ term, ends: [project(a), project(b)] as const }))).map(({ term, ends }, index) => {
+          const [[x1, y1], [x2, y2]] = ends;
           return <line key={index} data-scene-relation={term} x1={x1} y1={y1} x2={x2} y2={y2} stroke="var(--text-primary)"
             strokeWidth={term === selectedTerm ? 2.5 : 1.5} strokeDasharray="6 4" vectorEffect="non-scaling-stroke" />;
         })}
@@ -500,4 +500,25 @@ export function SceneElementInspector({ scene, selected }: { scene: Scene; selec
       })} />)}
     </Inspector>
   );
+}
+
+type Segment = readonly [ScenePoint, ScenePoint];
+
+/** Pixels between relations drawn between the same two places. */
+const relationGap = 6;
+
+/** Relations between the same two places, side by side across their common line rather than drawn over each other. */
+function parallelRelations<T extends { ends: Segment }>(relations: readonly T[]): T[] {
+  const key = ([a, b]: Segment) => [a, b].map(([x, y]) => `${Math.round(x)},${Math.round(y)}`).sort().join(' ');
+  const groups = new Map<string, number[]>();
+  relations.forEach((relation, index) => groups.set(key(relation.ends), [...groups.get(key(relation.ends)) ?? [], index]));
+  return relations.map((relation, index) => {
+    const group = groups.get(key(relation.ends))!;
+    const [[x1, y1], [x2, y2]] = relation.ends;
+    const length = Math.hypot(x2 - x1, y2 - y1);
+    if (group.length < 2 || !length) return relation;
+    const shift = (group.indexOf(index) - (group.length - 1) / 2) * relationGap;
+    const [dx, dy] = [(y1 - y2) / length * shift, (x2 - x1) / length * shift];
+    return { ...relation, ends: [[x1 + dx, y1 + dy], [x2 + dx, y2 + dy]] satisfies Segment };
+  });
 }
