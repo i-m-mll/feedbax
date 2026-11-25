@@ -2217,6 +2217,7 @@ class _Compiler:
                     tuple(row.patch_origins.items()),
                     tuple(row.patch_authors.items()),
                     tuple(row.coordinates.items()),
+                    tuple(entry.model_dump(mode="json") for entry in row.task_additions),
                 )),
                 tuple(sorted(inputs.items())),
                 tuple(
@@ -2497,6 +2498,7 @@ class _Compiler:
             self.work.rows,
             key,
             (kind, basis, to_json(tuple(row.patches.items())), tuple(sorted(inputs.items())), source_stamp,
+             to_json(tuple(entry.model_dump(mode="json") for entry in row.task_additions)),
              to_json({name: value.model_dump(mode="json") for name, value in fields.items()})),
             self.authored_inputs[key.variant],
             lower,
