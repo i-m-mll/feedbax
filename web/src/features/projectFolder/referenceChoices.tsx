@@ -2,15 +2,20 @@ import { studioName, studioStep } from '@/components/activity/studioVocabulary';
 import type { ReferenceChoice, ReferenceGroup } from '@/components/values/ReferenceField';
 import type { PlanStepView } from '@/features/pipeline/planView';
 import { viewGlyphs } from '@/features/projectWindow/ProjectWindow';
-import { documentsOfRole } from './useProjectDocuments';
+import { Package } from 'lucide-react';
+import { documentsOfRole, type DocumentRole } from './useProjectDocuments';
 
-type DocumentKind = 'model' | 'task' | 'objective';
+type DocumentKind = Extract<DocumentRole, 'model' | 'loaded_model' | 'task' | 'objective'>;
+
+const documentGlyphs = {
+  model: viewGlyphs.model, loaded_model: Package, task: viewGlyphs.task, objective: viewGlyphs.objective,
+} satisfies Record<DocumentKind, unknown>;
 
 export const documentChoiceId = (document: string) => JSON.stringify(['document', document]);
 export const stepChoiceId = (step: string) => JSON.stringify(['step', step]);
 
 export function documentChoice(kind: DocumentKind, document: string): ReferenceChoice {
-  const Glyph = viewGlyphs[kind];
+  const Glyph = documentGlyphs[kind];
   return { id: documentChoiceId(document), label: document, glyph: <Glyph /> };
 }
 

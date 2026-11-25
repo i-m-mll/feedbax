@@ -7,7 +7,7 @@ import {
 } from '@/components/activity/studioVocabulary';
 import { shownName } from '@/features/pipeline/planView';
 import type { DocumentPickerModel, PickerTemplate } from '@/features/projectWindow/DocumentPicker';
-import { blankTask } from '@/generated/studioContracts';
+import { blankTask, loadedModelDocumentSchemaId } from '@/generated/studioContracts';
 import type {
   Document, StudioProjectFilePatch, StudioSavedTrainKey, StudioTrialAuthoringRequest,
 } from '@/generated/studioContracts';
@@ -15,7 +15,9 @@ import type { ProjectEditController } from './projectEditController';
 import { baseOf, documentPayload } from './documentPayload';
 import { generatedName, holds, keyOfLabel } from './generatedName';
 
-export type DocumentRole = 'model' | 'task' | 'objective' | 'training' | 'analysis' | 'report';
+export type DocumentRole = 'model' | 'loaded_model' | 'task' | 'objective' | 'training' | 'analysis' | 'report';
+/** The roles whose documents are written in Studio, as opposed to imported. */
+type AuthoredRole = Exclude<DocumentRole, 'loaded_model'>;
 
 const supervisedTrainMethod = 'feedbax.supervised_gradient';
 const pythonTask = 'feedbax.spec.python_task';
@@ -42,10 +44,11 @@ export const blankDocuments = {
     schema: 'feedbax.report_document.v1',
     payload: { schema_version: 'feedbax.report_document.v1', title: 'Report', blocks: [] },
   },
-} satisfies Record<DocumentRole, Document>;
+} satisfies Record<AuthoredRole, Document>;
 
 const schemas: Record<DocumentRole, readonly string[]> = {
   model: [blankDocuments.model.schema],
+  loaded_model: [loadedModelDocumentSchemaId],
   task: [blankDocuments.task.schema, pythonTask],
   objective: [blankDocuments.objective.schema],
   training: [blankDocuments.training.schema],
@@ -54,7 +57,7 @@ const schemas: Record<DocumentRole, readonly string[]> = {
 };
 
 const labels: Record<DocumentRole, StudioNameId> = {
-  model: 'modelDocument', task: 'taskDocument', objective: 'objectiveDocument', training: 'trainingDocument',
+  model: 'modelDocument', loaded_model: 'loadedModelDocument', task: 'taskDocument', objective: 'objectiveDocument', training: 'trainingDocument',
   analysis: 'analysisDocument', report: 'reportDocument',
 };
 
@@ -160,7 +163,7 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
     if (role === 'analysis' || role === 'report') {
       return [{ address: { kind: 'step', id: stepId }, patches: [{ op: 'replace', path: '/base/document', value: document }] }];
     }
-    if (!run) return [];
+    if (!run || role === 'loaded_model') return [];
     const result = await readStudioTrialAuthoring(projectId, {
       revision, run, scope, change: { kind: 'select_document', role, document },
     }, editor.signal);
@@ -203,7 +206,7 @@ export function useProjectDocuments({ editor, stepId, run, scope, selectable, ed
       refusal: refused?.step === stepId && refused?.role === role ? refused.reason : undefined,
       choose: repoint ? (next) => { void attempt(role, () => point(studioAccessibleName('select', kind), role, next)); } : undefined,
       templates: role === 'task' && taskTemplates.size ? [...taskTemplates.values()].map(({ template }) => template) : undefined,
-      create: repoint ? (template) => attempt(role, async () => {
+      create: repoint && role !== 'loaded_model' ? (template) => attempt(role, async () => {
         const { saved } = editor.getSnapshot();
         const { id, document } = namedDocument(saved.project.documents,
           (template && taskTemplates.get(template)?.document) || blankDocuments[role]);
