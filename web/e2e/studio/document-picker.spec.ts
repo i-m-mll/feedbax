@@ -61,7 +61,7 @@ test('the slot header switches, creates, duplicates, renames and re-keys a step\
   async function renameStep(step: string, label: string) {
     await mapStep(page, step).click();
     await mapStep(page, step).press('F2');
-    const name = page.locator(`[data-map-step="${step}"]`).getByRole('textbox', { name: `Rename ${step}`, exact: true });
+    const name = page.locator(`[data-map-step="${step}"]`).getByRole('textbox', { name: /^Rename / });
     await name.fill(label);
     const sent = submitted(page, `${projectPath}/members/command`);
     await name.press('Enter');
@@ -70,7 +70,7 @@ test('the slot header switches, creates, duplicates, renames and re-keys a step\
 
   await page.goto(`/?project=${encodeURIComponent(snapshot.project_id)}`);
   await run('train');
-  await renameStep('sibling', 'Sibling');
+  await renameStep('sibling', 'Sibling reach');
   await run('sibling');
   await mapStep(page, 'train').click();
   await page.getByRole('tab', { name: 'Model', exact: true }).click();
@@ -88,7 +88,7 @@ test('the slot header switches, creates, duplicates, renames and re-keys a step\
   const activity = page.getByRole('region', { name: 'Activity', exact: true })
     .getByRole('region', { name: configuration.project, exact: true });
   await expect(activity.getByRole('button', { name: 'Train Train', exact: true })).toBeVisible();
-  await expect(activity.getByRole('button', { name: 'Train Sibling', exact: true })).toBeVisible();
+  await expect(activity.getByRole('button', { name: 'Train Sibling reach', exact: true })).toBeVisible();
   await expect(activity.getByRole('button', { name: 'Train Reach', exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: /^Activity( \d+)?$/ }).click();
 

@@ -582,7 +582,7 @@ test('Mounted field sweep continues exactly two Train rows with state', { tag: '
     const selectedRow = table.getByRole('button', { name: runName(shownRunLabel(selected[index])) });
     await selectedRow.click();
     await expect(selectedRow).toHaveAttribute('aria-pressed', 'true');
-    await expect(inspector.getByRole('button', { name: /^Select Made From train / })).toBeVisible();
+    await expect(inspector.getByRole('button', { name: /^Select Made From Train / })).toBeVisible();
     await expect(table.getByRole('progressbar')).toHaveCount(0);
     if (index === 0) {
       await openResultsSlot(page);

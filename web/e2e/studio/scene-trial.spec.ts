@@ -57,7 +57,7 @@ test('a Point signal appears in the Scene once the playhead passes its start', a
   const { snapshot } = await seedManagedProject(request, await fixture('delayed-reaches-files'));
   await openScene(page, snapshot.project_id, 'train');
   await expect(trialPicker(page)).toHaveText('nominal');
-  const target = element(page, 'target_pos');
+  const target = element(page, 'target position');
   await expect(element(page, 'start').locator('[data-scene-shown]')).toHaveCount(1);
   await expect(target).toHaveCount(0);
   await footer(page).getByRole('slider', { name: 'Playback Position' }).press('End');
@@ -87,7 +87,7 @@ async function doneEvaluationScene(page: Page, home: string, seed: string, scena
   await run('baseline');
   for (const step of after) await run(step);
   if (after.length) await mapStep(page, 'baseline').click();
-  await plans.getByRole('button', { name: /^\d+ baseline$/ }).click();
+  await plans.getByRole('button', { name: /^\d+ Baseline$/ }).click();
   await tab(page, 'Scene').click();
 }
 

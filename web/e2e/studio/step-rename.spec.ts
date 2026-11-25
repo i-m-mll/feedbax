@@ -61,7 +61,7 @@ test('renaming a Train step labels it, changing its key keeps its runs and its E
   await mapStep(page, 'train').click();
   await expectGoesIn(mapStep(page, 'train'));
   await mapStep(page, 'train').press('F2');
-  const name = page.locator('[data-map-step="train"]').getByRole('textbox', { name: 'Rename train', exact: true });
+  const name = page.locator('[data-map-step="train"]').getByRole('textbox', { name: 'Rename Train', exact: true });
   await expect(name).toBeFocused();
   await name.fill('Fit');
   await name.press('Enter');
@@ -76,7 +76,7 @@ test('renaming a Train step labels it, changing its key keeps its runs and its E
   await mapStep(page, 'train').click({ button: 'right' });
   await page.getByRole('menuitem', { name: 'Change Key', exact: true }).click();
   const key = page.getByRole('complementary', { name: 'Inspector', exact: true })
-    .getByRole('textbox', { name: 'Change Key train', exact: true });
+    .getByRole('textbox', { name: 'Change Key Train', exact: true });
   await expect(key).toBeFocused();
   await key.fill('fit');
   await key.press('Enter');
@@ -105,14 +105,14 @@ test('renaming a Train step labels it, changing its key keeps its runs and its E
   expect(await statuses()).toEqual({ train: 'succeeded', baseline: 'succeeded' });
 
   await mapStep(page, 'train').click();
-  await command('Rename Step train');
-  const palette = page.locator('[data-map-step="train"]').getByRole('textbox', { name: 'Rename train', exact: true });
+  await command('Rename Step Train');
+  const palette = page.locator('[data-map-step="train"]').getByRole('textbox', { name: 'Rename Train', exact: true });
   await expect(palette).toBeFocused();
   await palette.press('Escape');
   await expect(mapStep(page, 'train')).toBeFocused();
 
   const steps = page.getByRole('navigation', { name: 'Steps', exact: true });
-  const row = steps.getByRole('treeitem', { name: /^train\b/ });
+  const row = steps.getByRole('treeitem', { name: /^Train\b/ });
   if (!await row.isVisible()) await command('Show Steps');
   await row.click();
   await expectGoesIn(row);

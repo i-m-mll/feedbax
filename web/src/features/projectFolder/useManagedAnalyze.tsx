@@ -471,7 +471,7 @@ export function useManagedAnalyze({
             scope={{ project: saved.project_id, revision: projection.revision, variant: key.variant }} source={source}
             terms={where} planned={subset} picking={selection}
             disabled={!canBind} problem={problems.rule}
-            pick={{ rows: stepSourceRows(projection, source.id, key.variant) }} onCommit={write} />,
+            pick={stepSourceRows(projection, source.id, key.variant)} onCommit={write} />,
         };
       }}
       onChange={canBind ? (gesture) => {

@@ -80,7 +80,7 @@ test('the clock picks the nominal trial or a sample of a task document, and the 
   await pick('sample 2 of 4');
   await expect(hold).toHaveAttribute('data-end', String(holdEnd(seeded, 1)));
   await expect(epochs.getByRole('img', { name: /^hold / })).toHaveCount(0);
-  const target = shelf.getByRole('group', { name: 'target_pos', exact: true });
+  const target = shelf.getByRole('group', { name: 'target position', exact: true });
   await expect(target.locator('[data-start]').first()).toHaveAttribute('data-start', String(holdEnd(seeded, 1)));
   const drawn = seeded[1].variables.catch as boolean;
   const variables = primary.getByRole('table', { name: 'Variables', exact: true });
@@ -88,11 +88,11 @@ test('the clock picks the nominal trial or a sample of a task document, and the 
   await expect(variables.getByRole('row').filter({ has: page.getByRole('textbox', { name: 'Rename catch', exact: true }) })
     .getByRole('cell').nth(-2)).toHaveText(String(drawn));
 
-  await target.getByRole('button', { name: 'target_pos', exact: true }).click();
+  await target.getByRole('button', { name: 'target position', exact: true }).click();
   const drawer = page.getByRole('complementary', { name: 'Details Drawer', exact: true });
-  await expect(drawer.getByRole('tree', { name: 'Signals', exact: true }).getByRole('treeitem', { name: 'target_pos', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(drawer.getByRole('tree', { name: 'Signals', exact: true }).getByRole('treeitem', { name: 'target position', exact: true })).toHaveAttribute('aria-selected', 'true');
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-  await expect(inspector.getByRole('img', { name: 'Plot target_pos', exact: true })).toBeVisible();
+  await expect(inspector.getByRole('img', { name: 'Plot target position', exact: true })).toBeVisible();
 
   await pick('sample 1 of 4');
   await expect(hold).toHaveAttribute('data-end', String(holdEnd(seeded, 0)));

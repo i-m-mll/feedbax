@@ -145,10 +145,10 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', { ta
   const jobsSubmitted = (await Promise.all(submissions)).flatMap(({ items }) => items.map(({ job_id }) => job_id));
   expect(new Set(jobsSubmitted).size).toBe(1);
   await expect(activityRow.getByText('Done', { exact: true })).toBeVisible();
-  await expect(status.getByText('Train · train: Done', { exact: true })).toHaveCount(1);
+  await expect(status.getByText('Train · Train: Done', { exact: true })).toHaveCount(1);
   const messages = await status.locator(':scope > div').allTextContents();
   expect(new Set(messages).size).toBe(messages.length);
-  for (const message of messages) expect(message).toMatch(/^Train · train: /);
+  for (const message of messages) expect(message).toMatch(/^Train · Train: /);
   await expect(table.locator('tbody [aria-live]')).toHaveCount(0);
   await expect(activityRow.locator('[aria-live]')).toHaveCount(0);
   await info.attach('train-status-announcements', { body: JSON.stringify(messages), contentType: 'application/json' });
@@ -172,13 +172,13 @@ test('a real Model edit updates map, drawer, and Runs from the saved plan', { ta
   expect(saved.ok(), await saved.text()).toBe(true);
   expect((await saved.json()).result.status).toBe('applied');
   await expect(table.getByText('Out of date', { exact: true })).toBeVisible();
-  await expect(card.getByRole('button', { name: 'Select train · Out of date', exact: true })).toBeVisible();
-  await expect(drawer.getByRole('treeitem', { name: 'train Out of date', exact: true })).toBeVisible();
+  await expect(card.getByRole('button', { name: 'Select Train · Out of date', exact: true })).toBeVisible();
+  await expect(drawer.getByRole('treeitem', { name: 'Train Out of date', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
   await page.getByRole('dialog', { name: 'Command Palette' }).getByRole('option', { name: /^Undo\b/ }).click();
   await expect(table.getByText('Done', { exact: true })).toBeVisible();
-  await expect(card.getByRole('button', { name: 'Select train · Done', exact: true })).toBeVisible();
-  await expect(drawer.getByRole('treeitem', { name: 'train Done', exact: true })).toBeVisible();
+  await expect(card.getByRole('button', { name: 'Select Train · Done', exact: true })).toBeVisible();
+  await expect(drawer.getByRole('treeitem', { name: 'Train Done', exact: true })).toBeVisible();
 });
 
 test('outside saved-folder edits join the mounted Undo history', async ({ page, request, studio }, info) => {

@@ -34,7 +34,7 @@ test('a continuation started from its Model keeps its definition and continues a
   const continuation = (await saved()).project.steps!['train-2'];
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const start = inspector.getByRole('combobox', { name: 'Start', exact: true });
-  await expect(start).toHaveText('train');
+  await expect(start).toHaveText('Train');
 
   await pick(start, model);
   await expect.poll(async () => 'inline' in (await saved()).project.steps!['train-2'].base).toBe(true);
@@ -42,7 +42,7 @@ test('a continuation started from its Model keeps its definition and continues a
   await expect(start).toHaveText(model);
   await expect(inspector.getByRole('textbox', { name: 'Batches', exact: true })).toHaveValue('2');
 
-  await pick(start, 'train');
+  await pick(start, 'Train');
   await expect.poll(async () => (await saved()).project.steps!['train-2'].base).toEqual({ step: 'train' });
   const restored = (await saved()).project.steps!['train-2'];
   expect(restored.inputs).toEqual(continuation.inputs);
@@ -81,7 +81,7 @@ test('a Train step started at update 500 of another plans a continuation from th
   await chooseStepKind(page, 'Train');
   await expect(mapStep(page, 'train-2')).toHaveAttribute('aria-pressed', 'true');
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
-  await expect(inspector.getByRole('combobox', { name: 'Start', exact: true })).toHaveText('train');
+  await expect(inspector.getByRole('combobox', { name: 'Start', exact: true })).toHaveText('Train');
   const last = await requestOf();
 
   await pick(inspector.getByRole('combobox', { name: 'Checkpoint', exact: true }), 'At');

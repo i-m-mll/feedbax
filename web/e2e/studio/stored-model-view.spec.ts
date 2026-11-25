@@ -237,7 +237,7 @@ test('an Evaluate attachment for the step is stored in a document based on the s
   await outlineRow(page, 'Cell.output → Readout.input').click();
   await addIntervention(page, projectPath, { rows: ['seed=control'], axes: { seed: ['control'] } });
   await mapStep(page, 'baseline').click();
-  await evaluation.locator('.studio-map-run-mark').and(evaluation.getByRole('button', { name: /^Select seed comparison/ })).click();
+  await evaluation.locator('.studio-map-run-mark').and(evaluation.getByRole('button', { name: /^Select Comparison/ })).click();
   await outlineRow(page, 'Cell.output → Readout.input').click();
   await addIntervention(page, projectPath, { rows: ['seed=comparison'] });
   await expect(model.getByRole('button', { name: 'Attachment Scale', exact: true })).toHaveCount(2);

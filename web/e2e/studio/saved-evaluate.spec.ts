@@ -762,7 +762,7 @@ test('edits a checkpoint axis value and one sibling row through saved Plan', asy
   expect(axisPlan.right.request_id).toBe(before.right.request_id);
   expect(axisPlan.train).toBe(before.train);
   await expect(updates).toHaveValue('3');
-  await plans(page).getByRole('button', { name: /replicate=right/ }).click();
+  await plans(page).getByRole('button', { name: runName('Train · Right') }).click();
   await expect(every).toHaveValue('2');
   await pick(kind, 'List');
   const row = await save(async () => {
@@ -813,9 +813,9 @@ test('a checkpoint edit left for another run while the plan is read saves on its
   await updates.press('Enter');
   await plan.sent;
   await updates.fill('4');
-  await plans(page).getByRole('button', { name: /replicate=right/ }).click();
+  await plans(page).getByRole('button', { name: runName('Train · Right') }).click();
   plan.release();
-  await expect(inspector.getByRole('heading', { name: /replicate right/ })).toBeVisible();
+  await expect(inspector.getByRole('heading', { name: /Right/ })).toBeVisible();
   await expect(inspector.getByRole('textbox', { name: 'Every', exact: true })).toHaveValue('2');
   await expect.poll(() => patches.length).toBe(2);
   const after = await evaluations(patches[1].revision);

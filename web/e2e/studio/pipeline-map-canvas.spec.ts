@@ -43,7 +43,7 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', { 
   const source = card('train');
   const child = card('successor');
   const mark = (row: typeof included) => source.getByRole('button', {
-    name: new RegExp(`^Select seed ${row.coordinates.seed.label ?? row.coordinates.seed.value_id} · `),
+    name: new RegExp(`^Select ${row.coordinates.seed.label} · `),
   });
 
   await page.keyboard.press('Control+Meta+1');
@@ -143,7 +143,7 @@ test('navigates and resizes the saved pipeline canvas without changing zoom', { 
   await expect.poll(async () => (await camera()).zoom).toBe(zoomed.zoom);
   await page.keyboard.press('Control+Meta+3');
   await expect(canvas).toBeHidden();
-  await expect(region.getByRole('button', { name: 'Select train Train', exact: true })).toBeVisible();
+  await expect(region.getByRole('button', { name: 'Select Train Train', exact: true })).toBeVisible();
   await page.keyboard.press('Control+Meta+2');
   await page.setViewportSize({ width: 540, height: 850 });
   await expect(child).toHaveAttribute('data-map-density', 'compact');

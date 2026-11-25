@@ -30,7 +30,7 @@ test('a choice of two clauses draws a line each, and the missing value\'s Proble
   const source = { id: 'train', runs: [], ruleAxes: {} } as unknown as PlanStepView;
   render(<QueryClientProvider client={new QueryClient()}>
     <SelectionRule scope={{ project: 'p', revision: 'r', variant: 'main' }} source={source} disabled={false}
-      terms={{ clauses: [clause('0', '2'), clause('1', '3')] }} pick={{ rows: [] }}
+      terms={{ clauses: [clause('0', '2'), clause('1', '3')] }} pick={{ rows: [], axes: [] }}
       problem={{ reason: 'seed has no value 1', value: {
         clause_index: 1, axis: 'seed', missing: { id: 's1', label: '1' }, remaining: [{ id: 's0', label: '0' }, { id: 's2', label: '2' }],
       } }} onCommit={(next) => written.push(next)} />

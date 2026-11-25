@@ -69,7 +69,8 @@ test('connects the saved Model task signal from the keyboard', async ({ page, re
   expect(applied.ok(), JSON.stringify(result)).toBe(true);
   if (result.status !== 'applied') throw new Error(JSON.stringify(result));
   const saved = rootPayload(result.snapshot.project.documents![modelFile.id]) as unknown as ModelDocument;
-  const taskPort = saved.ports.inputs?.find(({ name }) => name === signal);
+  // The new input takes the name of the Task signal it reads.
+  const taskPort = saved.ports.inputs?.find(({ name }) => name === 'target position');
   expect(taskPort).toBeDefined();
   expect(Object.values(saved.interior.wires ?? {})).toContainEqual(expect.objectContaining({
     source: { owner: 'inputs', port: taskPort?.id }, target: firstWire.target,
@@ -135,7 +136,7 @@ test('a wire drawn to an occupied input of another type replaces its wire, keepi
   await expect(force.locator('..')).toHaveAttribute('data-verdict', 'marked');
   await expect(edge).toHaveAttribute('data-preview', 'kept');
   await expect(edge.locator('.react-flow__edge-path')).toHaveAttribute('d', new RegExp(`${waypoint.x},${waypoint.y}`));
-  await expect(model.getByRole('button', { name: /^Attachment / })).toHaveAccessibleDescription(/Inputs\.target_pos →/);
+  await expect(model.getByRole('button', { name: /^Attachment / })).toHaveAccessibleDescription(/Inputs\.target position →/);
   const edited = post('edit');
   await page.mouse.up();
   const replaced = storedDrive(await (await edited).json() as ModelEditResponse);

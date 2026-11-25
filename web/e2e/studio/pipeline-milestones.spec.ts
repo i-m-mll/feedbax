@@ -307,7 +307,7 @@ for (const grouped of [false, true]) test(`M2 saves, runs, and freezes a ${group
   const ranked = (await readPlan()).window_map!.evaluations!.filter(({ key }) => key.step === 'evaluate');
   expect(ranked.map(({ key }) => key)).toEqual(ranks.map(({ key }) => key));
   if (grouped) {
-    const firstGroup = runs(page).getByRole('rowheader').getByRole('button', { name: /^\d+ replicate First · Rank/ });
+    const firstGroup = runs(page).getByRole('rowheader').getByRole('button', { name: /^\d+ First · Rank/ });
     await firstGroup.nth(0).click();
     await firstGroup.nth(1).click({ modifiers: ['Shift'] });
     await launchRows(page, projectPath, ranked.slice(0, 2).map(({ key }) => key));
@@ -440,11 +440,11 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   const fast = runs(page).getByRole('row').filter({ hasText: '0.003' }).getByRole('button');
   await fast.click();
   await expect(inspector.getByRole('button', { name: /^Select Used By / })).toHaveCount(0);
-  await expect(steps.getByRole('treeitem', { name: /^evaluate\b/ })).toHaveAccessibleDescription('0 of 2');
+  await expect(steps.getByRole('treeitem', { name: /^Evaluate\b/ })).toHaveAccessibleDescription('0 of 2');
   const slow = runs(page).getByRole('row').filter({ hasText: '0.001' }).getByRole('button');
   await slow.click();
   await expect(inspector.getByRole('button', { name: /^Select Used By / })).toContainText('1 of 2');
-  await expect(steps.getByRole('treeitem', { name: /^evaluate\b/ })).toHaveAccessibleDescription('1 of 2');
+  await expect(steps.getByRole('treeitem', { name: /^Evaluate\b/ })).toHaveAccessibleDescription('1 of 2');
   await expect(evaluated.locator('[data-map-focus="downstream"]')).toHaveCount(1);
 
   await select(page, 'evaluate');
@@ -469,7 +469,7 @@ test('M2 authors and widens a saved Evaluate subset without resubmitting complet
   await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(3);
   await runs(page).getByRole('row').filter({ hasText: '0.003' }).getByRole('button').click();
   await expect(inspector.getByRole('button', { name: /^Select Made From / })).toContainText('1 of 3');
-  await expect(steps.getByRole('treeitem', { name: /^train\b/ })).toHaveAccessibleDescription('1 of 3');
+  await expect(steps.getByRole('treeitem', { name: /^Train\b/ })).toHaveAccessibleDescription('1 of 3');
   await page.getByRole('button', { name: 'Show Map', exact: true }).click();
   await expect(train.locator('[data-map-focus="upstream"]')).toHaveCount(1);
   const final = await readPlan();
@@ -602,12 +602,12 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
   await enter(mass, '3');
   await expect(runs(page).getByText('Out of date', { exact: true })).toHaveCount(4);
   // The source reads the runs the exception picks, as its row in Exceptions does, and reveals that row.
-  await expect(mass).toHaveAccessibleDescription('Exception · learning-rate 0.001 · 2 runs');
+  await expect(mass).toHaveAccessibleDescription('Exception · Learning rate Slow · 2 runs');
   await expect(page.locator('body')).not.toContainText(/trial-rows|values-/);
-  await page.getByRole('button', { name: 'Exception · learning-rate 0.001 · 2 runs', exact: true }).click();
+  await page.getByRole('button', { name: 'Exception · Learning rate Slow · 2 runs', exact: true }).click();
   const revealedException = page.getByRole('complementary', { name: 'Inspector', exact: true })
     .getByRole('list', { name: 'Exceptions', exact: true }).getByRole('listitem');
-  await expect(revealedException).toHaveText([/ · learning-rate 0\.001 · 2 runs$/]);
+  await expect(revealedException).toHaveText([/ · Learning rate Slow · 2 runs$/]);
   await expect(revealedException).toHaveAttribute('aria-current', 'true');
   const scoped = await read();
   const sweep = scoped.window_map!.steps.find(({ step_id }) => step_id === 'train')!;
@@ -643,7 +643,7 @@ test('M2 pivots saved Evaluate Tasks and edits scoped Train Model fields', { tag
   const inspector = page.getByRole('complementary', { name: 'Inspector', exact: true });
   const exception = inspector.getByRole('list', { name: 'Exceptions', exact: true })
     .getByRole('listitem').filter({ hasText: 'Mass' });
-  await expect(exception).toContainText('learning-rate 0.001 · seed 1, 2 · 2 runs');
+  await expect(exception).toContainText('Learning rate 0.001 · Seed 1, 2 · 2 runs');
   await exception.getByRole('button', { name: 'Remove Exception', exact: true }).click();
   await expect(runs(page).getByText('Out of date', { exact: true })).toHaveCount(2);
   await expect(runs(page).getByText('Done', { exact: true })).toHaveCount(4);

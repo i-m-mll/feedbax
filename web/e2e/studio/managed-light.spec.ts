@@ -216,8 +216,9 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   await place('Aligned velocity');
   await selectElement('Aligned velocity');
   if (!await inspector.isVisible()) await palette(page, 'showInspector', 'Show Inspector');
+  // The walkthrough's Task names its target signal; the selected-row project's Task leaves it unnamed, shown by its ID.
   for (const [field, label] of [
-    ['Position', / · effector position$/], ['Velocity', / · effector velocity$/], ['Target', /^target.pos$/i],
+    ['Position', / · effector position$/], ['Velocity', / · effector velocity$/], ['Target', /^target( position|_pos)$/],
   ] as const) {
     const select = inspector.getByRole('combobox', { name: field, exact: true });
     await edit(() => chooseOption(page, select, label));

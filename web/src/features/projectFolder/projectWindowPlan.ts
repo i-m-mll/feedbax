@@ -1,10 +1,10 @@
-import { studioFormat, studioOpeningStage, studioOpeningStep, type StudioResultState } from '@/components/activity/studioVocabulary';
+import { studioFormat, studioName, studioOpeningStage, studioOpeningStep, type StudioResultState } from '@/components/activity/studioVocabulary';
 import { statusCounted } from '@/components/ui/StatusMark';
 import {
   runResultState, shownName, type PlanResultView, type PlanRunView, type PlanStepView, type PlanSweepValueView, type PlanSweepView, type PlanView,
 } from '@/features/pipeline/planView';
 import type {
-  AxisSelectionClause, Project, SelectedAxisValue, StudioProjectWindowMapProblem, StudioProjectWindowMapRow, StudioSavedLightResult,
+  AxisSelectionClause, Project, SelectedAxisValue, StudioProjectWindowMapAxis, StudioProjectWindowMapProblem, StudioProjectWindowMapRow, StudioSavedLightResult,
   StudioBestRankGroup, StudioBoundBestSubject, StudioProjectWindowMapSubset, StudioSavedTrainRuns,
   SubsetTerms,
 } from '@/generated/studioContracts';
@@ -21,25 +21,36 @@ export function renamedSavedRunId(id: string, to: string) {
   return savedRunId({ variant, step: to, row });
 }
 
-export function stepSourceRows(saved: StudioSavedTrainRuns, step: string, variant: string): StudioProjectWindowMapRow[] {
-  return saved.window_map?.rows.filter(({ key, member_key }) =>
-    key.step === step && key.variant === variant && member_key != null) ?? [];
+/** A step's runs that another step can read, and the step's axes, which name their values. */
+export interface SourceRows {
+  readonly rows: readonly StudioProjectWindowMapRow[];
+  readonly axes: readonly StudioProjectWindowMapAxis[];
+}
+
+export function stepSourceRows(saved: StudioSavedTrainRuns, step: string, variant: string): SourceRows {
+  return {
+    rows: saved.window_map?.rows.filter(({ key, member_key }) =>
+      key.step === step && key.variant === variant && member_key != null) ?? [],
+    axes: saved.window_map?.steps.find(({ step_id, variant: shown }) => step_id === step && shown === variant)?.axes ?? [],
+  };
 }
 
 type SourceCoordinate = StudioProjectWindowMapRow['coordinates'][string] |
   NonNullable<StudioProjectWindowMapRow['input_axes']>[string];
 
-function pinValue(coordinate: SourceCoordinate): SelectedAxisValue {
+/** A picked value as a clause on its axis holds it: by its ID and its name under the axis. */
+function pinValue(axes: readonly StudioProjectWindowMapAxis[], axis: string, coordinate: SourceCoordinate): SelectedAxisValue {
   const { value_id: id, label } = coordinate;
+  const named = axes.find((item) => item.id === axis)?.values.find((value) => value.id === id)?.value_label;
   const value = 'value' in coordinate ? coordinate.value : null;
-  return { id, label: label ?? (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'string'
+  return { id, label: named ?? label ?? (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'string'
     ? String(value) : id) };
 }
 
 const compareIds = (left: string, right: string) => left < right ? -1 : left > right ? 1 : 0;
 
 /** Pins a product of axis values if it matches the pick, else gives each picked row its own clause. */
-export function selectedRowTerms(rows: readonly StudioProjectWindowMapRow[], picked: ReadonlySet<string>): SubsetTerms | undefined {
+export function selectedRowTerms({ rows, axes }: SourceRows, picked: ReadonlySet<string>): SubsetTerms | undefined {
   const members = rows.map(({ key, coordinates, input_axes }) =>
     ({ id: savedRunId(key), values: { ...coordinates, ...input_axes } as Record<string, SourceCoordinate> }));
   const selected = members.filter(({ id }) => picked.has(id));
@@ -56,7 +67,7 @@ export function selectedRowTerms(rows: readonly StudioProjectWindowMapRow[], pic
   for (const axis of names) {
     const values = selected.map((member) => member.values[axis]);
     if (values.some((value) => value === undefined)) continue;
-    const chosen = new Map(values.map((value) => [value.value_id, pinValue(value)]));
+    const chosen = new Map(values.map((value) => [value.value_id, pinValue(axes, axis, value)]));
     const stillOutside = outside.filter((member) => chosen.has(member.values[axis]?.value_id));
     if (stillOutside.length === outside.length) continue;
     product[axis] = [...chosen.values()].sort((left, right) => compareIds(left.id, right.id));
@@ -65,7 +76,7 @@ export function selectedRowTerms(rows: readonly StudioProjectWindowMapRow[], pic
   if (!outside.length) return Object.keys(product).length ? { clauses: storedClauses([product]) } : {};
 
   const clauses = selected.map(({ values }) =>
-    Object.fromEntries(Object.entries(values).map(([axis, value]) => [axis, [pinValue(value)]])));
+    Object.fromEntries(Object.entries(values).map(([axis, value]) => [axis, [pinValue(axes, axis, value)]])));
   if (clauses.some((clause) => others.some(({ values }) => matches(values, clause)))) return undefined;
   return { clauses: storedClauses(clauses) };
 }
@@ -435,7 +446,7 @@ export function projectWindowPlan(
       documentUses: projected?.document_uses,
       inputs,
       sweeps: drawnAxes([
-        ...modelAxis ? [[gatheredModelAxis, { label: gatheredModelAxis, values: new Map([...modelAxis].map(([model, name]) =>
+        ...modelAxis ? [[gatheredModelAxis, { label: studioName('model'), values: new Map([...modelAxis].map(([model, name]) =>
           [model, { id: model, label: name, valueLabel: name }])) }] as const] : [],
         ...sweepsByStep.get(id) ?? [],
         ...unplannedAxes(id),
