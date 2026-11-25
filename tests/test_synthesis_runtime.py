@@ -79,6 +79,28 @@ def test_synthesize_and_evaluate_plan_from_authored_documents():
     assert any("needs a Task signal" in problem.detail for problem in refused.problems)
 
 
+def test_synthesize_resolves_model_sweeps_and_trial_set_fields():
+    raw = synthesis_project()
+    raw["steps"].pop("baseline")
+    mass = ModelAddress.at_stored_path(("interior", "components", "plant", "fields", "mass"))
+    step = raw["steps"]["synthesize"]
+    step["sweep"] = {"axes": {"mass": {"values": {
+        name: {"value": value, "patches": {mass.to_text(): {"value": value}}}
+        for name, value in (("light", 1.0), ("heavy", 1.5))
+    }}}}
+    raw["documents"]["bank"] = {"schema": "feedbax.set_document.v1", "payload": {"entries": {"one": {}, "two": {}}}}
+    step["set_fields"] = {"bank": {"axis": {"set": "bank"}, "sampling": {"kind": "weighted", "none": 0}}}
+    plan = compile_project(Project.model_validate(raw))
+    assert not plan.diagnostics, plan.diagnostics
+    assert len(plan.runs) == 2 and not any(run.admission_problem for run in plan.runs)
+    for run in plan.runs:
+        spec = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
+        assert isinstance(spec, SynthesisRequestSpec)
+        documents = spec.trial_documents
+        assert documents.model.interior.components["plant"].fields["mass"] == run.coordinates["mass"].value
+        assert any(variable.set_choices is not None for variable in documents.task.variables)
+
+
 def test_served_synthesis_documents_bind_in_trials_and_model_view(host, tmp_path, monkeypatch):
     monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
     raw = synthesis_project()
@@ -141,12 +163,33 @@ def test_saved_synthesize_model_runs_evaluation_train_start_and_export(host, tmp
     raw = synthesis_project()
     shipped = load_shipped_projects()["point-mass-reaching"]
     train = shipped.steps["simple-reaches"].model_dump(mode="json", by_alias=True, exclude_unset=True)
-    train["base"]["inline"]["checkpoint_initialization"] = "initialize_from"
-    train["inputs"] = {"checkpoint": {"step": "synthesize"}}
     raw["steps"]["refine"] = train
+    raw["steps"]["synthesize"]["base"]["inline"]["settings"] = {"value": 0.0}
+    raw["steps"]["synthesize"]["sweep"] = {"axes": {"fill": {"values": {
+        name: {"value": value, "patches": {"settings.value": {"value": value}}}
+        for name, value in (("zero", 0.0), ("offset", 0.125))
+    }}}}
+    source = {"step": "synthesize", "where": {"clauses": [{"fill": [{"id": "zero", "label": "Zero"}]}]}}
+    raw["steps"]["baseline"]["inputs"]["subject"] = source
     _save_project(folders, project, Project.model_validate(raw))
+    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
+    route = f"/api/projects/{project}"
+    with TestClient(create_app(projects_dir=folders.root, automatic_run="off")) as client:
+        revision = client.get(route).json()["revision"]
+        start_url = f"{route}/authoring/train/refine/start"
+        response = client.post(start_url, json={"revision": revision, "source": source})
+        assert response.status_code == 200, response.text
+        edits = response.json()
+        assert edits["files"] and not edits["problems"]
+        invalid = client.post(start_url, json={"revision": revision, "source": source | {"checkpoint": "last"}})
+        assert invalid.status_code == 422, invalid.text
+        saved = client.patch(route, json={"revision": revision, "files": edits["files"]})
+        assert saved.status_code == 200, saved.text
     plan = folders.read_plan(project, revision=None)
-    synthesis = RunKey("default", "synthesize", "default")
+    synthesis = RunKey("default", "synthesize", "fill=zero")
+    refine = RunKey("default", "refine", "default")
+    assert plan.plan.row(refine).inputs["checkpoint"].producer == synthesis
+    assert folders.read(project).project.steps["refine"].base.inline["checkpoint_initialization"] == "initialize_from"
     (admitted,) = jobs.admit_plan(folders, plan, run_keys=(synthesis,), token=token("synthesize")).items
     assert admitted.disposition == "admitted", admitted
     job = wait_until(lambda: (
@@ -176,14 +219,13 @@ def test_saved_synthesize_model_runs_evaluation_train_start_and_export(host, tmp
     assert job["state"] == "succeeded", job["outcome"]
     result = jobs.read_evaluation_result(project=plan.project_id, store=plan.store_path, job_id=rolled_out.job_id)
     assert result._manifest().model_origin == SynthesizedModelOrigin(
-        kind="synthesized", key=ModelProductKey(variant="default", step="synthesize", row="default"),
+        kind="synthesized", key=ModelProductKey(variant="default", step="synthesize", row=synthesis.row),
         job_id=admitted.job_id, request_id=receipt.request.id,
     )
     with result.open_states() as dataset:
         assert "checkpoint" not in dataset.descriptor.dimensions
         assert dataset.descriptor.dimensions["trial"] > 0
 
-    refine = RunKey("default", "refine", "default")
     (trained,) = jobs.admit_plan(folders, plan, run_keys=(refine,), token=token("train-synthesis")).items
     assert trained.disposition == "admitted", trained
     job = wait_until(lambda: (job if (job := job_row(host, trained.job_id)) and job["outcome"] is not None else None))
@@ -191,16 +233,15 @@ def test_saved_synthesize_model_runs_evaluation_train_start_and_export(host, tmp
     (start,) = SuccessView(store).read_attempt(trained.job_id).receipt.inputs["checkpoint"]
     assert start.content == product.content and start.selection.receipt == view.attempt_ref(admitted.job_id)
 
-    monkeypatch.setenv("FEEDBAX_HOST_ROOT", str(host.root))
     with TestClient(create_app(projects_dir=folders.root, automatic_run="off")) as client:
-        route = f"/api/projects/{project}/loaded-models/export"
-        body = {"revision": plan.revision, "key": {"variant": "default", "step": "synthesize", "row": "default"},
+        export_url = f"{route}/loaded-models/export"
+        body = {"revision": plan.revision, "key": {"variant": "default", "step": "synthesize", "row": synthesis.row},
                 "job_id": admitted.job_id}
-        archive = client.post(route, json=body)
+        archive = client.post(export_url, json=body)
         assert archive.status_code == 200, archive.text
         assert archive.content[:2] == b"PK"
         assert archive.headers["content-disposition"] == 'attachment; filename="synthesize.feedbax-model"'
-        assert client.post(route, json=body | {"completed_updates": 2}).status_code == 422
+        assert client.post(export_url, json=body | {"completed_updates": 2}).status_code == 422
 
 
 def test_synthesis_writes_one_replica_with_every_parameter(tmp_path):

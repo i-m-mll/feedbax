@@ -1,5 +1,4 @@
-"""Where a Train step starts: from its Model with its own definition, or from a checkpoint of another Train step's runs
-as that step's continuation. Which runs and which checkpoint are the selection's, and the planner judges them."""
+"""Prepare Train starts from an authored Model, a loaded or synthesized model, or a Train checkpoint."""
 
 from dataclasses import dataclass
 from typing import Any
@@ -85,14 +84,14 @@ def _started(
 ):
     """The step's authored fields that give it ``payload``, its sweep, inputs and requirements from ``source``."""
     inputs = {name: binding for name, binding in own.inputs.items() if name != "checkpoint"}
-    if not isinstance(source, StepReference):
+    if parent is None:
         if source is not None:
             inputs["checkpoint"] = source.model_dump(mode="json", exclude_none=True)
         return {
             "base": {"inline": payload}, "sweep": own.sweep, "inputs": inputs or None,
             "requires": list(own.requires) or None, "deltas": None,
         }
-    assert parent is not None
+    assert isinstance(source, StepReference)
     patches = difference_patches(parent.payload, payload)
     layer = MatrixCompositionDelta(
         layer_id=_LAYER, patches=patches, acknowledges_ancestor_paths=[patch.path for patch in patches],
@@ -111,10 +110,10 @@ def _started(
 def prepare_train_start(
     folders: ProjectFolderService, project_id: str, step_id: str, body: StudioTrainStartRequest,
 ) -> StudioTrainStartEdit:
-    """The edit that starts the Train step from ``body.source``'s checkpoint, or from its Model.
+    """Start the Train step from the selected model and preserve its authored definition.
 
-    Started from a checkpoint, the step continues that step and stores only what differs from it; started from its
-    Model, it holds its whole definition, document references kept. Either way its runs keep their definition.
+    Starting from a Train checkpoint stores the definition's differences from the Train that supplies it.
+    Starting from the authored Model, a Loaded Model or a Synthesize keeps the whole definition inline.
     """
     snapshot = folders.read(project_id, revision=body.revision)
     project = snapshot.project
@@ -122,12 +121,12 @@ def prepare_train_start(
     source = body.source
     if step is None or step.kind != "train":
         raise ProjectFolderInvalid("Choose a Train step.")
-    if isinstance(source, StepReference) and (
-        (parent := project.steps.get(source.step)) is None
-        or parent.kind != "train"
-        or source.step == step_id
-    ):
-        raise ProjectFolderInvalid("A Train step starts from another Train step's checkpoint.")
+    parent = project.steps.get(source.step) if isinstance(source, StepReference) else None
+    if isinstance(source, StepReference):
+        if parent is None or parent.kind not in {"train", "synthesize"} or source.step == step_id:
+            raise ProjectFolderInvalid("Choose another Train's checkpoint or a Synthesize model.")
+        if parent.kind == "synthesize" and any(value is not None for value in (source.checkpoint, source.element, source.product)):
+            raise ProjectFolderInvalid("Choose a Synthesize row's model without a checkpoint or a product selector.")
     if isinstance(source, LoadedModelReference):
         selected = project.documents.get(source.source.document)
         if selected is None or selected.schema_id != LOADED_MODEL_SCHEMA_ID or source.source.pointer or source.source.unresolved:
@@ -143,7 +142,9 @@ def prepare_train_start(
     own = _definition(project, step_id)
     if isinstance(own, ProjectDiagnostic):
         return problem(own)
-    parent_definition = _definition(project, source.step) if isinstance(source, StepReference) else None
+    parent_definition = _definition(project, source.step) if (
+        isinstance(source, StepReference) and parent is not None and parent.kind == "train"
+    ) else None
     if isinstance(parent_definition, ProjectDiagnostic):
         return problem(parent_definition)
     payload = {key: value for key, value in own.payload.items() if key != _POLICY}
