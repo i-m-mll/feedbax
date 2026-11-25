@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from operator import attrgetter
 from typing import Any, ClassVar
 
@@ -15,7 +15,7 @@ from pydantic import Field as ConfigField
 
 from feedbax.contracts.component import DynamicPortPolicy, PortType
 from feedbax.contracts.model_values import ModelFacts
-from feedbax.contracts.portable import ComponentOptions, ConfigBinding, Ports
+from feedbax.contracts.portable import ComponentOptions, ConfigBinding, OutputSignals, PassedSignal, Ports
 from feedbax.runtime.graph import Component, GraphNode, Wire
 from feedbax.runtime.prototypes import _required_input
 
@@ -116,12 +116,22 @@ class StateSelection(GraphNode):
         return {"output": self.where(inputs["state"])}, state
 
 
+def _selected_signals(params: Mapping[str, Any]) -> OutputSignals:
+    paths = StateSelector(tuple(params["paths"])).paths
+    return {
+        (("output",) if len(paths) == 1 else ("output", index)): PassedSignal(
+            ("state", *path.split(".")), "identity"
+        )
+        for index, path in enumerate(paths)
+    }
+
+
 class SelectState(StateSelection, Component):
     """Output the parts of a state found at the configured paths."""
 
     model_facts = ModelFacts()
 
-    ports: ClassVar = StateSelection.ports
+    ports: ClassVar = replace(StateSelection.ports, output_leaves=_selected_signals)
 
     config: ClassVar[type[BaseModel]] = _SelectStateConfig
 

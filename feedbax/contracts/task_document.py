@@ -132,8 +132,9 @@ VALUE_TYPES: tuple[tuple[str, ValueType], ...] = (
     ("Duration", ValueType(base=ValueBase.REAL, dimensions=TIME)),
     ("Distance", ValueType(base=ValueBase.REAL, dimensions=LENGTH)),
     ("Angle", ValueType(base=ValueBase.REAL, dimensions=ANGLE)),
-    ("Point", ValueType(base=ValueBase.REAL, shape=(2,), dimensions=LENGTH)),
-    ("Velocity", ValueType(base=ValueBase.REAL, shape=(2,), dimensions=LENGTH.combine(TIME, -1))),
+    ("Point", ValueType(base=ValueBase.REAL, shape=(2,), dimensions=LENGTH, space="point")),
+    ("Displacement", ValueType(base=ValueBase.REAL, shape=(2,), dimensions=LENGTH, space="free")),
+    ("Velocity", ValueType(base=ValueBase.REAL, shape=(2,), dimensions=LENGTH.combine(TIME, -1), space="free")),
     ("Vector", ValueType(base=ValueBase.REAL, shape=(2,))),
 )
 """The types a variable or a signal can have, each by its name."""

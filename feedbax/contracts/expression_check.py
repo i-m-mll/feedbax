@@ -381,6 +381,13 @@ def check(
                 "Expression dimensions differ from the site's dimensions.",
                 path,
             )
+        elif not site.expected.accepts_space(root.type):
+            problem(
+                tree,
+                ProblemCode.TYPE_MISMATCH,
+                f"Expected {site.expected.space} space, got {root.type.space} space.",
+                path,
+            )
         if root.level > site.finest:
             problem(
                 tree,

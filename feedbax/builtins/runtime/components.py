@@ -27,6 +27,7 @@ from feedbax.contracts.portable import (
     ComponentOptions,
     ConfigBinding,
     MissingPrototypeInput,
+    PassedSignal,
     Ports,
 )
 from feedbax.runtime.graph import Component, GraphNode
@@ -1141,7 +1142,9 @@ class DelayLine(Component):
     config: ClassVar[type[BaseModel]] = _DelayLineConfig
 
     ports: ClassVar[Ports] = Ports(
-        inputs={"input": PortType(dtype="any")}, outputs={"output": PortType(dtype="any")}
+        inputs={"input": PortType(dtype="any")},
+        outputs={"output": PortType(dtype="any")},
+        output_leaves={("output",): PassedSignal(("input",), "type")},
     )
     component_options: ClassVar[ComponentOptions] = ComponentOptions(
         output_prototype_fn=stateful_passthrough_output_prototype

@@ -12,7 +12,8 @@
             "shape": [
               2
             ],
-            "unit": "m"
+            "unit": "m",
+            "space": "point"
           }
         }
       ],

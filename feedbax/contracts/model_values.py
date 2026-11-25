@@ -6,6 +6,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+from feedbax.contracts.expression_values import SignalSpace
+
 if TYPE_CHECKING:
     from feedbax.component_registry import ComponentRegistry
     from feedbax.contracts.acausal import AcausalGraphSpec
@@ -20,6 +22,9 @@ class ModelValue:
     kind: Literal["source", "learned"]
 
 
+type SignalLeafPath = tuple[str | int, ...]
+
+
 @dataclass(frozen=True)
 class StateValue:
     symbol: str
@@ -28,14 +33,15 @@ class StateValue:
     axis: Literal["xy", "unit", "muscle", "joint"]
     prototype: tuple[str, ...]
     """The resolved output port and path that provide the storage shape and dtype."""
-    frame: str | None = None
     aliases: tuple[tuple[str, ...], ...] = ()
     """Storage paths initialized with this value when they have no explicit initializer."""
     reset: StateReset | None = None
     configuration: bool = False
-    space: Literal["point"] | None = None
+    space: SignalSpace | None = None
     subtree: bool = False
     """Use the runtime signal's array leaves and axes below this storage path."""
+    output_leaves: tuple[SignalLeafPath, ...] = ()
+    """Port-first paths whose values equal this state after the step."""
 
 
 @dataclass(frozen=True)
