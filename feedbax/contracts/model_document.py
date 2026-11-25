@@ -7,7 +7,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import ConfigDict, Field, JsonValue, StringConstraints, model_validator
 
-from feedbax.contracts.acausal import AcausalPhysicalDomain
+from feedbax.contracts.acausal import AcausalPhysicalDomain, EquationsDomain
 from feedbax.contracts.base import StrictModel
 from feedbax.contracts.expression_values import UnresolvedValue
 from feedbax.contracts.model_address import ModelElementId, PhysicalEnd, SignalSource, SignalTarget
@@ -86,10 +86,13 @@ class SignalOutput(StrictModel):
     type: SignalType
 
 
+PhysicalPortType = Literal[EquationsDomain, "frame"]
+
+
 class PhysicalPort(StrictModel):
     id: ModelElementId
     name: ModelName
-    type: Literal["translational", "rotational", "frame"]
+    type: PhysicalPortType
 
 
 class ModelPorts(StrictModel):

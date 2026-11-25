@@ -9,7 +9,7 @@ from typing import Annotated, Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 
 from feedbax.contracts.domain import CAUSAL_DOMAIN_ID
-from feedbax.contracts.acausal import AcausalGraphSpec
+from feedbax.contracts.acausal import AcausalGraphSpec, EquationsDomain
 from feedbax.contracts.graph import GraphSpec, GraphUIState, ParamSchema, ParamValue
 from feedbax.contracts.representation import RepresentationSpec
 
@@ -409,6 +409,8 @@ class ComponentDefinition(BaseModel):
     template_graph: Optional[GraphSpec | AcausalGraphSpec] = None
     placement_reason: str | None = None
     """Why this definition cannot be placed as a component in a Model document."""
+    equations_domains: tuple[EquationsDomain, ...] = ()
+    """Domains in which this Library item can start a new Equations composite."""
     template_ui_state: Optional[GraphUIState] = None
     template_id: Optional[str] = None
     template_kind: Optional[str] = None

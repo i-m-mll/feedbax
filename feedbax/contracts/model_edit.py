@@ -11,7 +11,7 @@ from feedbax.contracts.model_address import ModelAddress, ModelElementId, Signal
 from feedbax.contracts.model_attachment import ModelAttachmentDifference, SetField as SetField
 from feedbax.contracts.model_document import (
     CompositeComponent, LeafComponent, ModelName, ModelPhysicalConnection,
-    ModelDocument, ModelWire, PhysicalPort, SignalInput, SignalOutput, SignalType, WireAttachment,
+    ModelDocument, ModelWire, PhysicalPort, PhysicalPortType, SignalInput, SignalOutput, SignalType, WireAttachment,
 )
 from feedbax.contracts.jobs import StudioProjectWindowMapProblem, StudioSavedTrainKey
 from feedbax.contracts.project import Sha256
@@ -151,6 +151,17 @@ class InsertComponentOnWire(StrictModel):
     id: ModelElementId | None = None
 
 
+class InsertComponentOnPhysicalConnection(StrictModel):
+    op: Literal["insert_physical_component"]
+    address: ModelAddress
+    component: LeafComponent | CompositeComponent
+    a_port: ModelElementId
+    b_port: ModelElementId
+    position: ModelPosition
+    flipped: bool = False
+    id: ModelElementId | None = None
+
+
 class BringSignalIn(StrictModel):
     op: Literal["bring_signal_in"]
     source_graph: ModelAddress
@@ -211,7 +222,8 @@ class ModelEditCommand(StrictModel):
     operation: Annotated[
         AddComponent | MoveCards | FlipComponent | CollapseGraph | RouteWire
         | DeleteElements | ConnectSignal | ConnectTaskSignal | ConnectPhysical | AddPort | RemovePort
-        | RenameElement | MovePort | SetField | SetModelAttachment | MoveWireAttachment | InsertComponentOnWire
+        | RenameElement | MovePort | SetField | SetModelAttachment | MoveWireAttachment
+        | InsertComponentOnWire | InsertComponentOnPhysicalConnection
         | BringSignalIn | CopyComponents | CutComponents
         | DuplicateComponents | PasteComponents | GroupComponents | UngroupComposite | ResetDifference,
         Field(discriminator="op"),
@@ -285,6 +297,11 @@ class ModelPortProjection(StrictModel):
     type: SignalType
 
 
+class ModelPhysicalPortProjection(StrictModel):
+    address: ModelAddress
+    type: PhysicalPortType
+
+
 class ModelTaskSignal(StrictModel):
     id: str
     label: str
@@ -332,6 +349,7 @@ class ModelProjection(StrictModel):
     ``value_differences`` are the selected sweep value's or set entry's from the step's Model."""
 
     ports: tuple[ModelPortProjection, ...] = ()
+    physical_ports: tuple[ModelPhysicalPortProjection, ...] = ()
     task_signals: tuple[ModelTaskSignal, ...] = ()
     task_inputs: tuple[ModelAddress, ...] = ()
     objective_ports: tuple[ModelAddress, ...] = ()
