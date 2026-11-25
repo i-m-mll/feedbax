@@ -125,7 +125,7 @@ def _model():
             "wires": {
                 "target_input": _wire("inputs.target", "target.input"),
                 "target_feedback": _wire("target.output", "feedback.target"),
-                "state_feedback": _wire("mechanics.state", "feedback.state", delayed=True),
+                "state_feedback": _wire("mechanics.state", "feedback.state"),
                 "add_feedback": _wire("feedback.feedback", "feedback_sum.a"),
                 "feedback_disturbance": _wire("inputs.feedback_disturbance", "feedback_sum.b"),
                 "noise_feedback": _wire("feedback_sum.output", "sensory_noise.input"),

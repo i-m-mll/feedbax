@@ -230,7 +230,7 @@ def _bind_carries(graph: Graph, authored: GraphSpec, scope: tuple[str, ...]) -> 
     state_loops = {}
     delay_ids = set()
     for wire in authored.wires:
-        if wire.temporality != "recurrent":
+        if not wire.is_recurrent:
             continue
         node = wire.target_node
         target = (node, wire.target_port)
