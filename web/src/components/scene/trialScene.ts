@@ -1,11 +1,14 @@
 import type { StudioRegionIssue } from '@/components/activity/StudioRegion';
-import { studioName } from '@/components/activity/studioVocabulary';
-import { elementKey, type ElementAddress } from '@/features/projectWindow/elementSelection';
+import { studioName, studioReason } from '@/components/activity/studioVocabulary';
+import { addressKey } from '@/features/projectFolder/model/modelGraph';
+import { elementKey, isModelAddress, type ElementAddress } from '@/features/projectWindow/elementSelection';
 import type {
-  DomainDiagnostic, JsonValue, ModelAddress, StudioSceneGeometryFrame, TaskDocument, TrialRecord, ValueType,
+  DomainDiagnostic, JsonValue, ModelAddress, StudioSceneGeometryFrame, TaskDocument, TrialRecord, TrialRelation, ValueType,
 } from '@/generated/studioContracts';
 import type { ScenePoint } from './planarProjection';
-import type { Scene, SceneElement, SceneGroup, SceneShape, SceneTrack } from './sceneView';
+import type {
+  Scene, SceneElement, SceneEnd, SceneGroup, ScenePlace, SceneRelation, SceneShape, SceneTrack,
+} from './sceneView';
 
 /** Values of a Model's states, by state address, that pose its mechanisms. */
 export type StateValues = Readonly<Record<string, JsonValue>>;
@@ -61,6 +64,14 @@ export function recordedTracks(record: TrialRecord, frame: number, trails: boole
 }
 
 const component = (address: ModelAddress) => address.element.kind === 'component' ? address.element.id : undefined;
+
+/** The component an address is of: itself, or the component that owns the field it names. */
+function owner(address: ModelAddress) {
+  const { element } = address;
+  const id = element.kind === 'component' ? element.id
+    : element.kind === 'field' && element.parent.kind === 'component' ? element.parent.id : undefined;
+  return id === undefined ? undefined : { key: JSON.stringify([address.composites, id]), id };
+}
 
 /** Each mechanism the geometry holds, with its bodies, joints and muscles, and each diagnostic on the element it names. */
 export function mechanismGroups(geometry: SceneModelGeometry): SceneGroup[] {
@@ -118,6 +129,59 @@ function variablePlace(record: TrialRecord, id: string, step: number): ScenePoin
 /** A task signal's place at `step` of `record`, while it is present there. */
 function signalPlace(record: TrialRecord, id: string, step: number): ScenePoint | undefined {
   return at(record.present[id], step) === true ? point(at(record.inputs[id], step)) : undefined;
+}
+
+/**
+ * The places Relate can join: each anchor the posed geometry draws, named by the mechanism that draws it, and each
+ * task variable or signal with a place at the playhead. An anchor no signal reads is not an end, and says so.
+ */
+export function relateEnds(geometry: SceneModelGeometry, task: SceneGroup | undefined): SceneEnd[] {
+  const names = new Map(geometry.mechanisms.map((mechanism) => [owner(mechanism.address)?.key, mechanism.name]));
+  const anchors = (geometry.anchors ?? []).map((anchor): SceneEnd => {
+    const of = owner(anchor.address);
+    const name = names.get(of?.key) ?? of?.id ?? studioName('anchor');
+    return {
+      key: JSON.stringify(['anchor', addressKey(anchor.address)]), place: { kind: 'anchor', address: anchor.address },
+      name, point: anchor.position, ...!anchor.signal && { reason: studioReason('unreadAnchor', name) },
+    };
+  });
+  const places = (task?.elements ?? []).flatMap((element): SceneEnd[] => {
+    if (element.shape?.kind !== 'point' || isModelAddress(element.address)) return [];
+    const [kind, ...id] = element.address.element.id.split(':');
+    if (kind !== 'variable' && kind !== 'signal') return [];
+    return [{ key: element.key, name: element.name, place: { kind, id: id.join(':') }, point: element.shape.point }];
+  });
+  return [...anchors, ...places];
+}
+
+/**
+ * Each term of the picked trial's Objective at state frame `frame`: a relation as its two ends, a lone place as its
+ * point. An end with no place at the frame (a signal not present, a computed point undefined) is not drawn.
+ */
+export function termDrawings(record: TrialRecord | undefined, geometry: SceneModelGeometry, frame: number) {
+  const anchors = new Map((geometry.anchors ?? []).map((anchor) => [addressKey(anchor.address), anchor.position]));
+  const placed = (place: TrialRelation['first']): ScenePoint | undefined => {
+    switch (place.kind) {
+      case 'anchor': return anchors.get(addressKey(place.address));
+      case 'variable': return record && variablePlace(record, place.id, frame);
+      case 'signal': return record && signalPlace(record, place.id, frame);
+      case 'computed': return point(at(place.samples, frame));
+    }
+  };
+  const relations: SceneRelation[] = [];
+  const places: ScenePlace[] = [];
+  for (const [term, value] of Object.entries(record?.terms ?? {})) {
+    for (const relation of value.relations ?? []) {
+      const first = placed(relation.first);
+      const second = placed(relation.second);
+      if (first && second) relations.push({ term, ends: [first, second] });
+    }
+    for (const place of value.places ?? []) {
+      const shown = placed(place);
+      if (shown) places.push({ term, point: shown });
+    }
+  }
+  return { relations, places };
 }
 
 /** The task a Scene draws: the document that holds it, and its definition. */
@@ -185,6 +249,8 @@ export function trialScene({ posed, rest, task, picked, possible, frame, trails 
   const drawn = task && taskGroup(task, picked, possible, frame);
   return {
     groups: [...mechanismGroups(posed), ...drawn ? [drawn] : []],
+    ends: relateEnds(posed, drawn),
+    ...termDrawings(picked, posed, frame),
     rest: rest ? mechanismShapes(rest) : [],
     tracks: [
       ...possible.filter((record) => record.id !== picked?.id).flatMap((record) => recordedTracks(record, frame, trails, false)),
