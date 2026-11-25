@@ -251,7 +251,7 @@ class StudioSavedTrainChange(StudioDefinitionChange):
 
 class StudioSavedTrainRow(StrictModel):
     key: StudioSavedTrainKey
-    label: str
+    label: str | None
     request_id: str
     attempts: list[StudioSavedTrainAttempt]
     status: JobStatus
@@ -302,7 +302,7 @@ class StudioSavedLightHistory(StrictModel):
 
 class StudioProjectWindowMapRow(StrictModel):
     key: StudioSavedTrainKey
-    label: str
+    label: str | None
     coordinates: dict[str, StudioProjectWindowMapCoordinate]
     input_axes: dict[str, StudioProjectWindowMapInputAxis] = Field(
         default_factory=dict, exclude_if=lambda value: not value,

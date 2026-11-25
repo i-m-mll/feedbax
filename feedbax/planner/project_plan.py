@@ -107,7 +107,8 @@ from feedbax.contracts.project_sweep import (
     axis_coordinates,
     checkpoint_rule_write,
     checkpoint_sweep_refusal,
-    coordinate_text,
+    sweep_row_name,
+    sweep_value_name,
     expand_sweep,
     model_field_target,
     sweep_patch,
@@ -242,7 +243,7 @@ class LabelName:
 
     @property
     def printed(self) -> str:
-        return self.label or self.key
+        return member_display_name(self.key, self.label)
 
 
 type LabelNames = Mapping[str, Mapping[str, LabelName]]
@@ -409,6 +410,13 @@ class PlannedRow:
     selector matches."""
     input_axes: Mapping[str, SweepInputCoordinate] = field(default_factory=dict, kw_only=True)
     """Each input axis's member on this row; ``axes`` terms select it by its key."""
+    kept_axes: tuple[str, ...] = field(default=(), kw_only=True)
+    """Optional axes for which this row is the unvalued member."""
+
+    @property
+    def selection_coordinates(self) -> dict[str, SweepCoordinate]:
+        return axis_coordinates(self.coordinates, self.input_axes, self.kept_axes)
+
     document_ids: Mapping[str, str] = field(default_factory=dict, kw_only=True)
     document_uses: frozenset[str] = field(default=frozenset(), kw_only=True)
     # Documents an Evaluate row reads through its subject run rather than naming them.
@@ -844,9 +852,9 @@ def _member_label(binding: PlannedInput, group: Mapping[str, SweepCoordinate]) -
     """
     rank = binding.member.reference
     if isinstance(rank, BestRank) and (rank.group or binding.member.key != rank.key) and "source" in binding.named:
-        values = (f"{axis}={coordinate_text(group[axis])}" for axis in sorted(rank.group))
-        return ", ".join((binding.named["source"].printed, *values, f"rank {rank.rank}"))
-    return binding.member.key
+        values = (sweep_value_name(axis, group[axis]) for axis in sorted(rank.group))
+        return " · ".join((binding.named["source"].printed, *values, f"Rank {rank.rank}"))
+    return member_display_name(binding.member.key)
 
 
 def _labelled(role: _Role, members: _Members) -> bool:
@@ -2084,7 +2092,13 @@ class _Compiler:
             horizon = producer.train.target_total \
                 if checkpoint_axis and role == "subject" and producer is not None and producer.train is not None else None
             if producer is not None and item.producer is not None:
-                return SweepInputMember(item.member.key, item.coordinates, producer.label, horizon)
+                names = self.variants[producer.key.variant].steps
+                shown = producer.label or (
+                    member_name(names, producer.key.step)
+                    if len(self.step_rows(producer.key.variant, producer.key.step)) == 1
+                    else member_display_name(producer.key.row)
+                )
+                return SweepInputMember(item.member.key, item.coordinates, shown, horizon)
             group = {
                 axis: producer.coordinates[axis] for axis in item.member.reference.group
             } if producer is not None and isinstance(item.member.reference, BestRank) else {}
@@ -2169,6 +2183,46 @@ class _Compiler:
                 sites[path] = answer = integer_site(path)
                 return answer
 
+            @cache
+            def model_drafts():
+                from feedbax.compiler.model_edit import ModelEditDraft
+                from feedbax.contracts.model_edit import ModelEditState
+
+                return tuple(ModelEditDraft(ModelEditState(document=model), lambda _: {}) for _, model in model_sites())
+
+            @cache
+            def field_unit(path: str) -> str | None:
+                target = model_field_target(path)
+                if target is None:
+                    return None
+                options = {
+                    draft.field_unit(target.address, functions=self.functions) for draft in model_drafts()
+                }
+                return options.pop() if len(options) == 1 else None
+
+            def with_units(row: ExpandedRow) -> ExpandedRow:
+                units: dict[str, set[str]] = {}
+                for path, origin in row.patch_origins.items():
+                    if origin[0] not in {"sweep_value", "set_entry"}:
+                        continue
+                    axis = origin[1]
+                    coordinate = row.coordinates.get(axis)
+                    if coordinate is not None and type(coordinate.value) in (int, float) and (unit := field_unit(path)):
+                        units.setdefault(axis, set()).add(unit)
+                if not units:
+                    return row
+                coordinates = dict(row.coordinates)
+                for axis, choices in units.items():
+                    if len(choices) == 1:
+                        coordinates[axis] = replace(coordinates[axis], unit=choices.pop())
+                choices = axis_coordinates(coordinates, row.input_axes, row.kept_axes)
+                assert sweep is not None
+                label = sweep_row_name(
+                    (axis, choices[axis]) for axis in sweep.axes
+                    if axis in choices and (axis in row.axis_value_ids or axis in row.kept_axes)
+                )
+                return replace(row, coordinates=coordinates, label=label)
+
             try:
                 sets = {}
                 if composition.sweep is not None and any(
@@ -2202,6 +2256,7 @@ class _Compiler:
                     checkpoint_subject=kind == "evaluate",
                     exception_matches=exception_matches, sets=sets,
                 )
+                rows = tuple(with_units(row) for row in rows)
                 if self.source_sweeps is not None:
                     axes = sweep.axes if sweep is not None else {}
                     roles = {axis.input for axis in axes.values() if isinstance(axis, InputAxis)}
@@ -3363,6 +3418,7 @@ class _Compiler:
             self.rows[run_key] = PlannedRow(
                 run_key, kind, row.label, coordinates, axis_keys=MappingProxyType(dict(row.axis_value_ids)),
                 input_axes=MappingProxyType(dict(row.input_axes)),
+                kept_axes=row.kept_axes,
             )
             if initial:
                 if has_checkpoint_axis:
@@ -3549,7 +3605,7 @@ class _Compiler:
         planned = self.rows[key]
         self.rows[key] = BlockedRow(
             planned.key, planned.kind, planned.label, planned.coordinates, MappingProxyType(dict(inputs)), producer,
-            axis_keys=planned.axis_keys, input_axes=planned.input_axes,
+            axis_keys=planned.axis_keys, input_axes=planned.input_axes, kept_axes=planned.kept_axes,
             resolved=not isinstance(resolved, ProjectDiagnostic),
             **({} if isinstance(resolved, ProjectDiagnostic) else {
                 "document_ids": MappingProxyType(dict(resolved.document_ids)),
@@ -3633,6 +3689,7 @@ class _Compiler:
             MappingProxyType(dict(inputs)), MappingProxyType(dict(omissions)), requires,
             axis_keys=row.axis_keys,
             input_axes=row.input_axes,
+            kept_axes=row.kept_axes,
             problems=lowered.problems,
             document_ids=lowered.document_ids,
             document_uses=lowered.document_uses,
@@ -3674,6 +3731,7 @@ class _Compiler:
             self.rows[key] = PlannedRow(
                 key, "report", row.label, coordinates, axis_keys=MappingProxyType(dict(row.axis_value_ids)),
                 input_axes=MappingProxyType(dict(row.input_axes)),
+                kept_axes=row.kept_axes,
             )
             inputs = {}
             for role, candidates in by_role.items():
@@ -3769,6 +3827,7 @@ class _Compiler:
             self.rows[key] = PlannedRow(
                 key, "analyze", row.label, coordinates, axis_keys=MappingProxyType(dict(row.axis_value_ids)),
                 input_axes=MappingProxyType(dict(row.input_axes)),
+                kept_axes=row.kept_axes,
             )
             inputs = {}
             for role, members in selected.items():
@@ -3823,6 +3882,7 @@ class _Compiler:
                 ).spec,
                 LabelName(source.producer.row, self.rows[source.producer].label, kind="row"),
                 cast(PlannedRun, self.rows[source.producer]).dataset_port,
+                member_name(self.variants[source.producer.variant].steps, source.producer.step),
             )
             for sources in inputs.values() for source in sources
             if source.producer is not None
@@ -3856,6 +3916,7 @@ class _Compiler:
             MappingProxyType(elements), template.requires, MappingProxyType(dict(inputs)), MappingProxyType(figures),
             axis_keys=original.axis_keys,
             input_axes=original.input_axes,
+            kept_axes=original.kept_axes,
             document_ids=MappingProxyType(dict(resolved.document_ids)),
             document_uses=resolved.document_uses,
         )
@@ -4322,8 +4383,8 @@ class _Compiler:
                 runs,
                 address=lambda run: (run.key.variant, run.key.row),
                 member_key=member_key,
-                coordinates=lambda run: axis_coordinates(run.coordinates, run.input_axes),
-                coordinate_label=coordinate_text,
+                coordinates=lambda run: run.selection_coordinates,
+                coordinate_label=sweep_value_name,
                 missing=problems.append,
                 producer=member_name(self.variants[variants[0]].steps, reference.step),
                 final_metrics=common_train_metrics if role.producer_kind == "train" else None,
@@ -4411,7 +4472,7 @@ class _Compiler:
                     product = ConditionalProduct(
                         request_id=product.request_id, role=product.role, select=product.select,
                         conditions=bind_metric_conditions(
-                            terms.rule, conditions, axis_coordinates(run.coordinates, run.input_axes),
+                            terms.rule, conditions, run.selection_coordinates,
                         ),
                     )
                 mapped = element.stack_key if element is not None and element.key.member is not None else None

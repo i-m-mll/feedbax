@@ -11,7 +11,7 @@ from collections.abc import Iterable, Mapping, Sequence
 import json
 
 from feedbax.contracts.jobs import StudioProjectWindowMapAxis, StudioProjectWindowMapAxisValue
-from feedbax.contracts.project_sweep import SweepCoordinate, coordinate_text
+from feedbax.contracts.project_sweep import SweepCoordinate, SweepInputCoordinate, sweep_value_name
 from feedbax.contracts.run_rule import value_text
 from feedbax.planner.project_plan import PlannedRow, RunKey
 
@@ -22,6 +22,8 @@ type _ValueIdentity = tuple[str, object]
 def _value_identity(coordinate: SweepCoordinate, *, member: bool) -> _ValueIdentity:
     """What makes two coordinates one value: a member is its key; a number is its number; otherwise its name."""
     value = coordinate.value
+    if coordinate.value_id == "":
+        return "kept", ""
     if member:
         return "member", coordinate.value_id
     if isinstance(value, bool):
@@ -41,11 +43,10 @@ def gather_axes(
     gathered: dict[str, dict[_ValueIdentity, list[SweepCoordinate]]] = {}
     identities: dict[tuple[RunKey, str], _ValueIdentity] = {}
     for row in rows:
-        for member, axes in ((False, row.coordinates), (True, row.input_axes)):
-            for axis, coordinate in axes.items():
-                identity = _value_identity(coordinate, member=member)
-                gathered.setdefault(axis, {}).setdefault(identity, []).append(coordinate)
-                identities[row.key, axis] = identity
+        for axis, coordinate in row.selection_coordinates.items():
+            identity = _value_identity(coordinate, member=isinstance(coordinate, SweepInputCoordinate))
+            gathered.setdefault(axis, {}).setdefault(identity, []).append(coordinate)
+            identities[row.key, axis] = identity
     axes: list[StudioProjectWindowMapAxis] = []
     ids: dict[tuple[str, _ValueIdentity], str] = {}
     for axis, values in gathered.items():
@@ -59,7 +60,8 @@ def gather_axes(
             ids[axis, identity] = key if key is not None and keys[key] == 1 else _gathered_id(identity)
         axes.append(StudioProjectWindowMapAxis(id=axis, values=[
             StudioProjectWindowMapAxisValue(
-                id=ids[axis, identity], label=coordinate_text(values[identity][0]), rule=value_text(values[identity][0]),
+                id=ids[axis, identity], label=sweep_value_name(axis, values[identity][0]),
+                rule=value_text(values[identity][0]),
             )
             for identity in order
         ]))

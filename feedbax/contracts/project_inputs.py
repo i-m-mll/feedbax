@@ -22,7 +22,7 @@ from feedbax.contracts.selection import ManifestPredicate
 # These names serve as file stems and path segments in project-level patches.
 ProjectName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_][A-Za-z0-9_-]*$")]
 RowKey = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_][A-Za-z0-9_=-]*$")]
-AxisValueId = Name
+AxisValueId = Literal[""] | Name
 """An axis value's ID: a value's name, or an input axis's member key (``seed=0``, ``variant/row``)."""
 NonemptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 type Pointer = Annotated[str, StringConstraints(pattern=r"^(?:/(?:[^~/]|~[01])*)*$")]
@@ -169,7 +169,7 @@ def select_step_rows[Row, Coordinate: SweepCoordinate](
     address: Callable[[Row], tuple[str, str]],
     member_key: Callable[[Row], str],
     coordinates: Callable[[Row], Mapping[str, Coordinate]],
-    coordinate_label: Callable[[Coordinate], str],
+    coordinate_label: Callable[[str, Coordinate], str],
     missing: Callable[[SelectedAxisValueRefusal], None],
     producer: str,
     final_metrics: Callable[[tuple[Row, ...]], frozenset[str]] | None = None,
@@ -197,7 +197,7 @@ def select_step_rows[Row, Coordinate: SweepCoordinate](
                 if absent:
                     broken = True
                     remaining = [
-                        SelectedAxisValue(id=option.value_id, label=coordinate_label(option))
+                        SelectedAxisValue(id=option.value_id, label=coordinate_label(axis, option))
                         for option, _ in options.values()
                     ]
                     for index, value in absent:
