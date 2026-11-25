@@ -151,7 +151,7 @@ def test_text_and_studio_compile_the_same_saved_evaluate_element_plan(tmp_path):
     assert figure.spec.document == FigureDocument.model_validate(project.documents["velocity-figure"].payload)
     rollout = decode_request(plan.requests[evaluate.request_id], plan.documents.__getitem__)
     condition = RolloutParameters.model_validate(rollout.spec.params).condition_id()
-    assert figure.spec.names["condition"] == {condition: "default"}
+    assert figure.spec.names["condition"] == {condition: "Baseline"}
     source = plan.sources[_KEY]["/payload/operations/summarize/params/bounds_scale"]
     assert (source.kind, source.name, source.path) == (
         "document",
@@ -696,7 +696,7 @@ def test_diagonal_axis_clauses_widen_and_keep_their_other_matches():
     assert problem.path == "inputs.states.where.clauses.1.mass.0"
     assert problem.selection_value.model_dump() == {
         "clause_index": 1, "axis": "mass", "missing": {"id": "b", "label": "Heavy"},
-        "remaining": [{"id": "a", "label": "1"}],
+        "remaining": [{"id": "a", "label": "Mass 1"}],
     }
     assert len(producers(broken)) == 3
     assert {(row["mass"].value_id, row["seed"].value_id) for row in producers(broken)} == {("a", "1")}

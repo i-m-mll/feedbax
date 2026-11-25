@@ -685,6 +685,25 @@ class ModelEditDraft:
             return False
         return True
 
+    def field_unit(self, address: ModelAddress, *, functions=None) -> str | None:
+        """Read the unit a scalar edit at this authored field would retain."""
+        try:
+            item, key = self.field_slot(address, functions=functions)
+        except _Refusal:
+            return None
+        value = item[key] if isinstance(item, list) else item.get(key)
+        if isinstance(value, dict) and isinstance(unit := value.get("unit"), str):
+            return unit
+        path = address.element.path
+        if address.element.parent.kind == "graph" and path == ("step_seconds",):
+            return "s"
+        if path[:2] == ("window", "spans") and path[-1] == "offset":
+            if value is None:
+                return "st"
+            if isinstance(value, dict) and value.get("kind") == "literal":
+                return "s"
+        return None
+
     def set_field(self, address: ModelAddress, value: Any, *, functions=None, attachment=None) -> None:
         item, key = self.field_slot(address, functions=functions, attachment=attachment)
         prior = item[key] if isinstance(item, list) else item.get(key)

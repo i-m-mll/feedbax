@@ -6,8 +6,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from feedbax.contracts.project import Project
+from feedbax.jobs import _plan_run_data
 from feedbax.web.app import create_app
 from feedbax.web.services.project_folder import ProjectFolderService
+from feedbax.web.services.project_plan import ProjectPlanRead
 from tests.support.managed_train_fixture import managed_train_project
 from tests.test_canonical_evaluate_admission import _save_project
 from tests.test_document_train_pair import authored_documents, document_project
@@ -254,6 +256,46 @@ def test_removing_the_last_copy_removes_the_axis(studio):
     assert folders.read(PROJECT).project.steps["baseline"].sweep is None or not folders.read(
         PROJECT).project.steps["baseline"].sweep.axes
     assert _runs(folders, "baseline") == before
+
+
+def test_duplicate_run_names_match_window_and_activity_and_the_kept_run_is_selectable(studio):
+    folders, client = studio
+
+    def read():
+        settled = folders.read_plan(PROJECT, revision=None)
+        response = ProjectPlanRead.without_history(settled).response(include_window_map=True).model_dump(mode="json")
+        return settled.plan, response
+
+    _, before = read()
+    assert next(row for row in before["rows"] if row["key"]["step"] == "train")["label"] is None
+    assert next(row for row in before["window_map"]["rows"] if row["key"]["step"] == "train")["label"] is None
+    assert _duplicate(folders, client, "train") == {"axis": "run", "value": "run-2"}
+    plan, result = read()
+    train = next(step for step in result["window_map"]["steps"] if step["step_id"] == "train")
+    assert [(value["id"], value["label"]) for value in train["axes"][0]["values"]] == [
+        ("", "Run 1"), ("run-2", "Run 2"),
+    ]
+    rows = [row for row in result["window_map"]["rows"] if row["key"]["step"] == "train"]
+    assert [(row["key"]["row"], row["label"], row["coordinates"]["run"]["axis_value"]) for row in rows] == [
+        ("default", "Run 1", ""), ("run=run-2", "Run 2", "run-2"),
+    ]
+    activities = [_plan_run_data("a", plan, row) for row in plan.rows if row.key.step == "train"]
+    assert [(item["label"], item["coordinates"]) for item in activities] == [
+        ("Train · Run 1", {}), ("Train · Run 2", {}),
+    ]
+
+    raw = folders.read(PROJECT).project.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    evaluate = raw["steps"]["baseline"]
+    evaluate["sweep"] = {"axes": {"subject": {"input": "subject"}}}
+    _save_project(folders, PROJECT, Project.model_validate(raw))
+    _, result = read()
+    assert [
+        row["label"] for row in result["window_map"]["rows"] if row["key"]["step"] == "baseline"
+    ] == ["Run 1", "Run 2"]
+
+    evaluate["inputs"]["subject"]["where"] = {"clauses": [{"run": [{"id": "", "label": "Run 1"}]}]}
+    _save_project(folders, PROJECT, Project.model_validate(raw))
+    assert [row.label for row in _rows(folders, "baseline").values()] == ["Run 1"]
 
 
 def test_set_entry_task_edits_reach_only_selected_sweep_and_trial_rows(studio):

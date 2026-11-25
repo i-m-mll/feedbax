@@ -329,6 +329,7 @@ def test_intervention_window_field_edits_and_sweeps_in_the_authored_unit(tmp_pat
         assert len(plan.runs) == 2 and all(run.admission_problem is None for run in plan.runs), (
             plan.diagnostics, tuple(run.problems for run in plan.runs),
         )
+        assert {run.label for run in plan.runs} == {"Offset 0.02 s", "Offset 0.04 s"}
         values = set()
         for run in plan.runs:
             documents = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec.trial_documents
