@@ -60,7 +60,11 @@ def _model_project():
         "ports": {"physical": [{"id": "frame", "name": "Frame", "type": "translational"}]},
         "interior": {
             "physical_domain": "translational",
-            "components": {"mass": {"kind": "leaf", "name": "Mass", "type": "feedbax.Mass"}},
+            "components": {
+                "mass": {"kind": "leaf", "name": "Mass", "type": "feedbax.Mass"},
+                "ground": {"kind": "leaf", "name": "Ground", "type": "feedbax.Ground"},
+            },
+            "connections": {"mass-ground": {"a": _end("mass", "flange"), "b": _end("ground", "flange")}},
         },
     }
     interior["wires"].update({
@@ -120,6 +124,11 @@ def _edit_cases():
         },
         "insert_component": {"address": ab, "component": _gain(), "input_port": "input",
                              "output_port": "output", "position": point},
+        "insert_physical_component": {
+            "address": _address("physical_connection", scope=("physics",), id="mass-ground"),
+            "component": {"kind": "leaf", "name": "Spring", "type": "feedbax.LinearSpring"},
+            "a_port": "flange_a", "b_port": "flange_b", "position": point,
+        },
         "bring_signal_in": {"source_graph": graph, "source": _end("a", "output"),
                             "destination": _address(scope=("wrapper",))},
         "copy": {"selection": [a]},
