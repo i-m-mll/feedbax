@@ -24,7 +24,7 @@ test('the Model inspector frames the document, one component and two', async ({ 
   const panel = inspector(page);
   const title = panel.locator('header').first();
 
-  await expect(title).toHaveText('point-massModel');
+  await expect(title).toHaveText('Point massModel');
   await expect(panel.getByRole('textbox', { name: 'Step', exact: true })).toBeVisible();
 
   const card = (name: string) => model.getByRole('article', { name, exact: true });

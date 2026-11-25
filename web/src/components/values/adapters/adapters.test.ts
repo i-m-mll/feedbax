@@ -142,3 +142,15 @@ test('a projected field keeps the Changed mark of its path and resets through it
   await field.commit!({ kind: 'reset' });
   expect(reset).toEqual(['velocity']);
 });
+
+// Catches the path's mark replacing the one a projection draws itself, so a selected run's swept value loses its
+// Selected Value mark.
+test('a projected field that marks its own change keeps that mark', () => {
+  const projection = fromParamSchema({ name: 'rate', type: 'float' }, 0.0025, () => undefined);
+  const field = fromJsonSchema('rate', { type: 'number' }, 0.0025, {
+    root: null,
+    projected: () => ({ ...projection, change: { from: { kind: 'selected', text: '0.0025' } } }),
+    changed: () => ({ from: { kind: 'base', document: 'base' } }),
+  });
+  expect(field.change?.from).toEqual({ kind: 'selected', text: '0.0025' });
+});
