@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, JsonValue
 
 from feedbax.contracts.expression_values import Problem
 from feedbax.contracts.jobs import JobReceipt
+from feedbax.contracts.trial_clock import TrialMean, TrialMeanOptions
 
 
 class TaskTimelineCue(BaseModel):
@@ -115,3 +116,5 @@ class StudioTrialReplayResponse(BaseModel):
     """Model address of the declared primary position, if available."""
     receipt: JobReceipt
     drawn: Annotated[TrialRecords | TrialAggregate, Field(discriminator="kind")]
+    mean_options: TrialMeanOptions | None = Field(default=None, exclude_if=lambda value: value is None)
+    mean: TrialMean | None = Field(default=None, exclude_if=lambda value: value is None)
