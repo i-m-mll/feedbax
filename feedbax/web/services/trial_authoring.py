@@ -1410,6 +1410,7 @@ def trial_authoring(
     row = next((item for item in plan.rows if item.key == key), None)
     output_paths = {_output_address(port.id).to_text(): (port.name,)
                     for port in documents.model.ports.outputs} | projected.output_paths
+    authored_signals = {signal.id: signal for signal in task.signals} if isinstance(task, TaskDocument) else {}
 
     def expression(path):
         document = _field_document(documents, path[0])
@@ -1422,7 +1423,7 @@ def trial_authoring(
                 return LiteralValue(value=stored_limit.value, unit=stored_limit.unit)
         found = site_expression(document, raw_path)
         if found is None and path[0] == "task" and path[1] == "signals" and path[3:] == ("absent",):
-            signal = next(item for item in document.signals if item.id == path[2])
+            signal = authored_signals[path[2]]
             return zero(signal.type.base, signal.type.shape)
         return found
 
@@ -1437,6 +1438,8 @@ def trial_authoring(
     for path, site in projected.fields.items():
         if path[1:2] == ("validation_trials",):
             continue
+        if path[:2] == ("task", "signals") and path[2] not in authored_signals:
+            continue  # Internal gate and operand signals are not editable Task fields.
         fields.extend(_trial_fields(
             path, site, expression(path), bundle.expression_functions, sweep, row, projected.problems, output_paths, period,
         ))
