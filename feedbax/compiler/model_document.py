@@ -10,7 +10,10 @@ from collections.abc import Mapping
 import numpy as np
 
 from feedbax.component_registry import ComponentRegistry
-from feedbax.compiler.resolution import GraphParameterResolution, resolve_graph_parameters
+from feedbax.compiler.resolution import resolve_graph_parameters
+from feedbax.compiler.model_signals import (
+    ModelSignalTable, ResolvedSignalLeaf, boundary_signal_port, resolve_model_signals, task_data_value_type,
+)
 from feedbax.compiler.prototypes import prototypes_from_task_bindings
 from feedbax.compiler.model_edit import model_graph_problems
 from feedbax.compiler.model_ports import ModelRegistryPorts
@@ -722,11 +725,6 @@ class _Lower:
                     (), "port", f"task has no compatible signal named {port.name!r}",
                     end={"owner": "inputs", "port": port.id},
                 )
-            if not self._compatible_task_signal(port, item):
-                raise self.problem(
-                    (), "port", f"task signal {port.name!r} does not match the root input type",
-                    end={"owner": "inputs", "port": port.id},
-                )
             self.origins[("task_binding_spec", "bindings", str(len(result)))] = self.address(
                 (), "port", end={"owner": "inputs", "port": port.id},
             )
@@ -735,19 +733,6 @@ class _Lower:
                 target_node_id=node, target_port=port_id, role=task_data_role(item),
             ))
         return binding.model_copy(update={"bindings": result})
-
-    @staticmethod
-    def _compatible_task_signal(port: SignalInput, item) -> bool:
-        expected = item.expected_shape
-        shape = expected[1:] if expected and expected[0] == "time" else expected
-        return not (
-            port.type.unit is not None and item.units is not None and port.type.unit != item.units
-            or port.type.shape is not None and shape is not None and (
-                len(port.type.shape) != len(shape)
-                or any(type(a) is int and type(b) is int and a != b for a, b in zip(port.type.shape, shape))
-            )
-        )
-
 
 @dataclass(frozen=True)
 class LoweredModelDocument:
@@ -760,19 +745,31 @@ class LoweredModelDocument:
     def interface(
         self, model: ModelDocument, components: ComponentRegistry,
         *, input_prototypes: Mapping[tuple[str, str], object] | None = None,
+        task_inputs: Mapping[str, ValueType] | None = None,
     ) -> ResolvedModelInterface:
         """Project resolved sample types for task and objective pairing."""
         prototypes = (
             prototypes_from_task_bindings(self.task) if self.task is not None else {}
         ) | dict(input_prototypes or {})
         resolution = resolve_graph_parameters(self.graph, prototypes, components)
+        legacy_inputs = {
+            item.label: value for item in self.task.exposed_data
+            if item.bindable and (value := task_data_value_type(item)) is not None
+        } if self.task is not None else {}
+        table = resolve_model_signals(model, resolution, components, task_inputs=legacy_inputs | (task_inputs or {}))
+        for port in model.ports.inputs:
+            incoming = legacy_inputs.get(port.name)
+            if incoming is not None and (leaf := table.at(boundary_signal_port((), "inputs", port.id))) is not None:
+                if not leaf.accepts(incoming):
+                    raise ModelCompilationProblem(leaf.address, f"Task signal {port.name!r} does not fit the Model input")
         return ResolvedModelInterface(
             _Lower(model, components).period,
-            _scoped_ports(model, resolution, "inputs"),
-            _scoped_ports(model, resolution, "outputs"),
+            _scoped_ports(model, table, "inputs"),
+            _scoped_ports(model, table, "outputs"),
             self.links,
             self.plugins,
             resolve_model_reset(resolution, components),
+            table,
         )
 
     def source_address(self, path: str) -> ModelAddress | None:
@@ -795,6 +792,11 @@ class ResolvedModelInterface:
     links: tuple[ResolvedModelLink, ...]
     plugins: tuple[str, ...]
     reset: ModelResetPlan = ModelResetPlan()
+    signals: ModelSignalTable = field(default_factory=ModelSignalTable)
+
+    @property
+    def readable_leaves(self) -> tuple[ResolvedSignalLeaf, ...]:
+        return self.signals.readable_leaves
 
 
 class ResolvedModelInput(ScopedValue):
@@ -819,42 +821,21 @@ class ResolvedModelLink:
 
 
 def _scoped_ports(
-    model: ModelDocument, resolved: GraphParameterResolution, direction: str,
+    model: ModelDocument, table: ModelSignalTable, direction: str,
 ) -> tuple[ScopedValue, ...]:
     results = []
     for port in getattr(model.ports, direction):
-        address = ModelAddress.model_validate({
-            "composites": [],
-            "element": {"kind": "port", "end": {"owner": direction, "port": port.id}},
-        })
-        if direction == "inputs":
-            target = resolved.graph.input_bindings.get(port.name)
-            proto = resolved.node_inputs.get(target)
-            if proto is None and port.default is not None:
-                proto = resolved.node_outputs.get((_generated("input", port.id), "output"))
+        address = boundary_signal_port((), direction, port.id)
+        if isinstance(port, SignalInput):
+            leaf = table.at(address)
         else:
-            proto = resolved.graph_outputs.get(port.name)
-        shape = getattr(proto, "shape", None)
-        dtype = getattr(getattr(proto, "dtype", None), "kind", None)
-        if shape is None or dtype not in {"b", "i", "u", "f"}:
+            leaves = table.at_port(address)
+            if any(item.path and item.type is not None for item in leaves):
+                continue
+            leaf = table.at(address)
+        if leaf is None or leaf.type is None:
             raise ModelCompilationProblem(address, f"Cannot resolve the numeric sample type of {port.name!r}")
-        unit = UNITS.get(port.type.unit or "")
-        if unit is None:
-            raise ModelCompilationProblem(address, f"Unknown expression unit {port.type.unit!r}")
-        base = ValueBase.BOOLEAN if dtype == "b" else ValueBase.REAL if dtype == "f" else ValueBase.INTEGER
-        if any(size <= 0 for size in shape) or (
-            port.type.shape is not None and (
-                len(shape) != len(port.type.shape) or any(
-                    type(declared) is int and actual != declared
-                    for actual, declared in zip(shape, port.type.shape)
-                )
-            )
-        ):
-            raise ModelCompilationProblem(address, f"Resolved shape of {port.name!r} conflicts with its port")
-        value = ScopedValue(
-            id=address.to_text(), name=port.name, level=Level.STEP,
-            type=ValueType(base=base, shape=tuple(shape), dimensions=unit.dimensions),
-        )
+        value = ScopedValue(id=address.to_text(), name=port.name, level=Level.STEP, type=leaf.type)
         results.append(
             ResolvedModelInput(**value.model_dump(), required=port.default is None)
             if isinstance(port, SignalInput) else value

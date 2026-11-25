@@ -1,6 +1,6 @@
 import { expect, test } from './fixtures/studio';
 import type { APIRequestContext, Page } from '@playwright/test';
-import type { StepReference, StudioProjectSnapshot, SubsetTerms } from '../../src/generated/studioContracts';
+import type { StepReference, StudioProjectSnapshot } from '../../src/generated/studioContracts';
 import { chooseSweepValue, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
 import { chooseStepKind } from './fixtures/studioKeyboard';
 import { hold } from './fixtures/heldRequest';
@@ -197,28 +197,31 @@ async function pickingProject(page: Page, request: APIRequestContext, axes: Reco
 
 // Catches a press on the card that selects the producer's runs instead of picking them, a rule that is not the picked
 // runs' own, and picks that are not saved on Enter.
-test('values picked on the producer\'s card write their rule, saved on Enter', async ({ page, request }) => {
+test('values picked on the producer\'s card pin their IDs on Enter', async ({ page, request }) => {
   const { rule, card, subject } = await pickingProject(page, request, { seed: { path: 'seed', values: [0, 1, 2, 3] } });
   await chooseSweepValue(card, 'seed', '0');
   await chooseSweepValue(card, 'seed', '2');
-  await expect(rule).toHaveValue('seed=0,2');
+  await expect(rule).toHaveValue('');
+  await expect(rule.locator('..')).toContainText('Rows');
   await expect(rule.locator('..')).toContainText('2/4');
   await expect(card.locator('.studio-map-run-mark[data-boxed]')).toHaveCount(2);
   await expect(mapStep(page, 'evaluate')).toHaveAttribute('aria-pressed', 'true');
   await expect(rule).toBeFocused();
   await rule.press('Enter');
-  await expect.poll(subject).toEqual({ rule: 'seed=0,2' });
+  await expect.poll(subject).toMatchObject({ clauses: [{ seed: expect.arrayContaining([
+    { id: expect.stringMatching(/^value-/), label: '0' }, { id: expect.stringMatching(/^value-/), label: '2' },
+  ]) }] });
   await expect(runRows(page)).toHaveCount(2);
 });
 
-// Catches picked runs that no rule chooses written as a rule that chooses others too, and Escape saving the picks.
-test('runs picked that no rule chooses are pinned as rows, and Escape keeps the saved rule', async ({ page, request }) => {
+// Catches a diagonal pick that widens to the whole rectangle, and Escape saving the picks.
+test('diagonal picks save two clauses, and Escape keeps the saved rule', async ({ page, request }) => {
   const { rule, card, subject } = await pickingProject(page, request, {
     seed: { path: 'seed', values: [0, 1] }, batches: { path: 'training_config.n_batches', values: [2, 3] },
   });
   const mark = (seed: number, batches: number) => card.getByRole('button', { name: new RegExp(`seed ${seed} · batches ${batches}\\b`) });
   await mark(0, 2).click();
-  await expect(rule).toHaveValue('batches=2 seed=0');
+  await expect(rule.locator('..')).toContainText('Rows');
   await page.keyboard.press('Escape');
   await expect(rule).toHaveValue('');
   expect(await subject()).toBeUndefined();
@@ -228,10 +231,13 @@ test('runs picked that no rule chooses are pinned as rows, and Escape keeps the 
   await mark(0, 2).click();
   await mark(1, 3).click();
   await expect(rule).toHaveValue('');
-  await expect(rule.locator('..')).toContainText('Rows');
+  for (const [seed, batches] of [[0, 2], [1, 3]]) await expect(mark(seed, batches)).toHaveAttribute('data-boxed', '');
+  await expect(card.locator('.studio-map-run-mark[data-boxed]')).toHaveCount(2);
   await expect(rule.locator('..')).toContainText('2/4');
   await rule.press('Enter');
-  await expect.poll(async () => (await subject() as SubsetTerms | undefined)?.rows?.length).toBe(2);
-  expect((await subject() as SubsetTerms).rule).toBeUndefined();
+  const value = (label: string) => [{ id: expect.stringMatching(/^value-/), label }];
+  await expect.poll(subject).toEqual({ clauses: expect.arrayContaining([
+    { seed: value('0'), batches: value('2') }, { seed: value('1'), batches: value('3') },
+  ]) });
   await expect(runRows(page)).toHaveCount(2);
 });

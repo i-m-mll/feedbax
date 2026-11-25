@@ -444,6 +444,11 @@ def new_project(body: StudioProjectNew, request: Request, response: Response) ->
     return document
 
 
+@router.delete("/{project_id}", status_code=204)
+def delete_project(project_id: ProjectName, request: Request, response: Response) -> None:
+    _project_response(response, lambda: request.app.state.project_folders.delete(project_id))
+
+
 @router.get("/{project_id}/open", response_model_exclude_unset=True)
 def open_project(project_id: ProjectName, request: Request, response: Response) -> StudioProjectDocument:
     return _project_response(response, lambda: request.app.state.project_folders.open(project_id))

@@ -191,7 +191,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   expect(created.project.steps?.analyze).toMatchObject({
     kind: 'analyze', base: { document: 'analysis' }, inputs: { states: {
       step: evaluateStep,
-      ...(paired ? { where: { rule: expect.stringMatching(/^mass=/) } } : { row: sources[0].key.row }),
+      where: { clauses: paired ? [{}] : [{ mass: [{ id: 'heavy', label: expect.any(String) }] }] },
     } },
   });
   function expectAnalyzeSources(projection: StudioProjectWindowMap) {
@@ -281,7 +281,7 @@ async function exerciseSavedResults({ page, request, home: suiteHome }: Walkthro
   expect(report.blocks).toHaveLength(2);
   const role = Object.keys(inputs)[0];
   expect(report.blocks[1]).toMatchObject({ figure: role });
-  expect(inputs[role]).toMatchObject({ step: 'analyze', row: 'default', element: 'velocity_summary', product: 'figure' });
+  expect(inputs[role]).toMatchObject({ step: 'analyze', element: 'velocity_summary', product: 'figure' });
 
   const settled = await plan(ordered.revision);
   expect(settled.problems.filter(({ step }) => step === 'analyze' || step === 'report')).toEqual([]);
@@ -601,7 +601,7 @@ test('authors a paired Analyze and shared successors from the primary variant', 
   await expect(page.getByRole('tabpanel', { name: 'Analysis', exact: true })).toBeVisible();
   expect(paired.project.steps?.analyze).toMatchObject({
     kind: 'analyze', inputs: { states: { step: 'conditions', where: {
-      rule: expect.stringMatching(/^mass=(1,2|2,1)$/),
+      clauses: [{}],
     } } },
   });
   expect(paired.project.sweep).toEqual(initial.project.sweep);

@@ -175,7 +175,6 @@ def test_plan_reads_an_incomplete_named_train_at_each_settled_revision(tmp_path)
         )}
         for name in (trial[slot]["document"] for slot in ("model", "task", "objective"))
     ]
-    train = {"kind": "step", "id": "train", "step": step}
     for entry in (
         model, task, objective,
         {"kind": "step", "id": "train", "step": {"kind": "train", "base": {"inline": {}}}},
@@ -657,9 +656,7 @@ def test_plan_preserves_full_variant_lineage_and_named_subset_after_edit(study):
     root, client = study
     original = load_text_project(root)
     authored = original.project.model_dump(mode="json", by_alias=True, exclude_unset=True)
-    authored["documents"]["selected"] = {"schema": "subset", "payload": {"rows": [
-        {"key": "selected-seed", "variant": "compare", "row": "seed=10"},
-    ]}}
+    authored["documents"]["selected"] = {"schema": "subset", "payload": {"clauses": [{"seed": [{"id": "10", "label": "First"}]}]}}
     authored["steps"]["follow"] = {
         "kind": "train",
         "base": {"step": "fit"},
@@ -688,14 +685,12 @@ def test_plan_preserves_full_variant_lineage_and_named_subset_after_edit(study):
     assert len(before.requests) == 3
     for variant in before.variants:
         [follower] = [run for run in before.runs if run.key == RunKey(variant, "follow", selected.row)]
-        producer = RunKey("compare", "fit", "seed=10")
+        producer = RunKey(variant, "fit", "seed=10")
         assert follower.inputs["checkpoint"].producer == producer
-        assert follower.inputs["checkpoint"].member.key == "selected-seed"
+        assert follower.inputs["checkpoint"].member.key == "seed=10"
         subset = before.subsets[variant, "follow", "checkpoint"]
         assert (subset.document, subset.candidates, subset.members) == ("selected", 2, (producer,))
-        assert [(row.key, row.variant, row.row) for row in subset.terms.rows] == [
-            ("selected-seed", "compare", "seed=10"),
-        ]
+        assert [value.id for value in subset.terms.clauses[0]["seed"]] == ["10"]
         assert before.steps[variant, "follow"].inputs["checkpoint"].step == "fit"
     assert set(before.sources) == {selected}
     source = before.sources[selected]["/inputs/checkpoint"]
@@ -793,9 +788,7 @@ def _plan_dependencies(root: Path) -> None:
         "10": {"label": "First", "patches": {seed_path: {"value": 10}}},
         "2": {"patches": {seed_path: {"value": 2}}},
     }}}}
-    authored["documents"]["selected"] = {"schema": "subset", "payload": {"rows": [
-        {"key": "seed=10", "variant": "default", "row": "seed=10"},
-    ]}}
+    authored["documents"]["selected"] = {"schema": "subset", "payload": {"clauses": [{"seed": [{"id": "10", "label": "First"}]}]}}
     authored["steps"]["follow"] = {
         "kind": "train",
         "base": {"step": "fit"},
@@ -1039,6 +1032,56 @@ def test_list_projects_reads_authored_folders_without_opening_or_creating_them(t
     assert edited["step_count"] == 1
     assert edited == {**listed, "modified": edited["modified"], "step_count": 1}
     assert datetime.fromisoformat(edited["modified"]) > datetime.fromisoformat(listed["modified"])
+
+
+def test_delete_project_requires_the_listed_home_identity(tmp_path):
+    root = tmp_path / "projects"
+    app = create_app(projects_dir=root)
+    with TestClient(app) as client:
+        assert client.post("/api/projects", json={"name": "remove"}).status_code == 201
+        assert client.post("/api/projects", json={"name": "keep"}).status_code == 201
+        external = tmp_path / "external"
+        (root / "keep").rename(external)
+        outside = app.state.project_folders.open_native_folder(external)[0].snapshot.project_id
+        (root / "alias").symlink_to(external, target_is_directory=True)
+        (root / "remove" / "outside").symlink_to(external, target_is_directory=True)
+        assert client.delete(f"/api/projects/{outside}").status_code == 404
+        assert client.delete("/api/projects/alias").status_code == 404
+        assert client.delete("/api/projects/remove").status_code == 404
+
+        listed, = client.get("/api/projects").json()["projects"]
+        url = f"/api/projects/{listed['project_id']}"
+        deleted = client.delete(url)
+        assert deleted.status_code == 204, deleted.text
+        assert deleted.content == b""
+        assert deleted.headers["Cache-Control"] == "no-store"
+        assert client.delete(url).status_code == 404
+        assert client.get("/api/projects").json() == {"projects": []}
+        assert set(root.iterdir()) == {root / "alias"}
+        assert load_text_project(external).configuration.project == "keep"
+
+
+def test_delete_project_does_not_remove_a_folder_replaced_after_verification(tmp_path, monkeypatch):
+    root = tmp_path / "projects"
+    client = TestClient(create_app(projects_dir=root))
+    created = client.post("/api/projects", json={"name": "target"})
+    project_id = created.json()["snapshot"]["project_id"]
+    target = root / "target"
+    original = root / "original"
+    renamed = project_folder.rename_no_replace
+
+    def replace_before_rename(source, destination, **kwargs):
+        if source == "target":
+            target.rename(original)
+            target.mkdir()
+            (target / "retained").touch()
+        return renamed(source, destination, **kwargs)
+
+    monkeypatch.setattr(project_folder, "rename_no_replace", replace_before_rename)
+    assert client.delete(f"/api/projects/{project_id}").status_code == 404
+    assert (target / "retained").exists()
+    assert load_text_project(original).configuration.project == "target"
+    assert set(root.iterdir()) == {target, original}
 
 
 def test_rename_changes_only_the_declaration_and_checks_authored_revision(study):
@@ -1968,5 +2011,5 @@ def test_create_project_from_shipped_example_uses_the_requested_name(tmp_path):
         created = client.post("/api/projects", json={"name": "my-reaching", "example": "point-mass-reaching"})
         assert created.status_code == 201, created.text
         assert created.json()["configuration"]["project"] == "my-reaching"
-        assert "train" in created.json()["snapshot"]["project"]["steps"]
+        assert created.json()["snapshot"]["project"]["steps"]["simple-reaches"]["kind"] == "train"
     assert {path.name for path in projects.iterdir()} == {"my-reaching"}

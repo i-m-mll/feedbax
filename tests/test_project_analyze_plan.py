@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from feedbax.builtins.figure_templates import VelocitySummary, VelocitySummarySettings
+from feedbax.contracts.project_inputs import StepReference
 from feedbax.contracts.base import sha256_bytes
 from feedbax.contracts.figure_document import FigureDocument
 from feedbax.contracts.model_address import ModelAddress
@@ -492,24 +493,63 @@ def test_analyze_collects_static_rows_in_each_named_variant():
     assert compile_project(project, operations=operations).elements == plan.elements
 
 
-def test_ordered_analyze_subset_is_one_request_unless_the_input_is_expanded():
+def test_axis_pin_widens_when_its_source_gains_an_unconstrained_axis():
+    project = _project()
+    project.steps["analyze"].inputs["states"] = StepReference.model_validate({
+        "step": "baseline", "where": {"clauses": [{}]},
+    })
+    operations = _operations()
+    before = compile_project(project, operations=operations)
+    assert not before.diagnostics
+    assert len(_decode(before, "align").inputs["states"]) == 1
+
+    project.steps["baseline"].sweep = Sweep.model_validate({"axes": {
+        "seed": {"path": "params.seed", "values": [0, 1, 2]},
+    }})
+    after = compile_project(project, operations=operations)
+    assert not after.diagnostics
+    assert len(_decode(after, "align").inputs["states"]) == 3
+
+
+def test_missing_axis_value_points_to_the_original_pin_and_names_remaining_values():
+    project = _project()
+    project.steps["conditions"] = _conditions()
+    project.steps["analyze"].inputs["states"] = StepReference.model_validate({
+        "step": "conditions",
+        "where": {"clauses": [{"mass": [{"id": "heavy", "label": "Heavy load"}]}]},
+    })
+    operations = _operations()
+    assert not compile_project(project, operations=operations).diagnostics
+
+    values = project.steps["conditions"].sweep.axes["mass"].values
+    del values["heavy"]
+    values["nominal"].label = "Nominal load"
+    broken = compile_project(project, operations=operations)
+    (problem,) = broken.diagnostics
+    assert (problem.step, problem.path) == ("analyze", "inputs.states.where.clauses.0.mass.0")
+    assert (problem.authored_file, problem.authored_path) == (
+        "steps/analyze.json", "/inputs/states/where/clauses/0/mass/0",
+    )
+    assert problem.selection_value.model_dump() == {
+        "clause_index": 0,
+        "axis": "mass",
+        "missing": {"id": "heavy", "label": "Heavy load"},
+        "remaining": [{"id": "nominal", "label": "Nominal load"}],
+    }
+    assert {row.key.step for row in broken.runs} == {"train", "baseline", "conditions"}
+
+
+def test_analyze_clause_value_order_does_not_change_the_request():
     project = _project()
     operations = _operations()
     project.steps["conditions"] = _conditions()
-    baseline = compile_project(project, operations=operations)
-    conditions = {
-        run.coordinates["mass"].value_id: run for run in baseline.runs if run.key.step == "conditions"
-    }
-    selection = [
-        {"key": key, "variant": "default", "row": conditions[key].key.row}
-        for key in ("heavy", "nominal")
-    ]
+    selection = [{"id": key, "label": key} for key in ("heavy", "nominal")]
 
     def choose(rows):
         project.steps["analyze"] = Step.model_validate({
             "kind": "analyze",
             "base": {"document": "velocity-analysis"},
-            "inputs": {"states": {"step": "conditions", "where": {"rows": rows}}},
+            "inputs": {"states": {"step": "conditions", "where": {"clauses": [{"mass": rows}]}}},
         })
         return compile_project(project, operations=operations)
 
@@ -517,8 +557,8 @@ def test_ordered_analyze_subset_is_one_request_unless_the_input_is_expanded():
     reversed_plan = choose(selection[::-1])
     assert not ordered.diagnostics and not reversed_plan.diagnostics
     first, second = _decode(ordered, "align"), _decode(reversed_plan, "align")
-    assert first.inputs["states"] == second.inputs["states"][::-1]
-    assert first.id != second.id
+    assert first.inputs["states"] == second.inputs["states"]
+    assert first.id == second.id
     assert len(ordered.elements) == len(reversed_plan.elements) == 3
 
     project.steps["analyze"].sweep = Sweep.model_validate({"axes": {"source": {"input": "states"}}})
@@ -528,7 +568,62 @@ def test_ordered_analyze_subset_is_one_request_unless_the_input_is_expanded():
     assert {
         tuple(binding.member.key for binding in element.inputs["states"])
         for element in expanded.elements.values() if element.key.name == "align"
-    } == {("heavy",), ("nominal",)}
+    } == {("mass=heavy",), ("mass=nominal",)}
+
+
+def test_diagonal_axis_clauses_widen_and_keep_their_other_matches():
+    project = _project()
+    conditions = _conditions()
+    project.steps["conditions"] = conditions
+    axes = conditions.sweep.axes
+    mass = axes["mass"].values
+    mass["a"], mass["b"] = mass.pop("nominal"), mass.pop("heavy")
+    axes["seed"] = Sweep.model_validate({"axes": {"seed": {"values": {
+        str(value): {"patches": {"params.seed": {"value": value}}} for value in (1, 2)
+    }}}}).axes["seed"]
+    chosen = [
+        {"mass": [{"id": mass_id, "label": label}], "seed": [{"id": str(seed), "label": str(seed)}]}
+        for mass_id, label, seed in (("a", "Nominal", 1), ("b", "Heavy", 2))
+    ]
+    operations = _operations()
+
+    def plan(clauses):
+        project.steps["analyze"].inputs["states"] = StepReference.model_validate({
+            "step": "conditions", "where": {"clauses": clauses},
+        })
+        return compile_project(project, operations=operations)
+
+    def producers(compiled):
+        align = compiled.elements[ElementKey(_KEY, "align")]
+        return [compiled.row(binding.producer).coordinates for binding in align.inputs["states"]]
+
+    first = plan(chosen)
+    opposite = plan([chosen[1], chosen[0], chosen[1]])
+    assert not first.diagnostics and not opposite.diagnostics
+    assert len(producers(first)) == 2
+    assert _decode(first, "align").id == _decode(opposite, "align").id
+    assert project.steps["analyze"].inputs["states"].where.model_dump(exclude_unset=True) == {"clauses": chosen}
+
+    axes["replicate"] = Sweep.model_validate({"axes": {"replicate": {"values": {
+        value: {} for value in ("x", "y", "z")
+    }}}}).axes["replicate"]
+    wider = plan(chosen)
+    assert not wider.diagnostics
+    assert len(producers(wider)) == 6
+    assert {
+        (row["mass"].value_id, row["seed"].value_id, row["replicate"].value_id) for row in producers(wider)
+    } == {(mass_id, seed, replicate) for mass_id, seed in (("a", "1"), ("b", "2")) for replicate in ("x", "y", "z")}
+
+    del mass["b"]
+    broken = plan(chosen)
+    (problem,) = broken.diagnostics
+    assert problem.path == "inputs.states.where.clauses.1.mass.0"
+    assert problem.selection_value.model_dump() == {
+        "clause_index": 1, "axis": "mass", "missing": {"id": "b", "label": "Heavy"},
+        "remaining": [{"id": "a", "label": "1"}],
+    }
+    assert len(producers(broken)) == 3
+    assert {(row["mass"].value_id, row["seed"].value_id) for row in producers(broken)} == {("a", "1")}
 
 
 def test_operation_cycle_keeps_independent_elements_plannable():

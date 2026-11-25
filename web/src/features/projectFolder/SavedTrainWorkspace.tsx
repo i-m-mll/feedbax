@@ -1463,7 +1463,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     const sourceStep = plan.steps.find(({ id }) => id === source.stepId);
     if (sourceStep?.kind === 'evaluate' && known) {
       const rows = source.selection ? selectedRuns(sourceStep, source.selection) : sourceStep.runs;
-      const input = analyzeInput(sourceStep, rows, known, !!saved.project.sweep);
+      const input = analyzeInput(sourceStep, rows, known);
       if (!input) return undefined;
       return { kinds: { analyze: () => void perform(async () => {
         const id = await createAnalyze(editor, known.revision, input);

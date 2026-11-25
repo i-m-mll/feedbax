@@ -3,7 +3,7 @@ import type {
   StudioJobSubmission, StudioProjectDocument, StudioProjectSnapshot,
   StudioSavedTrainKey, StudioSavedTrainRuns,
 } from '../../../src/generated/studioContracts';
-import { authorLearningRateSweep, mapStep, runName } from './canonicalTrain';
+import { authorLearningRateSweep, chooseSweepValue, mapStep, runName } from './canonicalTrain';
 import { activate, activateMenuItem, chooseOutlineRow, chooseStepKind, number, openView, palette, submitOption, tabTo } from './studioKeyboard';
 import { applyTo, outlineRow, pick } from './controls';
 
@@ -201,14 +201,14 @@ export async function verifyWalkthroughSuccessors(context: Walkthrough, pairedSt
   const settled = evaluationRows(await plan(context), subsetStep);
   const beforeWidening = await attempts();
   expect(beforeWidening).toEqual([...beforeSubset, ...admitted].sort());
-  await rule.focus();
-  await page.keyboard.press('End');
-  await page.keyboard.type(',0.003');
+  await rule.click({ button: 'right' });
+  await page.getByRole('menuitem', { name: 'Pick Runs', exact: true }).click();
+  for (const value of ['0.001', '0.002', '0.003']) await chooseSweepValue(mapStep(page, 'train'), 'learning-rate', value);
   await expect(ruleRow).toContainText('3/3');
   const edited = mutation(context, 'PATCH');
   await page.keyboard.press('Enter');
   expect((await edited).ok()).toBe(true);
-  await expect(rule).toHaveValue(/,0\.003$/);
+  await expect(rule).toHaveValue('');
   const widened = evaluationRows(await plan(context), subsetStep);
   expect(widened.slice(0, 2)).toEqual(settled);
   expect(widened).toHaveLength(3);

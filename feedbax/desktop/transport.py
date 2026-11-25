@@ -7,6 +7,7 @@ import secrets
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -36,6 +37,7 @@ fetch("/_desktop/exchange", { method: "POST", headers: {"X-Feedbax-Ticket": tick
     const project = response.headers.get("X-Feedbax-Project");
     if (project) location.replace("/?project=" + encodeURIComponent(project));
     else if (response.headers.get("X-Feedbax-Activity") === "1") location.replace("/?activity=1");
+    else if (response.headers.get("X-Feedbax-Start") === "1") location.replace("/");
     else throw Error();
   })
   .catch(() => {
@@ -66,10 +68,15 @@ class _RepresentedProject(StrictModel):
     generation: str
 
 
+class _SpecialWindow(Enum):
+    START = "x-feedbax-start"
+    ACTIVITY = "x-feedbax-activity"
+
+
 @dataclass(frozen=True)
 class _Ticket:
     expires: float
-    project_id: str | None
+    destination: str | _SpecialWindow
 
 
 class DesktopTransport:
@@ -80,13 +87,13 @@ class DesktopTransport:
         self.session = secrets.token_urlsafe(32)
         self.tickets: dict[str, _Ticket] = {}
 
-    def issue_ticket(self, project_id: str | None) -> str:
+    def issue_ticket(self, destination: str | _SpecialWindow) -> str:
         now = time.monotonic()
         self.tickets = {token: ticket for token, ticket in self.tickets.items() if ticket.expires > now}
         if len(self.tickets) >= 32:
             del self.tickets[next(iter(self.tickets))]
         token = secrets.token_urlsafe(32)
-        self.tickets[token] = _Ticket(now + 20, project_id)
+        self.tickets[token] = _Ticket(now + 20, destination)
         return token
 
     def register_ticket_route(
@@ -105,7 +112,7 @@ class DesktopTransport:
             if request.folder_identity is not None and request.project_folder is None:
                 raise HTTPException(422, "Restoring a project requires its folder.")
             if request.activity:
-                return {"ticket": self.issue_ticket(None)}
+                return {"ticket": self.issue_ticket(_SpecialWindow.ACTIVITY)}
             folders = self.app.state.project_folders
             try:
                 if request.project_folder is not None:
@@ -117,7 +124,7 @@ class DesktopTransport:
                 elif request.project_id is not None:
                     document, location = await run_in_threadpool(folders.open_native_id, request.project_id)
                 else:
-                    document, location = await run_in_threadpool(folders.new_native_project)
+                    return {"ticket": self.issue_ticket(_SpecialWindow.START)}
                 if is_stopping():
                     raise HTTPException(503, "Studio service is stopping")
                 project_id = document.snapshot.project_id
@@ -189,10 +196,10 @@ class DesktopTransport:
                 await self._deny(scope, receive, send)
                 return
             response = Response(status_code=204, headers=_BROWSER_HEADERS)
-            if ticket.project_id is None:
-                response.headers["x-feedbax-activity"] = "1"
+            if isinstance(ticket.destination, _SpecialWindow):
+                response.headers[ticket.destination.value] = "1"
             else:
-                response.headers["x-feedbax-project"] = ticket.project_id
+                response.headers["x-feedbax-project"] = ticket.destination
             response.set_cookie(_COOKIE, self.session, httponly=True, samesite="strict")
         elif (
             path.startswith(f"{CONTROL_ROUTE}/")
