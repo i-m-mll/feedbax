@@ -90,6 +90,7 @@ test('authors a Model with the pointer and trains it @round', async ({ page, req
   });
   const cellBox = (await card(cell).boundingBox())!;
   expect(Math.abs(cellBox.x - cursor.x) + Math.abs(cellBox.y - cursor.y)).toBeLessThan(4);
+  await expect(inspector.getByRole('textbox', { name: 'Hidden size', exact: true })).toBeVisible();
   await expect(inspector.getByRole('textbox', { name: 'Input size', exact: true })).toHaveCount(0);
   expect((await savedModel()).interior.components?.[cell]).not.toMatchObject({ fields: { input_size: expect.anything() } });
 

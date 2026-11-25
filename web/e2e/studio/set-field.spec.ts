@@ -17,7 +17,7 @@ async function files() {
 }
 
 // Catches a To Field that leaves the axis's runs on the card or shows no variable for the Set in the Task view, a
-// Value that drops an entry or None, a weight typed at its entry that is not stored at that entry, and a To Sweep that
+// Value that drops an entry or None or cuts one off, a weight typed at its entry that is not stored at that entry, and a To Sweep that
 // does not restore the axis's runs.
 test('To Field moves a Set into the run as a variable of the Task, its weights are edited there, and To Sweep moves it back', async ({ page, request }) => {
   test.setTimeout(60_000);
@@ -41,6 +41,17 @@ test('To Field moves a Set into the run as a variable of the Task, its weights a
   await expect(row.getByRole('listitem')).toHaveText(['Light', 'Mid', 'Heavy', 'None']);
   const weights = () => row.getByRole('textbox', { name: /^Weight / }).evaluateAll((fields) => fields.map((field) => (field as HTMLInputElement).value));
   await expect.poll(weights).toEqual(['1', '1', '1', '1']);
+  // Each entry is whole within its cell, on the row's one line, once the list alone is scrolled to it.
+  expect(await row.getByRole('list', { name: 'Values loads', exact: true }).evaluate((list) => {
+    const cell = list.closest('td')!;
+    return [...list.children].map((item) => {
+      list.scrollLeft += item.getBoundingClientRect().left - list.getBoundingClientRect().left;
+      cell.scrollTop = 0;
+      cell.scrollLeft = 0;
+      const [entry, box] = [item.getBoundingClientRect(), cell.getBoundingClientRect()];
+      return entry.top >= box.top && entry.bottom <= box.bottom && entry.left >= box.left && entry.right <= box.right;
+    });
+  })).toEqual([true, true, true, true]);
 
   await row.getByRole('textbox', { name: 'Weight Heavy', exact: true }).fill('3');
   await row.getByRole('textbox', { name: 'Weight Heavy', exact: true }).press('Enter');

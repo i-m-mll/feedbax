@@ -63,7 +63,8 @@ import { useStudioJobActions, useStudioJobs } from '@/hooks/useStudioJobs';
 import { authoredPointer, declarationAddress, ownDefinition, modelDocumentId } from './authoredEdits';
 import { withBaseDescendants } from './baseDescendants';
 import { stepDocument } from './documentPayload';
-import type { SceneRelate } from '@/components/scene/SceneRegion';
+import type { SceneMarking, SceneRelate } from '@/components/scene/SceneRegion';
+import { reasonOf } from '@/components/values/fieldModel';
 import { useManagedProjectDetails, useRecordedTerms, useStoredModel, type NamedDocumentScope } from './managedProjectDetails';
 import { useTrialClock } from './useTrialClock';
 import { declaredEvaluation, FigureClockContext } from './figureClock';
@@ -799,8 +800,14 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
       setFieldFocus({ key: crypto.randomUUID(), step: step.id, target: measureAnchor(answer.term) });
       return undefined;
     } : undefined;
+  const taskDocument = trial.view && 'variables' in trial.view.task ? trial.view.task_document ?? step?.id : undefined;
+  const marking = useMemo((): SceneMarking | undefined => trial.commit && taskDocument ? {
+    document: taskDocument,
+    mark: async (variable, marker) => reasonOf(await trial.commit!(studioAccessibleName('set', studioName('marker')),
+      { kind: 'structure', changes: [{ op: 'set_variable_marker', id: variable, marker }] })),
+  } : undefined, [trial.commit, taskDocument]);
   const detailInputs = {
-    editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection, relate,
+    editor, step, stepId: step?.id ?? null, focus: state.focus, selection: state.selection, relate, marking,
     variantId: variant, evaluation: selectedEvaluation, sceneTrial: trialClock.scene, checkpoints: evaluationReplay.checkpoints,
     namedRun, documentScopes, planCurrent: plans.current, elements, trial: trial.view, valueEditing: !!selectedValue, evaluateScope: evaluateScope || undefined, stored, modelProblems, selectedSweepValues, confirmRunRemoval: runRemoval.confirm, askStore,
     drawerSections,
@@ -835,7 +842,7 @@ function ManagedProjectWindow({ session, onNewStep }: { session: EditorSession }
     }
     const clocked = slot === clockSlot;
     return {
-      ...detailInputs, step: subject.step, stepId: subject.step.id, focus: null, selection: null, evaluation: subject.evaluation, relate: undefined,
+      ...detailInputs, step: subject.step, stepId: subject.step.id, focus: null, selection: null, evaluation: subject.evaluation, relate: undefined, marking: undefined,
       sceneTrial: clocked ? trialClock.scene : restTrial, checkpoints: clocked ? evaluationReplay.checkpoints : undefined,
       namedRun: undefined, documentScopes: { graph: undefined, task: undefined }, valueEditing: false, evaluateScope: undefined,
       stored: subject.stored, modelProblems: [], selectedSweepValues: new Map<string, Set<string>>(), fieldRows: undefined,
