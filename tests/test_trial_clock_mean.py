@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
+from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.dataset import TrialFigureTime
 from feedbax.contracts.jobs import JobReceipt
 from feedbax.contracts.trial_clock import TrialClockChoice, TrialMeanSelection
@@ -19,6 +20,8 @@ _TIME = np.arange(9) * 0.5
 _TRIALS = ("first", "second", "third")
 _START = (2, 4, 1)
 _END = (7, 6, 8)
+_START_POINT = np.array([-0.1, 0.2], dtype=np.float32)
+_TARGETS = np.array([[0.3, -0.2], [0.3, 0.1]], dtype=np.float32)
 
 
 def _sample(trial, step):
@@ -32,7 +35,11 @@ def unequal_epochs():
     layout = RecordedTrialLayout(
         epochs=(("hold", "Hold"), ("move", "Move")),
         positions=(_POSITION,), configurations=(),
-        discrete_variables=(TrialClockChoice(id="direction", label="Direction"),),
+        discrete_variables=(
+            TrialClockChoice(id="direction", label="Direction"),
+            TrialClockChoice(id="start", label="Start"),
+            TrialClockChoice(id="target", label="Target"),
+        ),
     )
     return Dataset.from_arrays(
         {
@@ -44,6 +51,8 @@ def unequal_epochs():
             ),
             "epoch_outcome": Variable(np.ones((1, 3, 2), dtype=int), (*axes, "epoch")),
             "/v1/task/variable/direction": Variable(np.array([[0, 0, 1]]), axes),
+            "/v1/task/variable/start": Variable(np.broadcast_to(_START_POINT, (1, 3, 2)), (*axes, "xy")),
+            "/v1/task/variable/target": Variable(_TARGETS[[0, 0, 1]][None], (*axes, "xy")),
             _POSITION: Variable(
                 np.array([[[_sample(trial, step) for step in range(len(_TIME))] for trial in range(3)]]),
                 (*axes, "state_time", "xy"), units="m", frame="world",
@@ -85,10 +94,12 @@ def test_saved_mean_groups_discrete_values_and_intersects_aligned_times(unequal_
     assert [trial.id for trial in one.drawn.trials] == ["second"]
     assert one.mean is None
     assert one.mean_options is not None
-    assert [(choice.id, choice.label) for choice in one.mean_options.by] == [("direction", "Direction")]
+    assert [(choice.id, choice.label) for choice in one.mean_options.by] == [
+        ("direction", "Direction"), ("start", "Start"), ("target", "Target"),
+    ]
     assert [choice.id for choice in one.mean_options.align] == ["hold", "move"]
 
-    aligned = result.replay(mean=TrialMeanSelection(align="move"))
+    aligned = result.replay(mean=TrialMeanSelection(align="move", by=["direction"]))
     assert aligned.mean is not None and aligned.position is not None
     assert aligned.drawn.kind == "trials" and len(aligned.drawn.trials) == 3
     assert [condition.values for condition in aligned.mean.conditions] == [{"direction": 0}, {"direction": 1}]
@@ -156,9 +167,16 @@ def test_saved_figure_mean_uses_the_same_aligned_sample_reference(unequal_epochs
     traces = rendered["data"]
     assert traces[-1] == plain["data"][-1]
     assert [trace["meta"]["group"]["trial"] for trace in traces[:-1] if "trial" in trace["meta"]["group"]] == list(_TRIALS)
-    for direction, indices in enumerate(((0, 1), (2,))):
-        group = {"condition": "condition-id", "direction": direction}
+    labels = ("Direction=0 · Target=[0.3, -0.2]", "Direction=1 · Target=[0.3, 0.1]")
+    for direction, (indices, label) in enumerate(zip(((0, 1), (2,)), labels, strict=True)):
+        group = {
+            "condition": "condition-id", "direction": direction,
+            "start": canonical_json_v2_bytes(_START_POINT.tolist()).decode(),
+            "target": canonical_json_v2_bytes(_TARGETS[direction].tolist()).decode(),
+        }
         upper, lower, average = [trace for trace in traces[:-1] if trace["meta"]["group"] == group]
+        assert {trace["name"] for trace in (upper, lower, average)} == {label}
+        assert len({trace["legendgroup"] for trace in (upper, lower, average)}) == 1
         time, mean, mins, maxes = _reference(indices, _START)
         for trace, values in ((average, mean), (lower, mins), (upper, maxes)):
             assert trace["x"] == time

@@ -47,6 +47,7 @@ def test_published_speed_figure_keeps_trial_order_and_checkpoint_samples(tmp_pat
         [[[[0, 0], [-3, 4], [5, -12]], [[-8, 15], [0, -3], [0, 0]]]],
     ], dtype=np.float32)
     condition = "d" * 64
+    trials = ('{"target":[0.2,0]}', '{"target":[0.1,0]}')
     states = Dataset.from_arrays(
         {"velocity": Variable(
             velocity, ("checkpoint", "condition", "trial", "state_time", "xy"), units="m/s", frame="world",
@@ -54,7 +55,7 @@ def test_published_speed_figure_keeps_trial_order_and_checkpoint_samples(tmp_pat
         coords={
             "checkpoint": Variable(np.array([31, 7]), ("checkpoint",)),
             "condition": Variable(np.array([condition]), ("condition",)),
-            "trial": Variable(np.array(["last", "first"]), ("trial",)),
+            "trial": Variable(np.array(trials), ("trial",)),
             "state_time": Variable(time, ("state_time",), units="s", trial_time=TrialFigureTime()),
         },
         schema_id=RAW_STATES_SCHEMA,
@@ -62,10 +63,17 @@ def test_published_speed_figure_keeps_trial_order_and_checkpoint_samples(tmp_pat
     speed = operation.defining_object(states, operation.value.parameter_model.model_validate({"velocity": "velocity"}))
     names = {"condition": {condition: "plant.mass=2"}}
     figure = render(document, {"speed": speed}, names=names)
-    assert [trace.name for trace in figure.data] == ["plant.mass=2 · Trial last", "plant.mass=2 · Trial first"]
+    assert [trace.name for trace in figure.data] == ["plant.mass=2 · Trial 1", "plant.mass=2 · Trial 2"]
     for trace, samples in zip(figure.data, ([0, 5, 13], [17, 3, 0]), strict=True):
         np.testing.assert_array_equal(trace.x, time)
         np.testing.assert_array_equal(trace.y, samples)
+
+    layer, = document.layers
+    selected = layer.model_copy(update={"select": layer.select | {"trial": trials[1]}})
+    single = render(document.model_copy(update={"layers": (selected,)}), {"speed": speed}, names=names)
+    trace, = single.data
+    assert trace.name == "plant.mass=2 · Trial 2"
+    assert trace.meta["group"]["trial"] == trials[1]
 
     store = ImmutableArtifactBlobProvider(tmp_path)
     ref = publish_dataset(store, speed)
@@ -88,7 +96,7 @@ def test_published_speed_figure_keeps_trial_order_and_checkpoint_samples(tmp_pat
     assert panel.model_dump(exclude_none=True) == {"x_axis": "x", "y_axis": "y", "time": {}}
     assert [trace.meta.model_dump() for trace in parsed.data] == [
         {"layer": "trial-speed", "group": {"condition": condition, "trial": trial}}
-        for trial in ("last", "first")
+        for trial in trials
     ]
 
 
