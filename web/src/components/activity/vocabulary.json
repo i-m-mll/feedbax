@@ -380,6 +380,7 @@
     "replay": "Replay",
     "timing": "Timing",
     "addDelay": "Add Delay",
+    "addHold": "Add Hold",
     "addIntervention": "Add Intervention",
     "addProbe": "Add Probe",
     "removeAttachment": "Remove Attachment",
