@@ -17,7 +17,7 @@ from feedbax.contracts.loaded_model import ImportedModelProvenance
 from feedbax.contracts.receipt_validity import ReceiptValidity
 from feedbax.contracts.project import StepKind
 from feedbax.contracts.request_refs import RequestKind
-from feedbax.contracts.synthesis import ModelOrigin, ModelProductKey
+from feedbax.contracts.model_origin import ModelOrigin, ModelProductKey
 from feedbax.contracts.project_inputs import SelectedAxisValueProblem, StepReference, SubsetTerms
 from feedbax.contracts.project_inputs import CheckpointRule
 from feedbax.contracts.project_sources import SourceKind

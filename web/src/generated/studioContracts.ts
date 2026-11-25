@@ -5230,7 +5230,7 @@ export type StudioTrialInput = {
 };
 
 export type StudioTrialObjectiveSource = {
-  "kind": "train" | "own";
+  "kind": "train" | "synthesize" | "own";
   "step": string;
 };
 
@@ -14215,7 +14215,7 @@ export const StudioTrialInputSchema: z.ZodType<StudioTrialInput> = z.lazy(() =>
 
 export const StudioTrialObjectiveSourceSchema: z.ZodType<StudioTrialObjectiveSource> = z.lazy(() =>
   z.object({
-    "kind": z.union([z.literal("train"), z.literal("own")]),
+    "kind": z.union([z.literal("train"), z.literal("synthesize"), z.literal("own")]),
     "step": z.string().regex(new RegExp("^[A-Za-z0-9_][A-Za-z0-9_-]*$")),
   }).strict()
 ) as unknown as z.ZodType<StudioTrialObjectiveSource>;

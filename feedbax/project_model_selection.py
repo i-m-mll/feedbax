@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.expression_values import Level, ScopedValue
@@ -58,15 +58,32 @@ def matched_task_inputs(
 
 
 def selected_model(definition: SelectedRunDefinition, document: str) -> object:
-    managed = definition.payload.get("trial_documents")
-    path = "payload.trial_documents.model"
+    managed, prefix = trial_document_slots(definition.payload)
+    path = f"payload.{prefix}model"
     if (
-        not isinstance(managed, dict)
-        or definition.document_ids.get(path) != document
+        definition.document_ids.get(path) != document
         or definition.document_pointers.get(path)
     ):
         return None
     return managed.get("model")
+
+
+def trial_document_slots(payload: Mapping) -> tuple[Mapping, str]:
+    """Return the authored document slots and their path below a step payload."""
+    nested = payload.get("trial_documents")
+    return (nested, "trial_documents.") if isinstance(nested, dict) else (payload, "")
+
+
+_TRIAL_TASK = TypeAdapter(TaskDocument | PythonTaskSelection)
+
+
+def trial_task_slot(value: object) -> TaskDocument | PythonTaskSelection:
+    from feedbax.project_folder import ProjectFolderInvalid
+
+    try:
+        return _TRIAL_TASK.validate_python(value)
+    except ValidationError as error:
+        raise ProjectFolderInvalid("The task slot does not contain a Task or Python task selection.") from error
 
 
 def _trial_document[Document: BaseModel](binding: str, value: object, schema: type[Document]) -> Document:
@@ -91,12 +108,11 @@ def selected_model_and_task(
         definition = plan.selected_definitions.get(key)
     if definition is None or (model := selected_model(definition, body.document)) is None:
         return None
-    managed = definition.payload.get("trial_documents")
-    assert isinstance(managed, dict)
+    managed, _ = trial_document_slots(definition.payload)
     if managed.get("python_task") is not None:
         source = _trial_document("python_task", managed["python_task"], PythonTaskSelection)
     elif managed.get("task") is not None:
-        source = _trial_document("task", managed["task"], TaskDocument)
+        source = trial_task_slot(managed["task"])
     else:
         source = None
     objective = managed.get("objective")

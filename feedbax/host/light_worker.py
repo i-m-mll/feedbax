@@ -17,6 +17,7 @@ from feedbax.contracts.artifact_custody import ContentRootRecord
 from feedbax.contracts.dataset import DATASET_MEDIA_TYPE, DatasetProductRef
 from feedbax.contracts.effective_success import Bindings, BoundMember, Product, Products, success_content_ref
 from feedbax.contracts.figure_document import PLOTLY_MEDIA_TYPE
+from feedbax.contracts.model_checkpoint import MODEL_TREE_MEDIA_TYPE
 from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.request_identity import DecodedRequest
 from feedbax.contracts.request_refs import ContentRef
@@ -24,6 +25,7 @@ from feedbax.contracts.request_specs import (
     AnalysisRequestSpec,
     RenderRequestSpec,
     ReportRequestSpec,
+    SynthesisRequestSpec,
 )
 from feedbax.contracts.strict_json import strict_json_loads
 from feedbax.contracts.studio_figure import FigureRun
@@ -36,6 +38,7 @@ from feedbax.execution.trial_clock import TrialClockRecord
 from feedbax.host.io import append
 from feedbax.host.model_checkpoint_input import bind_managed_inputs
 from feedbax.host.light_jobs import (
+    LightDeclaration,
     LightCompletionBindings,
     LightDelivery,
     dataset_member,
@@ -287,12 +290,49 @@ def check_light_environment(
     from feedbax.validity.light_products import light_product_matches
 
     role, operation = validate_light_request(request)
-    (retained,) = products[role]
-    candidate = _compute(store, request, bindings, attempt, role, operation)
+    candidate = _compute_products(store, request, bindings, attempt, role, operation)
     try:
-        return light_product_matches(store, retained, candidate)
+        return candidate.keys() == products.keys() and all(
+            len(products[name]) == 1 and light_product_matches(store, products[name][0], items[0])
+            for name, items in candidate.items()
+        )
     finally:
         store.release_root(light_staging_id(attempt))
+
+
+def _compute_products(
+    store: ImmutableArtifactBlobProvider, request: DecodedRequest, bindings: Bindings,
+    attempt: str, role: str, operation: LightDeclaration | None,
+) -> Products:
+    if not isinstance(spec := request.spec, SynthesisRequestSpec):
+        return {role: (_compute(store, request, bindings, attempt, role, operation),)}
+
+    from feedbax.host.synthesis import synthesize_model
+
+    prepared = synthesize_model(spec, registry=operation_application(), artifacts=store)
+    if isinstance(prepared, tuple):
+        raise ValueError("\n".join(f"/{'/'.join(map(str, problem.path))}: {problem.reason}" for problem in prepared))
+    products = {}
+    with store._exclusive_lock():
+        for name, dataset in sorted(prepared.datasets.items()):
+            ref = publish_dataset(store, dataset)
+            products[name] = (Product(
+                name=name, content=ref.content.model_copy(update={"media_type": DATASET_MEDIA_TYPE}),
+                descriptor={"descriptor_sha256": ref.descriptor_sha256},
+            ),)
+        model = prepared.writer.publish_to(
+            store, (prepared.model,), templates=(prepared.template,), replica_ids=("0",),
+            root_id=light_staging_id(attempt), root_kind="run", additional_targets=tuple(
+                light_staging_target(success_content_ref(items[0].content)) for items in products.values()
+            ),
+        )
+        products[role] = (Product(
+            name=role, content=ContentRef(
+                sha256=model.tree.descriptor.sha256, size=model.tree.descriptor.size_bytes,
+                tree=True, media_type=MODEL_TREE_MEDIA_TYPE,
+            ), descriptor=model.encoding.model_dump(mode="json"),
+        ),)
+    return products
 
 
 def main(_argv: list[str]) -> int:
@@ -308,8 +348,10 @@ def main(_argv: list[str]) -> int:
     with bind_managed_inputs(
         view, delivery.request, origins=exact.origins, checkpoint_bindings=exact.bindings, project=delivery.project_id,
     ) as (_, bindings, _):
-        product = _compute(store, request, bindings, attempt, role, operation)
-    result = {"outcome": "succeeded", "products": {role: [product.model_dump(mode="json")]}}
+        products = _compute_products(store, request, bindings, attempt, role, operation)
+    result = {"outcome": "succeeded", "products": {
+        name: [product.model_dump(mode="json") for product in items] for name, items in products.items()
+    }}
     if operation is not None:
         result["provider"] = asdict(operation.source)
     append(log, "result", result, sync=True)

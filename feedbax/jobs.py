@@ -56,6 +56,7 @@ from feedbax.contracts.jobs import (
     StudioVenueStream,
 )
 from feedbax.contracts.loaded_model import ImportedModelProvenance
+from feedbax.contracts.model_origin import ModelOrigin
 from feedbax.contracts.live_evaluate import LIVE_EVALUATE_POINT, LiveEvaluationObservation
 from feedbax.contracts.manifest import (
     EvaluationRunManifest,
@@ -72,8 +73,11 @@ from feedbax.planner.project_plan import (
 from feedbax.contracts.request_identity import decode_request, encode_request
 from feedbax.contracts.receipt_validity import CodeDifference, InputDifference, ReceiptValidity, ValidityJudgement
 from feedbax.contracts.effective_success import EvaluationSubjectValue, ExcludedProduct, MetricExclusion, TerminalTrainSubject
-from feedbax.contracts.request_refs import BatchMember, BatchSetMember, BestCandidate, BestRank, ConditionalProduct, ContentRef, LastMember, ProductRef, RequestId, UpdateSeriesMember
-from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
+from feedbax.contracts.request_refs import (
+    BatchMember, BatchSetMember, BestCandidate, BestRank, ConditionalProduct, ContentRef, LastMember, ProductRef, RequestId, UpdateSeriesMember,
+    is_synthesized_model_product,
+)
+from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, SynthesisRequestSpec
 from feedbax.contracts.rollout import RolloutParameters
 from feedbax.contracts.validation_placement import ValidationPlacement
 from feedbax.host import Admission, AdmissionItem, Edge, HostClient, HostError, Job, Launch
@@ -132,7 +136,7 @@ _ACTIVE_PLAN_STATUSES = frozenset({
     JobStatus.RUNNING, JobStatus.STOPPING, JobStatus.COLLECTING,
 })
 EVALUATION_SUBJECT_REQUIRED = "select an unambiguous admitted Train subject"
-_LIGHT_KINDS = frozenset({"analyze", "render", "report"})
+_LIGHT_KINDS = frozenset({"analyze", "render", "report", "synthesize"})
 
 
 _log = logging.getLogger(__name__)
@@ -240,6 +244,7 @@ class PlanJobAttempt:
     revision: str | None = None
     trials: tuple[str, ...] = ()
     loaded_model: ImportedModelProvenance | None = None
+    model_origin: ModelOrigin | None = None
 
 
 @dataclass(frozen=True)
@@ -269,6 +274,7 @@ class _VerifiedEvaluation:
     bound_subject: StudioBoundBestSubject | None = None
     trials: tuple[str, ...] = ()
     loaded_model: ImportedModelProvenance | None = None
+    model_origin: ModelOrigin | None = None
 
 
 @dataclass(frozen=True)
@@ -306,11 +312,9 @@ class PlanJobReader:
             raise CannotRun("/requires", "Evaluate has unresolved capabilities.")
         _, params, checkpoint = decode_rollout_request(run.request_id, plan.requests[run.request_id])
         if isinstance(checkpoint, ProductRef) and (source := plan.requests.get(checkpoint.request_id)) is not None:
-            from feedbax.contracts.request_specs import DocumentTrainingRequestSpec
-
             spec = decode_request(source, plan.documents.__getitem__).spec
-            if not isinstance(spec, DocumentTrainingRequestSpec):
-                raise CannotRun("/inputs/subject", "Managed Evaluate needs a document Train checkpoint.")
+            if not isinstance(spec, (DocumentTrainingRequestSpec, SynthesisRequestSpec)):
+                raise CannotRun("/inputs/subject", "Managed Evaluate needs a model product from resolved trial documents.")
         return params, checkpoint
 
     @inspect_without_recording()
@@ -453,6 +457,7 @@ class PlanJobReader:
                 request_id=request_id, revision=job["data"].get("revision"),
                 trials=result.trials if result is not None else (),
                 loaded_model=result.loaded_model if result is not None else None,
+                model_origin=result.model_origin if result is not None else None,
             )
             attempts.setdefault(request_id, []).append(attempt)
             for address in known:
@@ -627,6 +632,7 @@ class JobService(PlanJobReader):
         items = {}
         runs = {}
         checkpoints = {}
+        synthesized: dict[str, tuple[RunKey | None, RequestId]] = {}
         names_by_key = {key: name for name, key in selected.items()}
         reviewed_catalogs = _planned_checkpoint_catalogs(reviewed.plan) if train else {}
         with folders.admission_plan(project) as current:
@@ -676,7 +682,9 @@ class JobService(PlanJobReader):
                     except (ValueError, KeyError, OSError) as error:
                         items[name] = _rejected(name, f"cannot_run {error}")
                         continue
-                    if terminal is None and not isinstance(checkpoint, ContentRef):
+                    if is_synthesized_model_product(checkpoint):
+                        synthesized[name] = planned.producer, checkpoint.request_id
+                    elif terminal is None and not isinstance(checkpoint, ContentRef):
                         checkpoints[name] = (
                             tuple(
                                 (key, candidate.reference.request_id)
@@ -792,6 +800,22 @@ class JobService(PlanJobReader):
                     items[name] = item
                     assert item.job is not None
                     runs[name] = item.job.data | {"request_id": node.request_id}
+            synthesis_predecessors = set()
+            for name, (producer, request) in synthesized.items():
+                candidate_name = plan_attempt_key(producer) if producer is not None else None
+                candidate = items.get(candidate_name) if candidate_name is not None else None
+                anchor = self._product_anchor(project, store, request, candidate)
+                item = items[name]
+                assert item.job is not None
+                if anchor is None:
+                    items[name] = _rejected(name, "cannot_run /inputs/subject: run the selected Synthesize first.")
+                    runs.pop(name)
+                else:
+                    items[name] = replace(item, job=replace(item.job, edges=(Edge(anchor),)))
+                    if candidate is not None:
+                        synthesis_predecessors.add(candidate_name)
+            if synthesis_predecessors:
+                order.sort(key=lambda name: name not in synthesis_predecessors)
             record = {
                 "project": project, "continues": None, "runs": runs, "command": command,
                 "actor": actor.model_dump(mode="json"),
@@ -837,6 +861,17 @@ class JobService(PlanJobReader):
     def _checkpoint_producer(self, project: str, root: Path, request: RequestId) -> str | None:
         return self.host.checkpoint_producer(project=project, manifest_root=str(root), request=request)
 
+    def _product_anchor(
+        self, project: str, store: ImmutableArtifactBlobProvider, request: RequestId, candidate: AdmissionItem | None,
+    ) -> str | None:
+        if candidate is not None:
+            return candidate.job.id if candidate.job is not None and candidate.job.request == request else None
+        anchors = cast(list[dict[str, Any]], self.host.jobs(project=project, request=request))
+        return next((job["id"] for job in reversed(anchors) if (
+            job["data"].get("manifest_root") == str(store.root)
+            and (job["state"] in _LIVE_STATES | {"not_chosen"} or (job["state"] == "succeeded" and self._receipt_matches(job)))
+        )), None)
+
     def _light_item(
         self, project: str, plan: ProjectPlan, store: ImmutableArtifactBlobProvider,
         row: PlannedRow, node: PlannedRun | PlannedElement, items: Mapping[str, AdmissionItem],
@@ -870,19 +905,8 @@ class JobService(PlanJobReader):
                 exact_checkpoint = reference.role == "checkpoint" and isinstance(reference.select, BatchMember)
                 if candidate is None and exact_checkpoint:
                     anchor = self._checkpoint_producer(project, store.root, reference.request_id)
-                elif candidate is None:
-                    anchors = cast(list[dict[str, Any]], self.host.jobs(project=project, request=reference.request_id))
-                    anchor = next((job["id"] for job in reversed(anchors) if (
-                        job["data"].get("manifest_root") == str(store.root)
-                        and (job["state"] in _LIVE_STATES | {"not_chosen"} or (
-                            job["state"] == "succeeded" and self._receipt_matches(job)
-                        ))
-                    )), None)
                 else:
-                    anchor = (
-                        candidate.job.id
-                        if candidate.job is not None and candidate.job.request == reference.request_id else None
-                    )
+                    anchor = self._product_anchor(project, store, reference.request_id, candidate)
                 if anchor is None:
                     absent = excluded.get(reference.request_id)
                     if absent is None and not exact_checkpoint:
@@ -968,7 +992,8 @@ class JobService(PlanJobReader):
             manifest_root=root,
             canonical_request=EvaluationRequestBinding(
                 request=store.store_rooted_object(raw, namespace="studio-evaluate-request"),
-                checkpoint=subject if not isinstance(subject, ContentRef) else None,
+                checkpoint=subject if not isinstance(subject, ContentRef) and not is_synthesized_model_product(subject) else None,
+                model=subject if is_synthesized_model_product(subject) else None,
                 initial_model=subject if isinstance(subject, ContentRef) else None,
                 terminal=terminal,
             ),
@@ -1697,7 +1722,8 @@ class JobService(PlanJobReader):
             project_id=project, request_id=request_id, manifest_root=Path(destination.root),
             canonical_request=EvaluationRequestBinding(
                 request=success.request.object,
-                checkpoint=subject if not isinstance(subject, ContentRef) else None,
+                checkpoint=subject if not isinstance(subject, ContentRef) and not is_synthesized_model_product(subject) else None,
+                model=subject if is_synthesized_model_product(subject) else None,
                 initial_model=subject if isinstance(subject, ContentRef) else None,
             ),
         )
@@ -2432,10 +2458,10 @@ def _verify_stored_evaluation(
     manifest, subject = decode_evaluation_manifest(
         store, store.get_object(manifest_object), manifest_object, success.attempt, success.request.id, receipt,
     )
-    if isinstance(subject, ContentRef):
+    if isinstance(subject, ContentRef) or is_synthesized_model_product(subject):
         return _VerifiedEvaluation(
             receipt, states_ref(manifest).content.size, None, "ordinary", manifest_object,
-            trials=_evaluation_trials(manifest), loaded_model=manifest.loaded_model,
+            trials=_evaluation_trials(manifest), loaded_model=manifest.loaded_model, model_origin=manifest.model_origin,
         )
     (bound,) = success.inputs["subject"]
     source = bound.evaluation_subject

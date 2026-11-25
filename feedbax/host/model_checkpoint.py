@@ -17,11 +17,13 @@ from feedbax.compiler.model_assets import model_asset_refs
 from feedbax.contracts.artifact_custody import (
     ArtifactBlobCustodyError,
     ContentObjectRef,
+    ContentRetentionTarget,
     ContentTreeRef,
 )
 from feedbax.contracts.canonical_json import canonical_json_v2_bytes
 from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.loaded_model import ModelSlotFitProblem
+from feedbax.contracts.model_address import FieldElement, ModelAddress
 from feedbax.contracts.method_checkpoint import MethodCheckpointModel
 from feedbax.contracts.model_checkpoint import (
     MODEL_TREE_GRAPH_PATH as _GRAPH,
@@ -57,6 +59,7 @@ from feedbax.persistence.checkpoint_errors import CheckpointCustodyError
 if TYPE_CHECKING:
     from feedbax.component_registry import ComponentRegistry
     from feedbax.contracts.artifact_custody import ArtifactBlobProvider
+    from feedbax.compiler.model_document import LoweredModelDocument
 
 
 
@@ -104,6 +107,16 @@ class SemanticModelWriter:
         templates: Sequence[Graph], replica_ids: tuple[str, ...],
     ) -> MethodCheckpointModel:
         store = ImmutableArtifactBlobProvider(transaction.absolute() / _MODEL_STORE)
+        return self.publish_to(
+            store, models, templates=templates, replica_ids=replica_ids,
+            root_id="checkpoint:model", root_kind="logical-ref",
+        )
+
+    def publish_to(
+        self, store: ImmutableArtifactBlobProvider, models: Sequence[Graph], *,
+        templates: Sequence[Graph], replica_ids: tuple[str, ...], root_id: str,
+        root_kind: Literal["logical-ref", "run"], additional_targets: tuple[ContentRetentionTarget, ...] = (),
+    ) -> MethodCheckpointModel:
         if not len(models) == len(templates) == len(replica_ids) or not replica_ids:
             raise ModelCheckpointError("/model", "models must match a nonempty ordered list of unique replicas")
         graph = effective_model_graph(self.graph, models[0])
@@ -142,7 +155,7 @@ class SemanticModelWriter:
                 raise ModelCheckpointError(path, "model asset bytes differ from the authored reference")
             members[model_tree_asset_path(asset)] = asset
         tree, _ = store.publish_rooted_tree(
-            members, root_id="checkpoint:model", root_kind="logical-ref",
+            members, root_id=root_id, root_kind=root_kind, additional_targets=additional_targets,
         )
         encoding = SemanticModelEncoding(descriptor_sha256=members[_MANIFEST].sha256)
         return MethodCheckpointModel(tree=tree, encoding=encoding)
@@ -203,7 +216,7 @@ class SemanticModelSlot:
 
     def restore(
         self, template: Graph | None = None, *,
-        target: ModelRestoreTarget | None = None, replica_index: int = 0,
+        target: ModelRestoreTarget | None = None, replica_index: int = 0, synthesized: bool = False,
     ) -> Graph:
         """Verify the source slot, then bind compatible retained values to the target."""
         if template is None:
@@ -219,28 +232,34 @@ class SemanticModelSlot:
             )
         except ArrayContainerError as exc:
             raise ModelCheckpointError(path, str(exc)) from exc
-        return _restore_model(self.graph, template, decoded.tensors, decoded.descriptor.metadata, target)
+        return _restore_model(
+            self.graph, template, decoded.tensors, decoded.descriptor.metadata, target, synthesized=synthesized,
+        )
 
     def restore_all(
         self, templates: Sequence[Graph], *,
-        targets: Sequence[ModelRestoreTarget] | None = None,
+        targets: Sequence[ModelRestoreTarget] | None = None, synthesized: bool = False,
     ) -> tuple[Graph, ...]:
         """Restore every replica using templates in checkpoint order."""
         if len(templates) != len(self.replicas) or (targets is not None and len(targets) != len(templates)):
             raise ModelCheckpointError("/model/replicas", "templates do not match the checkpoint replica count")
         return tuple(
-            self.restore(template, target=None if targets is None else targets[index], replica_index=index)
+            self.restore(
+                template, target=None if targets is None else targets[index], replica_index=index, synthesized=synthesized,
+            )
             for index, template in enumerate(templates)
         )
 
 
 def _restore_model(
     graph: GraphSpec, template: Graph, tensors: Mapping[str, jax.Array | np.ndarray],
-    actual: object, target: ModelRestoreTarget | None = None,
+    actual: object, target: ModelRestoreTarget | None = None, *, synthesized: bool = False,
 ) -> Graph:
     expected, declarations = _describe(graph, template)
     if not isinstance(actual, dict):
         raise ModelCheckpointError("/v1/model", "missing value declarations")
+    if synthesized:
+        tensors = _synthesized_precision(expected, tensors, declarations)
     _verify_values(expected, declarations, tensors, actual)
 
     source_leaves = dict(graph_leaf_specs(graph))
@@ -307,6 +326,24 @@ def _restore_model(
     if unexpected := overrides.keys() - applied:
         raise ModelCheckpointError(min(unexpected), "override has no declared scalar source destination")
     return restored.prepare()
+
+
+def _synthesized_precision(expected, tensors, declarations):
+    """Round a 64-bit synthesized array to the consumer's declared 32-bit slot."""
+    adapted = dict(tensors)
+    for address in expected.keys() & tensors.keys():
+        current, saved = expected[address], tensors[address]
+        if (
+            declarations[address]["representation"] != "jax-array" or saved.shape != current.shape
+            or (saved.dtype, current.dtype) != (np.dtype("float64"), np.dtype("float32"))
+        ):
+            continue
+        with np.errstate(over="ignore"):
+            target = np.asarray(saved, dtype=np.float32)
+        if not np.isfinite(target).all():
+            raise ModelCheckpointError(address, "Synthesized parameter is outside the consumer's finite float32 range")
+        adapted[address] = target
+    return adapted
 
 
 def _verify_exact_model(original: Graph, restored: Graph) -> None:
@@ -384,6 +421,59 @@ def model_slot_fit_problems(
         {path: value for path, value in metadata.items() if not path.startswith(excluded)},
     ):
         yield ModelSlotFitProblem(kind=kind, replica=replica, address=address or "/", detail=detail)
+
+
+@dataclass(frozen=True)
+class ModelParameterLayout:
+    """A model's addressable parameters and the semantic model slots that hold them."""
+
+    graph: GraphSpec
+    template: Graph
+    addresses: Mapping[str, str]
+    arrays: Mapping[str, jax.Array | np.ndarray]
+    declarations: Mapping[str, object]
+
+    @classmethod
+    def from_model(cls, lowered: LoweredModelDocument, template: Graph) -> ModelParameterLayout:
+        graph = effective_model_graph(lowered.graph, template)
+        arrays, declarations = _describe(graph, template)
+        addresses = {}
+        for path, node in graph_leaf_specs(graph):
+            owner = template.get_node(path[:-1]) if path[:-1] else template
+            facts = owner.component_bindings[path[-1]].model_facts
+            if facts.is_fixed_configuration(node):
+                continue
+            origin = lowered.source_address(
+                "/graph/" + "/".join((*[token for name in path[:-1] for token in ("subgraphs", name)], "nodes", path[-1])),
+            )
+            for value in facts.values:
+                slot = semantic_key("model", "value", path, value.symbol)
+                if value.kind != "parameter" or slot not in arrays:
+                    continue
+                if origin is None or origin.element.kind != "component":
+                    raise ModelCheckpointError(slot, "Parameter has no authored Model address")
+                address = ModelAddress(composites=origin.composites, element=FieldElement(
+                    kind="field", parent=origin.element, path=("parameters", value.symbol),
+                )).to_text()
+                if address in addresses:
+                    raise ModelCheckpointError(slot, "Multiple parameters resolve to the same Model address")
+                addresses[address] = slot
+        return cls(graph, template, addresses, arrays, declarations)
+
+    def fitting(self, parameters: Mapping[str, jax.Array]) -> tuple[ModelSlotFitProblem, ...]:
+        expected = {address: self.arrays[slot] for address, slot in self.addresses.items()}
+        declarations = {address: self.declarations[slot] for address, slot in self.addresses.items()}
+        return tuple(
+            ModelSlotFitProblem(kind=kind, replica="0", address=address, detail=detail)
+            for kind, address, detail in _value_differences(
+                expected, declarations, parameters, {address: declarations.get(address) for address in parameters},
+            )
+        )
+
+    def apply(self, parameters: Mapping[str, jax.Array]) -> Graph:
+        arrays = dict(self.arrays)
+        arrays.update({self.addresses[address]: array for address, array in parameters.items()})
+        return _restore_model(self.graph, self.template, arrays, self.declarations)
 
 
 def _describe(

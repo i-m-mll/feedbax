@@ -39,7 +39,8 @@ from feedbax.contracts.operation import DatasetPort
 from feedbax.contracts.studio_authoring import InputProducer, InputRole
 from feedbax.contracts.studio_place import StudioTaskStart, path_parts, task_start, variation_targets
 from feedbax.contracts.project import (
-    DifferenceNotApplied, Differences, Document, InlineBase, Payload, Project, RootDocument, Step, StepBase, StepKind,
+    DifferenceNotApplied, Differences, Document, DocumentReference, InlineBase, Payload, Project, RootDocument, Step,
+    StepBase, StepKind,
     apply_differences, base_chain, diff, json_pointer_parts, member_display_name, member_name, nearest_shared_base,
 )
 from feedbax.contracts.run_rule import RuleRefusal, bind_metric_conditions
@@ -139,9 +140,12 @@ from feedbax.contracts.request_refs import (
 from feedbax.contracts.request_specs import (
     DocumentTrainingConfig,
     DocumentTrainingRequestSpec,
+    SynthesisRequestSpec,
     TrainContinuation,
     ReportRequestSpec,
+    TrialDocuments,
 )
+from feedbax.contracts.synthesis import SynthesisStepPayload
 from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, PythonTaskSelection, TaskAdditions, TaskDocument, add_to_task
 from feedbax.contracts.train_settings import normalize_train_method
 
@@ -155,6 +159,7 @@ if TYPE_CHECKING:
     from feedbax.compiler.model_document import LoweredModelDocument
     from feedbax.contracts.expression_registry import FunctionRegistry
     from feedbax.plot.templates import FigureTemplateRegistry
+    from feedbax.synthesis.methods import SynthesisMethodRegistry
 
 
 @cache
@@ -703,7 +708,7 @@ class ProjectPlan:
     @property
     def light_requests(self) -> Mapping[RunKey | ElementKey, PlannedRun | PlannedElement]:
         requests: dict[RunKey | ElementKey, PlannedRun | PlannedElement] = {
-            run.key: run for run in self.runs if run.kind == "report"
+            run.key: run for run in self.runs if run.kind in {"report", "synthesize"}
         }
         requests.update(self.elements)
         return requests
@@ -1405,6 +1410,42 @@ class _PayloadProblems(Exception):
         self.problems = problems
 
 
+def _synthesis_request(
+    payload: Payload, methods: SynthesisMethodRegistry, python_tasks: PythonTaskRegistry,
+) -> SynthesisRequestSpec:
+    from feedbax.tasks.registry import resolve_python_task_instance
+
+    authored = SynthesisStepPayload.model_validate(payload)
+    if not isinstance(authored.model, ModelDocument):
+        raise _PayloadProblems((("model", "Choose a Model document."),))
+    if isinstance(authored.objective, DocumentReference):
+        raise _PayloadProblems((("objective", "Choose an Objective document."),))
+    authored_task = authored.task
+    if isinstance(authored_task, DocumentReference):
+        raise _PayloadProblems((("task", "Choose a Task document."),))
+    if isinstance(authored_task, PythonTaskSelection):
+        resolved = resolve_python_task_instance(authored_task, python_tasks)
+        if isinstance(resolved, tuple):
+            raise _PayloadProblems(tuple(("task", problem.reason) for problem in resolved))
+        documents = TrialDocuments(
+            model=authored.model, task=None, python_task=resolved.selection(), objective=authored.objective,
+        )
+    else:
+        documents = TrialDocuments(model=authored.model, task=authored_task, objective=authored.objective)
+    try:
+        method = methods.resolve(authored.method)
+    except KeyError as error:
+        raise _PayloadProblems((("method", error.args[0]),)) from error
+    try:
+        settings = method.declaration.settings_model.model_validate(authored.settings).model_dump(mode="json")
+    except ValidationError as error:
+        raise _PayloadProblems(tuple(
+            (".".join(("settings", *map(str, failure["loc"]))), failure["msg"])
+            for failure in error.errors(include_url=False, include_input=False)
+        )) from error
+    return SynthesisRequestSpec(trial_documents=documents, method=method.key, settings=settings, target=authored.target)
+
+
 def _encode_row(
     key: RunKey,
     kind: StepKind,
@@ -1423,6 +1464,7 @@ def _encode_row(
     document_pointers: Mapping[str, str] = MappingProxyType({}),
     checkpoint_source: _TrainedSource | None = None,
     components: ComponentRegistry | None = None,
+    synthesis_methods: SynthesisMethodRegistry | None = None,
 ) -> _LoweredRow:
     checkpoint_problem = None
     metric_names = frozenset()
@@ -1492,6 +1534,24 @@ def _encode_row(
                     lowering_stamp,
                 )
             spec = ReportRequestSpec(document=document)
+        elif kind == "synthesize":
+            assert synthesis_methods is not None
+            spec = _synthesis_request(payload, synthesis_methods, python_tasks)
+            documents = spec.trial_documents
+            prepared = prepare_trial(documents)
+            compiled_model = prepared.graph if isinstance(prepared, _TrainPreparation) else None
+            evaluation = prepared.evaluation if isinstance(prepared, _TrainPreparation) else None
+            model_source = _ModelSource(
+                document_ids.get("payload.model"), documents.model,
+                sha256_bytes(to_json(documents.model.model_dump(mode="json"))),
+                evaluation_problem=evaluation if isinstance(evaluation, ProjectDiagnostic) else None,
+                evaluation_graph=compiled_model if isinstance(evaluation, GraphSpec) else None,
+                unpaired=isinstance(prepared, tuple),
+            )
+            if isinstance(prepared, tuple):
+                pairing_problems = _trial_problems(prepared, documents.model)
+            else:
+                checkpoint_problem = prepared.checkpoint_problem
         else:
             spec = request_identity.REQUEST_KINDS[kind].spec_type.model_validate(payload)
         if isinstance(spec, DocumentTrainingRequestSpec):
@@ -1555,7 +1615,7 @@ def _encode_row(
             if checkpoint_problem is None and checkpoint_source is not None:
                 assert components is not None
                 checkpoint_problem = _checkpoint_fit_problem(checkpoint_source, preparation, spec, components)
-        documents = spec.trial_documents if isinstance(spec, DocumentTrainingRequestSpec) else None
+        documents = spec.trial_documents if isinstance(spec, (DocumentTrainingRequestSpec, SynthesisRequestSpec)) else None
         if pairing_problems:
             refusals = pairing_problems
         elif documents is not None and not documents.model.interior.components:
@@ -1637,12 +1697,13 @@ def compiler_authority(
     functions: FunctionRegistry | None, python_tasks: PythonTaskRegistry | None,
     training_methods: TrainingMethodRegistry | None,
     figure_templates: FigureTemplateRegistry | None,
+    synthesis_methods: SynthesisMethodRegistry | None = None,
 ) -> tuple[object, ...]:
     """Identify the compiler code and registries whose output a memoized plan depends on."""
     return (
         compose_step, StepTemplate.resolve, expand_sweep, source_shape, tuple(_ROLES.items()),
         request_identity.request_codec_authority(), components, operations, functions, python_tasks, training_methods,
-        figure_templates,
+        figure_templates, synthesis_methods,
     )
 
 
@@ -1660,6 +1721,7 @@ class _Compiler:
         python_tasks: PythonTaskRegistry,
         training_methods: TrainingMethodRegistry | None = None,
         figure_templates: FigureTemplateRegistry | None = None,
+        synthesis_methods: SynthesisMethodRegistry | None = None,
         capture_sources: bool = False,
     ):
         self.project = project
@@ -1671,6 +1733,7 @@ class _Compiler:
         self.functions = functions
         self.python_tasks = python_tasks
         self.training_methods = training_methods
+        self.synthesis_methods = synthesis_methods
         self.source_sweeps: dict[tuple[str, str], SourceSweep] | None = {} if capture_sources else None
         self.variant_sites: dict[str, bool] = {}
         self.source_variants: frozenset[str] = frozenset()
@@ -2527,6 +2590,7 @@ class _Compiler:
                 prepared_train=prepared_train, remember_train=remember_train,
                 training_methods=self.training_methods, previous=previous,
                 checkpoint_source=checkpoint_source, components=self.components or _builtin_model_registry(),
+                synthesis_methods=self.synthesis_methods,
             )
             return replace(
                 lowered,
@@ -2682,10 +2746,10 @@ class _Compiler:
 
         if not isinstance(slots, dict) or slots.keys() - {"model", "task"}:
             return problem("payload.trial_documents", "An Evaluate reads a Model and a Task document.")
-        train = self.evaluation_train(reference) if isinstance(reference, ProductRef) else None
-        if train is None or model_source is None:
+        documents_read = self.evaluation_source_documents(reference) if isinstance(reference, ProductRef) else None
+        if documents_read is None or model_source is None:
             path = EVALUATION_MODEL if "model" in slots else EVALUATION_TASK
-            return problem(path, "Requires a trained subject.")
+            return problem(path, "Requires a step that produced a Model.")
         model = None
         if "model" in slots:
             name = document_ids.get(EVALUATION_MODEL)
@@ -2713,7 +2777,7 @@ class _Compiler:
             if not isinstance(params, dict):
                 return problem("payload.params", "Declare rollout parameters.")
             authored = model_source.trial.task if model_source.trial is not None else None
-            inherited = authored or train.trial_documents.task_source
+            inherited = authored or documents_read.task_source
             selected = slots.get("task")
             if "task" not in slots:
                 if not isinstance(inherited, TaskDocument):
@@ -2965,8 +3029,8 @@ class _Compiler:
             or model_source is None or model_source.evaluation_graph is None
         ):
             return payload
-        train = self.evaluation_train(reference)
-        if train is None:
+        source_documents = self.evaluation_source_documents(reference)
+        if source_documents is None:
             return payload
         raw = payload.get("params")
         if not isinstance(raw, dict):
@@ -2976,7 +3040,7 @@ class _Compiler:
             if "trial_set" not in raw or "trials" in raw:
                 raise ValueError("Declare a trial-set rule for managed Evaluate.")
             settings = authored_rollout_settings(raw)
-            documents = train.trial_documents
+            documents = source_documents
             authored = model_source.trial
             if authored is not None and isinstance(authored.task, TaskDocument):
                 documents = documents.model_copy(update={"task": authored.task, "input_bindings": authored.input_bindings})
@@ -3026,9 +3090,9 @@ class _Compiler:
                 resolved = documents.resolved_signal_bindings(
                     {signal.name: signal.id for signal in signals}, settings.input_bindings,
                 )
-                runtime_task = resolve_evaluation_task(train.trial_documents.task_source, settings.variation)
+                runtime_task = resolve_evaluation_task(source_documents.task_source, settings.variation)
                 runtime_signals = runtime_task.signals if isinstance(runtime_task, TaskDocument) else signals
-                runtime = train.trial_documents.resolved_signal_bindings({
+                runtime = source_documents.resolved_signal_bindings({
                     signal.name: signal.id for signal in runtime_signals
                 })
                 overrides = {key: value for key, value in resolved.items() if key not in runtime or runtime[key] != value}
@@ -3050,13 +3114,13 @@ class _Compiler:
                 row=key.row, variant=key.variant,
             )
 
-    def evaluation_train(self, reference: ProductRef) -> DocumentTrainingRequestSpec | None:
+    def evaluation_source_documents(self, reference: ProductRef) -> TrialDocuments | None:
         if (terminal := self.terminal_sources.get(reference.request_id)) is not None:
-            return terminal.train
+            return terminal.train.trial_documents
         if (source := self.requests.get(reference.request_id)) is None:
             return None
-        train = request_identity.decode_request(source, self.documents.__getitem__).spec
-        return train if isinstance(train, DocumentTrainingRequestSpec) else None
+        producer = request_identity.decode_request(source, self.documents.__getitem__).spec
+        return producer.trial_documents if isinstance(producer, (DocumentTrainingRequestSpec, SynthesisRequestSpec)) else None
 
     def lower_evaluate_model(
         self, key: RunKey, payload: Payload, model_source: _ModelSource | None, reference: object,
@@ -3085,13 +3149,12 @@ class _Compiler:
                 raise ValueError("Attachment differences require a rollout Evaluate with an authored Train Model")
             if not isinstance(reference, ProductRef):
                 raise ValueError("Attachment differences require a planned Train subject")
-            train = self.evaluation_train(reference)
-            if train is None:
-                raise ValueError("Attachment differences require a Train request")
+            documents = self.evaluation_source_documents(reference)
+            if documents is None:
+                raise ValueError("Attachment differences require a model-producing request")
             if model_source is None:
                 raise ValueError("Attachment differences need a saved Model document")
             components = self.components or _builtin_model_registry()
-            documents = train.trial_documents
             evaluated = model_source.model
             if model is not None:
                 try:
@@ -3170,7 +3233,7 @@ class _Compiler:
         self.steps[variant, name] = step
         wanted = self.wanted_sources.get((variant, name), set())
         role = _ROLES.get(kind)
-        if (role is None and kind not in ("analyze", "report")) or (kind == "analyze" and self.operations is None):
+        if (role is None and kind not in ("analyze", "report", "synthesize")) or (kind == "analyze" and self.operations is None):
             self.diagnostics.append(
                 ProjectDiagnostic(
                     ResolutionCode.UNSUPPORTED_PLAN,
@@ -3200,6 +3263,29 @@ class _Compiler:
             return self.compile_report_step(variant, name, template, active)
         if kind == "analyze":
             return self.compile_analyze_step(variant, name, template, active)
+        if kind == "synthesize":
+            if template.inputs:
+                self.diagnostics.append(ProjectDiagnostic(
+                    ResolutionCode.BAD_REFERENCE, "inputs", "Synthesize reads Model, Task and Objective documents.",
+                    name, variant=variant,
+                ))
+                return ()
+            rows = self.expand_rows(variant, name, template, {})
+            if isinstance(rows, ProjectDiagnostic):
+                self.diagnostics.append(rows)
+                return ()
+            result = []
+            for row in rows:
+                key = RunKey(variant, name, row.id)
+                self.rows[key] = PlannedRow(
+                    key, kind, row.label, MappingProxyType(deepcopy(dict(row.coordinates))),
+                    axis_keys=MappingProxyType(dict(row.axis_value_ids)), input_axes=MappingProxyType(dict(row.input_axes)),
+                )
+                definition = self.select_definition(template, key, row, {})
+                lowered = self.lower_row(template, key, row, kind, {}, template.row_basis, definition, None)
+                if (run := self.record_run(key, lowered, {}, {}, template.requires)) is not None:
+                    result.append(run)
+            return tuple(result)
         assert role is not None
         initial = "model" in role.documents and isinstance(
             template.inputs.get(role.name), (InitialModelReference, LoadedModelReference),
@@ -3326,7 +3412,9 @@ class _Compiler:
                     name, row=row.id, variant=variant,
                 ))
                 continue
-            if kind == "evaluate" and chosen is not None and isinstance(chosen.member.reference, ProductRef):
+            if kind == "evaluate" and chosen is not None and isinstance(chosen.member.reference, ProductRef) and (
+                chosen.member.reference.role == "checkpoint"
+            ):
                 reference = chosen.member.reference
                 selector = self.checkpoint_selector(variant, name, row, chosen, subject, has_checkpoint_axis)
                 if isinstance(selector, ProjectDiagnostic):
@@ -3498,13 +3586,17 @@ class _Compiler:
         evaluated = None
         if row.kind == "evaluate" and (subject := inputs.get("subject")) is not None and subject.producer is not None:
             own = lowered.document_ids
-            trained = self.rows[subject.producer].document_ids
-            if (named := own.get(EVALUATION_MODEL)) is not None and (model := trained.get(EVALUATION_MODEL)) is not None:
+            producer = self.rows[subject.producer]
+            upstream = producer.document_ids
+            if producer.kind == "synthesize":
+                upstream = {f"payload.trial_documents.{name}": document for name in ("model", "task")
+                            if (document := upstream.get(f"payload.{name}")) is not None}
+            if (named := own.get(EVALUATION_MODEL)) is not None and (model := upstream.get(EVALUATION_MODEL)) is not None:
                 evaluated = named, model
             slots = {EVALUATION_MODEL: (EVALUATION_MODEL,), EVALUATION_TASK: (EVALUATION_TASK, "payload.trial_documents.python_task")}
             inherited = {
-                path: trained[path] for slot, paths in slots.items() if slot not in own
-                for path in paths if path in trained
+                path: upstream[path] for slot, paths in slots.items() if slot not in own
+                for path in paths if path in upstream
             }
             followed = frozenset(inherited.values()) - lowered.document_uses
             lowered = replace(
@@ -4167,6 +4259,8 @@ class _Compiler:
                     f"measured member variants outside reference scope: {outside!r}", name,
                 )
         runs: tuple[PlannedRow, ...] = ()
+        accepted = {producer.kind: producer.product for producer in role.producers}
+        product_roles: set[str] = set()
         for source_variant in variants:
             target = source_variant, reference.step
             if target in active:
@@ -4174,16 +4268,28 @@ class _Compiler:
                 return ProjectDiagnostic(ResolutionCode.STEP_CYCLE, path, chain, name)
             project = self.variants.get(source_variant)
             producer = project.steps.get(reference.step) if project is not None else None
-            if producer is None or producer.kind != role.producer_kind:
+            if producer is None or producer.kind not in accepted:
                 label = member_name(project.steps if project is not None else self.project.steps, reference.step)
                 return ProjectDiagnostic(
                     ResolutionCode.BAD_REFERENCE,
                     path,
-                    f"{source_variant}/{label} must be a {role.producer_kind} step",
+                    f"{source_variant}/{label} must be a {' or '.join(accepted)} step",
                     name,
                 )
+            product_roles.add(accepted[producer.kind])
             self.step(*target, active)
             runs += self.step_rows(*target)
+        if len(product_roles) != 1:
+            return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, "The selected steps publish different products.", name)
+        product_role, = product_roles
+        if product_role == "model" and (
+            reference.checkpoint is not None or role.name == "subject" and template.sweep is not None and any(
+                isinstance(axis, CheckpointRuleAxis) for axis in template.sweep.axes.values()
+            )
+        ):
+            return ProjectDiagnostic(
+                ResolutionCode.BAD_REFERENCE, f"{path}.checkpoint", "Synthesize publishes one model without checkpoints.", name,
+            )
         candidate_count = len(runs)
 
         def member_key(run: PlannedRow) -> str:
@@ -4223,6 +4329,10 @@ class _Compiler:
             self.diagnostics.extend(map(rule_problem, problems[1:]))
             return rule_problem(problems[0])
         self.diagnostics.extend(map(rule_problem, problems))
+        if product_role == "model" and (best is not None or conditions):
+            return ProjectDiagnostic(
+                ResolutionCode.BAD_REFERENCE, f"{path}.where", "Metric conditions and Best require a Train step.", name,
+            )
         expands_input = template.sweep is not None and any(
             isinstance(axis, InputAxis) and axis.input == role.name
             for axis in template.sweep.axes.values()
@@ -4289,7 +4399,7 @@ class _Compiler:
                 ))
                 continue
             for request, element in requests:
-                product = ProductRef(request_id=request, role=role.product_role, select=selector)
+                product = ProductRef(request_id=request, role=product_role, select=selector)
                 if conditions:
                     assert terms is not None
                     product = ConditionalProduct(
@@ -4356,6 +4466,7 @@ def compile_project(
     python_tasks: PythonTaskRegistry | None = None,
     training_methods: TrainingMethodRegistry | None = None,
     figure_templates: FigureTemplateRegistry | None = None,
+    synthesis_methods: SynthesisMethodRegistry | None = None,
     capture_sources: bool = False,
 ) -> ProjectPlan:
     """Plan static requests and value sources with the supplied declaration registries."""
@@ -4364,6 +4475,8 @@ def compile_project(
     if training_methods is None and any(step.kind == "train" for step in project.steps.values()):
 
         training_methods = load_application().bundle.training_methods
+    if synthesis_methods is None and any(step.kind == "synthesize" for step in project.steps.values()):
+        synthesis_methods = load_application().bundle.synthesis_methods
     readers = replace(
         readers,
         external=cache(readers.external) if readers.external is not None else None,
@@ -4377,16 +4490,20 @@ def compile_project(
         return _Compiler(
             project, readers, source_runs, operations=operations, components=components,
             functions=functions, python_tasks=python_tasks, figure_templates=figure_templates, training_methods=training_methods,
-            capture_sources=capture_sources,
+            synthesis_methods=synthesis_methods, capture_sources=capture_sources,
         ).plan()
-    authority = compiler_authority(components, operations, functions, python_tasks, training_methods, figure_templates)
+    authority = compiler_authority(
+        components, operations, functions, python_tasks, training_methods, figure_templates, synthesis_methods,
+    )
     ticket, previous = memo._begin(authority)
     compiler = _Compiler(
         project, readers, source_runs, previous, operations, components, functions, python_tasks=python_tasks,
-        training_methods=training_methods, figure_templates=figure_templates,
+        training_methods=training_methods, figure_templates=figure_templates, synthesis_methods=synthesis_methods,
     )
     plan = compiler.plan()
-    if authority == compiler_authority(components, operations, functions, python_tasks, training_methods, figure_templates):
+    if authority == compiler_authority(
+        components, operations, functions, python_tasks, training_methods, figure_templates, synthesis_methods,
+    ):
         memo._publish(ticket, authority, compiler.work)
     return plan
 

@@ -81,7 +81,7 @@ def run_operation(
 
     model = None
     if model_member is not None:
-        from feedbax.persistence.model_input import checkpoint_model_source
+        from feedbax.persistence.model_input import model_product_source
         from feedbax.host.model_input import prepare_model_task, reconstruct_model
 
         if model_member.content.media_type == INITIAL_MODEL_MEDIA_TYPE:
@@ -96,7 +96,7 @@ def run_operation(
                 tree=imported.weights, encoding=imported.encoding, initial=InitialModelSource(document=pinned),
             )
         else:
-            source = checkpoint_model_source(model_member, artifacts=artifacts)
+            source = model_product_source(model_member, artifacts=artifacts)
         if task_source is None:
             model = reconstruct_model(source, registry=registry, artifacts=artifacts)
         else:
