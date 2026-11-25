@@ -220,7 +220,7 @@ function useSceneDetail({ editor, activeView, sceneTrial, checkpoints, elements,
   model: StoredModel | undefined, scope: string, projectId: string, revision: string): ManagedProjectDetail {
   const visible = activeView === 'scene';
   const source = model && visible ? { document_id: model.id, revision } : null;
-  const { picked, possible, frame, task, trails, failure } = sceneTrial;
+  const { picked, possible, frame, task, trails, failure, mean } = sceneTrial;
   const recorded = useMemo(() => picked && recordedStates(picked), [picked]);
   const poses = useMemo(() => recorded ? [picked!.inits, ...recorded] : [picked?.inits ?? noStateValues], [picked, recorded]);
   const geometry = useSceneGeometry(projectId, source, poses);
@@ -233,8 +233,8 @@ function useSceneDetail({ editor, activeView, sceneTrial, checkpoints, elements,
   const onCameraChange = (value: SceneCamera) => setCamera({ scope: sceneScope, value });
   const hiddenLayers = layerState?.scope === sceneScope ? layerState.value : shownLayers;
   const scene = useMemo(() => posed?.kind === 'ready' ? trialScene({
-    posed: posed.geometry, rest: rest?.kind === 'ready' ? rest.geometry : undefined, task, picked, possible, frame, trails,
-  }) : null, [posed, rest, task, picked, possible, frame, trails]);
+    posed: posed.geometry, rest: rest?.kind === 'ready' ? rest.geometry : undefined, task, picked, possible, frame, trails, mean,
+  }) : null, [posed, rest, task, picked, possible, frame, trails, mean]);
   const view: SceneView = failure ?? (!posed ? { kind: 'empty' }
     : posed.kind === 'failed' ? {
       kind: 'failed', issue: studioRegionIssue('scene', posed.error),

@@ -1,8 +1,8 @@
 import { expect, test } from './fixtures/studio';
 import type { Locator, Page } from '@playwright/test';
-import type { StudioJobSubmission } from '../../src/generated/studioContracts';
+import type { StudioJobSubmission, StudioTrialReplayResponse, TrialMean } from '../../src/generated/studioContracts';
 import { fixture, mapStep, runProjectFixture, seedManagedProject } from './fixtures/canonicalTrain';
-import { trialPicker } from './fixtures/controls';
+import { pick, trialPicker } from './fixtures/controls';
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -113,7 +113,7 @@ test('All on a Done evaluation draws every trial\'s path, the picked one heavier
   await expect(trialPicker(page)).toHaveText('trial 1 of 8');
   await footer(page).getByRole('button', { name: 'Shelf', exact: true }).click();
   const shelf = page.getByRole('region', { name: 'Shelf', exact: true });
-  await shelf.getByRole('group', { name: 'Trials', exact: true }).getByRole('button', { name: 'All', exact: true }).click();
+  await footer(page).getByRole('group', { name: 'Trials', exact: true }).getByRole('button', { name: 'All', exact: true }).click();
   await expect(trialPicker(page)).toHaveText('8 trials');
   const tracks = scene(page).locator('[data-scene-track]');
   await expect(tracks).toHaveCount(8);
@@ -122,4 +122,64 @@ test('All on a Done evaluation draws every trial\'s path, the picked one heavier
   await shelf.getByRole('button', { name: 'Trails', exact: true }).click();
   await expect.poll(() => tracks.evaluateAll((lines) => (lines as SVGPolylineElement[]).map((line) => line.points.numberOfItems)))
     .toEqual(Array(8).fill(1));
+});
+
+/** The next evaluate-replay reply that answers a Mean request for `align`, with its request. */
+const meanReply = (page: Page, align: string | null) => page.waitForResponse((response) => {
+  if (new URL(response.url()).pathname.split('/').at(-1) !== 'evaluate-replay') return false;
+  const body = response.request().postDataJSON() as { mean?: { align?: string | null } | null };
+  return !!body.mean && (body.mean.align ?? null) === align;
+}).then(async (response) => ({ request: response.request().postDataJSON(), reply: await response.json() as StudioTrialReplayResponse }));
+
+/** Each condition's distinct world-frame mean paths, as the Scene draws them once each. */
+const meanPathCount = (mean: TrialMean) => mean.conditions
+  .reduce((count, condition) => count + new Set(Object.values(condition.states).map(({ mean }) => JSON.stringify(mean))).size, 0);
+
+// Catches Mean that does not reach the Service's Mean, a Scene that draws no mean path or spread per condition or
+// still poses the mechanism, a clock that stays on the trial's own time rather than Align's, a mean path that is not
+// the mean of the trials aligned to Align's epoch, and By that does not change the conditions.
+test('Mean by condition aligned to an epoch draws one mean path with its spread per condition, on time from that epoch', { tag: '@round' }, async ({ page, studio }) => {
+  test.setTimeout(80_000);
+  await doneEvaluationScene(page, studio.home, 'seed-mean-conditions', 'scene-mean');
+  const clock = footer(page).getByRole('group', { name: 'Clock', exact: true });
+  const opened = meanReply(page, null);
+  await clock.getByRole('group', { name: 'Trials', exact: true }).getByRole('button', { name: 'Mean', exact: true }).click();
+  const { reply: first } = await opened;
+  const options = first.mean_options!;
+  const epoch = options.align.at(-1)!;
+  const aligned = meanReply(page, epoch.id);
+  await pick(clock.getByRole('combobox', { name: 'Align', exact: true }), epoch.label);
+  const { reply } = await aligned;
+  const mean = reply.mean!;
+  expect(mean.conditions.length).toBeGreaterThan(1);
+  await expect(scene(page).locator('[data-scene-mean]')).toHaveCount(meanPathCount(mean));
+  await expect(scene(page).locator('[data-scene-spread]')).toHaveCount(meanPathCount(mean));
+  await expect(scene(page).locator('[data-scene-layer="bodies"]')).toHaveCount(0);
+  await expect(scene(page).locator('[data-scene-rest] > *')).not.toHaveCount(0);
+  const start = Math.min(...mean.conditions.map(({ span }) => span!.start));
+  expect(start).toBeLessThan(0);
+  await expect(footer(page).getByRole('slider', { name: 'Playback Position' })).toHaveAttribute('min', String(start));
+  await footer(page).getByRole('button', { name: 'Shelf', exact: true }).click();
+  const epochs = page.getByRole('region', { name: 'Shelf', exact: true }).getByRole('group', { name: 'Epochs', exact: true });
+  await expect(epochs.getByRole('button', { name: epoch.label, exact: true })).toHaveAttribute('data-start', '0');
+
+  if (reply.drawn.kind !== 'trials') throw new Error('Mean answered without the trials.');
+  const records = new Map(reply.drawn.trials.map((record) => [record.id, record]));
+  const [address, summary] = Object.entries(mean.conditions[0].states)[0];
+  const at = mean.conditions[0].time.findIndex((time) => Math.abs(time) < 1e-9);
+  const samples = Object.entries(mean.conditions[0].trials).map(([id, { origin }]) => {
+    const frame = reply.state_time.findIndex((time) => Math.abs(time - origin) < 1e-9);
+    return records.get(id)!.states![address].samples[frame] as number[];
+  });
+  const reference = [0, 1].map((axis) => samples.reduce((sum, sample) => sum + sample[axis], 0) / samples.length);
+  expect(summary.mean[at][0]).toBeCloseTo(reference[0], 9);
+  expect(summary.mean[at][1]).toBeCloseTo(reference[1], 9);
+
+  const pooled = page.waitForResponse((response) => new URL(response.url()).pathname.endsWith('/evaluate-replay') &&
+    (response.request().postDataJSON() as { mean?: { by?: string[] } }).mean?.by?.length === 0);
+  await clock.getByRole('button', { name: /^By / }).click();
+  for (const { label } of options.by) await page.getByRole('menuitemcheckbox', { name: label, exact: true }).click();
+  const pooledMean = (await (await pooled).json() as StudioTrialReplayResponse).mean!;
+  expect(pooledMean.conditions).toHaveLength(1);
+  await expect(scene(page).locator('[data-scene-mean]')).toHaveCount(meanPathCount(pooledMean));
 });
