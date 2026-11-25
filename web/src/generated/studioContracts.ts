@@ -608,7 +608,7 @@ export interface DelayAttachment {
   kind: "delay";
   id: string;
   delay: ModelTime | UnresolvedValue;
-  initial_source?: DelayInitialValue | DelayInitialTask | DelayInitialWire;
+  initial_source?: ModelSignalSource;
 }
 
 export interface DelayInitialTask {
@@ -618,7 +618,7 @@ export interface DelayInitialTask {
 
 export interface DelayInitialValue {
   kind: "value";
-  value: number | UnresolvedValue;
+  value: number | number[] | UnresolvedValue;
 }
 
 export interface DelayInitialWire {
@@ -635,7 +635,7 @@ export interface InterventionAttachment {
   kind: "intervention";
   id: string;
   operation: string;
-  fields?: Record<string, JsonValue>;
+  operands?: Record<string, ModelSignalSource>;
   window?: Window | null;
 }
 
@@ -3542,6 +3542,8 @@ export type ModelProductKey = {
   "row": string;
 };
 
+export type ModelSignalSource = DelayInitialValue | DelayInitialTask | DelayInitialWire;
+
 export type ModelSlotFitProblem = {
   "kind": "missing_slot" | "unexpected_slot" | "mismatched_slot";
   "replica": string;
@@ -3937,6 +3939,7 @@ export type ScopedValue = {
   "type": ValueType;
   "level": Level;
   "list_count"?: number | null;
+  "set_entry"?: SetVariableOrigin | null;
 };
 
 export type SelectedAxisValue = {
@@ -4066,6 +4069,14 @@ export type SetVariableMarker = {
   "op": "set_variable_marker";
   "id": string;
   "marker": Marker | null;
+};
+
+export type SetVariableOrigin = {
+  "step": string;
+  "axis": string;
+  "set": string;
+  "entry": string;
+  "variable": string;
 };
 
 export type Sha256 = string;
@@ -7211,7 +7222,7 @@ export const DelayAttachmentSchema: z.ZodType<DelayAttachment> = z.lazy(() =>
       "kind": z.literal("delay"),
       "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
       "delay": z.union([ModelTimeSchema, UnresolvedValueSchema]),
-      "initial_source": z.union([DelayInitialValueSchema, DelayInitialTaskSchema, DelayInitialWireSchema]).optional(),
+      "initial_source": ModelSignalSourceSchema.optional(),
     })
     .strict()
 ) as unknown as z.ZodType<DelayAttachment>;
@@ -7229,7 +7240,7 @@ export const DelayInitialValueSchema: z.ZodType<DelayInitialValue> = z.lazy(() =
   z
     .object({
       "kind": z.literal("value"),
-      "value": z.union([z.number().finite(), UnresolvedValueSchema]),
+      "value": z.union([z.number().finite(), z.array(z.number().finite()), UnresolvedValueSchema]),
     })
     .strict()
 ) as unknown as z.ZodType<DelayInitialValue>;
@@ -7258,7 +7269,7 @@ export const InterventionAttachmentSchema: z.ZodType<InterventionAttachment> = z
       "kind": z.literal("intervention"),
       "id": z.string().regex(new RegExp("^[A-Za-z0-9_-]+$")),
       "operation": z.string(),
-      "fields": z.record(z.string(), jsonValueSchema).optional(),
+      "operands": z.record(z.string(), ModelSignalSourceSchema).optional(),
       "window": WindowSchema.nullable().optional(),
     })
     .strict()
@@ -12005,6 +12016,10 @@ export const ModelProductKeySchema: z.ZodType<ModelProductKey> = z.lazy(() =>
   }).strict()
 ) as unknown as z.ZodType<ModelProductKey>;
 
+export const ModelSignalSourceSchema: z.ZodType<ModelSignalSource> = z.lazy(() =>
+  z.union([DelayInitialValueSchema, DelayInitialTaskSchema, DelayInitialWireSchema])
+) as unknown as z.ZodType<ModelSignalSource>;
+
 export const ModelSlotFitProblemSchema: z.ZodType<ModelSlotFitProblem> = z.lazy(() =>
   z.object({
     "kind": z.union([z.literal("missing_slot"), z.literal("unexpected_slot"), z.literal("mismatched_slot")]),
@@ -12539,6 +12554,7 @@ export const ScopedValueSchema: z.ZodType<ScopedValue> = z.lazy(() =>
     "type": ValueTypeSchema,
     "level": LevelSchema,
     "list_count": z.union([z.number().int().safe().gt(0), z.null()]).optional(),
+    "set_entry": z.union([SetVariableOriginSchema, z.null()]).optional(),
   }).strict()
 ) as unknown as z.ZodType<ScopedValue>;
 
@@ -12714,6 +12730,16 @@ export const SetVariableMarkerSchema: z.ZodType<SetVariableMarker> = z.lazy(() =
     "marker": z.union([MarkerSchema, z.null()]),
   }).strict()
 ) as unknown as z.ZodType<SetVariableMarker>;
+
+export const SetVariableOriginSchema: z.ZodType<SetVariableOrigin> = z.lazy(() =>
+  z.object({
+    "step": z.string(),
+    "axis": z.string(),
+    "set": z.string(),
+    "entry": z.string(),
+    "variable": z.string(),
+  }).strict()
+) as unknown as z.ZodType<SetVariableOrigin>;
 
 export const Sha256Schema: z.ZodType<Sha256> = z.lazy(() =>
   z.string().regex(new RegExp("^[a-f0-9]{64}$"))

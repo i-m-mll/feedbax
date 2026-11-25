@@ -96,7 +96,7 @@ def test_noncontiguous_group_preserves_rollout_and_gradient(delay, initial_value
     boundary = {"owner": "inputs", "port": "signal"}
     source_wire = _wire(boundary, _end("a", "input"), [
         {"kind": "delay", "id": "delay", "delay": delay, "initial_source": {"kind": "value", "value": initial_value}},
-        {"kind": "intervention", "id": "scale", "operation": "Scale", "fields": {"factor": 3.0}},
+        {"kind": "intervention", "id": "scale", "operation": "Scale", "operands": {"factor": {"kind": "value", "value": 3.0}}},
     ])
     model = ModelDocument.model_validate({
         "step_seconds": 0.01,
@@ -271,7 +271,7 @@ def test_intervention_window_field_edits_and_sweeps_in_the_authored_unit(tmp_pat
     raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
     model = raw["documents"]["point-mass"]["payload"]
     pulse = {
-        "kind": "intervention", "id": "pulse", "operation": "add", "fields": {"value": [0.5, 0.0]},
+        "kind": "intervention", "id": "pulse", "operation": "add", "operands": {"value": {"kind": "value", "value": [0.5, 0.0]}},
         "window": {"spans": [{
             "kind": "interval", "start": {"anchor": {"kind": "trial", "edge": "start"}},
             "end": {"offset": {"value": 2, "unit": "st"}},
@@ -303,10 +303,10 @@ def test_intervention_window_field_edits_and_sweeps_in_the_authored_unit(tmp_pat
         fields = {tuple(field["address"]["element"]["path"]): field for field in response.json()["fields"]}
         offset = fields["window", "spans", 0, "start", "offset"]
         assert offset["text"] == "0 st" and offset["can_sweep"]
-        assert fields["fields", "value"]["structure"]["value"]["function"] == "vector"
-        edit = {"address": offset["address"], "edit": {"kind": "text", "text": "0.02 s"}}
+        assert fields["operands", "value", "value"]["structure"]["value"]["function"] == "vector"
+        edit = {"address": offset["address"], "edit": {"kind": "text", "text": "0.1 s"}}
         value = client.post(url + "/model/fields", json=body | edit).json()
-        assert value["command"]["operation"]["value"] == {"value": 0.02, "unit": "s"}
+        assert value["command"]["operation"]["value"] == {"value": 0.1, "unit": "s"}
         applied = client.post(url + "/model/edit", json={
             "revision": snapshot["revision"], "presentation_revision": snapshot["presentation_revision"],
             "document": "point-mass", "command": value["command"],
@@ -316,9 +316,9 @@ def test_intervention_window_field_edits_and_sweeps_in_the_authored_unit(tmp_pat
         body["revision"] = snapshot["revision"]
         fields = client.post(url + "/model/fields", json=body).json()["fields"]
         shown = next(field for field in fields if field["address"] == offset["address"])
-        assert shown["text"] == "0.02 s" and shown["conversion"] == {"value": 2.0, "unit": "st"}
+        assert shown["text"] == "0.1 s" and shown["conversion"] == {"value": 10.0, "unit": "st"}
         response = client.post(url + "/model/fields", json=body | {
-            "address": offset["address"], "edit": {"kind": "text", "text": "0.02 s, 0.04 s"},
+            "address": offset["address"], "edit": {"kind": "text", "text": "0.1 s, 0.2 s"},
         })
         assert response.status_code == 200, response.text
         prepared = response.json()
@@ -337,7 +337,24 @@ def test_intervention_window_field_edits_and_sweeps_in_the_authored_unit(tmp_pat
             start = attachment.window.spans[0].start.offset
             assert start.unit == "s"
             values.add(start.value)
-        assert values == {0.02, 0.04}
+            body = {
+                "project_id": "window", "revision": saved.json()["revision"], "count": 2,
+                "run": {"variant": run.key.variant, "step": run.key.step, "row": run.key.row},
+            }
+            route = "/api/execution/task-trials/sample"
+            sampled = client.post(route, json=body)
+            assert sampled.status_code == 200, sampled.text
+            draw = sampled.json()
+            address = ModelAddress.model_validate(owner).to_text()
+            first = round(start.value / documents.model.step_seconds)
+            active = [first, first + 1]
+            for trial in draw["drawn"]["trials"]:
+                assert np.flatnonzero(trial["intervention_windows"][address]).tolist() == active
+            batch = client.post(route, json=body | {"aggregate": True})
+            assert batch.status_code == 200, batch.text
+            shares = batch.json()["drawn"]["interventions"][address]
+            assert shares == [float(i in active) for i in range(draw["n_steps"])]
+        assert values == {0.1, 0.2}
 
 
 def test_addressed_field_range_sample_and_row_provenance(tmp_path):
@@ -1398,7 +1415,7 @@ def test_an_evaluate_attachment_for_selected_runs_changes_only_their_request(tmp
     owner = {"composites": ["wrapper", "controller"], "element": {
         "kind": "port", "end": {"owner": "component", "component": "cell", "port": "output", "direction": "output"},
     }}
-    attachment = {"kind": "intervention", "id": "condition", "operation": "Scale", "fields": {"factor": 0.5}}
+    attachment = {"kind": "intervention", "id": "condition", "operation": "Scale", "operands": {"factor": {"kind": "value", "value": 0.5}}}
 
     def edit(client, difference):
         snapshot = folders.read("nested")
@@ -1445,7 +1462,7 @@ _VARIANT_FIELD = "evaluate:86530315779f1c0f14fc177396bae4f98e4f8ceb8a5600d09bd6b
     ({"op": "set_attachment", "difference": {
         "op": "add", "after": None,
         "owner": {"composites": ["wrapper", "controller"], "element": {"kind": "wire", "id": "decode"}},
-        "attachment": {"kind": "intervention", "id": "condition", "operation": "Scale", "fields": {"factor": 0.5}},
+        "attachment": {"kind": "intervention", "id": "condition", "operation": "Scale", "operands": {"factor": {"kind": "value", "value": 0.5}}},
     }}, _VARIANT_WIRE),
     ({"op": "set_field", "address": {"composites": [], "element": {
         "kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"],
@@ -1513,7 +1530,7 @@ def _attachment_owner(wire):
 
 
 def _scale_attachment(identity, factor):
-    return {"kind": "intervention", "id": identity, "operation": "Scale", "fields": {"factor": factor}}
+    return {"kind": "intervention", "id": identity, "operation": "Scale", "operands": {"factor": {"kind": "value", "value": factor}}}
 
 
 def _add_attachment(owner, identity, after, factor=0.5):
