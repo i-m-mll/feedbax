@@ -130,6 +130,7 @@ class ProjectDiagnostic:
     """For ``blocked_input``, the producer row that cannot run."""
     span: TextSpan | None = None
     selection_value: SelectedAxisValueProblem | None = None
+    element_name: str | None = None
 
 
 @dataclass(frozen=True)

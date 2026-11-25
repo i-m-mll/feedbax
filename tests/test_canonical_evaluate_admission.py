@@ -164,7 +164,7 @@ def test_saved_train_to_evaluate_with_paired_conditions(host, tmp_path, monkeypa
         held_until_released(release),
         project=project,
     )
-    admit(host, "gate", gate)
+    admit(host, token("gate"), gate)
     wait_until(lambda: job_row(host, gate.id, "running"))
     (source,) = launch(jobs, (train,), "saved-train").items
     together = launch(jobs, (*keys, copy), "evaluate")

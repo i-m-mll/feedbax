@@ -81,3 +81,33 @@ test('Relate dragged from the hand to the target adds one Objective term and its
   await tab(page, 'Objective').click();
   await expect(table.getByRole('row')).toHaveCount(5);
 });
+
+// Catches a Scene that, while an edit's trial is read again, draws the Model alone (a lone dot without the start or the
+// target) instead of the frame it drew before the edit.
+test('while an edit\'s trial is read again, the Scene keeps drawing the trial it drew', async ({ page, request }) => {
+  const { snapshot } = await seedManagedProject(request, await fixture('ordinary-files', '2'));
+  await page.goto(`/?project=${snapshot.project_id}`);
+  await mapStep(page, 'train').click();
+  await tab(page, 'Scene').click();
+  const canvas = scene(page).getByRole('group', { name: 'Scene', exact: true });
+  await trialPicker(page).click();
+  await page.getByRole('radio', { name: /^sample 2 of \d+$/ }).click();
+  const shown = (name: string) => canvas.getByRole('button', { name: `Select ${name}`, exact: true }).locator('[data-scene-shown]');
+  await expect(shown('target')).toHaveCount(1);
+  const places = canvas.locator('[data-scene-place]');
+  const placed = await places.count();
+
+  const held: (() => Promise<void>)[] = [];
+  await page.route('**/api/execution/task-trials/sample', (route) => { held.push(() => route.continue()); });
+  await scene(page).getByRole('toolbar').getByRole('button', { name: 'Relate', exact: true }).click();
+  await canvas.getByRole('button', { name: 'Relate Point mass', exact: true }).click();
+  await expect.poll(() => held.length).toBeGreaterThan(0);
+  await expect(shown('start')).toHaveCount(1);
+  await expect(shown('target')).toHaveCount(1);
+  await expect(places).toHaveCount(placed);
+
+  await Promise.all(held.map((release) => release()));
+  await page.unroute('**/api/execution/task-trials/sample');
+  await expect(places).toHaveCount(placed + 1);
+  await expect(shown('target')).toHaveCount(1);
+});
