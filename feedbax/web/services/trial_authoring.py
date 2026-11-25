@@ -4,6 +4,7 @@
 from collections.abc import Iterator
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
+from uuid import uuid4
 
 from feedbax.execution.trial_resolution import TrialPair, compile_unpaired_task, pair_trial_source
 from feedbax.contracts.expression_values import (
@@ -1590,7 +1591,7 @@ def trial_authoring(
         if not _held_problems(problem.path, projected.problems)
     ]
     return StudioTrialAuthoring(
-        revision=snapshot.revision, run=body.run, model=model_document,
+        revision=snapshot.revision, run=body.run, expression_context=uuid4().hex, model=model_document,
         task_document=definition.document_ids.get(task_path) if task_path else None,
         objective_document=objective_document,
         task=task, objective=documents.objective, objective_source=objective_source,

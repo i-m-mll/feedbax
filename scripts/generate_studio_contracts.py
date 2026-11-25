@@ -451,7 +451,8 @@ from feedbax.contracts.request_specs import DocumentTrainingConfig, SynthesisReq
 from feedbax.contracts.synthesis import SynthesisStepPayload
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.studio_trials import (
-    StudioRelatePoint, StudioRelatePort, StudioTrialAuthoring, StudioTrialAuthoringRequest, StudioTrialRelate,
+    StudioRelatePoint, StudioRelatePort, StudioTrialAuthoring, StudioTrialAuthoringRequest,
+    StudioTrialExpressionMenuRequest, StudioTrialRelate,
 )
 from feedbax.contracts.studio_checkpoint_rule import StudioCheckpointRuleEdit, StudioCheckpointRuleRequest
 from feedbax.contracts.studio_subset import (
@@ -542,6 +543,7 @@ AUTHORED_CONTRACT_MODELS = (
     StudioLoadedModelImportResult,
     StudioTrialAuthoring,
     StudioTrialAuthoringRequest,
+    StudioTrialExpressionMenuRequest,
     StudioTrialRelate,
     StudioRelatePoint,
     StudioRelatePort,
