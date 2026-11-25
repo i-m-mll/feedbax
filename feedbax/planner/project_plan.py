@@ -3035,7 +3035,7 @@ class _Compiler:
         from feedbax.project_model_selection import matched_task_inputs, model_task_signals
         from feedbax.compiler.graph_schema import validate_graph_connection_schema
         from feedbax.contracts.rollout import CannotRun
-        from feedbax.training.evaluation_variant import resolve_evaluation_variant
+        from feedbax.training.evaluation_variant import resolve_evaluation_task, resolve_evaluation_variant
 
         address = None
         document = model_source.document if model_source is not None else None
@@ -3071,28 +3071,36 @@ class _Compiler:
                     )
                 except ValueError as error:
                     return _model_difference_problem(key, model.document, None, str(error), path=EVALUATION_MODEL)
+            raw_params = payload["params"]
+            params = authored_rollout_settings(raw_params)
+            prior = params.variation
+            if isinstance(prior, dict):
+                prior = tuple(prior[name] for name in sorted(prior))
+            source_task = documents.task_source
+            chosen_task = resolve_evaluation_task(source_task, prior)
             try:
-                before, lowered, derived = lower_evaluate_attachments(
+                attached = lower_evaluate_attachments(
                     model_source.model, evaluated, None, components, differences, functions=self.functions,
+                    trained_task=source_task if isinstance(source_task, TaskDocument) else None,
+                    evaluated_task=chosen_task if isinstance(chosen_task, TaskDocument) else None,
                 )
             except ValueError as error:
                 if model is not None and not isinstance(error, ModelCompilationProblem):
                     address = _refused_difference(model, model_source.model, components, self.functions)
                 raise
-            raw_params = payload["params"]
-            params = authored_rollout_settings(raw_params)
-            if not derived:
+            if not attached.edits and (attached.task is None or attached.task == chosen_task):
                 return stripped
-            prior = params.variation
-            if isinstance(prior, dict):
-                prior = tuple(prior[name] for name in sorted(prior))
-            variation = (*prior, *derived)
+            variation = (*prior, *attached.edits)
+            if attached.task is not None and attached.task != chosen_task:
+                variation = (*variation, OverridePatch(
+                    path="task", op="replace", value=attached.task.model_dump(mode="json"),
+                ))
             effective = resolve_evaluation_variant(
-                before.graph, documents.task_source, variation, components=components,
+                attached.before.graph, source_task, variation, components=components,
             )
             signals = model_task_signals(effective.task, self.python_tasks)
-            bound = matched_task_inputs(evaluated, signals, documents.input_bindings | params.input_bindings)
-            prototypes = model_input_prototypes(effective.graph, evaluated, {
+            bound = matched_task_inputs(attached.model, signals, documents.input_bindings | params.input_bindings)
+            prototypes = model_input_prototypes(effective.graph, attached.model, {
                 port.name: signal.type for port, signal in bound
             })
             resolution = resolve_graph_parameters(effective.graph, prototypes, components, allow_incomplete=True)
@@ -3101,7 +3109,7 @@ class _Compiler:
             )
             if issue := next((issue for issue in issues if issue.severity == "error"), None):
                 issue_path = (issue.location or {}).get("path", "/graph")
-                address = lowered.source_address(issue_path) or address
+                address = attached.after.source_address(issue_path) or address
                 raise ValueError(issue.message)
             return stripped | {"params": raw_params | {
                 "variation": [edit.model_dump(mode="json", exclude_unset=True) for edit in variation],
