@@ -20,6 +20,25 @@ test('the start page stays until a project is opened from its row, and makes non
   await expect(page.getByRole('tree', { name: 'Steps', exact: true })).toBeVisible();
 });
 
+// Catches a project window with no way back to the project list: its name in the title bar and Projects in the command
+// palette both open the start page.
+test('the project\'s name and the palette\'s Projects return to the start page', async ({ page, studio }) => {
+  const project: string = JSON.parse(await runProjectFixture('web.e2e.studio.fixtures.canonical_evaluate', 'seed', studio.home, 'switch'));
+  const start = page.getByRole('dialog', { name: 'Studio', exact: true });
+  const steps = page.getByRole('tree', { name: 'Steps', exact: true });
+  await page.goto(`/?project=${project}`);
+  await expect(steps).toBeVisible();
+  await page.getByRole('banner').getByRole('heading', { level: 1 }).getByRole('button').click();
+  await expect(start.getByRole('table', { name: 'Projects', exact: true })).toBeVisible();
+
+  await page.goBack();
+  await expect(steps).toBeVisible();
+  await page.getByRole('button', { name: 'Command Palette', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Command Palette', exact: true }).getByRole('combobox').fill('project');
+  await page.keyboard.press('Enter');
+  await expect(start.getByRole('table', { name: 'Projects', exact: true })).toBeVisible();
+});
+
 test('an example makes a named copy that opens, and Delete removes a filtered row', async ({ page, request }) => {
   const listed = async () => (await (await request.get('/api/projects')).json() as StudioProjectList).projects;
   await page.goto('/');
