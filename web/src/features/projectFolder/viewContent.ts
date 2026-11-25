@@ -6,7 +6,7 @@ import type { ModelDocument, StudioProjectWindowMapProblem } from '@/generated/s
 export const viewsByKind = {
   train: ['runs', 'model', 'task', 'objective', 'training', 'scene', 'results'],
   evaluate: ['runs', 'model', 'task', 'objective', 'scene', 'results'],
-  analyze: ['runs', 'analysis', 'figures'],
+  analyze: ['runs', 'analysis', 'figures', 'results'],
   report: ['runs', 'document'],
 } as const satisfies Record<PlanStepView['kind'], readonly ProjectWindowView[]>;
 
@@ -28,7 +28,8 @@ export interface ViewSubject {
   readonly scenePlaces: boolean | undefined;
   /** Why the focused run cannot run. */
   readonly runProblems: readonly StudioProjectWindowMapProblem[];
-  /** Whether the Results have something to show: a focused run's results, or the plan's read failed. */
+  /** Whether the Results have something to show: a focused run's results or its operations' products, or the plan's
+   * read failed. */
   readonly results: boolean;
   /** Whether the step holds a report document. */
   readonly report: boolean;
