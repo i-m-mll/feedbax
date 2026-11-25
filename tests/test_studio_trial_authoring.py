@@ -1191,7 +1191,9 @@ def test_until_authoring_switches_and_refuses_a_limit_that_rounds_to_zero(tmp_pa
         assert offered.task.epochs[0].end.kind == "until"
         assert offered.epochs[0].steps.least == 0
         assert offered.epochs[0].steps.greatest == offered.epochs[0].steps.nominal == 30
-        assert {field.path for field in offered.fields} >= {f"{end}/condition", f"{end}/limit"}
+        fields = {field.path: field for field in offered.fields}
+        assert f"{end}/condition" in fields
+        assert fields[f"{end}/limit"].conversion.model_dump() == {"value": 30, "unit": "st"}
         response = client.patch(f"/api/projects/{project}", json={
             "revision": revision, "files": [file.model_dump(mode="json") for file in offered.files],
         })

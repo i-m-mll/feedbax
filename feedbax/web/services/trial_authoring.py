@@ -301,7 +301,7 @@ def _expression_edit(change, documents, projection, bundle):
         return StudioTrialDocumentEdit(kind=role, edits=_end_edits(
             raw, end, "until", {"condition": value.model_dump(mode="json"), "limit": limit.model_dump(mode="json")},
         ))
-    if role == "task" and rest[:1] == ["epochs"] and tuple(rest[2:]) == ("end", "limit"):
+    if _epoch_end_field((role, *rest), "limit"):
         limit = _until_limit(text, site, bundle, documents, (role, *rest))
         if isinstance(limit, tuple):
             return limit
@@ -339,6 +339,10 @@ def _until_limit(text, site, bundle, documents, path):
         except ValueError as error:
             return (Problem(code=ProblemCode.STRUCTURE, reason=str(error), path=path),)
     return limit
+
+
+def _epoch_end_field(path: tuple[str | int, ...], field: str) -> bool:
+    return path[:2] == ("task", "epochs") and path[3:] == ("end", field)
 
 
 def _end_of(document, role, rest) -> str | None:
@@ -1162,7 +1166,10 @@ def _trial_fields(path, site: Site, expression, functions, sweep, row, problems,
             return [view.model_copy(update={
                 "site": projection, "problems": _field_problems(path, site, view.text, functions, problems),
             })]
-    projection = projection.model_copy(update={"kinds": tuple(kind for kind in projection.kinds if kind != FieldKind.SWEEP)})
+    if _epoch_end_field(path, "limit"):
+        projection = projection.model_copy(update={"kinds": (FieldKind.VALUE,), "functions": (), "parts": ()})
+    else:
+        projection = projection.model_copy(update={"kinds": tuple(kind for kind in projection.kinds if kind != FieldKind.SWEEP)})
     printed = site.model_copy(update={"names": (*site.names, *(
         ScopedValue(id=reference, name=reference, type=ValueType(base=ValueBase.REAL), level=Level.RUN)
         for reference in sorted(missing)
@@ -1319,7 +1326,7 @@ def trial_authoring(
         if document is None:
             return None
         raw_path = tuple(map(str, path[1:]))
-        if path[0] == "task" and path[1:2] == ("epochs",) and path[3:] == ("end", "limit"):
+        if _epoch_end_field(path, "limit"):
             stored_limit = at(document, raw_path)
             if isinstance(stored_limit, TimeValue):
                 return LiteralValue(value=stored_limit.value, unit=stored_limit.unit)
@@ -1330,7 +1337,7 @@ def trial_authoring(
         return found
 
     def sweep(path, site, label):
-        if paired is None or path[0] == "task" and path[1:2] == ("epochs",) and path[3:] == ("end", "limit"):
+        if paired is None or _epoch_end_field(path, "limit"):
             return None
         return _field_sweep(project, plan, key, definition, path, site, label)
 
@@ -1341,7 +1348,7 @@ def trial_authoring(
         if path[1:2] == ("validation_trials",):
             continue
         value = expression(path)
-        if path[0] == "task" and path[1:2] == ("epochs",) and path[3:] == ("end", "condition") and value is None:
+        if _epoch_end_field(path, "condition") and value is None:
             continue
         fields.extend(_trial_fields(
             path, site, value, bundle.expression_functions, sweep, row, projected.problems, output_paths, period,
