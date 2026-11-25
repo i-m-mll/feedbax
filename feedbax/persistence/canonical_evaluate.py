@@ -32,7 +32,7 @@ from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.contracts.project_sources import pointer
 from feedbax.contracts.request_identity import DecodedRequest, decode_request
 from feedbax.contracts.request_refs import (
-    BatchMember, BatchSetMember, BestRank, ContentRef, LastMember, ProductRef, UpdateSeriesMember,
+    BatchMember, BatchSetMember, BestRank, ConditionalProduct, ContentRef, LastMember, ProductRef, UpdateSeriesMember,
     is_synthesized_model_product,
 )
 from feedbax.contracts.request_specs import EvaluationRequestSpec
@@ -68,7 +68,7 @@ type EvaluationSubject = ProductRef | BestRank | ContentRef
 
 class EvaluationRequestBinding(StrictModel):
     request: ContentObjectRef
-    checkpoint: ProductRef | BestRank | None = Field(default=None, exclude_if=lambda value: value is None)
+    checkpoint: ConditionalProduct | ProductRef | BestRank | None = Field(default=None, exclude_if=lambda value: value is None)
     initial_model: ContentRef | None = Field(default=None, exclude_if=lambda value: value is None)
     model: ProductRef | None = Field(default=None, exclude_if=lambda value: value is None)
     terminal: TerminalTrainSubject | None = Field(default=None, exclude_if=lambda value: value is None)

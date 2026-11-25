@@ -84,12 +84,23 @@ class ValueType(ValueRecord):
         )
 
 
+class SetVariableOrigin(ValueRecord):
+    """The entry and original variable behind a projected Task variable."""
+
+    step: str
+    axis: str
+    set: str
+    entry: str
+    variable: str
+
+
 class ScopedValue(ValueRecord):
     id: Annotated[str, Field(min_length=1)]
     name: Annotated[str, Field(min_length=1)]
     type: ValueType
     level: Level
     list_count: Annotated[StrictInt, Field(gt=0)] | None = None
+    set_entry: SetVariableOrigin | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class Site(ValueRecord):

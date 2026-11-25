@@ -1,13 +1,14 @@
 """Project and prepare edits for one saved trial pairing."""
 
 
+from collections.abc import Iterator
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 
 from feedbax.execution.trial_resolution import TrialPair, compile_unpaired_task, pair_trial_source
 from feedbax.contracts.expression_values import (
-    Level, LiteralValue, Problem, ProblemCode, ScopedValue, Site, SweepList, SweepRange, SweepSample, UnresolvedValue,
-    ValueBase, ValueType,
+    Level, LiteralValue, Problem, ProblemCode, ScopedValue, Site, SweepList, SweepRange, SweepSample, TextSpan, UnresolvedValue,
+    SetVariableOrigin, ValueBase, ValueType,
 )
 from feedbax.tasks.document import TrialSource, zero
 from feedbax.tasks.registry import resolve_python_task_instance
@@ -17,21 +18,26 @@ from feedbax.contracts.matrix_core import stored_parts
 from feedbax.contracts.studio_scope import StoreKind
 from feedbax.compiler.model_reset import ModelResetField
 from feedbax.compiler.model_signals import model_measure_scope
+from feedbax.compiler.set_fields import entry_variable_id, rename_entry_references
+from feedbax.compiler.set_fields import resolve_trial_set_condition, trial_set_condition_site
 from feedbax.contracts.model_address import ModelAddress
 from feedbax.contracts.model_edit import AxisValueRuns, ListedRuns, VariantRuns
 from feedbax.contracts.model_attachment import MODEL_ATTACHMENTS, MODEL_DIFFERENCE_BATCHES
 from feedbax.compiler.model_attachment import resolve_effective_model
 from feedbax.contracts.project import (
-    LoadedModelDocument, RemoveProjectValue, SetProjectValue, apply_document_edits, json_pointer_parts, member_name,
+    LoadedModelDocument, Project, RemoveProjectValue, SetProjectValue, apply_document_edits, json_pointer_parts, member_name,
 )
 from feedbax.contracts.loaded_model import LOADED_MODEL_SCHEMA_ID
-from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode, compose_document, resolve_step
-from feedbax.planner.project_plan import EVALUATION_TASK, RunKey, compile_project, own_task_variation
+from feedbax.contracts.project_resolution import ProjectDiagnostic, ResolutionCode, compose_document, compose_step, resolve_step
+from feedbax.contracts.project_sweep import SetAxis
+from feedbax.contracts.set_document import SetEntry, read_set
+from feedbax.planner.project_plan import EVALUATION_TASK, PlannedRow, PlannedRun, RunKey, compile_project, own_task_variation
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_specs import DocumentTrainingConfig, DocumentTrainingRequestSpec, EvaluationRequestSpec
 from feedbax.contracts.rollout import ROLLOUT_TYPE, authored_rollout_settings
 from feedbax.contracts.project_sources import ValueSource, pointer
 from feedbax.contracts.studio_project import AuthoredFileAddress, StudioProjectFilePatch
+from feedbax.contracts.studio_sets import SetEntryTask
 from feedbax.contracts.studio_place import task_start_path
 from feedbax.studio.authoring import training_document_choice
 from feedbax.training.evaluation_variant import resolve_evaluation_variant
@@ -44,15 +50,16 @@ from feedbax.contracts.studio_trials import (
     StudioTrialStructureEdit,
 )
 from feedbax.contracts.task_document import (
-    PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, Length, PythonTaskSelection, TaskDocument,
+    PYTHON_TASK_SCHEMA_ID, TASK_DOCUMENT_SCHEMA_ID, Length, PythonTaskSelection, TaskDocument, Variable,
 )
 from feedbax.contracts.model_document import MODEL_DOCUMENT_SCHEMA_ID, ModelDocument
 from feedbax.contracts.time_units import TimeValue, length_steps
 from feedbax.contracts.objective_document import OBJECTIVE_DOCUMENT_SCHEMA_ID, ObjectiveDocument, ObjectiveTerm
+from feedbax.contracts.graph import GraphSpec
 from feedbax.contracts.training import TrialDocuments
 from feedbax.contracts.trial_bindings import selected_signal_id
 from feedbax.contracts.window import WindowPosition, store_window_offset, window_offset_expression, window_offset_sites
-from feedbax.contracts.expression_check import references
+from feedbax.contracts.expression_check import check, references
 from feedbax.contracts.expression_site import FieldKind, project_site, read_field
 from feedbax.contracts.expression_text import parse, print_field, resolve_expression
 from feedbax.studio.value_structure import value_structure
@@ -61,7 +68,7 @@ from feedbax.application.bundle import ApplicationRegistryBundle
 from feedbax.web.services.authored_scope import edited_authored_rows
 from feedbax.web.services.evaluate_sources import evaluate_subject, evaluate_value_source
 from feedbax.web.services.project_folder import ProjectFolderInvalid, ProjectFolderService
-from feedbax.web.services.set_authoring import trial_set_fields
+from feedbax.web.services.set_authoring import prepare_set_entry_task, trial_set_fields
 from feedbax.web.services.store_choice import EditStore, all_readers_store, choose_store
 from feedbax.studio.selection import StoredEdit
 from feedbax.studio.numeric_fields import project_numeric_field, time_conversion
@@ -70,7 +77,7 @@ from feedbax.web.services.trial_fields import (
     site_expression, trial_field_sweep, trial_field_sweep_edit, trial_time_use,
 )
 from feedbax.web.services.trial_scope import (
-    authored_payload, base_value_edits, changed_from_base, document_write, evaluation_document_write, lit_steps, preview_stored, scoped_file,
+    authored_payload, base_value_edits, changed_from_base, document_write, evaluation_document_write, file_value, lit_steps, preview_stored, scoped_file,
     reached_steps, selected_runs, source_value_file, variant_view,
 )
 
@@ -275,13 +282,23 @@ def _field_document(documents, role):
     return documents.task_source if role == "task" and isinstance(documents.task_source, TaskDocument) else None
 
 
+def _one_expression_problem(path):
+    return (Problem(code=ProblemCode.STRUCTURE, reason="This field takes one expression.", path=path),)
+
+
+def _one_expression(text, site, functions, path):
+    parsed = parse(text, site, functions)
+    value = UnresolvedValue(text=text) if isinstance(parsed, tuple) else parsed.value
+    return _one_expression_problem(path) if isinstance(value, SweepList | SweepRange | SweepSample) else value
+
+
 def _expression_edit(change, documents, projection, bundle):
     role, *rest = json_pointer_parts(change.path)
     site = projection.fields.get((role, *rest))
     document = _field_document(documents, role)
     if site is None or document is None or index_pointer(document.model_dump(mode="json"), tuple(rest[:-1])) is None:
         raise ProjectFolderInvalid("The selected field is unavailable.")
-    one = (Problem(code=ProblemCode.STRUCTURE, reason="This field takes one expression.", path=(role, *rest)),)
+    one = _one_expression_problem((role, *rest))
     if change.edit.kind != "text" or change.edit.value_id is not None:
         return one
     text = change.edit.text
@@ -314,10 +331,9 @@ def _expression_edit(change, documents, projection, bundle):
         return StudioTrialDocumentEdit(kind=role, edits=[SetProjectValue(
             op="replace", path=index_pointer(raw, tuple(rest)), value=limit.model_dump(mode="json"),
         )])
-    parsed = parse(text, site, bundle.expression_functions)
-    value = UnresolvedValue(text=text) if isinstance(parsed, tuple) else parsed.value
-    if isinstance(value, SweepList | SweepRange | SweepSample):
-        return one
+    value = _one_expression(text, site, bundle.expression_functions, (role, *rest))
+    if isinstance(value, tuple):
+        return value
     if window_offset:
         try:
             value = store_window_offset(value)
@@ -623,6 +639,13 @@ def _evaluate_documents(plan, key, definition, bundle):
                         components=bundle.components,
                     )
                     graph, task = lowered.graph, lowered.task
+                    if isinstance(variant.task, TaskDocument) and isinstance(task, TaskDocument):
+                        markers = {variable.id: variable.marker for variable in variant.task.variables}
+                        task = task.model_copy(update={"variables": tuple(
+                            variable.model_copy(update={"marker": markers[variable.id]})
+                            if variable.id in markers and variable.marker != markers[variable.id] else variable
+                            for variable in task.variables
+                        )})
                 params = effective_params
     except ValueError as error:
         return documents, _Projection(
@@ -671,6 +694,118 @@ def _pairing(plan, key, bundle, *, definition=None):
     raise ProjectFolderInvalid("The selected run has no authored trial pairing.")
 
 
+def read_run_trial_sample(
+    folders: ProjectFolderService, project: str, revision: str, key: RunKey, bundle: ApplicationRegistryBundle,
+) -> tuple[TrialDocuments | _InitialTrialDocuments, GraphSpec | None]:
+    """Read the selected run's model and trial inputs, including its effective Set and Evaluate changes."""
+    plan = folders.read_plan(project, revision=revision, source_runs=(key,)).plan
+    definition = _definition(plan, key)
+    run = plan.row(key)
+    if isinstance(run, PlannedRun) and run.kind == "train":
+        spec = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec
+        if isinstance(spec, DocumentTrainingRequestSpec):
+            documents = spec.trial_documents
+            if run.train is not None and run.train.task is not None:
+                documents = _with_task(documents, run.train.task)
+            return documents, None
+    try:
+        documents, _, graph = _pairing(plan, key, bundle, definition=definition)
+    except (ValueError, TypeError, KeyError) as error:
+        raise ProjectFolderInvalid(str(error)) from error
+    return documents, graph
+
+
+def _set_variables(project: Project, key: RunKey, row: PlannedRow | None) -> Iterator[tuple[str, SetVariableOrigin, bool, SetEntry]]:
+    """Yield each visible variable's authored Set origin and entry contents."""
+    if row is None:
+        return
+    template = compose_step(project, key.step)
+    sweep = template.sweep if not isinstance(template, ProjectDiagnostic) else None
+    arms: list[tuple[str, str, tuple[str, ...] | None]] = [
+        (axis, read.set, (row.axis_keys[axis],))
+        for axis, read in (sweep.axes.items() if sweep is not None else ())
+        if isinstance(read, SetAxis) and axis in row.axis_keys
+    ]
+    arms.extend((axis, field.axis.set, None) for axis, field in project.steps[key.step].set_fields.items())
+    for axis, name, selected in arms:
+        try:
+            entries = read_set(project.documents.get, name).entries
+        except ValueError:
+            continue
+        scoped = selected is None
+        for entry in entries if selected is None else selected:
+            source = entries.get(entry)
+            if source is None:
+                continue
+            for variable in source.task_variables:
+                id = entry_variable_id(axis, entry, variable.id) if scoped else variable.id
+                yield id, SetVariableOrigin(
+                    step=key.step, axis=axis, set=name, entry=entry, variable=variable.id,
+                ), scoped, source
+
+
+def _set_variable_edit(project, plan, key, path, change):
+    if path[:2] != ("task", "variables") or len(path) != 4 or path[-1] != "value":
+        return None
+    choices = [(origin, scoped, source) for id, origin, scoped, source in _set_variables(project, key, plan.row(key))
+               if id == path[2]]
+    if len(choices) > 1:
+        raise ProjectFolderInvalid("The variable belongs to more than one selected Set entry.")
+    if not choices:
+        return None
+    [(origin, scoped, source)] = choices
+    (edit,) = change.edits
+    assert isinstance(edit, SetProjectValue)
+    refs = {entry_variable_id(origin.axis, origin.entry, variable.id): variable.id for variable in source.task_variables}
+    value = rename_entry_references(edit.value, refs) if scoped else edit.value
+    variables = tuple(
+        Variable.model_validate(variable.model_dump(mode="json") | {"value": value})
+        if variable.id == origin.variable else variable for variable in source.task_variables
+    )
+    return origin.set, scoped, SetEntryTask(
+        kind="set_entry_task", step=key.step, axis=origin.axis, entry=origin.entry, task_variables=variables,
+    )
+
+def _set_condition_site(definition, projection):
+    task = definition.payload.get("trial_documents", {}).get("task")
+    if task is None:
+        return trial_set_condition_site(())
+    resolved = {variable.id: variable for variable in projection.variables}
+    return trial_set_condition_site(tuple(
+        resolved.get(variable.id) or ScopedValue(id=variable.id, name=variable.name, type=variable.type, level=Level.TRIAL)
+        for variable in TaskDocument.model_validate(task).variables
+    ))
+
+
+def _set_condition_edit(expression, path, body, folders, project, settled, key, bundle, definition, projection):
+    step = project.steps[key.step]
+    if step.kind != "train" or len(path) != 3 or path[-1] != "condition" or path[1] not in step.set_fields:
+        raise ProjectFolderInvalid("The selected Set condition is unavailable.")
+    edit = expression.edit
+    if edit.kind != "text" or edit.value_id is not None:
+        return StoredEdit([]), _one_expression_problem(path), None
+    field = step.set_fields[path[1]]
+    address = AuthoredFileAddress(kind="step", id=key.step)
+    if edit.text.strip():
+        site = _set_condition_site(definition, projection)
+        condition = _one_expression(edit.text, site, bundle.expression_functions, path)
+        if isinstance(condition, tuple):
+            return StoredEdit([]), condition, None
+        if condition == field.condition:
+            return StoredEdit([]), (), None
+        raw = step.model_dump(mode="json", by_alias=True, exclude_unset=True)
+        file = file_value(address, raw, path, condition.model_dump(mode="json"))
+    elif field.condition is not None:
+        file = StudioProjectFilePatch(address=address, patches=[RemoveProjectValue(op="remove", path=pointer(path))])
+    else:
+        return StoredEdit([]), (), None
+    selected = selected_runs(settled.plan, key, body.scope or StudioTrialStepScope(kind="step"))
+    return _validate_files(
+        body, project, settled, key, selected, folders, bundle,
+        [("whole_step", "Whole Step", key.step, StoredEdit([file]))], edited_rows=edited_authored_rows,
+    )
+
+
 def _prepare_edits(body, folders, project_id, project, settled, key, bundle, definition, documents, projected, *, change):
     scope = body.scope
     plan = settled.plan
@@ -678,6 +813,8 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, def
     expression = change if isinstance(change, StudioTrialExpressionEdit) else None
     if expression is not None:
         path = json_pointer_parts(expression.path)
+        if path[:1] == ("set_fields",):
+            return _set_condition_edit(expression, path, body, folders, project, settled, key, bundle, definition, projected)
         holder = next((path[:end] for end in range(len(path), 0, -1) if path[:end] in projected.fields), path)
         site = projected.fields.get(holder)
         swept = _field_sweep(project, plan, key, definition, path, site, _field_label(holder)) if (
@@ -707,6 +844,20 @@ def _prepare_edits(body, folders, project_id, project, settled, key, bundle, def
         change = _expression_edit(expression, documents, projected, bundle)
         if not isinstance(change, StudioTrialDocumentEdit):
             return StoredEdit([]), change, None
+        entry = _set_variable_edit(project, plan, key, path, change)
+        if entry is not None:
+            name, scoped, command = entry
+            selection = scope or (
+                StudioTrialStepScope(kind="step") if scoped
+                else AxisValueRuns(kind="axis_value", axis=command.axis, value=command.entry)
+            )
+            selected = selected_runs(plan, key, selection)
+            stored = prepare_set_entry_task(project, name, command)
+            narrowed = prepare_set_entry_task(project, name, command, {run.step for run in selected})
+            candidates = [("set_entry", "Set Entry", name, stored)]
+            if narrowed != stored:
+                candidates.append(("selected_readers", "Selected Readers", name, narrowed))
+            return _validate_files(body, project, settled, key, selected, folders, bundle, candidates)
     structural = isinstance(change, StudioTrialStructureEdit)
     if structural:
         change = _structure_edit(change, documents, definition)
@@ -871,7 +1022,12 @@ def _structure_edit(change, documents, definition) -> StudioTrialDocumentEdit | 
         changed = restructure(changed, each)
         if isinstance(changed, Problem):
             return (changed,)
-    _, raw = _changed_value(documents, definition, "task")
+    if isinstance(documents, _InitialTrialDocuments):
+        raw = definition.input_documents["task"].payload
+    else:
+        raw = (definition.payload.get("trial_documents") or {}).get("task")
+        if raw is None:
+            raw = task.model_dump(mode="json", exclude_unset=True)
     before, after = task.model_dump(mode="json"), changed.model_dump(mode="json")
     edits = [
         SetProjectValue(op="replace" if field in raw else "add", path=pointer((field,)), value=after.get(field, []))
@@ -1046,7 +1202,7 @@ def _resolved_value_files(authored, candidate, pairings, compile_sources, bundle
 
 def _validate_files(
     body, project, settled, key, selected, folders, bundle, candidates,
-    *, preserve=None, controlling=None, other_runs=None,
+    *, preserve=None, controlling=None, other_runs=None, edited_rows=None,
 ):
     """Calculate each store's reach on the authored definitions before preparing its files."""
     possible = {
@@ -1074,7 +1230,7 @@ def _validate_files(
             stored = preserve(stored)
         authored = preview_stored(project, stored)
         after = compile_sources(authored, possible)
-        runs = _changed_runs(before, after)
+        runs = (_changed_runs if edited_rows is None else edited_rows)(before, after)
         value = stored, authored, after
         if kind == "all_readers":
             return all_readers_store(source, runs, value)
@@ -1137,9 +1293,9 @@ def _changed_runs(before, after) -> frozenset[RunKey]:
     def values(plan):
         return {
             row.key: (
-                (definition.payload, definition.input_documents)
+                (definition.payload, definition.input_documents, definition.task_additions)
                 if (definition := plan.selected_definitions.get(row.key)) is not None else None,
-                row.document_ids, row.coordinates,
+                row.document_ids, row.coordinates, row.train,
             )
             for row in plan.rows if row.kind in {"train", "evaluate"} and row.key in authored
         }
@@ -1220,6 +1376,30 @@ def _trial_fields(path, site: Site, expression, functions, sweep, row, problems,
         conversion=time_conversion(expression, period, trial_time_use(path[0], path[1:])),
         problems=marks,
     ), *fields]
+
+
+def _condition_field(placement, site, functions, row):
+    path = "set_fields", placement.axis, "condition"
+    condition = placement.condition
+    problems = ()
+    if condition is not None:
+        parsed = resolve_trial_set_condition(condition, placement.sampling, site, functions)
+        checked = parsed if isinstance(parsed, tuple) else check(parsed.value, site, functions, spans=parsed.spans)
+        if isinstance(checked, tuple):
+            problems = tuple(item.model_copy(update={"path": (*path, *item.path)}) for item in checked)
+        elif row is not None:
+            problems = tuple(
+                Problem(code=ProblemCode.STRUCTURE, reason=item.detail, path=path)
+                for item in row.problems if item.path == pointer(path)
+            )
+    (view,) = _trial_fields(path, site, condition, functions, lambda *_: None, row, problems, {}, None)
+    if view.text and view.problems:
+        span = TextSpan(start=0, end=len(view.text))
+        view = view.model_copy(update={"problems": [
+            item if item.span else item.model_copy(update={"span": span})
+            for item in view.problems
+        ]})
+    return view
 
 
 def _batch_size(kind: str, payload) -> int | None:
@@ -1354,6 +1534,7 @@ def trial_authoring(
     row = next((item for item in plan.rows if item.key == key), None)
     output_paths = {_output_address(port.id).to_text(): (port.name,)
                     for port in documents.model.ports.outputs} | projected.output_paths
+    authored_signals = {signal.id: signal for signal in task.signals} if isinstance(task, TaskDocument) else {}
 
     def expression(path):
         document = _field_document(documents, path[0])
@@ -1366,7 +1547,7 @@ def trial_authoring(
                 return LiteralValue(value=stored_limit.value, unit=stored_limit.unit)
         found = site_expression(document, raw_path)
         if found is None and path[0] == "task" and path[1] == "signals" and path[3:] == ("absent",):
-            signal = next(item for item in document.signals if item.id == path[2])
+            signal = authored_signals[path[2]]
             return zero(signal.type.base, signal.type.shape)
         return found
 
@@ -1381,9 +1562,29 @@ def trial_authoring(
     for path, site in projected.fields.items():
         if path[1:2] == ("validation_trials",):
             continue
+        if path[:2] == ("task", "signals") and path[2] not in authored_signals:
+            continue  # Internal gate and operand signals are not editable Task fields.
         fields.extend(_trial_fields(
             path, site, expression(path), bundle.expression_functions, sweep, row, projected.problems, output_paths, period,
         ))
+    origins = {}
+    if (
+        task_source is not None and task_source.kind == "trained"
+        and not definition.payload.get("trial_documents", {}).get("task")
+        and (upstream := evaluate_subject(definition)) is not None
+    ):
+        parent = upstream[0]
+        upstream_project = plan.variant_projects[parent.variant]
+        origins.update((id, origin) for id, origin, _, _ in _set_variables(upstream_project, parent, plan.row(parent)))
+    origins.update((id, origin) for id, origin, _, _ in _set_variables(plan.variant_projects[key.variant], key, row))
+    variables = [
+        variable.model_copy(update={"set_entry": origin}) if (origin := origins.get(variable.id)) else variable
+        for variable in projected.variables
+    ]
+    set_fields = trial_set_fields(project, key.step)
+    if set_fields:
+        site = _set_condition_site(definition, projected)
+        fields.extend(_condition_field(placement, site, bundle.expression_functions, row) for placement in set_fields)
     field_problems = [
         problem for field in fields for problem in field.problems
         if not _held_problems(problem.path, projected.problems)
@@ -1398,10 +1599,10 @@ def trial_authoring(
             definition, objective_path,
         )) if objective_source is not None and objective_source.kind == "own" else [],
         task_source=task_source, task_field_sources=task_field_sources,
-        set_fields=trial_set_fields(snapshot.project, key.step),
+        set_fields=set_fields,
         task_types=[StudioTaskType(type=key, label=entry.label, parameter_schema=entry.parameters.model_json_schema())
                     for key in bundle.python_tasks.keys() if (entry := bundle.python_tasks.resolve(key))],
-        variables=list(projected.variables), signals=list(projected.signals), epochs=list(projected.epochs),
+        variables=variables, signals=list(projected.signals), epochs=list(projected.epochs),
         epoch_instances=list(projected.epoch_instances),
         period_seconds=period,
         n_steps=compiled.n_steps if compiled else None,

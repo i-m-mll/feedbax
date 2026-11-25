@@ -29,6 +29,7 @@ from feedbax.contracts.model_checkpoint import (
     MODEL_TREE_GRAPH_PATH as _GRAPH,
     MODEL_TREE_MANIFEST_PATH as _MANIFEST,
     MODEL_TREE_MEDIA_TYPE as MODEL_TREE_MEDIA_TYPE,
+    ModelInputArray,
     ModelReplica,
     ModelReplicaManifest,
     SemanticModelEncoding,
@@ -119,13 +120,14 @@ class SemanticModelWriter:
         if not len(models) == len(templates) == len(replica_ids) or not replica_ids:
             raise ModelCheckpointError("/model", "models must match a nonempty ordered list of unique replicas")
         graph = effective_model_graph(self.graph, models[0])
+        input_arrays = models[0].input_arrays
         members = {
             _GRAPH: store.store_object(canonical_json_v2_bytes(graph.model_dump(mode="json"))),
         }
         replicas = []
         for index, (replica_id, model, template) in enumerate(zip(replica_ids, models, templates, strict=True)):
             path = model_replica_array_path(index)
-            if effective_model_graph(self.graph, model) != graph:
+            if effective_model_graph(self.graph, model) != graph or model.input_arrays != input_arrays:
                 raise ModelCheckpointError(path, "replicas do not share one effective graph")
             arrays, declarations = _describe(graph, model)
             _verify_exact_model(model, _restore_model(graph, template, arrays, declarations))
@@ -138,7 +140,12 @@ class SemanticModelWriter:
                 raise ModelCheckpointError(path, str(exc)) from exc
             members[path] = store.store_object(encoded.data)
             replicas.append(ModelReplica(id=replica_id, array_descriptor_sha256=encoded.descriptor_sha256))
-        manifest = ModelReplicaManifest(replicas=tuple(replicas))
+        manifest = ModelReplicaManifest(
+            replicas=tuple(replicas),
+            input_arrays={
+                port: ModelInputArray(shape=shape, dtype=dtype) for port, (shape, dtype) in input_arrays.items()
+            },
+        )
         members[_MANIFEST] = store.store_object(canonical_json_v2_bytes(manifest.model_dump(mode="json")))
         for path, asset in model_asset_refs(graph):
             if self.assets is None:
@@ -168,6 +175,7 @@ class SemanticModelSlot:
     provider: ImmutableArtifactBlobProvider
     graph: GraphSpec
     replicas: tuple[ModelTreeReplica, ...]
+    input_arrays: dict[str, ModelInputArray]
     encoding: SemanticModelEncoding
     tree: ContentTreeRef
     components: ComponentRegistry
@@ -183,7 +191,7 @@ class SemanticModelSlot:
                 raise ModelCheckpointError("/graph", "graph has an undeclared semantic model owner")
             for path, asset in model.assets:
                 _read(provider, asset, path)
-            return cls(provider, model.graph, model.replicas, encoding, tree, components)
+            return cls(provider, model.graph, model.replicas, model.input_arrays, encoding, tree, components)
         except ModelCheckpointError:
             raise
         except ModelTreeLayoutError as exc:
@@ -198,9 +206,12 @@ class SemanticModelSlot:
     def template(self) -> Graph:
         from feedbax.compiler import GraphDocument, compile_graph
 
+        prototypes = {
+            self.graph.input_bindings[port]: jax.ShapeDtypeStruct(array.shape, array.dtype)
+            for port, array in self.input_arrays.items()
+        }
         return compile_graph(
-            GraphDocument(graph=self.graph), self.components,
-            artifact_provider=self.provider,
+            GraphDocument(graph=self.graph), self.components, prototypes, artifact_provider=self.provider,
         ).graph
 
     def restore(

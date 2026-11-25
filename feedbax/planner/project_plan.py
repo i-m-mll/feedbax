@@ -43,7 +43,7 @@ from feedbax.contracts.project import (
     StepBase, StepKind,
     apply_differences, base_chain, diff, json_pointer_parts, member_display_name, member_name, nearest_shared_base,
 )
-from feedbax.contracts.run_rule import RuleRefusal
+from feedbax.contracts.run_rule import RuleRefusal, bind_metric_conditions
 from feedbax.contracts.expression_text import RuleBest
 from feedbax.contracts.project_inputs import (
     BarrierCheckpoint,
@@ -123,6 +123,7 @@ from feedbax.contracts.request_refs import (
     BestMember,
     BestCandidate,
     BestRank,
+    ConditionalProduct,
     ContentRef,
     InputMember,
     LastMember,
@@ -145,7 +146,7 @@ from feedbax.contracts.request_specs import (
     TrialDocuments,
 )
 from feedbax.contracts.synthesis import SynthesisStepPayload
-from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, PythonTaskSelection, TaskDocument
+from feedbax.contracts.task_document import PYTHON_TASK_SCHEMA_ID, PythonTaskSelection, TaskAdditions, TaskDocument, add_to_task
 from feedbax.contracts.train_settings import normalize_train_method
 
 if TYPE_CHECKING:
@@ -206,8 +207,13 @@ class PlannedSubset:
     document: str | None
     rank_groups: tuple[PlannedRankGroup, ...] = ()
     source: SubsetSource | None = None
+    metric_conditions: Mapping[RunKey, ConditionalProduct] | None = None
     best: RuleBest | None = None
     """The rule's lowest or highest term, which ranks the members once they have run."""
+
+    @property
+    def conditional(self) -> bool:
+        return self.metric_conditions is not None
 
     @property
     def ranks(self) -> tuple[str, ...]:
@@ -446,11 +452,17 @@ class PlannedRun(PlannedRow):
     omissions: Mapping[str, str]
     requires: tuple[str, ...]
     dataset_port: DatasetPort | None = None
+    metric_names: frozenset[str] = frozenset()
 
     @property
     def admission_problem(self) -> RunProblem | None:
         """The reason the run cannot be admitted: the first of its problems."""
         return self.problems[0] if self.problems else None
+
+
+def common_train_metrics(rows: Iterable[PlannedRow]) -> frozenset[str]:
+    names = [row.metric_names for row in rows if isinstance(row, PlannedRun) and row.kind == "train"]
+    return frozenset.intersection(*names) if names else frozenset()
 
 
 @dataclass(frozen=True)
@@ -548,6 +560,7 @@ class SelectedRunDefinition:
     document_problems: tuple[ProjectDiagnostic, ...] = ()
     input_documents: Mapping[str, RootDocument] = field(default_factory=dict)
     pinned_model: ModelDocument | None = None
+    task_additions: tuple[TaskAdditions, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1257,6 +1270,7 @@ class _LoweredRow:
     resolved: bool = True
     pinned_model: ModelDocument | None = None
     dataset_port: DatasetPort | None = None
+    metric_names: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -1348,6 +1362,23 @@ def _trial_problems(
     return tuple(placed)
 
 
+def _set_condition_problems(problems: Iterable[RunProblem], origins: Mapping[str, str]) -> tuple[RunProblem, ...]:
+    """Report generated Task selection Problems on the authored Set condition."""
+    if not origins:
+        return tuple(problems)
+    placed = []
+    reported = set()
+    for problem in problems:
+        parts = json_pointer_parts(problem.path) if problem.path.startswith("/") else ()
+        if len(parts) > 3 and parts[:3] == ("trial_documents", "task", "variables") and (axis := origins.get(parts[3])):
+            if axis not in reported:
+                placed.append(replace(problem, path=pointer(("set_fields", axis, "condition"))))
+                reported.add(axis)
+        else:
+            placed.append(problem)
+    return tuple(placed)
+
+
 def _checkpoint_fit_problem(
     source: _TrainedSource, preparation: _TrainPreparation, spec: DocumentTrainingRequestSpec,
     components: ComponentRegistry,
@@ -1436,6 +1467,7 @@ def _encode_row(
     synthesis_methods: SynthesisMethodRegistry | None = None,
 ) -> _LoweredRow:
     checkpoint_problem = None
+    metric_names = frozenset()
     pairing_problems: tuple[RunProblem, ...] = ()
     preparation: _TrainPreparation | None = None
     if prepared_train is not None:
@@ -1539,7 +1571,8 @@ def _encode_row(
             except KeyError as error:
                 raise _PayloadProblems((("method", error.args[0]),)) from error
             try:
-                spec, _, _ = normalize_train_method(spec, training_methods)
+                spec, method, _ = normalize_train_method(spec, training_methods)
+                metric_names = method.metric_names(spec)
             except ValidationError as error:
                 raise _PayloadProblems(tuple(
                     (".".join(("settings", *map(str, failure["loc"]))), failure["msg"])
@@ -1593,7 +1626,7 @@ def _encode_row(
             refusals = (checkpoint_problem,) if checkpoint_problem is not None else ()
         return _LoweredRow(
             encoded, (), lowering_stamp, problems=refusals,
-            model_source=model_source, encoded_spec=encoded_spec,
+            model_source=model_source, encoded_spec=encoded_spec, metric_names=metric_names,
         )
     return _LoweredRow(
         None,
@@ -2034,8 +2067,9 @@ class _Compiler:
         variant: str,
         name: str,
         composition: StepComposition,
-        members: Mapping[str, _Members],
+        members: Mapping[str, _Members], *, sweep: Sweep | None = None,
     ) -> tuple[ExpandedRow, ...] | ProjectDiagnostic:
+        sweep = sweep if sweep is not None else composition.sweep
         kind = self.variants[variant].steps[name].kind
         checkpoint_axis = kind == "evaluate" and composition.sweep is not None and any(
             isinstance(axis, CheckpointRuleAxis) for axis in composition.sweep.axes.values()
@@ -2157,13 +2191,13 @@ class _Compiler:
                         )
                 exception_matches: dict[str, tuple[str, ...]] = {}
                 rows = expand_sweep(
-                    composition.sweep, inputs=fanout,
+                    sweep, inputs=fanout,
                     integer_site=capture_site if self.source_sweeps is not None else integer_site,
                     checkpoint_subject=kind == "evaluate",
                     exception_matches=exception_matches, sets=sets,
                 )
                 if self.source_sweeps is not None:
-                    axes = composition.sweep.axes if composition.sweep is not None else {}
+                    axes = sweep.axes if sweep is not None else {}
                     roles = {axis.input for axis in axes.values() if isinstance(axis, InputAxis)}
                     if checkpoint_axis:
                         roles.add("subject")
@@ -2190,6 +2224,7 @@ class _Compiler:
                 (variant, name),
                 (
                     composition,
+                    sweep,
                     tuple(subject.stamp if subject is not None else None for subject in subjects),
                     to_json(tuple(
                         (role, tuple(
@@ -2229,25 +2264,28 @@ class _Compiler:
         if not row.task_additions or isinstance(resolved, ProjectDiagnostic):
             return resolved
         raw = resolved.payload.get("trial_documents")
+        explicit = resolved.input_documents.get("task")
         if not isinstance(raw, dict) or "task" not in raw:
-            if project.steps[key.step].kind == "evaluate":
-                return resolved
-            return ProjectDiagnostic(
-                ResolutionCode.INVALID_PAYLOAD, "payload.trial_documents.task",
-                "A Set entry's Task variables and links need a Task document.", key.step, row=key.row, variant=key.variant,
-            )
-        from feedbax.contracts.task_document import add_to_task
-
+            if resolved.kind == "evaluate" and explicit is None:
+                return resolved  # The selected checkpoint supplies the Task later.
+            if explicit is None:
+                return ProjectDiagnostic(
+                    ResolutionCode.INVALID_PAYLOAD, "payload.trial_documents.task",
+                    "A Set entry's Task variables and links need a Task document.", key.step, row=key.row, variant=key.variant,
+                )
+        path = "inputs.task" if explicit is not None else "payload.trial_documents.task"
         try:
-            selected = add_to_task(TaskDocument.model_validate(raw["task"]), row.task_additions)
+            content = explicit.payload if explicit is not None else raw["task"]
+            selected = add_to_task(TaskDocument.model_validate(content), row.task_additions).model_dump(mode="json")
         except ValueError as error:
             return ProjectDiagnostic(
-                ResolutionCode.INVALID_PAYLOAD, "payload.trial_documents.task", str(error),
-                key.step, row=key.row, variant=key.variant,
+                ResolutionCode.INVALID_PAYLOAD, path, str(error), key.step, row=key.row, variant=key.variant,
             )
-        return replace(resolved, payload=resolved.payload | {
-            "trial_documents": raw | {"task": selected.model_dump(mode="json")},
-        })
+        if explicit is not None:
+            return replace(resolved, input_documents=resolved.input_documents | {
+                "task": explicit.model_copy(update={"payload": selected}),
+            })
+        return replace(resolved, payload=resolved.payload | {"trial_documents": raw | {"task": selected}})
 
     def project_definition(
         self,
@@ -2271,7 +2309,7 @@ class _Compiler:
                 resolved.payload, MappingProxyType(sources), MappingProxyType(resolved.document_ids), resolved.document_uses,
                 MappingProxyType(resolved.document_pointers),
                 resolved.document_problems,
-                MappingProxyType(resolved.input_documents),
+                MappingProxyType(resolved.input_documents), task_additions=row.task_additions,
             )
 
         if self.previous is None:
@@ -2439,7 +2477,7 @@ class _Compiler:
             lowering_stamp = (
                 _RowLoweringStamp(kind, sha256_bytes(to_json((
                     payload, tuple(sorted(document_ids.items())), tuple(sorted(document_pointers.items())),
-                    source_stamp, model_lineage,
+                    source_stamp, model_lineage, tuple(entry.model_dump(mode="json") for entry in row.task_additions),
                 ))), member)
                 if basis is not None and not fields else None
             )
@@ -2462,6 +2500,7 @@ class _Compiler:
                     None, (replace(source_problem, step=key.step, row=key.row, variant=key.variant),),
                     lowering_stamp, document_ids=document_ids, document_uses=document_uses,
                 )
+            condition_origins = {}
             if kind == "train":
                 trial = payload.get("trial_documents")
                 if (
@@ -2483,15 +2522,18 @@ class _Compiler:
                     trial = payload["trial_documents"]
                     try:
                         authored_task = TaskDocument.model_validate(trial.get("task"))
-                        model, task = lower_trial_sets(
+                        model, task, condition_origins = lower_trial_sets(
                             authored_model.model, authored_task, fields,
                             reader or self.variants[key.variant].documents.get,
                             self.components or _builtin_model_registry(),
+                            functions=self.functions or _builtin_expression_registry(),
                         )
                     except (SetFieldProblem, ValidationError) as error:
                         if isinstance(error, SetFieldProblem):
                             place = ("set_fields", error.axis)
-                            if error.entry is not None:
+                            if error.condition:
+                                place = (*place, "condition")
+                            elif error.entry is not None:
                                 place = (*place, "entries", error.entry)
                             problem = RunProblem(pointer(place), str(error))
                         else:
@@ -2514,11 +2556,11 @@ class _Compiler:
                 if isinstance(reference, BestRank):
                     assert subject is not None
                     payload = self.lower_best_evaluate(
-                        key, payload, subject, reference, has_differences, document_ids, read,
+                        key, payload, subject, reference, has_differences, document_ids, read, row.task_additions,
                     )
                 else:
                     payload = self.lower_evaluate_payload(
-                        key, payload, model_source, reference, has_differences, document_ids, read,
+                        key, payload, model_source, reference, has_differences, document_ids, read, row.task_additions,
                     )
             if isinstance(payload, ProjectDiagnostic):
                 payload = self.locate_sweep_problem(payload, composition, key, row)
@@ -2558,7 +2600,9 @@ class _Compiler:
                 document_uses=document_uses,
                 model_source=lowered.model_source or authored_model,
                 train=train,
-                problems=self.locate_sweep_run_problems((*refusals, *lowered.problems), composition, key, row),
+                problems=self.locate_sweep_run_problems(
+                    (*refusals, *_set_condition_problems(lowered.problems, condition_origins)), composition, key, row,
+                ),
                 dataset_port=dataset_port,
             )
 
@@ -2655,9 +2699,10 @@ class _Compiler:
         self, key: RunKey, payload: Payload, model_source: _ModelSource | None,
         reference: object, has_differences: bool,
         document_ids: Mapping[str, str], read: Callable[[str], Document | None],
+        task_additions: tuple[TaskAdditions, ...],
     ) -> Payload | ProjectDiagnostic | _EvaluatePayload:
         original = payload.get("params")
-        slots = self.evaluation_slots(key, payload, model_source, reference, document_ids, read)
+        slots = self.evaluation_slots(key, payload, model_source, reference, document_ids, read, task_additions)
         if isinstance(slots, ProjectDiagnostic):
             return slots
         lowered, model, task = slots
@@ -2680,6 +2725,7 @@ class _Compiler:
     def evaluation_slots(
         self, key: RunKey, payload: Payload, model_source: _ModelSource | None, reference: object,
         document_ids: Mapping[str, str], read: Callable[[str], Document | None],
+        task_additions: tuple[TaskAdditions, ...],
     ) -> tuple[Payload, _EvaluationModel | None, bool] | ProjectDiagnostic:
         """Lower an Evaluate step's own Model and Task documents against its subject run's.
 
@@ -2687,9 +2733,9 @@ class _Compiler:
         subject's task. The Model slot becomes the differences of its content from the nearest document it
         shares with the subject run's Model document.
         """
-        if "trial_documents" not in payload:
+        if "trial_documents" not in payload and not task_additions:
             return payload, None, False
-        slots = payload["trial_documents"]
+        slots = payload.get("trial_documents", {})
         payload = {name: value for name, value in payload.items() if name != "trial_documents"}
 
         def problem(path: str, detail: str) -> ProjectDiagnostic:
@@ -2726,15 +2772,30 @@ class _Compiler:
             if differences := diff(base.payload, content):
                 model = _EvaluationModel(name, differences)
         task = False
-        if "task" in slots:
+        if "task" in slots or task_additions:
             params = payload.get("params")
             if not isinstance(params, dict):
                 return problem("payload.params", "Declare rollout parameters.")
+            authored = model_source.trial.task if model_source.trial is not None else None
+            inherited = authored or documents_read.task_source
+            selected = slots.get("task")
+            if "task" not in slots:
+                if not isinstance(inherited, TaskDocument):
+                    return problem(EVALUATION_TASK, "A Set entry's Task variables and links need a Task document.")
+                try:
+                    selected = add_to_task(inherited, task_additions).model_dump(mode="json")
+                except ValueError as error:
+                    return problem(EVALUATION_TASK, str(error))
             try:
-                authored = model_source.trial.task if model_source.trial is not None else None
-                variation = own_task_variation(
-                    authored or documents_read.task_source, slots["task"], params.get("variation", []),
-                )
+                if isinstance(inherited, TaskDocument):
+                    inherited = inherited.without_markers()
+                if isinstance(selected, dict) and isinstance(selected.get("variables"), list) and any(
+                    isinstance(variable, dict) and "marker" in variable for variable in selected["variables"]
+                ):
+                    selected = TaskDocument.model_validate(selected).without_markers().model_dump(
+                        mode="json", exclude_unset=True,
+                    )
+                variation = own_task_variation(inherited, selected, params.get("variation", []))
             except ValueError as error:
                 return problem("payload.params.variation", str(error))
             if variation is not None:
@@ -2902,6 +2963,7 @@ class _Compiler:
     def lower_best_evaluate(
         self, key: RunKey, payload: Payload, subject: PlannedInput, rank: BestRank, has_differences: bool,
         document_ids: Mapping[str, str], read: Callable[[str], Document | None],
+        task_additions: tuple[TaskAdditions, ...],
     ) -> Payload | ProjectDiagnostic | _EvaluatePayload:
         def problem(detail: str) -> ProjectDiagnostic:
             return ProjectDiagnostic(
@@ -2923,7 +2985,7 @@ class _Compiler:
             if refusal := _authored_graph_variation_problem(key, payload):
                 return refusal
             lowered = self.lower_evaluate_payload(
-                key, payload, model, candidate.reference, has_differences, document_ids, read,
+                key, payload, model, candidate.reference, has_differences, document_ids, read, task_additions,
             )
             if isinstance(lowered, ProjectDiagnostic):
                 return replace(lowered, detail=f"Best candidate {name}: {lowered.detail}")
@@ -3070,7 +3132,7 @@ class _Compiler:
         from feedbax.project_model_selection import matched_task_inputs, model_task_signals
         from feedbax.compiler.graph_schema import validate_graph_connection_schema
         from feedbax.contracts.rollout import CannotRun
-        from feedbax.training.evaluation_variant import resolve_evaluation_variant
+        from feedbax.training.evaluation_variant import resolve_evaluation_task, resolve_evaluation_variant
 
         address = None
         document = model_source.document if model_source is not None else None
@@ -3105,28 +3167,36 @@ class _Compiler:
                     )
                 except ValueError as error:
                     return _model_difference_problem(key, model.document, None, str(error), path=EVALUATION_MODEL)
+            raw_params = payload["params"]
+            params = authored_rollout_settings(raw_params)
+            prior = params.variation
+            if isinstance(prior, dict):
+                prior = tuple(prior[name] for name in sorted(prior))
+            source_task = documents.task_source
+            chosen_task = resolve_evaluation_task(source_task, prior)
             try:
-                before, lowered, derived = lower_evaluate_attachments(
+                attached = lower_evaluate_attachments(
                     model_source.model, evaluated, None, components, differences, functions=self.functions,
+                    trained_task=source_task if isinstance(source_task, TaskDocument) else None,
+                    evaluated_task=chosen_task if isinstance(chosen_task, TaskDocument) else None,
                 )
             except ValueError as error:
                 if model is not None and not isinstance(error, ModelCompilationProblem):
                     address = _refused_difference(model, model_source.model, components, self.functions)
                 raise
-            raw_params = payload["params"]
-            params = authored_rollout_settings(raw_params)
-            if not derived:
+            if not attached.edits and (attached.task is None or attached.task == chosen_task):
                 return stripped
-            prior = params.variation
-            if isinstance(prior, dict):
-                prior = tuple(prior[name] for name in sorted(prior))
-            variation = (*prior, *derived)
+            variation = (*prior, *attached.edits)
+            if attached.task is not None and attached.task != chosen_task:
+                variation = (*variation, OverridePatch(
+                    path="task", op="replace", value=attached.task.model_dump(mode="json"),
+                ))
             effective = resolve_evaluation_variant(
-                before.graph, documents.task_source, variation, components=components,
+                attached.before.graph, source_task, variation, components=components,
             )
             signals = model_task_signals(effective.task, self.python_tasks)
-            bound = matched_task_inputs(evaluated, signals, documents.input_bindings | params.input_bindings)
-            prototypes = model_input_prototypes(effective.graph, evaluated, {
+            bound = matched_task_inputs(attached.model, signals, documents.input_bindings | params.input_bindings)
+            prototypes = model_input_prototypes(effective.graph, attached.model, {
                 port.name: signal.type for port, signal in bound
             })
             resolution = resolve_graph_parameters(effective.graph, prototypes, components, allow_incomplete=True)
@@ -3135,7 +3205,7 @@ class _Compiler:
             )
             if issue := next((issue for issue in issues if issue.severity == "error"), None):
                 issue_path = (issue.location or {}).get("path", "/graph")
-                address = lowered.source_address(issue_path) or address
+                address = attached.after.source_address(issue_path) or address
                 raise ValueError(issue.message)
             return stripped | {"params": raw_params | {
                 "variation": [edit.model_dump(mode="json", exclude_unset=True) for edit in variation],
@@ -3246,7 +3316,16 @@ class _Compiler:
             isinstance(axis, CheckpointRuleAxis) for axis in sweep.axes.values()
         )
         paired_step = _paired_checkpoint_step(authored, template.inputs.get(role.name))
-        rows = self.expand_rows(variant, name, template, {role.name: members})
+        if any(subset.conditional for subset in subsets.values()):
+            sweep = sweep or Sweep()
+            if not any(isinstance(axis, InputAxis) and axis.input == role.name for axis in sweep.axes.values()):
+                axis = role.name if role.name not in sweep.axes else next(
+                    f"{role.name}-{index}" for index in range(2, len(sweep.axes) + 3)
+                    if f"{role.name}-{index}" not in sweep.axes
+                )
+                sweep = sweep.model_copy(update={"axes": sweep.axes | {axis: InputAxis(input=role.name)}})
+                self.swept_step_axes[variant, name] = tuple(sweep.axes)
+        rows = self.expand_rows(variant, name, template, {role.name: members}, sweep=sweep)
         if isinstance(rows, ProjectDiagnostic):
             self.diagnostics.append(rows)
             return ()
@@ -3551,6 +3630,7 @@ class _Compiler:
             evaluated_model=evaluated,
             train=lowered.train,
             dataset_port=lowered.dataset_port,
+            metric_names=lowered.metric_names,
         )
         self.rows[key] = run
         return run
@@ -4197,8 +4277,8 @@ class _Compiler:
             runs += self.step_rows(*target)
         if len(product_roles) != 1:
             return ProjectDiagnostic(ResolutionCode.BAD_REFERENCE, path, "The selected steps publish different products.", name)
-        product, = product_roles
-        if product == "model" and (
+        product_role, = product_roles
+        if product_role == "model" and (
             reference.checkpoint is not None or role.name == "subject" and template.sweep is not None and any(
                 isinstance(axis, CheckpointRuleAxis) for axis in template.sweep.axes.values()
             )
@@ -4227,7 +4307,7 @@ class _Compiler:
 
         problems = []
         try:
-            keyed_runs, best = select_step_rows(
+            keyed_runs, best, conditions = select_step_rows(
                 terms,
                 runs,
                 address=lambda run: (run.key.variant, run.key.row),
@@ -4236,6 +4316,7 @@ class _Compiler:
                 coordinate_label=coordinate_text,
                 missing=problems.append,
                 producer=member_name(self.variants[variants[0]].steps, reference.step),
+                final_metrics=common_train_metrics if role.producer_kind == "train" else None,
             )
         except RuleRefusal as error:
             self.diagnostics.extend(map(rule_problem, problems))
@@ -4244,9 +4325,9 @@ class _Compiler:
             self.diagnostics.extend(map(rule_problem, problems[1:]))
             return rule_problem(problems[0])
         self.diagnostics.extend(map(rule_problem, problems))
-        if best is not None and product == "model":
+        if product_role == "model" and (best is not None or conditions):
             return ProjectDiagnostic(
-                ResolutionCode.BAD_REFERENCE, f"{path}.where", "Best requires a Train step.", name,
+                ResolutionCode.BAD_REFERENCE, f"{path}.where", "Metric conditions and Best require a Train step.", name,
             )
         expands_input = template.sweep is not None and any(
             isinstance(axis, InputAxis) and axis.input == role.name
@@ -4314,13 +4395,22 @@ class _Compiler:
                 ))
                 continue
             for request, element in requests:
+                product = ProductRef(request_id=request, role=product_role, select=selector)
+                if conditions:
+                    assert terms is not None
+                    product = ConditionalProduct(
+                        request_id=product.request_id, role=product.role, select=product.select,
+                        conditions=bind_metric_conditions(
+                            terms.rule, conditions, axis_coordinates(run.coordinates, run.input_axes),
+                        ),
+                    )
                 mapped = element.stack_key if element is not None and element.key.member is not None else None
                 members.append((
                     PlannedInput(
                         run.key,
                         InputMember(
                             key=key if mapped is None else mapped if len(keyed_runs) == 1 else f"{key}/{mapped}",
-                            reference=ProductRef(request_id=request, role=product, select=selector),
+                            reference=product,
                             labels=labels | (dict(element.mapped) if element is not None else {}),
                         ),
                         producer_element=reference.element,
@@ -4347,7 +4437,10 @@ class _Compiler:
                 deepcopy(terms), candidate_count,
                 tuple(run.key for _, run in keyed_runs), subset_document,
                 source=source,
-                best=best,
+                best=best, metric_conditions=MappingProxyType({
+                    run.key: product for member, run in members
+                    if isinstance((product := member.member.reference), ConditionalProduct)
+                }) if conditions else None,
             )
             if terms is not None
             else None

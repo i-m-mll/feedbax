@@ -830,6 +830,37 @@ def test_studio_saves_an_objective_ramp_weighted_by_a_delayed_signal(tmp_path):
         assert field["text"] == text
 
 
+def test_trial_authoring_shows_authored_fields_for_a_windowed_set_entry(tmp_path):
+    from feedbax.desktop.release import AppPaths
+    from web.e2e.studio.fixtures.set_authoring import seed_window
+
+    project = seed_window(str(tmp_path), "windowed-set")
+    folders = ProjectFolderService(AppPaths.resolve(instance_root=tmp_path).web / "projects")
+    snapshot = folders.read(project)
+    plan = folders.read_plan(project, revision=snapshot.revision).plan
+    assert not plan.diagnostics
+    selected = next(row for row in plan.rows if row.coordinates["pulse"].value_id == "force")
+    body = {
+        "revision": snapshot.revision,
+        "run": {"variant": selected.key.variant, "step": selected.key.step, "row": selected.key.row},
+    }
+    with TestClient(create_app(projects_dir=folders.root)) as client:
+        response = client.post(f"/api/projects/{project}/authoring/trials", json=body)
+        sample = client.post("/api/execution/task-trials/sample", json=body | {"project_id": project, "nominal": True})
+        assert sample.status_code == 200, sample.text
+        trial, = sample.json()["drawn"]["trials"]
+        window, = trial["intervention_windows"].values()
+        assert [index for index, active in enumerate(window) if active] == list(range(10, 15))
+    assert response.status_code == 200, response.text
+    view = response.json()
+    authored_signals = {signal["id"] for signal in view["task"]["signals"]}
+    signal_fields = [field["path"].split("/")[3] for field in view["fields"]
+                     if field["path"].startswith("/task/signals/")]
+    assert signal_fields and set(signal_fields) <= authored_signals
+    assert view["epochs"]
+    assert any(variable["name"].endswith("Onset") for variable in view["variables"])
+
+
 def test_objective_offsets_project_paired_editable_fields(tmp_path):
     raw = document_project(authored_documents())
     term = raw["documents"]["objective"]["payload"]["terms"][0]

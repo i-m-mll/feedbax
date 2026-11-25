@@ -96,7 +96,7 @@ def test_noncontiguous_group_preserves_rollout_and_gradient(delay, initial_value
     boundary = {"owner": "inputs", "port": "signal"}
     source_wire = _wire(boundary, _end("a", "input"), [
         {"kind": "delay", "id": "delay", "delay": delay, "initial_source": {"kind": "value", "value": initial_value}},
-        {"kind": "intervention", "id": "scale", "operation": "Scale", "fields": {"factor": 3.0}},
+        {"kind": "intervention", "id": "scale", "operation": "Scale", "operands": {"factor": {"kind": "value", "value": 3.0}}},
     ])
     model = ModelDocument.model_validate({
         "step_seconds": 0.01,
@@ -265,6 +265,95 @@ def test_a_projected_delay_carries_its_conversion_to_the_other_time_unit(tmp_pat
         projected = client.post(url + "/model/projection", json={"revision": revision, "document": "reach-model"})
         assert projected.status_code == 200, projected.text
         assert projected.json()["delay_steps"][ModelAddress.model_validate(owner).to_text()] == delay_steps
+
+
+def test_intervention_window_field_edits_and_sweeps_in_the_authored_unit(tmp_path):
+    raw = managed_train_project().model_dump(mode="json", by_alias=True, exclude_unset=True)
+    model = raw["documents"]["point-mass"]["payload"]
+    pulse = {
+        "kind": "intervention", "id": "pulse", "operation": "add", "operands": {"value": {"kind": "value", "value": [0.5, 0.0]}},
+        "window": {"spans": [{
+            "kind": "interval", "start": {"anchor": {"kind": "trial", "edge": "start"}},
+            "end": {"offset": {"value": 2, "unit": "st"}},
+        }]},
+    }
+    model["interior"]["wires"]["drive"]["attachments"] = [pulse]
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, "window", Project.model_validate(raw))
+    url = "/api/projects/window"
+    owner = {"composites": [], "element": {
+        "kind": "attachment", "parent": {"kind": "wire", "id": "drive"}, "id": "pulse",
+    }}
+
+    with TestClient(create_app(projects_dir=tmp_path)) as client:
+        snapshot = client.get(url).json()
+        body = {"revision": snapshot["revision"], "document": "point-mass", "owner": owner,
+                "run": {"variant": "default", "step": "train", "row": "default"}}
+        projection = client.post(url + "/model/projection", json={
+            "revision": snapshot["revision"], "document": "point-mass", "run": body["run"],
+        })
+        assert projection.status_code == 200, projection.text
+        shown_model = projection.json()
+        assert not shown_model["problems"], shown_model["problems"]
+        shown = shown_model["resolved_model"]
+        assert shown["interior"]["wires"]["drive"]["attachments"][0]["id"] == "pulse"
+        assert set(shown["interior"]["components"]) == set(model["interior"]["components"])
+        response = client.post(url + "/model/fields", json=body)
+        assert response.status_code == 200, response.text
+        fields = {tuple(field["address"]["element"]["path"]): field for field in response.json()["fields"]}
+        offset = fields["window", "spans", 0, "start", "offset"]
+        assert offset["text"] == "0 st" and offset["can_sweep"]
+        assert fields["operands", "value", "value"]["structure"]["value"]["function"] == "vector"
+        edit = {"address": offset["address"], "edit": {"kind": "text", "text": "0.1 s"}}
+        value = client.post(url + "/model/fields", json=body | edit).json()
+        assert value["command"]["operation"]["value"] == {"value": 0.1, "unit": "s"}
+        applied = client.post(url + "/model/edit", json={
+            "revision": snapshot["revision"], "presentation_revision": snapshot["presentation_revision"],
+            "document": "point-mass", "command": value["command"],
+        })
+        assert applied.status_code == 200, applied.text
+        snapshot = applied.json()["result"]["snapshot"]
+        body["revision"] = snapshot["revision"]
+        fields = client.post(url + "/model/fields", json=body).json()["fields"]
+        shown = next(field for field in fields if field["address"] == offset["address"])
+        assert shown["text"] == "0.1 s" and shown["conversion"] == {"value": 10.0, "unit": "st"}
+        response = client.post(url + "/model/fields", json=body | {
+            "address": offset["address"], "edit": {"kind": "text", "text": "0.1 s, 0.2 s"},
+        })
+        assert response.status_code == 200, response.text
+        prepared = response.json()
+        assert not prepared["problems"], prepared
+        saved = client.patch(url, json={"revision": snapshot["revision"], "files": prepared["files"]})
+        assert saved.status_code == 200, saved.text
+        plan = folders.read_plan("window", revision=None).plan
+        assert len(plan.runs) == 2 and all(run.admission_problem is None for run in plan.runs), (
+            plan.diagnostics, tuple(run.problems for run in plan.runs),
+        )
+        values = set()
+        for run in plan.runs:
+            documents = decode_request(plan.requests[run.request_id], plan.documents.__getitem__).spec.trial_documents
+            attachment = documents.model.interior.wires["drive"].attachments[0]
+            start = attachment.window.spans[0].start.offset
+            assert start.unit == "s"
+            values.add(start.value)
+            body = {
+                "project_id": "window", "revision": saved.json()["revision"], "count": 2,
+                "run": {"variant": run.key.variant, "step": run.key.step, "row": run.key.row},
+            }
+            route = "/api/execution/task-trials/sample"
+            sampled = client.post(route, json=body)
+            assert sampled.status_code == 200, sampled.text
+            draw = sampled.json()
+            address = ModelAddress.model_validate(owner).to_text()
+            first = round(start.value / documents.model.step_seconds)
+            active = [first, first + 1]
+            for trial in draw["drawn"]["trials"]:
+                assert np.flatnonzero(trial["intervention_windows"][address]).tolist() == active
+            batch = client.post(route, json=body | {"aggregate": True})
+            assert batch.status_code == 200, batch.text
+            shares = batch.json()["drawn"]["interventions"][address]
+            assert shares == [float(i in active) for i in range(draw["n_steps"])]
+        assert values == {0.1, 0.2}
 
 
 def test_addressed_field_range_sample_and_row_provenance(tmp_path):
@@ -1040,6 +1129,33 @@ def test_plan_reports_all_authored_graph_problems_for_train_and_initial_evaluate
         assert {item.model_address.element.id for item in row.problems} == {"dangling-first", "dangling-second"}
 
 
+def test_unwired_linear_review_accepts_the_gru_width(tmp_path):
+    from feedbax.contracts.model_edit import ModelConnectionReviewRequest
+    from tests.support.managed_train_fixture import managed_train_project
+
+    data = managed_train_project().model_dump(mode="json", by_alias=True)
+    interior = data["documents"]["point-mass"]["payload"]["interior"]
+    for wire in ("target", "decode"):
+        del interior["wires"][wire]
+    interior["components"]["scalar"] = {"kind": "leaf", "name": "Scalar", "type": "feedbax.Constant", "fields": {"value": 2.0}}
+    folders = ProjectFolderService(tmp_path)
+    _save_project(folders, "unwired", Project.model_validate(data))
+    revision = folders.read("unwired").revision
+    registry = new_application_registry_bundle()
+
+    def candidate(component):
+        review = folders.review_model_connections("unwired", ModelConnectionReviewRequest.model_validate({
+            "revision": revision, "document": "point-mass",
+            "graph": {"composites": [], "element": {"kind": "graph"}},
+            "source": {"owner": "component", "component": component, "port": "output"},
+        }), registry)
+        return next(item for item in review.targets if item.target.owner == "component"
+                    and item.target.component == "readout" and item.target.port == "input")
+
+    assert candidate("cell").reason is None and candidate("cell").problem is None
+    assert "shape" in candidate("scalar").problem
+
+
 @pytest.mark.parametrize("source", ["gru", "task"])
 def test_model_projection_and_compilation_get_input_size_from_the_wire(tmp_path, source):
     """Changing a GRU's hidden size also changes the wired Linear's input width."""
@@ -1298,7 +1414,7 @@ def test_an_evaluate_attachment_for_selected_runs_changes_only_their_request(tmp
     owner = {"composites": ["wrapper", "controller"], "element": {
         "kind": "port", "end": {"owner": "component", "component": "cell", "port": "output", "direction": "output"},
     }}
-    attachment = {"kind": "intervention", "id": "condition", "operation": "Scale", "fields": {"factor": 0.5}}
+    attachment = {"kind": "intervention", "id": "condition", "operation": "Scale", "operands": {"factor": {"kind": "value", "value": 0.5}}}
 
     def edit(client, difference):
         snapshot = folders.read("nested")
@@ -1345,7 +1461,7 @@ _VARIANT_FIELD = "evaluate:86530315779f1c0f14fc177396bae4f98e4f8ceb8a5600d09bd6b
     ({"op": "set_attachment", "difference": {
         "op": "add", "after": None,
         "owner": {"composites": ["wrapper", "controller"], "element": {"kind": "wire", "id": "decode"}},
-        "attachment": {"kind": "intervention", "id": "condition", "operation": "Scale", "fields": {"factor": 0.5}},
+        "attachment": {"kind": "intervention", "id": "condition", "operation": "Scale", "operands": {"factor": {"kind": "value", "value": 0.5}}},
     }}, _VARIANT_WIRE),
     ({"op": "set_field", "address": {"composites": [], "element": {
         "kind": "field", "parent": {"kind": "component", "id": "plant"}, "path": ["fields", "mass"],
@@ -1413,7 +1529,7 @@ def _attachment_owner(wire):
 
 
 def _scale_attachment(identity, factor):
-    return {"kind": "intervention", "id": identity, "operation": "Scale", "fields": {"factor": factor}}
+    return {"kind": "intervention", "id": identity, "operation": "Scale", "operands": {"factor": {"kind": "value", "value": factor}}}
 
 
 def _add_attachment(owner, identity, after, factor=0.5):
@@ -1931,6 +2047,8 @@ def test_three_level_model_train_evaluate_and_rename_current(host, tmp_path, cap
     slot = read_method_checkpoint(checkpoint.checkpoint_root, checkpoint.pointer, components=new_application_registry_bundle().components).model
     assert slot is not None
     restored = slot.restore()
+    assert restored.input_shapes == {"reach_target": (2,)}
+    assert slot.input_arrays["reach_target"].dtype == "float32"
     assert restored.nodes["wrapper"].nodes["controller"].nodes["cell"].cell.weight_ih.shape[1] == 2
     evaluated = finished(evaluation_job)
     assert evaluated["state"] == "succeeded", evaluated.get("outcome")

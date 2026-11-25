@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from pydantic import TypeAdapter
 
 from feedbax.contracts.artifact_custody import ContentObjectRef
-from feedbax.contracts.effective_success import TerminalTrainSubject
+from feedbax.contracts.effective_success import ExcludedProduct, LightOrigins, TerminalTrainSubject
 from feedbax.contracts.execution_target import attempt_target
 from feedbax.contracts.request_refs import BestRank
 from feedbax.persistence.checkpoint_selection import requested_checkpoint_selection
@@ -184,6 +184,10 @@ class DeferredAdmissions:
 
         try:
             origins, bindings = self._input_authority(row, launch, view)
+            if any(isinstance(origin, ExcludedProduct) for origin in origins.values()) and self.store.exclude_empty_light(
+                row, {key: value.model_dump(mode="json") for key, value in origins.items()},
+            ):
+                return
             equal = self._equal_inputs(row, published, view, origins, bindings)
         except _UNAVAILABLE as error:
             self._block(row, "dependency_corrupt", str(error))
@@ -230,9 +234,11 @@ class DeferredAdmissions:
 
     def _input_authority(
         self, row: sqlite3.Row, launch: dict, view: SuccessView,
-    ) -> tuple[dict[str, ContentObjectRef], list[dict]]:
+    ) -> tuple[LightOrigins, list[dict]]:
+        from pydantic import TypeAdapter
+
         origins = (
-            {request: ContentObjectRef.model_validate(value) for request, value in self.store.light_origins(row).items()}
+            TypeAdapter(LightOrigins).validate_python(self.store.light_origins(row))
             if launch["warm_entrypoint"] == LIGHT_ENTRYPOINT else {}
         )
         bindings = self.store.completion_bindings(row["id"])
@@ -258,7 +264,7 @@ class DeferredAdmissions:
     @staticmethod
     def _equal_inputs(
         row: sqlite3.Row, published: PublishedSuccess, view: SuccessView,
-        origins: dict[str, ContentObjectRef], bindings: list[dict],
+        origins: LightOrigins, bindings: list[dict],
     ) -> bool:
         if bindings and row["request"].startswith(("analyze:", "evaluate:")):
             from feedbax.host.current_checkpoints import compare_pinned_checkpoint

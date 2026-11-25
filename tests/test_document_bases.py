@@ -73,7 +73,7 @@ def test_an_incremental_plan_follows_the_base_chain():
     memo = ProjectPlanMemo()
     first = _requests(compile_project(Project.model_validate(data), memo=memo))
 
-    _fields(data, "cell")["hidden_size"] = _fields(data, "readout")["input_size"] = 5
+    _fields(data, "cell")["hidden_size"] = 5
     project = Project.model_validate(data)
     changed = _requests(compile_project(project, memo=memo))
     assert changed == _requests(compile_project(project))

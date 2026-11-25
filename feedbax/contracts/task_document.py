@@ -25,6 +25,13 @@ class SetVariableChoices(ValueRecord):
     entries: tuple[str | None, ...]
 
 
+class Marker(ValueRecord):
+    """The Scene mark for a Task point."""
+
+    shape: Literal["circle", "square", "triangle"]
+    filled: bool
+
+
 class Variable(ValueRecord):
     id: str
     name: str
@@ -32,6 +39,7 @@ class Variable(ValueRecord):
     value: Expression
     count: Expression | None = Field(default=None, exclude_if=lambda value: value is None)
     set_choices: SetVariableChoices | None = Field(default=None, exclude_if=lambda value: value is None)
+    marker: Marker | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class Length(ValueRecord):
@@ -138,6 +146,15 @@ class TaskDocument(ValueRecord):
     validation_trials: tuple[ValidationTrial, ...] = Field(
         default=(ValidationTrial(),), min_length=1
     )
+
+    def without_markers(self) -> "TaskDocument":
+        """The computational Task, with its Scene-only metadata removed."""
+        if not any(variable.marker is not None for variable in self.variables):
+            return self
+        return self.model_copy(update={"variables": tuple(
+            variable if variable.marker is None else variable.model_copy(update={"marker": None})
+            for variable in self.variables
+        )})
 
     @property
     def condition_ids(self) -> tuple[str, ...]:

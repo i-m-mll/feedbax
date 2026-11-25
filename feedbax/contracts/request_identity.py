@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import cache
@@ -32,6 +32,7 @@ from feedbax.contracts.request_refs import (
     EffectiveBindingId,
     EffectiveInputs,
     InputMember,
+    ProductRef,
     RequestId,
     RequestInputs,
     RequestKind,
@@ -439,12 +440,30 @@ def decode_request(data: bytes, read_document: Callable[[str], bytes]) -> Decode
     return DecodedRequest(kind=kind, spec=spec, inputs=inputs, id=encoded.id)
 
 
-def effective_binding_id(request: DecodedRequest, inputs: EffectiveInputs) -> EffectiveBindingId:
+def retained_request_inputs(
+    request: DecodedRequest, excluded: Mapping[str, Collection[str]],
+) -> RequestInputs:
+    """Keep authored order while projecting a proved absence out of a gathered input."""
+    if not excluded.keys() <= request.inputs.keys():
+        raise ValueError("Excluded inputs must name authored roles")
+    retained = {}
+    for role, members in request.inputs.items():
+        absent = set(excluded.get(role, ()))
+        if not absent <= {member.key for member in members if isinstance(member.reference, ProductRef)}:
+            raise ValueError(f"Excluded members must name producer products for {role!r}")
+        retained[role] = tuple(member for member in members if member.key not in absent)
+    return retained
+
+
+def effective_binding_id(
+    request: DecodedRequest, inputs: EffectiveInputs, *, excluded: Mapping[str, Collection[str]] | None = None,
+) -> EffectiveBindingId:
     """Project verified bindings to a separately scoped successful-result lookup key."""
-    if inputs.keys() != request.inputs.keys():
+    retained = retained_request_inputs(request, excluded) if excluded else request.inputs
+    if inputs.keys() != retained.keys():
         raise ValueError("Effective inputs must cover the authored input roles")
     for role, members in inputs.items():
-        authored = request.inputs[role]
+        authored = retained[role]
         if tuple(member.key for member in members) != tuple(member.key for member in authored):
             raise ValueError(f"Effective inputs must preserve authored member order for {role!r}")
         for bound, source in zip(members, authored, strict=True):
@@ -466,7 +485,7 @@ def effective_binding_id(request: DecodedRequest, inputs: EffectiveInputs) -> Ef
                     "descriptor": member.descriptor,
                     **_member_labels(source),
                 }
-                for member, source in zip(members, request.inputs[role], strict=True)
+                for member, source in zip(members, retained[role], strict=True)
             ]
             for role, members in inputs.items()
         },

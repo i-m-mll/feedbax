@@ -85,6 +85,8 @@ class TrialMeanShelf(StrictModel):
     epochs: list[TrialMeanEpoch]
     signals: dict[str, list[float]]
     terms: dict[str, TrialMeanTermShare]
+    interventions: dict[str, list[float]] = Field(default_factory=dict, exclude_if=lambda value: not value)
+    """Intervention shares by Model attachment address on the same aligned intervals."""
 
 
 class TrialMean(StrictModel):

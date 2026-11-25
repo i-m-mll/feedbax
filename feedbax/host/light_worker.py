@@ -347,7 +347,7 @@ def main(_argv: list[str]) -> int:
     role, operation = validate_light_request(request)
     with bind_managed_inputs(
         view, delivery.request, origins=exact.origins, checkpoint_bindings=exact.bindings, project=delivery.project_id,
-    ) as (_, bindings):
+    ) as (_, bindings, _):
         products = _compute_products(store, request, bindings, attempt, role, operation)
     result = {"outcome": "succeeded", "products": {
         name: [product.model_dump(mode="json") for product in items] for name, items in products.items()

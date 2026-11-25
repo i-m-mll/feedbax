@@ -521,7 +521,7 @@
     },
     "validity": {
       "code": "Code", "environment": "Environment", "file": "File", "input": "Input",
-      "changed": "Changed", "removed": "Removed", "unreadable": "Unreadable", "invalid": "Invalid", "indeterminate": "Undetermined",
+      "changed": "Changed", "added": "Added", "removed": "Removed", "unreadable": "Unreadable", "invalid": "Invalid", "indeterminate": "Undetermined",
       "source": "Source changed", "computation": "Results differ", "unverifiable": "Can't be checked",
       "pending": "Not yet checked", "confirmed": "Same results", "different": "Different results", "not_checked": "Not checked"
     },

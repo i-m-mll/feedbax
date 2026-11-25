@@ -83,7 +83,7 @@ test('a wire drawn to an occupied input of another type replaces its wire, keepi
   definition.ports.outputs![0].type = { shape: [2], unit: 's' };
   const drive = definition.interior.wires!.command;
   const original = drive.source;
-  drive.attachments = [{ id: 'gain', kind: 'intervention', operation: 'scale', fields: { factor: 2 } }];
+  drive.attachments = [{ id: 'gain', kind: 'intervention', operation: 'scale', operands: { factor: { kind: 'value', value: 2 } } }];
   const seeded = await seedManagedProject(request, files);
   const { projectPath } = seeded;
   const wire = { composites: [], element: { kind: 'wire', id: 'command' } } as const;

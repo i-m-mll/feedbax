@@ -216,6 +216,76 @@ def _short_reaches(steps):
     return task
 
 
+
+def test_timed_intervention_uses_the_exact_trained_checkpoint(host, tmp_path):
+    from feedbax.contracts.model_address import ModelAddress
+    from feedbax.contracts.project_sources import pointer
+
+    raw = managed_evaluation_definition()
+    raw["documents"]["task"] = _short_reaches(5)
+    raw["documents"]["objective"]["payload"]["terms"][0].pop("window")
+    train = raw["steps"]["train"]
+    baseline = raw["steps"]["baseline"]
+    baseline["base"]["inline"]["params"]["trial_set"] = {"kind": "sample", "count": 1}
+    raw["steps"] = {"train": train, "baseline": baseline}
+    registries = new_application_registry_bundle()
+    addresses = {}
+    for name, owner in (
+        ("root-pulse", {"composites": [], "element": {"kind": "wire", "id": "plant-wire"}}),
+        ("nested-pulse", _attachment_owner("read")),
+    ):
+        raw["steps"][name] = deepcopy(baseline)
+        read_changed_model(raw, name, [{
+            "op": "add", "owner": owner, "after": None,
+            "attachment": {
+                "kind": "intervention", "id": "pulse", "operation": "add", "operands": {"value": {"kind": "value", "value": [0.5, 0.0]}},
+                "window": {"spans": [{
+                    "kind": "interval",
+                    "start": {"anchor": {"kind": "trial", "edge": "start"}, "offset": {"value": 2, "unit": "st"}},
+                    "end": {"offset": {"value": 2, "unit": "st"}},
+                }]},
+            },
+        }], base="reach-model", components=registries.components)
+        addresses[name] = ModelAddress.model_validate(owner | {
+            "element": {"kind": "attachment", "parent": owner["element"], "id": "pulse"},
+        }).to_text()
+
+    folders = ProjectFolderService(tmp_path / "projects")
+    _save_project(folders, "checkpoint-window", Project.model_validate(raw))
+    reviewed = folders.read_plan("checkpoint-window", revision=None)
+    assert not reviewed.plan.diagnostics
+    assert not [(run.key, run.problems) for run in reviewed.plan.runs if run.problems]
+
+    planned = {run.key.step: run for run in reviewed.plan.runs}
+    jobs = JobService(host, registries)
+    names = ("train", "baseline", *addresses)
+    started = jobs.admit_plan(
+        folders, reviewed, run_keys=tuple(planned[name].key for name in names), token=token("checkpoint-window"),
+    ).items
+    assert [item.disposition for item in started] == ["admitted"] * len(names)
+    settled = [wait_until(lambda: job_row(host, item.job_id, "succeeded") or job_row(host, item.job_id, "failed")
+                          or job_row(host, item.job_id, "blocked")) for item in started]
+    assert [row["state"] for row in settled] == ["succeeded"] * len(names), [
+        row["outcome"].get("error", {}).get("message") for row in settled
+    ]
+    assert all(row["edges"][0]["binding"]["terminal"]["receipt"] == settled[0]["outcome"]["store_success"]
+               for row in settled[1:])
+    velocities = {}
+    for name, item in zip(names[1:], started[1:], strict=True):
+        result = jobs.read_evaluation_result(project=reviewed.project_id, store=reviewed.store_path, job_id=item.job_id)
+        with result.open_states() as states:
+            velocities[name] = states.data("/v1/model/state/plant/effector~1velocity")[0, 0, 0]
+            if name in addresses:
+                np.testing.assert_array_equal(
+                    states.data(pointer(("v1", "task", "intervention_window", addresses[name])))[0, 0, 0],
+                    [False, False, True, True, False],
+                )
+    baseline_velocity = velocities.pop("baseline")
+    for pulse_velocity in velocities.values():
+        np.testing.assert_array_equal(pulse_velocity[:3], baseline_velocity[:3])
+        assert pulse_velocity[-1, 0] > baseline_velocity[-1, 0]
+
+
 def _selected_task_variants():
     raw = managed_evaluation_definition()
     train = raw["steps"]["train"]

@@ -30,7 +30,8 @@ from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.model_address import (
     ComponentElement, ComponentPortAddress, FieldElement, ModelAddress, OutputBoundaryEnd, PortElement,
 )
-from feedbax.contracts.model_document import GraphInterior, ModelDocument
+from feedbax.contracts.model_attachment import is_trial_binding
+from feedbax.contracts.model_document import GraphInterior, ModelDocument, SignalInput, SignalType
 from feedbax.contracts.model_values import component_model_facts
 from feedbax.contracts.project import json_pointer_parts
 from feedbax.contracts.task_document import PythonTaskSelection
@@ -139,12 +140,22 @@ def pair_trial_source(
         template = None
         from feedbax.compiler.set_fields import lower_trial_interventions
 
+        recorded = {}
+        if graph_override is not None:
+            recorded = {signal.id: signal for signal in task.signals if is_trial_binding(signal.id)}
+            if recorded:
+                task = task.model_copy(update={"signals": tuple(signal for signal in task.signals if signal.id not in recorded)})
         try:
             model, task = lower_trial_interventions(model, task, components)
         except ModelCompilationProblem as error:
             return model_compilation_problems(error)
         except ValueError as error:
             return (Problem(code=ProblemCode.STRUCTURE, path=("model",), reason=str(error)),)
+        if graph_override is not None:
+            signals = {signal.id: signal for signal in task.signals} | recorded
+            task = task.model_copy(update={"signals": tuple(
+                signal for id, signal in signals.items() if not is_trial_binding(id) or id in graph_override.input_bindings
+            )})
         signal_types = {signal.id: signal.type for signal in task.signals}
         signal_ids = {signal.name: signal.id for signal in task.signals}
     supplied_types = {}
@@ -155,14 +166,32 @@ def pair_trial_source(
     supplied = frozenset(supplied_types)
     try:
         lowered = lower_model_document(model, components, supplied_inputs=supplied)
-        prototypes = model_input_prototypes(lowered.graph, model, supplied_types)
         if graph_override is not None:
-            if graph_override.input_bindings != lowered.graph.input_bindings:
+            def public(bindings):
+                return {name: slot for name, slot in bindings.items() if not is_trial_binding(name)}
+
+            if public(graph_override.input_bindings) != public(lowered.graph.input_bindings):
                 return (Problem(
                     code=ProblemCode.STRUCTURE, path=("model", "inputs"),
                     reason="The selected task changes which optional inputs use the trained model's defaults.",
                 ),)
+            generated = tuple(name for name in graph_override.input_ports if is_trial_binding(name))
+            if missing := next((name for name in generated if name not in signal_types), None):
+                return (Problem(
+                    code=ProblemCode.STRUCTURE, path=("task", "signals", missing),
+                    reason="The generated intervention input has no Task signal.",
+                ),)
+            supplied_types.update({name: signal_types[name] for name in generated})
+            model = model.model_copy(update={"ports": model.ports.model_copy(update={
+                "inputs": (
+                    *(port for port in model.ports.inputs if not is_trial_binding(port.name)),
+                    *(SignalInput(id=name, name=name, type=SignalType(
+                        base=signal_types[name].base.value, shape=signal_types[name].shape,
+                    )) for name in generated),
+                ),
+            })})
             lowered = replace(lowered, graph=graph_override)
+        prototypes = model_input_prototypes(lowered.graph, model, supplied_types)
         interface = lowered.interface(model, components, input_prototypes=prototypes, task_inputs=supplied_types)
     except ModelCompilationProblem as error:
         return model_compilation_problems(error)
@@ -246,12 +275,13 @@ def preview_trial_source(
     *,
     python_tasks: PythonTaskRegistry,
     input_bindings: Mapping[str, str | None],
+    graph_override: GraphSpec | None = None,
     nominal: bool = False,
 ) -> PreviewTrialSource | tuple[Problem, ...]:
     """Compile the Task's trial, including each Model link that can be resolved."""
     paired = pair_trial_source(
         model, task, components, functions, python_tasks=python_tasks, input_bindings=input_bindings,
-        nominal=nominal,
+        graph_override=graph_override, nominal=nominal,
     )
     if isinstance(paired, TrialPair):
         scope = model_measure_scope(model, paired.model.signals)

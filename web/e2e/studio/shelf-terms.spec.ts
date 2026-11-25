@@ -5,6 +5,7 @@ test.use({ viewport: { width: 1440, height: 900 } });
 
 const target = { kind: 'call', function: 'sqnorm', args: [{ kind: 'name', reference: 'target_pos' }] };
 const squared = { base: 'real', dimensions: { length: 2 } };
+const window = (...epochs: string[]) => ({ spans: epochs.map((epoch) => ({ kind: 'epoch', epoch })) });
 
 // Catches a term's bar that disagrees with where training applies it (drawn over its whole window, ignoring that the
 // target is absent before the cue), a term that applies nowhere losing its row, a term that does not compile looking
@@ -14,10 +15,10 @@ test('each term that is on has a row on the shelf, barred where it applies, and 
   for (const file of files) {
     const payload = file.document?.payload;
     if (payload?.terms) payload.terms.push(
-      { id: 'reach', name: 'reach', measure: target, measure_type: squared, epochs: ['move', 'hold'] },
-      { id: 'held', name: 'held', measure: target, measure_type: squared, epochs: ['hold'] },
+      { id: 'reach', name: 'reach', measure: target, measure_type: squared, window: window('move', 'hold') },
+      { id: 'held', name: 'held', measure: target, measure_type: squared, window: window('hold') },
       { id: 'off', name: 'off', measure: target, measure_type: squared, enabled: false },
-      { id: 'untyped', name: 'untyped', measure: target, epochs: ['move'] },
+      { id: 'untyped', name: 'untyped', measure: target, window: window('move') },
     );
   }
   const { snapshot } = await seedManagedProject(request, files);

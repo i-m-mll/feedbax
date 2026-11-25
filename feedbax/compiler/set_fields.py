@@ -10,8 +10,11 @@ from itertools import product
 
 from feedbax.component_registry import ComponentRegistry
 from feedbax.compiler.model_attachment import resolve_effective_model
+from feedbax.contracts.expression_registry import FunctionRegistry
+from feedbax.contracts.expression_text import ParsedField, resolve_expression
 from feedbax.contracts.expression_values import (
-    CallValue, DrawValue, Expression, LiteralValue, NameValue, ValueBase, ValueType,
+    CallValue, DrawValue, Expression, Level, LiteralValue, NameValue, Problem, ProblemCode, ScopedValue, Site,
+    ValueBase, ValueType, walk,
 )
 from feedbax.contracts.model_address import (
     AttachmentElement, AttachmentOwner, ComponentElement, ComponentPortAddress, ComponentPortEnd, FieldElement,
@@ -19,11 +22,11 @@ from feedbax.contracts.model_address import (
 )
 from feedbax.contracts.model_attachment import SetField
 from feedbax.contracts.model_document import (
-    CompositeComponent, GraphInterior, InterventionAttachment, LeafComponent, ModelDocument, ModelWire,
+    CompositeComponent, DelayInitialTask, DelayInitialWire, GraphInterior, InterventionAttachment, LeafComponent, ModelDocument, ModelWire,
     SignalInput, SignalType,
 )
 from feedbax.contracts.project import Document, apply_differences
-from feedbax.contracts.project_sweep import CooccurringSetTrials, ListedSetTrials, SetEntryParts, TrialSetField
+from feedbax.contracts.project_sweep import CooccurringSetTrials, ListedSetTrials, SetEntryParts, SetTrialSampling, TrialSetField
 from feedbax.contracts.set_document import SetEntry, read_set
 from feedbax.contracts.task_document import (
     Cell, Link, SetVariableChoices, Signal, TaskAdditions, TaskDocument, ValidationTrial, Variable, add_to_task,
@@ -32,10 +35,11 @@ from feedbax.contracts.window import Window
 
 
 class SetFieldProblem(ValueError):
-    def __init__(self, axis: str, set_name: str, entry: str | None, reason: str):
+    def __init__(self, axis: str, set_name: str, entry: str | None, reason: str, *, condition: bool = False):
         self.axis = axis
         self.set_name = set_name
         self.entry = entry
+        self.condition = condition
         super().__init__(reason)
 
 
@@ -55,19 +59,56 @@ _BOOL = ValueType(base=ValueBase.BOOLEAN)
 _INT = ValueType(base=ValueBase.INTEGER)
 
 
+def entry_variable_id(axis: str, entry: str, variable: str) -> str:
+    return _id(axis, entry, variable)
+
+
+def rename_entry_references(value, refs: Mapping[str, str]):
+    if isinstance(value, dict):
+        if value.get("kind") == "name" and isinstance(reference := value.get("reference"), str) and reference in refs:
+            return value | {"reference": refs[reference]}
+        if value.get("kind") == "task" and isinstance(variable := value.get("variable"), str) and variable in refs:
+            return value | {"variable": refs[variable]}
+        return {key: rename_entry_references(item, refs) for key, item in value.items()}
+    if isinstance(value, list):
+        return [rename_entry_references(item, refs) for item in value]
+    return value
+
+
+def trial_set_condition_site(variables: tuple[ScopedValue, ...]) -> Site:
+    return Site(expected=_BOOL, finest=Level.TRIAL, names=variables, structural=True)
+
+
+def resolve_trial_set_condition(
+    expression: Expression, sampling: SetTrialSampling, site: Site, functions: FunctionRegistry,
+) -> ParsedField[Expression] | tuple[Problem, ...]:
+    if isinstance(sampling, ListedSetTrials):
+        return (Problem(code=ProblemCode.STRUCTURE, reason="A trial condition needs Weighted or Co-occurring sampling."),)
+    parsed = resolve_expression(expression, site, functions)
+    if isinstance(parsed, tuple):
+        return parsed
+    names = {item.id for item in site.names}
+    problems = []
+    for path, node in walk(parsed.value):
+        if isinstance(node, NameValue) and node.reference not in names:
+            problems.append(Problem(
+                code=ProblemCode.UNKNOWN_NAME, reason=f"Task variable {node.reference!r} is not in scope for this condition.",
+                path=path, span=parsed.spans.get(path),
+            ))
+        elif isinstance(node, DrawValue) or (
+            isinstance(node, CallValue) and (function := functions.resolve(node.function)) and function.info.random
+        ):
+            problems.append(Problem(
+                code=ProblemCode.OUT_OF_SCOPE,
+                reason="A trial condition can read sampled Task variables and cannot make its own draw.",
+                path=path, span=parsed.spans.get(path),
+            ))
+    return tuple(problems) if problems else parsed
+
+
 def _entry_scope(axis: str, entry: str, source: SetEntry) -> SetEntry:
-    refs = {variable.id: _id(axis, entry, variable.id) for variable in source.task_variables}
-
-    def rename(value):
-        if isinstance(value, dict):
-            if value.get("kind") == "name" and isinstance(reference := value.get("reference"), str) and reference in refs:
-                return value | {"reference": refs[reference]}
-            return {key: rename(item) for key, item in value.items()}
-        if isinstance(value, list):
-            return [rename(item) for item in value]
-        return value
-
-    renamed = rename(source.model_dump(mode="json"))
+    refs = {variable.id: entry_variable_id(axis, entry, variable.id) for variable in source.task_variables}
+    renamed = rename_entry_references(source.model_dump(mode="json"), refs)
     for variable in renamed.get("task_variables", ()):
         variable["id"] = refs[variable["id"]]
         variable["name"] = f"{entry} · {variable['name']}"
@@ -87,11 +128,16 @@ def _attachment_links(
             remaining.append(link)
             continue
         at = address.element
-        if isinstance(at, FieldElement) and isinstance(at.parent, AttachmentElement) and at.path[0] in {"fields", "window"}:
-            value = NameValue(reference=link.variable).model_dump(mode="json")
-            writes.append(SetField(op="set_field", address=address, value=value))
-        else:
-            remaining.append(link)
+        if isinstance(at, FieldElement) and isinstance(at.parent, AttachmentElement):
+            if at.path[0] == "operands":
+                address = address.model_copy(update={"element": at.model_copy(update={"path": at.path[:2]})})
+                writes.append(SetField(op="set_field", address=address, value={"kind": "task", "variable": link.variable}))
+                continue
+            if at.path[0] == "window":
+                value = NameValue(reference=link.variable).model_dump(mode="json")
+                writes.append(SetField(op="set_field", address=address, value=value))
+                continue
+        remaining.append(link)
     return resolve_effective_model(model, components, tuple(writes)), tuple(remaining)
 
 
@@ -125,6 +171,7 @@ class _Union:
         self.port_attachments = model.interior.attachments
         self.alternatives: dict[str, list[_Alternative]] = defaultdict(list)
         self.conditions: list[tuple[dict[str, int], ...]] = []
+        self.condition_origins: dict[str, str] = {}
         self.curl_activation: dict[str, tuple[bool, list[Expression]]] = {}
 
     def variable(
@@ -148,11 +195,11 @@ class _Union:
         return InputBoundaryEnd(owner="inputs", port=gate_id)
 
     def operands(self, attachment: InterventionAttachment, context: str) -> InterventionAttachment:
-        fields = dict(attachment.fields)
-        for key, value in fields.items():
-            reference = _task_reference(value)
-            if reference is None:
+        operands = dict(attachment.operands)
+        for key, operand in operands.items():
+            if not isinstance(operand, DelayInitialTask):
                 continue
+            reference = operand.variable
             variable = next((variable for variable in self.variables if variable.id == reference), None)
             if variable is None:
                 raise ValueError(f"Intervention {attachment.id!r} links to missing Task variable {reference!r}.")
@@ -165,11 +212,8 @@ class _Union:
             self.inputs.append(SignalInput(
                 id=id, name=id, type=SignalType(base=variable.type.base.value, shape=variable.type.shape),
             ))
-            address = ModelAddress(
-                composites=self.scope, element=PortElement(kind="port", end=InputBoundaryEnd(owner="inputs", port=id)),
-            )
-            fields[key] = NameValue(reference=address.to_text()).model_dump(mode="json")
-        return attachment.model_copy(update={"fields": fields}) if fields != attachment.fields else attachment
+            operands[key] = DelayInitialWire(kind="wire", source=InputBoundaryEnd(owner="inputs", port=id))
+        return attachment.model_copy(update={"operands": operands}) if operands != attachment.operands else attachment
 
     def added_components(self, alt: _Alternative, model: ModelDocument, added_wires: set[str]):
         nominal = self.model.interior
@@ -251,7 +295,42 @@ class _Union:
         selectors.append(predicate)
         return True
 
-    def placement(self, axis: str, placement: TrialSetField, read: Callable[[str], Document | None]):
+    def eligibility(self, axis: str, placement: TrialSetField, functions: FunctionRegistry) -> NameValue | None:
+        if placement.condition is None:
+            return None
+
+        def refused(reason: str) -> SetFieldProblem:
+            return SetFieldProblem(axis, placement.axis.set, None, reason, condition=True)
+
+        scope = tuple(
+            ScopedValue(id=var.id, name=var.name, type=var.type, level=Level.TRIAL)
+            for var in self.task.variables
+        )
+        parsed = resolve_trial_set_condition(placement.condition, placement.sampling, trial_set_condition_site(scope), functions)
+        if isinstance(parsed, tuple):
+            raise refused(parsed[0].reason)
+        try:
+            id = _id("eligibility", axis, "condition")
+            eligible = self.variable(id, _BOOL, parsed.value)
+        except ValueError as error:
+            raise refused(str(error)) from error
+        self.condition_origins[id] = axis
+        return eligible
+
+    def placement(
+        self, axis: str, placement: TrialSetField, read: Callable[[str], Document | None], functions: FunctionRegistry,
+    ):
+        eligible = self.eligibility(axis, placement, functions)
+
+        def select(
+            id: str, kind: ValueType, draw: DrawValue, none: bool | int, entries: tuple[str | None, ...],
+        ) -> NameValue:
+            value: Expression = draw
+            if eligible is not None:
+                value = _call("where", eligible, draw, LiteralValue(value=none))
+                self.condition_origins[id] = axis
+            return self.variable(id, kind, value, choices=SetVariableChoices(set=placement.axis.set, entries=entries))
+
         try:
             entries = read_set(read, placement.axis.set).entries
             sample = placement.sampling
@@ -272,16 +351,18 @@ class _Union:
                     parts = sample.weights.get(entry, SetEntryParts())
                     if not (parts.off or parts.on):
                         raise SetFieldProblem(axis, placement.axis.set, entry, "The switch has zero total parts.")
-                    gates.append(self.variable(_id(axis, entry), _BOOL, DrawValue(
+                    draw = DrawValue(
                         family="choice", args=(LiteralValue(value=False), LiteralValue(value=True)),
                         weights=(parts.off, parts.on),
-                    ), choices=SetVariableChoices(set=placement.axis.set, entries=(None, entry))))
+                    )
+                    gates.append(select(_id(axis, entry), _BOOL, draw, False, (None, entry)))
             else:
                 if not any(weights):
                     raise ValueError("The choice has zero total parts.")
-                selected = self.variable(axis, _INT, DrawValue(
+                draw = DrawValue(
                     family="choice", args=tuple(LiteralValue(value=value) for value in choices), weights=weights,
-                ), choices=SetVariableChoices(set=placement.axis.set, entries=(None, *by_id)))
+                )
+                selected = select(axis, _INT, draw, 0, (None, *by_id))
                 if isinstance(sample, ListedSetTrials):
                     self.conditions.append(tuple({selected.reference: value} for value in choices))
                 gates = [_call("eq", selected, LiteralValue(value=index)) for index in range(1, len(by_id) + 1)]
@@ -473,21 +554,10 @@ def _has_window(wire: ModelWire) -> bool:
     return any(isinstance(item, InterventionAttachment) and item.window is not None for item in wire.attachments)
 
 
-def _task_reference(value) -> str | None:
-    if not isinstance(value, dict) or value.get("kind") != "name":
-        return None
-    reference = NameValue.model_validate(value).reference
-    try:
-        ModelAddress.from_text(reference)
-    except ValueError:
-        return reference
-    return None
-
-
 def _needs_task(attachments) -> bool:
     return any(
         isinstance(attachment, InterventionAttachment)
-        and (attachment.window is not None or any(_task_reference(value) is not None for value in attachment.fields.values()))
+        and (attachment.window is not None or any(isinstance(operand, DelayInitialTask) for operand in attachment.operands.values()))
         for attachment in attachments
     )
 
@@ -545,16 +615,18 @@ def _insertions(base: ModelWire, variant: ModelWire) -> list[tuple[int, Interven
 
 def lower_trial_sets(
     model: ModelDocument, task: TaskDocument, fields: Mapping[str, TrialSetField],
-    read: Callable[[str], Document | None], components: ComponentRegistry,
-) -> tuple[ModelDocument, TaskDocument]:
+    read: Callable[[str], Document | None], components: ComponentRegistry, *, functions: FunctionRegistry,
+) -> tuple[ModelDocument, TaskDocument, dict[str, str]]:
     model, links = _attachment_links(model, task.links, components)
     task = task.model_copy(update={"links": links}) if links != task.links else task
     union = _Union(model, task, components)
     for axis, placement in sorted(fields.items()):
         if placement.axis.where is not None:
             raise SetFieldProblem(axis, placement.axis.set, None, "Trial Set placements apply to all runs of the step.")
-        union.placement(axis, placement, read)
-    return union.finish()
+        union.placement(axis, placement, read, functions)
+    compiled_model, compiled_task = union.finish()
+    return compiled_model, compiled_task, union.condition_origins
+
 
 
 def lower_trial_interventions(

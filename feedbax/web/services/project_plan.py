@@ -6,6 +6,7 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
+from functools import cache
 from hashlib import sha256
 from itertools import chain
 from math import isfinite, prod
@@ -27,6 +28,7 @@ from feedbax.contracts.dataset import DATASET_MEDIA_TYPE, DatasetDescriptor
 from feedbax.contracts.effective_success import (
     RequestObject, Success, read_effective_request, read_success_request, success_content_ref,
 )
+from feedbax.contracts.expression_values import Expression
 from feedbax.contracts.figure_document import PLOTLY_FIGURE_ROLE, PlotlyFigurePort
 from feedbax.contracts.intent_diff import first_request_change
 from feedbax.contracts.jobs import (
@@ -81,16 +83,18 @@ from feedbax.contracts.project_io import project_declaration_name
 from feedbax.planner.project_plan import (
     BlockedRow, ElementKey, PlannedAnalyzeRun, PlannedElement, PlannedInput, PlannedRow, PlannedRun, ProjectPlan, RunKey,
     RunProblem,
-    authored_request_change, planned_input_groups,
+    authored_request_change, common_train_metrics, planned_input_groups,
 )
 from feedbax.planner.project_plan_io import run_key
 from feedbax.contracts.project_resolution import ProjectDiagnostic
 from feedbax.contracts.result_address import parse_labels
 from feedbax.contracts.project_sweep import CheckpointRuleAxis, axis_coordinates, coordinate_text
-from feedbax.contracts.run_rule import RuleRefusal, choose
+from feedbax.contracts.run_rule import (
+    METRIC_CONDITION_FALSE, RuleRefusal, bind_metric_conditions, choose, metric_condition_holds,
+)
 from feedbax.contracts.request_identity import decode_request
 from feedbax.contracts.request_refs import (
-    BatchMember, BatchSetMember, BestRank, LastMember, ProductRef, UpdateSeriesMember,
+    BatchMember, BatchSetMember, BestRank, ConditionalProduct, LastMember, ProductRef, RequestId, UpdateSeriesMember,
     is_synthesized_model_product,
 )
 from feedbax.contracts.request_specs import DocumentTrainingRequestSpec, EvaluationRequestSpec, SynthesisRequestSpec
@@ -118,6 +122,7 @@ from feedbax.orchestration.session_jobs import ApprovedRowStatus
 from feedbax.persistence.artifact_custody import ImmutableArtifactBlobProvider
 from feedbax.persistence.effective_success import SuccessView
 from feedbax.persistence.store_damage import inspect_without_recording
+from feedbax.persistence.train_metrics import read_final_train_metrics
 from feedbax.persistence.canonical_evaluate import EvaluationResult, decode_rollout_request
 from feedbax.host.live_evaluate import live_objective_series
 from feedbax.contracts.rollout import CannotRun
@@ -323,7 +328,7 @@ class ProjectPlanRead:
 
         counts: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
         for key, status in statuses.items():
-            if isinstance(key, RunKey):
+            if isinstance(key, RunKey) and status.status is not JobStatus.NOT_CHOSEN:
                 counts[key.variant, key.step][status.status.value] += 1
 
         edge_keys = [
@@ -338,11 +343,19 @@ class ProjectPlanRead:
             for producer in binding.sources
         )
 
+        check_metric = _final_metric_check(self.settled, self.history)
+
         def inputs(variant: str, step_id: str) -> Iterator[StudioProjectWindowMapInput]:
             step = plan.steps[variant, step_id]
             for role, binding in (step.inputs if step.inputs is not None else step.authored_inputs).items():
                 for input_id, reference in _step_references(role, binding):
                     subset = plan.subsets.get((variant, step_id, input_id))
+                    members = subset.members if subset is not None else ()
+                    if subset is not None and (conditions := subset.metric_conditions) is not None:
+                        members = _settled_metric_members(members, lambda key: (
+                            check_metric(key, condition.request_id, condition.conditions)
+                            if (condition := conditions.get(key)) is not None else None
+                        ))
                     axis = next((
                         (name, item) for name, item in step.sweep.axes.items()
                         if isinstance(item, CheckpointRuleAxis)
@@ -356,8 +369,14 @@ class ProjectPlanRead:
                         ),
                         checkpoint_axis=axis[0] if axis is not None else None,
                         can_sweep_checkpoint=input_id == "subject" and step.can_sweep_checkpoint,
+                        metric_names=sorted(common_train_metrics(
+                            row for source_variant in (
+                                plan.variant_projects if reference.variants == "all"
+                                else reference.variants or (variant,)
+                            ) for row in step_rows.get((source_variant, reference.step), ())
+                        )),
                         subset=StudioProjectWindowMapSubset(
-                            terms=subset.terms, count=len(subset.ranks or subset.members), total=subset.candidates,
+                            terms=subset.terms, count=len(subset.ranks or members), total=subset.candidates,
                             ranks=list(subset.ranks),
                             rank_groups=[
                                 StudioBestRankGroup(coordinates=dict(group.coordinates), ranks=list(group.ranks))
@@ -365,7 +384,7 @@ class ProjectPlanRead:
                             ],
                             document=subset.document,
                             members=[
-                                StudioSavedTrainKey.model_validate(member, from_attributes=True) for member in subset.members
+                                StudioSavedTrainKey.model_validate(member, from_attributes=True) for member in members
                             ] if evaluation_tasks is not None and step.kind == "evaluate" and role == "subject" else None,
                         ) if subset is not None else StudioProjectWindowMapSubset(
                             terms=reference.where, count=0,
@@ -733,26 +752,41 @@ class ProjectPlanService:
 
     def check_run_rule(self, project_id: str, body: StudioRunRuleRequest) -> StudioRunRuleCheck:
         """What ``body.rule`` chooses among the producer's planned rows, as the plan would choose them."""
-        plan = self.folders.read_plan(project_id, revision=body.revision).plan
+        settled = self.folders.read_plan(project_id, revision=body.revision)
+        plan = settled.plan
         step = plan.steps.get((body.variant, body.step))
         if step is None:
             raise ProjectFolderInvalid(f"{body.step} is not a step of {body.variant}.")
         rows = [row for row in plan.rows if (row.key.variant, row.key.step) == (body.variant, body.step)]
         coordinates = {id(row): axis_coordinates(row.coordinates, row.input_axes) for row in rows}
+        metrics = sorted(common_train_metrics(rows)) if body.ranked else []
         try:
             chosen = choose(
                 body.rule, rows, coordinates=lambda row: coordinates[id(row)], producer=step.label or body.step,
-                ranked=body.ranked,
+                ranked=body.ranked, final_metrics=common_train_metrics if step.kind == "train" else None,
             )
         except RuleRefusal as refusal:
             return StudioRunRuleCheck(
-                total=len(rows), result=StudioRunRuleRefused(reason=refusal.detail, span=refusal.span),
+                total=len(rows), metric_names=metrics, result=StudioRunRuleRefused(reason=refusal.detail, span=refusal.span),
             )
         best = chosen.best
         groups = {tuple(coordinates[id(row)][axis].value_id for axis in best.per) for row in chosen.rows} if best else ()
-        return StudioRunRuleCheck(total=len(rows), result=StudioRunRuleChosen(
-            runs=[row.key.row for row in chosen.rows],
-            count=best.count * len(groups) if best else len(chosen.rows),
+        members = chosen.rows
+        if chosen.conditions:
+            attempts = self.jobs.read_plan_attempts(
+                project=settled.project_id, store=settled.store_path, project_root=settled.project_root,
+                requests={row.request_id for row in members if isinstance(row, PlannedRun)},
+            )
+            check_metric = _final_metric_check(settled, _train_history(settled, attempts))
+            members = _settled_metric_members(members, lambda row: (
+                check_metric(row.key, row.request_id, bind_metric_conditions(
+                    body.rule, chosen.conditions, coordinates[id(row)],
+                )) if isinstance(row, PlannedRun) else None
+            ))
+        return StudioRunRuleCheck(total=len(rows), metric_names=metrics, result=StudioRunRuleChosen(
+            runs=[row.key.row for row in members],
+            count=best.count * len(groups) if best else len(members),
+            conditional=bool(chosen.conditions),
         ))
 
     def subset_to_rows(self, project_id: str, body: StudioSubsetToRowsRequest) -> StudioSubsetToRowsEdit:
@@ -930,6 +964,41 @@ class ProjectPlanService:
             raise JobConflict("The retained Evaluate objective could not be read and authenticated.") from error
 
 
+def _final_metric_check(
+    settled: SettledProjectPlan, history: Mapping[RunKey, TrainRowHistory],
+) -> Callable[[RunKey, RequestId, tuple[Expression, ...]], bool | None]:
+    @cache
+    def read_metrics(job_id: str, request: RequestId) -> Callable[[str], float]:
+        view = SuccessView(ImmutableArtifactBlobProvider(settled.store_path))
+        evidence = view.attempt_ref(job_id)
+        if evidence is None:
+            raise ValueError("The Train result has no accepted Store receipt.")
+        return read_final_train_metrics(view.store, view.read_receipt(evidence), request)
+
+    def check(key: RunKey, request: RequestId, conditions: tuple[Expression, ...]) -> bool | None:
+        producer = history.get(key)
+        if producer is None or producer.status is not JobStatus.SUCCEEDED or producer.result is None:
+            return None
+        return metric_condition_holds(conditions, read_metrics(producer.result.job_id, request))
+
+    return check
+
+
+def _settled_metric_members[T](members: tuple[T, ...], check: Callable[[T], bool | None]) -> tuple[T, ...]:
+    """Keep the candidate set until every Train has a result. Invalid metrics cannot choose a row."""
+    passing = []
+    for member in members:
+        try:
+            decision = check(member)
+        except (OSError, ValueError, KeyError):
+            continue
+        if decision is None:
+            return members
+        if decision:
+            passing.append(member)
+    return tuple(passing)
+
+
 def read_settled_project_plan(
     settled: SettledProjectPlan, reader: PlanJobReader, *, stopped_checkpoint_jobs: Sequence[str] = (),
     remote_attempts: Sequence[StudioActivityJob] = (),
@@ -959,6 +1028,24 @@ def read_settled_project_plan(
             ))
         jobs = replace(jobs, by_request=MappingProxyType(by_request))
     history = dict(_train_history(settled, jobs))
+    conditional = {
+        run.key: binding for run in runs for binding in run.inputs.values()
+        if isinstance(binding.member.reference, ConditionalProduct)
+    }
+    decisions: dict[RunKey, tuple[JobStatus, str]] = {}
+    if conditional:
+        check_metric = _final_metric_check(settled, history)
+        for key, binding in conditional.items():
+            try:
+                reference = binding.member.reference
+                assert isinstance(reference, ConditionalProduct) and binding.producer is not None
+                if check_metric(binding.producer, reference.request_id, reference.conditions) is False:
+                    decisions[key] = JobStatus.NOT_CHOSEN, METRIC_CONDITION_FALSE
+            except (OSError, ValueError, KeyError) as error:
+                decisions[key] = JobStatus.CANNOT_RUN, str(error)
+        for key in history.keys() & decisions.keys():
+            status, reason = decisions[key]
+            history[key] = replace(history[key], status=status, reason=reason)
     for key, opening in (openings or {}).items():
         if key in history:
             history[key] = replace(history[key], status=opening.status, reason=opening.reason)
@@ -967,6 +1054,11 @@ def read_settled_project_plan(
     for run in runs:
         if run.kind == "evaluate":
             row, problem = _evaluation_row(settled, run, jobs, reader, history)
+            if (decision := decisions.get(run.key)) is not None:
+                status, reason = decision
+                row = row.model_copy(update={"status": status, "reason": reason, "can_run": False})
+                if status is JobStatus.NOT_CHOSEN:
+                    problem = None
             if (opening := (openings or {}).get(run.key)) is not None:
                 row = row.model_copy(update={"status": opening.status, "reason": opening.reason})
             evaluations[run.key] = row

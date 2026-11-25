@@ -8,7 +8,7 @@ from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
-from pydantic import TypeAdapter, field_validator
+from pydantic import Field, TypeAdapter, field_validator
 
 from feedbax.analysis.report_document import PLOTLY_SCRIPT_NAME, REPORT_HTML_NAME, render as render_report
 from feedbax.contracts.artifact_custody import (
@@ -21,6 +21,8 @@ from feedbax.contracts.dataset import DATASET_MEDIA_TYPE, DatasetProductRef
 from feedbax.contracts.effective_success import (
     Bindings,
     BoundMember,
+    ExcludedProduct,
+    LightOrigins,
     Product,
     Products,
     RequestObject,
@@ -62,6 +64,7 @@ class LightDelivery(StrictModel):
     project_id: str
     manifest_root: Path
     request: RequestObject
+    excluded: dict[RequestId, ExcludedProduct] = Field(default_factory=dict, exclude_if=lambda value: not value)
 
     @field_validator("manifest_root")
     @classmethod
@@ -73,11 +76,11 @@ class LightDelivery(StrictModel):
 
 class LightCompletionBindings(StrictModel):
     bindings: tuple[dict, ...]
-    origins: dict[RequestId, ContentObjectRef]
+    origins: LightOrigins
 
 
 _PRODUCTS = TypeAdapter(Products)
-_ORIGINS = TypeAdapter(dict[RequestId, ContentObjectRef])
+_ORIGINS = TypeAdapter(LightOrigins)
 _PROVIDER = TypeAdapter(DistributionSource)
 
 
@@ -381,7 +384,7 @@ def publish_light_success(
         ordered = tuple(result[name][0] for name in order)
         with bind_managed_inputs(
             view, delivery.request, origins=exact_origins, checkpoint_bindings=checkpoint_bindings, project=delivery.project_id,
-        ) as (_, bindings):
+        ) as (_, bindings, excluded):
             if view.attempt_ref(job_id) is None:
                 (root,) = read_active_roots(store, (root_id,))
                 if root.targets != tuple(light_staging_target(success_content_ref(product.content)) for product in ordered):
@@ -391,7 +394,7 @@ def publish_light_success(
             success = view.publish_bound(
                 delivery.request, attempt=job_id, products=result, bindings=bindings,
                 provider=provider_trace, target=target,
-                execution_evidence=execution_evidence,
+                execution_evidence=execution_evidence, excluded=excluded,
             )
         store.release_root(root_id)
     return success.ref.model_dump(mode="json")
