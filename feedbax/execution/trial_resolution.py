@@ -22,6 +22,7 @@ from feedbax.compiler.model_document import declared_model_input_prototypes as d
 from feedbax.compiler.model_reset import ModelResetField
 from feedbax.compiler.model_signals import ModelMeasureScope, ResolvedSignalLeaf, model_measure_scope
 from feedbax.compiler.resolution import ParameterResolutionError, ParameterResolutionErrors
+from feedbax.contracts.retained_state import RetainedStateField
 from feedbax.contracts.graph import GraphSpec
 from feedbax.component_registry import ComponentRegistry
 from feedbax.contracts.artifact_custody import ArtifactBlobProvider
@@ -67,6 +68,7 @@ class ResolvedTrialExecution:
     lowered: LoweredModelDocument
     task_source: TaskDocument | PythonTaskSelection
     signal_scope: ModelMeasureScope
+    retained_state_fields: tuple[RetainedStateField, ...]
 
     def realize(
         self,
@@ -475,6 +477,7 @@ def resolve_trial_execution(
         pairing.lowered,
         pairing.task_source,
         signal_scope,
+        interface.retained_state_fields,
     )
 
 

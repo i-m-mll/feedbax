@@ -652,7 +652,7 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
                 "group": ["member", "condition", "trial"], "select": {"checkpoint": {"index": 0}},
                 "encode": {
                     axis: {
-                        "variable": analysis["operations"]["align"]["params"]["target"],
+                        "variable": "/v1/model/state/plant/effector~1position",
                         "select": {"xy": {"index": index}},
                     } for index, axis in enumerate(("x", "y"))
                 } | {"color": color},
@@ -747,6 +747,11 @@ def test_saved_paired_evaluate_rows_make_one_figure_and_report(host, tmp_path, m
     conditions, source_attrs, times = [], [], []
     for _, receipt in evaluations:
         with open_stored_dataset(store, dataset_member(receipt.products["states"][0])) as data:
+            hand = "/v1/model/state/plant/effector~1position"
+            producer = next(run for run in plan.runs if run.request_id == receipt.request.id)
+            declared = producer.dataset_port.variables[hand]
+            assert declared == data.descriptor.variables[hand]
+            assert declared.dims == ("checkpoint", "condition", "trial", "state_time", "xy")
             conditions.extend(data.data("condition").tolist())
             assert data.data("trial").tolist() == _TRIALS
             assert data.data("checkpoint").tolist() == [trained.continuation.clock.completed_updates]
