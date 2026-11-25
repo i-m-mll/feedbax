@@ -344,6 +344,30 @@ def _change_key(studio):
     assert not edit["problems"]
 
 
+@pytest.mark.parametrize(("binding", "document"), [
+    ("python_task", "simple-reaches-task"),
+    ("task", "simple-reaches-objective"),
+    ("objective", "simple-reaches-task"),
+])
+def test_model_projection_refuses_a_wrong_trial_document_kind(tmp_path, binding, document):
+    raw = load_shipped_projects()["point-mass-reaching"].model_dump(mode="json", by_alias=True, exclude_unset=True)
+    step = raw["steps"]["simple-reaches"]
+    bindings = step["base"]["inline"]["trial_documents"]
+    if binding == "python_task":
+        del bindings["task"]
+    bindings[binding] = {"document": document}
+    raw["steps"] = {"simple-reaches": step}
+    app = create_app(projects_dir=tmp_path)
+    with TestClient(app) as client:
+        _save_project(app.state.project_folders, _PROJECT, Project.model_validate(raw))
+        studio = _Studio(client, app.state.project_folders)
+        response = client.post(f"{_URL}/model/projection", json={
+            "revision": studio.before["revision"], "document": "point-mass", "run": studio.run("simple-reaches"),
+        })
+    assert response.status_code == 422, response.text
+    assert f"trial_documents.{binding}" in response.json()["detail"]
+
+
 @pytest.mark.parametrize(("seed", "witness"), [
     pytest.param(_graph_project, _incompatible_wire, id="incompatible-wire"),
     pytest.param(_typed_signal_project, _incompatible_signal_space, id="incompatible-space"),

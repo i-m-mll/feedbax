@@ -5,10 +5,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
+from pydantic import BaseModel, ValidationError
+
 from feedbax.contracts.expression_units import UNITS
 from feedbax.contracts.expression_values import Level, ScopedValue
 from feedbax.contracts.model_document import ModelDocument, SignalInput, SignalType
 from feedbax.contracts.model_edit import ModelProjectionRequest, ModelTaskSignal
+from feedbax.contracts.objective_document import ObjectiveDocument
 from feedbax.planner.project_plan import RunKey, SelectedRunDefinition
 from feedbax.contracts.task_document import PythonTaskSelection, TaskDocument
 from feedbax.contracts.trial_bindings import selected_signal_id
@@ -63,37 +66,51 @@ def selected_model(definition: SelectedRunDefinition, document: str) -> object:
     return managed.get("model")
 
 
+def _trial_document[Document: BaseModel](binding: str, value: object, schema: type[Document]) -> Document:
+    from feedbax.project_folder import ProjectFolderInvalid
+
+    try:
+        return schema.model_validate(value)
+    except ValidationError as error:
+        raise ProjectFolderInvalid(
+            f"trial_documents.{binding} does not contain a valid {schema.__name__}."
+        ) from error
+
+
 def selected_model_and_task(
     folders: ProjectFolder, project_id: str, body: ModelProjectionRequest, *, definition: SelectedRunDefinition | None = None,
 ):
-    from feedbax.project_folder import ProjectFolderInvalid
-
     if body.run is None:
-        raise ProjectFolderInvalid("Choose a run for this Model selection.")
+        return None
     if definition is None:
         key = RunKey(body.run.variant, body.run.step, body.run.row)
         plan = folders.read_plan(project_id, revision=body.revision, source_runs=(key,)).plan
         definition = plan.selected_definitions.get(key)
     if definition is None or (model := selected_model(definition, body.document)) is None:
-        raise ProjectFolderInvalid("The selected run does not use this Model")
+        return None
     managed = definition.payload.get("trial_documents")
     assert isinstance(managed, dict)
     if managed.get("python_task") is not None:
-        source = PythonTaskSelection.model_validate(managed["python_task"])
+        source = _trial_document("python_task", managed["python_task"], PythonTaskSelection)
     elif managed.get("task") is not None:
-        source = TaskDocument.model_validate(managed["task"])
+        source = _trial_document("task", managed["task"], TaskDocument)
     else:
         source = None
+    objective = managed.get("objective")
     return (
-        ModelDocument.model_validate(model), model_task_signals(folders, source),
-        managed.get("objective"), managed.get("input_bindings", {}),
+        _trial_document("model", model, ModelDocument), model_task_signals(folders, source),
+        _trial_document("objective", objective, ObjectiveDocument) if objective is not None else None,
+        managed.get("input_bindings", {}),
     )
 
 
 def selected_task_signal(folders: ProjectFolder, project_id: str, body: ModelProjectionRequest, signal: str) -> ModelTaskSignal:
     from feedbax.project_folder import ProjectFolderInvalid
 
-    _, task, _, _ = selected_model_and_task(folders, project_id, body)
+    selected = selected_model_and_task(folders, project_id, body)
+    if selected is None:
+        raise ProjectFolderInvalid("The selected run does not use this Model")
+    _, task, _, _ = selected
     item = next((item for item in task if item.id == signal), None)
     if item is None:
         raise ProjectFolderInvalid("The selected task does not expose this signal")

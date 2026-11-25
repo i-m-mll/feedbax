@@ -10,7 +10,7 @@ import re
 import socket
 import sys
 import time
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -324,6 +324,7 @@ def test_reusable_worker_retires_after_edit_to_source_loaded_by_failed_delivery(
     )
     monkeypatch.setattr(worker, "_redirect", lambda paths: None)
     monkeypatch.setattr(worker.os, "environ", {**os.environ, TOKEN_ENV: "worker-token"})
+    monkeypatch.setattr(worker.resource, "getrusage", lambda who: SimpleNamespace(ru_maxrss=0))
 
     def execute(_argv):
         assert importlib.import_module(source.stem).value == 1
